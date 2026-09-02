@@ -86,7 +86,8 @@ use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
 };
 use crate::quickdraw::fonts::{
-    font_id_for_name, font_name_for_id, get_font_face_scale_ratio, get_font_face_scaled,
+    font_id_for_name, font_name_for_id, get_font_face, get_font_face_scale_ratio,
+    get_font_face_scaled, FONT_APPLICATION,
 };
 use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
@@ -510,6 +511,31 @@ const PPC_TE_LH_ELEMENT_SIZE: u32 = 0x04;
 const PPC_TE_NULL_STYLE_SCRAP_OFFSET: u32 = 0x04;
 const PPC_TE_NULL_STYLE_REC_SIZE: u32 = 0x08;
 const PPC_TE_STYLE_SCRAP_REC_SIZE: u32 = 0x16;
+const PPC_TE_SCRAP_N_STYLES_OFFSET: u32 = 0x00;
+const PPC_TE_SCRAP_STYLE_TAB_OFFSET: u32 = 0x02;
+const PPC_TE_SCRAP_STYLE_HEIGHT_OFFSET: u32 = 0x04;
+const PPC_TE_SCRAP_STYLE_ASCENT_OFFSET: u32 = 0x06;
+const PPC_TE_SCRAP_STYLE_FONT_OFFSET: u32 = 0x08;
+const PPC_TE_SCRAP_STYLE_FACE_OFFSET: u32 = 0x0a;
+const PPC_TE_SCRAP_STYLE_SIZE_OFFSET: u32 = 0x0c;
+const PPC_TE_SCRAP_STYLE_COLOR_OFFSET: u32 = 0x0e;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcTeResolvedStyle {
+    font: i16,
+    face: u8,
+    size: i16,
+    color: PpcRgbColor,
+    line_height: i16,
+    ascent: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcTeStyleRun {
+    start: usize,
+    style_index: usize,
+    style: PpcTeResolvedStyle,
+}
 // Inside Macintosh: More Macintosh Toolbox (1993), pp. 4-106--4-108.
 const PPC_LIST_VIEW_OFFSET: u32 = 0;
 const PPC_LIST_PORT_OFFSET: u32 = 8;
@@ -1423,6 +1449,9 @@ pub enum PpcImportDispatcherTarget {
     TEInit,
     TENew,
     TEStyleNew,
+    TESetStyle,
+    TEContinuousStyle,
+    MeasureText,
     TEGetText,
     TEDispose,
     TEActivate { active: bool },
@@ -1494,6 +1523,7 @@ pub enum PpcImportDispatcherTarget {
     TextWidth,
     StringWidth,
     CharWidth,
+    RealFont,
     GetFontInfo,
     FontMetrics,
     GetFNum,
@@ -14448,6 +14478,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "TEInit") => PpcImportDispatcherTarget::TEInit,
         ("InterfaceLib", "TENew") => PpcImportDispatcherTarget::TENew,
         ("InterfaceLib", "TEStyleNew") => PpcImportDispatcherTarget::TEStyleNew,
+        ("InterfaceLib", "TESetStyle") => PpcImportDispatcherTarget::TESetStyle,
+        ("InterfaceLib", "TEContinuousStyle") => PpcImportDispatcherTarget::TEContinuousStyle,
         ("InterfaceLib", "TEGetText") => PpcImportDispatcherTarget::TEGetText,
         ("InterfaceLib", "TEDispose") | ("InterfaceLib", "TEDispos") => PpcImportDispatcherTarget::TEDispose,
         ("InterfaceLib", "TEActivate") | ("InterfaceLib", "TEActivat") => PpcImportDispatcherTarget::TEActivate { active: true },
@@ -14563,6 +14595,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "TextWidth") => PpcImportDispatcherTarget::TextWidth,
         ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
         ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,
+        ("InterfaceLib", "MeasureText") => PpcImportDispatcherTarget::MeasureText,
+        ("InterfaceLib", "RealFont") => PpcImportDispatcherTarget::RealFont,
         ("InterfaceLib", "GetFontInfo") => PpcImportDispatcherTarget::GetFontInfo,
         ("InterfaceLib", "FontMetrics") => PpcImportDispatcherTarget::FontMetrics,
         ("InterfaceLib", "GetFNum") => PpcImportDispatcherTarget::GetFNum,
@@ -14788,12 +14822,10 @@ fn dispatcher_target_for_import(
             | "NMRemove"
             | "ObscureCursor"
             | "OpenDefaultComponent"
-            | "RealFont"
             | "ResetAlertStage"
             | "SetFrontProcess"
             | "StyledLineBreak"
             | "SystemEdit"
-            | "TESetStyle"
             | "TruncText"
             | "UpperString"
             | "WaitMouseUp",
@@ -21216,6 +21248,100 @@ fn dispatch_supported_import(
             };
             Some(PpcImportAction::Return(te_handle))
         }
+        PpcImportDispatcherTarget::TESetStyle => {
+            // Universal Interfaces TextEdit.h: TESetStyle's native PPC ABI
+            // is (short mode, const TextStyle *, Boolean redraw, TEHandle).
+            let te_handle = cpu.gpr[6];
+            let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let mut start = usize::from(
+                memory
+                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+                    .unwrap_or(0),
+            );
+            let mut end = usize::from(
+                memory
+                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+                    .unwrap_or(0),
+            );
+            if end < start {
+                std::mem::swap(&mut start, &mut end);
+            }
+            let insertion_point = start == end;
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let style_result = if insertion_point {
+                ppc_te_set_null_style(memory, te_handle, cpu.gpr[3] as u16, cpu.gpr[4])
+            } else {
+                ppc_te_set_style_for_range(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    te_handle,
+                    start,
+                    end,
+                    cpu.gpr[3] as u16,
+                    cpu.gpr[4],
+                )
+            };
+            if style_result && !insertion_point && cpu.gpr[5] != 0 {
+                let _ = ppc_te_recalculate_layout(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    te_handle,
+                );
+                ppc_te_draw(
+                    memory,
+                    handles,
+                    gworlds,
+                    te_handle,
+                    *current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::TEContinuousStyle => {
+            // TextEdit stores mode and TextStyle as caller-owned out
+            // parameters. Return true only when every requested attribute is
+            // continuous across the current selection.
+            let result =
+                ppc_te_continuous_style(memory, handles, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::MeasureText => {
+            let count = cpu.gpr[3] as u16 as i16;
+            let text_font = ppc_current_text_font(memory, *current_gworld);
+            let text_face = ppc_current_text_style(memory, *current_gworld);
+            ppc_measure_text(
+                memory,
+                count,
+                cpu.gpr[4],
+                cpu.gpr[5],
+                text_font,
+                *quickdraw_text_size,
+                text_face,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::RealFont => {
+            let font = cpu.gpr[3] as u16 as i16;
+            let size = cpu.gpr[4] as u16 as i16;
+            Some(PpcImportAction::Return(u32::from(
+                font != FONT_APPLICATION
+                    && get_font_face(font, ppc_te_font_lookup_size(size)).is_some(),
+            )))
+        }
         PpcImportDispatcherTarget::TEGetText => {
             // Inside Macintosh: Text (1993), p. 2-83: TEGetText returns the
             // CharsHandle stored in TERec.hText.
@@ -22662,31 +22788,39 @@ fn dispatch_supported_import(
         ))),
         PpcImportDispatcherTarget::TextWidth => {
             let text_font = ppc_current_text_font(memory, *current_gworld);
+            let text_face = ppc_current_text_style(memory, *current_gworld);
             Some(PpcImportAction::Return(ppc_text_width(
                 cpu,
                 memory,
                 text_font,
                 *quickdraw_text_size,
+                text_face,
             )))
         }
         PpcImportDispatcherTarget::StringWidth => {
             let text_font = ppc_current_text_font(memory, *current_gworld);
+            let text_face = ppc_current_text_style(memory, *current_gworld);
             let width = ppc_read_pascal_string(memory, cpu.gpr[3])
                 .map(|bytes| {
-                    ppc_text_bytes_advance_for_font(&bytes, text_font, *quickdraw_text_size).max(0)
+                    ppc_text_width_bytes(text_font, *quickdraw_text_size, text_face, &bytes).max(0)
                         as u32
                 })
                 .unwrap_or(0);
             Some(PpcImportAction::Return(width))
         }
-        PpcImportDispatcherTarget::CharWidth => Some(PpcImportAction::Return(
-            ppc_text_byte_advance_for_font(
-                (cpu.gpr[3] & 0xff) as u8,
-                ppc_current_text_font(memory, *current_gworld),
-                *quickdraw_text_size,
-            )
-            .max(0) as u32,
-        )),
+        PpcImportDispatcherTarget::CharWidth => {
+            let text_font = ppc_current_text_font(memory, *current_gworld);
+            let text_face = ppc_current_text_style(memory, *current_gworld);
+            Some(PpcImportAction::Return(
+                ppc_text_width_bytes(
+                    text_font,
+                    *quickdraw_text_size,
+                    text_face,
+                    &[(cpu.gpr[3] & 0xff) as u8],
+                )
+                .max(0) as u32,
+            ))
+        }
         PpcImportDispatcherTarget::GetFontInfo => {
             let text_font = ppc_current_text_font(memory, *current_gworld);
             ppc_get_font_info(memory, cpu.gpr[3], text_font, *quickdraw_text_size);
@@ -27816,7 +27950,6 @@ fn ppc_dispatch_system_compatibility(
             let _ = ppc_write_pstring_bytes(memory, cpu.gpr[5], b"");
             PpcImportAction::ReturnPreserve
         }
-        "RealFont" => PpcImportAction::Return(u32::from((cpu.gpr[4] as u16 as i16) > 0)),
         "SystemEdit" | "WaitMouseUp" | "DIBadMount" => PpcImportAction::Return(0),
         "FindNextComponent" | "OpenDefaultComponent" => PpcImportAction::Return(0),
         "CTBGetCTBVersion" => PpcImportAction::Return(0x0200),
@@ -27831,7 +27964,7 @@ fn ppc_dispatch_system_compatibility(
             PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR))
         }
         "DILoad" | "DIUnload" | "Debugger" | "InitCRM" | "InitCTBUtilities" | "NMRemove"
-        | "ResetAlertStage" | "TESetStyle" => PpcImportAction::ReturnPreserve,
+        | "ResetAlertStage" => PpcImportAction::ReturnPreserve,
         _ => PpcImportAction::ReturnPreserve,
     }
 }
@@ -68478,6 +68611,7 @@ fn ppc_text_width(
     memory: &mut PpcSectionMem,
     text_font: i16,
     text_size: i16,
+    text_face: u8,
 ) -> u32 {
     let text_ptr = cpu.gpr[3];
     let first_byte = cpu.gpr[4];
@@ -68492,7 +68626,7 @@ fn ppc_text_width(
         };
         bytes.push(memory.read_u8(addr).unwrap_or(0));
     }
-    ppc_text_bytes_advance_for_font(&bytes, text_font, text_size).max(0) as u32
+    ppc_text_width_bytes(text_font, text_size, text_face, &bytes).max(0) as u32
 }
 
 fn ppc_get_font_info(memory: &mut PpcSectionMem, info_ptr: u32, text_font: i16, text_size: i16) {
@@ -69567,9 +69701,22 @@ fn ppc_te_initialize_record(
         PPC_TE_REC_MIN_SIZE,
         true,
     );
+    if te_handle == 0 {
+        return 0;
+    }
     let Some(te_ptr) = memory.read_u32_be(te_handle).filter(|ptr| *ptr != 0) else {
+        ppc_te_cleanup_handles(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &[te_handle],
+        );
         return 0;
     };
+    let mut allocated_handles = vec![te_handle];
     let h_text = ppc_allocator_view_allocate_handle(
         allocator.as_deref_mut(),
         memory,
@@ -69580,6 +69727,19 @@ fn ppc_te_initialize_record(
         0,
         true,
     );
+    if h_text == 0 {
+        ppc_te_cleanup_handles(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &allocated_handles,
+        );
+        return 0;
+    }
+    allocated_handles.push(h_text);
     let text_font = ppc_current_text_font(memory, current_port);
     let text_face = memory
         .read_u8(current_port.wrapping_add(PPC_CGRAF_PORT_TX_FACE_OFFSET))
@@ -69630,6 +69790,19 @@ fn ppc_te_initialize_record(
         PPC_TE_ST_ELEMENT_SIZE,
         true,
     );
+    if style_table == 0 {
+        ppc_te_cleanup_handles(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &allocated_handles,
+        );
+        return 0;
+    }
+    allocated_handles.push(style_table);
     let lh_table = ppc_allocator_view_allocate_handle(
         allocator.as_deref_mut(),
         memory,
@@ -69640,6 +69813,19 @@ fn ppc_te_initialize_record(
         PPC_TE_LH_ELEMENT_SIZE,
         true,
     );
+    if lh_table == 0 {
+        ppc_te_cleanup_handles(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &allocated_handles,
+        );
+        return 0;
+    }
+    allocated_handles.push(lh_table);
     let null_scrap = ppc_allocator_view_allocate_handle(
         allocator.as_deref_mut(),
         memory,
@@ -69650,6 +69836,19 @@ fn ppc_te_initialize_record(
         PPC_TE_STYLE_SCRAP_REC_SIZE,
         true,
     );
+    if null_scrap == 0 {
+        ppc_te_cleanup_handles(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &allocated_handles,
+        );
+        return 0;
+    }
+    allocated_handles.push(null_scrap);
     let null_style = ppc_allocator_view_allocate_handle(
         allocator.as_deref_mut(),
         memory,
@@ -69660,6 +69859,19 @@ fn ppc_te_initialize_record(
         PPC_TE_NULL_STYLE_REC_SIZE,
         true,
     );
+    if null_style == 0 {
+        ppc_te_cleanup_handles(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &allocated_handles,
+        );
+        return 0;
+    }
+    allocated_handles.push(null_style);
     let style_handle = ppc_allocator_view_allocate_handle(
         allocator.as_deref_mut(),
         memory,
@@ -69670,6 +69882,19 @@ fn ppc_te_initialize_record(
         PPC_TE_STYLE_REC_SIZE,
         true,
     );
+    if style_handle == 0 {
+        ppc_te_cleanup_handles(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &allocated_handles,
+        );
+        return 0;
+    }
+    allocated_handles.push(style_handle);
 
     if let Some(style_table_ptr) = memory.read_u32_be(style_table).filter(|ptr| *ptr != 0) {
         let _ = memory.write_u16_be(style_table_ptr, 1);
@@ -69740,6 +69965,392 @@ fn ppc_te_text_bytes(
     })
 }
 
+fn ppc_te_font_lookup_size(size: i16) -> i16 {
+    if size == 0 {
+        PPC_QD_TEXT_SIZE_SYSTEM
+    } else {
+        size.max(1)
+    }
+}
+
+fn ppc_te_resolved_style_from_parts(
+    font: i16,
+    face: u8,
+    size: i16,
+    color: PpcRgbColor,
+    line_height: i16,
+    ascent: i16,
+) -> PpcTeResolvedStyle {
+    let size = ppc_te_font_lookup_size(size);
+    let metrics = get_font_metrics(font, size);
+    let fallback_height = metrics
+        .ascent
+        .saturating_add(metrics.descent)
+        .saturating_add(metrics.leading);
+    PpcTeResolvedStyle {
+        font,
+        face,
+        size,
+        color,
+        line_height: if line_height > 0 {
+            line_height
+        } else {
+            fallback_height.max(1)
+        },
+        ascent: if ascent > 0 {
+            ascent
+        } else {
+            metrics.ascent.max(0)
+        },
+    }
+}
+
+fn ppc_te_style_from_table_element(
+    memory: &mut PpcSectionMem,
+    style_ptr: u32,
+) -> Option<PpcTeResolvedStyle> {
+    Some(ppc_te_resolved_style_from_parts(
+        memory.read_u16_be(style_ptr + 6)? as i16,
+        memory.read_u8(style_ptr + 8)?,
+        memory.read_u16_be(style_ptr + 10)? as i16,
+        PpcRgbColor {
+            red: memory.read_u16_be(style_ptr + 12)?,
+            green: memory.read_u16_be(style_ptr + 14)?,
+            blue: memory.read_u16_be(style_ptr + 16)?,
+        },
+        memory.read_u16_be(style_ptr + 2)? as i16,
+        memory.read_u16_be(style_ptr + 4)? as i16,
+    ))
+}
+
+fn ppc_te_null_style_scrap_handle(memory: &mut PpcSectionMem, te_handle: u32) -> u32 {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return 0;
+    };
+    let style_handle = memory
+        .read_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET)
+        .unwrap_or(0);
+    let style_ptr = memory
+        .read_u32_be(style_handle)
+        .filter(|ptr| *ptr != 0)
+        .unwrap_or(0);
+    let null_style_handle = memory
+        .read_u32_be(style_ptr + PPC_TE_STYLE_NULL_STYLE_OFFSET)
+        .unwrap_or(0);
+    let null_style_ptr = memory
+        .read_u32_be(null_style_handle)
+        .filter(|ptr| *ptr != 0)
+        .unwrap_or(0);
+    memory
+        .read_u32_be(null_style_ptr + PPC_TE_NULL_STYLE_SCRAP_OFFSET)
+        .unwrap_or(0)
+}
+
+fn ppc_te_null_style_resolved_style(
+    memory: &mut PpcSectionMem,
+    te_handle: u32,
+) -> Option<PpcTeResolvedStyle> {
+    let scrap_handle = ppc_te_null_style_scrap_handle(memory, te_handle);
+    let scrap_ptr = memory.read_u32_be(scrap_handle).filter(|ptr| *ptr != 0)?;
+    if memory.read_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET)? == 0 {
+        return None;
+    }
+    let element = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
+    Some(ppc_te_resolved_style_from_parts(
+        memory.read_u16_be(element + PPC_TE_SCRAP_STYLE_FONT_OFFSET)? as i16,
+        memory.read_u8(element + PPC_TE_SCRAP_STYLE_FACE_OFFSET)?,
+        memory.read_u16_be(element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET)? as i16,
+        PpcRgbColor {
+            red: memory.read_u16_be(element + PPC_TE_SCRAP_STYLE_COLOR_OFFSET)?,
+            green: memory.read_u16_be(element + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + 2)?,
+            blue: memory.read_u16_be(element + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + 4)?,
+        },
+        memory.read_u16_be(element + PPC_TE_SCRAP_STYLE_HEIGHT_OFFSET)? as i16,
+        memory.read_u16_be(element + PPC_TE_SCRAP_STYLE_ASCENT_OFFSET)? as i16,
+    ))
+}
+
+fn ppc_te_set_null_style(
+    memory: &mut PpcSectionMem,
+    te_handle: u32,
+    mode: u16,
+    text_style_ptr: u32,
+) -> bool {
+    if text_style_ptr == 0 {
+        return false;
+    }
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return false;
+    };
+    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) != Some(0xffff) {
+        return false;
+    }
+    let scrap_handle = ppc_te_null_style_scrap_handle(memory, te_handle);
+    let Some(scrap_ptr) = memory.read_u32_be(scrap_handle).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    let element = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
+    let source_font = memory.read_u16_be(text_style_ptr).unwrap_or(0);
+    let source_face = memory.read_u8(text_style_ptr + 2).unwrap_or(0);
+    let source_size = memory.read_u16_be(text_style_ptr + 4).unwrap_or(0);
+    let source_color = [
+        memory.read_u16_be(text_style_ptr + 6).unwrap_or(0),
+        memory.read_u16_be(text_style_ptr + 8).unwrap_or(0),
+        memory.read_u16_be(text_style_ptr + 10).unwrap_or(0),
+    ];
+    let _ = memory.write_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET, 1);
+    if mode & 0x0001 != 0 {
+        let _ = memory.write_u16_be(
+            element + PPC_TE_SCRAP_STYLE_FONT_OFFSET,
+            source_font,
+        );
+    }
+    if mode & 0x0002 != 0 {
+        let _ = memory.write_u8(
+            element + PPC_TE_SCRAP_STYLE_FACE_OFFSET,
+            source_face,
+        );
+    }
+    if mode & 0x0004 != 0 {
+        let _ = memory.write_u16_be(
+            element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET,
+            source_size,
+        );
+    }
+    if mode & 0x0008 != 0 {
+        for (offset, color) in [0u32, 2, 4].into_iter().zip(source_color) {
+            let _ = memory.write_u16_be(
+                element + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + offset,
+                color,
+            );
+        }
+    }
+    let font = memory
+        .read_u16_be(element + PPC_TE_SCRAP_STYLE_FONT_OFFSET)
+        .unwrap_or(0) as i16;
+    let size = ppc_te_font_lookup_size(
+        memory
+            .read_u16_be(element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET)
+            .unwrap_or(0) as i16,
+    );
+    let metrics = get_font_metrics(font, size);
+    let _ = memory.write_u16_be(
+        element + PPC_TE_SCRAP_STYLE_HEIGHT_OFFSET,
+        metrics
+            .ascent
+            .saturating_add(metrics.descent)
+            .saturating_add(metrics.leading) as u16,
+    );
+    let _ = memory.write_u16_be(
+        element + PPC_TE_SCRAP_STYLE_ASCENT_OFFSET,
+        metrics.ascent as u16,
+    );
+    true
+}
+
+fn ppc_te_fallback_style(memory: &mut PpcSectionMem, te_ptr: u32) -> PpcTeResolvedStyle {
+    let font = memory
+        .read_u16_be(te_ptr + PPC_TE_TX_FONT_OFFSET)
+        .unwrap_or(PPC_QD_TEXT_FONT_DEFAULT as u16) as i16;
+    let size = memory
+        .read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET)
+        .unwrap_or(PPC_QD_TEXT_SIZE_SYSTEM as u16) as i16;
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
+    let size = ppc_te_font_lookup_size(size);
+    let (font_face, scale) = get_font_face_scaled(font, size);
+    let ascent = font_face.metrics.ascent.saturating_mul(scale);
+    let line_height = ascent
+        .saturating_add(font_face.metrics.descent.saturating_mul(scale))
+        .saturating_add(font_face.metrics.leading.saturating_mul(scale));
+    ppc_te_resolved_style_from_parts(font, face, size, PPC_RGB_BLACK, line_height, ascent)
+}
+
+fn ppc_te_style_at_offset(runs: &[PpcTeStyleRun], offset: usize) -> PpcTeResolvedStyle {
+    let mut style = runs
+        .first()
+        .map(|run| run.style)
+        .unwrap_or_else(|| ppc_te_resolved_style_from_parts(0, 0, 0, PPC_RGB_BLACK, 0, 0));
+    for run in runs {
+        if run.start > offset {
+            break;
+        }
+        style = run.style;
+    }
+    style
+}
+
+fn ppc_te_style_runs(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    te_handle: u32,
+    text_len: usize,
+) -> Vec<PpcTeStyleRun> {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return Vec::new();
+    };
+    let fallback = ppc_te_fallback_style(memory, te_ptr);
+    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) != Some(0xffff) {
+        return vec![PpcTeStyleRun {
+            start: 0,
+            style_index: 0,
+            style: fallback,
+        }];
+    }
+    let style_handle = memory
+        .read_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET)
+        .unwrap_or(0);
+    let Some(style_ptr) = memory.read_u32_be(style_handle).filter(|ptr| *ptr != 0) else {
+        return vec![PpcTeStyleRun {
+            start: 0,
+            style_index: 0,
+            style: fallback,
+        }];
+    };
+    let Some(style_table_handle) = memory
+        .read_u32_be(style_ptr + PPC_TE_STYLE_TABLE_OFFSET)
+        .filter(|handle| *handle != 0)
+    else {
+        return vec![PpcTeStyleRun {
+            start: 0,
+            style_index: 0,
+            style: fallback,
+        }];
+    };
+    let Some(style_table_ptr) = memory
+        .read_u32_be(style_table_handle)
+        .filter(|ptr| *ptr != 0)
+    else {
+        return vec![PpcTeStyleRun {
+            start: 0,
+            style_index: 0,
+            style: fallback,
+        }];
+    };
+    let n_runs = usize::from(
+        memory
+            .read_u16_be(style_ptr + PPC_TE_STYLE_N_RUNS_OFFSET)
+            .unwrap_or(0),
+    );
+    let n_styles = usize::from(
+        memory
+            .read_u16_be(style_ptr + PPC_TE_STYLE_N_STYLES_OFFSET)
+            .unwrap_or(0),
+    );
+    let max_runs = handles
+        .iter()
+        .find(|record| record.handle == style_handle)
+        .map(|record| {
+            usize::try_from(record.size.saturating_sub(PPC_TE_STYLE_RUNS_OFFSET) / 4)
+                .unwrap_or(usize::MAX)
+        })
+        .unwrap_or(n_runs);
+    let max_styles = handles
+        .iter()
+        .find(|record| record.handle == style_table_handle)
+        .map(|record| usize::try_from(record.size / PPC_TE_ST_ELEMENT_SIZE).unwrap_or(usize::MAX))
+        .unwrap_or(n_styles);
+    let run_count = n_runs.min(max_runs).min(4096);
+    let style_count = n_styles.min(max_styles).min(4096);
+    if run_count == 0 || style_count == 0 {
+        return vec![PpcTeStyleRun {
+            start: 0,
+            style_index: 0,
+            style: fallback,
+        }];
+    }
+
+    let mut runs = Vec::with_capacity(run_count);
+    for run_index in 0..run_count {
+        let run_ptr = style_ptr + PPC_TE_STYLE_RUNS_OFFSET + (run_index as u32 * 4);
+        let style_index_word = memory.read_u16_be(run_ptr + 2).unwrap_or(0xffff);
+        if style_index_word == 0xffff {
+            break;
+        }
+        let style_index = usize::from(style_index_word);
+        if style_index >= style_count {
+            continue;
+        }
+        let element_ptr = style_table_ptr + style_index as u32 * PPC_TE_ST_ELEMENT_SIZE;
+        let Some(style) = ppc_te_style_from_table_element(memory, element_ptr) else {
+            continue;
+        };
+        runs.push(PpcTeStyleRun {
+            start: usize::from(memory.read_u16_be(run_ptr).unwrap_or(0)).min(text_len),
+            style_index,
+            style,
+        });
+    }
+    if runs.is_empty() {
+        return vec![PpcTeStyleRun {
+            start: 0,
+            style_index: 0,
+            style: fallback,
+        }];
+    }
+    runs.sort_by_key(|run| run.start);
+    let mut folded: Vec<PpcTeStyleRun> = Vec::with_capacity(runs.len() + 1);
+    for run in runs {
+        if let Some(last) = folded.last_mut() {
+            if last.start == run.start {
+                *last = run;
+                continue;
+            }
+            if last.style == run.style {
+                continue;
+            }
+        }
+        folded.push(run);
+    }
+    if folded.first().is_none_or(|run| run.start != 0) {
+        folded.insert(
+            0,
+            PpcTeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: fallback,
+            },
+        );
+    }
+    folded
+}
+
+fn ppc_te_measure_text_width_styled(
+    runs: &[PpcTeStyleRun],
+    text: &[u8],
+    start: usize,
+    end: usize,
+) -> i16 {
+    let start = start.min(text.len());
+    let end = end.min(text.len());
+    text[start..end]
+        .iter()
+        .enumerate()
+        .fold(0i16, |width, (index, byte)| {
+            let style = ppc_te_style_at_offset(runs, start + index);
+            width.saturating_add(ppc_text_width_bytes(
+                style.font,
+                style.size,
+                style.face,
+                &[*byte],
+            ))
+        })
+}
+
+fn ppc_te_line_metrics_for_range(runs: &[PpcTeStyleRun], start: usize, end: usize) -> (i16, i16) {
+    if start >= end {
+        let style = ppc_te_style_at_offset(runs, start);
+        return (style.line_height, style.ascent);
+    }
+    let mut line_height = 1i16;
+    let mut ascent = 0i16;
+    for offset in start..end {
+        let style = ppc_te_style_at_offset(runs, offset);
+        line_height = line_height.max(style.line_height);
+        ascent = ascent.max(style.ascent);
+    }
+    (line_height, ascent)
+}
+
 fn ppc_te_primary_font_and_size(memory: &mut PpcSectionMem, te_ptr: u32) -> (i16, i16) {
     if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff) {
         let style_handle = memory
@@ -69768,7 +70379,7 @@ fn ppc_te_primary_font_and_size(memory: &mut PpcSectionMem, te_ptr: u32) -> (i16
 }
 
 fn ppc_te_recalculate_layout(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -69785,19 +70396,31 @@ fn ppc_te_recalculate_layout(
     let (_, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, i16::MAX));
     let max_width = right.saturating_sub(left).max(1);
+    let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let style_runs = if styled {
+        ppc_te_style_runs(memory, handles, te_handle, text.len())
+    } else {
+        Vec::new()
+    };
     let (font, size) = ppc_te_primary_font_and_size(memory, te_ptr);
-    let starts = crate::quickdraw::text::wrap_classic_text(&text, max_width, |_, byte| {
-        ppc_text_byte_advance_for_font(byte, font, size)
-    })
-    .into_iter()
-    .map(|line| line.start.min(u16::MAX as usize) as u16)
-    .collect::<Vec<_>>();
+    let lines = crate::quickdraw::text::wrap_classic_text(&text, max_width, |index, byte| {
+        if styled {
+            let style = ppc_te_style_at_offset(&style_runs, index);
+            ppc_text_width_bytes(style.font, style.size, style.face, &[byte])
+        } else {
+            ppc_text_byte_advance_for_font(byte, font, size)
+        }
+    });
+    let starts = lines
+        .iter()
+        .map(|line| line.start.min(u16::MAX as usize) as u16)
+        .collect::<Vec<_>>();
     let required_size = PPC_TE_REC_MIN_SIZE.max(
         PPC_TE_LINE_STARTS_OFFSET
             .saturating_add((starts.len() as u32).saturating_add(2).saturating_mul(2)),
     );
     let result = ppc_allocator_view_resize_handle(
-        allocator,
+        allocator.as_deref_mut(),
         memory,
         heap_cursor,
         heap_limit,
@@ -69819,21 +70442,432 @@ fn ppc_te_recalculate_layout(
     for (index, start) in starts.iter().copied().enumerate() {
         let _ = memory.write_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + index as u32 * 2, start);
     }
-    for index in starts.len()..starts.len().saturating_add(2) {
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + index as u32 * 2, 0);
-    }
-    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff) {
+    let _ = memory.write_u16_be(
+        te_ptr + PPC_TE_LINE_STARTS_OFFSET + starts.len() as u32 * 2,
+        text.len().min(u16::MAX as usize) as u16,
+    );
+    let _ = memory.write_u16_be(
+        te_ptr + PPC_TE_LINE_STARTS_OFFSET + starts.len().saturating_add(1) as u32 * 2,
+        0,
+    );
+    if styled {
         let style_handle = memory
             .read_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET)
             .unwrap_or(0);
         if let Some(style_ptr) = memory.read_u32_be(style_handle).filter(|ptr| *ptr != 0) {
-            let _ = memory.write_u16_be(
-                style_ptr + PPC_TE_STYLE_RUNS_OFFSET + 4,
-                text.len().saturating_add(1).min(u16::MAX as usize) as u16,
+            let run_count = usize::from(
+                memory
+                    .read_u16_be(style_ptr + PPC_TE_STYLE_N_RUNS_OFFSET)
+                    .unwrap_or(0),
             );
+            let _ = memory.write_u16_be(
+                style_ptr
+                    .saturating_add(PPC_TE_STYLE_RUNS_OFFSET)
+                    .saturating_add((run_count as u32).saturating_mul(4)),
+                    text.len()
+                        .saturating_add(1)
+                        .min(u16::MAX as usize) as u16,
+            );
+            let _ = memory.write_u16_be(
+                style_ptr
+                    .saturating_add(PPC_TE_STYLE_RUNS_OFFSET)
+                    .saturating_add((run_count as u32).saturating_mul(4))
+                    .saturating_add(2),
+                0xffff,
+            );
+
+            let lh_handle = memory
+                .read_u32_be(style_ptr + PPC_TE_STYLE_LH_TABLE_OFFSET)
+                .unwrap_or(0);
+            if lh_handle != 0 {
+                let required_lh_size = (lines.len().saturating_add(1) as u32)
+                    .saturating_mul(PPC_TE_LH_ELEMENT_SIZE);
+                let result = ppc_allocator_view_resize_handle(
+                    allocator.as_deref_mut(),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    lh_handle,
+                    required_lh_size,
+                );
+                if result == PPC_NO_ERR {
+                    if let Some(lh_ptr) = memory.read_u32_be(lh_handle).filter(|ptr| *ptr != 0) {
+                        for line_index in 0..=lines.len() {
+                            let (line_height, ascent) = if let Some(line) = lines.get(line_index) {
+                                ppc_te_line_metrics_for_range(
+                                    &style_runs,
+                                    line.start.min(text.len()),
+                                    line.next.min(text.len()),
+                                )
+                            } else {
+                                ppc_te_line_metrics_for_range(
+                                    &style_runs,
+                                    text.len(),
+                                    text.len(),
+                                )
+                            };
+                            let offset =
+                                lh_ptr.saturating_add(line_index as u32 * PPC_TE_LH_ELEMENT_SIZE);
+                            let _ = memory.write_u16_be(offset, line_height as u16);
+                            let _ = memory.write_u16_be(offset + 2, ascent as u16);
+                        }
+                    }
+                }
+            }
         }
     }
     PPC_NO_ERR
+}
+
+fn ppc_te_write_style_table_element(
+    memory: &mut PpcSectionMem,
+    style_ptr: u32,
+    style: PpcTeResolvedStyle,
+) {
+    let _ = memory.write_u16_be(style_ptr, 1);
+    let _ = memory.write_u16_be(style_ptr + 2, style.line_height as u16);
+    let _ = memory.write_u16_be(style_ptr + 4, style.ascent as u16);
+    let _ = memory.write_u16_be(style_ptr + 6, style.font as u16);
+    let _ = memory.write_u8(style_ptr + 8, style.face);
+    let _ = memory.write_u16_be(style_ptr + 10, style.size as u16);
+    let _ = memory.write_u16_be(style_ptr + 12, style.color.red);
+    let _ = memory.write_u16_be(style_ptr + 14, style.color.green);
+    let _ = memory.write_u16_be(style_ptr + 16, style.color.blue);
+}
+
+fn ppc_te_set_style_for_range(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    te_handle: u32,
+    range_start: usize,
+    range_end: usize,
+    mode: u16,
+    text_style_ptr: u32,
+) -> bool {
+    if text_style_ptr == 0 {
+        return false;
+    }
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return false;
+    };
+    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) != Some(0xffff) {
+        return false;
+    }
+    let Some(text) = ppc_te_text_bytes(memory, handles, te_handle) else {
+        return false;
+    };
+    let text_len = text.len();
+    let range_start = range_start.min(text_len);
+    let range_end = range_end.min(text_len);
+    if range_start >= range_end {
+        return false;
+    }
+    let existing_runs = ppc_te_style_runs(memory, handles, te_handle, text_len);
+    if existing_runs.is_empty() {
+        return false;
+    }
+    let requested_face = memory.read_u8(text_style_ptr + 2).unwrap_or(0);
+    let toggle_face = mode & 0x0020 != 0 && mode & 0x0002 != 0;
+    let remove_toggled_face = toggle_face
+        && existing_runs.iter().enumerate().all(|(index, run)| {
+            let run_end = existing_runs
+                .get(index + 1)
+                .map(|next| next.start)
+                .unwrap_or(text_len);
+            run_end <= range_start
+                || run.start >= range_end
+                || run.style.face & requested_face == requested_face
+        });
+    let mut transform = |mut style: PpcTeResolvedStyle| {
+        if mode & 0x0001 != 0 {
+            style.font = memory.read_u16_be(text_style_ptr).unwrap_or(0) as i16;
+        }
+        if mode & 0x0002 != 0 {
+            style.face = if toggle_face {
+                if remove_toggled_face {
+                    style.face & !requested_face
+                } else {
+                    style.face | requested_face
+                }
+            } else {
+                requested_face
+            };
+        }
+        if mode & 0x0010 != 0 {
+            let delta = memory.read_u16_be(text_style_ptr + 4).unwrap_or(0) as i16;
+            style.size = style.size.saturating_add(delta).max(1);
+        } else if mode & 0x0004 != 0 {
+            style.size = memory.read_u16_be(text_style_ptr + 4).unwrap_or(0) as i16;
+        }
+        if mode & 0x0008 != 0 {
+            style.color = PpcRgbColor {
+                red: memory
+                    .read_u16_be(text_style_ptr + 6)
+                    .unwrap_or(style.color.red),
+                green: memory
+                    .read_u16_be(text_style_ptr + 8)
+                    .unwrap_or(style.color.green),
+                blue: memory
+                    .read_u16_be(text_style_ptr + 10)
+                    .unwrap_or(style.color.blue),
+            };
+        }
+        let metrics = get_font_metrics(style.font, ppc_te_font_lookup_size(style.size));
+        style.size = ppc_te_font_lookup_size(style.size);
+        style.line_height = metrics
+            .ascent
+            .saturating_add(metrics.descent)
+            .saturating_add(metrics.leading)
+            .max(1);
+        style.ascent = metrics.ascent.max(0);
+        style
+    };
+    let old_range_end_style = ppc_te_style_at_offset(&existing_runs, range_end);
+    let mut merged = Vec::with_capacity(existing_runs.len() + 2);
+    for run in &existing_runs {
+        if run.start < range_start || run.start >= range_end {
+            merged.push((run.start, run.style));
+        } else {
+            merged.push((run.start, transform(run.style)));
+        }
+    }
+    if !existing_runs.iter().any(|run| run.start == range_start) {
+        merged.push((
+            range_start,
+            transform(ppc_te_style_at_offset(&existing_runs, range_start)),
+        ));
+    }
+    if range_end < text_len && !existing_runs.iter().any(|run| run.start == range_end) {
+        merged.push((range_end, old_range_end_style));
+    }
+    merged.sort_by_key(|(start, _)| *start);
+    let mut folded = Vec::with_capacity(merged.len());
+    for (start, style) in merged {
+        if let Some((last_start, last_style)) = folded.last_mut() {
+            if *last_start == start {
+                *last_style = style;
+                continue;
+            }
+            if *last_style == style {
+                continue;
+            }
+        }
+        folded.push((start, style));
+    }
+    if folded.first().is_none_or(|(start, _)| *start != 0) {
+        folded.insert(0, (0, ppc_te_style_at_offset(&existing_runs, 0)));
+    }
+    let run_count = folded.len().min(u16::MAX as usize);
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return false;
+    };
+    let style_handle = memory
+        .read_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET)
+        .unwrap_or(0);
+    if style_handle == 0 {
+        return false;
+    }
+    let required_style_size =
+        PPC_TE_STYLE_RUNS_OFFSET.saturating_add((run_count as u32 + 1).saturating_mul(4));
+    if ppc_allocator_view_resize_handle(
+        allocator.as_deref_mut(),
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        style_handle,
+        required_style_size,
+    ) != PPC_NO_ERR
+    {
+        return false;
+    }
+    let Some(style_ptr) = memory.read_u32_be(style_handle).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    let mut style_table_handle = memory
+        .read_u32_be(style_ptr + PPC_TE_STYLE_TABLE_OFFSET)
+        .unwrap_or(0);
+    if style_table_handle == 0 {
+        style_table_handle = ppc_allocator_view_allocate_handle(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            (run_count as u32).saturating_mul(PPC_TE_ST_ELEMENT_SIZE),
+            true,
+        );
+        if style_table_handle == 0 {
+            return false;
+        }
+        let _ = memory.write_u32_be(style_ptr + PPC_TE_STYLE_TABLE_OFFSET, style_table_handle);
+    }
+    if ppc_allocator_view_resize_handle(
+        allocator.as_deref_mut(),
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        style_table_handle,
+        (run_count as u32).saturating_mul(PPC_TE_ST_ELEMENT_SIZE),
+    ) != PPC_NO_ERR
+    {
+        return false;
+    }
+    let Some(style_ptr) = memory.read_u32_be(style_handle).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    let Some(style_table_ptr) = memory
+        .read_u32_be(style_table_handle)
+        .filter(|ptr| *ptr != 0)
+    else {
+        return false;
+    };
+    let _ = memory.write_u16_be(style_ptr + PPC_TE_STYLE_N_RUNS_OFFSET, run_count as u16);
+    let _ = memory.write_u16_be(style_ptr + PPC_TE_STYLE_N_STYLES_OFFSET, run_count as u16);
+    for (index, (start, style)) in folded.iter().take(run_count).enumerate() {
+        ppc_te_write_style_table_element(
+            memory,
+            style_table_ptr + index as u32 * PPC_TE_ST_ELEMENT_SIZE,
+            *style,
+        );
+        let run_ptr = style_ptr + PPC_TE_STYLE_RUNS_OFFSET + index as u32 * 4;
+        let _ = memory.write_u16_be(run_ptr, (*start).min(u16::MAX as usize) as u16);
+        let _ = memory.write_u16_be(run_ptr + 2, index as u16);
+    }
+    let sentinel = style_ptr + PPC_TE_STYLE_RUNS_OFFSET + run_count as u32 * 4;
+    let _ = memory.write_u16_be(
+        sentinel,
+        text_len.saturating_add(1).min(u16::MAX as usize) as u16,
+    );
+    let _ = memory.write_u16_be(sentinel + 2, 0xffff);
+    true
+}
+
+fn ppc_te_continuous_style(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    mode_ptr: u32,
+    style_ptr: u32,
+    te_handle: u32,
+) -> bool {
+    if mode_ptr == 0 || style_ptr == 0 {
+        return false;
+    }
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return false;
+    };
+    let Some(text) = ppc_te_text_bytes(memory, handles, te_handle) else {
+        return false;
+    };
+    let requested_mode = memory.read_u16_be(mode_ptr).unwrap_or(0);
+    let mut start = usize::from(
+        memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+            .unwrap_or(0),
+    );
+    let mut end = usize::from(
+        memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+            .unwrap_or(0),
+    );
+    if end < start {
+        std::mem::swap(&mut start, &mut end);
+    }
+    start = start.min(text.len());
+    end = end.min(text.len());
+    let runs = ppc_te_style_runs(memory, handles, te_handle, text.len());
+    let first = if start == end {
+        ppc_te_null_style_resolved_style(memory, te_handle).unwrap_or_else(|| {
+            ppc_te_style_at_offset(
+                &runs,
+                start.saturating_sub(1).min(text.len().saturating_sub(1)),
+            )
+        })
+    } else {
+        ppc_te_style_at_offset(&runs, start)
+    };
+    let mut common_mode = requested_mode;
+    let mut common_face = first.face;
+    let mut all_faces_equal = true;
+    if start < end {
+        for offset in start..end {
+            let style = ppc_te_style_at_offset(&runs, offset);
+            if requested_mode & 0x0001 != 0 && style.font != first.font {
+                common_mode &= !0x0001;
+            }
+            if requested_mode & 0x0002 != 0 {
+                if style.face != first.face {
+                    all_faces_equal = false;
+                }
+                common_face &= style.face;
+            }
+            if requested_mode & 0x0004 != 0 && style.size != first.size {
+                common_mode &= !0x0004;
+            }
+            if requested_mode & 0x0008 != 0 && style.color != first.color {
+                common_mode &= !0x0008;
+            }
+        }
+    }
+    if requested_mode & 0x0002 != 0 && !all_faces_equal && common_face == 0 {
+        common_mode &= !0x0002;
+    }
+    let _ = memory.write_u16_be(mode_ptr, common_mode);
+    if requested_mode & 0x0001 != 0 {
+        let _ = memory.write_u16_be(style_ptr, first.font as u16);
+    }
+    if requested_mode & 0x0002 != 0 {
+        let _ = memory.write_u8(style_ptr + 2, common_face);
+    }
+    if requested_mode & 0x0004 != 0 {
+        let _ = memory.write_u16_be(style_ptr + 4, first.size as u16);
+    }
+    if requested_mode & 0x0008 != 0 {
+        let _ = memory.write_u16_be(style_ptr + 6, first.color.red);
+        let _ = memory.write_u16_be(style_ptr + 8, first.color.green);
+        let _ = memory.write_u16_be(style_ptr + 10, first.color.blue);
+    }
+    common_mode == requested_mode
+}
+
+fn ppc_measure_text(
+    memory: &mut PpcSectionMem,
+    count: i16,
+    text_ptr: u32,
+    char_locs_ptr: u32,
+    text_font: i16,
+    text_size: i16,
+    text_face: u8,
+) {
+    if count < 0 || char_locs_ptr == 0 {
+        return;
+    }
+    let count = count as u32;
+    let mut width = 0i16;
+    let _ = memory.write_u16_be(char_locs_ptr, 0);
+    for index in 0..count {
+        let byte = memory.read_u8(text_ptr.saturating_add(index)).unwrap_or(0);
+        width = width.saturating_add(ppc_text_width_bytes(
+            text_font,
+            text_size,
+            text_face,
+            &[byte],
+        ));
+        let _ = memory.write_u16_be(
+            char_locs_ptr.saturating_add((index + 1).saturating_mul(2)),
+            width as u16,
+        );
+    }
 }
 
 fn ppc_te_set_text(
@@ -70053,33 +71087,60 @@ fn ppc_te_click(
     };
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
-    let (font, size, line_height, _) = ppc_te_metrics(memory, te_ptr);
+    let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let style_runs = if styled {
+        ppc_te_style_runs(memory, handles, te_handle, text.len())
+    } else {
+        Vec::new()
+    };
+    let (font, size, fallback_line_height, _) = ppc_te_metrics(memory, te_ptr);
     let line_count = usize::from(
         memory
             .read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET)
             .unwrap_or(0),
     );
-    let line = if line_count == 0 {
-        0
-    } else {
-        usize::try_from(i32::from(v.saturating_sub(top)).max(0) / i32::from(line_height))
-            .unwrap_or(0)
-            .min(line_count - 1)
-    };
+    let target_v = i32::from(v.saturating_sub(top)).max(0);
+    let mut line = 0;
+    if line_count != 0 {
+        let mut line_top = 0i32;
+        for candidate in 0..line_count {
+            let candidate_height = if styled {
+                ppc_te_line_height(memory, te_ptr, candidate).max(1)
+            } else {
+                fallback_line_height
+            };
+            if target_v < line_top.saturating_add(i32::from(candidate_height))
+                || candidate + 1 == line_count
+            {
+                line = candidate;
+                break;
+            }
+            line_top = line_top.saturating_add(i32::from(candidate_height));
+        }
+    }
     let (start, end) =
         ppc_te_line_range(memory, te_ptr, line, text.len()).unwrap_or((text.len(), text.len()));
     let visible_end = (start..end)
         .rev()
         .find(|index| !matches!(text[*index], b'\r' | b'\n'))
         .map_or(start, |index| index + 1);
-    let width = ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size);
+    let width = if styled {
+        ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
+    } else {
+        ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size)
+    };
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
     let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
     let target_x = h.saturating_sub(line_left);
     let mut offset = start;
     let mut advance = 0i16;
     for (index, byte) in text[start..visible_end].iter().copied().enumerate() {
-        let char_width = ppc_text_byte_advance_for_font(byte, font, size);
+        let char_width = if styled {
+            let style = ppc_te_style_at_offset(&style_runs, start + index);
+            ppc_text_width_bytes(style.font, style.size, style.face, &[byte])
+        } else {
+            ppc_text_byte_advance_for_font(byte, font, size)
+        };
         if target_x < advance.saturating_add(char_width / 2) {
             offset = start + index;
             break;
@@ -70285,7 +71346,13 @@ fn ppc_te_get_point(
     };
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
-    let (font, size, line_height, _) = ppc_te_metrics(memory, te_ptr);
+    let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let style_runs = if styled {
+        ppc_te_style_runs(memory, handles, te_handle, text.len())
+    } else {
+        Vec::new()
+    };
+    let (font, size, fallback_line_height, _) = ppc_te_metrics(memory, te_ptr);
     let line_end = if line_count == 0 {
         0
     } else {
@@ -70297,15 +71364,29 @@ fn ppc_te_get_point(
         .rev()
         .find(|index| !matches!(text[*index], b'\r' | b'\n'))
         .map_or(start, |index| index + 1);
-    let line_width = ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size);
+    let line_width = if styled {
+        ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
+    } else {
+        ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size)
+    };
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
     let line_left = crate::text_edit::aligned_line_left(left, right, line_width, alignment, 1);
-    let h = line_left.saturating_add(ppc_text_bytes_advance_for_font(
-        &text[start..offset.min(visible_end)],
-        font,
-        size,
-    ));
-    let v = top.saturating_add((line as i16).saturating_mul(line_height));
+    let prefix_end = offset.min(visible_end);
+    let prefix_width = if styled {
+        ppc_te_measure_text_width_styled(&style_runs, &text, start, prefix_end)
+    } else {
+        ppc_text_bytes_advance_for_font(&text[start..prefix_end], font, size)
+    };
+    let h = line_left.saturating_add(prefix_width);
+    let mut v = top;
+    for previous_line in 0..line {
+        let previous_height = if styled {
+            ppc_te_line_height(memory, te_ptr, previous_line).max(1)
+        } else {
+            fallback_line_height
+        };
+        v = v.saturating_add(previous_height);
+    }
     (u32::from(v as u16) << 16) | u32::from(h as u16)
 }
 
@@ -70590,31 +71671,13 @@ fn ppc_te_draw(
     };
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
-    let (font, size, mut line_height, mut ascent) = ppc_te_metrics(memory, te_ptr);
-    let mut color = fallback_color;
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
-    if styled {
-        let style_handle = memory
-            .read_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET)
-            .unwrap_or(0);
-        let table_handle = memory
-            .read_u32_be(style_handle)
-            .filter(|ptr| *ptr != 0)
-            .and_then(|style_ptr| memory.read_u32_be(style_ptr + PPC_TE_STYLE_TABLE_OFFSET))
-            .unwrap_or(0);
-        if let Some(table_ptr) = memory.read_u32_be(table_handle).filter(|ptr| *ptr != 0) {
-            // Inside Macintosh: Text (1993), p. 2-72: styled
-            // TextEdit stores an RGBColor in each style entry, so it is not
-            // governed by the current port's Palette Manager index.
-            line_height = memory.read_u16_be(table_ptr + 2).unwrap_or(0) as i16;
-            ascent = memory.read_u16_be(table_ptr + 4).unwrap_or(0) as i16;
-            color = PpcRgbColor {
-                red: memory.read_u16_be(table_ptr + 12).unwrap_or(color.red),
-                green: memory.read_u16_be(table_ptr + 14).unwrap_or(color.green),
-                blue: memory.read_u16_be(table_ptr + 16).unwrap_or(color.blue),
-            };
-        }
-    }
+    let (font, size, fallback_line_height, fallback_ascent) = ppc_te_metrics(memory, te_ptr);
+    let style_runs = if styled {
+        ppc_te_style_runs(memory, handles, te_handle, text.len())
+    } else {
+        Vec::new()
+    };
     let port = memory
         .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
         .filter(|port| *port != 0 && gworlds.iter().any(|g| g.port == *port))
@@ -70651,25 +71714,68 @@ fn ppc_te_draw(
         while visible_end > start && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n') {
             visible_end -= 1;
         }
-        let width = ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size);
+        let width = if styled {
+            ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
+        } else {
+            ppc_text_width_bytes(
+                font,
+                size,
+                ppc_current_text_style(memory, port),
+                &text[start..visible_end],
+            )
+        };
         let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
         let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
-        let _ = ppc_draw_text_bytes(
-            memory,
-            gworlds,
-            port,
-            (
-                line_left,
-                top.saturating_add(ascent)
-                    .saturating_add((line as i16).saturating_mul(line_height)),
-            ),
-            font,
-            size,
-            mode,
-            color,
-            explicit_index,
-            &text[start..visible_end],
-        );
+        let (line_height, ascent) = if styled {
+            ppc_te_line_metrics_for_range(&style_runs, start, end)
+        } else {
+            (fallback_line_height, fallback_ascent)
+        };
+        let baseline = top
+            .saturating_add(ascent)
+            .saturating_add((line as i16).saturating_mul(line_height));
+        if styled {
+            let mut offset = start;
+            let mut pen = line_left;
+            while offset < visible_end {
+                let style = ppc_te_style_at_offset(&style_runs, offset);
+                let run_end = style_runs
+                    .iter()
+                    .find(|run| run.start > offset)
+                    .map(|run| run.start)
+                    .unwrap_or(visible_end)
+                    .min(visible_end)
+                    .max(offset + 1);
+                let advance = ppc_draw_text_bytes_styled(
+                    memory,
+                    gworlds,
+                    port,
+                    (pen, baseline),
+                    style.font,
+                    style.size,
+                    mode,
+                    style.color,
+                    None,
+                    style.face,
+                    &text[offset..run_end],
+                );
+                pen = pen.saturating_add(advance);
+                offset = run_end;
+            }
+        } else {
+            let _ = ppc_draw_text_bytes(
+                memory,
+                gworlds,
+                port,
+                (line_left, baseline),
+                font,
+                size,
+                mode,
+                fallback_color,
+                explicit_index,
+                &text[start..visible_end],
+            );
+        }
     }
 
     let sel_start = usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET).unwrap_or(0));
@@ -70694,14 +71800,39 @@ fn ppc_te_draw(
             };
             if sel_start >= start && (sel_start <= end || line + 1 == line_count) {
                 let mut visible_end = end;
-        while visible_end > start && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n') {
+                while visible_end > start
+                    && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n')
+                {
                     visible_end -= 1;
                 }
-                let width = ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size);
+                let (line_height, _) = if styled {
+                    ppc_te_line_metrics_for_range(&style_runs, start, end)
+                } else {
+                    (fallback_line_height, fallback_ascent)
+                };
+                let width = if styled {
+                    ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
+                } else {
+                    ppc_text_width_bytes(
+                        font,
+                        size,
+                        ppc_current_text_style(memory, port),
+                        &text[start..visible_end],
+                    )
+                };
                 let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
                 let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
                 let caret_offset = sel_start.min(visible_end).max(start);
-                let measured = ppc_text_bytes_advance_for_font(&text[start..caret_offset], font, size);
+                let measured = if styled {
+                    ppc_te_measure_text_width_styled(&style_runs, &text, start, caret_offset)
+                } else {
+                    ppc_text_width_bytes(
+                        font,
+                        size,
+                        ppc_current_text_style(memory, port),
+                        &text[start..caret_offset],
+                    )
+                };
                 let mut caret_x = line_left + measured;
                 if caret_offset > start {
                     caret_x = caret_x.saturating_sub(1);
@@ -70713,12 +71844,40 @@ fn ppc_te_draw(
                     gworlds,
                     port,
                     (line_top, caret_x, line_bottom, caret_x.saturating_add(1)),
-                    color,
+                    if styled {
+                        ppc_te_style_at_offset(&style_runs, caret_offset).color
+                    } else {
+                        fallback_color
+                    },
                     explicit_index,
                 );
                 break;
             }
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_te_cleanup_handles(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    allocated: &[u32],
+) {
+    for handle in allocated.iter().copied().rev() {
+        ppc_te_forget_handle(
+            allocator.as_deref_mut(),
+            None,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            handle,
+        );
     }
 }
 
@@ -150363,6 +151522,326 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(loaded.memory.read_u32_be(te_handle), Some(0));
         assert!(test_handle_records!(loaded).is_empty());
+    }
+
+    #[test]
+    fn native_styled_textedit_styles_runs_and_reports_real_measurements() {
+        let pef = synthetic_pef_with_import(b"TEStyleNew");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let rects = PPC_DATA_BASE + 0x1000;
+        let text_ptr = PPC_DATA_BASE + 0x1020;
+        let style_ptr = PPC_DATA_BASE + 0x1040;
+        let mode_ptr = PPC_DATA_BASE + 0x1060;
+        let result_style_ptr = PPC_DATA_BASE + 0x1064;
+        let locations_ptr = PPC_DATA_BASE + 0x1080;
+        let name_ptr = PPC_DATA_BASE + 0x10a0;
+        loaded
+            .memory
+            .add_region(PPC_DATA_BASE + 0x1000, vec![0; 0x100]);
+        ppc_write_rect(&mut loaded.memory, rects, 10, 20, 80, 220).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 10, 20, 80, 220).unwrap();
+        loaded.cpu.gpr[3] = rects;
+        loaded.cpu.gpr[4] = rects + 8;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+        let te_handle = loaded.cpu.gpr[3];
+        let constructor_te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+        let style_handle = loaded
+            .memory
+            .read_u32_be(constructor_te_ptr + PPC_TE_TX_FONT_OFFSET)
+            .unwrap();
+
+        loaded.memory.write_bytes(text_ptr, b"Styled").unwrap();
+        loaded.cpu.gpr[3] = text_ptr;
+        loaded.cpu.gpr[4] = 6;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+
+        let write_style =
+            |memory: &mut PpcSectionMem, font: i16, face: u8, size: i16, color: PpcRgbColor| {
+                memory.write_u16_be(style_ptr, font as u16).unwrap();
+                memory.write_u8(style_ptr + 2, face).unwrap();
+                memory.write_u16_be(style_ptr + 4, size as u16).unwrap();
+                memory.write_u16_be(style_ptr + 6, color.red).unwrap();
+                memory.write_u16_be(style_ptr + 8, color.green).unwrap();
+                memory.write_u16_be(style_ptr + 10, color.blue).unwrap();
+            };
+        write_style(
+            &mut loaded.memory,
+            3,
+            0x01,
+            14,
+            PpcRgbColor {
+                red: 0xffff,
+                green: 0,
+                blue: 0,
+            },
+        );
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 3;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = 0x000f;
+        loaded.cpu.gpr[4] = style_ptr;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+
+        write_style(
+            &mut loaded.memory,
+            4,
+            0x02,
+            10,
+            PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0xffff,
+            },
+        );
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 6;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = 0x000f;
+        loaded.cpu.gpr[4] = style_ptr;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+
+        let runs = ppc_te_style_runs(
+            &mut loaded.memory,
+            &test_handle_records!(loaded),
+            te_handle,
+            6,
+        );
+        assert_eq!(
+            runs.iter().map(|run| run.start).collect::<Vec<_>>(),
+            vec![0, 3]
+        );
+        assert_eq!(runs[0].style.font, 3);
+        assert_eq!(runs[0].style.face, 0x01);
+        assert_eq!(runs[0].style.size, 14);
+        assert_eq!(runs[0].style.color.red, 0xffff);
+        assert_eq!(runs[1].style.font, 4);
+        assert_eq!(runs[1].style.face, 0x02);
+        assert_eq!(runs[1].style.size, 10);
+        assert_eq!(runs[1].style.color.blue, 0xffff);
+
+        loaded.cpu.gpr[3] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
+        let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+        let n_lines = usize::from(
+            loaded
+                .memory
+                .read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET)
+                .unwrap(),
+        );
+        assert!(n_lines > 0);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + n_lines as u32 * 2),
+            Some(6)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(
+                te_ptr + PPC_TE_LINE_STARTS_OFFSET + n_lines.saturating_add(1) as u32 * 2,
+            ),
+            Some(0)
+        );
+        let style_record_ptr = loaded.memory.read_u32_be(style_handle).unwrap();
+        let n_runs = usize::from(
+            loaded
+                .memory
+                .read_u16_be(style_record_ptr + PPC_TE_STYLE_N_RUNS_OFFSET)
+                .unwrap(),
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(
+                style_record_ptr + PPC_TE_STYLE_RUNS_OFFSET + n_runs as u32 * 4,
+            ),
+            Some(7)
+        );
+        let lh_handle = loaded
+            .memory
+            .read_u32_be(style_record_ptr + PPC_TE_STYLE_LH_TABLE_OFFSET)
+            .unwrap();
+        let handle_records = test_handle_records!(loaded);
+        let lh_record = handle_records
+            .iter()
+            .find(|record| record.handle == lh_handle)
+            .unwrap();
+        assert!(lh_record.size >= (n_lines.saturating_add(1) * 4) as u32);
+        let lh_ptr = loaded.memory.read_u32_be(lh_handle).unwrap();
+        assert!(loaded.memory.read_u16_be(lh_ptr + n_lines as u32 * 4).unwrap() > 0);
+
+        // Text 1993, p. 2-102: a mixed face selection reports the bits
+        // common to every face, so bold plus bold-italic reports bold.
+        write_style(
+            &mut loaded.memory,
+            4,
+            0x03,
+            10,
+            PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0xffff,
+            },
+        );
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 6;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = 0x0002;
+        loaded.cpu.gpr[4] = style_ptr;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 6;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.memory.write_u16_be(mode_ptr, 0x0002).unwrap();
+        loaded.cpu.gpr[3] = mode_ptr;
+        loaded.cpu.gpr[4] = result_style_ptr;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEContinuousStyle);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr), Some(0x0002));
+        assert_eq!(loaded.memory.read_u8(result_style_ptr + 2), Some(0x01));
+
+        // TESetStyle at an insertion point updates the null scrap used by
+        // later TEInsert/TEStyleInsert calls instead of changing no runs.
+        write_style(
+            &mut loaded.memory,
+            4,
+            0x04,
+            11,
+            PpcRgbColor {
+                red: 0,
+                green: 0xffff,
+                blue: 0,
+            },
+        );
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 3;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = 0x000f;
+        loaded.cpu.gpr[4] = style_ptr;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+        let style_record_ptr = loaded.memory.read_u32_be(style_handle).unwrap();
+        let null_style_handle = loaded
+            .memory
+            .read_u32_be(style_record_ptr + PPC_TE_STYLE_NULL_STYLE_OFFSET)
+            .unwrap();
+        let null_style_ptr = loaded.memory.read_u32_be(null_style_handle).unwrap();
+        let null_scrap_handle = loaded
+            .memory
+            .read_u32_be(null_style_ptr + PPC_TE_NULL_STYLE_SCRAP_OFFSET)
+            .unwrap();
+        let null_scrap_ptr = loaded.memory.read_u32_be(null_scrap_handle).unwrap();
+        let null_element = null_scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(null_scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET),
+            Some(1)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(null_element + PPC_TE_SCRAP_STYLE_FONT_OFFSET),
+            Some(4)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(null_element + PPC_TE_SCRAP_STYLE_FACE_OFFSET),
+            Some(0x04)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(null_element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET),
+            Some(11)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(null_element + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + 2),
+            Some(0xffff)
+        );
+        loaded.memory.write_u16_be(mode_ptr, 0x000f).unwrap();
+        loaded.cpu.gpr[3] = mode_ptr;
+        loaded.cpu.gpr[4] = result_style_ptr;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEContinuousStyle);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr), Some(0x000f));
+        assert_eq!(loaded.memory.read_u8(result_style_ptr + 2), Some(0x04));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 4), Some(11));
+
+        loaded.memory.write_u16_be(mode_ptr, 0x000f).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 6;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = mode_ptr;
+        loaded.cpu.gpr[4] = result_style_ptr;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEContinuousStyle);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr), Some(0x0002));
+
+        loaded.memory.write_u16_be(mode_ptr, 0x000f).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 3;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = mode_ptr;
+        loaded.cpu.gpr[4] = result_style_ptr;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEContinuousStyle);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr), Some(0x000f));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 4), Some(14));
+
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 10;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TextSize);
+        loaded.cpu.gpr[3] = 6;
+        loaded.cpu.gpr[4] = text_ptr;
+        loaded.cpu.gpr[5] = locations_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MeasureText);
+        let measure_width = loaded.memory.read_u16_be(locations_ptr + 12).unwrap();
+        assert!(measure_width > 0);
+        loaded.cpu.gpr[3] = text_ptr;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 6;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TextWidth);
+        let text_width = loaded.cpu.gpr[3];
+        assert!(text_width > 0);
+        assert!((text_width as i32 - measure_width as i32).abs() <= 6);
+
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b"Geneva");
+        loaded.cpu.gpr[3] = name_ptr;
+        loaded.cpu.gpr[4] = result_style_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetFNum);
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr), Some(3));
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 9;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::RealFont);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 12;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::RealFont);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = 12;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::RealFont);
+        assert_eq!(loaded.cpu.gpr[3], 0);
     }
 
     #[test]
