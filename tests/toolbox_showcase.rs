@@ -777,7 +777,7 @@ fn test_toolbox_showcase() {
                 [84, 255, 84],
                 [84, 218, 84],
                 [135, 218, 84],
-                [37, 23, 138],
+                [37, 27, 138],
                 [135, 179, 135],
                 [179, 179, 135],
                 [179, 135, 135],
@@ -843,9 +843,10 @@ fn test_toolbox_showcase() {
             "direct-color RGBForeColor must render the requested dark blue; got {inverse_table_band:?}"
         );
     } else {
-        assert!(
-            inverse_table_band[0] > 100 && inverse_table_band[1] > 100,
-            "8-bit RGBForeColor must use the screen GDevice inverse-table index when logical and hardware CLUTs differ; got {inverse_table_band:?}"
+        assert_eq!(
+            inverse_table_band,
+            [154, 147, 161],
+            "8-bit RGBForeColor must use the screen GDevice inverse-table index and default gamma transfer when logical and hardware CLUTs differ"
         );
     }
     let initial_palette_rgb = [
