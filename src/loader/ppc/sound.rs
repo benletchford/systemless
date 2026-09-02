@@ -114,7 +114,6 @@ pub struct PpcSoundState {
     pub immediate_commands: Vec<PpcSndCommandRecord>,
     pub file_playbacks: Vec<PpcSoundFilePlaybackRecord>,
     pub decoded_file_playbacks: Vec<PpcDecodedAiffPlaybackRecord>,
-    pub pending_completions: Vec<PpcSoundCompletionRecord>,
     pub completion_invocations: Vec<PpcSoundCompletionInvocationRecord>,
     pub sys_beep_count: u32,
     pub last_sys_beep_duration: i16,
@@ -132,7 +131,6 @@ impl PartialEq for PpcSoundState {
             && self.immediate_commands == other.immediate_commands
             && self.file_playbacks == other.file_playbacks
             && self.decoded_file_playbacks == other.decoded_file_playbacks
-            && self.pending_completions == other.pending_completions
             && self.completion_invocations == other.completion_invocations
             && self.sys_beep_count == other.sys_beep_count
             && self.last_sys_beep_duration == other.last_sys_beep_duration
