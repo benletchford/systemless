@@ -44,6 +44,11 @@ test protocol. Its Pages menu selects ten interactive views:
     resource, verifies SysBeep PCM, queues volume and callback commands,
     flushes and quiets the channel immediately, observes completion, and
     disposes the channel.
+11. Styled Text & Fonts creates a live `TEStyleNew` record, applies multiple
+    `TESetStyle` runs, inspects mixed and continuous attributes with
+    `TEContinuousStyle`, resolves Geneva and Monaco through `GetFNum`/`RealFont`,
+    and compares `CharWidth`, `TextWidth`, and `MeasureText` results from the
+    same Font Manager state that renders the record.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -60,6 +65,9 @@ Volume VI* (1991), pp. 20-8–20-22. Lists follow *Inside Macintosh: More
 Macintosh Toolbox* (1993), pp. 4-26–4-42 and 4-65–4-95.
 Sound follows *Inside Macintosh: Sound* (1994), pp. 2-19–2-29, 2-92–2-101,
 2-121–2-123, and 2-151–2-152.
+The styled TextEdit
+and Font Manager checks track public issue #1266 and follow *Inside Macintosh:
+Text* (1993), pp. 2-78, 2-98–2-102, 3-81–3-82, and 4-52–4-53.
 
 ## Rebuild and verify
 
@@ -125,6 +133,8 @@ exact Systemless framebuffer references while performing the same sequence:
 18. Activate Sound & Channels (item 10), verify SysBeep and `SndPlay` produce
     PCM, queue volume/callback commands, issue immediate flush/quiet, wait for
     the callback checkmark, then dispose the channel.
+19. Activate Styled Text & Fonts (item 11), verify the rendered multistyled
+    TextEdit and its Font Manager/measurement readouts, and capture the page.
 
 For a manual launch from the public repository:
 
@@ -137,7 +147,7 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the eighteen interaction steps above. Use an 800×600
+PowerPC slice, then follow the nineteen interaction steps above. Use an 800×600
 8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
 SheepShaver for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
@@ -193,6 +203,7 @@ indexed paths.
 | 16. Interacted inventory list | <img src="reference/systemless-68k/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in BasiliskII" width="360"> |
 | 17. Sound controls | <img src="reference/systemless-68k/17-sound-controls.png" alt="Sound controls in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/17-sound-controls.png" alt="Sound controls in BasiliskII" width="360"> |
 | 18. Sound completion | <img src="reference/systemless-68k/18-sound-complete.png" alt="Sound completion in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/18-sound-complete.png" alt="Sound completion in BasiliskII" width="360"> |
+| 19. Styled Text & Fonts | <img src="reference/systemless-68k/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in BasiliskII running the 68K slice" width="360"> |
 
 ### PowerPC
 
@@ -216,9 +227,10 @@ indexed paths.
 | 16. Interacted inventory list | <img src="reference/systemless-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in SheepShaver" width="360"> |
 | 17. Sound controls | <img src="reference/systemless-ppc/17-sound-controls.png" alt="Sound controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/17-sound-controls.png" alt="Sound controls in SheepShaver" width="360"> |
 | 18. Sound completion | <img src="reference/systemless-ppc/18-sound-complete.png" alt="Sound completion in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/18-sound-complete.png" alt="Sound completion in SheepShaver" width="360"> |
+| 19. Styled Text & Fonts | <img src="reference/systemless-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in SheepShaver running the PowerPC slice" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all eighteen rendered
+state rather than relying on fixed delays, and compares all nineteen rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 

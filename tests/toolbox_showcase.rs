@@ -1,4 +1,4 @@
-//! Integration test exercising Toolbox Showcase for issues #1078, #1081, #1264, and #1265.
+//! Integration test exercising Toolbox Showcase for issues #1078, #1081, #1264, #1265, and #1266.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -31,6 +31,7 @@ const ITEM_PAGE_TEXTEDIT: i16 = 7;
 const ITEM_PAGE_PALETTES: i16 = 8;
 const ITEM_PAGE_LISTS: i16 = 9;
 const ITEM_PAGE_SOUND: i16 = 10;
+const ITEM_PAGE_STYLED_TEXT: i16 = 11;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -354,6 +355,85 @@ fn assert_drawing_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_le
     );
 }
 
+fn region_contains_color<F>(
+    runner: &mut FixtureRunner,
+    top: i16,
+    left: i16,
+    bottom: i16,
+    right: i16,
+    matches: F,
+) -> bool
+where
+    F: Fn([u8; 3]) -> bool,
+{
+    let (width, height, rgb) = rendered_rgb(runner);
+    let top = u32::from(top.max(0) as u16).min(height);
+    let left = u32::from(left.max(0) as u16).min(width);
+    let bottom = u32::from(bottom.max(0) as u16).min(height);
+    let right = u32::from(right.max(0) as u16).min(width);
+    (top..bottom).any(|v| {
+        (left..right).any(|h| {
+            let offset = ((v * width + h) * 3) as usize;
+            matches([rgb[offset], rgb[offset + 1], rgb[offset + 2]])
+        })
+    })
+}
+
+fn assert_styled_text_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_left: i16) {
+    // The upper well is the actual TEStyleNew output. Restrict the probes to
+    // its text rectangle so a decorative legend cannot satisfy the check.
+    let text_top = win_top + 76;
+    let text_left = win_left + 34;
+    let text_bottom = win_top + 114;
+    let text_right = win_left + 521;
+    assert!(
+        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
+            rgb[2] > rgb[0].saturating_add(20) && rgb[2] > rgb[1].saturating_add(10)
+        }),
+        "styled TextEdit blue run was not rendered"
+    );
+    assert!(
+        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
+            rgb[0] > rgb[1].saturating_add(25) && rgb[0] > rgb[2].saturating_add(25)
+        }),
+        "styled TextEdit red run was not rendered"
+    );
+    assert!(
+        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
+            rgb[1] > rgb[0].saturating_add(15) && rgb[1] > rgb[2].saturating_add(15)
+        }),
+        "styled TextEdit green run was not rendered"
+    );
+    assert!(
+        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
+            rgb[0] > 45 && rgb[2] > 45 && rgb[1].saturating_add(20) < rgb[0].min(rgb[2])
+        }),
+        "styled TextEdit purple run was not rendered"
+    );
+
+    // These three rows are lengths returned by CharWidth, TextWidth, and
+    // MeasureText, respectively. Their colors and non-zero extents are
+    // generated from those API results by the fixture.
+    assert!(
+        region_contains_color(runner, win_top + 263, win_left + 399, win_top + 270, win_left + 450, |rgb| {
+            rgb[2] > rgb[0].saturating_add(20)
+        }),
+        "CharWidth result ruler was not rendered"
+    );
+    assert!(
+        region_contains_color(runner, win_top + 278, win_left + 399, win_top + 285, win_left + 500, |rgb| {
+            rgb[1] > rgb[0].saturating_add(15)
+        }),
+        "TextWidth result ruler was not rendered"
+    );
+    assert!(
+        region_contains_color(runner, win_top + 293, win_left + 399, win_top + 300, win_left + 500, |rgb| {
+            rgb[0] > 45 && rgb[2] > 45
+        }),
+        "MeasureText result ruler was not rendered"
+    );
+}
+
 #[test]
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
@@ -433,6 +513,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_SOUND_COMPLETE),
         "Sound completion must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_STYLED_TEXT),
+        "Styled Text & Fonts page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -1277,4 +1361,29 @@ fn test_toolbox_showcase() {
         ),
         "sound completion checkmark must survive channel disposal"
     );
+
+    // 19. Switch to Styled Text & Fonts and verify the live styled TextEdit,
+    // Font Manager lookups, and measurement rulers.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_STYLED_TEXT),
+        "failed to queue selection of Styled Text & Fonts page"
+    );
+    step_until(&mut runner, "switch to Styled Text & Fonts page", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_PAGES,
+            ITEM_PAGE_STYLED_TEXT,
+        )
+    });
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_STYLED_TEXT
+    ));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS));
+    run_ticks(&mut runner, "Styled Text & Fonts page to settle", 1);
+    assert_styled_text_page_rendered(&mut runner, win_top, win_left);
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "19-styled-text.png");
 }

@@ -7,6 +7,8 @@
  * - Menu Manager & Hierarchical Submenus (Macintosh Toolbox Essentials ch 3)
  * - List Manager, default text lists, selection, scrolling, and resizing
  *   (More Macintosh Toolbox ch 4)
+ * - Styled TextEdit runs, Font Manager lookup, and text measurement
+ *   (Inside Macintosh: Text ch 2, 3, and 4)
  * - Control Manager & Standard CDEFs (Macintosh Toolbox Essentials ch 5)
  * - Dialog Manager & Alerts (Macintosh Toolbox Essentials ch 6)
  * - Sound Manager channels, sampled playback & command queues
@@ -82,6 +84,7 @@
 #define iPalettes 8
 #define iLists 9
 #define iSound 10
+#define iStyledText 11
 
 /* State menu items */
 #define iButtonState 1
@@ -131,6 +134,7 @@
 #define pagePalettes 8
 #define pageLists 9
 #define pageSound 10
+#define pageStyledText 11
 
 #define kInventoryRowCount 12
 #define listStatusNone 0
@@ -218,6 +222,7 @@ static Boolean gSoundQueued = false;
 static Boolean gSoundFlushed = false;
 static Boolean gSoundQuieted = false;
 static volatile Boolean gSoundCompleted = false;
+static Boolean gSoundCompletionPresented = false;
 static Boolean gSoundDisposed = true;
 static Boolean gSoundResourceLocked = false;
 static OSErr gSoundLastError = noErr;
@@ -225,6 +230,7 @@ static OSErr gSoundStatusError = noErr;
 
 static void SyncMenuState(void);
 static MenuHandle StateMenu(void);
+static void DrawMainWindow(void);
 
 /*
  * Sound Manager callbacks run at interrupt time. Store the completion flag
@@ -297,6 +303,7 @@ static void PlayShowcaseSound(Boolean queueCompletion)
     gSoundFlushed = false;
     gSoundQuieted = false;
     gSoundCompleted = false;
+    gSoundCompletionPresented = false;
     gSoundDisposed = false;
     SyncMenuState();
 
@@ -410,7 +417,28 @@ static void PollShowcaseSound(void)
 {
     RefreshShowcaseSoundStatus();
     CheckItem(StateMenu(), iSoundState, gSoundCompleted);
+    if (gSoundCompleted && !gSoundCompletionPresented) {
+        gSoundCompletionPresented = true;
+        DrawMainWindow();
+    }
 }
+
+/* Page 11: Styled TextEdit & Font Manager */
+static TEHandle gStyledTE;
+static Rect gStyledTERect;
+static short gStyledGenevaFont;
+static short gStyledMonacoFont;
+static Boolean gStyledGenevaReal;
+static Boolean gStyledMonacoReal;
+static short gStyledInspectMode;
+static Boolean gStyledInspectResult;
+static TextStyle gStyledInspectStyle;
+static short gStyledRunMode;
+static Boolean gStyledRunResult;
+static TextStyle gStyledRunStyle;
+static short gStyledCharWidth;
+static short gStyledTextWidth;
+static short gStyledMeasureWidth;
 
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
@@ -419,6 +447,9 @@ static const char kTESampleText[] =
 
 static const char kTECalloutText[] =
     "TETextBox renders transient wrapped paragraphs with specified justification.";
+
+static const char kStyledSampleText[] =
+    "Plain  Bold  Color  Size  Font";
 
 static const char *kInventoryItems[kInventoryRowCount] = {
     "Phase Shifter       01  equipped",
@@ -1983,6 +2014,219 @@ static void DrawListsPage(void)
     DrawControls(gMainWindow);
 }
 
+/*
+ * Page 11: Styled TextEdit and Font Manager measurements.
+ * The upper well is the rendered TextEdit record itself. The lower panels
+ * report values returned by the same style and measurement APIs that created
+ * that record; no parallel swatch model is used. Inside Macintosh: Text
+ * (1993), pp. 2-78, 2-98..2-102, and 3-81..3-82.
+ */
+static void SetStyledStyle(TextStyle *style, short font, Style face,
+                           short size, const RGBColor *color)
+{
+    style->tsFont = font;
+    style->tsFace = face;
+    style->tsSize = size;
+    style->tsColor = *color;
+}
+
+static void ApplyStyledStyle(short start, short end, TextStyle *style)
+{
+    TESetSelect(start, end, gStyledTE);
+    TESetStyle(doAll, style, true, gStyledTE);
+}
+
+static void InspectStyledText(void)
+{
+    short textLength;
+
+    if (gStyledTE == nil) return;
+    textLength = sizeof(kStyledSampleText) - 1;
+    TESetSelect(0, textLength, gStyledTE);
+    gStyledInspectMode = doAll;
+    gStyledInspectResult = TEContinuousStyle(&gStyledInspectMode,
+                                             &gStyledInspectStyle, gStyledTE);
+
+    TESetSelect(7, 11, gStyledTE);
+    gStyledRunMode = doAll;
+    gStyledRunResult = TEContinuousStyle(&gStyledRunMode,
+                                         &gStyledRunStyle, gStyledTE);
+    TESetSelect(0, 0, gStyledTE);
+}
+
+static void MeasureStyledText(void)
+{
+    static const char measureText[] = "Styled";
+    short charLocations[sizeof(measureText)];
+    short count;
+
+    count = sizeof(measureText) - 1;
+    TextFont(gStyledGenevaFont);
+    TextFace(0);
+    TextSize(10);
+    gStyledCharWidth = CharWidth('A');
+    gStyledTextWidth = TextWidth((Ptr)measureText, 0, count);
+    MeasureText(count, (Ptr)measureText, (Ptr)charLocations);
+    gStyledMeasureWidth = charLocations[count];
+}
+
+static void InitializeStyledText(void)
+{
+    TextStyle style;
+    RGBColor black;
+    RGBColor blue;
+    RGBColor red;
+    RGBColor green;
+    RGBColor purple;
+    short textLength;
+
+    black.red = black.green = black.blue = 0x0000;
+    blue.red = 0x1111; blue.green = 0x2222; blue.blue = 0xdddd;
+    red.red = 0xffff; red.green = 0x2222; red.blue = 0x2222;
+    green.red = 0x1111; green.green = 0x9999; green.blue = 0x2222;
+    purple.red = 0x8888; purple.green = 0x2222; purple.blue = 0x9999;
+
+    /* Text 1993, pp. 4-52..4-53: resolve family names through Font Manager. */
+    gStyledGenevaFont = 0;
+    gStyledMonacoFont = 0;
+    GetFNum("\pGeneva", &gStyledGenevaFont);
+    GetFNum("\pMonaco", &gStyledMonacoFont);
+    gStyledGenevaReal = gStyledGenevaFont != 0 && RealFont(gStyledGenevaFont, 9);
+    gStyledMonacoReal = gStyledMonacoFont != 0 && RealFont(gStyledMonacoFont, 9);
+
+    SetRect(&gStyledTERect, 34, 76, 521, 114);
+    TextFont(gStyledGenevaFont);
+    TextFace(0);
+    TextSize(10);
+    RGBForeColor(&black);
+    gStyledTE = TEStyleNew(&gStyledTERect, &gStyledTERect);
+    if (gStyledTE == nil) return;
+    textLength = sizeof(kStyledSampleText) - 1;
+    TESetText((const void *)kStyledSampleText, textLength, gStyledTE);
+
+    SetStyledStyle(&style, gStyledGenevaFont, 0, 10, &black);
+    ApplyStyledStyle(0, 5, &style);
+    SetStyledStyle(&style, gStyledGenevaFont, bold, 12, &blue);
+    ApplyStyledStyle(7, 11, &style);
+    SetStyledStyle(&style, gStyledMonacoFont, 0, 10, &red);
+    ApplyStyledStyle(13, 18, &style);
+    SetStyledStyle(&style, gStyledMonacoFont, italic, 14, &green);
+    ApplyStyledStyle(20, 24, &style);
+    SetStyledStyle(&style, gStyledGenevaFont, underline, 10, &purple);
+    ApplyStyledStyle(26, 30, &style);
+
+    InspectStyledText();
+    MeasureStyledText();
+}
+
+static void DrawStyledTextPage(void)
+{
+    Rect r;
+    Rect well;
+    Rect bar;
+    Str255 numStr;
+    RGBColor white;
+    RGBColor black;
+    RGBColor blue;
+    RGBColor green;
+    RGBColor purple;
+
+    white.red = white.green = white.blue = 0xffff;
+    black.red = black.green = black.blue = 0x0000;
+    blue.red = 0x1111; blue.green = 0x2222; blue.blue = 0xdddd;
+    green.red = 0x1111; green.green = 0x9999; green.blue = 0x2222;
+    purple.red = 0x8888; purple.green = 0x2222; purple.blue = 0x9999;
+
+    DrawHeading("\pStyled Text & Fonts");
+    SetRect(&r, 20, 48, 535, 128);
+    DrawBeveledBox(&r, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 62);
+    DrawString("\pTEStyleNew live multistyled record");
+    TextFace(0);
+    SetRect(&well, 28, 70, 527, 120);
+    DrawBeveledBox(&well, true);
+    if (gStyledTE != nil) {
+        RGBBackColor(&white);
+        RGBForeColor(&black);
+        EraseRect(&gStyledTERect);
+        TEUpdate(&gStyledTERect, gStyledTE);
+    }
+
+    SetRect(&r, 20, 138, 300, 310);
+    DrawBeveledBox(&r, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 153);
+    DrawString("\pTESetStyle runs (doAll)");
+    TextFace(0);
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(28, 174); DrawString("\pPlain: Geneva 10pt / black");
+    MoveTo(28, 189); DrawString("\pBold: Geneva 12pt / blue");
+    MoveTo(28, 204); DrawString("\pColor: Monaco 10pt / red");
+    MoveTo(28, 219); DrawString("\pSize: Monaco 14pt / italic green");
+    MoveTo(28, 234); DrawString("\pFont: Geneva 10pt / underline purple");
+    MoveTo(28, 260); DrawString("\pRun boundaries and colors are stored");
+    MoveTo(28, 275); DrawString("\pin the live TEStyleHandle.");
+    RGBForeColor(&purple);
+    MoveTo(28, 294); DrawString("\pThe upper text is the assertion surface.");
+
+    SetRect(&r, 310, 138, 535, 310);
+    DrawBeveledBox(&r, false);
+    RGBForeColor(&black);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(318, 153); DrawString("\pTEContinuousStyle + Font Manager");
+    TextFace(0);
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(318, 172); DrawString("\pAll runs: ");
+    DrawString(gStyledInspectResult ? "\pcontinuous" : "\pmixed");
+    MoveTo(318, 187); DrawString("\pMode mask: ");
+    NumToString(gStyledInspectMode, numStr); DrawString(numStr);
+    MoveTo(318, 202); DrawString("\pBold run: ");
+    DrawString(gStyledRunResult ? "\pcontinuous" : "\pmixed");
+    MoveTo(318, 217); DrawString("\pRun font/size: ");
+    NumToString(gStyledRunStyle.tsFont, numStr); DrawString(numStr);
+    DrawString("\p / ");
+    NumToString(gStyledRunStyle.tsSize, numStr); DrawString(numStr);
+    DrawString("\ppt");
+    MoveTo(318, 232); DrawString("\pGetFNum: ");
+    NumToString(gStyledGenevaFont, numStr); DrawString(numStr);
+    DrawString("\p Geneva / ");
+    NumToString(gStyledMonacoFont, numStr); DrawString(numStr);
+    DrawString("\p Monaco");
+    MoveTo(318, 247); DrawString("\pRealFont 9pt: ");
+    DrawString(gStyledGenevaReal ? "\pGeneva yes / " : "\pGeneva no / ");
+    DrawString(gStyledMonacoReal ? "\pMonaco yes" : "\pMonaco no");
+
+    /* These bars are lengths returned by CharWidth, TextWidth, and MeasureText. */
+    MoveTo(318, 263); DrawString("\pMeasured widths");
+    SetRect(&r, 395, 257, 520, 305); FrameRect(&r);
+    RGBForeColor(&blue);
+    SetRect(&bar, 398, 263, 398 + gStyledCharWidth * 5, 270); PaintRect(&bar);
+    RGBForeColor(&green);
+    SetRect(&bar, 398, 278, 398 + gStyledTextWidth * 2, 285); PaintRect(&bar);
+    RGBForeColor(&purple);
+    SetRect(&bar, 398, 293, 398 + gStyledMeasureWidth * 2, 300); PaintRect(&bar);
+    RGBForeColor(&black);
+    MoveTo(318, 270); DrawString("\pChar");
+    MoveTo(318, 285); DrawString("\pText");
+    MoveTo(318, 300); DrawString("\pCumulative");
+
+    RGBBackColor(&white);
+    RGBForeColor(&black);
+    MoveTo(20, 335);
+    TextFont(applFont);
+    TextSize(9);
+    DrawString("\pActual TEStyle runs drive the rendered colors, fonts, faces, and measured widths.");
+}
+
 static void DrawMainWindow(void)
 {
     RGBColor white;
@@ -2025,6 +2269,9 @@ static void DrawMainWindow(void)
             break;
         case pageSound:
             DrawSoundPage();
+            break;
+        case pageStyledText:
+            DrawStyledTextPage();
             break;
     }
 }
@@ -2171,7 +2418,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 10; i++) {
+        for (i = 1; i <= 11; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -2509,6 +2756,9 @@ static void Initialize(void)
     gSoundBtnDispose = NewControl(gMainWindow, &r, "\pDispose", false, 0, 0, 1,
                                   pushButProc, 0);
 
+    /* Page 11: Styled TextEdit & Font Manager */
+    InitializeStyledText();
+
     SetPage(pageGraphics);
 }
 
@@ -2520,7 +2770,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iSound) {
+    if (menuID == mPages && item >= iGraphics && item <= iStyledText) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -2817,7 +3067,6 @@ void main(void)
             TEIdle(gTE);
         } else if (gPage == pageSound) {
             PollShowcaseSound();
-            DrawMainWindow();
         }
     }
     DisposeShowcaseSoundChannel();
@@ -2825,6 +3074,7 @@ void main(void)
     if (gShowcasePalette != nil) DisposePalette(gShowcasePalette);
     if (gOriginalPalette != nil) DisposePalette(gOriginalPalette);
     if (gTE != nil) TEDispose(gTE);
+    if (gStyledTE != nil) TEDispose(gStyledTE);
     if (gInventoryList != nil) {
         LActivate(false, gInventoryList);
         LDispose(gInventoryList);

@@ -1750,6 +1750,21 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn te_null_style_resolved_style(
+        bus: &MacMemoryBus,
+        te_handle: u32,
+    ) -> Option<TeResolvedStyle> {
+        let scrap_handle = Self::te_null_style_scrap_handle(bus, te_handle);
+        let scrap_ptr = bus.read_long(scrap_handle);
+        if scrap_ptr == 0 || bus.read_word(scrap_ptr + Self::SCRAP_N_STYLES_OFFSET) == 0 {
+            return None;
+        }
+        Some(Self::te_style_from_scrap_element(
+            bus,
+            scrap_ptr + Self::SCRAP_STYLE_TAB_OFFSET,
+        ))
+    }
+
     fn te_style_runs(
         &self,
         bus: &MacMemoryBus,
@@ -14720,25 +14735,87 @@ impl super::TrapDispatcher {
                         } else {
                             0
                         };
-                        if style_ptr != 0 {
-                            let (tx_font, tx_face, tx_size, color, _, _) =
-                                self.te_primary_style(bus, te_handle);
-                            if (requested_mode & 0x0001) != 0 {
-                                bus.write_word(style_ptr, tx_font as u16);
+                        let text_len = Self::te_text_length(bus, te_handle);
+                        let te_ptr = Self::te_record_ptr(bus, te_handle);
+                        let mut selection_start = if te_ptr != 0 {
+                            bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize
+                        } else {
+                            0
+                        };
+                        let mut selection_end = if te_ptr != 0 {
+                            bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize
+                        } else {
+                            0
+                        };
+                        if selection_end < selection_start {
+                            std::mem::swap(&mut selection_start, &mut selection_end);
+                        }
+                        selection_start = selection_start.min(text_len);
+                        selection_end = selection_end.min(text_len);
+                        let runs = self.te_style_runs(bus, te_handle, text_len);
+                        let first = if selection_start == selection_end {
+                            Self::te_null_style_resolved_style(bus, te_handle).unwrap_or_else(|| {
+                                Self::te_style_at_offset(
+                                    &runs,
+                                    selection_start
+                                        .saturating_sub(1)
+                                        .min(text_len.saturating_sub(1)),
+                                )
+                            })
+                        } else {
+                            Self::te_style_at_offset(&runs, selection_start)
+                        };
+                        let mut common_mode = requested_mode;
+                        let mut common_face = first.face;
+                        let mut all_faces_equal = true;
+                        for offset in selection_start..selection_end {
+                            let style = Self::te_style_at_offset(&runs, offset);
+                            if requested_mode & 0x0001 != 0 && style.font != first.font {
+                                common_mode &= !0x0001;
                             }
-                            if (requested_mode & 0x0002) != 0 {
-                                bus.write_byte(style_ptr + 2, tx_face as u8);
+                            if requested_mode & 0x0002 != 0 {
+                                if style.face != first.face {
+                                    all_faces_equal = false;
+                                }
+                                common_face &= style.face;
                             }
-                            if (requested_mode & 0x0004) != 0 {
-                                bus.write_word(style_ptr + 4, tx_size as u16);
+                            if requested_mode & 0x0004 != 0 && style.size != first.size {
+                                common_mode &= !0x0004;
                             }
-                            if (requested_mode & 0x0008) != 0 {
-                                bus.write_word(style_ptr + 6, color.0);
-                                bus.write_word(style_ptr + 8, color.1);
-                                bus.write_word(style_ptr + 10, color.2);
+                            if requested_mode & 0x0008 != 0 && style.color != first.color {
+                                common_mode &= !0x0008;
                             }
                         }
-                        bus.write_word(result_addr, 0xFFFF);
+                        if requested_mode & 0x0002 != 0 && !all_faces_equal && common_face == 0 {
+                            common_mode &= !0x0002;
+                        }
+                        if mode_ptr != 0 {
+                            bus.write_word(mode_ptr, common_mode);
+                        }
+                        if style_ptr != 0 {
+                            if requested_mode & 0x0001 != 0 {
+                                bus.write_word(style_ptr, first.font as u16);
+                            }
+                            if requested_mode & 0x0002 != 0 {
+                                bus.write_byte(style_ptr + 2, common_face as u8);
+                            }
+                            if requested_mode & 0x0004 != 0 {
+                                bus.write_word(style_ptr + 4, first.size as u16);
+                            }
+                            if requested_mode & 0x0008 != 0 {
+                                bus.write_word(style_ptr + 6, first.color.0);
+                                bus.write_word(style_ptr + 8, first.color.1);
+                                bus.write_word(style_ptr + 10, first.color.2);
+                            }
+                        }
+                        bus.write_word(
+                            result_addr,
+                            if common_mode == requested_mode {
+                                0xFFFF
+                            } else {
+                                0
+                            },
+                        );
                         cpu.write_reg(Register::A7, result_addr);
                     }
                     0x000B => {
@@ -35073,6 +35150,165 @@ mod tests {
         assert_eq!(bus.read_word(style_ptr + 6), 0);
         assert_eq!(bus.read_word(style_ptr + 8), 0);
         assert_eq!(bus.read_word(style_ptr + 10), 0);
+    }
+
+    #[test]
+    fn te_dispatch_continuous_style_reports_mixed_styled_selection() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.tx_font = 3;
+        disp.tx_size = 10;
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 40, 120), (0, 0, 40, 120));
+        disp.te_set_text_contents(&mut bus, te_handle, b"AB");
+
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+
+        let text_style = bus.alloc(12);
+        bus.write_word(text_style, 4);
+        bus.write_byte(text_style + 2, 1);
+        bus.write_word(text_style + 4, 14);
+        bus.write_word(text_style + 6, 0xFFFF);
+        bus.write_word(text_style + 8, 0);
+        bus.write_word(text_style + 10, 0);
+        bus.write_word(TEST_SP, 0x0001);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_word(TEST_SP + 6, 0); // redraw = FALSE
+        bus.write_long(TEST_SP + 8, text_style);
+        bus.write_word(TEST_SP + 12, 0x000F); // doAll
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        // Inspect the whole selection, which contains the original and the
+        // newly styled run. No requested attribute is continuous.
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+        let result_style = 0x300000u32;
+        let mode_ptr = 0x300100u32;
+        bus.write_word(mode_ptr, 0x000F);
+        bus.write_word(TEST_SP, 0x000A);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, result_style);
+        bus.write_long(TEST_SP + 10, mode_ptr);
+        cpu.write_reg(Register::A7, TEST_SP);
+
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+        assert_eq!(bus.read_word(TEST_SP + 14), 0);
+        assert_eq!(bus.read_word(mode_ptr), 0);
+        assert_eq!(bus.read_word(result_style), 3);
+        assert_eq!(bus.read_byte(result_style + 2), 0);
+        assert_eq!(bus.read_word(result_style + 4), 10);
+        assert_eq!(bus.read_word(result_style + 6), 0);
+        assert_eq!(bus.read_word(result_style + 8), 0);
+        assert_eq!(bus.read_word(result_style + 10), 0);
+    }
+
+    #[test]
+    fn te_dispatch_continuous_style_reports_common_face_bits_and_null_style() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.tx_font = 3;
+        disp.tx_size = 10;
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 40, 120), (0, 0, 40, 120));
+        disp.te_set_text_contents(&mut bus, te_handle, b"AB");
+        let te_ptr = bus.read_long(te_handle);
+        let text_style = bus.alloc(12);
+        bus.write_word(text_style, 4);
+        bus.write_byte(text_style + 2, 0x03);
+        bus.write_word(text_style + 4, 10);
+        bus.write_word(text_style + 6, 0);
+        bus.write_word(text_style + 8, 0);
+        bus.write_word(text_style + 10, 0);
+
+        // Give the two characters faces 0b11 and 0b01. Their common face
+        // bits must be reported as 0b01 rather than treating the faces as
+        // unequal values.
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+        bus.write_word(TEST_SP, 0x0001);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_word(TEST_SP + 6, 0);
+        bus.write_long(TEST_SP + 8, text_style);
+        bus.write_word(TEST_SP + 12, 0x0002);
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        bus.write_byte(text_style + 2, 0x01);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let result_style = 0x300000u32;
+        let mode_ptr = 0x300100u32;
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+        bus.write_word(mode_ptr, 0x0002);
+        bus.write_word(TEST_SP, 0x000A);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, result_style);
+        bus.write_long(TEST_SP + 10, mode_ptr);
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let mixed_runs = disp.te_style_runs(&bus, te_handle, 2);
+        assert_eq!(
+            mixed_runs
+                .iter()
+                .map(|run| (run.start, run.style.face))
+                .collect::<Vec<_>>(),
+            vec![(0, 3), (1, 1)]
+        );
+        assert_eq!(bus.read_word(TEST_SP + 14), 0xFFFF);
+        assert_eq!(bus.read_word(mode_ptr), 0x0002);
+        assert_eq!(bus.read_byte(result_style + 2), 0x01);
+
+        // An insertion point uses the null scrap, not the following
+        // character, for its reported style.
+        bus.write_byte(text_style + 2, 0x07);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 1);
+        bus.write_word(TEST_SP, 0x0001);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_word(TEST_SP + 6, 0);
+        bus.write_long(TEST_SP + 8, text_style);
+        bus.write_word(TEST_SP + 12, 0x0002);
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let null_scrap_handle = TrapDispatcher::te_null_style_scrap_handle(&bus, te_handle);
+        let null_scrap = bus.read_long(null_scrap_handle);
+        assert_eq!(bus.read_word(null_scrap + TrapDispatcher::SCRAP_N_STYLES_OFFSET), 1);
+        bus.write_word(mode_ptr, 0x0002);
+        bus.write_word(TEST_SP, 0x000A);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, result_style);
+        bus.write_long(TEST_SP + 10, mode_ptr);
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 14), 0xFFFF);
+        assert_eq!(bus.read_word(mode_ptr), 0x0002);
+        assert_eq!(bus.read_byte(result_style + 2), 0x07);
     }
 
     #[test]

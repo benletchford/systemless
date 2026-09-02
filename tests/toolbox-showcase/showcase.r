@@ -91,7 +91,8 @@ resource 'MENU' (mPages, preload) {
         "TextEdit", noIcon, noKey, noMark, plain;
         "Palettes", noIcon, noKey, noMark, plain;
         "Lists & Inventory", noIcon, noKey, noMark, plain;
-        "Sound & Channels", noIcon, noKey, noMark, plain
+        "Sound & Channels", noIcon, noKey, noMark, plain;
+        "Styled Text & Fonts", noIcon, noKey, noMark, plain
     }
 };
 
