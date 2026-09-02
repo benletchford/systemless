@@ -1717,6 +1717,7 @@ pub(crate) struct ProcessNativeHeapState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessNativeAllocatorState {
+    initial_heap: ProcessNativeHeapState,
     pub(crate) heap: ProcessNativeHeapState,
     pub(crate) ptrs: Vec<ProcessPtrRecord>,
     pub(crate) free_ptr_blocks: Vec<ProcessPtrRecord>,
@@ -1852,6 +1853,14 @@ impl SharedClassicHeapAllocator {
             "classic heap owner changed before process-manager handoff"
         );
         state.owner_id = Some(target_owner_id);
+    }
+
+    fn assert_owned_by(&self, owner_id: usize) {
+        assert_eq!(
+            self.0.borrow().owner_id,
+            Some(owner_id),
+            "classic heap owner changed before process-manager handoff"
+        );
     }
 
     pub(crate) fn is_pristine(&self) -> bool {
@@ -4458,6 +4467,7 @@ impl ProcessNativeMemoryManager {
         let allocator = self
             .native_allocator
             .get_or_insert_with(|| ProcessNativeAllocatorState {
+                initial_heap: heap,
                 heap,
                 ptrs: Vec::new(),
                 free_ptr_blocks: Vec::new(),
@@ -4543,12 +4553,19 @@ impl ProcessNativeMemoryManager {
         self.ptr_to_handle.insert(ptr, handle)
     }
 
-    pub(crate) fn adopt_handle_metadata(&mut self, source: &mut Self) {
+    fn assert_can_adopt_handle_metadata(&self, source: &Self) {
         if let Some(source_allocator) = source.classic_allocator.as_ref() {
             assert!(
                 self.classic_allocator.is_none(),
                 "cannot adopt a standalone classic heap into an attached process allocator"
             );
+            source_allocator.assert_owned_by(Rc::as_ptr(&source.classic_owner) as usize);
+        }
+    }
+
+    fn adopt_handle_metadata(&mut self, source: &mut Self) {
+        self.assert_can_adopt_handle_metadata(source);
+        if let Some(source_allocator) = source.classic_allocator.as_ref() {
             source_allocator.transfer_owner(
                 Rc::as_ptr(&source.classic_owner) as usize,
                 Rc::as_ptr(&self.classic_owner) as usize,
@@ -4574,6 +4591,67 @@ impl ProcessNativeMemoryManager {
                 .extend(source.native_handle_ptrs.drain());
             self.native_handles.extend(source.native_handles.drain());
         }
+    }
+
+    fn native_allocator_is_pristine(&self) -> bool {
+        self.native_allocations.is_empty()
+            && self.native_handle_ptrs.is_empty()
+            && self.native_handles.is_empty()
+            && self.native_allocator.as_ref().is_none_or(|allocator| {
+                allocator.heap == allocator.initial_heap
+                    && allocator.ptrs.is_empty()
+                    && allocator.free_ptr_blocks.is_empty()
+                    && allocator.free_handle_blocks.is_empty()
+            })
+    }
+
+    fn assert_can_adopt_native_allocator(&self, source: &Self) {
+        assert!(
+            self.native_allocator_is_pristine() || source.native_allocator_is_pristine(),
+            "cannot attach two populated native allocators"
+        );
+    }
+
+    /// Transfer one standalone native allocator into the process owner.
+    ///
+    /// An allocator with no state beyond its launch-time heap baseline may be
+    /// discarded. A populated allocator instead replaces a pristine target,
+    /// leaving no second owner behind after attachment.
+    fn adopt_native_allocator(&mut self, source: &mut Self) {
+        self.assert_can_adopt_native_allocator(source);
+        let target_is_pristine = self.native_allocator_is_pristine();
+        let source_is_pristine = source.native_allocator_is_pristine();
+        let source_supplies_allocator = !source_is_pristine
+            || (self.native_allocator.is_none() && source.native_allocator.is_some());
+
+        if target_is_pristine && source_supplies_allocator {
+            self.native_allocator = source.native_allocator.take();
+            self.native_allocator_dirty = source.native_allocator_dirty;
+            self.native_allocations = std::mem::take(&mut source.native_allocations);
+            self.native_handle_ptrs = std::mem::take(&mut source.native_handle_ptrs);
+            self.native_handles = std::mem::take(&mut source.native_handles);
+        }
+
+        source.native_allocator = None;
+        source.native_allocator_dirty = false;
+        source.native_allocations.clear();
+        source.native_handle_ptrs.clear();
+        source.native_handles.clear();
+    }
+
+    /// Reject an incompatible Memory Manager handoff before either owner is
+    /// modified.
+    pub(crate) fn assert_can_adopt_process_memory_manager(&self, source: &Self) {
+        self.assert_can_adopt_native_allocator(source);
+        self.assert_can_adopt_handle_metadata(source);
+    }
+
+    /// Transfer every standalone allocator and handle index into one process
+    /// owner after all compatibility checks have passed.
+    pub(crate) fn adopt_process_memory_manager(&mut self, source: &mut Self) {
+        self.assert_can_adopt_process_memory_manager(source);
+        self.adopt_native_allocator(source);
+        self.adopt_handle_metadata(source);
     }
 
     #[cfg(test)]
@@ -5009,6 +5087,17 @@ mod tests {
     use crate::memory::{MacMemoryBus, MemoryBus};
     use ppc::PpcMemory;
 
+    fn native_heap_state(heap_cursor: u32, heap_limit: u32) -> ProcessNativeHeapState {
+        ProcessNativeHeapState {
+            heap_base: 0x0300_0000,
+            heap_cursor,
+            heap_limit,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+        }
+    }
+
     #[test]
     fn process_context_owns_the_memory_mapping_for_cpu_adapters() {
         let mut context = ProcessContext::default();
@@ -5436,6 +5525,188 @@ mod tests {
         assert_eq!(heap.last_mem_error, ProcessMemoryManager::PARAM_ERR);
         assert!(heap.heap_maximized);
         assert_eq!(heap.master_pointer_blocks_requested, 1);
+    }
+
+    #[test]
+    fn native_allocator_attachment_transfers_the_populated_owner() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut target = ProcessMemoryManager::default();
+        target.publish_native_allocator(
+            native_heap_state(HEAP_BASE, HEAP_BASE + 0x1000),
+            &[],
+            &[],
+            &[],
+        );
+        let mut source = ProcessMemoryManager::default();
+        source.publish_native_allocator(
+            native_heap_state(HEAP_BASE + 0x80, HEAP_BASE + 0x2000),
+            &[],
+            &[],
+            &[],
+        );
+        source.mutate_native_allocator(|allocator| {
+            allocator.heap.heap_cursor += 0x20;
+            allocator.ptrs.push(ProcessPtrRecord {
+                ptr: HEAP_BASE + 0x80,
+                size: 0x20,
+            });
+        });
+        let expected = source.native_allocator_snapshot();
+
+        target.adopt_process_memory_manager(&mut source);
+
+        assert_eq!(target.native_allocator_snapshot(), expected);
+        assert!(!source.has_native_allocator());
+        assert!(source.native_handle_records().is_empty());
+    }
+
+    #[test]
+    fn native_allocator_attachment_retains_a_populated_target() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut target = ProcessMemoryManager::default();
+        target.publish_native_allocator(
+            native_heap_state(HEAP_BASE, HEAP_BASE + 0x2000),
+            &[],
+            &[],
+            &[],
+        );
+        target.mutate_native_allocator(|allocator| {
+            allocator.heap.heap_limit -= 0x100;
+            allocator.heap.last_mem_error = ProcessMemoryManager::PARAM_ERR;
+        });
+        let expected = target.native_allocator_snapshot();
+        let mut source = ProcessMemoryManager::default();
+        source.publish_native_allocator(
+            native_heap_state(HEAP_BASE + 0x80, HEAP_BASE + 0x3000),
+            &[],
+            &[],
+            &[],
+        );
+
+        target.adopt_process_memory_manager(&mut source);
+
+        assert_eq!(target.native_allocator_snapshot(), expected);
+        assert!(!source.has_native_allocator());
+    }
+
+    #[test]
+    fn native_allocator_attachment_moves_a_pristine_source_into_an_empty_target() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut target = ProcessMemoryManager::default();
+        let mut source = ProcessMemoryManager::default();
+        let heap = native_heap_state(HEAP_BASE + 0x80, HEAP_BASE + 0x2000);
+        source.publish_native_allocator(heap, &[], &[], &[]);
+
+        target.adopt_process_memory_manager(&mut source);
+
+        assert_eq!(target.native_heap_state(), Some(heap));
+        assert!(!source.has_native_allocator());
+    }
+
+    #[test]
+    fn native_allocator_attachment_retains_the_target_when_both_are_pristine() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let target_heap = native_heap_state(HEAP_BASE, HEAP_BASE + 0x1000);
+        let source_heap = native_heap_state(HEAP_BASE + 0x80, HEAP_BASE + 0x2000);
+        let mut target = ProcessMemoryManager::default();
+        target.publish_native_allocator(target_heap, &[], &[], &[]);
+        let mut source = ProcessMemoryManager::default();
+        source.publish_native_allocator(source_heap, &[], &[], &[]);
+
+        target.adopt_process_memory_manager(&mut source);
+
+        assert_eq!(target.native_heap_state(), Some(target_heap));
+        assert!(!source.has_native_allocator());
+    }
+
+    #[test]
+    fn native_allocator_attachment_rejects_two_populated_owners_atomically() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let first_record = ProcessHandleRecord {
+            handle: HEAP_BASE,
+            ptr: HEAP_BASE + 0x20,
+            size: 16,
+            capacity: 16,
+        };
+        let second_record = ProcessHandleRecord {
+            handle: HEAP_BASE + 0x40,
+            ptr: HEAP_BASE + 0x60,
+            size: 32,
+            capacity: 32,
+        };
+        let mut target = ProcessMemoryManager::default();
+        target.publish_native_allocator(
+            native_heap_state(HEAP_BASE, HEAP_BASE + 0x2000),
+            &[],
+            &[],
+            &[],
+        );
+        target.register_native_handle_records([(first_record, 0x80)]);
+        let mut source = ProcessMemoryManager::default();
+        source.publish_native_allocator(
+            native_heap_state(HEAP_BASE + 0x100, HEAP_BASE + 0x3000),
+            &[],
+            &[],
+            &[],
+        );
+        source.register_native_handle_records([(second_record, 0x40)]);
+        let target_allocator = target.native_allocator_snapshot();
+        let source_allocator = source.native_allocator_snapshot();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            target.adopt_process_memory_manager(&mut source);
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(target.native_allocator_snapshot(), target_allocator);
+        assert_eq!(source.native_allocator_snapshot(), source_allocator);
+        assert_eq!(target.native_allocation(first_record.handle), Some(first_record));
+        assert_eq!(source.native_allocation(second_record.handle), Some(second_record));
+        assert_eq!(target.handle_for_ptr(first_record.ptr), Some(first_record.handle));
+        assert_eq!(source.handle_for_ptr(second_record.ptr), Some(second_record.handle));
+        assert_eq!(target.state_for_handle(first_record.handle), Some(0x80));
+        assert_eq!(source.state_for_handle(second_record.handle), Some(0x40));
+    }
+
+    #[test]
+    fn process_memory_manager_handoff_preflights_classic_metadata_before_native_transfer() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut target = ProcessMemoryManager::default();
+        target.publish_native_allocator(
+            native_heap_state(HEAP_BASE, HEAP_BASE + 0x2000),
+            &[],
+            &[],
+            &[],
+        );
+        let mut target_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        target.attach_classic_memory_bus(&mut target_bus);
+        let target_ptr = target.new_classic_ptr(&mut target_bus, 16);
+
+        let mut source = ProcessMemoryManager::default();
+        source.publish_native_allocator(
+            native_heap_state(HEAP_BASE, HEAP_BASE + 0x2000),
+            &[],
+            &[],
+            &[],
+        );
+        source.mutate_native_allocator(|allocator| allocator.heap.heap_cursor += 0x20);
+        let mut source_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        source.attach_classic_memory_bus(&mut source_bus);
+        let source_ptr = source.new_classic_ptr(&mut source_bus, 32);
+        let target_allocator = target.native_allocator_snapshot();
+        let source_allocator = source.native_allocator_snapshot();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            target.adopt_process_memory_manager(&mut source);
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(target.native_allocator_snapshot(), target_allocator);
+        assert_eq!(source.native_allocator_snapshot(), source_allocator);
+        assert_eq!(target.classic_allocation_size(target_ptr), Some(16));
+        assert_eq!(source.classic_allocation_size(source_ptr), Some(32));
+        assert_ne!(target.new_classic_ptr(&mut target_bus, 8), 0);
+        assert_ne!(source.new_classic_ptr(&mut source_bus, 8), 0);
     }
 
     #[test]

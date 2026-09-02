@@ -2751,6 +2751,20 @@ impl TrapDispatcher {
 
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+        let mut memory_manager = None;
+        context.attach_memory_manager(&mut memory_manager);
+        let memory_manager =
+            memory_manager.expect("process context supplies a Memory Manager");
+        if let Some(attached) = &self.process_memory_manager {
+            assert!(
+                attached.ptr_eq(&memory_manager),
+                "cannot attach two process Memory Managers"
+            );
+        } else if !self.standalone_memory_manager.ptr_eq(&memory_manager) {
+            let target = memory_manager.borrow();
+            let standalone = self.standalone_memory_manager.borrow();
+            target.assert_can_adopt_process_memory_manager(&standalone);
+        }
         context.attach_file_system(&mut self.process_file_system);
         self.open_files = self.process_file_system.files.shared_handle();
         self.write_refnums = self.process_file_system.writable_refnums.shared_handle();
@@ -2813,11 +2827,7 @@ impl TrapDispatcher {
             &mut self.next_vfs_timestamp,
             &mut self.default_dir_id,
         );
-        let mut memory_manager = None;
-        context.attach_memory_manager(&mut memory_manager);
-        self.attach_memory_manager_handle(
-            memory_manager.expect("process context supplies a Memory Manager"),
-        );
+        self.attach_memory_manager_handle(memory_manager);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
@@ -2841,7 +2851,7 @@ impl TrapDispatcher {
         if !self.standalone_memory_manager.ptr_eq(&memory_manager) {
             let mut target = memory_manager.borrow_mut();
             let mut standalone = self.standalone_memory_manager.borrow_mut();
-            target.adopt_handle_metadata(&mut standalone);
+            target.adopt_process_memory_manager(&mut standalone);
         }
         self.process_memory_manager = Some(memory_manager);
     }
@@ -11244,6 +11254,43 @@ mod tests {
         assert_eq!(attached.borrow().state_for_handle(0x1100), Some(0x80));
         assert_eq!(standalone.borrow().handle_for_ptr(0x2200), None);
         assert_eq!(standalone.borrow().state_for_handle(0x1100), None);
+    }
+
+    #[test]
+    fn attaching_dispatcher_transfers_a_standalone_native_allocator() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut dispatcher = TrapDispatcher::new();
+        let standalone = dispatcher.process_memory_manager();
+        standalone.borrow_mut().publish_native_allocator(
+            crate::process_context::ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[crate::process_context::ProcessPtrRecord {
+                ptr: HEAP_BASE,
+                size: 24,
+            }],
+            &[],
+            &[],
+        );
+
+        let mut context = ProcessContext::default();
+        dispatcher.attach_process_context(&mut context);
+        let attached = dispatcher.process_memory_manager();
+
+        assert!(!attached.ptr_eq(&standalone));
+        assert!(!standalone.borrow().has_native_allocator());
+        assert_eq!(
+            attached.borrow().native_ptr_records(),
+            [crate::process_context::ProcessPtrRecord {
+                ptr: HEAP_BASE,
+                size: 24,
+            }]
+        );
     }
 
     #[test]
