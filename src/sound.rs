@@ -278,9 +278,6 @@ pub struct SndChannel {
 }
 
 impl SndChannel {
-    pub(crate) fn set_file_paused(&mut self, paused: bool) {
-        self.file_paused = paused;
-    }
     pub fn new(guest_ptr: u32, allocated: bool) -> Self {
         Self {
             guest_ptr,
@@ -421,9 +418,20 @@ impl SndChannel {
     }
 
     pub fn pause_file_playback_toggle(&mut self) {
+        self.toggle_file_playback_paused();
+    }
+
+    fn toggle_file_playback_paused(&mut self) -> Option<bool> {
         if self.playback_kind == Some(PlaybackKind::File) {
             self.file_paused = !self.file_paused;
+            Some(self.file_paused)
+        } else {
+            None
         }
+    }
+
+    pub(crate) fn file_playback_paused(&self) -> Option<bool> {
+        (self.playback_kind == Some(PlaybackKind::File)).then_some(self.file_paused)
     }
 
     pub(crate) fn mark_auto_dispose_when_idle(&mut self) {
@@ -663,10 +671,16 @@ impl SoundManager {
         channel.play_stereo_buffer(samples, sample_rate_fixed, PlaybackKind::Buffer, 0);
     }
 
-    pub(crate) fn set_file_paused(&mut self, guest_ptr: u32, paused: bool) {
-        if let Some(channel) = self.find_channel_mut(guest_ptr) {
-            channel.set_file_paused(paused);
-        }
+    pub(crate) fn file_playback_paused(&self, guest_ptr: u32) -> Option<bool> {
+        self.channels
+            .iter()
+            .find(|channel| channel.guest_ptr == guest_ptr)
+            .and_then(SndChannel::file_playback_paused)
+    }
+
+    pub(crate) fn toggle_file_paused(&mut self, guest_ptr: u32) -> Option<bool> {
+        self.find_channel_mut(guest_ptr)
+            .and_then(SndChannel::toggle_file_playback_paused)
     }
 
     pub(crate) fn quiet_channel(&mut self, guest_ptr: u32) {

@@ -55,9 +55,6 @@ pub struct PpcSoundFilePlaybackRecord {
     pub completion: u32,
     pub completion_command: Option<PpcSndCommandRecord>,
     pub async_play: bool,
-    pub paused: bool,
-    pub active: bool,
-    pub quiet_now: bool,
     pub aiff: Option<PpcAiffMetadata>,
     pub decoded_aiff: Option<PpcDecodedAiffSamples>,
 }

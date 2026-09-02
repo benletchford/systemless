@@ -43222,18 +43222,13 @@ fn ppc_snd_channel_status(
             return PPC_PARAM_ERR;
         }
     }
-    if let Some(playback) = sound
-        .file_playbacks
-        .iter()
-        .rev()
-        .find(|record| record.channel == channel && record.active)
-    {
+    if let Some(paused) = sound.manager.file_playback_paused(channel) {
         if byte_count > 12 && memory.write_u8(status_ptr + 12, 1).is_none() {
             return PPC_PARAM_ERR;
         }
         if byte_count > 14
             && memory
-                .write_u8(status_ptr + 14, u8::from(playback.paused))
+                .write_u8(status_ptr + 14, u8::from(paused))
                 .is_none()
         {
             return PPC_PARAM_ERR;
@@ -43260,10 +43255,7 @@ fn ppc_snd_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &PpcSoundSt
         b"ssiz" => memory.write_u16_be(info_ptr, 8),
         b"chan" => memory.write_u16_be(info_ptr, 1),
         b"hwbs" => {
-            let busy = sound
-                .file_playbacks
-                .iter()
-                .any(|record| record.channel == channel && record.active)
+            let busy = sound.manager.file_playback_paused(channel).is_some()
                 || sound
                     .manager
                     .double_buffer_playbacks
@@ -43424,17 +43416,6 @@ fn ppc_snd_do_immediate(
     let Some(command) = ppc_read_snd_command(memory, cmd_ptr) else {
         return PPC_PARAM_ERR;
     };
-    if command.command == 3 || command.command == 4 {
-        for playback in sound
-            .file_playbacks
-            .iter_mut()
-            .filter(|record| record.channel == channel && record.active)
-        {
-            playback.active = false;
-            playback.paused = false;
-            playback.quiet_now = true;
-        }
-    }
     if command.command == 85 && command.param2 != 0 {
         if !ppc_memory_can_write_bytes(memory, command.param2, 4)
             || memory.write_u32_be(command.param2, 0x0001_0000).is_none()
@@ -43483,14 +43464,17 @@ fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcS
     if command.command == 13 {
         let completion = memory.read_u32_be(channel.saturating_add(8)).unwrap_or(0);
         if completion != 0 {
-            if let Some(playback) = sound
-                .file_playbacks
-                .iter_mut()
-                .rev()
-                .find(|playback| playback.channel == channel && playback.active)
-            {
-                playback.completion = completion;
-                playback.completion_command = Some(PpcSndCommandRecord { channel, ..command });
+            if sound.manager.file_playback_paused(channel).is_some() {
+                if let Some(playback) = sound
+                    .file_playbacks
+                    .iter_mut()
+                    .rev()
+                    .find(|playback| playback.channel == channel)
+                {
+                    playback.completion = completion;
+                    playback.completion_command =
+                        Some(PpcSndCommandRecord { channel, ..command });
+                }
             }
         }
     }
@@ -43521,15 +43505,6 @@ fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcS
 fn ppc_snd_dispose_channel(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
     let channel = cpu.gpr[3];
     sound.manager.remove_channel(channel);
-    for playback in sound
-        .file_playbacks
-        .iter_mut()
-        .filter(|record| record.channel == channel)
-    {
-        playback.active = false;
-        playback.paused = false;
-        playback.quiet_now = true;
-    }
     for playback in sound
         .decoded_file_playbacks
         .iter_mut()
@@ -43563,14 +43538,6 @@ fn ppc_snd_play(
     let Ok(file_playback_index) = u32::try_from(sound.file_playbacks.len()) else {
         return PPC_MEM_FULL_ERR;
     };
-    for playback in sound
-        .file_playbacks
-        .iter_mut()
-        .filter(|playback| playback.channel == channel && playback.active)
-    {
-        playback.active = false;
-        playback.paused = false;
-    }
     let summary = decoded.summary;
     let samples = decoded.samples;
     if ppc_sound_trace_enabled() {
@@ -43607,9 +43574,6 @@ fn ppc_snd_play(
         completion: 0,
         completion_command: None,
         async_play,
-        paused: false,
-        active: true,
-        quiet_now: false,
         aiff: None,
         decoded_aiff: Some(summary),
     });
@@ -43898,44 +43862,41 @@ fn ppc_snd_start_file_play(
         completion: cpu.gpr[9],
         completion_command: None,
         async_play: cpu.gpr[10] != 0,
-        paused: false,
-        active: true,
-        quiet_now: false,
         aiff,
         decoded_aiff: decoded_aiff_summary,
     };
-    if channel != 0 {
-        for playback in sound
-            .file_playbacks
-            .iter_mut()
-            .filter(|playback| playback.channel == channel && playback.active)
-        {
-            playback.active = false;
-            playback.paused = false;
-        }
-    }
-    if let (Some(file_playback_index), Some(decoded_sound)) = (file_playback_index, decoded_sound) {
+    let completion = Some((
+        CallbackTaskArchitecture::PowerPc,
+        if record.async_play {
+            record.completion
+        } else {
+            0
+        },
+    ));
+    if let Some(decoded_sound) = decoded_sound {
         sound.manager.play_file_buffer(
             channel,
             decoded_sound.samples.clone(),
             decoded_sound.summary.sample_rate_fixed,
-            Some((
-                CallbackTaskArchitecture::PowerPc,
-                if record.async_play {
-                    record.completion
-                } else {
-                    0
-                },
-            )),
+            completion,
         );
-        sound
-            .decoded_file_playbacks
-            .push(PpcDecodedAiffPlaybackRecord {
-                file_playback_index,
-                channel,
-                sample_rate_fixed: decoded_sound.summary.sample_rate_fixed,
-                samples: decoded_sound.samples,
-            });
+        if let Some(file_playback_index) = file_playback_index {
+            sound
+                .decoded_file_playbacks
+                .push(PpcDecodedAiffPlaybackRecord {
+                    file_playback_index,
+                    channel,
+                    sample_rate_fixed: decoded_sound.summary.sample_rate_fixed,
+                    samples: decoded_sound.samples,
+                });
+        }
+    } else {
+        sound.manager.play_file_buffer(
+            channel,
+            Vec::new(),
+            crate::sound::OUTPUT_RATE << 16,
+            completion,
+        );
     }
     sound.file_playbacks.push(record);
     sound.start_count = sound.start_count.saturating_add(1);
@@ -44263,32 +44224,14 @@ fn ppc_read_extended_sample_rate(data: &[u8], offset: usize) -> Option<u32> {
 fn ppc_snd_pause_file_play(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
     let channel = cpu.gpr[3];
     sound.pause_count = sound.pause_count.saturating_add(1);
-    if let Some(playback) = sound
-        .file_playbacks
-        .iter_mut()
-        .rev()
-        .find(|record| record.channel == channel && record.active)
-    {
-        playback.paused = !playback.paused;
-        sound.manager.set_file_paused(channel, playback.paused);
-        return PPC_NO_ERR;
-    }
+    sound.manager.toggle_file_paused(channel);
     PPC_NO_ERR
 }
 
 fn ppc_snd_stop_file_play(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
     let channel = cpu.gpr[3];
-    let quiet_now = cpu.gpr[4] != 0;
+    let _quiet_now = cpu.gpr[4] != 0;
     sound.stop_count = sound.stop_count.saturating_add(1);
-    for playback in sound
-        .file_playbacks
-        .iter_mut()
-        .filter(|record| record.channel == channel && record.active)
-    {
-        playback.active = false;
-        playback.paused = false;
-        playback.quiet_now = quiet_now;
-    }
     sound.manager.quiet_channel(channel);
     PPC_NO_ERR
 }
@@ -46936,6 +46879,12 @@ fn ppc_qt_start_movie_audio(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundS
             summary.sample_rate_fixed
         );
     }
+    sound.manager.play_file_buffer(
+        PPC_QT_MOVIE,
+        samples.clone(),
+        summary.sample_rate_fixed,
+        None,
+    );
     sound
         .decoded_file_playbacks
         .push(PpcDecodedAiffPlaybackRecord {
@@ -46954,9 +46903,6 @@ fn ppc_qt_start_movie_audio(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundS
         completion: 0,
         completion_command: None,
         async_play: false,
-        paused: false,
-        active: true,
-        quiet_now: false,
         aiff: None,
         decoded_aiff: Some(summary),
     });
@@ -46964,15 +46910,7 @@ fn ppc_qt_start_movie_audio(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundS
 }
 
 fn ppc_qt_stop_movie_audio(sound: &mut PpcSoundState) {
-    for playback in sound
-        .file_playbacks
-        .iter_mut()
-        .filter(|playback| playback.channel == PPC_QT_MOVIE && playback.active)
-    {
-        playback.active = false;
-        playback.paused = false;
-        playback.quiet_now = true;
-    }
+    sound.manager.quiet_channel(PPC_QT_MOVIE);
 }
 
 fn ppc_qt_decode_movie_audio_samples(quicktime: &PpcQuickTimeState) -> Option<PpcDecodedAiffData> {
@@ -127008,8 +126946,10 @@ pub(crate) mod tests {
         let movie_audio_playback = loaded.sound.file_playbacks.last().copied().unwrap();
         assert_eq!(movie_audio_playback.channel, PPC_QT_MOVIE);
         assert_eq!(movie_audio_playback.ref_num, PPC_FIRST_FILE_REF_NUM);
-        assert!(movie_audio_playback.active);
-        assert!(!movie_audio_playback.quiet_now);
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
+            Some(false)
+        );
         assert_eq!(
             movie_audio_playback.decoded_aiff,
             Some(PpcDecodedAiffSamples {
@@ -127039,9 +126979,10 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert!(!loaded.quicktime.movie_started);
-        let movie_audio_playback = loaded.sound.file_playbacks.last().copied().unwrap();
-        assert!(!movie_audio_playback.active);
-        assert!(movie_audio_playback.quiet_now);
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
+            None
+        );
 
         loaded.quicktime.movie_started = true;
         loaded.quicktime.movie_task_count = 119;
@@ -127095,10 +127036,16 @@ pub(crate) mod tests {
             Some((10, 20, 80, 120))
         );
 
-        let movie_audio_index = loaded.sound.file_playbacks.len() - 1;
-        loaded.sound.file_playbacks[movie_audio_index].active = true;
-        loaded.sound.file_playbacks[movie_audio_index].paused = true;
-        loaded.sound.file_playbacks[movie_audio_index].quiet_now = false;
+        loaded.sound.manager.play_file_buffer(
+            PPC_QT_MOVIE,
+            vec![0x80],
+            crate::sound::OUTPUT_RATE << 16,
+            None,
+        );
+        assert_eq!(
+            loaded.sound.manager.toggle_file_paused(PPC_QT_MOVIE),
+            Some(true)
+        );
         loaded.quicktime.movie_started = true;
         loaded.quicktime.movie_task_count = 3;
         loaded.quicktime.movie_at_beginning = false;
@@ -127115,10 +127062,10 @@ pub(crate) mod tests {
         assert!(loaded.quicktime.movie_at_beginning);
         assert!(!loaded.quicktime.movie_started);
         assert_eq!(loaded.quicktime.movie_task_count, 0);
-        let movie_audio_playback = loaded.sound.file_playbacks[movie_audio_index];
-        assert!(!movie_audio_playback.active);
-        assert!(!movie_audio_playback.paused);
-        assert!(movie_audio_playback.quiet_now);
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
+            None
+        );
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtCloseMovieFile;
@@ -128388,11 +128335,23 @@ pub(crate) mod tests {
         loaded
             .sound
             .file_playbacks
-            .push(test_sound_file_playback(PPC_QT_MOVIE, true, true, false));
+            .push(test_sound_file_playback(PPC_QT_MOVIE));
         loaded
             .sound
             .file_playbacks
-            .push(test_sound_file_playback(0x1234_5678, true, true, false));
+            .push(test_sound_file_playback(0x1234_5678));
+        loaded.sound.manager.play_file_buffer(
+            PPC_QT_MOVIE,
+            vec![0x80],
+            crate::sound::OUTPUT_RATE << 16,
+            None,
+        );
+        loaded.sound.manager.play_file_buffer(
+            0x1234_5678,
+            vec![0x80],
+            crate::sound::OUTPUT_RATE << 16,
+            None,
+        );
         loaded.cpu.gpr[3] = movie_out_ptr;
         loaded.cpu.gpr[4] = PPC_FIRST_FILE_REF_NUM as u16 as u32;
         loaded.cpu.gpr[5] = res_id_ptr;
@@ -128413,11 +128372,19 @@ pub(crate) mod tests {
         assert!(loaded.quicktime.movie_at_beginning);
         assert_eq!(
             loaded.sound.file_playbacks[0],
-            test_sound_file_playback(PPC_QT_MOVIE, false, false, true)
+            test_sound_file_playback(PPC_QT_MOVIE)
         );
         assert_eq!(
             loaded.sound.file_playbacks[1],
-            test_sound_file_playback(0x1234_5678, true, true, false)
+            test_sound_file_playback(0x1234_5678)
+        );
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
+            None
+        );
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(0x1234_5678),
+            Some(false)
         );
     }
 
@@ -128585,7 +128552,7 @@ pub(crate) mod tests {
         loaded
             .sound
             .file_playbacks
-            .push(test_sound_file_playback(PPC_QT_MOVIE, true, true, false));
+            .push(test_sound_file_playback(PPC_QT_MOVIE));
         loaded.cpu.gpr[3] = movie_out_ptr;
         loaded.cpu.gpr[4] = PPC_FIRST_FILE_REF_NUM as u16 as u32;
         loaded.cpu.gpr[5] = res_id_ptr;
@@ -128620,7 +128587,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             loaded.sound.file_playbacks[0],
-            test_sound_file_playback(PPC_QT_MOVIE, true, true, false)
+            test_sound_file_playback(PPC_QT_MOVIE)
         );
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -128729,11 +128696,20 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], 0);
         assert_eq!(loaded.quicktime.movie_error, PPC_NO_ERR);
 
-        let movie_audio_index = loaded.sound.file_playbacks.len();
         loaded
             .sound
             .file_playbacks
-            .push(test_sound_file_playback(PPC_QT_MOVIE, true, true, false));
+            .push(test_sound_file_playback(PPC_QT_MOVIE));
+        loaded.sound.manager.play_file_buffer(
+            PPC_QT_MOVIE,
+            vec![0x80],
+            crate::sound::OUTPUT_RATE << 16,
+            None,
+        );
+        assert_eq!(
+            loaded.sound.manager.toggle_file_paused(PPC_QT_MOVIE),
+            Some(true)
+        );
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtMoviesTask;
@@ -128746,9 +128722,10 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.quicktime.movie_task_count, 1);
         assert!(loaded.quicktime.movie_started);
-        assert!(loaded.sound.file_playbacks[movie_audio_index].active);
-        assert!(loaded.sound.file_playbacks[movie_audio_index].paused);
-        assert!(!loaded.sound.file_playbacks[movie_audio_index].quiet_now);
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
+            Some(true)
+        );
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtIsMovieDone;
@@ -128773,9 +128750,10 @@ pub(crate) mod tests {
             assert_eq!(loaded.quicktime.movie_task_count, expected_count);
         }
         assert!(!loaded.quicktime.movie_started);
-        assert!(!loaded.sound.file_playbacks[movie_audio_index].active);
-        assert!(!loaded.sound.file_playbacks[movie_audio_index].paused);
-        assert!(loaded.sound.file_playbacks[movie_audio_index].quiet_now);
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
+            None
+        );
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtIsMovieDone;
@@ -160148,12 +160126,16 @@ pub(crate) mod tests {
                 completion: 0,
                 completion_command: None,
                 async_play: false,
-                paused: true,
-                active: true,
-                quiet_now: false,
                 aiff: None,
                 decoded_aiff: None,
             });
+        loaded.sound.manager.play_file_buffer(
+            channel,
+            vec![0x80],
+            crate::sound::OUTPUT_RATE << 16,
+            None,
+        );
+        assert_eq!(loaded.sound.manager.toggle_file_paused(channel), Some(true));
         loaded.cpu.gpr[3] = channel;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -160161,9 +160143,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert!(!loaded.sound.file_playbacks[0].active);
-        assert!(!loaded.sound.file_playbacks[0].paused);
-        assert!(loaded.sound.file_playbacks[0].quiet_now);
+        assert_eq!(loaded.sound.manager.file_playback_paused(channel), None);
     }
 
     #[test]
@@ -160508,9 +160488,6 @@ pub(crate) mod tests {
                 completion: PPC_CODE_BASE + 0x40,
                 completion_command: None,
                 async_play: true,
-                paused: false,
-                active: true,
-                quiet_now: false,
                 aiff: None,
                 decoded_aiff: None,
             })
@@ -160541,7 +160518,10 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.sound.pause_count, 1);
-        assert!(loaded.sound.file_playbacks.last().unwrap().paused);
+        assert_eq!(
+            loaded.sound.manager.file_playback_paused(channel),
+            Some(true)
+        );
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SndChannelStatus;
@@ -160567,10 +160547,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.sound.stop_count, 1);
-        let playback = loaded.sound.file_playbacks.last().unwrap();
-        assert!(!playback.active);
-        assert!(!playback.paused);
-        assert!(playback.quiet_now);
+        assert_eq!(loaded.sound.manager.file_playback_paused(channel), None);
     }
 
     #[test]
@@ -162871,12 +162848,7 @@ pub(crate) mod tests {
         bytes
     }
 
-    fn test_sound_file_playback(
-        channel: u32,
-        active: bool,
-        paused: bool,
-        quiet_now: bool,
-    ) -> PpcSoundFilePlaybackRecord {
+    fn test_sound_file_playback(channel: u32) -> PpcSoundFilePlaybackRecord {
         PpcSoundFilePlaybackRecord {
             channel,
             ref_num: PPC_FIRST_FILE_REF_NUM,
@@ -162887,9 +162859,6 @@ pub(crate) mod tests {
             completion: 0,
             completion_command: None,
             async_play: false,
-            paused,
-            active,
-            quiet_now,
             aiff: None,
             decoded_aiff: None,
         }
