@@ -6,6 +6,7 @@ use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::process_context::ProcessVfsDirectory;
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, read_fsspec_name};
 use crate::{Error, Result};
 
@@ -5934,7 +5935,11 @@ impl super::TrapDispatcher {
 
                 if named_volume.is_none() && !name.is_empty() {
                     if let Some(path) = self.find_vfs_directory_in_directory(target_dir_id, &name) {
-                        if let Some(directory) = self.vfs_directories.get(&path) {
+                        if let Some(directory) = self
+                            .vfs_directories
+                            .iter()
+                            .find(|directory| directory.path.eq_ignore_ascii_case(&path))
+                        {
                             target_dir_id = directory.dir_id;
                         }
                     } else if let Some(path) = self.find_vfs_file_in_directory(target_dir_id, &name)
@@ -6568,8 +6573,8 @@ impl super::TrapDispatcher {
                                     .any(|path| path.eq_ignore_ascii_case(key))
                                 || self
                                     .vfs_directories
-                                    .keys()
-                                    .any(|path| path.eq_ignore_ascii_case(key))
+                                    .iter()
+                                    .any(|directory| directory.path.eq_ignore_ascii_case(key))
                         } else {
                             false
                         };
@@ -6850,8 +6855,10 @@ impl super::TrapDispatcher {
                                 };
                                 let duplicate = self
                                     .vfs_directories
-                                    .keys()
-                                    .any(|path| path.eq_ignore_ascii_case(&child_path))
+                                    .iter()
+                                    .any(|directory| {
+                                        directory.path.eq_ignore_ascii_case(&child_path)
+                                    })
                                     || self
                                         .vfs
                                         .keys()
@@ -7289,7 +7296,8 @@ impl super::TrapDispatcher {
                         self.find_vfs_directory_in_directory(base_dir_id, &name)
                     {
                         self.vfs_directories
-                            .get(&path)
+                            .iter()
+                            .find(|directory| directory.path.eq_ignore_ascii_case(&path))
                             .map(|directory| directory.dir_id)
                             .unwrap_or(base_dir_id)
                     } else {
@@ -7463,8 +7471,8 @@ impl super::TrapDispatcher {
                             };
                             let duplicate = self
                                 .vfs_directories
-                                .keys()
-                                .any(|path| path.eq_ignore_ascii_case(&child_path))
+                                .iter()
+                                .any(|directory| directory.path.eq_ignore_ascii_case(&child_path))
                                 || self
                                     .vfs
                                     .keys()
@@ -7620,7 +7628,13 @@ impl super::TrapDispatcher {
 
                     if let Some(entry) = lookup {
                         if entry.is_directory {
-                            if let Some(directory) = self.vfs_directories.get(&entry.path) {
+                            if let Some(directory) = self
+                                .vfs_directories
+                                .iter()
+                                .find(|directory| {
+                                    directory.path.eq_ignore_ascii_case(&entry.path)
+                                })
+                            {
                                 self.fill_directory_catalog_info(bus, pb, directory);
                                 eprintln!(
                                     "[TRAP] FSDispatch PBGetCatInfo dir \"{}\" -> dirID={} parentDirID={}",
@@ -8074,14 +8088,14 @@ impl super::TrapDispatcher {
         Self::write_finfo(
             bus,
             pb + 32,
-            u32::from_be_bytes(*b"fold"),
-            u32::from_be_bytes(*b"MACS"),
-            0,
+            directory.file_type,
+            directory.creator,
+            directory.finder_flags,
         );
         bus.write_long(pb + 48, directory.dir_id);
         let child_directory_count = self
             .vfs_directories
-            .values()
+            .iter()
             .filter(|child| {
                 child.dir_id != directory.dir_id && child.parent_dir_id == directory.dir_id
             })
@@ -8128,7 +8142,8 @@ impl super::TrapDispatcher {
         self.ensure_vfs_catalog();
         let mut entries = Vec::new();
 
-        for (path, directory) in &*self.vfs_directories {
+        for directory in &*self.vfs_directories {
+            let path = &directory.path;
             let entry_volume_ref = self
                 .vfs_volume_for_path(path)
                 .map(|volume| volume.ref_num)
@@ -8138,7 +8153,7 @@ impl super::TrapDispatcher {
             }
             let child_count = self
                 .vfs_directories
-                .values()
+                .iter()
                 .filter(|child| {
                     child.dir_id != directory.dir_id && child.parent_dir_id == directory.dir_id
                 })
@@ -8156,18 +8171,22 @@ impl super::TrapDispatcher {
                 } else {
                     self.vfs_volume_for_ref_num(volume_ref_num)
                         .map(|volume| volume.name.clone())
-                        .unwrap_or_else(|| directory.name.clone())
+                        .unwrap_or_else(|| Self::vfs_basename(&directory.path).to_string())
                 }
             } else {
-                Self::hfs_name_from_vfs_component(&directory.name)
+                Self::hfs_name_from_vfs_component(Self::vfs_basename(&directory.path))
             };
+            let mut finder_info = [0u8; 16];
+            finder_info[..4].copy_from_slice(&directory.file_type.to_be_bytes());
+            finder_info[4..8].copy_from_slice(&directory.creator.to_be_bytes());
+            finder_info[8..10].copy_from_slice(&directory.finder_flags.to_be_bytes());
             entries.push(CatSearchEntry {
                 name,
                 vref_num: volume_ref_num,
                 parent_dir_id: directory.parent_dir_id,
                 is_directory: true,
                 locked: false,
-                finder_info: [0; 16],
+                finder_info,
                 extended_finder_info: [0; 16],
                 data_length: 0,
                 resource_length: 0,
@@ -8406,7 +8425,9 @@ impl super::TrapDispatcher {
             let path = self.directory_path_for_id(dir_id)?.to_string();
             return Some(super::dispatch::VfsCatalogEntry {
                 path,
-                name: super::TrapDispatcher::hfs_name_from_vfs_component(&directory.name),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    &super::TrapDispatcher::vfs_directory_name(&directory.path),
+                ),
                 is_directory: true,
             });
         }
@@ -8424,16 +8445,23 @@ impl super::TrapDispatcher {
             let path = self.directory_path_for_id(dir_id)?.to_string();
             return Some(super::dispatch::VfsCatalogEntry {
                 path,
-                name: super::TrapDispatcher::hfs_name_from_vfs_component(&directory.name),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    &super::TrapDispatcher::vfs_directory_name(&directory.path),
+                ),
                 is_directory: true,
             });
         }
 
         if let Some(path) = self.find_vfs_directory_in_directory(dir_id, filename) {
-            let directory = self.vfs_directories.get(&path)?;
+            let directory = self
+                .vfs_directories
+                .iter()
+                .find(|directory| directory.path.eq_ignore_ascii_case(&path))?;
             return Some(super::dispatch::VfsCatalogEntry {
                 path: path.clone(),
-                name: super::TrapDispatcher::hfs_name_from_vfs_component(&directory.name),
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    &super::TrapDispatcher::vfs_directory_name(&directory.path),
+                ),
                 is_directory: true,
             });
         }
@@ -8609,12 +8637,12 @@ impl super::TrapDispatcher {
             return Some(2);
         }
 
-        let mut sorted_keys: Vec<&String> = self.vfs_directories.keys().collect();
-        sorted_keys.sort_unstable();
-        sorted_keys
+        let mut sorted_directories: Vec<&ProcessVfsDirectory> = self.vfs_directories.iter().collect();
+        sorted_directories.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        sorted_directories
             .into_iter()
-            .find(|key| key.eq_ignore_ascii_case(&normalized))
-            .and_then(|key| self.vfs_directories.get(key).map(|dir| dir.dir_id))
+            .find(|directory| directory.path.eq_ignore_ascii_case(&normalized))
+            .map(|directory| directory.dir_id)
     }
 
     fn fsspec_parts_for_hfs_path(
@@ -16328,6 +16356,13 @@ mod tests {
 
         let app_dir_id = disp.ensure_vfs_directory("EV Override 1.0.1");
         let pilots_dir_id = disp.ensure_vfs_directory("EV Override 1.0.1/Pilots");
+        let pilots_directory = disp
+            .vfs_directories
+            .iter_mut()
+            .find(|directory| directory.dir_id == pilots_dir_id)
+            .expect("created directory should be canonical");
+        pilots_directory.creator = u32::from_be_bytes(*b"TEST");
+        pilots_directory.finder_flags = 0x0400;
         disp.vfs
             .insert("EV Override 1.0.1/Pilots/Ben".to_string(), vec![0x42]);
 
@@ -16350,7 +16385,8 @@ mod tests {
             "PBGetCatInfo returned a directory"
         );
         assert_eq!(bus.read_long(pb + 32), u32::from_be_bytes(*b"fold"));
-        assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"MACS"));
+        assert_eq!(bus.read_long(pb + 36), u32::from_be_bytes(*b"TEST"));
+        assert_eq!(bus.read_word(pb + 40), 0x0400);
         assert_eq!(bus.read_long(pb + 48), pilots_dir_id);
         assert_eq!(
             bus.read_word(pb + 52),

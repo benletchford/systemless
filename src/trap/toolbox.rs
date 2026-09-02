@@ -2139,7 +2139,11 @@ impl super::TrapDispatcher {
         let mut entries = Vec::new();
         for entry in self.list_vfs_catalog_entries(dir_id) {
             if entry.is_directory {
-                let Some(directory) = self.vfs_directories.get(&entry.path) else {
+                let Some(directory) = self
+                    .vfs_directories
+                    .iter()
+                    .find(|directory| directory.path.eq_ignore_ascii_case(&entry.path))
+                else {
                     continue;
                 };
                 let mut name = encode_mac_roman_lossy(&entry.name);
@@ -3071,9 +3075,12 @@ impl super::TrapDispatcher {
         let target_name = crate::trap::types::read_fsspec_name(bus, target_ptr);
         let resolved_dir_id = self.resolve_directory_id(vref, dir_id);
         let target_key = self.vfs_key_for_fsspec(vref, dir_id, &target_name);
-        let target_directory = target_key
-            .as_ref()
-            .and_then(|key| self.vfs_directories.get(key).cloned());
+        let target_directory = target_key.as_ref().and_then(|key| {
+            self.vfs_directories
+                .iter()
+                .find(|directory| directory.path.eq_ignore_ascii_case(key))
+                .cloned()
+        });
         let target_metadata = target_key
             .as_ref()
             .and_then(|key| self.vfs_file_metadata(key));

@@ -90083,6 +90083,8 @@ pub(crate) mod tests {
         let detached = native.clone();
         let mut classic = TrapDispatcher::new();
         classic.attach_process_context(&mut context);
+        assert!(classic.vfs_directories.ptr_eq(&executing_directories));
+        assert!(classic.next_vfs_dir_id.ptr_eq(&executing_next_dir_id));
 
         native.vfs_directories.push(PpcVfsDirectory {
             dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
@@ -90121,6 +90123,20 @@ pub(crate) mod tests {
         *native.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
         *native.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
 
+        // Directory records are canonical process state, so the classic
+        // adapter observes native mutations before any file compatibility
+        // publication pass.
+        let shared_directory = classic
+            .directory_entry_for_id(PPC_FIRST_DYNAMIC_DIR_ID)
+            .cloned()
+            .expect("native directory should be visible to classic adapter");
+        assert_eq!(shared_directory.path, "Shared Folder");
+        assert_eq!(shared_directory.parent_dir_id, PPC_ROOT_DIR_ID);
+        assert_eq!(shared_directory.creator, u32::from_be_bytes(*b"TEST"));
+        assert_eq!(shared_directory.file_type, u32::from_be_bytes(*b"fold"));
+        assert_eq!(shared_directory.finder_flags, 0x0400);
+        assert!(shared_directory.dirty);
+
         // Volume records are canonical process state, so the classic adapter
         // observes this native mutation before any catalogue publication pass.
         assert_eq!(
@@ -90144,6 +90160,17 @@ pub(crate) mod tests {
         assert_eq!(classic.vfs_volume_for_ref_num(-2).unwrap().name, "Read Only");
 
         let classic_dir_id = classic.ensure_vfs_directory("Classic Folder");
+        let classic_directory = native
+            .vfs_directories
+            .iter()
+            .find(|directory| directory.dir_id == classic_dir_id)
+            .cloned()
+            .expect("classic-created directory should be visible to native adapter");
+        assert_eq!(classic_directory.path, "Classic Folder");
+        assert_eq!(classic_directory.parent_dir_id, PPC_ROOT_DIR_ID);
+        assert_eq!(classic_directory.creator, u32::from_be_bytes(*b"MACS"));
+        assert_eq!(classic_directory.file_type, u32::from_be_bytes(*b"fold"));
+        assert!(classic_directory.dirty);
         let classic_volume_ref = classic.mount_vfs_volume(
             "Classic Disk",
             0,
