@@ -43265,6 +43265,7 @@ fn ppc_snd_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &PpcSoundSt
                 .iter()
                 .any(|record| record.channel == channel && record.active)
                 || sound
+                    .manager
                     .double_buffer_playbacks
                     .iter()
                     .any(|record| record.channel == channel && record.active);
@@ -43433,14 +43434,6 @@ fn ppc_snd_do_immediate(
             playback.paused = false;
             playback.quiet_now = true;
         }
-        for playback in sound
-            .double_buffer_playbacks
-            .iter_mut()
-            .filter(|record| record.channel == channel && record.active)
-        {
-            playback.active = false;
-            playback.host_buffer_loaded = false;
-        }
     }
     if command.command == 85 && command.param2 != 0 {
         if !ppc_memory_can_write_bytes(memory, command.param2, 4)
@@ -43543,14 +43536,6 @@ fn ppc_snd_dispose_channel(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
         .filter(|record| record.channel == channel)
     {
         playback.samples.clear();
-    }
-    for playback in sound
-        .double_buffer_playbacks
-        .iter_mut()
-        .filter(|record| record.channel == channel)
-    {
-        playback.active = false;
-        playback.host_buffer_loaded = false;
     }
     PPC_NO_ERR
 }
@@ -43799,19 +43784,13 @@ fn ppc_snd_play_double_buffer(
             callback
         );
     }
-    for playback in sound
-        .double_buffer_playbacks
-        .iter_mut()
-        .filter(|record| record.channel == channel && record.active)
-    {
-        playback.active = false;
-        playback.host_buffer_loaded = false;
-    }
+    sound.manager.stop_double_buffer_playbacks(channel);
     let mut playback = PpcSoundDoubleBufferPlaybackRecord {
         channel,
         header,
         buffers: [buffer0, buffer1],
         callback,
+        callback_architecture: CallbackTaskArchitecture::PowerPc,
         sample_rate_fixed,
         num_channels,
         sample_size,
@@ -43831,7 +43810,7 @@ fn ppc_snd_play_double_buffer(
             .play_double_buffer_samples(channel, samples, sample_rate_fixed);
         playback.host_buffer_loaded = true;
     }
-    sound.double_buffer_playbacks.push(playback);
+    sound.manager.double_buffer_playbacks.push(playback);
     sound.double_buffer_play_count = sound.double_buffer_play_count.saturating_add(1);
     sound.last_double_buffer_channel = channel;
     sound.last_double_buffer_header = header;
@@ -160110,12 +160089,13 @@ pub(crate) mod tests {
         assert_eq!(loaded.sound.last_double_buffer_channel, channel);
         assert_eq!(loaded.sound.last_double_buffer_header, header);
         assert_eq!(
-            loaded.sound.double_buffer_playbacks,
+            loaded.sound.manager.double_buffer_playbacks,
             vec![PpcSoundDoubleBufferPlaybackRecord {
                 channel,
                 header,
                 buffers: [PPC_DATA_BASE + 0x3000, PPC_DATA_BASE + 0x4000],
                 callback: PPC_CODE_BASE + 0x40,
+                callback_architecture: CallbackTaskArchitecture::PowerPc,
                 sample_rate_fixed: 22_050u32 << 16,
                 num_channels: 2,
                 sample_size: 16,
@@ -160135,7 +160115,7 @@ pub(crate) mod tests {
             .channels
             .iter()
             .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
-        assert!(loaded.sound.pending_doublebacks.is_empty());
+        assert!(loaded.sound.manager.pending_process_doublebacks.is_empty());
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;

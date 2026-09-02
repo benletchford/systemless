@@ -6192,6 +6192,40 @@ mod tests {
             )),
         );
         native.mix_frame(1);
+        native.double_buffer_playbacks.push(
+            crate::sound::ProcessSoundDoubleBufferPlayback {
+                channel: 0x6000,
+                header: 0x6100,
+                buffers: [0x6200, 0x6300],
+                callback: 0x6400,
+                callback_architecture:
+                    crate::callback_manager::CallbackTaskArchitecture::PowerPc,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                num_channels: 1,
+                sample_size: 8,
+                compression_id: 0,
+                packet_size: 0,
+                current_buffer_index: 0,
+                callback_pending_mask: 1,
+                active: true,
+                host_initialized: true,
+                host_buffer_loaded: true,
+            },
+        );
+        native.pending_process_doublebacks.push(
+            crate::sound::PendingProcessSoundDoubleBack {
+                architecture: crate::callback_manager::CallbackTaskArchitecture::PowerPc,
+                channel: 0x6000,
+                header: 0x6100,
+                exhausted_buffer: 0x6200,
+                exhausted_buffer_index: 0,
+                callback: 0x6400,
+                tick: 12,
+                instruction_count: 34,
+            },
+        );
+        let playback_snapshot = native.clone();
+        classic.quiet_channel(0x6000);
 
         assert!(classic.ptr_eq(&native));
         assert_eq!(native.channels.len(), 3);
@@ -6208,6 +6242,12 @@ mod tests {
         assert_eq!(detached.channels.len(), 1);
         assert!(detached.pending_sound_callbacks.is_empty());
         assert_eq!(detached.sys_beep_volume(), 0x0100_0100);
+        assert!(!native.double_buffer_playbacks[0].active);
+        assert!(!native.double_buffer_playbacks[0].host_buffer_loaded);
+        assert!(classic.pending_process_doublebacks.is_empty());
+        assert!(playback_snapshot.double_buffer_playbacks[0].active);
+        assert!(playback_snapshot.double_buffer_playbacks[0].host_buffer_loaded);
+        assert_eq!(playback_snapshot.pending_process_doublebacks.len(), 1);
     }
 
     #[test]

@@ -188,6 +188,44 @@ pub enum PendingSoundCallback {
     },
 }
 
+/// Process-owned state for one active `SndPlayDoubleBuffer` submission.
+///
+/// The guest header and buffer records are shared memory objects. This host
+/// state tracks the Sound Manager's current buffer and callback scheduling;
+/// neither CPU adapter owns a private playback lifecycle. Inside Macintosh:
+/// Sound (1994), pp. 2-115--2-119.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessSoundDoubleBufferPlayback {
+    pub channel: u32,
+    pub header: u32,
+    pub buffers: [u32; 2],
+    pub callback: u32,
+    pub callback_architecture: CallbackTaskArchitecture,
+    pub sample_rate_fixed: u32,
+    pub num_channels: u16,
+    pub sample_size: u16,
+    pub compression_id: i16,
+    pub packet_size: u16,
+    pub current_buffer_index: u8,
+    pub callback_pending_mask: u8,
+    pub active: bool,
+    pub host_initialized: bool,
+    pub host_buffer_loaded: bool,
+}
+
+/// A doubleback waiting for its owning CPU adapter to construct the ABI frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingProcessSoundDoubleBack {
+    pub architecture: CallbackTaskArchitecture,
+    pub channel: u32,
+    pub header: u32,
+    pub exhausted_buffer: u32,
+    pub exhausted_buffer_index: u32,
+    pub callback: u32,
+    pub tick: u32,
+    pub instruction_count: u64,
+}
+
 /// Per-channel state.
 #[derive(Clone, Debug)]
 pub struct SndChannel {
@@ -406,6 +444,10 @@ impl SndChannel {
 #[derive(Clone, Debug)]
 pub struct SoundManager {
     pub channels: Vec<SndChannel>,
+    /// Active double-buffer lifecycles shared by every CPU adapter.
+    pub double_buffer_playbacks: Vec<ProcessSoundDoubleBufferPlayback>,
+    /// Doublebacks waiting at the architecture-neutral callback boundary.
+    pub pending_process_doublebacks: Vec<PendingProcessSoundDoubleBack>,
     /// Pending double-buffer callbacks to fire on the next frame.
     pub pending_callbacks: Vec<PendingDoubleBackCallback>,
     /// Pending sound callback procedures / completion routines.
@@ -454,6 +496,8 @@ impl SoundManager {
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),
+            double_buffer_playbacks: Vec::new(),
+            pending_process_doublebacks: Vec::new(),
             pending_callbacks: Vec::new(),
             pending_sound_callbacks: Vec::new(),
             debug_cmd_count: 0,
@@ -470,6 +514,8 @@ impl SoundManager {
 
     pub(crate) fn is_pristine(&self) -> bool {
         self.channels.is_empty()
+            && self.double_buffer_playbacks.is_empty()
+            && self.pending_process_doublebacks.is_empty()
             && self.pending_callbacks.is_empty()
             && self.pending_sound_callbacks.is_empty()
             && self.debug_cmd_count == 0
@@ -624,9 +670,30 @@ impl SoundManager {
     }
 
     pub(crate) fn quiet_channel(&mut self, guest_ptr: u32) {
+        self.stop_double_buffer_playbacks(guest_ptr);
         if let Some(channel) = self.find_channel_mut(guest_ptr) {
             channel.quiet();
         }
+    }
+
+    pub(crate) fn flush_channel(&mut self, guest_ptr: u32) {
+        self.stop_double_buffer_playbacks(guest_ptr);
+        if let Some(channel) = self.find_channel_mut(guest_ptr) {
+            channel.flush();
+        }
+    }
+
+    pub(crate) fn stop_double_buffer_playbacks(&mut self, guest_ptr: u32) {
+        for playback in self
+            .double_buffer_playbacks
+            .iter_mut()
+            .filter(|playback| playback.channel == guest_ptr)
+        {
+            playback.active = false;
+            playback.host_buffer_loaded = false;
+        }
+        self.pending_process_doublebacks
+            .retain(|pending| pending.channel != guest_ptr);
     }
 
     /// Apply a native immediate command to the canonical process channel.
@@ -634,12 +701,11 @@ impl SoundManager {
     /// place. Sound 1994, pp. 2-93 and 2-128--2-130.
     pub(crate) fn execute_immediate_command(&mut self, guest_ptr: u32, command: SndCommand) {
         self.record_command(command.cmd);
-        let channel = self.ensure_channel_mut(guest_ptr);
         match command.cmd {
-            cmd::QUIET => channel.quiet(),
-            cmd::FLUSH => channel.flush(),
-            cmd::VOLUME => channel.set_volume(command.param2),
-            cmd::RATE => channel.set_rate(command.param2),
+            cmd::QUIET => self.quiet_channel(guest_ptr),
+            cmd::FLUSH => self.flush_channel(guest_ptr),
+            cmd::VOLUME => self.ensure_channel_mut(guest_ptr).set_volume(command.param2),
+            cmd::RATE => self.ensure_channel_mut(guest_ptr).set_rate(command.param2),
             _ => {}
         }
     }
@@ -673,6 +739,7 @@ impl SoundManager {
 
     /// Remove and return a channel by guest pointer.
     pub fn take_channel(&mut self, guest_ptr: u32) -> Option<SndChannel> {
+        self.stop_double_buffer_playbacks(guest_ptr);
         self.channels
             .iter()
             .position(|c| c.guest_ptr == guest_ptr)

@@ -2,6 +2,10 @@
 
 use super::imports::PpcHleImportTraceEntry;
 use crate::process_context::SharedProcessSoundManager;
+pub use crate::sound::{
+    PendingProcessSoundDoubleBack as PpcSoundDoubleBackRecord,
+    ProcessSoundDoubleBufferPlayback as PpcSoundDoubleBufferPlaybackRecord,
+};
 use ppc::{PpcFetchHistogram, PpcRunResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,35 +70,6 @@ pub struct PpcDecodedBufferCommandRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcSoundDoubleBufferPlaybackRecord {
-    pub channel: u32,
-    pub header: u32,
-    pub buffers: [u32; 2],
-    pub callback: u32,
-    pub sample_rate_fixed: u32,
-    pub num_channels: u16,
-    pub sample_size: u16,
-    pub compression_id: i16,
-    pub packet_size: u16,
-    pub current_buffer_index: u8,
-    pub callback_pending_mask: u8,
-    pub active: bool,
-    pub host_initialized: bool,
-    pub host_buffer_loaded: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcSoundDoubleBackRecord {
-    pub channel: u32,
-    pub header: u32,
-    pub exhausted_buffer: u32,
-    pub exhausted_buffer_index: u32,
-    pub callback: u32,
-    pub tick: u32,
-    pub instruction_count: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcSoundCompletionRecord {
     pub file_playback_index: u32,
     pub channel: u32,
@@ -137,11 +112,9 @@ pub struct PpcSoundState {
     pub(crate) manager: SharedProcessSoundManager,
     pub queued_commands: Vec<PpcSndCommandRecord>,
     pub immediate_commands: Vec<PpcSndCommandRecord>,
-    pub double_buffer_playbacks: Vec<PpcSoundDoubleBufferPlaybackRecord>,
     pub file_playbacks: Vec<PpcSoundFilePlaybackRecord>,
     pub decoded_file_playbacks: Vec<PpcDecodedAiffPlaybackRecord>,
     pub pending_completions: Vec<PpcSoundCompletionRecord>,
-    pub pending_doublebacks: Vec<PpcSoundDoubleBackRecord>,
     pub completion_invocations: Vec<PpcSoundCompletionInvocationRecord>,
     pub sys_beep_count: u32,
     pub last_sys_beep_duration: i16,
@@ -157,11 +130,9 @@ impl PartialEq for PpcSoundState {
     fn eq(&self, other: &Self) -> bool {
         self.queued_commands == other.queued_commands
             && self.immediate_commands == other.immediate_commands
-            && self.double_buffer_playbacks == other.double_buffer_playbacks
             && self.file_playbacks == other.file_playbacks
             && self.decoded_file_playbacks == other.decoded_file_playbacks
             && self.pending_completions == other.pending_completions
-            && self.pending_doublebacks == other.pending_doublebacks
             && self.completion_invocations == other.completion_invocations
             && self.sys_beep_count == other.sys_beep_count
             && self.last_sys_beep_duration == other.last_sys_beep_duration

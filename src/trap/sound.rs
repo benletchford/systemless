@@ -1445,14 +1445,10 @@ impl super::TrapDispatcher {
         match cmd.cmd {
             sound::cmd::NULL => {}
             sound::cmd::QUIET => {
-                if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
-                    chan.quiet();
-                }
+                self.sound_manager.quiet_channel(chan_ptr);
             }
             sound::cmd::FLUSH => {
-                if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
-                    chan.flush();
-                }
+                self.sound_manager.flush_channel(chan_ptr);
             }
             sound::cmd::REST => {
                 // Sound 1994, 2-95: restCmd inserts a rest of `param1`
