@@ -3918,8 +3918,28 @@ impl ProcessNativeMemoryManager {
 
     /// Recover the stable handle whose relocatable block starts at `ptr`.
     /// Inside Macintosh: Memory (1992), pp. 2-54--2-55.
+    #[cfg(test)]
     pub(crate) fn recover_handle(&self, ptr: u32) -> Option<u32> {
         self.ptr_to_handle.get(&ptr)
+    }
+
+    /// Recover a handle only while its live master-pointer slot still names
+    /// `ptr`. The reverse map is an index for the Memory Manager's conceptual
+    /// master-pointer-table scan, so a reused or guest-mutated slot invalidates
+    /// its cached entry. Inside Macintosh Volume V (1986), p. V-579.
+    pub(crate) fn recover_handle_from_master_pointer(
+        &self,
+        ptr: u32,
+        read_master_pointer: impl FnOnce(u32) -> Option<u32>,
+    ) -> Option<u32> {
+        let handle = self.ptr_to_handle.get(&ptr)?;
+        if read_master_pointer(handle) == Some(ptr) {
+            return Some(handle);
+        }
+        if self.ptr_to_handle.get(&ptr) == Some(handle) {
+            self.ptr_to_handle.remove(&ptr);
+        }
+        None
     }
 
     /// Allocate a native relocatable block and its stable master pointer.
