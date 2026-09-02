@@ -5,6 +5,8 @@
  * Exercises standard Macintosh Toolbox subsystems:
  * - Window Manager & Event Manager (Macintosh Toolbox Essentials ch 2, 4)
  * - Menu Manager & Hierarchical Submenus (Macintosh Toolbox Essentials ch 3)
+ * - List Manager, default text lists, selection, scrolling, and resizing
+ *   (More Macintosh Toolbox ch 4)
  * - Control Manager & Standard CDEFs (Macintosh Toolbox Essentials ch 5)
  * - Dialog Manager & Alerts (Macintosh Toolbox Essentials ch 6)
  * - Palette Manager activation, indexed drawing & animation
@@ -20,6 +22,7 @@
 #include <Fonts.h>
 #include <Memory.h>
 #include <Menus.h>
+#include <Lists.h>
 #include <OSUtils.h>
 #include <Palettes.h>
 #include <QDOffscreen.h>
@@ -73,6 +76,7 @@
 #define iDialogs 6
 #define iTextEdit 7
 #define iPalettes 8
+#define iLists 9
 
 /* State menu items */
 #define iButtonState 1
@@ -119,6 +123,16 @@
 #define pageDialogs 6
 #define pageTextEdit 7
 #define pagePalettes 8
+#define pageLists 9
+
+#define kInventoryRowCount 12
+#define listStatusNone 0
+#define listStatusSelected 1
+#define listStatusMutated 2
+#define listStatusScrolled 3
+#define listStatusResized 4
+#define listStatusInactive 5
+#define listStatusActivated 6
 
 static QDGlobals qd;
 static WindowPtr gMainWindow;
@@ -165,6 +179,20 @@ static ControlHandle gTEBtnCopy;
 static ControlHandle gTEBtnPaste;
 static ControlHandle gTEBtnReset;
 
+/* Page 9: Lists & Inventory */
+static ListHandle gInventoryList;
+static Rect gInventoryView;
+static ControlHandle gListInspect;
+static ControlHandle gListMutate;
+static ControlHandle gListScroll;
+static ControlHandle gListResize;
+static ControlHandle gListActivate;
+static short gListStatus;
+static short gListSelectedRow = -1;
+static short gListSelectedLength;
+static Boolean gListActive = true;
+static Boolean gListResized = false;
+
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
     "selection highlighting, and clipboard scrap operations.\r\r"
@@ -172,6 +200,21 @@ static const char kTESampleText[] =
 
 static const char kTECalloutText[] =
     "TETextBox renders transient wrapped paragraphs with specified justification.";
+
+static const char *kInventoryItems[kInventoryRowCount] = {
+    "Phase Shifter       01  equipped",
+    "Medkit              03  ready",
+    "Plasma Cartridge    12  ready",
+    "Shield Cell         04  reserve",
+    "Navigation Chip     01  installed",
+    "Repair Nanobots     06  reserve",
+    "Fuel Rod            02  reserve",
+    "Signal Beacon       01  ready",
+    "Star Map             02  archive",
+    "Alien Artifact      01  sealed",
+    "Quantum Key         01  secured",
+    "Mission Log          04  archive"
+};
 
 /*
  * Record an indexed PixMap into a PICT, replay it through a canonical
@@ -1445,6 +1488,205 @@ static void DrawTextEditPage(void)
     DrawControls(gMainWindow);
 }
 
+/*
+ * Page 9: Lists & Inventory.
+ *
+ * The default text list definition (theProc = 0) owns the cell drawing. The
+ * page intentionally keeps the list in one column so every operation is
+ * visible in the same deterministic row geometry on both CPU slices.
+ * More Macintosh Toolbox (1993), pp. 4-70--4-76, 4-81--4-84, and 4-90--4-95.
+ */
+static short InventoryTextLength(const char *text)
+{
+    short length;
+
+    length = 0;
+    while (text[length] != 0) length++;
+    return length;
+}
+
+static void UpdateInventoryList(void)
+{
+    RgnHandle updateRegion;
+
+    if (gInventoryList == nil) return;
+    updateRegion = NewRgn();
+    if (updateRegion != nil) {
+        RectRgn(updateRegion, &gInventoryView);
+        LUpdate(updateRegion, gInventoryList);
+        DisposeRgn(updateRegion);
+    } else {
+        LUpdate(nil, gInventoryList);
+    }
+}
+
+static void PopulateInventoryList(void)
+{
+    Cell cell;
+    short row;
+
+    if (gInventoryList == nil) return;
+
+    /* Batch structural and cell writes with automatic drawing disabled. */
+    LSetDrawingMode(false, gInventoryList);
+    LAddRow(kInventoryRowCount - 1, 1, gInventoryList);
+    for (row = 0; row < kInventoryRowCount; row++) {
+        cell.v = row;
+        cell.h = 0;
+        LSetCell((Ptr)kInventoryItems[row], InventoryTextLength(kInventoryItems[row]),
+                 cell, gInventoryList);
+    }
+    LSetDrawingMode(true, gInventoryList);
+    UpdateInventoryList();
+}
+
+static Boolean InspectInventorySelection(void)
+{
+    Cell cell;
+    char cellData[96];
+    short dataLength;
+
+    cell.v = 0;
+    cell.h = 0;
+    gListSelectedRow = -1;
+    gListSelectedLength = 0;
+    if (gInventoryList == nil || !LGetSelect(true, &cell, gInventoryList)) {
+        gListStatus = listStatusNone;
+        return false;
+    }
+
+    /* LGetCell is the inspection path; the buffer is intentionally bounded. */
+    dataLength = sizeof(cellData);
+    LGetCell(cellData, &dataLength, cell, gInventoryList);
+    gListSelectedRow = cell.v;
+    gListSelectedLength = dataLength;
+    gListStatus = listStatusSelected;
+    return true;
+}
+
+static void MutateInventorySelection(void)
+{
+    Cell cell;
+    char cellData[96];
+    short dataLength;
+    short suffixLength;
+    short i;
+    static const char suffix[] = "  * updated";
+
+    cell.v = 0;
+    cell.h = 0;
+    if (gInventoryList == nil || !LGetSelect(true, &cell, gInventoryList)) {
+        gListStatus = listStatusNone;
+        gListSelectedRow = -1;
+        gListSelectedLength = 0;
+        return;
+    }
+
+    dataLength = sizeof(cellData);
+    LGetCell(cellData, &dataLength, cell, gInventoryList);
+    suffixLength = InventoryTextLength(suffix);
+    if (dataLength > sizeof(cellData) - suffixLength) {
+        dataLength = sizeof(cellData) - suffixLength;
+    }
+    for (i = 0; i < suffixLength; i++) {
+        cellData[dataLength + i] = suffix[i];
+    }
+    dataLength += suffixLength;
+    LSetCell(cellData, dataLength, cell, gInventoryList);
+    gListSelectedRow = cell.v;
+    gListSelectedLength = dataLength;
+    gListStatus = listStatusMutated;
+    UpdateInventoryList();
+}
+
+static void ScrollInventoryList(void)
+{
+    if (gInventoryList == nil) return;
+    LScroll(0, 4, gInventoryList);
+    gListStatus = listStatusScrolled;
+    UpdateInventoryList();
+}
+
+static void ResizeInventoryList(void)
+{
+    if (gInventoryList == nil) return;
+    if (gListResized) {
+        LSize(504, 150, gInventoryList);
+        SetRect(&gInventoryView, 24, 78, 528, 228);
+        gListResized = false;
+    } else {
+        LSize(450, 114, gInventoryList);
+        SetRect(&gInventoryView, 24, 78, 474, 192);
+        gListResized = true;
+    }
+    gListStatus = listStatusResized;
+    UpdateInventoryList();
+}
+
+static void ToggleInventoryActivation(void)
+{
+    if (gInventoryList == nil) return;
+    gListActive = !gListActive;
+    LActivate(gListActive, gInventoryList);
+    gListStatus = gListActive ? listStatusActivated : listStatusInactive;
+    UpdateInventoryList();
+}
+
+static void DrawListsPage(void)
+{
+    Rect frame;
+    Str255 number;
+
+    DrawHeading("\pLists & Inventory: List Manager operations");
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(24, 54);
+    DrawString("\pLNew + LAddRow + LSetCell populate a default text LDEF.");
+    MoveTo(24, 66);
+    DrawString("\pClick a row, inspect it, mutate it, scroll, resize, or toggle activation.");
+
+    frame = gInventoryView;
+    UpdateInventoryList();
+    FrameRect(&frame);
+
+    MoveTo(24, 316);
+    TextFace(bold);
+    DrawString("\pList Manager status: ");
+    TextFace(0);
+    if (gInventoryList == nil) {
+        DrawString("\pLNew failed");
+    } else if (gListStatus == listStatusNone) {
+        DrawString("\pno cell selected");
+    } else if (gListStatus == listStatusSelected) {
+        DrawString("\pselected row ");
+        NumToString(gListSelectedRow + 1, number);
+        DrawString(number);
+        DrawString("\p (LGetSelect/LGetCell)");
+    } else if (gListStatus == listStatusMutated) {
+        DrawString("\prow ");
+        NumToString(gListSelectedRow + 1, number);
+        DrawString(number);
+        DrawString("\p updated with LSetCell");
+    } else if (gListStatus == listStatusScrolled) {
+        DrawString("\pscrolled with LScroll (four-row request)");
+    } else if (gListStatus == listStatusResized) {
+        DrawString(gListResized ? "\presized to compact view with LSize"
+                               : "\prestored full view with LSize");
+    } else if (gListStatus == listStatusInactive) {
+        DrawString("\pinactive with LActivate(FALSE)");
+    } else {
+        DrawString("\pactive with LActivate(TRUE)");
+    }
+
+    MoveTo(24, 336);
+    DrawString("\pSelected cell bytes: ");
+    NumToString(gListSelectedLength, number);
+    DrawString(number);
+    DrawString(gListActive ? "\p | list active" : "\p | list inactive");
+
+    DrawControls(gMainWindow);
+}
+
 static void DrawMainWindow(void)
 {
     RGBColor white;
@@ -1482,6 +1724,9 @@ static void DrawMainWindow(void)
         case pageTextEdit:
             DrawTextEditPage();
             break;
+        case pageLists:
+            DrawListsPage();
+            break;
     }
 }
 
@@ -1504,6 +1749,7 @@ static void ShowAllControls(short page)
     Boolean isDialogs = (page == pageDialogs);
     Boolean isPalettes = (page == pagePalettes);
     Boolean isTextEdit = (page == pageTextEdit);
+    Boolean isLists = (page == pageLists);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -1579,6 +1825,21 @@ static void ShowAllControls(short page)
         HideControl(gTEBtnPaste);
         HideControl(gTEBtnReset);
     }
+
+    /* Page 9: Lists & Inventory */
+    if (isLists) {
+        ShowControl(gListInspect);
+        ShowControl(gListMutate);
+        ShowControl(gListScroll);
+        ShowControl(gListResize);
+        ShowControl(gListActivate);
+    } else {
+        HideControl(gListInspect);
+        HideControl(gListMutate);
+        HideControl(gListScroll);
+        HideControl(gListResize);
+        HideControl(gListActivate);
+    }
 }
 
 static void SyncMenuState(void)
@@ -1591,7 +1852,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 8; i++) {
+        for (i = 1; i <= 9; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -1689,6 +1950,10 @@ static void SetPage(short page)
         SetPalette(gMainWindow, gOriginalPalette, true);
         ActivatePalette(gMainWindow);
     }
+    if (gPage == pageLists && page != pageLists && gInventoryList != nil) {
+        LActivate(false, gInventoryList);
+        LSetDrawingMode(false, gInventoryList);
+    }
     gPage = page;
     if (page == pagePalettes) {
         SetPalette(gMainWindow, gShowcasePalette, true);
@@ -1696,6 +1961,11 @@ static void SetPage(short page)
     }
     if (page == pageTextEdit) {
         if (gTE != nil) TEActivate(gTE);
+    }
+    if (page == pageLists && gInventoryList != nil) {
+        gListActive = true;
+        LSetDrawingMode(true, gInventoryList);
+        LActivate(true, gInventoryList);
     }
     ShowAllControls(page);
     SyncMenuState();
@@ -1720,6 +1990,8 @@ static void Initialize(void)
     Handle menuBar;
     MenuHandle hMenu;
     Rect r;
+    Rect dataBounds;
+    Point cellSize;
 
     InitGraf(&qd.thePort);
     InitFonts();
@@ -1861,6 +2133,32 @@ static void Initialize(void)
     gTEBtnReset = NewControl(gMainWindow, &r, "\pReset", false, 0, 0, 1,
                              pushButProc, 0);
 
+    /* Page 9: Lists & Inventory */
+    SetRect(&gInventoryView, 24, 78, 528, 228);
+    SetRect(&dataBounds, 0, 0, 1, 1);
+    cellSize.v = 18;
+    cellSize.h = 504;
+    gInventoryList = LNew(&gInventoryView, &dataBounds, cellSize, 0,
+                          gMainWindow, false, true, false, true);
+    PopulateInventoryList();
+    if (gInventoryList != nil) LSetDrawingMode(false, gInventoryList);
+
+    SetRect(&r, 24, 242, 135, 266);
+    gListInspect = NewControl(gMainWindow, &r, "\pInspect Selection", false, 0, 0, 1,
+                              pushButProc, 0);
+    SetRect(&r, 143, 242, 270, 266);
+    gListMutate = NewControl(gMainWindow, &r, "\pUpdate Selected Row", false, 0, 0, 1,
+                             pushButProc, 0);
+    SetRect(&r, 278, 242, 390, 266);
+    gListScroll = NewControl(gMainWindow, &r, "\pScroll Four Rows", false, 0, 0, 1,
+                             pushButProc, 0);
+    SetRect(&r, 398, 242, 514, 266);
+    gListResize = NewControl(gMainWindow, &r, "\pResize List", false, 0, 0, 1,
+                             pushButProc, 0);
+    SetRect(&r, 24, 274, 170, 298);
+    gListActivate = NewControl(gMainWindow, &r, "\pToggle Activation", false, 0, 0, 1,
+                               pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -1872,7 +2170,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iPalettes) {
+    if (menuID == mPages && item >= iGraphics && item <= iLists) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -1931,6 +2229,7 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
     short trackedPart;
     short value;
     Point where;
+    Rect listHit;
 
     if (window != gMainWindow) {
         return;
@@ -1944,6 +2243,20 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         TEClick(where, shift, gTE);
         DrawMainWindow();
         return;
+    }
+
+    if (gPage == pageLists && gInventoryList != nil && gListActive) {
+        /* LClick also accepts the List Manager scroll-bar strip. */
+        listHit = gInventoryView;
+        listHit.top -= 1;
+        listHit.bottom += 1;
+        listHit.right += 16;
+        if (PtInRect(where, &listHit)) {
+            LClick(where, event->modifiers, gInventoryList);
+            InspectInventorySelection();
+            DrawMainWindow();
+            return;
+        }
     }
 
     part = FindControl(where, window, &control);
@@ -2050,6 +2363,16 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
     } else if (control == gTEBtnReset) {
         TESetText((const void *)kTESampleText, sizeof(kTESampleText) - 1, gTE);
         TESetSelect(0, 14, gTE);
+    } else if (control == gListInspect) {
+        InspectInventorySelection();
+    } else if (control == gListMutate) {
+        MutateInventorySelection();
+    } else if (control == gListScroll) {
+        ScrollInventoryList();
+    } else if (control == gListResize) {
+        ResizeInventoryList();
+    } else if (control == gListActivate) {
+        ToggleInventoryActivation();
     }
     DrawMainWindow();
 }
@@ -2081,6 +2404,15 @@ static void DoEvent(EventRecord *event)
                 } else {
                     gQuit = true;
                 }
+            }
+            break;
+
+        case activateEvt:
+            window = (WindowPtr)event->message;
+            if (window == gMainWindow && gInventoryList != nil) {
+                gListActive = (event->modifiers & activeFlag) != 0;
+                LActivate(gListActive, gInventoryList);
+                if (gPage == pageLists) DrawMainWindow();
             }
             break;
 
@@ -2124,5 +2456,9 @@ void main(void)
     if (gShowcasePalette != nil) DisposePalette(gShowcasePalette);
     if (gOriginalPalette != nil) DisposePalette(gOriginalPalette);
     if (gTE != nil) TEDispose(gTE);
+    if (gInventoryList != nil) {
+        LActivate(false, gInventoryList);
+        LDispose(gInventoryList);
+    }
     ExitToShell();
 }
