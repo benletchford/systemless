@@ -7761,9 +7761,9 @@ impl super::TrapDispatcher {
     /// IM:I-121 (SizeResource) and IM:IV-16 (MaxSizeRsrc) document a
     /// disk-vs-map distinction (SizeResource may load the resource;
     /// MaxSizeRsrc reads from the map only) which collapses in our
-    /// memory-resident HLE — every handle we know about points at a
-    /// real guest-bus allocation. Both traps therefore return the
-    /// same byte count from `bus.get_alloc_size`.
+    /// memory-resident HLE. An empty handle returned while `ResLoad` is false
+    /// has no guest allocation, so its byte count comes from the retained
+    /// resource-fork backing data without materializing the resource.
     fn handle_resource_size_query<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -7793,13 +7793,20 @@ impl super::TrapDispatcher {
             self.restore_loaded_resource_handle(handle, ptr);
         }
 
-        let size: i32 = if identity.is_some() {
-            // IM:I I-121 keys validity on whether the handle is a Resource
-            // Manager handle, not on whether the handle's master pointer is
-            // currently non-NIL (SetResLoad(FALSE) can return empty handles).
-            bus.get_alloc_size(ptr).map(|s| s as i32).unwrap_or(-1)
-        } else {
-            -1
+        let size: i32 = match identity {
+            Some((_, _, _)) if ptr != 0 => {
+                bus.get_alloc_size(ptr).map(|s| s as i32).unwrap_or(-1)
+            }
+            Some((0, res_type, res_id)) => self
+                .resource_handle_files
+                .get(&handle)
+                .and_then(|refnum| {
+                    self.resource_backing_data
+                        .get(&(*refnum, res_type, res_id))
+                })
+                .map(|data| data.len() as i32)
+                .unwrap_or(-1),
+            _ => -1,
         };
 
         if size < 0 {
@@ -10664,8 +10671,20 @@ mod tests {
         let data_ptr = setup_resources(&mut disp, &mut bus, b"ALRT", 90, &bytes);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"ALRT", 90, data_ptr);
 
-        // Emulate an empty handle while retaining Resource Manager ownership.
+        // Match the state produced by GetResource/Get1IndResource while
+        // automatic loading is disabled: the map-owned handle and backing
+        // bytes remain known, but both recorded and live data pointers are NIL.
+        disp.loaded_handles.insert(handle, (0, *b"ALRT", 90));
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .loaded
+            .insert((*b"ALRT", 90), 0);
         bus.write_long(handle, 0);
+        disp.policy.res_load = false;
 
         bus.write_long(TEST_SP, handle);
         call(&mut disp, true, 0x1A5, &mut cpu, &mut bus).unwrap();
@@ -10674,6 +10693,8 @@ mod tests {
         assert_eq!(new_sp, TEST_SP + 4);
         assert_eq!(bus.read_long(new_sp) as i32, bytes.len() as i32);
         assert_eq!(bus.read_word(0x0A60), 0);
+        assert_eq!(bus.read_long(handle), 0, "size query must not load data");
+        assert_eq!(disp.loaded_handles.get(&handle).unwrap().0, 0);
     }
 
     #[test]
