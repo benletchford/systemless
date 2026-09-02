@@ -554,6 +554,7 @@ fn test_toolbox_showcase() {
     assert_reference_frame(&mut runner, "03-windows.png");
 
     // 4. Switch to Drawing & 3D Bevels page (disposing auxiliary window).
+    let completed_qd3d_frames = runner.completed_qd3d_frame_count();
     assert!(
         runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_DRAWING),
         "failed to queue selection of Drawing page"
@@ -565,9 +566,12 @@ fn test_toolbox_showcase() {
         let one_window = r.window_count() == 1;
         page_checked && aux_cleared && one_window
     });
-    step_until(&mut runner, "QuickDraw 3D page to finish rendering", |r| {
-        let [red, green, blue] = screen_rgb(r, (win_top + 110) as u16, (win_left + 345) as u16);
-        red > 150 && green > 100 && blue < 100
+    step_until(&mut runner, "Drawing page and native QuickDraw 3D to finish", |r| {
+        let [red, green, blue] =
+            screen_rgb(r, (win_top + 110) as u16, (win_left + 345) as u16);
+        let drawing_finished = red > 150 && green > 100 && blue < 100;
+        drawing_finished
+            && (!powerpc || r.completed_qd3d_frame_count() > completed_qd3d_frames)
     });
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING));
