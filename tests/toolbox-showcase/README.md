@@ -118,10 +118,10 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
 PowerPC slice, then follow the fourteen interaction steps above. Use an 800×600
-8-bit display in BasiliskII and an 800×600 direct-color display in SheepShaver
-for captures matching this gallery. The Pages, State, and nested menu
-checkmarks, window count, control values, modal sessions, visible drawing, and
-final page provide the comparison points between runs.
+8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
+SheepShaver for captures matching this gallery. The Pages, State, and nested
+menu checkmarks, window count, control values, modal sessions, visible drawing,
+and final page provide the comparison points between runs.
 
 ## Reference screenshots
 
@@ -139,13 +139,15 @@ PowerPC run also submits native QuickDraw 3D geometry before the fixture paints
 the same architecture-neutral visible result; classic operating-system
 presentation remains environment-dependent.
 
-SheepShaver's oracle display is direct color, so its animation checkpoint is
-intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11 notes
-that color-table animation is unavailable on direct devices. Its same-device
-transfer band likewise uses an RGB fallback because positional CLUT indexes
-exist only on indexed devices. Systemless uses the same direct-color behavior
-for its PowerPC baseline. The Systemless 68K and BasiliskII captures exercise
-the actual 8-bit indexed paths.
+SheepShaver's oracle display is 32-bit direct color, so its animation checkpoint
+is intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11
+notes that color-table animation is unavailable on direct devices. Its
+same-device transfer band likewise uses an RGB fallback because positional CLUT
+indexes exist only on indexed devices. Systemless uses the same direct-color
+behavior for its 16-bit PowerPC baseline; the small RGB differences in the
+screenshots are the expected device-depth quantization of the same logical
+colors. The Systemless 68K and BasiliskII captures exercise the actual 8-bit
+indexed paths.
 
 ### 68K
 

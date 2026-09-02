@@ -756,19 +756,36 @@ fn test_toolbox_showcase() {
         screen_rgb(r, (win_top + 280) as u16, (win_left + 340) as u16)
             != [255, 255, 255]
     });
-    let indexed_picture_left = screen_rgb(
-        &mut runner,
-        (win_top + 280) as u16,
-        (win_left + 345) as u16,
-    );
-    let indexed_picture_right = screen_rgb(
-        &mut runner,
-        (win_top + 280) as u16,
-        (win_left + 505) as u16,
-    );
-    assert_ne!(
-        indexed_picture_left, indexed_picture_right,
-        "DrawPicture and CopyBits must preserve the indexed PICT gradient across CTables"
+    let indexed_picture_rgb = [340, 365, 382, 400, 421, 450, 480, 500, 520]
+        .map(|x| screen_rgb(&mut runner, (win_top + 280) as u16, (win_left + x) as u16));
+    assert_eq!(
+        indexed_picture_rgb,
+        if powerpc {
+            [
+                [49, 255, 49],
+                [49, 206, 49],
+                [99, 206, 49],
+                [99, 206, 99],
+                [99, 156, 99],
+                [156, 156, 99],
+                [156, 99, 99],
+                [206, 99, 156],
+                [206, 49, 49],
+            ]
+        } else {
+            [
+                [84, 255, 84],
+                [84, 218, 84],
+                [135, 218, 84],
+                [37, 23, 138],
+                [135, 179, 135],
+                [179, 179, 135],
+                [179, 135, 135],
+                [218, 135, 179],
+                [218, 84, 84],
+            ]
+        },
+        "DrawPicture and CopyBits must preserve the exact architecture-specific indexed PICT color sequence across CTables"
     );
     let initial_device_rgb = screen_rgb(
         &mut runner,
