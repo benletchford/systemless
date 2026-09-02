@@ -4397,7 +4397,10 @@ impl super::TrapDispatcher {
                 let volume_by_ref = |requested_vref: i16| {
                     let volume_ref_num = if requested_vref
                         == super::TrapDispatcher::boot_volume_ref_num()
-                        || self.vfs_volumes.contains_key(&requested_vref)
+                        || self
+                            .vfs_volumes
+                            .iter()
+                            .any(|volume| volume.ref_num == requested_vref)
                     {
                         Some(requested_vref)
                     } else {
@@ -4429,7 +4432,7 @@ impl super::TrapDispatcher {
                 } else if volume_index > 0 {
                     let mut mounted = self
                         .vfs_volumes
-                        .values()
+                        .iter()
                         .map(|volume| (volume.name.clone(), volume.ref_num, volume.attributes))
                         .collect::<Vec<_>>();
                     mounted.sort_by_key(|(_, ref_num, _)| std::cmp::Reverse(*ref_num));
@@ -4670,7 +4673,10 @@ impl super::TrapDispatcher {
                 let vref = bus.read_word(pb + 22) as i16;
                 let known_by_vref = vref == 0
                     || vref == Self::boot_volume_ref_num()
-                    || self.vfs_volumes.contains_key(&vref)
+                    || self
+                        .vfs_volumes
+                        .iter()
+                        .any(|volume| volume.ref_num == vref)
                     || self.working_directories.contains_key(&vref);
                 let known_by_name = !name.is_empty()
                     && (name.eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name())

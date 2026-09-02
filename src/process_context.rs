@@ -881,6 +881,7 @@ pub struct ProcessFileSystemState {
     pub(crate) application_working_directory_ref_num: SharedProcessValue<i16>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
     pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
+    pub(crate) next_vfs_volume_ref_num: SharedProcessValue<i16>,
     pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
     pub(crate) next_vfs_dir_id: SharedProcessValue<u32>,
     pub(crate) default_dir_id: SharedProcessValue<u32>,
@@ -888,10 +889,7 @@ pub struct ProcessFileSystemState {
     pub(crate) classic_vfs_directories:
         SharedProcessValue<HashMap<String, ProcessClassicVfsDirectory>>,
     pub(crate) classic_vfs_directory_paths: SharedProcessValue<HashMap<u32, String>>,
-    pub(crate) classic_vfs_volumes: SharedProcessValue<HashMap<i16, ProcessVfsVolumeRecord>>,
-    pub(crate) classic_vfs_volume_names: SharedProcessValue<HashMap<String, i16>>,
     pub(crate) classic_locked_files: SharedProcessValue<HashSet<String>>,
-    pub(crate) classic_next_vfs_volume_ref_num: SharedProcessValue<i16>,
     pub(crate) classic_next_vfs_file_id: SharedProcessValue<u32>,
     pub(crate) classic_next_vfs_timestamp: SharedProcessValue<u32>,
     pub(crate) vfs_files: ProcessVfsFileRecords,
@@ -911,16 +909,14 @@ impl Default for ProcessFileSystemState {
             application_working_directory_ref_num: SharedProcessValue::from_value(-1),
             stdio_streams: HashMap::new(),
             vfs_volumes: SharedProcessValue::default(),
+            next_vfs_volume_ref_num: SharedProcessValue::from_value(-2),
             vfs_directories: SharedProcessValue::default(),
             next_vfs_dir_id: SharedProcessValue::from_value(0),
             default_dir_id: SharedProcessValue::from_value(0),
             classic_vfs_metadata: SharedProcessValue::default(),
             classic_vfs_directories: SharedProcessValue::default(),
             classic_vfs_directory_paths: SharedProcessValue::default(),
-            classic_vfs_volumes: SharedProcessValue::default(),
-            classic_vfs_volume_names: SharedProcessValue::default(),
             classic_locked_files: SharedProcessValue::default(),
-            classic_next_vfs_volume_ref_num: SharedProcessValue::from_value(-2),
             classic_next_vfs_file_id: SharedProcessValue::from_value(32),
             classic_next_vfs_timestamp: SharedProcessValue::from_value(1),
             vfs_files: ProcessVfsFileRecords::default(),
@@ -980,6 +976,8 @@ impl ProcessFileSystemState {
             }
             self.vfs_volumes.push(volume);
         }
+        *self.next_vfs_volume_ref_num =
+            (*self.next_vfs_volume_ref_num).min(*source.next_vfs_volume_ref_num);
         for directory in source.vfs_directories.drain(..) {
             if self.vfs_directories.iter().any(|existing| {
                 existing.dir_id == directory.dir_id
@@ -1033,25 +1031,10 @@ impl ProcessFileSystemState {
                     .or_insert(path);
             }
         }
-        if !Rc::ptr_eq(&self.classic_vfs_volumes.0, &source.classic_vfs_volumes.0) {
-            for (ref_num, volume) in std::mem::take(&mut *source.classic_vfs_volumes) {
-                self.classic_vfs_volumes.entry(ref_num).or_insert(volume);
-            }
-        }
-        if !Rc::ptr_eq(
-            &self.classic_vfs_volume_names.0,
-            &source.classic_vfs_volume_names.0,
-        ) {
-            for (name, ref_num) in std::mem::take(&mut *source.classic_vfs_volume_names) {
-                self.classic_vfs_volume_names.entry(name).or_insert(ref_num);
-            }
-        }
         if !Rc::ptr_eq(&self.classic_locked_files.0, &source.classic_locked_files.0) {
             self.classic_locked_files
                 .extend(std::mem::take(&mut *source.classic_locked_files));
         }
-        *self.classic_next_vfs_volume_ref_num =
-            (*self.classic_next_vfs_volume_ref_num).min(*source.classic_next_vfs_volume_ref_num);
         *self.classic_next_vfs_file_id =
             (*self.classic_next_vfs_file_id).max(*source.classic_next_vfs_file_id);
         *self.classic_next_vfs_timestamp =
@@ -1064,16 +1047,14 @@ impl ProcessFileSystemState {
     fn detached_vfs_snapshot(&self) -> Self {
         let mut snapshot = Self::default();
         snapshot.vfs_volumes = self.vfs_volumes.clone();
+        snapshot.next_vfs_volume_ref_num = self.next_vfs_volume_ref_num.clone();
         snapshot.vfs_directories = self.vfs_directories.clone();
         snapshot.next_vfs_dir_id = self.next_vfs_dir_id.clone();
         snapshot.default_dir_id = self.default_dir_id.clone();
         snapshot.classic_vfs_metadata = self.classic_vfs_metadata.clone();
         snapshot.classic_vfs_directories = self.classic_vfs_directories.clone();
         snapshot.classic_vfs_directory_paths = self.classic_vfs_directory_paths.clone();
-        snapshot.classic_vfs_volumes = self.classic_vfs_volumes.clone();
-        snapshot.classic_vfs_volume_names = self.classic_vfs_volume_names.clone();
         snapshot.classic_locked_files = self.classic_locked_files.clone();
-        snapshot.classic_next_vfs_volume_ref_num = self.classic_next_vfs_volume_ref_num.clone();
         snapshot.classic_next_vfs_file_id = self.classic_next_vfs_file_id.clone();
         snapshot.classic_next_vfs_timestamp = self.classic_next_vfs_timestamp.clone();
         snapshot.vfs_files = self.vfs_files.clone();
@@ -1094,9 +1075,12 @@ impl ProcessFileSystemState {
         self
     }
 
+    /// Mirror native directory and file records into the classic path indexes.
+    /// Volume records intentionally do not participate in this compatibility
+    /// pass: both adapters query the canonical process-owned volume vector
+    /// directly. Files (1992), pp. 2-27--2-29 and 2-85.
     pub(crate) fn publish_native_vfs_catalogue(&mut self) {
         let directories = (*self.vfs_directories).clone();
-        let volumes = (*self.vfs_volumes).clone();
         let files = self.vfs_files.iter().cloned().collect::<Vec<_>>();
         let resource_files = self.vfs_resource_files.iter().cloned().collect::<Vec<_>>();
         let deleted_paths = self.deleted_vfs_file_paths.clone();
@@ -1139,16 +1123,6 @@ impl ProcessFileSystemState {
                 .max()
                 .unwrap_or(16),
         );
-
-        for volume in volumes {
-            self.classic_vfs_volume_names
-                .insert(volume.name.to_ascii_lowercase(), volume.ref_num);
-            self.classic_vfs_volumes.insert(volume.ref_num, volume);
-        }
-        if let Some(lowest_ref_num) = self.classic_vfs_volumes.keys().copied().min() {
-            *self.classic_next_vfs_volume_ref_num =
-                (*self.classic_next_vfs_volume_ref_num).min(lowest_ref_num.saturating_sub(1));
-        }
 
         for file in files {
             if file.path.is_empty() {
@@ -1244,15 +1218,11 @@ impl ProcessFileSystemState {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        let volumes = self.classic_vfs_volumes.keys().copied().collect::<Vec<_>>();
         for path in directories {
             self.publish_classic_vfs_directory(&path);
         }
         for path in metadata {
             self.publish_classic_vfs_metadata(&path);
-        }
-        for ref_num in volumes {
-            self.publish_classic_vfs_volume(ref_num);
         }
     }
 
@@ -1307,21 +1277,6 @@ impl ProcessFileSystemState {
                     dirty: false,
                 });
             }
-        }
-    }
-
-    pub(crate) fn publish_classic_vfs_volume(&mut self, ref_num: i16) {
-        let Some(volume) = self.classic_vfs_volumes.get(&ref_num).cloned() else {
-            return;
-        };
-        if let Some(native) = self
-            .vfs_volumes
-            .iter_mut()
-            .find(|native| native.ref_num == ref_num)
-        {
-            *native = volume;
-        } else {
-            self.vfs_volumes.push(volume);
         }
     }
 
@@ -4646,17 +4601,19 @@ impl ProcessContext {
         );
     }
 
+    /// Attach the classic path indexes to the process File Manager.
+    ///
+    /// Volume records and their negative-reference allocator are attached by
+    /// the adapter's process-file-system handle, so this compatibility-index
+    /// method deliberately has no parallel volume arguments.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn attach_classic_vfs_catalogue(
         &self,
         metadata: &mut SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
         directories: &mut SharedProcessValue<HashMap<String, ProcessClassicVfsDirectory>>,
         directory_paths: &mut SharedProcessValue<HashMap<u32, String>>,
-        volumes: &mut SharedProcessValue<HashMap<i16, ProcessVfsVolumeRecord>>,
-        volume_names: &mut SharedProcessValue<HashMap<String, i16>>,
         locked_files: &mut SharedProcessValue<HashSet<String>>,
         next_dir_id: &mut SharedProcessValue<u32>,
-        next_volume_ref_num: &mut SharedProcessValue<i16>,
         next_file_id: &mut SharedProcessValue<u32>,
         next_timestamp: &mut SharedProcessValue<u32>,
         default_dir_id: &mut SharedProcessValue<u32>,
@@ -4670,17 +4627,9 @@ impl ProcessContext {
             &self.file_system.classic_vfs_directory_paths,
             process_classic_vfs_directory_paths_are_pristine,
         );
-        volumes.attach_to(&self.file_system.classic_vfs_volumes, HashMap::is_empty);
-        volume_names.attach_to(
-            &self.file_system.classic_vfs_volume_names,
-            HashMap::is_empty,
-        );
         locked_files.attach_to(&self.file_system.classic_locked_files, HashSet::is_empty);
         next_dir_id.attach_to(&self.file_system.next_vfs_dir_id, |value| {
             matches!(*value, 0 | 16 | 18)
-        });
-        next_volume_ref_num.attach_to(&self.file_system.classic_next_vfs_volume_ref_num, |value| {
-            *value == -2
         });
         next_file_id.attach_to(&self.file_system.classic_next_vfs_file_id, |value| {
             *value == 32
@@ -6066,12 +6015,8 @@ mod tests {
         let mut first_directories =
             SharedProcessValue::<HashMap<String, ProcessClassicVfsDirectory>>::default();
         let mut first_directory_paths = SharedProcessValue::<HashMap<u32, String>>::default();
-        let mut first_volumes =
-            SharedProcessValue::<HashMap<i16, ProcessVfsVolumeRecord>>::default();
-        let mut first_volume_names = SharedProcessValue::<HashMap<String, i16>>::default();
         let mut first_locked_files = SharedProcessValue::<HashSet<String>>::default();
         let mut first_next_dir_id = SharedProcessValue::from_value(16);
-        let mut first_next_volume_ref_num = SharedProcessValue::from_value(-2);
         let mut first_next_file_id = SharedProcessValue::from_value(32);
         let mut first_next_timestamp = SharedProcessValue::from_value(1);
         let mut first_default_dir_id = SharedProcessValue::from_value(2);
@@ -6089,11 +6034,8 @@ mod tests {
             &mut first_metadata,
             &mut first_directories,
             &mut first_directory_paths,
-            &mut first_volumes,
-            &mut first_volume_names,
             &mut first_locked_files,
             &mut first_next_dir_id,
-            &mut first_next_volume_ref_num,
             &mut first_next_file_id,
             &mut first_next_timestamp,
             &mut first_default_dir_id,
@@ -6104,12 +6046,8 @@ mod tests {
         let mut second_directories =
             SharedProcessValue::<HashMap<String, ProcessClassicVfsDirectory>>::default();
         let mut second_directory_paths = SharedProcessValue::<HashMap<u32, String>>::default();
-        let mut second_volumes =
-            SharedProcessValue::<HashMap<i16, ProcessVfsVolumeRecord>>::default();
-        let mut second_volume_names = SharedProcessValue::<HashMap<String, i16>>::default();
         let mut second_locked_files = SharedProcessValue::<HashSet<String>>::default();
         let mut second_next_dir_id = SharedProcessValue::from_value(16);
-        let mut second_next_volume_ref_num = SharedProcessValue::from_value(-2);
         let mut second_next_file_id = SharedProcessValue::from_value(32);
         let mut second_next_timestamp = SharedProcessValue::from_value(1);
         let mut second_default_dir_id = SharedProcessValue::from_value(2);
@@ -6117,11 +6055,8 @@ mod tests {
             &mut second_metadata,
             &mut second_directories,
             &mut second_directory_paths,
-            &mut second_volumes,
-            &mut second_volume_names,
             &mut second_locked_files,
             &mut second_next_dir_id,
-            &mut second_next_volume_ref_num,
             &mut second_next_file_id,
             &mut second_next_timestamp,
             &mut second_default_dir_id,
