@@ -3773,6 +3773,22 @@ impl FixtureRunner {
     fn share_ppc_process_memory(&mut self, ppc_app: &mut PpcLoadedApp) {
         let ram_end = self.bus.ram_size();
         let low_memory_end = PROCESS_LOW_MEMORY_SIZE.min(ram_end);
+
+        // Native PEF sections retain precedence over the shared flat-RAM
+        // holes below. Keep the process-owned classic heap from selecting any
+        // of those occupied spans before the overlays are installed. Inside
+        // Macintosh: Memory (1992), pp. 2-19--2-21.
+        let classic_heap_floor = APP_HEAP_FLOOR;
+        let classic_heap_limit = self.bus.classic_heap_limit();
+        for (mapping_start, mapping_end) in ppc_app.memory.ordinary_mapping_ranges() {
+            let start = mapping_start.max(classic_heap_floor);
+            let end = mapping_end.min(classic_heap_limit);
+            if start < end {
+                self.process_context
+                    .reserve_classic_heap_range(start, end);
+            }
+        }
+
         let process_low_memory = self
             .bus
             .shared_ram_region(0, low_memory_end)

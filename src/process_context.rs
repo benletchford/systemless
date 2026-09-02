@@ -1802,6 +1802,37 @@ struct ClassicHeapAllocatorState {
     alloc_bucket_sizes: HashMap<u32, u32>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ClassicAllocationPlanSource {
+    Free {
+        bucket: u32,
+        retains_capacity: bool,
+    },
+    Bump {
+        previous_heap_ptr: u32,
+        next_heap_ptr: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClassicAllocationPlan {
+    address: u32,
+    requested_size: u32,
+    aligned_size: u32,
+    alignment: u32,
+    heap_limit: u32,
+    source: ClassicAllocationPlanSource,
+}
+
+impl ClassicAllocationPlan {
+    fn capacity(self) -> u32 {
+        match self.source {
+            ClassicAllocationPlanSource::Free { bucket, .. } => bucket,
+            ClassicAllocationPlanSource::Bump { .. } => self.aligned_size,
+        }
+    }
+}
+
 impl Default for ClassicHeapAllocatorState {
     fn default() -> Self {
         Self {
@@ -1913,6 +1944,10 @@ impl SharedClassicHeapAllocator {
         ((size + 3) & !3).max(4)
     }
 
+    fn checked_allocation_bucket_size(size: u32) -> Option<u32> {
+        size.checked_add(3).map(|size| (size & !3).max(4))
+    }
+
     fn can_reuse_bucket_for_request(bucket: u32, requested: u32) -> bool {
         let max_bucket = if requested <= 1024 {
             4096
@@ -1944,7 +1979,10 @@ impl SharedClassicHeapAllocator {
         size: u32,
         alignment: u32,
     ) -> Option<(u32, u32)> {
-        let mut ptr = (state.heap_ptr + alignment - 1) & !(alignment - 1);
+        let mut ptr = state
+            .heap_ptr
+            .checked_add(alignment - 1)?
+            & !(alignment - 1);
         loop {
             let new_ptr = ptr.checked_add(size)?;
             let overlap = state
@@ -1952,97 +1990,204 @@ impl SharedClassicHeapAllocator {
                 .iter()
                 .find(|&&(start, end)| ptr < end && new_ptr > start);
             if let Some(&(_, end)) = overlap {
-                ptr = (end + alignment - 1) & !(alignment - 1);
+                ptr = end.checked_add(alignment - 1)? & !(alignment - 1);
                 continue;
             }
             return Some((ptr, new_ptr));
         }
     }
 
-    pub(crate) fn allocate(&self, size: u32, alignment: u32, heap_limit: u32) -> u32 {
+    fn range_overlaps_reserved(
+        state: &ClassicHeapAllocatorState,
+        address: u32,
+        len: u32,
+    ) -> bool {
+        let Some(end) = address.checked_add(len) else {
+            return true;
+        };
+        state
+            .reserved_heap_ranges
+            .iter()
+            .any(|&(start, reserved_end)| address < reserved_end && start < end)
+    }
+
+    fn allocation_plan(
+        &self,
+        size: u32,
+        alignment: u32,
+        heap_limit: u32,
+    ) -> Option<ClassicAllocationPlan> {
         let alignment = if alignment > 4 && alignment.is_power_of_two() {
             alignment
         } else {
             4
         };
-        let aligned_size = Self::allocation_bucket_size(size);
-        let mut state = self.0.borrow_mut();
+        let aligned_size = Self::checked_allocation_bucket_size(size)?;
+        let state = self.0.borrow();
 
-        if let Some(blocks) = state.free_blocks.get_mut(&aligned_size) {
-            let index = if alignment == 4 {
-                blocks.len().checked_sub(1)
+        if let Some(blocks) = state.free_blocks.get(&aligned_size) {
+            let address = if alignment == 4 {
+                blocks
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&address| !Self::range_overlaps_reserved(&state, address, aligned_size))
             } else {
-                blocks.iter().position(|addr| addr % alignment == 0)
+                blocks.iter().copied().find(|&address| {
+                    address % alignment == 0
+                        && !Self::range_overlaps_reserved(&state, address, aligned_size)
+                })
             };
-            if let Some(index) = index {
-                let addr = blocks.swap_remove(index);
-                state.alloc_sizes.insert(addr, size);
-                let event = if alignment == 4 {
-                    "reuse-exact"
-                } else {
-                    "reuse-exact-aligned"
-                };
-                crate::memory::bus::trace_alloc_event(event, addr, size, aligned_size);
-                return addr;
+            if let Some(address) = address {
+                return Some(ClassicAllocationPlan {
+                    address,
+                    requested_size: size,
+                    aligned_size,
+                    alignment,
+                    heap_limit,
+                    source: ClassicAllocationPlanSource::Free {
+                        bucket: aligned_size,
+                        retains_capacity: false,
+                    },
+                });
             }
         }
 
         let best = state
             .free_blocks
             .iter()
-            .filter(|(&bucket, blocks)| {
-                bucket > aligned_size
-                    && !blocks.is_empty()
-                    && Self::can_reuse_bucket_for_request(bucket, aligned_size)
-                    && (alignment == 4 || blocks.iter().any(|addr| addr % alignment == 0))
+            .filter_map(|(&bucket, blocks)| {
+                if bucket <= aligned_size
+                    || blocks.is_empty()
+                    || !Self::can_reuse_bucket_for_request(bucket, aligned_size)
+                {
+                    return None;
+                }
+                let address = if alignment == 4 {
+                    blocks
+                        .iter()
+                        .rev()
+                        .copied()
+                        .find(|&address| !Self::range_overlaps_reserved(&state, address, bucket))
+                } else {
+                    blocks.iter().copied().find(|&address| {
+                        address % alignment == 0
+                            && !Self::range_overlaps_reserved(&state, address, bucket)
+                    })
+                }?;
+                Some((bucket, address))
             })
-            .map(|(&bucket, _)| bucket)
-            .min();
-        if let Some(bucket) = best {
-            let blocks = state
-                .free_blocks
-                .get_mut(&bucket)
-                .expect("free bucket exists");
-            let index = if alignment == 4 {
-                blocks.len() - 1
-            } else {
-                blocks
-                    .iter()
-                    .position(|addr| addr % alignment == 0)
-                    .expect("aligned free block exists")
-            };
-            let addr = blocks.swap_remove(index);
-            state.alloc_sizes.insert(addr, size);
-            state.alloc_bucket_sizes.insert(addr, bucket);
-            let event = if alignment == 4 {
-                "reuse-best"
-            } else {
-                "reuse-best-aligned"
-            };
-            crate::memory::bus::trace_alloc_event(event, addr, size, bucket);
-            return addr;
+            .min_by_key(|(bucket, _)| *bucket);
+        if let Some((bucket, address)) = best {
+            return Some(ClassicAllocationPlan {
+                address,
+                requested_size: size,
+                aligned_size,
+                alignment,
+                heap_limit,
+                source: ClassicAllocationPlanSource::Free {
+                    bucket,
+                    retains_capacity: true,
+                },
+            });
         }
 
-        let Some((ptr, new_ptr)) = Self::bump_allocation_address(&state, aligned_size, alignment)
-        else {
-            return 0;
-        };
-        if new_ptr >= heap_limit {
-            eprintln!(
-                "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
-                size, alignment, ptr, heap_limit
-            );
-            return 0;
+        let (address, next_heap_ptr) =
+            Self::bump_allocation_address(&state, aligned_size, alignment)?;
+        if next_heap_ptr >= heap_limit {
+            return None;
         }
-        state.heap_ptr = new_ptr;
-        state.alloc_sizes.insert(ptr, size);
-        let event = if alignment == 4 {
-            "bump"
-        } else {
-            "bump-aligned"
+        Some(ClassicAllocationPlan {
+            address,
+            requested_size: size,
+            aligned_size,
+            alignment,
+            heap_limit,
+            source: ClassicAllocationPlanSource::Bump {
+                previous_heap_ptr: state.heap_ptr,
+                next_heap_ptr,
+            },
+        })
+    }
+
+    fn commit_allocation_plan(&self, plan: ClassicAllocationPlan) -> bool {
+        let mut state = self.0.borrow_mut();
+        if state.alloc_sizes.contains_key(&plan.address)
+            || Self::range_overlaps_reserved(&state, plan.address, plan.capacity())
+        {
+            return false;
+        }
+
+        let event = match plan.source {
+            ClassicAllocationPlanSource::Free {
+                bucket,
+                retains_capacity,
+            } => {
+                let Some(blocks) = state.free_blocks.get_mut(&bucket) else {
+                    return false;
+                };
+                let Some(index) = blocks.iter().position(|&address| address == plan.address)
+                else {
+                    return false;
+                };
+                blocks.swap_remove(index);
+                if retains_capacity {
+                    state.alloc_bucket_sizes.insert(plan.address, bucket);
+                }
+                if plan.alignment == 4 {
+                    if retains_capacity {
+                        "reuse-best"
+                    } else {
+                        "reuse-exact"
+                    }
+                } else if retains_capacity {
+                    "reuse-best-aligned"
+                } else {
+                    "reuse-exact-aligned"
+                }
+            }
+            ClassicAllocationPlanSource::Bump {
+                previous_heap_ptr,
+                next_heap_ptr,
+            } => {
+                if state.heap_ptr != previous_heap_ptr
+                    || Self::bump_allocation_address(
+                        &state,
+                        plan.aligned_size,
+                        plan.alignment,
+                    ) != Some((plan.address, next_heap_ptr))
+                    || next_heap_ptr >= plan.heap_limit
+                {
+                    return false;
+                }
+                state.heap_ptr = next_heap_ptr;
+                if plan.alignment == 4 {
+                    "bump"
+                } else {
+                    "bump-aligned"
+                }
+            }
         };
-        crate::memory::bus::trace_alloc_event(event, ptr, size, aligned_size);
-        ptr
+
+        state.alloc_sizes.insert(plan.address, plan.requested_size);
+        crate::memory::bus::trace_alloc_event(
+            event,
+            plan.address,
+            plan.requested_size,
+            plan.aligned_size,
+        );
+        true
+    }
+
+    pub(crate) fn allocate(&self, size: u32, alignment: u32, heap_limit: u32) -> u32 {
+        let Some(plan) = self.allocation_plan(size, alignment, heap_limit) else {
+            return 0;
+        };
+        if self.commit_allocation_plan(plan) {
+            plan.address
+        } else {
+            0
+        }
     }
 
     pub(crate) fn heap_bump_ptr(&self) -> u32 {
@@ -2096,6 +2241,10 @@ pub(crate) struct ProcessMemoryManager {
 pub(crate) struct ProcessNativeMemoryManager {
     classic_owner: Rc<()>,
     classic_allocator: Option<SharedClassicHeapAllocator>,
+    /// Canonical upper bound for classic allocations in this process. The
+    /// adapter bus supplies it once at attachment; detached managers retain
+    /// the same ceiling even when their byte adapter is recreated.
+    classic_heap_limit: Option<u32>,
     ptr_to_handle: SharedProcessMap<u32>,
     handle_state_bits: SharedProcessMap<u8>,
     handle_high_locked: SharedProcessMap<bool>,
@@ -2164,6 +2313,7 @@ impl ProcessNativeMemoryManager {
                 .classic_allocator
                 .as_ref()
                 .map(|allocator| allocator.detached_clone_for_owner(classic_owner_id)),
+            classic_heap_limit: self.classic_heap_limit,
             ptr_to_handle: self.ptr_to_handle.detached_clone(),
             handle_state_bits: self.handle_state_bits.detached_clone(),
             handle_high_locked: self.handle_high_locked.detached_clone(),
@@ -2189,6 +2339,7 @@ impl ProcessNativeMemoryManager {
             }
             (None, None) => {}
         }
+        self.classic_heap_limit = snapshot.classic_heap_limit;
         self.ptr_to_handle.replace_from(&snapshot.ptr_to_handle);
         self.handle_state_bits
             .replace_from(&snapshot.handle_state_bits);
@@ -2381,6 +2532,14 @@ impl ProcessNativeMemoryManager {
     pub(crate) fn attach_classic_memory_bus(&mut self, bus: &mut MacMemoryBus) {
         let owner_id = Rc::as_ptr(&self.classic_owner) as usize;
         let bus_allocator = bus.shared_classic_heap_allocator();
+        let bus_heap_limit = bus.classic_heap_limit();
+
+        if let Some(heap_limit) = self.classic_heap_limit {
+            assert_eq!(
+                heap_limit, bus_heap_limit,
+                "cannot attach a classic bus with a different heap ceiling"
+            );
+        }
 
         bus_allocator.assert_can_claim_owner(owner_id);
         let bus_is_pristine = bus_allocator.is_pristine();
@@ -2407,6 +2566,7 @@ impl ProcessNativeMemoryManager {
         } else {
             self.classic_allocator = Some(bus_allocator);
         }
+        self.classic_heap_limit = Some(bus_heap_limit);
     }
 
     fn assert_classic_memory_bus_attached(&self, bus: &MacMemoryBus) {
@@ -2423,6 +2583,11 @@ impl ProcessNativeMemoryManager {
     fn classic_allocator(&self) -> &SharedClassicHeapAllocator {
         self.classic_allocator
             .as_ref()
+            .expect("classic Memory Manager operation requires an attached bus")
+    }
+
+    fn classic_heap_ceiling(&self) -> u32 {
+        self.classic_heap_limit
             .expect("classic Memory Manager operation requires an attached bus")
     }
 
@@ -2450,7 +2615,7 @@ impl ProcessNativeMemoryManager {
     pub(crate) fn new_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
         self.assert_classic_memory_bus_attached(bus);
         self.classic_allocator()
-            .allocate(size, 4, bus.classic_heap_limit())
+            .allocate(size, 4, self.classic_heap_ceiling())
     }
 
     /// Release a native or classic nonrelocatable block owned by this process.
@@ -2488,11 +2653,11 @@ impl ProcessNativeMemoryManager {
     ) -> Result<(u32, u32), i16> {
         self.assert_classic_memory_bus_attached(bus);
         let allocator = self.classic_allocator();
-        let ptr = allocator.allocate(size, 4, bus.classic_heap_limit());
+        let ptr = allocator.allocate(size, 4, self.classic_heap_ceiling());
         if ptr == 0 && size > 0 {
             return Err(Self::MEM_FULL_ERR);
         }
-        let handle = allocator.allocate(4, 4, bus.classic_heap_limit());
+        let handle = allocator.allocate(4, 4, self.classic_heap_ceiling());
         if handle == 0 {
             allocator.free(ptr);
             return Err(Self::MEM_FULL_ERR);
@@ -2649,7 +2814,7 @@ impl ProcessNativeMemoryManager {
         self.assert_classic_memory_bus_attached(bus);
         let handle = self
             .classic_allocator()
-            .allocate(4, 4, bus.classic_heap_limit());
+            .allocate(4, 4, self.classic_heap_ceiling());
         if handle == 0 {
             return Err(Self::MEM_FULL_ERR);
         }
@@ -2908,7 +3073,7 @@ impl ProcessNativeMemoryManager {
 
         let new_ptr = self
             .classic_allocator()
-            .allocate(new_size, 4, bus.classic_heap_limit());
+            .allocate(new_size, 4, self.classic_heap_ceiling());
         if new_ptr == 0 && new_size > 0 {
             return Self::MEM_FULL_ERR;
         }
@@ -3004,7 +3169,7 @@ impl ProcessNativeMemoryManager {
 
         let new_ptr = self
             .classic_allocator()
-            .allocate(new_size, 4, bus.classic_heap_limit());
+            .allocate(new_size, 4, self.classic_heap_ceiling());
         if new_ptr == 0 && new_size > 0 {
             return Err(Self::MEM_FULL_ERR);
         }
@@ -3089,7 +3254,7 @@ impl ProcessNativeMemoryManager {
         } else {
             let new_ptr = self
                 .classic_allocator()
-                .allocate(size, 4, bus.classic_heap_limit());
+                .allocate(size, 4, self.classic_heap_ceiling());
             if new_ptr == 0 && size > 0 {
                 return Err(Self::MEM_FULL_ERR);
             }
@@ -4374,6 +4539,210 @@ impl ProcessNativeMemoryManager {
         Some(record)
     }
 
+    /// Change a native or classic relocatable block's logical size through
+    /// the process-owned native address space.
+    ///
+    /// Native records retain their existing allocator policy. Classic
+    /// handles use the shared four-byte bucket allocator, preserving larger
+    /// recycled capacities and the logical prefix while making relocation a
+    /// single process-manager transaction. A locked classic handle may grow
+    /// only while its current bucket can hold the request. Resource and
+    /// externally-owned handles are rejected because their backing metadata
+    /// is not part of the generic Memory Manager record. Inside Macintosh:
+    /// Memory (1992), pp. 2-40--2-43, 2-46--2-51.
+    pub(crate) fn set_process_handle_size_from_native_import(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+        new_size: u32,
+    ) -> i16 {
+        if self.native_allocation(handle).is_some() {
+            return self.set_native_handle_size(memory, handle, new_size);
+        }
+
+        let Some(allocator) = self.classic_allocator.clone() else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        if handle == 0 || allocator.allocation_size(handle) != Some(4) {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+
+        let state = self.state_for_handle(handle).unwrap_or(0);
+        if state & 0x20 != 0 {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+
+        let Some(master_ptr) = PpcMemory::read_u32_be(memory, handle) else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        let (old_size, old_capacity) = if master_ptr == 0 {
+            (0, 0)
+        } else {
+            let Some(old_size) = allocator.allocation_size(master_ptr) else {
+                self.set_native_mem_error(Self::MEM_WZ_ERR);
+                return Self::MEM_WZ_ERR;
+            };
+            let Some(old_capacity) = allocator.allocation_capacity(master_ptr) else {
+                self.set_native_mem_error(Self::MEM_WZ_ERR);
+                return Self::MEM_WZ_ERR;
+            };
+            if self.ptr_to_handle.get(&master_ptr) != Some(handle)
+                || old_size > old_capacity
+                || master_ptr == handle
+                || master_ptr
+                    .checked_add(old_capacity)
+                    .is_none()
+                || handle
+                    .checked_add(4)
+                    .is_some_and(|master_end| {
+                        master_ptr < master_end
+                            && handle < master_ptr.saturating_add(old_capacity)
+                    })
+            {
+                self.set_native_mem_error(Self::MEM_WZ_ERR);
+                return Self::MEM_WZ_ERR;
+            }
+            (old_size, old_capacity)
+        };
+
+        let Some(new_capacity) = SharedClassicHeapAllocator::checked_allocation_bucket_size(
+            new_size,
+        ) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        // The master slot is part of the commit contract even when the
+        // pointer remains stable. Write-back of identical bytes verifies that
+        // an ordinary/PEF read-only mapping cannot be mistaken for a classic
+        // master pointer without changing any guest-visible value.
+        let master_bytes = master_ptr.to_be_bytes();
+        if !memory.preflight_writable_range(handle, 4) {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+
+        if master_ptr == 0 && new_size == 0 {
+            self.set_native_mem_error(Self::NO_ERR);
+            return Self::NO_ERR;
+        }
+
+        if new_capacity <= old_capacity && master_ptr != 0 {
+            if !memory.preflight_writable_range(master_ptr, new_capacity)
+                || (new_size < old_size
+                    && !memory.preflight_writable_range(
+                        master_ptr
+                            .checked_add(new_size)
+                            .expect("new size fits in the validated allocation"),
+                        old_size - new_size,
+                    ))
+            {
+                self.set_native_mem_error(Self::PARAM_ERR);
+                return Self::PARAM_ERR;
+            }
+            if new_size < old_size {
+                let tail = vec![0; (old_size - new_size) as usize];
+                memory
+                    .write_bytes(
+                        master_ptr
+                            .checked_add(new_size)
+                            .expect("new size fits in the validated allocation"),
+                        &tail,
+                    )
+                    .expect("the writable classic tail was preflighted");
+            }
+            allocator.set_allocation_size(master_ptr, new_size);
+            self.set_native_mem_error(Self::NO_ERR);
+            return Self::NO_ERR;
+        }
+
+        if state & 0x80 != 0 {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        }
+
+        let Some(plan) = allocator.allocation_plan(
+            new_size,
+            4,
+            self.classic_heap_ceiling(),
+        ) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let new_ptr = plan.address;
+        let new_capacity = plan.capacity();
+        if new_ptr == handle
+            || master_ptr
+                .checked_add(old_capacity)
+                .is_some_and(|old_end| {
+                    new_ptr < old_end
+                        && master_ptr < new_ptr.saturating_add(new_capacity)
+                })
+            || allocator.allocation_size(new_ptr).is_some()
+            || self
+                .ptr_to_handle
+                .get(&new_ptr)
+                .is_some_and(|mapped_handle| mapped_handle != handle)
+        {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        }
+
+        let copy_len = old_size.min(new_size);
+        let Ok(copy_len) = usize::try_from(copy_len) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let mut prefix = vec![0; copy_len];
+        if copy_len > 0 && memory.read_bytes_into(master_ptr, &mut prefix).is_none() {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        }
+
+        if !memory.preflight_writable_range(new_ptr, new_capacity) {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        }
+        let mut destination_before = vec![0; copy_len];
+        if copy_len > 0 && memory.read_bytes_into(new_ptr, &mut destination_before).is_none() {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        }
+        if memory.write_bytes(new_ptr, &prefix).is_none() {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        }
+
+        if memory.write_bytes(handle, &new_ptr.to_be_bytes()).is_none() {
+            if copy_len > 0 {
+                let _ = memory.write_bytes(new_ptr, &destination_before);
+            }
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+
+        if !allocator.commit_allocation_plan(plan) {
+            let _ = memory.write_bytes(handle, &master_bytes);
+            if copy_len > 0 {
+                let _ = memory.write_bytes(new_ptr, &destination_before);
+            }
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        }
+        if master_ptr != 0 {
+            allocator.free(master_ptr);
+            if self.ptr_to_handle.get(&master_ptr) == Some(handle) {
+                self.ptr_to_handle.remove(&master_ptr);
+            }
+        }
+        self.ptr_to_handle.insert(new_ptr, handle);
+        self.set_native_mem_error(Self::NO_ERR);
+        Self::NO_ERR
+    }
+
     pub(crate) fn set_native_handle_size(
         &mut self,
         memory: &mut GuestAddressSpace,
@@ -4784,6 +5153,14 @@ impl ProcessNativeMemoryManager {
             );
             source_allocator.assert_owned_by(Rc::as_ptr(&source.classic_owner) as usize);
         }
+        if let (Some(target_limit), Some(source_limit)) =
+            (self.classic_heap_limit, source.classic_heap_limit)
+        {
+            assert_eq!(
+                target_limit, source_limit,
+                "cannot adopt process Memory Managers with different classic heap ceilings"
+            );
+        }
     }
 
     fn adopt_handle_metadata(&mut self, source: &mut Self) {
@@ -4794,6 +5171,7 @@ impl ProcessNativeMemoryManager {
                 Rc::as_ptr(&self.classic_owner) as usize,
             );
             self.classic_allocator = source.classic_allocator.take();
+            self.classic_heap_limit = source.classic_heap_limit.take();
         }
         if self.ptr_to_handle.ptr_eq(&source.ptr_to_handle)
             && self.handle_state_bits.ptr_eq(&source.handle_state_bits)

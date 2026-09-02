@@ -201,6 +201,8 @@ const PPC_CLASSIC_APP_MEMORY_SIZE: usize = 0x000f_0000;
 pub const PPC_MEM_FULL_ERR: i16 = -108;
 const PPC_NIL_HANDLE_ERR: i16 = -109;
 #[cfg(test)]
+const PPC_MEM_WZ_ERR: i16 = -111;
+#[cfg(test)]
 const PPC_MEM_PUR_ERR: i16 = -112;
 const PPC_C_DEPTH_ERR: i16 = -157;
 pub const PPC_NO_ERR: i16 = 0;
@@ -15649,7 +15651,8 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SetHandleSize => {
             let handle = cpu.gpr[3];
             let size = cpu.gpr[4];
-            *last_mem_error = process_memory_manager.set_native_handle_size(memory, handle, size);
+            *last_mem_error = process_memory_manager
+                .set_process_handle_size_from_native_import(memory, handle, size);
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
@@ -87716,6 +87719,21 @@ pub(crate) mod tests {
         drain_test_m68k_guest_calls(loaded);
     }
 
+    fn attach_test_classic_heap(
+        native: &mut PpcLoadedApp,
+        context: &mut ProcessContext,
+        ram_size: usize,
+        heap_len: usize,
+    ) -> MacMemoryBus {
+        let mut classic_bus = MacMemoryBus::new(ram_size);
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let classic_heap = classic_bus
+            .shared_ram_region(0x0020_0000, heap_len as u32)
+            .expect("classic adapter owns its heap range");
+        context.attach_memory(0x0020_0000, classic_heap, &mut native.memory);
+        classic_bus
+    }
+
     fn drain_test_m68k_guest_calls(loaded: &mut PpcLoadedApp) {
         while let Some(pending) = loaded
             .guest_calls
@@ -94439,6 +94457,576 @@ pub(crate) mod tests {
         });
 
         assert_eq!(classic_bus.get_alloc_size(ptr), None);
+    }
+
+    #[test]
+    fn ppc_set_handle_size_resizes_process_owned_classic_handle_across_isa() {
+        let pef = synthetic_pef_with_import(b"SetHandleSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 16)
+            .unwrap();
+        let original = (0x10..=0x1f).collect::<Vec<_>>();
+        classic_bus.write_bytes(ptr, &original);
+        let neighbor = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 16);
+        classic_bus.fill_bytes(neighbor, 16, 0xa5);
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager
+            .borrow_mut()
+            .set_state_for_handle(handle, 0x40);
+        let mut detached = native.clone();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 8;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(native.cpu.gpr[3], handle);
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(8));
+        assert_eq!(
+            classic_bus.read_bytes(ptr, 16),
+            [original[..8].to_vec(), vec![0; 8]].concat()
+        );
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x40));
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_NO_ERR)
+        );
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 12;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(12));
+        assert_eq!(
+            classic_bus.read_bytes(ptr, 12),
+            [original[..8].to_vec(), vec![0; 4]].concat()
+        );
+        classic_bus.write_bytes(ptr + 8, &[0x81, 0x82, 0x83, 0x84]);
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 48;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        let moved_ptr = classic_bus.read_long(handle);
+        assert_ne!(moved_ptr, ptr);
+        assert_eq!(classic_bus.get_alloc_size(ptr), None);
+        assert_eq!(classic_bus.get_alloc_size(moved_ptr), Some(48));
+        assert_eq!(
+            classic_bus.read_bytes(moved_ptr, 12),
+            [original[..8].to_vec(), vec![0x81, 0x82, 0x83, 0x84]].concat()
+        );
+        assert_eq!(classic_bus.read_bytes(neighbor, 16), vec![0xa5; 16]);
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut native.memory, handle),
+            Some(moved_ptr)
+        );
+        assert_eq!(
+            memory_manager.borrow().classic_allocation_size(moved_ptr),
+            Some(48)
+        );
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), None);
+        assert_eq!(
+            memory_manager.borrow().handle_for_ptr(moved_ptr),
+            Some(handle)
+        );
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x40));
+        assert_eq!(
+            classic_bus.read_bytes(moved_ptr, 12),
+            ppc_memory_read_bytes(&mut native.memory, moved_ptr, 12).unwrap()
+        );
+
+        native.cpu.gpr[3] = ptr;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::RecoverHandle,
+            &memory_manager,
+        );
+        assert_eq!(native.cpu.gpr[3], 0);
+
+        native.cpu.gpr[3] = moved_ptr;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::RecoverHandle,
+            &memory_manager,
+        );
+        assert_eq!(native.cpu.gpr[3], handle);
+
+        native.cpu.gpr[3] = handle;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::GetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(native.cpu.gpr[3], 48);
+        assert_eq!(
+            classic_bus.read_bytes(moved_ptr, 12),
+            ppc_memory_read_bytes(&mut native.memory, moved_ptr, 12).unwrap()
+        );
+
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        assert_eq!(detached_manager.classic_allocation_size(handle), Some(4));
+        assert_eq!(detached_manager.classic_allocation_size(ptr), Some(16));
+        assert_eq!(detached_manager.classic_allocation_size(moved_ptr), None);
+        assert_eq!(detached_manager.handle_for_ptr(ptr), Some(handle));
+        assert_eq!(detached_manager.handle_for_ptr(moved_ptr), None);
+        assert_eq!(detached_manager.state_for_handle(handle), Some(0x40));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut detached.memory, ptr, 16),
+            Some(original)
+        );
+    }
+
+    #[test]
+    fn ppc_set_handle_size_keeps_zero_size_empty_classic_handle_empty() {
+        let pef = synthetic_pef_with_import(b"SetHandleSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        let handle = context
+            .memory_manager_mut()
+            .new_empty_classic_handle(&mut classic_bus)
+            .unwrap();
+        let memory_manager = context.memory_manager_handle().clone();
+        let cursor = context.classic_heap_bump_ptr();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 0;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+
+        assert_eq!(classic_bus.read_long(handle), 0);
+        assert_eq!(classic_bus.get_alloc_size(handle), Some(4));
+        assert_eq!(context.classic_heap_bump_ptr(), cursor);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(0), None);
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_NO_ERR)
+        );
+    }
+
+    #[test]
+    fn ppc_set_handle_size_preserves_classic_state_on_atomic_failure() {
+        let pef = synthetic_pef_with_import(b"SetHandleSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 3 * 1024 * 1024, 0x4000);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 16)
+            .unwrap();
+        let payload = (0xa0..=0xaf).collect::<Vec<_>>();
+        classic_bus.write_bytes(ptr, &payload);
+        let neighbor = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 16);
+        classic_bus.fill_bytes(neighbor, 16, 0x5a);
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager
+            .borrow_mut()
+            .set_state_for_handle(handle, 0x40);
+        let mut detached = native.clone();
+        let handle_bytes = classic_bus.read_bytes(handle, 4);
+        let cursor = context.classic_heap_bump_ptr();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 0x0010_0000;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_MEM_FULL_ERR)
+        );
+        assert_eq!(classic_bus.read_bytes(handle, 4), handle_bytes);
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        assert_eq!(classic_bus.get_alloc_size(handle), Some(4));
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(16));
+        assert_eq!(classic_bus.read_bytes(ptr, 16), payload);
+        assert_eq!(classic_bus.read_bytes(neighbor, 16), vec![0x5a; 16]);
+        assert_eq!(context.classic_heap_bump_ptr(), cursor);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().handle_for_ptr(neighbor), None);
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x40));
+
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        assert_eq!(detached_manager.classic_allocation_size(ptr), Some(16));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut detached.memory, ptr, 16),
+            Some((0xa0..=0xaf).collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn ppc_set_handle_size_rejects_a_guest_mutated_classic_master_pointer() {
+        let pef = synthetic_pef_with_import(b"SetHandleSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 16)
+            .unwrap();
+        let payload = (0xb0..=0xbf).collect::<Vec<_>>();
+        classic_bus.write_bytes(ptr, &payload);
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager
+            .borrow_mut()
+            .set_state_for_handle(handle, 0x40);
+        let mut detached = native.clone();
+        let invalid_ptr = 0xdead_beefu32;
+        classic_bus.write_long(handle, invalid_ptr);
+        let cursor = context.classic_heap_bump_ptr();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 48;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_MEM_WZ_ERR)
+        );
+        assert_eq!(classic_bus.read_long(handle), invalid_ptr);
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(16));
+        assert_eq!(classic_bus.read_bytes(ptr, 16), payload);
+        assert_eq!(context.classic_heap_bump_ptr(), cursor);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x40));
+
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        assert_eq!(detached_manager.classic_allocation_size(ptr), Some(16));
+        assert_eq!(detached_manager.handle_for_ptr(ptr), Some(handle));
+    }
+
+    #[test]
+    fn ppc_set_handle_size_rejects_another_classic_handles_data_block() {
+        let pef = synthetic_pef_with_import(b"SetHandleSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 16)
+            .unwrap();
+        let (other_handle, other_ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 24)
+            .unwrap();
+        let original = (0x20..=0x2f).collect::<Vec<_>>();
+        let other = (0x80..=0x97).collect::<Vec<_>>();
+        classic_bus.write_bytes(ptr, &original);
+        classic_bus.write_bytes(other_ptr, &other);
+        classic_bus.write_long(handle, other_ptr);
+        let memory_manager = context.memory_manager_handle().clone();
+        let cursor = context.classic_heap_bump_ptr();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 48;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_MEM_WZ_ERR)
+        );
+        assert_eq!(classic_bus.read_long(handle), other_ptr);
+        assert_eq!(classic_bus.read_long(other_handle), other_ptr);
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(16));
+        assert_eq!(classic_bus.get_alloc_size(other_ptr), Some(24));
+        assert_eq!(classic_bus.read_bytes(ptr, 16), original);
+        assert_eq!(classic_bus.read_bytes(other_ptr, 24), other);
+        assert_eq!(context.classic_heap_bump_ptr(), cursor);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), Some(handle));
+        assert_eq!(
+            memory_manager.borrow().handle_for_ptr(other_ptr),
+            Some(other_handle)
+        );
+    }
+
+    #[test]
+    fn ppc_set_handle_size_rejects_locked_classic_relocation_without_mutation() {
+        let pef = synthetic_pef_with_import(b"SetHandleSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 16)
+            .unwrap();
+        let payload = (0xc0..=0xcf).collect::<Vec<_>>();
+        classic_bus.write_bytes(ptr, &payload);
+        let neighbor = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 16);
+        classic_bus.fill_bytes(neighbor, 16, 0x6b);
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager
+            .borrow_mut()
+            .set_state_for_handle(handle, 0x80);
+        let mut detached = native.clone();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 8;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(8));
+        assert_eq!(
+            classic_bus.read_bytes(ptr, 16),
+            [payload[..8].to_vec(), vec![0; 8]].concat()
+        );
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x80));
+
+        let before_handle = classic_bus.read_bytes(handle, 4);
+        let before_data = classic_bus.read_bytes(ptr, 16);
+        let before_cursor = context.classic_heap_bump_ptr();
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 48;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_MEM_FULL_ERR)
+        );
+        assert_eq!(classic_bus.read_bytes(handle, 4), before_handle);
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(8));
+        assert_eq!(classic_bus.read_bytes(ptr, 16), before_data);
+        assert_eq!(classic_bus.read_bytes(neighbor, 16), vec![0x6b; 16]);
+        assert_eq!(context.classic_heap_bump_ptr(), before_cursor);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x80));
+
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        assert_eq!(detached_manager.classic_allocation_size(ptr), Some(16));
+        assert_eq!(detached_manager.state_for_handle(handle), Some(0x80));
+    }
+
+    #[test]
+    fn ppc_set_handle_size_does_not_bypass_classic_resource_ownership() {
+        let pef = synthetic_pef_with_import(b"SetHandleSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        let ptr = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 16);
+        let payload = (0xd0..=0xdf).collect::<Vec<_>>();
+        classic_bus.write_bytes(ptr, &payload);
+        let handle = classic.get_or_create_resource_handle(&mut classic_bus, *b"TEST", 128, ptr);
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager
+            .borrow_mut()
+            .set_process_handle_purgeable(handle, false);
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
+        let mut detached = native.clone();
+        let before_handle = classic_bus.read_bytes(handle, 4);
+        let before_cursor = context.classic_heap_bump_ptr();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 48;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_NIL_HANDLE_ERR)
+        );
+        assert_eq!(classic_bus.read_bytes(handle, 4), before_handle);
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        assert_eq!(classic_bus.get_alloc_size(handle), Some(4));
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(16));
+        assert_eq!(classic_bus.read_bytes(ptr, 16), payload);
+        assert_eq!(context.classic_heap_bump_ptr(), before_cursor);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
+
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        assert_eq!(detached_manager.classic_allocation_size(ptr), Some(16));
+        assert_eq!(detached_manager.state_for_handle(handle), Some(0x20));
+    }
+
+    #[test]
+    fn ppc_set_handle_size_does_not_claim_an_external_pef_master_pointer() {
+        let pef = synthetic_pef_with_loader_and_data(
+            synthetic_loader(b"InterfaceLib", b"SetHandleSize"),
+            &[0; 0x80],
+        );
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        classic_bus.attach_guest_address_space(native.memory.shared_view());
+        let handle = PPC_DATA_BASE + 0x40;
+        let memory_manager = context.memory_manager_handle().clone();
+        let ptr = native.with_process_memory_manager(|native, memory_manager| {
+            let ptr = memory_manager.new_native_ptr(&mut native.memory, 32, true);
+            assert_ne!(ptr, 0);
+            native
+                .memory
+                .write_bytes(ptr, b"external PEF payload")
+                .unwrap();
+            PpcMemory::write_u32_be(&mut native.memory, handle, ptr).unwrap();
+            let heap_cursor = memory_manager.native_heap_state().unwrap().heap_cursor;
+            memory_manager.publish_external_native_resource_handle(handle, ptr, heap_cursor);
+            ptr
+        });
+        let mut detached = native.clone();
+        let before_handle = PpcMemory::read_u32_be(&mut native.memory, handle);
+        let expected_pef = ppc_memory_read_bytes(&mut native.memory, PPC_DATA_BASE, 0x80).unwrap();
+        let detached_pef =
+            ppc_memory_read_bytes(&mut detached.memory, PPC_DATA_BASE, 0x80).unwrap();
+
+        native.cpu.gpr[3] = handle;
+        native.cpu.gpr[4] = 64;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::SetHandleSize,
+            &memory_manager,
+        );
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error),
+            Some(PPC_NIL_HANDLE_ERR)
+        );
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut native.memory, handle),
+            before_handle
+        );
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, PPC_DATA_BASE, 0x80),
+            Some(expected_pef)
+        );
+        assert_eq!(memory_manager.borrow().native_allocation(handle), None);
+        assert!(memory_manager
+            .borrow()
+            .native_ptr_records()
+            .iter()
+            .any(|record| record.ptr == ptr && record.size == 32));
+        assert_eq!(memory_manager.borrow().handle_for_ptr(ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x60));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, ptr, b"external PEF payload".len() as u32),
+            Some(b"external PEF payload".to_vec())
+        );
+
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        assert_eq!(
+            ppc_memory_read_bytes(&mut detached.memory, PPC_DATA_BASE, 0x80),
+            Some(detached_pef)
+        );
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(detached_manager.native_allocation(handle), None);
+        assert!(detached_manager
+            .native_ptr_records()
+            .iter()
+            .any(|record| record.ptr == ptr && record.size == 32));
+        assert_eq!(
+            ppc_memory_read_bytes(
+                &mut detached.memory,
+                ptr,
+                b"external PEF payload".len() as u32,
+            ),
+            Some(b"external PEF payload".to_vec())
+        );
     }
 
     #[test]
