@@ -143,10 +143,14 @@ fn screen_rgb(runner: &mut FixtureRunner, v: u16, h: u16) -> [u8; 3] {
     [rgba[offset], rgba[offset + 1], rgba[offset + 2]]
 }
 
-fn reference_path(filename: &str) -> PathBuf {
+fn reference_path(powerpc: bool, filename: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/toolbox-showcase/reference")
-        .join("systemless")
+        .join(if powerpc {
+            "systemless-ppc"
+        } else {
+            "systemless-68k"
+        })
         .join(filename)
 }
 
@@ -184,7 +188,7 @@ fn write_rgb(path: &Path, width: u32, height: u32, rgb: Vec<u8>) {
 
 fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
     let (width, height, actual) = rendered_rgb(runner);
-    let reference = reference_path(filename);
+    let reference = reference_path(runner.is_powerpc_app(), filename);
 
     if update_references() {
         write_rgb(&reference, width, height, actual);
@@ -281,12 +285,12 @@ fn assert_drawing_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_le
 #[test]
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
+    let powerpc = prefer_powerpc();
     runner
-        .set_powerpc_screen_depth(8)
-        .expect("8-bit PowerPC fixture screen must be supported");
+        .set_powerpc_screen_depth(if powerpc { 16 } else { 8 })
+        .expect("selected PowerPC fixture screen depth must be supported");
     runner.set_app_start_time(3_786_912_000);
     runner.set_menu_bar_visible(true);
-    let powerpc = prefer_powerpc();
 
     let app = load_game(&mut runner, SHOWCASE_SIT).expect("failed to load toolbox showcase");
     assert_eq!(
@@ -814,14 +818,32 @@ fn test_toolbox_showcase() {
         (win_top + 331) as u16,
         (win_left + 450) as u16,
     );
-    assert!(
-        inverse_table_band[0] > 100 && inverse_table_band[1] > 100,
-        "8-bit RGBForeColor must use the screen GDevice inverse-table index when logical and hardware CLUTs differ; got {inverse_table_band:?}"
-    );
-    let initial_palette_rgb = screen_rgb(
-        &mut runner,
-        (win_top + 130) as u16,
-        (win_left + 100) as u16,
+    if powerpc {
+        assert!(
+            inverse_table_band[0] < 16
+                && inverse_table_band[1] < 16
+                && inverse_table_band[2] > 80,
+            "direct-color RGBForeColor must render the requested dark blue; got {inverse_table_band:?}"
+        );
+    } else {
+        assert!(
+            inverse_table_band[0] > 100 && inverse_table_band[1] > 100,
+            "8-bit RGBForeColor must use the screen GDevice inverse-table index when logical and hardware CLUTs differ; got {inverse_table_band:?}"
+        );
+    }
+    let initial_palette_rgb = [
+        screen_rgb(&mut runner, (win_top + 130) as u16, (win_left + 100) as u16),
+        screen_rgb(&mut runner, (win_top + 130) as u16, (win_left + 280) as u16),
+        screen_rgb(&mut runner, (win_top + 130) as u16, (win_left + 440) as u16),
+    ];
+    assert_eq!(
+        initial_palette_rgb,
+        if powerpc {
+            [[255, 255, 0], [255, 99, 0], [0, 206, 173]]
+        } else {
+            [[255, 255, 0], [255, 135, 0], [0, 218, 192]]
+        },
+        "initial palette swatches must retain their exact architecture-specific RGB values"
     );
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "11-palette.png");
@@ -829,15 +851,23 @@ fn test_toolbox_showcase() {
     // 12. Animate Palette button: local Rect (342, 40, 366, 230).
     click_point(&mut runner, win_top + 354, win_left + 135);
     run_ticks(&mut runner, "palette animation to settle", 1);
-    let animated_palette_rgb = screen_rgb(
-        &mut runner,
-        (win_top + 130) as u16,
-        (win_left + 100) as u16,
-    );
-    assert_ne!(
-        animated_palette_rgb, initial_palette_rgb,
-        "AnimateEntry must recolor an already-indexed swatch without a redraw"
-    );
+    let animated_palette_rgb = [
+        screen_rgb(&mut runner, (win_top + 130) as u16, (win_left + 100) as u16),
+        screen_rgb(&mut runner, (win_top + 130) as u16, (win_left + 280) as u16),
+        screen_rgb(&mut runner, (win_top + 130) as u16, (win_left + 440) as u16),
+    ];
+    if powerpc {
+        assert_eq!(
+            animated_palette_rgb, initial_palette_rgb,
+            "AnimateEntry must leave already-drawn pixels unchanged on a direct-color device"
+        );
+    } else {
+        assert_eq!(
+            animated_palette_rgb,
+            [[255, 39, 179], [39, 231, 119], [63, 119, 255]],
+            "AnimateEntry must apply the exact replacement CLUT colors without a redraw"
+        );
+    }
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "12-palette-animated.png");
 
