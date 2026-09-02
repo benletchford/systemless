@@ -1,5 +1,99 @@
 # Changelog
 
+## [0.29.0](https://github.com/benletchford/systemless/compare/v0.28.5...v0.29.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **files:** share access permissions across CPU adapters ([#1240](https://github.com/benletchford/systemless/issues/1240))
+* **files:** share open sessions across CPU adapters ([#1238](https://github.com/benletchford/systemless/issues/1238))
+* **sound:** make file playback lifecycle process-owned ([#1236](https://github.com/benletchford/systemless/issues/1236))
+* **sound:** dispatch native completions from process state ([#1234](https://github.com/benletchford/systemless/issues/1234))
+* **sound:** make double-buffer playback process-owned
+* **sound:** make file completion process-owned ([#1224](https://github.com/benletchford/systemless/issues/1224))
+* **quickdraw:** make error state process-owned ([#1222](https://github.com/benletchford/systemless/issues/1222))
+* **resource:** make policy and error state process-owned ([#1217](https://github.com/benletchford/systemless/issues/1217))
+* **list:** make manager state process-owned
+* **control:** make metadata process-owned
+* **dialog:** make parameter text process-owned
+* **scrap:** make desktop scrap process-owned
+* **callback:** make scheduling metadata process-owned
+* **callback:** make task queues process-owned
+* **resource:** make current file process-owned ([#1200](https://github.com/benletchford/systemless/issues/1200))
+* **quickdraw:** make port selection process-owned
+* **display:** make color state process-owned
+* **cursor:** make state process-owned ([#1168](https://github.com/benletchford/systemless/issues/1168))
+
+### Features
+
+* add Standard File showcase page ([#1294](https://github.com/benletchford/systemless/issues/1294)) ([f0df45f](https://github.com/benletchford/systemless/commit/f0df45fd549bff349e527e3d28ec534253362960))
+* **mixed-mode:** support standalone reverse calls ([4bc02d4](https://github.com/benletchford/systemless/commit/4bc02d48cddb36d710512ac9366a2c11e937c54a))
+* **showcase:** add styled text fixture coverage ([12de647](https://github.com/benletchford/systemless/commit/12de647753ad371e8b267b4befe2966af3d2ada4)), closes [#1266](https://github.com/benletchford/systemless/issues/1266)
+* **showcase:** cover Sound Manager playback ([08d62b7](https://github.com/benletchford/systemless/commit/08d62b7daae9abdf65e81b820c2843558cc02087)), closes [#1265](https://github.com/benletchford/systemless/issues/1265)
+
+
+### Bug Fixes
+
+* **dialog:** substitute ParamText in PowerPC static text ([#1278](https://github.com/benletchford/systemless/issues/1278)) ([3a5cb14](https://github.com/benletchford/systemless/commit/3a5cb1407e0283f391fdf6e66f02ab37a68b270b))
+* **display:** match classic high-resolution gamma ([#1255](https://github.com/benletchford/systemless/issues/1255)) ([ebdf10d](https://github.com/benletchford/systemless/commit/ebdf10d11dbf8c54977b39675fa3658189f93ea7))
+* **memory:** keep rejected classic heap attachment atomic ([76a9d4c](https://github.com/benletchford/systemless/commit/76a9d4cbb8ac42b7effcd8896de5e6b88e548588))
+* **memory:** release classic handles through PowerPC ([#1290](https://github.com/benletchford/systemless/issues/1290)) ([5f0cc59](https://github.com/benletchford/systemless/commit/5f0cc59fea29f499846035b5a4d6d1124c948f68))
+* **memory:** resize classic handles through PowerPC ([#1295](https://github.com/benletchford/systemless/issues/1295)) ([e505618](https://github.com/benletchford/systemless/commit/e505618fd52601e5915fec2f017f7d6c3b839bf7))
+* **memory:** resize classic pointers through PowerPC imports ([#1287](https://github.com/benletchford/systemless/issues/1287)) ([213305b](https://github.com/benletchford/systemless/commit/213305bead3f153be806080a4507d21326cfa28f))
+* **memory:** validate RecoverHandle master pointer slots ([#1288](https://github.com/benletchford/systemless/issues/1288)) ([3111503](https://github.com/benletchford/systemless/commit/31115034f6fa74848a84df6fb0187df7703f04f0))
+* **menu:** draw hierarchical indicators as triangles ([#1253](https://github.com/benletchford/systemless/issues/1253)) ([335a9a2](https://github.com/benletchford/systemless/commit/335a9a21f4f7f9adaaec9b92f4e9052c9daf129f))
+* **ppc:** enforce Toolbox architecture equivalence ([0122c6f](https://github.com/benletchford/systemless/commit/0122c6f823bd8d37dbfa895780bbeedee36a755d))
+* **release:** keep breaking changes pre-major ([#1263](https://github.com/benletchford/systemless/issues/1263)) ([8918f65](https://github.com/benletchford/systemless/commit/8918f651b3349fe827227562ae0fb677d2200f16))
+* **toolbox:** complete PowerPC List Manager coverage ([#1282](https://github.com/benletchford/systemless/issues/1282)) ([e51cd7e](https://github.com/benletchford/systemless/commit/e51cd7e7bf609c66116df7dd9e611277593706bb))
+
+
+### Code Refactoring
+
+* **callback:** make scheduling metadata process-owned ([88c6386](https://github.com/benletchford/systemless/commit/88c63869b770f2d93fca12df40801a81feacda67))
+* **callback:** make task queues process-owned ([d1fe737](https://github.com/benletchford/systemless/commit/d1fe73792ab4922c48e04c3c91922dfed9e0d69c))
+* **control:** make metadata process-owned ([ced97fe](https://github.com/benletchford/systemless/commit/ced97fef6f5ded8590bb443512dce74bb052af25))
+* **cursor:** make state process-owned ([#1168](https://github.com/benletchford/systemless/issues/1168)) ([1d63fcb](https://github.com/benletchford/systemless/commit/1d63fcb48d6a1d8ffd81ee29787026c4c7f29f62))
+* **dialog:** make parameter text process-owned ([63f9c88](https://github.com/benletchford/systemless/commit/63f9c88cdbec688d14bf4e1ec77a8613b04c1478))
+* **display:** make color state process-owned ([d97e01f](https://github.com/benletchford/systemless/commit/d97e01f5888f40c3201dc4bc34357205acccc11a))
+* **events:** make queue process-owned ([4fa4473](https://github.com/benletchford/systemless/commit/4fa4473a7b447f7df3c9a9ff8c396dd03ed710ad))
+* **files:** attach classic catalog to process state ([45754bc](https://github.com/benletchford/systemless/commit/45754bce6f953e8be30e05eac53e6aad6a7e3343))
+* **files:** make file and resource managers process-owned ([82abc1a](https://github.com/benletchford/systemless/commit/82abc1a89fb3015db26fc1a9f40873715e3e88ca))
+* **files:** move native catalog into process state ([a33a4d7](https://github.com/benletchford/systemless/commit/a33a4d75f3337b681e9b275cb7d6097db3f866b1))
+* **files:** share access permissions across CPU adapters ([#1240](https://github.com/benletchford/systemless/issues/1240)) ([54aef07](https://github.com/benletchford/systemless/commit/54aef07fc13bfbaaeedf3b25502c4a9dc7ec5aaf))
+* **files:** share asynchronous completion queue ([03624e2](https://github.com/benletchford/systemless/commit/03624e2982d4e634acf63cc1ca36d6d9070b6edc))
+* **files:** share open sessions across CPU adapters ([#1238](https://github.com/benletchford/systemless/issues/1238)) ([8135be2](https://github.com/benletchford/systemless/commit/8135be2c880d327d3f683db82778329cccdaa595))
+* **files:** share VFS directory catalogue across CPU adapters ([7ab2f68](https://github.com/benletchford/systemless/commit/7ab2f681fe0a8d991409fc2b6f7f8d7323b3aeae))
+* **files:** share VFS volume catalogue across CPU adapters ([ed609e5](https://github.com/benletchford/systemless/commit/ed609e50a8339ccefd37ee551fa3f7375823936b))
+* **files:** share working-directory state across CPU adapters ([af625b9](https://github.com/benletchford/systemless/commit/af625b9ab6f3d596a3734c0b30286677b79356c8))
+* **files:** unify process VFS catalog mutations ([#1190](https://github.com/benletchford/systemless/issues/1190)) ([503179f](https://github.com/benletchford/systemless/commit/503179f8b1e854dca8b8f1e659fbcc423074f923))
+* **input:** make state process-owned ([#1174](https://github.com/benletchford/systemless/issues/1174)) ([a1909b7](https://github.com/benletchford/systemless/commit/a1909b7c07ffe80fcb97a8c8b8a6c69374d98040))
+* **list:** make manager state process-owned ([39c0418](https://github.com/benletchford/systemless/commit/39c04185bd230178e508398aa9b1b0747a82a12f))
+* **memory:** keep native heap state process-owned ([#1182](https://github.com/benletchford/systemless/issues/1182)) ([3526b33](https://github.com/benletchford/systemless/commit/3526b33a5ed3690df3611507c148896998de1108))
+* **memory:** make classic heap allocator process-owned ([#1279](https://github.com/benletchford/systemless/issues/1279)) ([28607df](https://github.com/benletchford/systemless/commit/28607df621de67ebd6c3f008f008de1d1411dc84))
+* **memory:** move classic heap policy into process state ([#1184](https://github.com/benletchford/systemless/issues/1184)) ([fc83137](https://github.com/benletchford/systemless/commit/fc8313786d80226e759da14237a2cb9ea383695c))
+* **memory:** remove native import allocator copies ([#1180](https://github.com/benletchford/systemless/issues/1180)) ([0d78c58](https://github.com/benletchford/systemless/commit/0d78c582b76e8b1f05c33979235d15a9b06ccae4))
+* **memory:** remove native slice handoffs ([02f2124](https://github.com/benletchford/systemless/commit/02f212451c517139fab60a45217674d0f7b38547))
+* **memory:** remove runner handoffs ([231149a](https://github.com/benletchford/systemless/commit/231149aa2563f49f26383386065f3156af325902))
+* **memory:** retain process address mappings ([b7be378](https://github.com/benletchford/systemless/commit/b7be3780b362dfbea17e32b5ed0d76281de21769))
+* **memory:** transfer native allocator ownership on attachment ([386a450](https://github.com/benletchford/systemless/commit/386a45046ec6ca81ff1362d76444a40a5ce80bcc))
+* **menus:** make tracking process-owned ([#1172](https://github.com/benletchford/systemless/issues/1172)) ([f242eea](https://github.com/benletchford/systemless/commit/f242eea39eedb692546afb1bb74971c325d6b237))
+* **quickdraw:** make error state process-owned ([#1222](https://github.com/benletchford/systemless/issues/1222)) ([7512bf7](https://github.com/benletchford/systemless/commit/7512bf7998009bd0c9dc93da9b5bc442d8d0175e))
+* **quickdraw:** make port selection process-owned ([b1fb3d6](https://github.com/benletchford/systemless/commit/b1fb3d665ced02e76dd4f68486ae846a9a55623f))
+* **quickdraw:** share current port draw state across CPU adapters ([#1219](https://github.com/benletchford/systemless/issues/1219)) ([2b7384b](https://github.com/benletchford/systemless/commit/2b7384b47b6c3e4a86b12a2017fa46e104835a19))
+* remove runner-owned native sound playback mirrors ([50c5950](https://github.com/benletchford/systemless/commit/50c59503aa80d41ef3b898c246886c2213eb9d05))
+* **resource:** make current file process-owned ([#1200](https://github.com/benletchford/systemless/issues/1200)) ([c085300](https://github.com/benletchford/systemless/commit/c085300c2f9f06788fd3b84cffc7296b7a7ba14e))
+* **resource:** make policy and error state process-owned ([#1217](https://github.com/benletchford/systemless/issues/1217)) ([ea92dba](https://github.com/benletchford/systemless/commit/ea92dba8cbede9ddc1e52c47e6db2bf57ae2c6b5))
+* route native double buffers through the process Sound Manager ([2cd4518](https://github.com/benletchford/systemless/commit/2cd4518563fbc30092f842d2ff8afeb5b60af092))
+* **scrap:** make desktop scrap process-owned ([1637baa](https://github.com/benletchford/systemless/commit/1637baa7757c1d7ffd77cbf7359d6b83782d7b1b))
+* **sound:** dispatch native completions from process state ([#1234](https://github.com/benletchford/systemless/issues/1234)) ([8c0172c](https://github.com/benletchford/systemless/commit/8c0172cba9b8f5b6e61356c36fd33369720690b5))
+* **sound:** make double-buffer playback process-owned ([b329193](https://github.com/benletchford/systemless/commit/b329193073581148135eaa89fa2642d2ac5b1c85))
+* **sound:** make file completion process-owned ([#1224](https://github.com/benletchford/systemless/issues/1224)) ([befb0b6](https://github.com/benletchford/systemless/commit/befb0b69dff75733c16f32f480418a64cae45662))
+* **sound:** make file playback lifecycle process-owned ([#1236](https://github.com/benletchford/systemless/issues/1236)) ([6860181](https://github.com/benletchford/systemless/commit/6860181e643a9632f65d77d4b207603870a73983))
+* **sound:** make the Sound Manager process-owned ([0f3bd61](https://github.com/benletchford/systemless/commit/0f3bd614c7c084aa054a24977bb123c64ceb66a9))
+* **textedit:** make private state process-owned ([#1215](https://github.com/benletchford/systemless/issues/1215)) ([926088c](https://github.com/benletchford/systemless/commit/926088cc79c552499e3a72a3b10b940bebc1b9fe))
+* **vfs:** keep the catalogue process-owned during execution ([7abce70](https://github.com/benletchford/systemless/commit/7abce70127b1e832634141114bcbb80cf4ac45e7))
+* **window:** make the window registry process-owned ([544fc73](https://github.com/benletchford/systemless/commit/544fc734b22f57955bafa5ff3cefc2b3bc18481b))
+
 ## [0.28.5](https://github.com/benletchford/systemless/compare/v0.28.4...v0.28.5) (2026-09-01)
 
 
