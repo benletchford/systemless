@@ -15958,9 +15958,15 @@ mod tests {
         let saves_directory = runner
             .dispatcher()
             .vfs_directories
-            .get("System Folder/Preferences/Test App Saves")
-            .expect("dirty PPC directory should sync to dispatcher catalog");
-        assert_eq!(saves_directory.name, "Test App Saves");
+            .iter()
+            .find(|directory| {
+                directory.path == "System Folder/Preferences/Test App Saves"
+            })
+            .expect("dirty PPC directory should remain in the shared catalogue");
+        assert_eq!(
+            TrapDispatcher::vfs_basename(&saves_directory.path),
+            "Test App Saves"
+        );
         assert!(output_dir
             .path()
             .join("System Folder/Preferences/Test App Saves")

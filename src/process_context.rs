@@ -237,18 +237,12 @@ pub(crate) struct ProcessVfsMetadata {
     pub modified_date: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ProcessClassicVfsDirectory {
-    pub dir_id: u32,
-    pub parent_dir_id: u32,
-    pub name: String,
-}
-
-fn process_classic_vfs_directories_are_pristine(
-    directories: &HashMap<String, ProcessClassicVfsDirectory>,
+fn process_native_vfs_catalogue_is_pristine(
+    volumes: &[ProcessVfsVolumeRecord],
+    directories: &[ProcessVfsDirectory],
 ) -> bool {
-    if directories.is_empty() {
-        return true;
+    if !volumes.is_empty() {
+        return false;
     }
     let expected = [
         ("", 2, 1),
@@ -256,40 +250,19 @@ fn process_classic_vfs_directories_are_pristine(
         ("System Folder/Preferences", 17, 16),
     ];
     directories.len() <= expected.len()
-        && directories.iter().all(|(path, directory)| {
-            expected
-                .iter()
-                .any(|(expected_path, dir_id, parent_dir_id)| {
-                    path == expected_path
+        && directories.iter().all(|directory| {
+            !directory.dirty
+                && expected.iter().any(|(path, dir_id, parent_dir_id)| {
+                    directory.path == *path
                         && directory.dir_id == *dir_id
                         && directory.parent_dir_id == *parent_dir_id
                 })
         })
 }
 
-fn process_classic_vfs_directory_paths_are_pristine(paths: &HashMap<u32, String>) -> bool {
-    if paths.is_empty() {
+fn process_vfs_directories_are_pristine(directories: &[ProcessVfsDirectory]) -> bool {
+    if directories.is_empty() {
         return true;
-    }
-    let expected = [
-        (2, ""),
-        (16, "System Folder"),
-        (17, "System Folder/Preferences"),
-    ];
-    paths.len() <= expected.len()
-        && paths.iter().all(|(dir_id, path)| {
-            expected
-                .iter()
-                .any(|(expected_id, expected_path)| dir_id == expected_id && path == expected_path)
-        })
-}
-
-fn process_native_vfs_catalogue_is_pristine(
-    volumes: &[ProcessVfsVolumeRecord],
-    directories: &[ProcessVfsDirectory],
-) -> bool {
-    if !volumes.is_empty() {
-        return false;
     }
     let expected = [
         ("", 2, 1),
@@ -886,9 +859,6 @@ pub struct ProcessFileSystemState {
     pub(crate) next_vfs_dir_id: SharedProcessValue<u32>,
     pub(crate) default_dir_id: SharedProcessValue<u32>,
     pub(crate) classic_vfs_metadata: SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
-    pub(crate) classic_vfs_directories:
-        SharedProcessValue<HashMap<String, ProcessClassicVfsDirectory>>,
-    pub(crate) classic_vfs_directory_paths: SharedProcessValue<HashMap<u32, String>>,
     pub(crate) classic_locked_files: SharedProcessValue<HashSet<String>>,
     pub(crate) classic_next_vfs_file_id: SharedProcessValue<u32>,
     pub(crate) classic_next_vfs_timestamp: SharedProcessValue<u32>,
@@ -914,8 +884,6 @@ impl Default for ProcessFileSystemState {
             next_vfs_dir_id: SharedProcessValue::from_value(0),
             default_dir_id: SharedProcessValue::from_value(0),
             classic_vfs_metadata: SharedProcessValue::default(),
-            classic_vfs_directories: SharedProcessValue::default(),
-            classic_vfs_directory_paths: SharedProcessValue::default(),
             classic_locked_files: SharedProcessValue::default(),
             classic_next_vfs_file_id: SharedProcessValue::from_value(32),
             classic_next_vfs_timestamp: SharedProcessValue::from_value(1),
@@ -967,25 +935,29 @@ impl ProcessFileSystemState {
 
         let target_catalogue_was_pristine =
             process_native_vfs_catalogue_is_pristine(&self.vfs_volumes, &self.vfs_directories);
-        for volume in source.vfs_volumes.drain(..) {
-            if self.vfs_volumes.iter().any(|existing| {
-                existing.ref_num == volume.ref_num
-                    || existing.name.eq_ignore_ascii_case(&volume.name)
-            }) {
-                continue;
+        if !Rc::ptr_eq(&self.vfs_volumes.0, &source.vfs_volumes.0) {
+            for volume in source.vfs_volumes.drain(..) {
+                if self.vfs_volumes.iter().any(|existing| {
+                    existing.ref_num == volume.ref_num
+                        || existing.name.eq_ignore_ascii_case(&volume.name)
+                }) {
+                    continue;
+                }
+                self.vfs_volumes.push(volume);
             }
-            self.vfs_volumes.push(volume);
         }
         *self.next_vfs_volume_ref_num =
             (*self.next_vfs_volume_ref_num).min(*source.next_vfs_volume_ref_num);
-        for directory in source.vfs_directories.drain(..) {
-            if self.vfs_directories.iter().any(|existing| {
-                existing.dir_id == directory.dir_id
-                    || existing.path.eq_ignore_ascii_case(&directory.path)
-            }) {
-                continue;
+        if !Rc::ptr_eq(&self.vfs_directories.0, &source.vfs_directories.0) {
+            for directory in source.vfs_directories.drain(..) {
+                if self.vfs_directories.iter().any(|existing| {
+                    existing.dir_id == directory.dir_id
+                        || existing.path.eq_ignore_ascii_case(&directory.path)
+                }) {
+                    continue;
+                }
+                self.vfs_directories.push(directory);
             }
-            self.vfs_directories.push(directory);
         }
         *self.next_vfs_dir_id = (*self.next_vfs_dir_id).max(*source.next_vfs_dir_id);
         if *self.default_dir_id == 0
@@ -1011,26 +983,6 @@ impl ProcessFileSystemState {
                 self.classic_vfs_metadata.entry(path).or_insert(metadata);
             }
         }
-        if !Rc::ptr_eq(
-            &self.classic_vfs_directories.0,
-            &source.classic_vfs_directories.0,
-        ) {
-            for (path, directory) in std::mem::take(&mut *source.classic_vfs_directories) {
-                self.classic_vfs_directories
-                    .entry(path)
-                    .or_insert(directory);
-            }
-        }
-        if !Rc::ptr_eq(
-            &self.classic_vfs_directory_paths.0,
-            &source.classic_vfs_directory_paths.0,
-        ) {
-            for (dir_id, path) in std::mem::take(&mut *source.classic_vfs_directory_paths) {
-                self.classic_vfs_directory_paths
-                    .entry(dir_id)
-                    .or_insert(path);
-            }
-        }
         if !Rc::ptr_eq(&self.classic_locked_files.0, &source.classic_locked_files.0) {
             self.classic_locked_files
                 .extend(std::mem::take(&mut *source.classic_locked_files));
@@ -1052,8 +1004,6 @@ impl ProcessFileSystemState {
         snapshot.next_vfs_dir_id = self.next_vfs_dir_id.clone();
         snapshot.default_dir_id = self.default_dir_id.clone();
         snapshot.classic_vfs_metadata = self.classic_vfs_metadata.clone();
-        snapshot.classic_vfs_directories = self.classic_vfs_directories.clone();
-        snapshot.classic_vfs_directory_paths = self.classic_vfs_directory_paths.clone();
         snapshot.classic_locked_files = self.classic_locked_files.clone();
         snapshot.classic_next_vfs_file_id = self.classic_next_vfs_file_id.clone();
         snapshot.classic_next_vfs_timestamp = self.classic_next_vfs_timestamp.clone();
@@ -1075,54 +1025,16 @@ impl ProcessFileSystemState {
         self
     }
 
-    /// Mirror native directory and file records into the classic path indexes.
-    /// Volume records intentionally do not participate in this compatibility
-    /// pass: both adapters query the canonical process-owned volume vector
-    /// directly. Files (1992), pp. 2-27--2-29 and 2-85.
+    /// Mirror native file records into the classic path indexes.
+    ///
+    /// Directory and volume records are canonical process-owned records and
+    /// therefore do not participate in this compatibility pass. Files (1992),
+    /// pp. 2-27--2-29 and 2-85.
     pub(crate) fn publish_native_vfs_catalogue(&mut self) {
         let directories = (*self.vfs_directories).clone();
         let files = self.vfs_files.iter().cloned().collect::<Vec<_>>();
         let resource_files = self.vfs_resource_files.iter().cloned().collect::<Vec<_>>();
         let deleted_paths = self.deleted_vfs_file_paths.clone();
-
-        for directory in &directories {
-            let path = directory.path.clone();
-            let name = if path.is_empty() {
-                "MacintoshHD".to_string()
-            } else {
-                process_vfs_basename(&path).to_string()
-            };
-            self.classic_vfs_directories.insert(
-                path.clone(),
-                ProcessClassicVfsDirectory {
-                    dir_id: directory.dir_id,
-                    parent_dir_id: directory.parent_dir_id,
-                    name,
-                },
-            );
-            self.classic_vfs_directory_paths
-                .insert(directory.dir_id, path.clone());
-            if directory.dirty && !path.is_empty() {
-                publish_native_vfs_metadata(
-                    &mut self.classic_vfs_metadata,
-                    &mut self.classic_next_vfs_file_id,
-                    &mut self.classic_next_vfs_timestamp,
-                    &path,
-                    directory.parent_dir_id,
-                    directory.file_type,
-                    directory.creator,
-                    directory.finder_flags,
-                    true,
-                );
-            }
-        }
-        *self.next_vfs_dir_id = (*self.next_vfs_dir_id).max(
-            directories
-                .iter()
-                .map(|directory| directory.dir_id.saturating_add(1))
-                .max()
-                .unwrap_or(16),
-        );
 
         for file in files {
             if file.path.is_empty() {
@@ -1172,66 +1084,15 @@ impl ProcessFileSystemState {
         }
     }
 
-    pub(crate) fn publish_classic_vfs_directory(&mut self, path: &str) {
-        let Some(directory) = self.classic_vfs_directories.get(path).cloned() else {
-            return;
-        };
-        let metadata = self.classic_vfs_metadata.get(path).copied();
-        if let Some(native) = self
-            .vfs_directories
-            .iter_mut()
-            .find(|native| native.path.eq_ignore_ascii_case(path))
-        {
-            native.dir_id = directory.dir_id;
-            native.parent_dir_id = directory.parent_dir_id;
-            if let Some(metadata) = metadata {
-                native.file_type = metadata.file_type;
-                native.creator = metadata.creator;
-                native.finder_flags = metadata.finder_flags;
-            }
-            return;
-        }
-        self.vfs_directories.push(ProcessVfsDirectory {
-            dir_id: directory.dir_id,
-            parent_dir_id: directory.parent_dir_id,
-            path: path.to_string(),
-            creator: metadata
-                .map(|metadata| metadata.creator)
-                .unwrap_or(u32::from_be_bytes(*b"MACS")),
-            file_type: metadata
-                .map(|metadata| metadata.file_type)
-                .unwrap_or(u32::from_be_bytes(*b"fold")),
-            finder_flags: metadata.map(|metadata| metadata.finder_flags).unwrap_or(0),
-            dirty: false,
-        });
-        *self.next_vfs_dir_id = (*self.next_vfs_dir_id).max(directory.dir_id.saturating_add(1));
-    }
-
-    pub(crate) fn publish_classic_vfs_catalogue(&mut self) {
-        let directories = self
-            .classic_vfs_directories
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        let metadata = self
-            .classic_vfs_metadata
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        for path in directories {
-            self.publish_classic_vfs_directory(&path);
-        }
-        for path in metadata {
-            self.publish_classic_vfs_metadata(&path);
-        }
-    }
-
     pub(crate) fn publish_classic_vfs_metadata(&mut self, path: &str) {
         let Some(metadata) = self.classic_vfs_metadata.get(path).copied() else {
             return;
         };
-        if self.classic_vfs_directories.contains_key(path) {
-            self.publish_classic_vfs_directory(path);
+        if self
+            .vfs_directories
+            .iter()
+            .any(|directory| directory.path.eq_ignore_ascii_case(path))
+        {
             return;
         }
         if let Some(data) = self.vfs_files.data_forks.get_shared(path) {
@@ -1304,10 +1165,6 @@ impl ProcessFileSystemState {
                     .starts_with(&prefix.to_ascii_lowercase())
         });
     }
-}
-
-fn process_vfs_basename(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 fn process_vfs_parent_dir_id(directories: &[ProcessVfsDirectory], path: &str) -> u32 {
@@ -4609,24 +4466,18 @@ impl ProcessContext {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn attach_classic_vfs_catalogue(
         &self,
+        directories: &mut SharedProcessValue<Vec<ProcessVfsDirectory>>,
         metadata: &mut SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
-        directories: &mut SharedProcessValue<HashMap<String, ProcessClassicVfsDirectory>>,
-        directory_paths: &mut SharedProcessValue<HashMap<u32, String>>,
         locked_files: &mut SharedProcessValue<HashSet<String>>,
         next_dir_id: &mut SharedProcessValue<u32>,
         next_file_id: &mut SharedProcessValue<u32>,
         next_timestamp: &mut SharedProcessValue<u32>,
         default_dir_id: &mut SharedProcessValue<u32>,
     ) {
+        directories.attach_to(&self.file_system.vfs_directories, |directories| {
+            process_vfs_directories_are_pristine(directories)
+        });
         metadata.attach_to(&self.file_system.classic_vfs_metadata, HashMap::is_empty);
-        directories.attach_to(
-            &self.file_system.classic_vfs_directories,
-            process_classic_vfs_directories_are_pristine,
-        );
-        directory_paths.attach_to(
-            &self.file_system.classic_vfs_directory_paths,
-            process_classic_vfs_directory_paths_are_pristine,
-        );
         locked_files.attach_to(&self.file_system.classic_locked_files, HashSet::is_empty);
         next_dir_id.attach_to(&self.file_system.next_vfs_dir_id, |value| {
             matches!(*value, 0 | 16 | 18)
@@ -6010,30 +5861,26 @@ mod tests {
     #[test]
     fn attached_classic_catalogues_share_mutations_while_clones_detach() {
         let context = ProcessContext::default();
+        let mut first_directories = SharedProcessValue::from_value(vec![ProcessVfsDirectory {
+            dir_id: 2,
+            parent_dir_id: 1,
+            path: String::new(),
+            creator: u32::from_be_bytes(*b"MACS"),
+            file_type: u32::from_be_bytes(*b"fold"),
+            finder_flags: 0,
+            dirty: false,
+        }]);
         let mut first_metadata =
             SharedProcessValue::<HashMap<String, ProcessVfsMetadata>>::default();
-        let mut first_directories =
-            SharedProcessValue::<HashMap<String, ProcessClassicVfsDirectory>>::default();
-        let mut first_directory_paths = SharedProcessValue::<HashMap<u32, String>>::default();
         let mut first_locked_files = SharedProcessValue::<HashSet<String>>::default();
         let mut first_next_dir_id = SharedProcessValue::from_value(16);
         let mut first_next_file_id = SharedProcessValue::from_value(32);
         let mut first_next_timestamp = SharedProcessValue::from_value(1);
         let mut first_default_dir_id = SharedProcessValue::from_value(2);
-        first_directories.insert(
-            String::new(),
-            ProcessClassicVfsDirectory {
-                dir_id: 2,
-                parent_dir_id: 1,
-                name: "MacintoshHD".to_string(),
-            },
-        );
-        first_directory_paths.insert(2, String::new());
 
         context.attach_classic_vfs_catalogue(
-            &mut first_metadata,
             &mut first_directories,
-            &mut first_directory_paths,
+            &mut first_metadata,
             &mut first_locked_files,
             &mut first_next_dir_id,
             &mut first_next_file_id,
@@ -6043,47 +5890,52 @@ mod tests {
 
         let mut second_metadata =
             SharedProcessValue::<HashMap<String, ProcessVfsMetadata>>::default();
-        let mut second_directories =
-            SharedProcessValue::<HashMap<String, ProcessClassicVfsDirectory>>::default();
-        let mut second_directory_paths = SharedProcessValue::<HashMap<u32, String>>::default();
+        let mut second_directories = SharedProcessValue::<Vec<ProcessVfsDirectory>>::default();
         let mut second_locked_files = SharedProcessValue::<HashSet<String>>::default();
         let mut second_next_dir_id = SharedProcessValue::from_value(16);
         let mut second_next_file_id = SharedProcessValue::from_value(32);
         let mut second_next_timestamp = SharedProcessValue::from_value(1);
         let mut second_default_dir_id = SharedProcessValue::from_value(2);
         context.attach_classic_vfs_catalogue(
-            &mut second_metadata,
             &mut second_directories,
-            &mut second_directory_paths,
+            &mut second_metadata,
             &mut second_locked_files,
             &mut second_next_dir_id,
             &mut second_next_file_id,
             &mut second_next_timestamp,
             &mut second_default_dir_id,
         );
+        assert!(first_directories.ptr_eq(&second_directories));
         let detached_directories = second_directories.clone();
         let detached_default_dir_id = second_default_dir_id.clone();
 
-        first_directories.insert(
-            "Games".to_string(),
-            ProcessClassicVfsDirectory {
-                dir_id: 16,
-                parent_dir_id: 2,
-                name: "Games".to_string(),
-            },
-        );
-        first_directory_paths.insert(16, "Games".to_string());
+        first_directories.push(ProcessVfsDirectory {
+            dir_id: 16,
+            parent_dir_id: 2,
+            path: "Games".to_string(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"fold"),
+            finder_flags: 0x0400,
+            dirty: true,
+        });
         *first_next_dir_id = 17;
         *first_default_dir_id = 16;
 
-        assert!(second_directories.contains_key("Games"));
+        assert!(second_directories
+            .iter()
+            .any(|directory| directory.path == "Games"));
         assert_eq!(
-            second_directory_paths.get(&16).map(String::as_str),
+            second_directories
+                .iter()
+                .find(|directory| directory.dir_id == 16)
+                .map(|directory| directory.path.as_str()),
             Some("Games")
         );
         assert_eq!(*second_next_dir_id, 17);
         assert_eq!(*second_default_dir_id, 16);
-        assert!(!detached_directories.contains_key("Games"));
+        assert!(!detached_directories
+            .iter()
+            .any(|directory| directory.path == "Games"));
         assert_eq!(*detached_default_dir_id, 2);
     }
 

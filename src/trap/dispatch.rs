@@ -14,10 +14,11 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    PendingFileCompletion, ProcessClassicVfsDirectory, ProcessContext, ProcessForkMap,
+    PendingFileCompletion, ProcessContext, ProcessForkMap,
     ProcessKeyRepeatState, ProcessLoadedResources, ProcessResourceFileMap,
     ProcessResourceManagerState, ProcessWorkingDirectory,
-    ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
+    ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord,
+    SharedProcessAppleEventHandlers,
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
@@ -1020,7 +1021,7 @@ pub(crate) struct ControlAuxRecordState {
 }
 
 pub(crate) type VfsMetadata = ProcessVfsMetadata;
-pub(crate) type VfsDirectory = ProcessClassicVfsDirectory;
+pub(crate) type VfsDirectory = ProcessVfsDirectory;
 pub(crate) type VfsVolume = ProcessVfsVolumeRecord;
 
 pub(crate) type WorkingDirectory = ProcessWorkingDirectory;
@@ -1940,10 +1941,9 @@ pub struct TrapDispatcher {
     pub vfs_rsrc: SharedProcessValue<ProcessForkMap>,
     /// Finder metadata and catalog IDs for VFS file entries.
     pub(crate) vfs_metadata: SharedProcessValue<HashMap<String, VfsMetadata>>,
-    /// Directory catalog metadata keyed by normalized path.
-    pub(crate) vfs_directories: SharedProcessValue<HashMap<String, VfsDirectory>>,
-    /// Reverse directory lookup by catalog ID.
-    pub(crate) vfs_directory_paths: SharedProcessValue<HashMap<u32, String>>,
+    /// Canonical process directory catalogue shared with the native adapter.
+    /// Files (1992), pp. 2-27--2-29 and 2-190--2-192.
+    pub(crate) vfs_directories: SharedProcessValue<Vec<VfsDirectory>>,
     /// Read-only disk-image volumes mounted alongside the synthetic boot volume.
     pub(crate) vfs_volumes: SharedProcessValue<Vec<VfsVolume>>,
     /// Open working directories keyed by working directory reference number.
@@ -2805,16 +2805,14 @@ impl TrapDispatcher {
         self.process_window_list_attached = true;
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         context.attach_classic_vfs_catalogue(
-            &mut self.vfs_metadata,
             &mut self.vfs_directories,
-            &mut self.vfs_directory_paths,
+            &mut self.vfs_metadata,
             &mut self.locked_files,
             &mut self.next_vfs_dir_id,
             &mut self.next_vfs_file_id,
             &mut self.next_vfs_timestamp,
             &mut self.default_dir_id,
         );
-        self.process_file_system.publish_classic_vfs_catalogue();
         let mut memory_manager = None;
         context.attach_memory_manager(&mut memory_manager);
         self.attach_memory_manager_handle(
@@ -3675,21 +3673,18 @@ impl TrapDispatcher {
     }
 
     pub fn new() -> Self {
-        let mut vfs_directories = HashMap::new();
-        let mut vfs_directory_paths = HashMap::new();
-        vfs_directories.insert(
-            String::new(),
-            VfsDirectory {
-                dir_id: 2,
-                parent_dir_id: 1,
-                // The root directory's catalog name is the volume name.
-                // Files 1992, 2-27 and 2-85.
-                name: BOOT_VOLUME_NAME.to_string(),
-            },
-        );
-        vfs_directory_paths.insert(2, String::new());
-
-        let process_file_system = SharedProcessFileSystem::default();
+        let mut process_file_system = SharedProcessFileSystem::default();
+        *process_file_system.vfs_directories = vec![ProcessVfsDirectory {
+            dir_id: 2,
+            parent_dir_id: 1,
+            // The root directory's catalog name is the volume name.
+            // Files 1992, 2-27 and 2-85.
+            path: String::new(),
+            creator: u32::from_be_bytes(*b"MACS"),
+            file_type: u32::from_be_bytes(*b"fold"),
+            finder_flags: 0,
+            dirty: false,
+        }];
         let open_files = process_file_system.files.shared_handle();
         let write_refnums = process_file_system.writable_refnums.shared_handle();
         let pending_file_completions = process_file_system.pending_completions.shared_handle();
@@ -3704,6 +3699,7 @@ impl TrapDispatcher {
         let next_vfs_volume_ref_num = process_file_system
             .next_vfs_volume_ref_num
             .shared_handle();
+        let vfs_directories = process_file_system.vfs_directories.shared_handle();
         let file_positions = process_file_system.files.positions();
 
         let mut dispatcher = Self {
@@ -3779,8 +3775,7 @@ impl TrapDispatcher {
             vfs: SharedProcessValue::default(),
             vfs_rsrc: SharedProcessValue::default(),
             vfs_metadata: SharedProcessValue::default(),
-            vfs_directories: SharedProcessValue::from_value(vfs_directories),
-            vfs_directory_paths: SharedProcessValue::from_value(vfs_directory_paths),
+            vfs_directories,
             vfs_volumes,
             working_directories,
             open_files,
@@ -4629,6 +4624,14 @@ impl TrapDispatcher {
         path.rsplit('/').next().unwrap_or(path)
     }
 
+    pub(crate) fn vfs_directory_name(path: &str) -> String {
+        if path.is_empty() {
+            BOOT_VOLUME_NAME.to_string()
+        } else {
+            Self::vfs_basename(path).to_string()
+        }
+    }
+
     fn allocate_vfs_timestamp(&mut self) -> u32 {
         let timestamp = *self.next_vfs_timestamp;
         *self.next_vfs_timestamp = self.next_vfs_timestamp.saturating_add(1);
@@ -4682,14 +4685,12 @@ impl TrapDispatcher {
         if normalized.is_empty() {
             return 2;
         }
-        if let Some(dir_id) = self
+        if let Some(directory) = self
             .vfs_directories
-            .get(&normalized)
-            .map(|directory| directory.dir_id)
+            .iter()
+            .find(|directory| directory.path.eq_ignore_ascii_case(&normalized))
         {
-            self.process_file_system
-                .publish_classic_vfs_directory(&normalized);
-            return dir_id;
+            return directory.dir_id;
         }
 
         let parent_path = Self::vfs_parent_path(&normalized).to_string();
@@ -4697,17 +4698,15 @@ impl TrapDispatcher {
         let dir_id = *self.next_vfs_dir_id;
         *self.next_vfs_dir_id = self.next_vfs_dir_id.saturating_add(1);
 
-        self.vfs_directories.insert(
-            normalized.clone(),
-            VfsDirectory {
-                dir_id,
-                parent_dir_id,
-                name: Self::vfs_basename(&normalized).to_string(),
-            },
-        );
-        self.vfs_directory_paths.insert(dir_id, normalized.clone());
-        self.process_file_system
-            .publish_classic_vfs_directory(&normalized);
+        self.vfs_directories.push(VfsDirectory {
+            dir_id,
+            parent_dir_id,
+            path: normalized,
+            creator: u32::from_be_bytes(*b"MACS"),
+            file_type: u32::from_be_bytes(*b"fold"),
+            finder_flags: 0,
+            dirty: true,
+        });
         dir_id
     }
 
@@ -4983,17 +4982,15 @@ impl TrapDispatcher {
 
         removed |= self.vfs_metadata.remove(&normalized).is_some();
 
-        let directory_keys: Vec<String> = self
-            .vfs_directories
-            .keys()
-            .filter(|key| *key == &normalized || key.starts_with(&prefix))
-            .cloned()
-            .collect();
-        for key in directory_keys {
-            if let Some(directory) = self.vfs_directories.remove(&key) {
-                self.vfs_directory_paths.remove(&directory.dir_id);
-                removed = true;
-            }
+        let directory_count = self.vfs_directories.len();
+        self.vfs_directories.retain(|directory| {
+            let path = directory.path.to_ascii_lowercase();
+            let normalized = normalized.to_ascii_lowercase();
+            let prefix = prefix.to_ascii_lowercase();
+            !(path == normalized || path.starts_with(&prefix))
+        });
+        if self.vfs_directories.len() != directory_count {
+            removed = true;
         }
 
         self.process_file_system.remove_classic_vfs_path(&normalized);
@@ -5028,13 +5025,16 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn directory_path_for_id(&self, dir_id: u32) -> Option<&str> {
-        self.vfs_directory_paths.get(&dir_id).map(String::as_str)
+        self.vfs_directories
+            .iter()
+            .find(|directory| directory.dir_id == dir_id)
+            .map(|directory| directory.path.as_str())
     }
 
     pub(crate) fn directory_entry_for_id(&self, dir_id: u32) -> Option<&VfsDirectory> {
-        self.vfs_directory_paths
-            .get(&dir_id)
-            .and_then(|path| self.vfs_directories.get(path))
+        self.vfs_directories
+            .iter()
+            .find(|directory| directory.dir_id == dir_id)
     }
 
     pub(crate) fn resolve_volume_ref_num(&self, vref: i16) -> i16 {
@@ -5366,32 +5366,30 @@ impl TrapDispatcher {
                 );
             }
         }
-        // Sort vfs_directories keys before first-match .find() to avoid
-        // leaking HashMap hash-randomisation into directory resolution
-        // (and from there into resource load order, allocation order, and
-        // tick advancement under realtime cadence).
-        let mut sorted_keys: Vec<&String> = self.vfs_directories.keys().collect();
-        sorted_keys.sort_unstable();
+        // Sort paths before first-match .find() to keep directory resolution
+        // deterministic when an archive contains case-different spellings.
+        let mut sorted_directories: Vec<&VfsDirectory> = self.vfs_directories.iter().collect();
+        sorted_directories.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
             let candidate = if dir_path.is_empty() {
                 normalized.clone()
             } else {
                 format!("{dir_path}/{normalized}")
             };
-            if let Some(found) = sorted_keys
+            if let Some(found) = sorted_directories
                 .iter()
                 .copied()
-                .find(|path| path.eq_ignore_ascii_case(&candidate))
+                .find(|directory| directory.path.eq_ignore_ascii_case(&candidate))
             {
-                return Some(found.clone());
+                return Some(found.path.clone());
             }
         }
         if normalized.contains('/') {
-            return sorted_keys
+            return sorted_directories
                 .iter()
                 .copied()
-                .find(|path| path.eq_ignore_ascii_case(&normalized))
-                .cloned();
+                .find(|directory| directory.path.eq_ignore_ascii_case(&normalized))
+                .map(|directory| directory.path.clone());
         }
         None
     }
@@ -5399,29 +5397,23 @@ impl TrapDispatcher {
     pub(crate) fn list_vfs_catalog_entries(&mut self, dir_id: u32) -> Vec<VfsCatalogEntry> {
         self.ensure_vfs_catalog();
         let mut entries = Vec::new();
-        let effective_dir_id = if self.vfs_directory_paths.contains_key(&dir_id) {
+        let effective_dir_id = if self.directory_entry_for_id(dir_id).is_some() {
             dir_id
         } else {
             2
         };
 
-        // Iterate vfs_directories in path-sorted order so the entries Vec is
-        // built deterministically. The final entries.sort_by_key(name) below
-        // only sorts by name (case-insensitive), so two directories with the
-        // same name but different paths would otherwise land in HashMap-random
-        // order.
-        let mut dir_paths: Vec<&String> = self.vfs_directories.keys().collect();
-        dir_paths.sort_unstable();
-        for path in dir_paths {
-            let Some(directory) = self.vfs_directories.get(path) else {
-                continue;
-            };
-            if path.is_empty() || directory.parent_dir_id != effective_dir_id {
+        // Iterate the canonical directory vector in path-sorted order so the
+        // entries Vec is deterministic before the final name sort.
+        let mut directories: Vec<&VfsDirectory> = self.vfs_directories.iter().collect();
+        directories.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        for directory in directories {
+            if directory.path.is_empty() || directory.parent_dir_id != effective_dir_id {
                 continue;
             }
             entries.push(VfsCatalogEntry {
-                path: path.clone(),
-                name: directory.name.clone(),
+                path: directory.path.clone(),
+                name: Self::vfs_directory_name(&directory.path),
                 is_directory: true,
             });
         }
@@ -10611,10 +10603,16 @@ mod tests {
         assert!(!disp.vfs.contains_key("Game/Plug-Ins/MAGMA/Data"));
         assert!(!disp.vfs_rsrc.contains_key("Game/Plug-Ins/MAGMA/Data"));
         assert!(!disp.vfs_metadata.contains_key("Game/Plug-Ins/MAGMA/Data"));
-        assert!(!disp.vfs_directories.contains_key("Game/Plug-Ins/MAGMA"));
+        assert!(!disp
+            .vfs_directories
+            .iter()
+            .any(|directory| directory.path == "Game/Plug-Ins/MAGMA"));
         assert!(disp.vfs.contains_key("Game/Plug-Ins/Keep/Data"));
         assert!(disp.vfs_metadata.contains_key("Game/Plug-Ins/Keep/Data"));
-        assert!(disp.vfs_directories.contains_key("Game/Plug-Ins/Keep"));
+        assert!(disp
+            .vfs_directories
+            .iter()
+            .any(|directory| directory.path == "Game/Plug-Ins/Keep"));
     }
 
     #[test]

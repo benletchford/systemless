@@ -2940,25 +2940,8 @@ fn ppc_diagnostic_vfs(
     let dispatcher = runner.dispatcher();
     let app_resource_path =
         app_resource_path.map(crate::trap::dispatch::TrapDispatcher::normalize_vfs_path);
-    let mut directory_entries: Vec<_> = dispatcher.vfs_directory_paths.iter().collect();
-    directory_entries.sort_by_key(|(dir_id, _)| **dir_id);
-
-    let directories = directory_entries
-        .into_iter()
-        .filter_map(|(dir_id, _)| {
-            let path = dispatcher.directory_path_for_id(*dir_id)?;
-            let directory = dispatcher.directory_entry_for_id(*dir_id)?;
-            Some(PpcVfsDirectory {
-                dir_id: *dir_id,
-                parent_dir_id: directory.parent_dir_id,
-                path: path.to_string(),
-                creator: 0,
-                file_type: 0,
-                finder_flags: 0,
-                dirty: false,
-            })
-        })
-        .collect();
+    let mut directories = dispatcher.vfs_directories.iter().cloned().collect::<Vec<_>>();
+    directories.sort_by_key(|directory| directory.dir_id);
 
     let mut volumes = dispatcher
         .vfs_volumes
