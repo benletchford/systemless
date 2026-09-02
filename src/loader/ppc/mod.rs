@@ -514,6 +514,9 @@ const PPC_LIST_PORT_OFFSET: u32 = 8;
 const PPC_LIST_INDENT_OFFSET: u32 = 12;
 const PPC_LIST_CELL_SIZE_OFFSET: u32 = 16;
 const PPC_LIST_VISIBLE_OFFSET: u32 = 20;
+const PPC_LIST_VSCROLL_OFFSET: u32 = 28;
+const PPC_LIST_HSCROLL_OFFSET: u32 = 32;
+const PPC_LIST_SEL_FLAGS_OFFSET: u32 = 36;
 const PPC_LIST_ACTIVE_OFFSET: u32 = 37;
 const PPC_LIST_FLAGS_OFFSET: u32 = 39;
 const PPC_LIST_CLICK_TIME_OFFSET: u32 = 40;
@@ -1458,6 +1461,9 @@ pub enum PpcImportDispatcherTarget {
     LGetCell,
     LClick,
     LActivate,
+    LSetDrawingMode,
+    LScroll,
+    LSize,
     LUpdate,
     LAutoScroll,
     LSearch,
@@ -14116,7 +14122,6 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
         ("InterfaceLib", "InvalMenuBar") => PpcImportDispatcherTarget::InvalMenuBar,
         ("InterfaceLib", "OpenCPicture")
-        | ("InterfaceLib", "LSetDrawingMode")
         | ("InterfaceLib", "DrawGrowIcon")
         | ("InterfaceLib", "DebugStr") => PpcImportDispatcherTarget::MenuNoop,
         ("InterfaceLib", "LocalToGlobal") => PpcImportDispatcherTarget::LocalToGlobal,
@@ -14554,6 +14559,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LGetCell") => PpcImportDispatcherTarget::LGetCell,
         ("InterfaceLib", "LClick") => PpcImportDispatcherTarget::LClick,
         ("InterfaceLib", "LActivate") => PpcImportDispatcherTarget::LActivate,
+        ("InterfaceLib", "LSetDrawingMode") => PpcImportDispatcherTarget::LSetDrawingMode,
+        ("InterfaceLib", "LScroll") => PpcImportDispatcherTarget::LScroll,
+        ("InterfaceLib", "LSize") => PpcImportDispatcherTarget::LSize,
         ("InterfaceLib", "LUpdate") => PpcImportDispatcherTarget::LUpdate,
         ("InterfaceLib", "LAutoScroll") => PpcImportDispatcherTarget::LAutoScroll,
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
@@ -21787,6 +21795,7 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
+                controls,
                 list_manager,
             );
             *last_mem_error = if list == 0 {
@@ -21796,7 +21805,15 @@ fn dispatch_supported_import(
             };
             if let Some(record) = list_manager.get(&list) {
                 if record.draw_enabled {
-                    ppc_list_draw(memory, gworlds, record);
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        *current_resource_refnum,
+                        record,
+                    );
                 }
             }
             Some(PpcImportAction::Return(list))
@@ -21806,6 +21823,34 @@ fn dispatch_supported_import(
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
                 };
+                let list_ptr = memory.read_u32_be(record.handle).unwrap_or(0);
+                let control_handles = if list_ptr != 0 {
+                    [
+                        memory
+                            .read_u32_be(list_ptr + PPC_LIST_VSCROLL_OFFSET)
+                            .unwrap_or(0),
+                        memory
+                            .read_u32_be(list_ptr + PPC_LIST_HSCROLL_OFFSET)
+                            .unwrap_or(0),
+                    ]
+                } else {
+                    [0, 0]
+                };
+                for control_handle in control_handles {
+                    if control_handle != 0 {
+                        ppc_dispose_control(
+                            Some(&mut allocator),
+                            None,
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                            controls,
+                            control_handle,
+                        );
+                    }
+                }
                 let _ = allocator.dispose_handle(
                     memory,
                     heap_cursor,
@@ -21858,6 +21903,7 @@ fn dispatch_supported_import(
                         })
                         .collect();
                     record.data_bounds.2 = record.data_bounds.2.saturating_add(count);
+                    ppc_list_recompute_visible(record);
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
                     };
@@ -21872,7 +21918,15 @@ fn dispatch_supported_import(
                     );
                     *last_mem_error = result;
                     if record.draw_enabled {
-                        ppc_list_draw(memory, gworlds, record);
+                        ppc_list_redraw(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            *current_resource_refnum,
+                            record,
+                        );
                     }
                 }
             }
@@ -21933,6 +21987,7 @@ fn dispatch_supported_import(
                         .data_bounds
                         .2
                         .saturating_sub(delete_rows.min(i16::MAX as usize) as i16);
+                    ppc_list_recompute_visible(record);
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
                     };
@@ -21947,7 +22002,15 @@ fn dispatch_supported_import(
                     );
                     *last_mem_error = result;
                     if record.draw_enabled {
-                        ppc_list_draw(memory, gworlds, record);
+                        ppc_list_redraw(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            *current_resource_refnum,
+                            record,
+                        );
                     }
                 }
             }
@@ -22002,7 +22065,15 @@ fn dispatch_supported_import(
                     );
                     *last_mem_error = result;
                     if record.draw_enabled {
-                        ppc_list_draw(memory, gworlds, record);
+                        ppc_list_redraw(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            *current_resource_refnum,
+                            record,
+                        );
                     }
                 }
             }
@@ -22013,10 +22084,7 @@ fn dispatch_supported_import(
             let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], length as u32);
             let v = (cpu.gpr[5] >> 16) as u16 as i16;
             let h = cpu.gpr[5] as u16 as i16;
-            if let (Some(bytes), Some(record)) = (
-                bytes,
-                list_manager.get_mut(&cpu.gpr[6]),
-            ) {
+            if let (Some(bytes), Some(record)) = (bytes, list_manager.get_mut(&cpu.gpr[6])) {
                 if ppc_list_cell_index(record, v, h).is_some() {
                     record.cells.insert((v, h), bytes);
                     let mut allocator = PpcProcessAllocatorView {
@@ -22033,7 +22101,15 @@ fn dispatch_supported_import(
                     );
                     *last_mem_error = result;
                     if record.draw_enabled {
-                        ppc_list_draw(memory, gworlds, record);
+                        ppc_list_redraw(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            *current_resource_refnum,
+                            record,
+                        );
                     }
                 }
             }
@@ -22047,11 +22123,15 @@ fn dispatch_supported_import(
             if let Some(bytes) = list_manager.get(&cpu.gpr[6]).and_then(|record| {
                 ppc_list_cell_index(record, v, h)?;
                 Some(record.cells.get(&(v, h)).map(Vec::as_slice).unwrap_or(&[]))
-            })
+            }) {
+                // More Macintosh Toolbox (1993), pp. 4-82--4-83: dataLen is
+                // an in/out buffer capacity.  A short buffer is left
+                // untouched, including its original capacity, rather than
+                // receiving a truncated cell.
+                if bytes.len() <= requested
+                    && (bytes.is_empty() || memory.write_bytes(cpu.gpr[3], bytes).is_some())
             {
-                let copied = requested.min(bytes.len());
-                if copied == 0 || memory.write_bytes(cpu.gpr[3], &bytes[..copied]).is_some() {
-                    let _ = memory.write_u16_be(length_ptr, copied as u16);
+                    let _ = memory.write_u16_be(length_ptr, bytes.len() as u16);
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -22063,8 +22143,15 @@ fn dispatch_supported_import(
             let mut double_click = false;
             if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
-                    let view = ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
-                        .unwrap_or((0, 0, 0, 0));
+                    let active = memory
+                        .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
+                        .unwrap_or(1)
+                        != 0;
+                    if let Some(view) = ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
+                        .filter(|view| {
+                            active && v >= view.0 && v < view.2 && h >= view.1 && h < view.3
+                        })
+                    {
                     let visible = ppc_read_rect(memory, list_ptr + PPC_LIST_VISIBLE_OFFSET)
                         .unwrap_or(record.data_bounds);
                     let cell_v = memory
@@ -22085,10 +22172,12 @@ fn dispatch_supported_import(
                             .unwrap_or(0);
                         let previous_v = memory
                             .read_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET)
-                            .unwrap_or(u16::MAX) as i16;
+                                .unwrap_or(u16::MAX)
+                                as i16;
                         let previous_h = memory
                             .read_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET + 2)
-                            .unwrap_or(u16::MAX) as i16;
+                                .unwrap_or(u16::MAX)
+                                as i16;
                         let double_time = memory
                             .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
                             .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
@@ -22108,18 +22197,22 @@ fn dispatch_supported_import(
                         }
                         record.last_click = (row, column);
                         record.last_click_tick = *tick_count;
-                        let _ = memory.write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET, v as u16);
                         let _ =
-                            memory.write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET + 2, h as u16);
-                        let _ = memory.write_u16_be(list_ptr + PPC_LIST_MOUSE_LOC_OFFSET, v as u16);
-                        let _ =
-                            memory.write_u16_be(list_ptr + PPC_LIST_MOUSE_LOC_OFFSET + 2, h as u16);
-                        let _ =
-                            memory.write_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET, row as u16);
+                                memory.write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET, v as u16);
                         let _ = memory
-                            .write_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET + 2, column as u16);
+                                .write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET + 2, h as u16);
                         let _ =
-                            memory.write_u32_be(list_ptr + PPC_LIST_CLICK_TIME_OFFSET, *tick_count);
+                                memory.write_u16_be(list_ptr + PPC_LIST_MOUSE_LOC_OFFSET, v as u16);
+                            let _ = memory
+                                .write_u16_be(list_ptr + PPC_LIST_MOUSE_LOC_OFFSET + 2, h as u16);
+                            let _ = memory
+                                .write_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET, row as u16);
+                            let _ = memory.write_u16_be(
+                                list_ptr + PPC_LIST_LAST_CLICK_OFFSET + 2,
+                                column as u16,
+                            );
+                            let _ = memory
+                                .write_u32_be(list_ptr + PPC_LIST_CLICK_TIME_OFFSET, *tick_count);
                         let mut allocator = PpcProcessAllocatorView {
                             memory_manager: process_memory_manager,
                         };
@@ -22134,7 +22227,16 @@ fn dispatch_supported_import(
                         );
                         *last_mem_error = result;
                         if record.draw_enabled {
-                            ppc_list_draw(memory, gworlds, record);
+                                ppc_list_redraw(
+                                    memory,
+                                    handles,
+                                    controls,
+                                    gworlds,
+                                    vfs_resources,
+                                    *current_resource_refnum,
+                                    record,
+                                );
+                            }
                         }
                     }
                 }
@@ -22142,20 +22244,131 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(u32::from(double_click)))
         }
         PpcImportDispatcherTarget::LActivate => {
-            if let Some(record) = list_manager.get(&cpu.gpr[4]) {
+            let active = cpu.gpr[3] != 0;
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[4]) {
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
-                    let _ = memory
-                        .write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, u8::from(cpu.gpr[3] != 0));
-                    if record.draw_enabled {
-                        ppc_list_draw(memory, gworlds, record);
+                    let _ = memory.write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, u8::from(active));
+                    for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
+                        let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
+                        if let Some(control) = ppc_control_ptr(memory, control_handle) {
+                            // Inside Macintosh: More Macintosh Toolbox (1993),
+                            // pp. 4-75--4-76: an inactive list disables its
+                            // standard scroll bars through contrlHilite.
+                            let _ = memory.write_u8(
+                                control + PPC_CONTROL_HILITE_OFFSET,
+                                if active { 0 } else { 0xff },
+                            );
+                        }
                     }
+                    if record.draw_enabled {
+                        ppc_list_redraw(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            *current_resource_refnum,
+                            record,
+                        );
+                    }
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LSetDrawingMode => {
+            let draw_enabled = cpu.gpr[3] != 0;
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[4]) {
+                record.draw_enabled = draw_enabled;
+                if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
+                    for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
+                        let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
+                        if let Some(control) = ppc_control_ptr(memory, control_handle) {
+                            let _ = memory.write_u8(
+                                control + PPC_CONTROL_VISIBLE_OFFSET,
+                                if draw_enabled { 0xff } else { 0 },
+                            );
+                        }
+                    }
+                }
+                if draw_enabled {
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        *current_resource_refnum,
+                        record,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LScroll => {
+            // More Macintosh Toolbox (1993), pp. 4-89--4-90: scrolling is
+            // pinned to dataBounds and redraws when automatic drawing is on.
+            let d_cols = cpu.gpr[3] as u16 as i16;
+            let d_rows = cpu.gpr[4] as u16 as i16;
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+                ppc_list_set_visible_origin(
+                    record,
+                    record.visible.0.saturating_add(d_rows),
+                    record.visible.1.saturating_add(d_cols),
+                );
+                let result = ppc_list_sync_guest_visible(memory, record);
+                *last_mem_error = result;
+                if record.draw_enabled {
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        *current_resource_refnum,
+                        record,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LSize => {
+            // More Macintosh Toolbox (1993), pp. 4-91--4-92: resize the
+            // visible rectangle and redraw its contents as necessary.
+            let width = cpu.gpr[3] as u16 as i16;
+            let height = cpu.gpr[4] as u16 as i16;
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+                record.view_rect.2 = record.view_rect.0.saturating_add(height.max(0));
+                record.view_rect.3 = record.view_rect.1.saturating_add(width.max(0));
+                ppc_list_recompute_visible(record);
+                let result = ppc_list_sync_guest_size(memory, record);
+                *last_mem_error = result;
+                if record.draw_enabled {
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        *current_resource_refnum,
+                        record,
+                    );
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LUpdate => {
             if let Some(record) = list_manager.get(&cpu.gpr[4]) {
-                ppc_list_draw(memory, gworlds, record);
+                if record.draw_enabled {
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        *current_resource_refnum,
+                        record,
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -22184,7 +22397,15 @@ fn dispatch_supported_import(
                         record.visible.3,
                     );
                     if record.draw_enabled {
-                        ppc_list_draw(memory, gworlds, record);
+                        ppc_list_redraw(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            *current_resource_refnum,
+                            record,
+                        );
                     }
                 }
             }
@@ -22194,9 +22415,7 @@ fn dispatch_supported_import(
             let requested = ppc_memory_read_bytes(memory, cpu.gpr[3], u32::from(cpu.gpr[4] as u16))
                 .unwrap_or_default();
             let cell_ptr = cpu.gpr[6];
-            let result = list_manager
-                .get(&cpu.gpr[7])
-                .and_then(|record| {
+            let result = list_manager.get(&cpu.gpr[7]).and_then(|record| {
                     let start_v = memory.read_u16_be(cell_ptr)? as i16;
                     let start_h = memory.read_u16_be(cell_ptr + 2)? as i16;
                     let start = ppc_list_cell_index(record, start_v, start_h)?;
@@ -68601,6 +68820,64 @@ fn ppc_list_dimensions(bounds: (i16, i16, i16, i16)) -> (usize, usize) {
     )
 }
 
+fn ppc_list_visible_rect(
+    view_rect: (i16, i16, i16, i16),
+    data_bounds: (i16, i16, i16, i16),
+    cell_size: (i16, i16),
+) -> (i16, i16, i16, i16) {
+    // More Macintosh Toolbox (1993), pp. 4-70--4-72 and 4-91--4-92:
+    // visible includes any cell that intersects the view, so partial cells
+    // round up to the next row or column.
+    let (columns, rows) = ppc_list_dimensions(data_bounds);
+    let cell_v = cell_size.0.max(1);
+    let cell_h = cell_size.1.max(1);
+    let view_height = (i32::from(view_rect.2) - i32::from(view_rect.0)).max(0);
+    let view_width = (i32::from(view_rect.3) - i32::from(view_rect.1)).max(0);
+    let visible_rows = usize::try_from((view_height + i32::from(cell_v) - 1) / i32::from(cell_v))
+        .unwrap_or(0)
+        .max(1)
+        .min(rows);
+    let visible_columns = usize::try_from((view_width + i32::from(cell_h) - 1) / i32::from(cell_h))
+        .unwrap_or(0)
+        .max(1)
+        .min(columns);
+    (
+        data_bounds.0,
+        data_bounds.1,
+        data_bounds.0.saturating_add(visible_rows as i16),
+        data_bounds.1.saturating_add(visible_columns as i16),
+    )
+}
+
+fn ppc_list_set_visible_origin(record: &mut PpcListRecord, row: i16, column: i16) {
+    let row_page = record.visible.2.saturating_sub(record.visible.0).max(1);
+    let column_page = record.visible.3.saturating_sub(record.visible.1).max(1);
+    let max_row = record
+        .data_bounds
+        .2
+        .saturating_sub(row_page)
+        .max(record.data_bounds.0);
+    let max_column = record
+        .data_bounds
+        .3
+        .saturating_sub(column_page)
+        .max(record.data_bounds.1);
+    let top = row.clamp(record.data_bounds.0, max_row);
+    let left = column.clamp(record.data_bounds.1, max_column);
+    record.visible = (
+        top,
+        left,
+        top.saturating_add(row_page).min(record.data_bounds.2),
+        left.saturating_add(column_page).min(record.data_bounds.3),
+    );
+}
+
+fn ppc_list_recompute_visible(record: &mut PpcListRecord) {
+    let old_origin = (record.visible.0, record.visible.1);
+    record.visible = ppc_list_visible_rect(record.view_rect, record.data_bounds, record.cell_size);
+    ppc_list_set_visible_origin(record, old_origin.0, old_origin.1);
+}
+
 fn ppc_list_cell_index(record: &PpcListRecord, v: i16, h: i16) -> Option<usize> {
     let (columns, rows) = ppc_list_dimensions(record.data_bounds);
     let column = usize::try_from(i32::from(h) - i32::from(record.data_bounds.1)).ok()?;
@@ -68625,6 +68902,155 @@ fn ppc_list_cell_for_index(record: &PpcListRecord, index: usize) -> Option<(i16,
     ))
 }
 
+fn ppc_list_scrollbar_bounds(record: &PpcListRecord, vertical: bool) -> (i16, i16, i16, i16) {
+    // More Macintosh Toolbox (1993), pp. 4-75--4-76: standard list scroll
+    // bars occupy the one-pixel border outside rView and a 16-pixel strip.
+    if vertical {
+        (
+            record.view_rect.0.saturating_sub(1),
+            record.view_rect.3,
+            record.view_rect.2.saturating_add(1),
+            record.view_rect.3.saturating_add(16),
+        )
+    } else {
+        (
+            record.view_rect.2,
+            record.view_rect.1.saturating_sub(1),
+            record.view_rect.2.saturating_add(16),
+            record.view_rect.3.saturating_add(1),
+        )
+    }
+}
+
+fn ppc_list_scrollbar_limits(record: &PpcListRecord, vertical: bool) -> (i16, i16, i16) {
+    let (data_start, data_end, visible_start, visible_end) = if vertical {
+        (
+            record.data_bounds.0,
+            record.data_bounds.2,
+            record.visible.0,
+            record.visible.2,
+        )
+    } else {
+        (
+            record.data_bounds.1,
+            record.data_bounds.3,
+            record.visible.1,
+            record.visible.3,
+        )
+    };
+    let page = visible_end.saturating_sub(visible_start).max(1);
+    let max = data_end.saturating_sub(page).max(data_start);
+    (visible_start.clamp(data_start, max), data_start, max)
+}
+
+fn ppc_list_sync_guest_scrollbars(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
+    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
+        return PPC_PARAM_ERR;
+    };
+    for (offset, vertical) in [
+        (PPC_LIST_VSCROLL_OFFSET, true),
+        (PPC_LIST_HSCROLL_OFFSET, false),
+    ] {
+        let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
+        let Some(control) = ppc_control_ptr(memory, control_handle) else {
+            continue;
+        };
+        let (top, left, bottom, right) = ppc_list_scrollbar_bounds(record, vertical);
+        let (value, min, max) = ppc_list_scrollbar_limits(record, vertical);
+        if ppc_write_rect(
+            memory,
+            control + PPC_CONTROL_RECT_OFFSET,
+            top,
+            left,
+            bottom,
+            right,
+        )
+        .is_none()
+            || memory
+                .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, value as u16)
+                .is_none()
+            || memory
+                .write_u16_be(control + PPC_CONTROL_MIN_OFFSET, min as u16)
+                .is_none()
+            || memory
+                .write_u16_be(control + PPC_CONTROL_MAX_OFFSET, max as u16)
+                .is_none()
+        {
+            return PPC_PARAM_ERR;
+        }
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_list_sync_guest_geometry(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
+    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
+        return PPC_PARAM_ERR;
+    };
+    if ppc_write_rect(
+        memory,
+        list_ptr + PPC_LIST_VIEW_OFFSET,
+        record.view_rect.0,
+        record.view_rect.1,
+        record.view_rect.2,
+        record.view_rect.3,
+    )
+    .is_none()
+        || ppc_write_rect(
+            memory,
+            list_ptr + PPC_LIST_VISIBLE_OFFSET,
+            record.visible.0,
+            record.visible.1,
+            record.visible.2,
+            record.visible.3,
+        )
+        .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    ppc_list_sync_guest_scrollbars(memory, record)
+}
+
+fn ppc_list_sync_guest_visible(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
+    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
+        return PPC_PARAM_ERR;
+    };
+    if ppc_write_rect(
+        memory,
+        list_ptr + PPC_LIST_VISIBLE_OFFSET,
+        record.visible.0,
+        record.visible.1,
+        record.visible.2,
+        record.visible.3,
+    )
+    .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    ppc_list_sync_guest_scrollbars(memory, record)
+}
+
+fn ppc_list_sync_guest_size(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
+    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
+        return PPC_PARAM_ERR;
+    };
+    if memory
+        .write_u16_be(
+            list_ptr + PPC_LIST_VIEW_OFFSET + 4,
+            record.view_rect.2 as u16,
+        )
+        .is_none()
+        || memory
+            .write_u16_be(
+                list_ptr + PPC_LIST_VIEW_OFFSET + 6,
+                record.view_rect.3 as u16,
+            )
+            .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    ppc_list_sync_guest_visible(memory, record)
+}
+
 fn ppc_list_sync_guest_storage(
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
@@ -68636,9 +69062,7 @@ fn ppc_list_sync_guest_storage(
 ) -> i16 {
     let (columns, rows) = ppc_list_dimensions(record.data_bounds);
     let cell_count = columns.saturating_mul(rows);
-    let offsets_size = (cell_count as u32)
-        .saturating_add(1)
-        .saturating_mul(2);
+    let offsets_size = (cell_count as u32).saturating_add(1).saturating_mul(2);
     let list_size = PPC_LIST_REC_MIN_SIZE.max(PPC_LIST_CELL_ARRAY_OFFSET + offsets_size);
     let result = ppc_allocator_view_resize_handle(
         allocator.as_deref_mut(),
@@ -68676,6 +69100,10 @@ fn ppc_list_sync_guest_storage(
     if result != PPC_NO_ERR {
         return result;
     }
+    let result = ppc_list_sync_guest_geometry(memory, record);
+    if result != PPC_NO_ERR {
+        return result;
+    }
     let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
         return PPC_PARAM_ERR;
     };
@@ -68694,7 +69122,7 @@ fn ppc_list_sync_guest_storage(
         || memory
             .write_u16_be(
                 list_ptr + PPC_LIST_MAX_INDEX_OFFSET,
-                cell_count.min(i16::MAX as usize) as u16,
+                cell_count.saturating_mul(2).min(u16::MAX as usize) as u16,
             )
             .is_none()
     {
@@ -68740,6 +69168,7 @@ fn ppc_list_new(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    controls: &mut Vec<PpcControlRecord>,
     list_manager: &mut PpcListManagerState,
 ) -> u32 {
     let (Some(view), Some(data_bounds)) = (
@@ -68778,8 +69207,8 @@ fn ppc_list_new(
     let Some(list_ptr) = memory.read_u32_be(list_handle).filter(|ptr| *ptr != 0) else {
         return 0;
     };
-    let mut cell_v = memory.read_u16_be(cpu.gpr[5]).unwrap_or(0) as i16;
-    let mut cell_h = memory.read_u16_be(cpu.gpr[5].wrapping_add(2)).unwrap_or(0) as i16;
+    let mut cell_v = (cpu.gpr[5] >> 16) as u16 as i16;
+    let mut cell_h = cpu.gpr[5] as u16 as i16;
     if cell_v <= 0 {
         let font = ppc_current_text_font(memory, cpu.gpr[7]);
         let size = memory
@@ -68801,24 +69230,71 @@ fn ppc_list_new(
             (view.3.saturating_sub(view.1) / columns as i16).max(1)
         };
     }
-    let visible_rows = usize::try_from(view.2.saturating_sub(view.0) / cell_v)
-        .unwrap_or(0)
-        .max(1)
-        .min(rows);
-    let visible_columns = usize::try_from(view.3.saturating_sub(view.1) / cell_h)
-        .unwrap_or(0)
-        .max(1)
-        .min(columns);
-    let visible = (
-        data_bounds.0,
-        data_bounds.1,
-        data_bounds.0.saturating_add(visible_rows as i16),
-        data_bounds.1.saturating_add(visible_columns as i16),
-    );
+    let visible = ppc_list_visible_rect(view, data_bounds, (cell_v, cell_h));
+    let scroll_horiz = cpu.gpr[10] != 0;
     let scroll_vert = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
         .and_then(|slot| memory.read_u32_be(slot))
         .unwrap_or(0)
         != 0;
+    let draw_enabled = cpu.gpr[8] != 0;
+    let record = PpcListRecord {
+        handle: list_handle,
+        cells_handle,
+        view_rect: view,
+        data_bounds,
+        cell_size: (cell_v, cell_h),
+        visible,
+        port: cpu.gpr[7],
+        draw_enabled,
+        cells: std::collections::HashMap::new(),
+        selected: std::collections::BTreeSet::new(),
+        last_click: (-1, -1),
+        last_click_tick: 0,
+    };
+    let v_scroll = if scroll_vert {
+        ppc_new_control_record_values(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            controls,
+            record.port,
+            ppc_list_scrollbar_bounds(&record, true),
+            &[],
+            draw_enabled,
+            ppc_list_scrollbar_limits(&record, true).0,
+            ppc_list_scrollbar_limits(&record, true).1,
+            ppc_list_scrollbar_limits(&record, true).2,
+            16,
+            0,
+        )
+    } else {
+        0
+    };
+    let h_scroll = if scroll_horiz {
+        ppc_new_control_record_values(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            controls,
+            record.port,
+            ppc_list_scrollbar_bounds(&record, false),
+            &[],
+            draw_enabled,
+            ppc_list_scrollbar_limits(&record, false).0,
+            ppc_list_scrollbar_limits(&record, false).1,
+            ppc_list_scrollbar_limits(&record, false).2,
+            16,
+            0,
+        )
+    } else {
+        0
+    };
     if ppc_write_rect(
         memory,
         list_ptr + PPC_LIST_VIEW_OFFSET,
@@ -68830,6 +69306,18 @@ fn ppc_list_new(
     .is_none()
         || memory
             .write_u32_be(list_ptr + PPC_LIST_PORT_OFFSET, cpu.gpr[7])
+            .is_none()
+        || memory
+            .write_u32_be(list_ptr + PPC_LIST_VSCROLL_OFFSET, v_scroll)
+            .is_none()
+        || memory
+            .write_u32_be(list_ptr + PPC_LIST_HSCROLL_OFFSET, h_scroll)
+            .is_none()
+        || memory
+            .write_u8(list_ptr + PPC_LIST_SEL_FLAGS_OFFSET, 0)
+            .is_none()
+        || memory
+            .write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, 1)
             .is_none()
         || memory
             .write_u16_be(
@@ -68856,28 +69344,11 @@ fn ppc_list_new(
         )
         .is_none()
         || memory
-            .write_u8(
-                list_ptr + PPC_LIST_FLAGS_OFFSET,
-                u8::from(cpu.gpr[10] != 0) | (u8::from(scroll_vert) << 1),
-            )
+            .write_u8(list_ptr + PPC_LIST_FLAGS_OFFSET, 0)
             .is_none()
     {
         return 0;
     }
-    let record = PpcListRecord {
-        handle: list_handle,
-        cells_handle,
-        view_rect: view,
-        data_bounds,
-        cell_size: (cell_v, cell_h),
-        visible,
-        port: cpu.gpr[7],
-        draw_enabled: cpu.gpr[8] != 0,
-        cells: std::collections::HashMap::new(),
-        selected: std::collections::BTreeSet::new(),
-        last_click: (-1, -1),
-        last_click_tick: 0,
-    };
     if ppc_list_sync_guest_storage(
         allocator.as_deref_mut(),
         memory,
@@ -68898,7 +69369,8 @@ fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record
     let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
         return;
     };
-    let Some((view_top, view_left, _, _)) = ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
+    let Some((view_top, view_left, view_bottom, view_right)) =
+        ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
     else {
         return;
     };
@@ -68911,12 +69383,17 @@ fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record
     let cell_h = memory
         .read_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET + 2)
         .unwrap_or(1) as i16;
+    let active = memory
+        .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
+        .unwrap_or(1)
+        != 0;
     let port = memory
         .read_u32_be(list_ptr + PPC_LIST_PORT_OFFSET)
         .unwrap_or(PPC_MAIN_GWORLD);
-    let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, port) else {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
         return;
     };
+    let front = surface.front_buffer;
     let font = ppc_current_text_font(memory, port);
     let size = memory
         .read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_TX_SIZE_OFFSET))
@@ -68931,13 +69408,16 @@ fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record
             let top = view_top.saturating_add(row.saturating_sub(visible.0).saturating_mul(cell_v));
             let left =
                 view_left.saturating_add(column.saturating_sub(visible.1).saturating_mul(cell_h));
-            let rect = (
+            // List view coordinates are local to the list's port. Imaging
+            // With QuickDraw (1994), pp. 2-9--2-10: map them through the
+            // port's PixMap boundary before writing the backing pixels.
+            let rect = surface.local_rect_i16((
                 top,
                 left,
-                top.saturating_add(cell_v),
-                left.saturating_add(cell_h),
-            );
-            let selected = record.selected.contains(&(row, column));
+                top.saturating_add(cell_v).min(view_bottom),
+                left.saturating_add(cell_h).min(view_right),
+            ));
+            let selected = active && record.selected.contains(&(row, column));
             let background = if selected {
                 PPC_RGB_BLACK
             } else {
@@ -68966,6 +69446,38 @@ fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record
                     .unwrap_or(&[]),
             );
         }
+    }
+}
+
+fn ppc_list_redraw(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    record: &PpcListRecord,
+) {
+    ppc_list_draw(memory, gworlds, record);
+    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
+        return;
+    };
+    for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
+        let Some(control_handle) = memory
+            .read_u32_be(list_ptr + offset)
+            .filter(|handle| *handle != 0)
+        else {
+            continue;
+        };
+        let _ = ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            control_handle,
+        );
     }
 }
 
@@ -149333,26 +149845,35 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn native_list_manager_stores_cells_rows_and_selection_in_public_records() {
+    fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_records() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LScroll"),
+            PpcImportDispatcherTarget::LScroll
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LSize"),
+            PpcImportDispatcherTarget::LSize
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LSetDrawingMode"),
+            PpcImportDispatcherTarget::LSetDrawingMode
+        );
         let pef = synthetic_pef_with_import(b"LNew");
         let mut loaded = load_pef_application(&pef).unwrap();
         let scratch = PPC_DATA_BASE + 0x1000;
         let view_ptr = scratch;
         let bounds_ptr = scratch + 8;
-        let size_ptr = scratch + 16;
         let text_ptr = scratch + 20;
         let output_ptr = scratch + 32;
         let length_ptr = scratch + 48;
         let cell_ptr = scratch + 52;
         loaded.memory.add_region(scratch, vec![0; 64]);
-        ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 50, 220).unwrap();
+        ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 90, 220).unwrap();
         ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 2, 2).unwrap();
-        loaded.memory.write_u16_be(size_ptr, 20).unwrap();
-        loaded.memory.write_u16_be(size_ptr + 2, 100).unwrap();
         loaded.memory.write_bytes(text_ptr, b"Pilot").unwrap();
         loaded.cpu.gpr[3] = view_ptr;
         loaded.cpu.gpr[4] = bounds_ptr;
-        loaded.cpu.gpr[5] = size_ptr;
+        loaded.cpu.gpr[5] = (20u32 << 16) | 100;
         loaded.cpu.gpr[6] = 0;
         loaded.cpu.gpr[7] = PPC_MAIN_GWORLD;
         loaded.cpu.gpr[8] = 0;
@@ -149363,7 +149884,7 @@ pub(crate) mod tests {
             .write_u32_be(
                 ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
                     .unwrap(),
-                0,
+                1,
             )
             .unwrap();
         let probe = loaded.run_with_hle_imports(128);
@@ -149376,10 +149897,56 @@ pub(crate) mod tests {
             Some((0, 0, 2, 2))
         );
         assert_eq!(
+            ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_VISIBLE_OFFSET),
+            Some((0, 0, 2, 2))
+        );
+        assert_eq!(
             loaded
                 .memory
                 .read_u16_be(list_ptr + PPC_LIST_MAX_INDEX_OFFSET),
-            Some(4)
+            Some(8)
+        );
+        assert_eq!(
+            loaded
+                .list_manager
+                .get(&list)
+                .map(|record| record.cell_size),
+            Some((20, 100))
+        );
+        let vertical_scroll = loaded
+            .memory
+            .read_u32_be(list_ptr + PPC_LIST_VSCROLL_OFFSET)
+            .unwrap();
+        assert_ne!(vertical_scroll, 0);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(list_ptr + PPC_LIST_HSCROLL_OFFSET),
+            Some(0)
+        );
+        let vertical_scroll_ptr = ppc_control_ptr(&mut loaded.memory, vertical_scroll).unwrap();
+        assert_eq!(
+            ppc_read_rect(
+                &mut loaded.memory,
+                vertical_scroll_ptr + PPC_CONTROL_RECT_OFFSET,
+            ),
+            Some((9, 220, 91, 236))
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(vertical_scroll_ptr + PPC_CONTROL_VISIBLE_OFFSET),
+            Some(0)
+        );
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LSetDrawingMode);
+        assert!(loaded.list_manager[&list].draw_enabled);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(vertical_scroll_ptr + PPC_CONTROL_VISIBLE_OFFSET),
+            Some(0xff)
         );
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -149406,6 +149973,17 @@ pub(crate) mod tests {
             Some(b"Pilot".to_vec())
         );
 
+        loaded.memory.write_bytes(output_ptr, b"XXXXX").unwrap();
+        loaded.memory.write_u16_be(length_ptr, 3).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.run_with_hle_imports(128);
+        assert_eq!(loaded.memory.read_u16_be(length_ptr), Some(3));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, output_ptr, 5),
+            Some(b"XXXXX".to_vec())
+        );
+
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LSetSelect;
@@ -149426,17 +150004,195 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u16_be(cell_ptr), Some(1));
         assert_eq!(loaded.memory.read_u16_be(cell_ptr + 2), Some(1));
 
+        let selected_before_rejected_clicks = loaded.list_manager[&list].selected.clone();
+        loaded.cpu.gpr[3] = (9u32 << 16) | 20;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LClick);
+        assert_eq!(
+            loaded.list_manager[&list].selected, selected_before_rejected_clicks,
+            "LClick must ignore points outside rView",
+        );
+
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LActivate);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(vertical_scroll_ptr + PPC_CONTROL_HILITE_OFFSET),
+            Some(0xff)
+        );
+        loaded.cpu.gpr[3] = (10u32 << 16) | 20;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LClick);
+        assert_eq!(
+            loaded.list_manager[&list].selected, selected_before_rejected_clicks,
+            "LClick must ignore inactive lists",
+        );
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LActivate);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(vertical_scroll_ptr + PPC_CONTROL_HILITE_OFFSET),
+            Some(0)
+        );
+
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LAddRow;
-        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[3] = 3;
         loaded.cpu.gpr[4] = 2;
         loaded.cpu.gpr[5] = list;
         loaded.run_with_hle_imports(128);
         let list_ptr = loaded.memory.read_u32_be(list).unwrap();
         assert_eq!(
             ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_DATA_BOUNDS_OFFSET),
-            Some((0, 0, 3, 2))
+            Some((0, 0, 5, 2))
+        );
+        assert_eq!(
+            loaded.list_manager.get(&list).map(|record| record.visible),
+            Some((0, 0, 4, 2))
+        );
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_VISIBLE_OFFSET),
+            Some((0, 0, 4, 2))
+        );
+
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LScroll);
+        let list_ptr = loaded.memory.read_u32_be(list).unwrap();
+        assert_eq!(
+            loaded.list_manager.get(&list).map(|record| record.visible),
+            Some((1, 0, 5, 2))
+        );
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_VISIBLE_OFFSET),
+            Some((1, 0, 5, 2))
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(vertical_scroll_ptr + PPC_CONTROL_VALUE_OFFSET),
+            Some(1)
+        );
+
+        loaded.cpu.gpr[3] = 100;
+        loaded.cpu.gpr[4] = 40;
+        loaded.cpu.gpr[5] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LSize);
+        let list_ptr = loaded.memory.read_u32_be(list).unwrap();
+        assert_eq!(
+            loaded
+                .list_manager
+                .get(&list)
+                .map(|record| record.view_rect),
+            Some((10, 20, 50, 120))
+        );
+        assert_eq!(
+            loaded.list_manager.get(&list).map(|record| record.visible),
+            Some((1, 0, 3, 1))
+        );
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_VIEW_OFFSET),
+            Some((10, 20, 50, 120))
+        );
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_VISIBLE_OFFSET),
+            Some((1, 0, 3, 1))
+        );
+        assert_eq!(
+            ppc_read_rect(
+                &mut loaded.memory,
+                vertical_scroll_ptr + PPC_CONTROL_RECT_OFFSET,
+            ),
+            Some((9, 120, 51, 136))
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(vertical_scroll_ptr + PPC_CONTROL_MAX_OFFSET),
+            Some(3)
+        );
+
+        loaded.cpu.gpr[3] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LDispose);
+        assert_eq!(loaded.memory.read_u32_be(vertical_scroll), Some(0));
+        assert!(!loaded
+            .controls
+            .iter()
+            .any(|record| record.handle == vertical_scroll));
+    }
+
+    #[test]
+    fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
+        let pef = synthetic_pef_with_import(b"LNew");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x2200;
+        let view_ptr = scratch;
+        let bounds_ptr = scratch + 8;
+        loaded.memory.add_region(scratch, vec![0; 24]);
+        ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 50, 120).unwrap();
+        ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 3, 1).unwrap();
+        loaded.cpu.gpr[3] = view_ptr;
+        loaded.cpu.gpr[4] = bounds_ptr;
+        loaded.cpu.gpr[5] = (20u32 << 16) | 100;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 0;
+        loaded.cpu.gpr[10] = 0;
+        loaded
+            .memory
+            .write_u32_be(
+                ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                    .unwrap(),
+                0,
+            )
+            .unwrap();
+        let probe = loaded.run_with_hle_imports(128);
+        assert_eq!(probe.unsupported_import_index, None);
+        let list = loaded.cpu.gpr[3];
+        let record = loaded.list_manager.get_mut(&list).unwrap();
+        record.selected.insert((0, 0));
+
+        // NewCWindow gives an on-screen window a negative PixMap origin so
+        // its local port coordinates map to its global screen position.
+        ppc_set_port_origin(&mut loaded.memory, PPC_MAIN_GWORLD, -150, -40).unwrap();
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        assert_eq!((surface.top, surface.left), (-40, -150));
+        let front = surface.front_buffer;
+        let black =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+        let white =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+        assert!(ppc_fill_front_rect(
+            &mut loaded.memory,
+            front,
+            (0, 0, front.height as i16, front.width as i16),
+            PPC_RGB_WHITE,
+        ));
+        let record = loaded.list_manager.get(&list).unwrap().clone();
+        ppc_list_draw(&mut loaded.memory, &loaded.gworlds, &record);
+
+        // Row 0, column 0 is local (10,20)-(30,120), which maps to
+        // screen (50,170)-(70,270) for this window origin.
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (260, 65)),
+            Some(black),
+            "selected list background must follow the port origin"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (110, 25)),
+            Some(white),
+            "selected list background must not remain at port-local screen coordinates"
         );
     }
 
@@ -149451,7 +150207,6 @@ pub(crate) mod tests {
         let scratch = PPC_DATA_BASE + 0x1800;
         let view_ptr = scratch;
         let bounds_ptr = scratch + 8;
-        let size_ptr = scratch + 16;
         let classic_text_ptr = scratch + 20;
         let native_text_ptr = scratch + 32;
         let output_ptr = scratch + 48;
@@ -149459,14 +150214,18 @@ pub(crate) mod tests {
         native.memory.add_region(scratch, vec![0; 80]);
         ppc_write_rect(&mut native.memory, view_ptr, 10, 20, 50, 220).unwrap();
         ppc_write_rect(&mut native.memory, bounds_ptr, 0, 0, 2, 2).unwrap();
-        native.memory.write_u16_be(size_ptr, 20).unwrap();
-        native.memory.write_u16_be(size_ptr + 2, 100).unwrap();
-        native.memory.write_bytes(classic_text_ptr, b"Classic").unwrap();
-        native.memory.write_bytes(native_text_ptr, b"Native").unwrap();
+        native
+            .memory
+            .write_bytes(classic_text_ptr, b"Classic")
+            .unwrap();
+        native
+            .memory
+            .write_bytes(native_text_ptr, b"Native")
+            .unwrap();
 
         native.cpu.gpr[3] = view_ptr;
         native.cpu.gpr[4] = bounds_ptr;
-        native.cpu.gpr[5] = size_ptr;
+        native.cpu.gpr[5] = (20u32 << 16) | 100;
         native.cpu.gpr[6] = 0;
         native.cpu.gpr[7] = PPC_MAIN_GWORLD;
         native.cpu.gpr[8] = 0;
@@ -149483,6 +150242,13 @@ pub(crate) mod tests {
         native.run_with_hle_imports(128);
         let first_list = native.cpu.gpr[3];
         assert!(classic.list_states.contains_key(&first_list));
+        assert_eq!(
+            native
+                .list_manager
+                .get(&first_list)
+                .map(|record| record.cell_size),
+            Some((20, 100))
+        );
 
         let classic_state = classic.list_states.get_mut(&first_list).unwrap();
         classic_state.cells.insert((1, 1), b"Classic".to_vec());
@@ -149517,7 +150283,7 @@ pub(crate) mod tests {
 
         native.cpu.gpr[3] = view_ptr;
         native.cpu.gpr[4] = bounds_ptr;
-        native.cpu.gpr[5] = size_ptr;
+        native.cpu.gpr[5] = (20u32 << 16) | 100;
         native.cpu.gpr[6] = 0;
         native.cpu.gpr[7] = PPC_MAIN_GWORLD;
         native.cpu.gpr[8] = 0;
@@ -149527,6 +150293,13 @@ pub(crate) mod tests {
         let second_list = native.cpu.gpr[3];
         assert_ne!(first_list, second_list);
         assert_eq!(classic.list_states.len(), 2);
+        assert_eq!(
+            native
+                .list_manager
+                .get(&second_list)
+                .map(|record| record.cell_size),
+            Some((20, 100))
+        );
 
         native.cpu.gpr[3] = first_list;
         run_test_import(&mut native, PpcImportDispatcherTarget::LDispose);
@@ -149536,8 +150309,7 @@ pub(crate) mod tests {
 
     #[test]
     fn cloned_native_adapter_detaches_list_manager_state() {
-        let mut original =
-            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut original = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         original.list_manager.insert(
             0x0032_1000,
             PpcListRecord {
@@ -149722,7 +150494,10 @@ pub(crate) mod tests {
         ditl[16..21].copy_from_slice(b"Pilot");
         for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
             let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-            loaded.process_file_system.vfs_resources.push(PpcVfsResourceRecord {
+            loaded
+                .process_file_system
+                .vfs_resources
+                .push(PpcVfsResourceRecord {
                 ref_num: current_resource_refnum,
                 path: String::new(),
                 res_type: u32::from_be_bytes(res_type),

@@ -1,4 +1,4 @@
-//! Integration test exercising Toolbox Showcase for issues #1078 and #1081.
+//! Integration test exercising Toolbox Showcase for issues #1078, #1081, and #1264.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -29,6 +29,7 @@ const ITEM_PAGE_PREFERENCES: i16 = 5;
 const ITEM_PAGE_DIALOGS: i16 = 6;
 const ITEM_PAGE_TEXTEDIT: i16 = 7;
 const ITEM_PAGE_PALETTES: i16 = 8;
+const ITEM_PAGE_LISTS: i16 = 9;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -349,6 +350,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_TEXTEDIT),
         "TextEdit page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS),
+        "Lists & Inventory page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -940,6 +945,7 @@ fn test_toolbox_showcase() {
         MENU_PAGES,
         ITEM_PAGE_TEXTEDIT
     ));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS));
     assert_eq!(
         runner.window_count(),
         1,
@@ -953,4 +959,93 @@ fn test_toolbox_showcase() {
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "14-graphics-return.png");
+
+    // 15. Switch to Lists & Inventory and exercise selection, cell access,
+    // mutation, scrolling, resizing, and activation through the List Manager.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_LISTS),
+        "failed to queue selection of Lists & Inventory page"
+    );
+    step_until(&mut runner, "switch to Lists & Inventory page", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_PAGES,
+            ITEM_PAGE_LISTS,
+        )
+    });
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS));
+
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "15-lists.png");
+
+    // Select row 8 (zero-based row 7) in the initial 18-pixel cell layout.
+    // The sample is in the row's empty right-hand background, so it observes
+    // the List Manager's selection highlight rather than text rasterization.
+    let list_row_v = win_top + 78 + (7 * 18) + 9;
+    let list_row_h = win_left + 24 + 480;
+    let unselected_row_rgb = screen_rgb(&mut runner, list_row_v as u16, list_row_h as u16);
+    click_point(&mut runner, list_row_v, list_row_h);
+    step_until(&mut runner, "select inventory row", |r| {
+        screen_rgb(r, list_row_v as u16, list_row_h as u16) != unselected_row_rgb
+    });
+
+    // Inspect Selection calls LGetSelect/LGetCell again and keeps the same
+    // selected-cell result visible in the inspector readout.
+    click_point(&mut runner, win_top + 254, win_left + 80);
+    run_ticks(&mut runner, "inspect selected inventory row", 1);
+    runner.set_mouse_position(550, 760);
+    let selected_frame = rendered_rgb(&mut runner).2;
+
+    // Update Selected Row appends data obtained through LGetCell and writes
+    // it back with LSetCell.
+    click_point(&mut runner, win_top + 254, win_left + 205);
+    run_ticks(&mut runner, "mutate selected inventory row", 1);
+    runner.set_mouse_position(550, 760);
+    let mutated_frame = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        selected_frame, mutated_frame,
+        "LSetCell mutation must change the rendered list/status state"
+    );
+
+    // The four-row request is intentionally bounded by List Manager data
+    // bounds when the visible page cannot expose a full four-row displacement.
+    click_point(&mut runner, win_top + 254, win_left + 334);
+    run_ticks(&mut runner, "scroll inventory list", 1);
+    runner.set_mouse_position(550, 760);
+    let scrolled_frame = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        mutated_frame, scrolled_frame,
+        "LScroll must change the rendered list/status state"
+    );
+
+    click_point(&mut runner, win_top + 254, win_left + 442);
+    run_ticks(&mut runner, "resize inventory list", 1);
+    runner.set_mouse_position(550, 760);
+    let resized_frame = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        scrolled_frame, resized_frame,
+        "LSize must change the rendered list/status state"
+    );
+
+    // Toggle activation off and on so both LActivate paths are exercised.
+    click_point(&mut runner, win_top + 286, win_left + 97);
+    run_ticks(&mut runner, "deactivate inventory list", 1);
+    runner.set_mouse_position(550, 760);
+    let inactive_frame = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        resized_frame, inactive_frame,
+        "LActivate(FALSE) must change the rendered list/status state"
+    );
+
+    click_point(&mut runner, win_top + 286, win_left + 97);
+    run_ticks(&mut runner, "reactivate inventory list", 1);
+    runner.set_mouse_position(550, 760);
+    let active_frame = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        inactive_frame, active_frame,
+        "LActivate(TRUE) must change the rendered list/status state"
+    );
+    assert_reference_frame(&mut runner, "16-lists-interacted.png");
 }

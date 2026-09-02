@@ -88,7 +88,8 @@ resource 'MENU' (mPages, preload) {
         "Game Preferences", noIcon, noKey, noMark, plain;
         "Dialogs & Alerts", noIcon, noKey, noMark, plain;
         "TextEdit", noIcon, noKey, noMark, plain;
-        "Palettes", noIcon, noKey, noMark, plain
+        "Palettes", noIcon, noKey, noMark, plain;
+        "Lists & Inventory", noIcon, noKey, noMark, plain
     }
 };
 
