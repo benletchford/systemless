@@ -133,11 +133,11 @@ Each architecture is paired with its corresponding classic-Mac oracle. The
 frames are functional comparisons rather than whole-frame pixel-identical
 targets. Palette entry selection, colors before device-depth quantization, and
 animation behavior are strict comparison points rather than presentation
-variance. Cursor placement and preference values can differ when a manual
-oracle capture is taken at a different point in the interaction sequence. The
-PowerPC run also submits native QuickDraw 3D geometry before the fixture paints
-the same architecture-neutral visible result; classic operating-system
-presentation remains environment-dependent.
+variance. Cursor placement can differ between captures. Checkpoints 5 and 6
+use the documented final preference state: Veteran difficulty, full audio,
+QD3D Bevels, and 80% volume. The PowerPC run also submits native QuickDraw 3D
+geometry before the fixture paints the same architecture-neutral visible
+result; classic operating-system presentation remains environment-dependent.
 
 SheepShaver's oracle display is 32-bit direct color, so its animation checkpoint
 is intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11
