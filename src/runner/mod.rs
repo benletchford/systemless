@@ -2949,8 +2949,9 @@ impl FixtureRunner {
         // direct-loaded image. Reserve the image itself, plus the zone header,
         // without throwing that lower partition space away.
         // Inside Macintosh: Memory (1992), pp. 1-7 to 1-9 and 2-19.
-        self.bus.reserve_heap(APP_ZONE_HEADER_SIZE);
-        self.bus.reserve_heap_range(image_start, heap_start);
+        self.process_context.reserve_classic_heap(APP_ZONE_HEADER_SIZE);
+        self.process_context
+            .reserve_classic_heap_range(image_start, heap_start);
         self.dispatcher.load_resources(fork, &mut self.bus);
 
         let segments: HashMap<i16, u32> = app.segment_bases.iter().map(|(&k, &v)| (k, v)).collect();
@@ -3385,7 +3386,10 @@ impl FixtureRunner {
         let visible_zone_start = app_visible_zone_start_for_loaded_app(app);
         let zone_header_size: u32 = APP_ZONE_HEADER_SIZE;
         let initial_heap_end = visible_zone_start + zone_header_size;
-        let minimum_safe_appl_limit = self.bus.heap_bump_ptr().max(allocation_heap_start);
+        let minimum_safe_appl_limit = self
+            .process_context
+            .classic_heap_bump_ptr()
+            .max(allocation_heap_start);
         let stack_base = app.initial_sp;
         let default_appl_limit = stack_base - APP_STACK_SAFETY_MARGIN;
         let requested_partition_size = self.application_partition_size.or_else(|| {
@@ -3462,7 +3466,7 @@ impl FixtureRunner {
         // Apps and the Memory Manager read the zone header to determine
         // available memory. zcbFree (offset +12) must reflect free bytes.
         // Reserve heap space so alloc() doesn't overwrite the zone header.
-        self.bus.reserve_heap(zone_header_size);
+        self.process_context.reserve_classic_heap(zone_header_size);
         let zone_size = appl_limit.saturating_sub(visible_zone_start);
         let free_bytes = zone_size.saturating_sub(zone_header_size);
         self.bus.write_long(visible_zone_start, appl_limit); // bkLim: end of zone

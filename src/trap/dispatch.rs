@@ -11247,6 +11247,26 @@ mod tests {
     }
 
     #[test]
+    fn attaching_dispatcher_transfers_its_standalone_classic_allocator() {
+        let mut dispatcher = TrapDispatcher::new();
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        let ptr = dispatcher.new_process_classic_ptr(&mut bus, 24);
+        assert_ne!(ptr, 0);
+
+        let mut context = ProcessContext::default();
+        dispatcher.attach_process_context(&mut context);
+        context.attach_classic_memory_bus(&mut bus);
+
+        assert_eq!(
+            context.memory_manager_mut().process_ptr_size(&bus, ptr),
+            Some(24)
+        );
+        dispatcher.dispose_process_ptr(&mut bus, ptr);
+        let reused = context.memory_manager_mut().new_classic_ptr(&mut bus, 16);
+        assert_eq!(reused, ptr);
+    }
+
+    #[test]
     fn attached_dispatcher_relocates_native_handle_without_slice_pointer() {
         const HEAP_BASE: u32 = 0x0300_0000;
         let handle = HEAP_BASE;

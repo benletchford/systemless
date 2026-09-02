@@ -15141,7 +15141,10 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(ptr))
         }
         PpcImportDispatcherTarget::DisposePtr => {
-            let _ = process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
+            let ptr = cpu.gpr[3];
+            if process_memory_manager.dispose_native_ptr(ptr).is_none() {
+                process_memory_manager.dispose_classic_ptr_from_native_import(ptr);
+            }
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
@@ -15151,7 +15154,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPtrSize => {
-            let size = process_memory_manager.native_ptr_size(cpu.gpr[3]);
+            let size = process_memory_manager.process_ptr_size_for_native_import(cpu.gpr[3]);
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
@@ -90931,6 +90934,45 @@ pub(crate) mod tests {
 
         assert_eq!(classic.handle_state_bits(handle), Some(0xc0));
         assert_eq!(detached.borrow().state_for_handle(handle), Some(0x40));
+    }
+
+    #[test]
+    fn ppc_pointer_imports_observe_process_owned_classic_allocations() {
+        let pef = synthetic_pef_with_import(b"GetPtrSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let ptr = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 37);
+        assert_ne!(ptr, 0);
+        classic_bus.fill_bytes(ptr, 37, 0x5a);
+        assert_eq!(
+            context
+                .memory_manager_mut()
+                .set_process_ptr_size(&mut classic_bus, ptr, 36),
+            0
+        );
+        assert_eq!(classic_bus.read_byte(ptr + 36), 0);
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.gpr[3] = ptr;
+            let probe = native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(native.cpu.gpr[3], 36);
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposePtr;
+            native.cpu.gpr[3] = ptr;
+            let probe = native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(memory_manager.classic_allocation_size(ptr), None);
+        });
+
+        assert_eq!(classic_bus.get_alloc_size(ptr), None);
     }
 
     #[test]

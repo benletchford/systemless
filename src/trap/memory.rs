@@ -4012,12 +4012,21 @@ impl super::TrapDispatcher {
                 let handle = cpu.read_reg(Register::A0);
                 if handle == 0 {
                     cpu.write_reg(Register::D0, 0); // noErr
-                } else if bus.get_alloc_size(handle) != Some(4) {
-                    cpu.write_reg(Register::D0, (-111i32) as u32); // memWZErr
                 } else {
-                    let the_zone = bus.read_long(0x0118); // TheZone low-mem global
-                    cpu.write_reg(Register::A0, the_zone);
-                    cpu.write_reg(Register::D0, 0); // noErr
+                    let memory_manager = self.process_memory_manager();
+                    let valid = {
+                        let mut memory_manager = memory_manager.borrow_mut();
+                        memory_manager.attach_classic_memory_bus(bus);
+                        memory_manager.native_allocation(handle).is_some()
+                            || memory_manager.classic_allocation_size(handle) == Some(4)
+                    };
+                    if !valid {
+                        cpu.write_reg(Register::D0, (-111i32) as u32); // memWZErr
+                    } else {
+                        let the_zone = bus.read_long(0x0118); // TheZone low-mem global
+                        cpu.write_reg(Register::A0, the_zone);
+                        cpu.write_reg(Register::D0, 0); // noErr
+                    }
                 }
                 Ok(())
             }
@@ -4040,9 +4049,19 @@ impl super::TrapDispatcher {
                 if ptr == 0 {
                     cpu.write_reg(Register::D0, (-111i32) as u32); // memWZErr
                 } else {
-                    let the_zone = bus.read_long(0x0118); // TheZone low-mem global
-                    cpu.write_reg(Register::A0, the_zone);
-                    cpu.write_reg(Register::D0, 0); // noErr
+                    let memory_manager = self.process_memory_manager();
+                    let valid = {
+                        let mut memory_manager = memory_manager.borrow_mut();
+                        memory_manager.attach_classic_memory_bus(bus);
+                        memory_manager.process_ptr_size(bus, ptr).is_some()
+                    };
+                    if !valid {
+                        cpu.write_reg(Register::D0, (-111i32) as u32); // memWZErr
+                    } else {
+                        let the_zone = bus.read_long(0x0118); // TheZone low-mem global
+                        cpu.write_reg(Register::A0, the_zone);
+                        cpu.write_reg(Register::D0, 0); // noErr
+                    }
                 }
                 Ok(())
             }
