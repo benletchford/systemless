@@ -3818,6 +3818,104 @@ impl ProcessNativeMemoryManager {
         true
     }
 
+    /// Empty a native or classic relocatable block from a native import.
+    ///
+    /// The live master pointer is read and cleared through the process address
+    /// space before allocator metadata is committed, so a failed guest write
+    /// leaves the allocation intact. The stable master-pointer block and its
+    /// state bits remain allocated. Inside Macintosh: Memory (1992),
+    /// pp. 2-51--2-52.
+    pub(crate) fn empty_process_handle_from_native_import(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+    ) -> i16 {
+        if self.native_allocation(handle).is_some() {
+            return self.empty_native_handle(memory, handle);
+        }
+
+        let Some(allocator) = self.classic_allocator.clone() else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        if handle == 0 || allocator.allocation_size(handle) != Some(4) {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+        if self.state_for_handle(handle).unwrap_or(0) & 0x20 != 0 {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+        if self.state_for_handle(handle).unwrap_or(0) & 0x80 != 0 {
+            self.set_native_mem_error(Self::MEM_PUR_ERR);
+            return Self::MEM_PUR_ERR;
+        }
+        let Some(ptr) = PpcMemory::read_u32_be(memory, handle) else {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return Self::MEM_WZ_ERR;
+        };
+        if ptr != 0 && allocator.allocation_size(ptr).is_none() {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return Self::MEM_WZ_ERR;
+        }
+        if PpcMemory::write_u32_be(memory, handle, 0).is_none() {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+
+        if ptr != 0 {
+            allocator.free(ptr);
+            self.ptr_to_handle.remove(&ptr);
+        }
+        self.set_native_mem_error(Self::NO_ERR);
+        Self::NO_ERR
+    }
+
+    /// Dispose a native or classic relocatable block from a native import.
+    ///
+    /// Classic disposal releases both allocator records without rewriting the
+    /// freed master-pointer bytes. The stale reverse entry is intentionally
+    /// retained until validated `RecoverHandle` observes reuse of that slot,
+    /// preserving existing invalid-handle compatibility. Inside Macintosh:
+    /// Memory (1992), pp. 2-34--2-35 and 2-53--2-54.
+    pub(crate) fn dispose_process_handle_from_native_import(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+    ) -> bool {
+        if self.native_allocation(handle).is_some() {
+            return self.dispose_native_handle(memory, handle).is_some();
+        }
+
+        let Some(allocator) = self.classic_allocator.clone() else {
+            self.set_native_mem_error(Self::NO_ERR);
+            return false;
+        };
+        if handle == 0 || allocator.allocation_size(handle) != Some(4) {
+            self.set_native_mem_error(Self::NO_ERR);
+            return false;
+        }
+        if self.state_for_handle(handle).unwrap_or(0) & 0x20 != 0 {
+            self.set_native_mem_error(Self::NO_ERR);
+            return false;
+        }
+        let Some(ptr) = PpcMemory::read_u32_be(memory, handle) else {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return false;
+        };
+        if ptr != 0 && allocator.allocation_size(ptr).is_none() {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return false;
+        }
+
+        allocator.free(ptr);
+        allocator.free(handle);
+        self.handle_state_bits.remove(&handle);
+        self.handle_high_locked.remove(&handle);
+        self.set_native_mem_error(Self::NO_ERR);
+        true
+    }
+
     /// Change the logical size of a native nonrelocatable block in place.
     ///
     /// A nonrelocatable block cannot move, so growth can fail when another

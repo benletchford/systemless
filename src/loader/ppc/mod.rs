@@ -199,6 +199,8 @@ const PPC_MMU_32BIT_ADDR: u32 = 0x0000_0cb2;
 const PPC_CLASSIC_APP_MEMORY_SIZE: usize = 0x000f_0000;
 pub const PPC_MEM_FULL_ERR: i16 = -108;
 const PPC_NIL_HANDLE_ERR: i16 = -109;
+#[cfg(test)]
+const PPC_MEM_PUR_ERR: i16 = -112;
 const PPC_C_DEPTH_ERR: i16 = -157;
 pub const PPC_NO_ERR: i16 = 0;
 const PPC_EVT_NOT_ENB: i16 = 1;
@@ -15352,15 +15354,17 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::DisposeHandle => {
             let handle = cpu.gpr[3];
-            let disposed = ppc_dispose_process_native_handle(
+            let disposed = process_memory_manager
+                .dispose_process_handle_from_native_import(memory, handle);
+            ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
-                handles,
-                handle,
             );
+            if disposed {
+                handles.retain(|record| record.handle != handle);
+            }
             if disposed {
                 toolbox_startup
                     .indexed_screen_ctables
@@ -15375,12 +15379,12 @@ fn dispatch_supported_import(
                     resource.handle = 0;
                 }
             }
-            *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EmptyHandle => {
             let handle = cpu.gpr[3];
-            *last_mem_error = process_memory_manager.empty_native_handle(memory, handle);
+            *last_mem_error = process_memory_manager
+                .empty_process_handle_from_native_import(memory, handle);
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
@@ -16947,7 +16951,12 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DetachResource => {
-            ppc_detach_resource(cpu, vfs_resources, last_resource_error);
+            ppc_detach_resource(
+                cpu,
+                process_memory_manager,
+                vfs_resources,
+                last_resource_error,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ReadPartialResource => {
@@ -61669,6 +61678,7 @@ fn ppc_release_resource(
 
 fn ppc_detach_resource(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     vfs_resources: &mut [PpcVfsResourceRecord],
     last_resource_error: &mut i16,
 ) {
@@ -61685,6 +61695,7 @@ fn ppc_detach_resource(
         return;
     }
     record.handle = 0;
+    process_memory_manager.set_process_handle_resource(handle, false);
     *last_resource_error = PPC_NO_ERR;
 }
 
@@ -91407,6 +91418,307 @@ pub(crate) mod tests {
 
         assert_eq!(classic.handle_state_bits(handle), Some(0xc0));
         assert_eq!(detached.borrow().state_for_handle(handle), Some(0x40));
+    }
+
+    #[test]
+    fn ppc_empty_handle_releases_a_process_owned_classic_block_atomically() {
+        let pef = synthetic_pef_with_import(b"EmptyHandle");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+
+        let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let classic_heap = classic_bus
+            .shared_ram_region(0x0020_0000, 0x2000)
+            .expect("classic adapter owns its heap range");
+        context.attach_memory(0x0020_0000, classic_heap, &mut native.memory);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 24)
+            .unwrap();
+        classic_bus.write_bytes(ptr, b"classic process handle");
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager.borrow_mut().set_state_for_handle(handle, 0xc0);
+        let mut detached = native.clone();
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.gpr[3] = handle;
+            let probe =
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_MEM_PUR_ERR)
+            );
+            assert_eq!(PpcMemory::read_u32_be(&mut native.memory, handle), Some(ptr));
+            assert_eq!(memory_manager.classic_allocation_size(ptr), Some(24));
+            assert_eq!(memory_manager.recover_handle(ptr), Some(handle));
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0xc0));
+
+            memory_manager.set_state_for_handle(handle, 0x40);
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[3] = handle;
+            let probe =
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NO_ERR)
+            );
+            assert_eq!(PpcMemory::read_u32_be(&mut native.memory, handle), Some(0));
+            assert_eq!(memory_manager.classic_allocation_size(handle), Some(4));
+            assert_eq!(memory_manager.classic_allocation_size(ptr), None);
+            assert_eq!(memory_manager.recover_handle(ptr), None);
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0x40));
+        });
+
+        assert_eq!(classic_bus.read_long(handle), 0);
+        assert_eq!(classic_bus.get_alloc_size(handle), Some(4));
+        assert_eq!(classic_bus.get_alloc_size(ptr), None);
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(detached_manager.classic_allocation_size(handle), Some(4));
+        assert_eq!(detached_manager.classic_allocation_size(ptr), Some(24));
+        assert_eq!(detached_manager.recover_handle(ptr), Some(handle));
+        assert_eq!(detached_manager.state_for_handle(handle), Some(0xc0));
+    }
+
+    #[test]
+    fn ppc_dispose_handle_releases_classic_storage_and_preserves_stale_slot_rules() {
+        let pef = synthetic_pef_with_import(b"DisposeHandle");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+
+        let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let classic_heap = classic_bus
+            .shared_ram_region(0x0020_0000, 0x2000)
+            .expect("classic adapter owns its heap range");
+        context.attach_memory(0x0020_0000, classic_heap, &mut native.memory);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 16)
+            .unwrap();
+        classic_bus.write_bytes(ptr, b"disposed classic");
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager.borrow_mut().set_state_for_handle(handle, 0x80);
+        let mut detached = native.clone();
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.gpr[3] = handle;
+            let probe =
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NO_ERR)
+            );
+            assert_eq!(PpcMemory::read_u32_be(&mut native.memory, handle), Some(ptr));
+            assert_eq!(memory_manager.classic_allocation_size(handle), None);
+            assert_eq!(memory_manager.classic_allocation_size(ptr), None);
+            assert_eq!(memory_manager.recover_handle(ptr), Some(handle));
+            assert_eq!(memory_manager.state_for_handle(handle), None);
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::RecoverHandle;
+            native.cpu.gpr[3] = ptr;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], handle);
+        });
+
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        let reused = context
+            .memory_manager_mut()
+            .new_empty_classic_handle(&mut classic_bus)
+            .unwrap();
+        assert_eq!(reused, handle);
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[3] = ptr;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], 0);
+            assert_eq!(memory_manager.recover_handle(ptr), None);
+        });
+
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle),
+            Some(ptr)
+        );
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(detached_manager.classic_allocation_size(handle), Some(4));
+        assert_eq!(detached_manager.classic_allocation_size(ptr), Some(16));
+        assert_eq!(detached_manager.recover_handle(ptr), Some(handle));
+        assert_eq!(detached_manager.state_for_handle(handle), Some(0x80));
+    }
+
+    #[test]
+    fn ppc_handle_release_does_not_bypass_classic_resource_manager_ownership() {
+        let pef = synthetic_pef_with_import(b"DisposeHandle");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+
+        let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let classic_heap = classic_bus
+            .shared_ram_region(0x0020_0000, 0x2000)
+            .expect("classic adapter owns its heap range");
+        context.attach_memory(0x0020_0000, classic_heap, &mut native.memory);
+        let ptr = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 16);
+        classic_bus.write_bytes(ptr, b"classic resource");
+        let handle =
+            classic.get_or_create_resource_handle(&mut classic_bus, *b"TEST", 128, ptr);
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager
+            .borrow_mut()
+            .set_process_handle_purgeable(handle, false);
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeHandle;
+            native.cpu.gpr[3] = handle;
+            let probe =
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NO_ERR)
+            );
+            assert_eq!(PpcMemory::read_u32_be(&mut native.memory, handle), Some(ptr));
+            assert_eq!(memory_manager.classic_allocation_size(handle), Some(4));
+            assert_eq!(memory_manager.classic_allocation_size(ptr), Some(16));
+            assert_eq!(memory_manager.recover_handle(ptr), Some(handle));
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0x20));
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::EmptyHandle;
+            native.cpu.gpr[3] = handle;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NIL_HANDLE_ERR)
+            );
+            assert_eq!(PpcMemory::read_u32_be(&mut native.memory, handle), Some(ptr));
+            assert_eq!(memory_manager.classic_allocation_size(handle), Some(4));
+            assert_eq!(memory_manager.classic_allocation_size(ptr), Some(16));
+            assert_eq!(memory_manager.recover_handle(ptr), Some(handle));
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0x20));
+        });
+
+        assert_eq!(classic_bus.read_long(handle), ptr);
+        assert_eq!(classic_bus.read_bytes(ptr, 16), b"classic resource");
+
+        let mut classic_cpu = crate::trap::test_helpers::MockCpu::new();
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_bus.write_long(TEST_SP, handle);
+        assert!(classic
+            .dispatch_toolbox(true, 0x1ad, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(classic_bus.read_word(0x0a60), 0);
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0));
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeHandle;
+            native.cpu.gpr[3] = handle;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(memory_manager.classic_allocation_size(handle), None);
+            assert_eq!(memory_manager.classic_allocation_size(ptr), None);
+            assert_eq!(memory_manager.state_for_handle(handle), None);
+        });
+    }
+
+    #[test]
+    fn ppc_dispose_handle_does_not_claim_an_external_pef_master_pointer() {
+        let pef = synthetic_pef_with_loader_and_data(
+            synthetic_loader(b"InterfaceLib", b"DisposeHandle"),
+            &[0; 0x80],
+        );
+        let mut native = load_pef_application(&pef).unwrap();
+        let handle = PPC_DATA_BASE + 0x40;
+        let before = ppc_memory_read_bytes(&mut native.memory, PPC_DATA_BASE, 0x80).unwrap();
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            let ptr = memory_manager.new_native_ptr(&mut native.memory, 32, true);
+            assert_ne!(ptr, 0);
+            PpcMemory::write_u32_be(&mut native.memory, handle, ptr).unwrap();
+            let heap_cursor = memory_manager.native_heap_state().unwrap().heap_cursor;
+            memory_manager.publish_external_native_resource_handle(handle, ptr, heap_cursor);
+            let expected =
+                ppc_memory_read_bytes(&mut native.memory, PPC_DATA_BASE, 0x80).unwrap();
+
+            native.cpu.gpr[3] = handle;
+            let probe =
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NO_ERR)
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut native.memory, PPC_DATA_BASE, 0x80),
+                Some(expected.clone())
+            );
+            assert!(memory_manager
+                .native_allocator()
+                .unwrap()
+                .ptrs
+                .iter()
+                .any(|record| record.ptr == ptr && record.size == 32));
+            assert_eq!(memory_manager.recover_handle(ptr), Some(handle));
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0x60));
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::EmptyHandle;
+            native.cpu.gpr[3] = handle;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NIL_HANDLE_ERR)
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut native.memory, PPC_DATA_BASE, 0x80),
+                Some(expected)
+            );
+            assert_eq!(memory_manager.recover_handle(ptr), Some(handle));
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0x60));
+        });
+
+        let after = ppc_memory_read_bytes(&mut native.memory, PPC_DATA_BASE, 0x80).unwrap();
+        assert_ne!(after, before);
+        assert_eq!(&after[..0x40], &before[..0x40]);
+        assert_eq!(&after[0x44..], &before[0x44..]);
     }
 
     #[test]
@@ -147235,6 +147547,24 @@ pub(crate) mod tests {
         );
         assert_ne!(handle, 0);
         let ptr = loaded.memory.read_u32_be(handle).unwrap();
+        loaded
+            .process_memory_manager
+            .0
+            .borrow_mut()
+            .set_process_handle_resource(handle, true);
+        loaded
+            .process_memory_manager
+            .0
+            .borrow_mut()
+            .set_process_handle_purgeable(handle, false);
+        assert_eq!(
+            loaded
+                .process_memory_manager
+                .0
+                .borrow()
+                .state_for_handle(handle),
+            Some(0x20)
+        );
         loaded.process_file_system.vfs_resources.push(PpcVfsResourceRecord {
             ref_num: 0,
             path: "Test App".to_string(),
@@ -147259,6 +147589,24 @@ pub(crate) mod tests {
         assert!(test_handle_records!(loaded)
             .iter()
             .any(|record| record.handle == handle));
+        assert_eq!(
+            loaded
+                .process_memory_manager
+                .0
+                .borrow()
+                .state_for_handle(handle),
+            Some(0)
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HGetState;
+        loaded.cpu.gpr[3] = handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResAttrs;

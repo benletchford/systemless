@@ -908,6 +908,9 @@ impl super::TrapDispatcher {
                         self.resident_resources.insert(key);
                         self.track_handle_ptr(existing_ptr, handle);
                     }
+                    self.update_handle_state_bits(handle, |state| {
+                        Some(state.unwrap_or(0x40) | 0x20)
+                    });
                     return handle;
                 }
             }
@@ -924,6 +927,9 @@ impl super::TrapDispatcher {
         self.loaded_handles.insert(handle, (ptr, res_type, res_id));
         self.resource_handle_files.insert(handle, refnum);
         self.remember_resource_handle_index(handle, key.0, key.1, key.2);
+        self.update_handle_state_bits(handle, |state| {
+            Some(state.unwrap_or(0x40) | 0x20)
+        });
         if materialize && ptr != 0 {
             self.resident_resources.insert(key);
             self.track_handle_ptr(ptr, handle);
@@ -1141,6 +1147,9 @@ impl super::TrapDispatcher {
 
     fn restore_loaded_resource_handle(&mut self, handle: u32, ptr: u32) {
         self.track_handle_ptr(ptr, handle);
+        self.update_handle_state_bits(handle, |state| {
+            Some(state.unwrap_or(0x40) | 0x20)
+        });
         if let (Some((_, res_type, res_id)), Some(refnum)) = (
             self.loaded_handles.get(&handle).copied(),
             self.resource_handle_files.get(&handle).copied(),
@@ -1307,6 +1316,9 @@ impl super::TrapDispatcher {
                 self.forget_resource_handle_index_for_handle(handle);
                 self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
+                self.update_handle_state_bits(handle, |state| {
+                    Some(state.unwrap_or(0x40) & !0x20)
+                });
                 bus.write_word(0x0A60, 0);
                 true
             }
@@ -2076,6 +2088,9 @@ impl super::TrapDispatcher {
                             self.detached_handle_files.insert(handle, refnum);
                         }
                         self.detached_handles.insert(handle, (res_type, res_id));
+                        self.update_handle_state_bits(handle, |state| {
+                            Some(state.unwrap_or(0x40) & !0x20)
+                        });
                         bus.write_word(0x0A60, 0);
                     }
                 } else {
@@ -3165,6 +3180,9 @@ impl super::TrapDispatcher {
                     self.loaded_handles.insert(handle, (ptr, res_type, res_id));
                     self.resource_handle_files.insert(handle, refnum);
                     self.remember_resource_handle_index(handle, refnum, res_type, res_id);
+                    self.update_handle_state_bits(handle, |state| {
+                        Some(state.unwrap_or(0x40) | 0x20)
+                    });
 
                     let mut added_to_file = false;
                     if let Some(resources) = self.resources.as_mut() {
