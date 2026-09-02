@@ -1834,14 +1834,20 @@ impl SharedClassicHeapAllocator {
         Self(Rc::new(RefCell::new(state)))
     }
 
-    pub(crate) fn claim_owner(&self, owner_id: usize) {
-        let mut state = self.0.borrow_mut();
-        match state.owner_id {
-            Some(existing) => assert_eq!(
+    fn assert_can_claim_owner(&self, owner_id: usize) {
+        if let Some(existing) = self.0.borrow().owner_id {
+            assert_eq!(
                 existing, owner_id,
                 "cannot attach a classic heap owned by another process"
-            ),
-            None => state.owner_id = Some(owner_id),
+            );
+        }
+    }
+
+    pub(crate) fn claim_owner(&self, owner_id: usize) {
+        self.assert_can_claim_owner(owner_id);
+        let mut state = self.0.borrow_mut();
+        if state.owner_id.is_none() {
+            state.owner_id = Some(owner_id);
         }
     }
 
@@ -2357,19 +2363,31 @@ impl ProcessNativeMemoryManager {
     pub(crate) fn attach_classic_memory_bus(&mut self, bus: &mut MacMemoryBus) {
         let owner_id = Rc::as_ptr(&self.classic_owner) as usize;
         let bus_allocator = bus.shared_classic_heap_allocator();
+
+        bus_allocator.assert_can_claim_owner(owner_id);
+        let bus_is_pristine = bus_allocator.is_pristine();
+        if let Some(allocator) = self.classic_allocator.as_ref() {
+            if !allocator.ptr_eq(&bus_allocator) {
+                assert!(
+                    allocator.is_pristine() || bus_is_pristine,
+                    "cannot attach two populated classic heap allocators"
+                );
+            }
+        }
         bus_allocator.claim_owner(owner_id);
+
         if let Some(allocator) = &self.classic_allocator {
             if allocator.ptr_eq(&bus_allocator) {
                 return;
             }
-            if allocator.is_pristine() && !bus_allocator.is_pristine() {
+            if allocator.is_pristine() && !bus_is_pristine {
                 allocator.replace_pristine_state_from(&bus_allocator);
                 bus.replace_adopted_classic_heap_allocator(allocator.clone());
             } else {
                 bus.attach_classic_heap_allocator(allocator.clone());
             }
         } else {
-            self.classic_allocator = Some(bus.shared_classic_heap_allocator());
+            self.classic_allocator = Some(bus_allocator);
         }
     }
 
@@ -5098,6 +5116,10 @@ mod tests {
         }
     }
 
+    fn classic_owner_id(allocator: &SharedClassicHeapAllocator) -> Option<usize> {
+        allocator.0.borrow().owner_id
+    }
+
     #[test]
     fn process_context_owns_the_memory_mapping_for_cpu_adapters() {
         let mut context = ProcessContext::default();
@@ -5220,6 +5242,8 @@ mod tests {
         let mut context = ProcessContext::default();
         let mut primary = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut primary);
+        let primary_allocator = primary.shared_classic_heap_allocator();
+        let primary_owner_before = classic_owner_id(&primary_allocator);
         let primary_ptr = context
             .memory_manager_mut()
             .new_classic_ptr(&mut primary, 24);
@@ -5227,6 +5251,8 @@ mod tests {
 
         let mut second = MacMemoryBus::new(8 * 1024 * 1024);
         let second_ptr = second.alloc(24);
+        let second_allocator = second.shared_classic_heap_allocator();
+        let second_owner_before = classic_owner_id(&second_allocator);
         assert_ne!(second_ptr, 0);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             context.attach_classic_memory_bus(&mut second);
@@ -5242,6 +5268,82 @@ mod tests {
             Some(24)
         );
         assert_eq!(second.get_alloc_size(second_ptr), Some(24));
+        assert_eq!(classic_owner_id(&primary_allocator), primary_owner_before);
+        assert_eq!(classic_owner_id(&second_allocator), second_owner_before);
+    }
+
+    #[test]
+    fn rejected_populated_classic_bus_can_attach_to_a_fresh_process() {
+        let mut original_context = ProcessContext::default();
+        let mut original_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        original_context.attach_classic_memory_bus(&mut original_bus);
+        let original_ptr = original_context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut original_bus, 24);
+        let original_allocator = original_bus.shared_classic_heap_allocator();
+        let original_owner = classic_owner_id(&original_allocator);
+
+        let mut incoming_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        let incoming_ptr = incoming_bus.alloc(32);
+        let incoming_allocator = incoming_bus.shared_classic_heap_allocator();
+        let incoming_owner = classic_owner_id(&incoming_allocator);
+        let incoming_cursor = incoming_bus.heap_bump_ptr();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            original_context.attach_classic_memory_bus(&mut incoming_bus);
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(classic_owner_id(&original_allocator), original_owner);
+        assert_eq!(classic_owner_id(&incoming_allocator), incoming_owner);
+        assert_eq!(incoming_bus.heap_bump_ptr(), incoming_cursor);
+        assert_eq!(incoming_bus.get_alloc_size(incoming_ptr), Some(32));
+        assert_eq!(
+            original_context
+                .memory_manager
+                .borrow()
+                .classic_allocation_size(original_ptr),
+            Some(24)
+        );
+
+        let mut fresh_context = ProcessContext::default();
+        fresh_context.attach_classic_memory_bus(&mut incoming_bus);
+
+        assert_eq!(fresh_context.classic_heap_bump_ptr(), incoming_cursor);
+        assert_eq!(
+            fresh_context
+                .memory_manager
+                .borrow()
+                .classic_allocation_size(incoming_ptr),
+            Some(32)
+        );
+        assert_eq!(incoming_bus.get_alloc_size(incoming_ptr), Some(32));
+        assert_ne!(classic_owner_id(&incoming_allocator), incoming_owner);
+    }
+
+    #[test]
+    fn populated_process_allocator_attaches_a_pristine_bus() {
+        let mut context = ProcessContext::default();
+        let mut attached_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut attached_bus);
+        let ptr = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut attached_bus, 24);
+        let process_allocator = attached_bus.shared_classic_heap_allocator();
+        let process_owner = classic_owner_id(&process_allocator);
+
+        let mut pristine_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut pristine_bus);
+
+        assert!(
+            process_allocator.ptr_eq(&pristine_bus.shared_classic_heap_allocator()),
+            "successful attachment must share the process allocator"
+        );
+        assert_eq!(
+            classic_owner_id(&pristine_bus.shared_classic_heap_allocator()),
+            process_owner
+        );
+        assert_eq!(pristine_bus.get_alloc_size(ptr), Some(24));
     }
 
     #[test]
@@ -5249,6 +5351,8 @@ mod tests {
         let mut context = ProcessContext::default();
         let mut first_adapter = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut first_adapter);
+        let process_allocator = first_adapter.shared_classic_heap_allocator();
+        let process_owner = classic_owner_id(&process_allocator);
 
         let mut populated = MacMemoryBus::new(8 * 1024 * 1024);
         let ptr = populated.alloc(24);
@@ -5259,6 +5363,14 @@ mod tests {
         assert_eq!(
             context.memory_manager.borrow().classic_allocation_size(ptr),
             Some(24)
+        );
+        assert!(
+            process_allocator.ptr_eq(&populated.shared_classic_heap_allocator()),
+            "successful adoption must retain the process allocator identity"
+        );
+        assert_eq!(
+            classic_owner_id(&populated.shared_classic_heap_allocator()),
+            process_owner
         );
         assert_eq!(first_adapter.get_alloc_size(ptr), Some(24));
         context
