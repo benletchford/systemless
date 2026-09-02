@@ -209,6 +209,7 @@ pub const PPC_NSV_ERR: i16 = -35;
 pub const PPC_FNF_ERR: i16 = -43;
 pub const PPC_DUP_FN_ERR: i16 = -48;
 pub const PPC_RF_NUM_ERR: i16 = -51;
+pub const PPC_WR_PERM_ERR: i16 = -61;
 pub const PPC_PARAM_ERR: i16 = -50;
 pub const PPC_C_RES_ERR: i16 = -156;
 pub const PPC_DIR_NF_ERR: i16 = -120;
@@ -7260,6 +7261,7 @@ impl PpcLoadedApp {
         let mut vbl_tasks = std::mem::take(&mut self.vbl_tasks);
         let mut callback_scheduling = std::mem::take(&mut self.callback_scheduling);
         let mut files = std::mem::take(&mut self.files);
+        let mut writable_refnums = self.process_file_system.writable_refnums.shared_handle();
         let mut stdio_streams = std::mem::take(&mut self.stdio_streams);
         let mut vfs_files = std::mem::take(&mut self.vfs_files);
         let mut deleted_vfs_file_paths = std::mem::take(&mut self.deleted_vfs_file_paths);
@@ -7803,6 +7805,7 @@ impl PpcLoadedApp {
                         &mut vbl_tasks,
                         &mut callback_scheduling,
                         &mut files,
+                        &mut writable_refnums,
                         &mut vfs_files,
                         &mut stdio_streams,
                         &mut deleted_vfs_file_paths,
@@ -15043,6 +15046,7 @@ fn dispatch_supported_import(
     vbl_tasks: &mut Vec<PpcVblTaskRecord>,
     callback_scheduling: &mut ProcessCallbackScheduling,
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     vfs_files: &mut ProcessVfsFileRecords,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
     deleted_vfs_file_paths: &mut Vec<String>,
@@ -20409,6 +20413,7 @@ fn dispatch_supported_import(
                 vfs_directories,
                 vfs_files,
                 files,
+                writable_refnums,
                 next_file_ref_num,
             ))))
         }
@@ -20419,6 +20424,7 @@ fn dispatch_supported_import(
                 vfs_directories,
                 vfs_files,
                 files,
+                writable_refnums,
                 next_file_ref_num,
                 default_dir_id,
             );
@@ -20544,6 +20550,7 @@ fn dispatch_supported_import(
                 vfs_directories,
                 vfs_files,
                 files,
+                writable_refnums,
                 next_file_ref_num,
                 default_dir_id,
             ))))
@@ -20586,10 +20593,10 @@ fn dispatch_supported_import(
             ),
         ))),
         PpcImportDispatcherTarget::FSClose => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fs_close(cpu, files),
+            ppc_fs_close(cpu, files, writable_refnums),
         ))),
         PpcImportDispatcherTarget::PBClose => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_close(cpu, memory, files),
+            ppc_pb_close(cpu, memory, files, writable_refnums),
         ))),
         PpcImportDispatcherTarget::PBFlushFile => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_flush_file(cpu, memory, files),
@@ -20601,10 +20608,10 @@ fn dispatch_supported_import(
             ppc_pb_read(cpu, memory, files, vfs_files),
         ))),
         PpcImportDispatcherTarget::FSWrite => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fs_write(cpu, memory, files, vfs_files),
+            ppc_fs_write(cpu, memory, files, writable_refnums, vfs_files),
         ))),
         PpcImportDispatcherTarget::PBWrite => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_write(cpu, memory, files, vfs_files),
+            ppc_pb_write(cpu, memory, files, writable_refnums, vfs_files),
         ))),
         PpcImportDispatcherTarget::GetEOF => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_get_eof(cpu, memory, files, vfs_files),
@@ -20613,13 +20620,13 @@ fn dispatch_supported_import(
             ppc_pb_get_eof(cpu, memory, files, vfs_files),
         ))),
         PpcImportDispatcherTarget::SetEOF => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_set_eof(cpu, files, vfs_files),
+            ppc_set_eof(cpu, files, writable_refnums, vfs_files),
         ))),
         PpcImportDispatcherTarget::AllocContig => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_alloc_contig(cpu, memory, files),
+            ppc_alloc_contig(cpu, memory, files, writable_refnums),
         ))),
         PpcImportDispatcherTarget::PBSetEOF => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_set_eof(cpu, memory, files, vfs_files),
+            ppc_pb_set_eof(cpu, memory, files, writable_refnums, vfs_files),
         ))),
         PpcImportDispatcherTarget::GetFPos => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_get_fpos(cpu, memory, files),
@@ -20804,6 +20811,7 @@ fn dispatch_supported_import(
                 vfs_directories,
                 vfs_files,
                 files,
+                writable_refnums,
                 next_file_ref_num,
             ))))
         }
@@ -22766,6 +22774,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 files,
+                writable_refnums,
                 vfs_files,
                 next_file_ref_num,
                 stdio_streams,
@@ -28371,6 +28380,7 @@ fn ppc_dispatch_stdio_compatibility(
     next_file_ref_num: &mut i16,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
 ) -> PpcImportAction {
+    let mut writable_refnums = HashSet::new();
     ppc_dispatch_stdio_compatibility_with_manager(
         binding,
         cpu,
@@ -28379,6 +28389,7 @@ fn ppc_dispatch_stdio_compatibility(
         heap_cursor,
         heap_limit,
         files,
+        &mut writable_refnums,
         vfs_files,
         next_file_ref_num,
         stdio_streams,
@@ -28394,6 +28405,7 @@ fn ppc_dispatch_process_stdio_compatibility(
     heap_cursor: &mut u32,
     heap_limit: u32,
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     vfs_files: &mut ProcessVfsFileRecords,
     next_file_ref_num: &mut i16,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
@@ -28406,6 +28418,7 @@ fn ppc_dispatch_process_stdio_compatibility(
         heap_cursor,
         heap_limit,
         files,
+        writable_refnums,
         vfs_files,
         next_file_ref_num,
         stdio_streams,
@@ -28421,6 +28434,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
     heap_cursor: &mut u32,
     heap_limit: u32,
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     vfs_files: &mut ProcessVfsFileRecords,
     next_file_ref_num: &mut i16,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
@@ -28505,6 +28519,9 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
                 path: path.clone(),
                 position,
             });
+            if writable {
+                writable_refnums.insert(ref_num as u16);
+            }
             stdio_streams.insert(
                 stream_ptr,
                 PpcStdioStreamRecord {
@@ -28534,6 +28551,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             if !record.standard {
                 if let Some(ref_num) = record.ref_num {
                     files.retain(|file| file.ref_num != ref_num);
+                    writable_refnums.remove(&(ref_num as u16));
                 }
             }
             PpcImportAction::Return(0)
@@ -79944,16 +79962,23 @@ fn ppc_wrap_quilt_raw_pict_frames(resources: &mut [PpcVfsResourceRecord]) {
     }
 }
 
+fn ppc_file_permission_allows_writing(permission: u8) -> bool {
+    // Inside Macintosh: Files (1992), pp. 2-7--2-8: fsCurPerm grants
+    // read/write when available, and fsWrPerm is synonymous with fsRdWrPerm.
+    matches!(permission, 0 | 2 | 3 | 4)
+}
+
 fn ppc_fsp_open_df(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut Vec<PpcVfsFileRecord>,
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
 ) -> i16 {
     let spec_ptr = cpu.gpr[3];
-    let _permission = cpu.gpr[4] as u8;
+    let permission = cpu.gpr[4] as u8;
     let ref_num_out_ptr = cpu.gpr[5];
     if ref_num_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, ref_num_out_ptr, 2) {
         return PPC_PARAM_ERR;
@@ -79974,7 +79999,7 @@ fn ppc_fsp_open_df(
     if ppc_hle_trace_enabled() {
         eprintln!(
             "[PPC-TRACE] FSpOpenDF path=\"{}\" permission={} data_len={} result={}",
-            path, _permission, opened_data_len, PPC_NO_ERR
+            path, permission, opened_data_len, PPC_NO_ERR
         );
     }
     let _ = memory.write_u16_be(ref_num_out_ptr, ref_num as u16);
@@ -79983,6 +80008,9 @@ fn ppc_fsp_open_df(
         path,
         position: 0,
     });
+    if ppc_file_permission_allows_writing(permission) {
+        writable_refnums.insert(ref_num as u16);
+    }
     *next_file_ref_num = next_ref_num;
     PPC_NO_ERR
 }
@@ -79993,6 +80021,7 @@ fn ppc_h_open(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
     default_dir_id: u32,
 ) -> i16 {
@@ -80005,11 +80034,13 @@ fn ppc_h_open(
         vfs_directories,
         vfs_files,
         files,
+        writable_refnums,
         next_file_ref_num,
         default_dir_id,
         vref,
         dir_id,
         cpu.gpr[5],
+        cpu.gpr[6] as u8,
         cpu.gpr[7],
     )
 }
@@ -80020,6 +80051,7 @@ fn ppc_fs_open(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
     default_dir_id: u32,
 ) -> i16 {
@@ -80030,11 +80062,13 @@ fn ppc_fs_open(
         vfs_directories,
         vfs_files,
         files,
+        writable_refnums,
         next_file_ref_num,
         default_dir_id,
         0,
         0,
         cpu.gpr[3],
+        cpu.gpr[4] as u8,
         cpu.gpr[5],
     )
 }
@@ -80045,11 +80079,13 @@ fn ppc_open_data_fork_by_name(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
     default_dir_id: u32,
     vref: i16,
     dir_id: u32,
     name_ptr: u32,
+    permission: u8,
     ref_num_out_ptr: u32,
 ) -> i16 {
     if !matches!(vref, 0 | PPC_BOOT_VOLUME_REF_NUM)
@@ -80091,6 +80127,9 @@ fn ppc_open_data_fork_by_name(
         path,
         position: 0,
     });
+    if ppc_file_permission_allows_writing(permission) {
+        writable_refnums.insert(ref_num as u16);
+    }
     *next_file_ref_num = next_ref_num;
     PPC_NO_ERR
 }
@@ -80101,6 +80140,7 @@ fn ppc_pbh_open_df(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut [PpcVfsFileRecord],
     files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
 ) -> i16 {
     let pb = cpu.gpr[3];
@@ -80114,6 +80154,9 @@ fn ppc_pbh_open_df(
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
     let Some(dir_id) = memory.read_u32_be(pb + 48) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(permission) = memory.read_u8(pb + 27) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
     let name = ppc_normalize_vfs_path(&decode_mac_roman(&name_bytes));
@@ -80147,17 +80190,30 @@ fn ppc_pbh_open_df(
         path,
         position: 0,
     });
+    if ppc_file_permission_allows_writing(permission) {
+        writable_refnums.insert(ref_num as u16);
+    }
     *next_file_ref_num = next_ref_num;
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_fs_close(cpu: &mut PpcCpu, files: &mut Vec<PpcFileRecord>) -> i16 {
+fn ppc_fs_close(
+    cpu: &mut PpcCpu,
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+) -> i16 {
     let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
     files.retain(|file| file.ref_num != ref_num);
+    writable_refnums.remove(&(ref_num as u16));
     PPC_NO_ERR
 }
 
-fn ppc_pb_close(cpu: &PpcCpu, memory: &mut PpcSectionMem, files: &mut Vec<PpcFileRecord>) -> i16 {
+fn ppc_pb_close(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+) -> i16 {
     let pb = cpu.gpr[3];
     let Some(ref_num) = memory.read_u16_be(pb + 24).map(|value| value as i16) else {
         return PPC_PARAM_ERR;
@@ -80166,6 +80222,7 @@ fn ppc_pb_close(cpu: &PpcCpu, memory: &mut PpcSectionMem, files: &mut Vec<PpcFil
         return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
     }
     files.retain(|file| file.ref_num != ref_num);
+    writable_refnums.remove(&(ref_num as u16));
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
@@ -80277,6 +80334,7 @@ fn ppc_pb_write(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     files: &mut [PpcFileRecord],
+    writable_refnums: &HashSet<u16>,
     vfs_files: &mut [PpcVfsFileRecord],
 ) -> i16 {
     let pb = cpu.gpr[3];
@@ -80306,6 +80364,9 @@ fn ppc_pb_write(
     let Some(file_index) = files.iter().position(|file| file.ref_num == ref_num) else {
         return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
     };
+    if !writable_refnums.contains(&(ref_num as u16)) {
+        return ppc_complete_pb(memory, pb, PPC_WR_PERM_ERR);
+    }
     let Some(vfs_file_index) = vfs_files
         .iter()
         .position(|record| record.path.eq_ignore_ascii_case(&files[file_index].path))
@@ -80371,6 +80432,7 @@ fn ppc_pb_set_eof(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     files: &mut [PpcFileRecord],
+    writable_refnums: &HashSet<u16>,
     vfs_files: &mut [PpcVfsFileRecord],
 ) -> i16 {
     let pb = cpu.gpr[3];
@@ -80383,6 +80445,9 @@ fn ppc_pb_set_eof(
     let Some(file_index) = files.iter().position(|file| file.ref_num == ref_num) else {
         return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
     };
+    if !writable_refnums.contains(&(ref_num as u16)) {
+        return ppc_complete_pb(memory, pb, PPC_WR_PERM_ERR);
+    }
     let Some(vfs_file) = vfs_files
         .iter_mut()
         .find(|record| record.path.eq_ignore_ascii_case(&files[file_index].path))
@@ -80970,7 +81035,12 @@ fn ppc_get_eof(
     }
 }
 
-fn ppc_alloc_contig(cpu: &PpcCpu, memory: &mut PpcSectionMem, files: &[PpcFileRecord]) -> i16 {
+fn ppc_alloc_contig(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    files: &[PpcFileRecord],
+    writable_refnums: &HashSet<u16>,
+) -> i16 {
     // Files (1992), pp. 2-119--2-120: AllocContig reserves physical file
     // blocks without changing logical EOF. The virtual filesystem has no
     // physical allocation map, so a valid open fork can satisfy the request.
@@ -80978,6 +81048,9 @@ fn ppc_alloc_contig(cpu: &PpcCpu, memory: &mut PpcSectionMem, files: &[PpcFileRe
     let count_ptr = cpu.gpr[4];
     if !files.iter().any(|file| file.ref_num == ref_num) {
         return PPC_RF_NUM_ERR;
+    }
+    if !writable_refnums.contains(&(ref_num as u16)) {
+        return PPC_WR_PERM_ERR;
     }
     if count_ptr == 0 || !ppc_memory_can_write_bytes(memory, count_ptr, 4) {
         return PPC_PARAM_ERR;
@@ -80988,6 +81061,7 @@ fn ppc_alloc_contig(cpu: &PpcCpu, memory: &mut PpcSectionMem, files: &[PpcFileRe
 fn ppc_set_eof(
     cpu: &mut PpcCpu,
     files: &mut [PpcFileRecord],
+    writable_refnums: &HashSet<u16>,
     vfs_files: &mut [PpcVfsFileRecord],
 ) -> i16 {
     let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
@@ -80999,6 +81073,9 @@ fn ppc_set_eof(
     else {
         return PPC_RF_NUM_ERR;
     };
+    if !writable_refnums.contains(&(ref_num as u16)) {
+        return PPC_WR_PERM_ERR;
+    }
     let Some(vfs_file) = vfs_files
         .iter_mut()
         .find(|record| record.path.eq_ignore_ascii_case(&path))
@@ -81135,6 +81212,7 @@ fn ppc_fs_write(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     files: &mut [PpcFileRecord],
+    writable_refnums: &HashSet<u16>,
     vfs_files: &mut Vec<PpcVfsFileRecord>,
 ) -> i16 {
     let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
@@ -81154,6 +81232,9 @@ fn ppc_fs_write(
     }
     if requested_count > 0 && !ppc_memory_can_read_bytes(memory, buffer_ptr, requested_count) {
         return PPC_PARAM_ERR;
+    }
+    if !writable_refnums.contains(&(ref_num as u16)) {
+        return PPC_WR_PERM_ERR;
     }
     let Some(vfs_file) = ppc_vfs_file_mut(vfs_files, &file.path) else {
         return PPC_FNF_ERR;
@@ -89443,6 +89524,10 @@ pub(crate) mod tests {
                 path: "Shared Data".to_string(),
                 position: 4,
             });
+        native
+            .process_file_system
+            .writable_refnums
+            .insert(PPC_FIRST_FILE_REF_NUM as u16);
         native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
 
         let mut context = ProcessContext::default();
@@ -89452,6 +89537,9 @@ pub(crate) mod tests {
         classic.attach_process_context(&mut context);
 
         assert!(classic.open_files.ptr_eq(&native.files));
+        assert!(classic
+            .write_refnums
+            .ptr_eq(&native.process_file_system.writable_refnums));
         assert_eq!(
             classic
                 .open_files
@@ -89464,6 +89552,14 @@ pub(crate) mod tests {
             .file_positions
             .insert(PPC_FIRST_FILE_REF_NUM as u16, 9);
         assert_eq!(native.files[0].position, 9);
+
+        classic
+            .write_refnums
+            .remove(&(PPC_FIRST_FILE_REF_NUM as u16));
+        assert!(!native
+            .process_file_system
+            .writable_refnums
+            .contains(&(PPC_FIRST_FILE_REF_NUM as u16)));
 
         native.files[0].position = 12;
         assert_eq!(
@@ -89480,11 +89576,24 @@ pub(crate) mod tests {
             .open_files
             .insert(next_refnum, "Classic Data".to_string());
         classic.file_positions.insert(next_refnum, 3);
+        native
+            .process_file_system
+            .writable_refnums
+            .insert(next_refnum);
         assert_eq!(native.files.last().unwrap().path, "Classic Data");
         assert_eq!(native.files.last().unwrap().position, 3);
+        assert!(classic.write_refnums.contains(&next_refnum));
 
         assert_eq!(detached.files.len(), 1);
         assert_eq!(detached.files[0].position, 4);
+        assert!(detached
+            .process_file_system
+            .writable_refnums
+            .contains(&(PPC_FIRST_FILE_REF_NUM as u16)));
+        assert!(!detached
+            .process_file_system
+            .writable_refnums
+            .contains(&next_refnum));
         assert_eq!(detached.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 1);
     }
 
@@ -142249,6 +142358,27 @@ pub(crate) mod tests {
         assert_eq!(loaded.vfs_files[0].data, b"prefs");
         assert!(!loaded.vfs_files[0].dirty);
         assert_eq!(loaded.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 1);
+        assert!(!loaded
+            .process_file_system
+            .writable_refnums
+            .contains(&(PPC_FIRST_FILE_REF_NUM as u16)));
+
+        let count_ptr = scratch + 84;
+        let buffer_ptr = scratch + 88;
+        loaded.memory.write_u32_be(count_ptr, 1).unwrap();
+        loaded.memory.write_u8(buffer_ptr, b'x').unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FSWrite;
+        loaded.cpu.gpr[3] = PPC_FIRST_FILE_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = count_ptr;
+        loaded.cpu.gpr[5] = buffer_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_WR_PERM_ERR));
+        assert_eq!(loaded.memory.read_u32_be(count_ptr), Some(1));
+        assert_eq!(loaded.vfs_files[0].data, b"prefs");
     }
 
     #[test]
@@ -144371,6 +144501,10 @@ pub(crate) mod tests {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             position: 0,
         });
+        loaded
+            .process_file_system
+            .writable_refnums
+            .insert(PPC_FIRST_FILE_REF_NUM as u16);
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"abcdef".to_vec()).into(),
@@ -144590,6 +144724,10 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         let ref_num = loaded.memory.read_u16_be(ref_num_out_ptr).unwrap() as i16;
+        assert!(loaded
+            .process_file_system
+            .writable_refnums
+            .contains(&(ref_num as u16)));
 
         for (offset, byte) in b"prefs".iter().copied().enumerate() {
             loaded
@@ -144633,6 +144771,10 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.files.len(), 0);
+        assert!(!loaded
+            .process_file_system
+            .writable_refnums
+            .contains(&(ref_num as u16)));
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FSpOpenDF;
