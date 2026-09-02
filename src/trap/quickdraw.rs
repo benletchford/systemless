@@ -44178,7 +44178,7 @@ mod tests {
         );
         assert_eq!(
             *d.file_positions.get(&100).unwrap(),
-            pic_size,
+            u32::try_from(pic_size).unwrap(),
             "spooled DrawPicture should ignore a short picSize and advance through EndOfPicture"
         );
     }

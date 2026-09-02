@@ -402,6 +402,152 @@ pub struct ProcessOpenFileRecord {
     pub position: u32,
 }
 
+/// Detached-by-default open-file records for one process File Manager.
+///
+/// Native code uses the record slice directly. The classic adapter installs
+/// map-shaped path and position views over the same allocation so both ABIs
+/// observe one refnum and one file mark during Mixed Mode calls.
+#[derive(Debug)]
+pub(crate) struct SharedProcessOpenFiles(Rc<UnsafeCell<Vec<ProcessOpenFileRecord>>>);
+
+impl Default for SharedProcessOpenFiles {
+    fn default() -> Self {
+        Self(Rc::new(UnsafeCell::new(Vec::new())))
+    }
+}
+
+impl Clone for SharedProcessOpenFiles {
+    fn clone(&self) -> Self {
+        Self::from_records((**self).clone())
+    }
+}
+
+impl std::ops::Deref for SharedProcessOpenFiles {
+    type Target = Vec<ProcessOpenFileRecord>;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: process adapters execute serially and ordinary clones detach.
+        unsafe { &*self.0.get() }
+    }
+}
+
+impl std::ops::DerefMut for SharedProcessOpenFiles {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: see `Deref`.
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+impl SharedProcessOpenFiles {
+    fn from_records(records: Vec<ProcessOpenFileRecord>) -> Self {
+        Self(Rc::new(UnsafeCell::new(records)))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
+    pub(crate) fn positions(&self) -> SharedProcessOpenFilePositions {
+        SharedProcessOpenFilePositions(Rc::clone(&self.0))
+    }
+
+    pub(crate) fn get(&self, ref_num: &u16) -> Option<&String> {
+        let ref_num = i16::try_from(*ref_num).ok()?;
+        self.iter()
+            .find(|record| record.ref_num == ref_num)
+            .map(|record| &record.path)
+    }
+
+    pub(crate) fn insert(&mut self, ref_num: u16, path: String) -> Option<String> {
+        let Ok(ref_num) = i16::try_from(ref_num) else {
+            return None;
+        };
+        if let Some(record) = self.iter_mut().find(|record| record.ref_num == ref_num) {
+            return Some(std::mem::replace(&mut record.path, path));
+        }
+        self.push(ProcessOpenFileRecord {
+            ref_num,
+            path,
+            position: 0,
+        });
+        None
+    }
+
+    pub(crate) fn remove(&mut self, ref_num: &u16) -> Option<String> {
+        let ref_num = i16::try_from(*ref_num).ok()?;
+        let index = self.iter().position(|record| record.ref_num == ref_num)?;
+        Some(Vec::remove(self, index).path)
+    }
+
+    pub(crate) fn contains_key(&self, ref_num: &u16) -> bool {
+        self.get(ref_num).is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Classic File Manager position-map view over process open-file records.
+#[derive(Debug)]
+pub(crate) struct SharedProcessOpenFilePositions(
+    Rc<UnsafeCell<Vec<ProcessOpenFileRecord>>>,
+);
+
+impl SharedProcessOpenFilePositions {
+    pub(crate) fn get(&self, ref_num: &u16) -> Option<&u32> {
+        let ref_num = i16::try_from(*ref_num).ok()?;
+        // SAFETY: this view shares the same serialized process allocation as
+        // `SharedProcessOpenFiles`.
+        unsafe { &*self.0.get() }
+            .iter()
+            .find(|record| record.ref_num == ref_num)
+            .map(|record| &record.position)
+    }
+
+    pub(crate) fn get_mut(&mut self, ref_num: &u16) -> Option<&mut u32> {
+        let ref_num = i16::try_from(*ref_num).ok()?;
+        // SAFETY: see `get`; mutable adapter access is serialized.
+        unsafe { &mut *self.0.get() }
+            .iter_mut()
+            .find(|record| record.ref_num == ref_num)
+            .map(|record| &mut record.position)
+    }
+
+    pub(crate) fn insert(&mut self, ref_num: u16, position: usize) -> Option<usize> {
+        let position = u32::try_from(position).unwrap_or(u32::MAX);
+        if let Some(old) = self.get(&ref_num).copied() {
+            *self
+                .get_mut(&ref_num)
+                .expect("open file disappeared while updating its position") = position;
+            return usize::try_from(old).ok();
+        }
+        let Ok(ref_num) = i16::try_from(ref_num) else {
+            return None;
+        };
+        // Some focused File Manager fixtures seed the mark before the path.
+        // A later path insertion fills this same canonical record.
+        unsafe { &mut *self.0.get() }.push(ProcessOpenFileRecord {
+            ref_num,
+            path: String::new(),
+            position,
+        });
+        None
+    }
+
+    pub(crate) fn remove(&mut self, ref_num: &u16) -> Option<usize> {
+        self.get(ref_num)
+            .copied()
+            .and_then(|position| usize::try_from(position).ok())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, ref_num: &u16) -> bool {
+        self.get(ref_num).is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessStdioStreamRecord {
     pub(crate) ref_num: Option<i16>,
@@ -702,7 +848,7 @@ impl ProcessResourceManagerState {
 /// Macintosh Volume I (1985), pp. I-109--I-110.
 #[derive(Debug, Clone)]
 pub struct ProcessFileSystemState {
-    pub(crate) files: Vec<ProcessOpenFileRecord>,
+    pub(crate) files: SharedProcessOpenFiles,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
     pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
     pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
@@ -727,7 +873,7 @@ pub struct ProcessFileSystemState {
 impl Default for ProcessFileSystemState {
     fn default() -> Self {
         Self {
-            files: Vec::new(),
+            files: SharedProcessOpenFiles::default(),
             stdio_streams: HashMap::new(),
             vfs_volumes: SharedProcessValue::default(),
             vfs_directories: SharedProcessValue::default(),

@@ -6675,8 +6675,7 @@ impl super::TrapDispatcher {
                     // Mars Rising's installer pattern: open temp rsrc fork, write 81KB to
                     // it, close, then re-open and expect the 81KB to still be there. If we
                     // re-seed from vfs_rsrc here, the writes are lost.
-                    let refnum = self.next_refnum;
-                    self.next_refnum += 1;
+                    let refnum = self.allocate_process_file_refnum();
                     let rsrc_key = format!("__rsrc__{}", vfs_key);
                     self.vfs
                         .entry(rsrc_key.clone())
@@ -13773,8 +13772,7 @@ impl super::TrapDispatcher {
                             if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
                                 existing
                             } else {
-                                let refnum = self.next_refnum;
-                                self.next_refnum += 1;
+                                let refnum = self.allocate_process_file_refnum();
                                 self.register_empty_resource_file(refnum);
                                 self.set_resource_file_name(refnum, vfs_key.clone());
                                 if wants_write {
