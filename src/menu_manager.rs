@@ -1803,8 +1803,8 @@ pub(crate) fn for_each_standard_hierarchy_indicator_pixel(
     mid_y: i16,
     mut visit: impl FnMut(i16, i16),
 ) {
-    for dx in 0..7i16 {
-        let half_height = dx.min(6 - dx);
+    for dx in 0..6i16 {
+        let half_height = 5 - dx;
         for dy in -half_height..=half_height {
             visit(left.saturating_add(dx), mid_y.saturating_add(dy));
         }
@@ -4312,20 +4312,19 @@ mod tests {
         for_each_standard_hierarchy_indicator_pixel(40, 30, |x, y| {
             hierarchy.push((x, y));
         });
-        assert_eq!(hierarchy.len(), 25);
+        assert_eq!(hierarchy.len(), 36);
         assert_eq!(
-            (40..=46)
+            (40..=45)
                 .map(|x| hierarchy
                     .iter()
                     .filter(|(pixel_x, _)| *pixel_x == x)
                     .count())
                 .collect::<Vec<_>>(),
-            vec![1, 3, 5, 7, 5, 3, 1],
+            vec![11, 9, 7, 5, 3, 1],
         );
-        assert!(hierarchy.contains(&(40, 30)));
-        assert!(hierarchy.contains(&(43, 27)));
-        assert!(hierarchy.contains(&(43, 33)));
-        assert!(hierarchy.contains(&(46, 30)));
+        assert!(hierarchy.contains(&(40, 25)));
+        assert!(hierarchy.contains(&(40, 35)));
+        assert!(hierarchy.contains(&(45, 30)));
 
         let mut scroll_up = Vec::new();
         for_each_standard_scroll_up_indicator_pixel(50, 10, |x, y| scroll_up.push((x, y)));
