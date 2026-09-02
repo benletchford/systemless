@@ -9,6 +9,9 @@
  *   (More Macintosh Toolbox ch 4)
  * - Styled TextEdit runs, Font Manager lookup, and text measurement
  *   (Inside Macintosh: Text ch 2, 3, and 4)
+ * - Standard File Open/Save dialogs, file-type filtering, navigation,
+ *   cancellation, editable names, and returned FSSpec/SFReply records
+ *   (Inside Macintosh: Files ch 3)
  * - Control Manager & Standard CDEFs (Macintosh Toolbox Essentials ch 5)
  * - Dialog Manager & Alerts (Macintosh Toolbox Essentials ch 6)
  * - Sound Manager channels, sampled playback & command queues
@@ -23,6 +26,7 @@
 #include <ControlDefinitions.h>
 #include <Dialogs.h>
 #include <Events.h>
+#include <Files.h>
 #include <Fonts.h>
 #include <Memory.h>
 #include <Menus.h>
@@ -33,6 +37,7 @@
 #include <Quickdraw.h>
 #include <Resources.h>
 #include <Sound.h>
+#include <StandardFile.h>
 #include <TextEdit.h>
 #include <ToolUtils.h>
 #include <Windows.h>
@@ -85,6 +90,7 @@
 #define iLists 9
 #define iSound 10
 #define iStyledText 11
+#define iStandardFile 12
 
 /* State menu items */
 #define iButtonState 1
@@ -135,6 +141,7 @@
 #define pageLists 9
 #define pageSound 10
 #define pageStyledText 11
+#define pageStandardFile 12
 
 #define kInventoryRowCount 12
 #define listStatusNone 0
@@ -439,6 +446,26 @@ static TextStyle gStyledRunStyle;
 static short gStyledCharWidth;
 static short gStyledTextWidth;
 static short gStyledMeasureWidth;
+
+/* Page 12: Standard File */
+#define fileStatusNone 0
+#define fileStatusAccepted 1
+#define fileStatusCancelled 2
+#define fileStatusError 3
+
+static ControlHandle gFileOpen;
+static ControlHandle gFileLegacyOpen;
+static ControlHandle gFileSave;
+static ControlHandle gFileLegacySave;
+static StandardFileReply gFileOpenReply;
+static StandardFileReply gFileSaveReply;
+static SFReply gFileLegacyOpenReply;
+static SFReply gFileLegacySaveReply;
+static short gFileOpenStatus;
+static short gFileLegacyOpenStatus;
+static short gFileSaveStatus;
+static short gFileLegacySaveStatus;
+static SFTypeList gFileTypeList;
 
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
@@ -2227,6 +2254,120 @@ static void DrawStyledTextPage(void)
     DrawString("\pActual TEStyle runs drive the rendered colors, fonts, faces, and measured widths.");
 }
 
+/*
+ * Page 12: Standard File. Each button deliberately calls a different public
+ * entry point. The Open path enters the fixture folder and accepts the sole
+ * TEXT item; the legacy Open and Save paths are canceled; both Save paths
+ * begin with an editable default name. Inside Macintosh: Files (1992),
+ * pp. 3-42--3-54.
+ */
+static void DrawFileStatus(short status)
+{
+    if (status == fileStatusAccepted) {
+        DrawString("\paccepted");
+    } else if (status == fileStatusCancelled) {
+        DrawString("\pcancelled");
+    } else if (status == fileStatusError) {
+        DrawString("\perror");
+    } else {
+        DrawString("\pnot exercised");
+    }
+}
+
+static void DrawFileStatusLine(short top, ConstStr255Param label, short status)
+{
+    MoveTo(32, top);
+    DrawString(label);
+    DrawFileStatus(status);
+}
+
+static void DoStandardFileOpen(void)
+{
+    StandardGetFile(nil, 1, gFileTypeList, &gFileOpenReply);
+    gFileOpenStatus = gFileOpenReply.sfGood ? fileStatusAccepted : fileStatusCancelled;
+}
+
+static void DoLegacyFileOpen(void)
+{
+    Point where;
+
+    where.v = 0;
+    where.h = 0;
+    SFGetFile(where, "\pCancel this filtered legacy Open", nil, 1,
+              gFileTypeList, nil, &gFileLegacyOpenReply);
+    gFileLegacyOpenStatus = gFileLegacyOpenReply.good ? fileStatusAccepted : fileStatusCancelled;
+}
+
+static void DoStandardFileSave(void)
+{
+    OSErr err;
+
+    StandardPutFile("\pSave a named fixture", "\pUntitled", &gFileSaveReply);
+    if (!gFileSaveReply.sfGood) {
+        gFileSaveStatus = fileStatusCancelled;
+        return;
+    }
+
+    /* The returned FSSpec is consumed by File Manager, then removed so the
+     * next Open dialog sees only the immutable fixture entries. */
+    err = FSpCreate(&gFileSaveReply.sfFile, 'SHWC', 'TEXT', smSystemScript);
+    if (err == noErr) {
+        err = FSpDelete(&gFileSaveReply.sfFile);
+    }
+    gFileSaveStatus = err == noErr ? fileStatusAccepted : fileStatusError;
+}
+
+static void DoLegacyFileSave(void)
+{
+    Point where;
+
+    where.v = 0;
+    where.h = 0;
+    SFPutFile(where, "\pCancel this legacy Save", "\pUntitled", nil,
+              &gFileLegacySaveReply);
+    gFileLegacySaveStatus = gFileLegacySaveReply.good ? fileStatusAccepted : fileStatusCancelled;
+}
+
+static void DrawStandardFilePage(void)
+{
+    Rect frame;
+
+    DrawHeading("\pStandard File: Open, Save As, filtering & cancellation");
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(24, 54);
+    DrawString("\pThe fixture folder contains a TEXT document and a DATA file.");
+    MoveTo(24, 68);
+    DrawString("\pOpen TEXT navigates into it; the other controls exercise legacy APIs.");
+
+    SetRect(&frame, 20, 84, 535, 216);
+    DrawBeveledBox(&frame, false);
+    TextFace(bold);
+    MoveTo(32, 106);
+    DrawString("\pReturned record checkpoints");
+    TextFace(0);
+    MoveTo(32, 126);
+    DrawString("\pModern Open: sfGood + sfType + sfFile FSSpec");
+    MoveTo(32, 142);
+    DrawString("\pLegacy Open: good + fType + vRefNum + fName");
+    MoveTo(32, 158);
+    DrawString("\pModern Save: editable sfFile name, then FSpCreate/FSpDelete");
+    MoveTo(32, 174);
+    DrawString("\pLegacy Save: editable fName and SFReply cancellation");
+
+    TextFace(bold);
+    DrawFileStatusLine(236, "\pModern Open: ", gFileOpenStatus);
+    DrawFileStatusLine(254, "\pLegacy Open: ", gFileLegacyOpenStatus);
+    DrawFileStatusLine(272, "\pModern Save: ", gFileSaveStatus);
+    DrawFileStatusLine(290, "\pLegacy Save: ", gFileLegacySaveStatus);
+    TextFace(0);
+    MoveTo(32, 316);
+    DrawString("\pAccepted Open returns TEXT; Cancel leaves sfGood/good false.");
+    MoveTo(32, 332);
+    DrawString("\pNames are MacRoman PStrings and FSSpec directory IDs are checked.");
+    DrawControls(gMainWindow);
+}
+
 static void DrawMainWindow(void)
 {
     RGBColor white;
@@ -2273,6 +2414,9 @@ static void DrawMainWindow(void)
         case pageStyledText:
             DrawStyledTextPage();
             break;
+        case pageStandardFile:
+            DrawStandardFilePage();
+            break;
     }
 }
 
@@ -2297,6 +2441,7 @@ static void ShowAllControls(short page)
     Boolean isTextEdit = (page == pageTextEdit);
     Boolean isLists = (page == pageLists);
     Boolean isSound = (page == pageSound);
+    Boolean isStandardFile = (page == pageStandardFile);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -2406,6 +2551,19 @@ static void ShowAllControls(short page)
         HideControl(gSoundBtnComplete);
         HideControl(gSoundBtnDispose);
     }
+
+    /* Page 12: Standard File */
+    if (isStandardFile) {
+        ShowControl(gFileOpen);
+        ShowControl(gFileLegacyOpen);
+        ShowControl(gFileSave);
+        ShowControl(gFileLegacySave);
+    } else {
+        HideControl(gFileOpen);
+        HideControl(gFileLegacyOpen);
+        HideControl(gFileSave);
+        HideControl(gFileLegacySave);
+    }
 }
 
 static void SyncMenuState(void)
@@ -2418,7 +2576,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 11; i++) {
+        for (i = 1; i <= 12; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -2759,6 +2917,24 @@ static void Initialize(void)
     /* Page 11: Styled TextEdit & Font Manager */
     InitializeStyledText();
 
+    /* Page 12: Standard File */
+    gFileTypeList[0] = 'TEXT';
+    gFileTypeList[1] = 0;
+    gFileTypeList[2] = 0;
+    gFileTypeList[3] = 0;
+    SetRect(&r, 24, 204, 148, 228);
+    gFileOpen = NewControl(gMainWindow, &r, "\pOpen TEXT", false, 0, 0, 1,
+                           pushButProc, 0);
+    SetRect(&r, 158, 204, 294, 228);
+    gFileLegacyOpen = NewControl(gMainWindow, &r, "\pLegacy Open", false, 0, 0, 1,
+                                 pushButProc, 0);
+    SetRect(&r, 304, 204, 416, 228);
+    gFileSave = NewControl(gMainWindow, &r, "\pSave As", false, 0, 0, 1,
+                           pushButProc, 0);
+    SetRect(&r, 426, 204, 535, 228);
+    gFileLegacySave = NewControl(gMainWindow, &r, "\pLegacy Save", false, 0, 0, 1,
+                                 pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -2770,7 +2946,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iStyledText) {
+    if (menuID == mPages && item >= iGraphics && item <= iStandardFile) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -2988,6 +3164,22 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         ResizeInventoryList();
     } else if (control == gListActivate) {
         ToggleInventoryActivation();
+    } else if (control == gFileOpen) {
+        DoStandardFileOpen();
+        DrawMainWindow();
+        return;
+    } else if (control == gFileLegacyOpen) {
+        DoLegacyFileOpen();
+        DrawMainWindow();
+        return;
+    } else if (control == gFileSave) {
+        DoStandardFileSave();
+        DrawMainWindow();
+        return;
+    } else if (control == gFileLegacySave) {
+        DoLegacyFileSave();
+        DrawMainWindow();
+        return;
     }
     DrawMainWindow();
 }

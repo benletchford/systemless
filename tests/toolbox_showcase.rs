@@ -1,4 +1,5 @@
-//! Integration test exercising Toolbox Showcase for issues #1078, #1081, #1264, #1265, and #1266.
+//! Integration test exercising Toolbox Showcase for issues #1078, #1081,
+//! #1264, #1265, #1266, and #1267.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -32,6 +33,7 @@ const ITEM_PAGE_PALETTES: i16 = 8;
 const ITEM_PAGE_LISTS: i16 = 9;
 const ITEM_PAGE_SOUND: i16 = 10;
 const ITEM_PAGE_STYLED_TEXT: i16 = 11;
+const ITEM_PAGE_STANDARD_FILE: i16 = 12;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -102,6 +104,43 @@ where
             return;
         }
         let (_steps, still_running) = runner.run_steps(BATCH_STEPS, None);
+        if !still_running || runner.is_halted() {
+            panic!(
+                "Emulation halted unexpectedly while waiting for '{label}' at iteration {iteration}:\n\
+                 PC: {:08X?}\n\
+                 Trap: {:04X?}\n\
+                 SP: {:08X?}\n\
+                 D0: {:08X?}\n\
+                 ExitToShell: {}\n\
+                 Total instructions: {}",
+                runner.halted_pc(),
+                runner.halted_trap(),
+                runner.halted_sp(),
+                runner.halted_d0(),
+                runner.halted_by_exit_to_shell(),
+                runner.total_instructions(),
+            );
+        }
+    }
+    panic!(
+        "Timed out waiting for '{label}' after {} instructions",
+        runner.total_instructions()
+    );
+}
+
+fn step_until_gui<F>(runner: &mut FixtureRunner, label: &str, mut condition: F)
+where
+    F: FnMut(&mut FixtureRunner) -> bool,
+{
+    const BATCH_STEPS: usize = 50_000;
+    const MAX_ITERATIONS: usize = 200;
+
+    for iteration in 0..MAX_ITERATIONS {
+        if condition(runner) {
+            return;
+        }
+        let target_tick = runner.guest_tick().saturating_add(1);
+        let (_steps, still_running) = runner.run_steps_with_audio(BATCH_STEPS, Some(target_tick), 0);
         if !still_running || runner.is_halted() {
             panic!(
                 "Emulation halted unexpectedly while waiting for '{label}' at iteration {iteration}:\n\
@@ -312,6 +351,18 @@ fn step_until_with_audio<F>(
     );
 }
 
+fn run_gui_ticks(runner: &mut FixtureRunner, label: &str, ticks: u32) {
+    let target = runner.guest_tick().saturating_add(ticks);
+    while runner.guest_tick() < target {
+        let frame_target = runner.guest_tick().saturating_add(1).min(target);
+        let (_steps, still_running) = runner.run_steps_with_audio(50_000, Some(frame_target), 0);
+        assert!(
+            still_running && !runner.is_halted(),
+            "emulation halted while waiting for {label}"
+        );
+    }
+}
+
 fn assert_graphics_page_rendered(runner: &mut FixtureRunner) {
     // WIND 128 begins at (50, 40); this samples the center of the red oval
     // drawn at local Rect(205, 55, 325, 135).
@@ -517,6 +568,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_STYLED_TEXT),
         "Styled Text & Fonts page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_STANDARD_FILE),
+        "Standard File page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -1386,4 +1441,108 @@ fn test_toolbox_showcase() {
     assert_styled_text_page_rendered(&mut runner, win_top, win_left);
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "19-styled-text.png");
+
+    // 20. Exercise Standard File's modern and legacy Open/Save entry points.
+    // The archive contains a folder with one TEXT and one DATA file. The
+    // modern Open filter must enter the folder and return the TEXT FSSpec;
+    // the other paths prove cancellation and editable Save names.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_STANDARD_FILE),
+        "failed to queue selection of Standard File page"
+    );
+    step_until(&mut runner, "switch to Standard File page", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_PAGES,
+            ITEM_PAGE_STANDARD_FILE,
+        )
+    });
+    runner.set_mouse_position(550, 760);
+    let page_dialog_sample = screen_rgb(&mut runner, 212, 223);
+    let page_save_dialog_sample = screen_rgb(&mut runner, 227, 221);
+    let legacy_get_sample_point = if powerpc { (100, 100) } else { (50, 0) };
+    let legacy_save_sample_point = if powerpc { (100, 100) } else { (227, 221) };
+    let page_legacy_get_sample = screen_rgb(
+        &mut runner,
+        legacy_get_sample_point.0,
+        legacy_get_sample_point.1,
+    );
+    let page_legacy_save_sample = screen_rgb(
+        &mut runner,
+        legacy_save_sample_point.0,
+        legacy_save_sample_point.1,
+    );
+    let legacy_get_sample = legacy_get_sample_point;
+    assert_reference_frame(&mut runner, "20-standard-file-page.png");
+
+    // Modern StandardGetFile: the fixture folder is the selected first row.
+    click_point(&mut runner, win_top + 216, win_left + 86);
+    runner.set_mouse_position(550, 760);
+    step_until_gui(&mut runner, "modern StandardGetFile dialog", |r| {
+        screen_rgb(r, 212, 223) != page_dialog_sample
+    });
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "21-standard-file-open.png");
+
+    // Open the selected folder, then accept its filtered TEXT row with Return.
+    click_point(&mut runner, 211 + 148, 222 + 298);
+    runner.set_mouse_position(550, 760);
+    run_gui_ticks(&mut runner, "StandardGetFile folder navigation", 1);
+    runner.push_key_down(0x24, b'\r');
+    runner.push_key_up(0x24, b'\r');
+    step_until_gui(&mut runner, "modern StandardGetFile acceptance", |r| {
+        screen_rgb(r, 212, 223) == page_dialog_sample
+    });
+
+    // Legacy SFGetFile: cancel from a filtered dialog and verify the page
+    // returns to its normal framebuffer before the next operation.
+    click_point(&mut runner, win_top + 216, win_left + 226);
+    runner.set_mouse_position(550, 760);
+    step_until_gui(&mut runner, "legacy SFGetFile dialog", |r| {
+        screen_rgb(r, legacy_get_sample.0, legacy_get_sample.1) != page_legacy_get_sample
+    });
+    runner.push_key_down(0x35, 0);
+    runner.push_key_up(0x35, 0);
+    step_until_gui(&mut runner, "legacy SFGetFile cancellation", |r| {
+        screen_rgb(r, legacy_get_sample.0, legacy_get_sample.1) == page_legacy_get_sample
+    });
+
+    // Modern StandardPutFile: the default name is selected, so typing one
+    // character replaces it; Return accepts and the app consumes the FSSpec
+    // through FSpCreate/FSpDelete.
+    click_point(&mut runner, win_top + 216, win_left + 360);
+    runner.set_mouse_position(550, 760);
+    step_until_gui(&mut runner, "modern StandardPutFile dialog", |r| {
+        screen_rgb(r, 227, 221) != page_save_dialog_sample
+    });
+    runner.push_key_down(0x00, b'S');
+    runner.push_key_up(0x00, b'S');
+    runner.push_key_down(0x24, b'\r');
+    runner.push_key_up(0x24, b'\r');
+    step_until_gui(&mut runner, "modern StandardPutFile acceptance", |r| {
+        screen_rgb(r, 227, 221) == page_save_dialog_sample
+    });
+
+    // Legacy SFPutFile: cancellation must leave its SFReply good bit false.
+    click_point(&mut runner, win_top + 216, win_left + 480);
+    runner.set_mouse_position(550, 760);
+    step_until_gui(&mut runner, "legacy SFPutFile dialog", |r| {
+        screen_rgb(
+            r,
+            legacy_save_sample_point.0,
+            legacy_save_sample_point.1,
+        ) != page_legacy_save_sample
+    });
+    runner.push_key_down(0x35, 0);
+    runner.push_key_up(0x35, 0);
+    step_until_gui(&mut runner, "legacy SFPutFile cancellation", |r| {
+        screen_rgb(
+            r,
+            legacy_save_sample_point.0,
+            legacy_save_sample_point.1,
+        ) == page_legacy_save_sample
+    });
+
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "22-standard-file-complete.png");
 }

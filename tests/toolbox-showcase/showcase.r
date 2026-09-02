@@ -92,7 +92,8 @@ resource 'MENU' (mPages, preload) {
         "Palettes", noIcon, noKey, noMark, plain;
         "Lists & Inventory", noIcon, noKey, noMark, plain;
         "Sound & Channels", noIcon, noKey, noMark, plain;
-        "Styled Text & Fonts", noIcon, noKey, noMark, plain
+        "Styled Text & Fonts", noIcon, noKey, noMark, plain;
+        "Standard File", noIcon, noKey, noMark, plain
     }
 };
 

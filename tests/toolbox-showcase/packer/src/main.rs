@@ -33,6 +33,27 @@ fn main() {
         creator: *b"SHWC",
         ..SitEntry::default()
     });
+    archive.add_entry(SitEntry {
+        name: "Standard File Fixtures".to_owned(),
+        file_type: *b"fold",
+        creator: *b"MACS",
+        is_folder: true,
+        ..SitEntry::default()
+    });
+    archive.add_entry(SitEntry {
+        name: "Standard File Fixtures/Text Document".to_owned(),
+        data_fork: b"Standard File TEXT fixture\r".to_vec(),
+        file_type: *b"TEXT",
+        creator: *b"ttxt",
+        ..SitEntry::default()
+    });
+    archive.add_entry(SitEntry {
+        name: "Standard File Fixtures/Binary Data".to_owned(),
+        data_fork: vec![0x00, 0x11, 0x22, 0x33, 0x44],
+        file_type: *b"DATA",
+        creator: *b"SHWC",
+        ..SitEntry::default()
+    });
 
     let bytes = archive
         .serialize()
