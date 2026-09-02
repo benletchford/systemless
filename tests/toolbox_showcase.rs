@@ -1,5 +1,5 @@
 //! Integration test exercising Toolbox Showcase for issues #1078, #1081,
-//! #1264, #1265, #1266, #1267, and #1269.
+//! #1264, #1265, #1266, #1267, #1268, and #1269.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -35,6 +35,7 @@ const ITEM_PAGE_SOUND: i16 = 10;
 const ITEM_PAGE_STYLED_TEXT: i16 = 11;
 const ITEM_PAGE_STANDARD_FILE: i16 = 12;
 const ITEM_PAGE_RESOURCES: i16 = 13;
+const ITEM_PAGE_SPRITES: i16 = 14;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -525,6 +526,48 @@ fn assert_styled_text_page_rendered(runner: &mut FixtureRunner, win_top: i16, wi
     );
 }
 
+fn assert_sprites_page_rendered(
+    runner: &mut FixtureRunner,
+    win_top: i16,
+    win_left: i16,
+) -> ([u8; 3], [u8; 3]) {
+    // The page copies the 320×128 GWorld into local Rect(24, 80, 344, 208).
+    // The first sprite's body center is world (62, 70), and its matte corner
+    // at (38, 38) must leave the scene background untouched.
+    let first_body = screen_rgb(runner, (win_top + 80 + 70) as u16, (win_left + 24 + 62) as u16);
+    let matte_outside =
+        screen_rgb(runner, (win_top + 80 + 38) as u16, (win_left + 24 + 38) as u16);
+    let scene_background =
+        screen_rgb(runner, (win_top + 80 + 8) as u16, (win_left + 24 + 8) as u16);
+    assert_ne!(
+        first_body, scene_background,
+        "CopyMask sprite body must differ from the offscreen scene background"
+    );
+    assert_eq!(
+        matte_outside, scene_background,
+        "CopyMask's transparent matte pixels must preserve the scene"
+    );
+
+    // The second sprite is centered at world (238, 70). Its center is both
+    // inside the deep mask and inside the BitMapToRegion-derived clip.
+    let second_body =
+        screen_rgb(runner, (win_top + 80 + 70) as u16, (win_left + 24 + 238) as u16);
+    assert_ne!(
+        second_body, scene_background,
+        "CopyDeepMask's deep-mask center must render inside the region clip"
+    );
+
+    // SetCPixel/GetCPixel writes a red probe at world (15, 12), outside both
+    // sprites, and the page copies that pixel to the visible scene.
+    let probe = screen_rgb(runner, (win_top + 80 + 12) as u16, (win_left + 24 + 15) as u16);
+    assert!(
+        probe[0] > probe[1].saturating_add(30),
+        "SetCPixel/GetCPixel probe must retain its red component: rgb={probe:?}"
+    );
+
+    (first_body, second_body)
+}
+
 #[test]
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
@@ -616,6 +659,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_RESOURCES),
         "Resource Browser page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SPRITES),
+        "Sprites page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -1659,4 +1706,109 @@ fn test_toolbox_showcase() {
         rendered_rgb(&mut runner).2,
         "released resource must reload to the same deterministic loaded frame"
     );
+
+    // 22. Switch to Sprites, Masks & Scrolling and build the scene in
+    // offscreen GWorlds. The page uses 1-bit CopyMask, 8-bit CopyDeepMask,
+    // BitMapToRegion, and SetCPixel/GetCPixel before presenting through one
+    // indexed-to-screen CopyBits transfer.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_SPRITES),
+        "failed to queue selection of Sprites, Masks & Scrolling page"
+    );
+    step_until(&mut runner, "switch to Sprites, Masks & Scrolling page", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_PAGES,
+            ITEM_PAGE_SPRITES,
+        )
+    });
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SPRITES));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_RESOURCES));
+    run_ticks(&mut runner, "sprite scene to settle", 1);
+    runner.set_mouse_position(550, 760);
+    let (initial_first_body, initial_second_body) =
+        assert_sprites_page_rendered(&mut runner, win_top, win_left);
+    let initial_frame = rendered_rgb(&mut runner).2;
+    assert_reference_frame(&mut runner, "26-sprites.png");
+
+    // 23. Animate the source sprite and rebuild the offscreen scene. This
+    // must change the sprite pixels while leaving the matte/region pipeline
+    // intact on both CPU slices.
+    click_point(&mut runner, win_top + 316, win_left + 90);
+    run_ticks(&mut runner, "animated sprite to settle", 1);
+    let (animated_first_body, animated_second_body) =
+        assert_sprites_page_rendered(&mut runner, win_top, win_left);
+    assert_ne!(
+        initial_first_body, animated_first_body,
+        "Animate Sprite must change the CopyMask sprite frame"
+    );
+    assert_ne!(
+        initial_second_body, animated_second_body,
+        "Animate Sprite must change the CopyDeepMask sprite frame"
+    );
+    let animated_frame = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        initial_frame, animated_frame,
+        "animated sprite scene must change the framebuffer"
+    );
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "27-sprites-animated.png");
+
+    // 24. Scroll the existing offscreen raster left. The first sprite's
+    // center should move by 24 pixels, and ScrollRect must report nonzero
+    // changed bytes plus the right-hand vacated strip.
+    click_point(&mut runner, win_top + 316, win_left + 208);
+    if powerpc {
+        // Native PowerPC owns its QuickDraw state separately from the 68K
+        // TrapDispatcher, so use the visible offscreen result as the
+        // architecture-neutral ScrollRect checkpoint.
+        step_until(&mut runner, "ScrollRect to move sprite scene", |r| {
+            let shifted = screen_rgb(
+                r,
+                (win_top + 80 + 70) as u16,
+                (win_left + 24 + 38) as u16,
+            );
+            let old = screen_rgb(
+                r,
+                (win_top + 80 + 70) as u16,
+                (win_left + 24 + 62) as u16,
+            );
+            shifted == animated_first_body && old != animated_first_body
+        });
+    } else {
+        let prior_scrolls = runner.dispatcher().debug_scroll_rect_nonzero_delta_count;
+        step_until(&mut runner, "ScrollRect to move sprite scene", |r| {
+            r.dispatcher().debug_scroll_rect_nonzero_delta_count > prior_scrolls
+        });
+        assert_eq!(
+            runner.dispatcher().debug_scroll_rect_last_delta,
+            (-24, 0),
+            "first scene scroll must shift pixels left by 24"
+        );
+        assert!(
+            runner.dispatcher().debug_scroll_rect_last_changed_bytes > 0,
+            "ScrollRect must change bytes in the offscreen GWorld raster"
+        );
+    }
+    let shifted_body = screen_rgb(
+        &mut runner,
+        (win_top + 80 + 70) as u16,
+        (win_left + 24 + 38) as u16,
+    );
+    let old_center = screen_rgb(
+        &mut runner,
+        (win_top + 80 + 70) as u16,
+        (win_left + 24 + 62) as u16,
+    );
+    assert_eq!(
+        shifted_body, animated_first_body,
+        "ScrollRect must move the sprite center 24 pixels left"
+    );
+    assert_ne!(
+        old_center, animated_first_body,
+        "ScrollRect must vacate the sprite's former center"
+    );
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "28-sprites-scrolled.png");
 }

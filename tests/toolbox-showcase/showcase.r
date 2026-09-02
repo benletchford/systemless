@@ -99,7 +99,8 @@ resource 'MENU' (mPages, preload) {
         "Sound & Channels", noIcon, noKey, noMark, plain;
         "Styled Text & Fonts", noIcon, noKey, noMark, plain;
         "Standard File", noIcon, noKey, noMark, plain;
-        "Resource Browser", noIcon, noKey, noMark, plain
+        "Resource Browser", noIcon, noKey, noMark, plain;
+        "Sprites, Masks & Scrolling", noIcon, noKey, noMark, plain
     }
 };
 
