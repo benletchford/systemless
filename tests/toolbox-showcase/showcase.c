@@ -3081,17 +3081,25 @@ static void DrawSpritesPage(void)
     MoveTo(378, 170);
     DrawString("\pRegion round-trip: ");
     DrawString(gSpriteRegionVerified ? "\pverified" : "\pnot verified");
-    MoveTo(378, 178);
+    MoveTo(378, 186);
     DrawString("\pUpdate region: ");
-    DrawString(gSpriteUpdateRegionVerified ? "\pverified" : "\pnot verified");
-    MoveTo(378, 194);
+    if (gSpriteScrollDelta == 0) {
+        DrawString("\pnone");
+    } else {
+        DrawString(gSpriteUpdateRegionVerified ? "\pverified" : "\pnot verified");
+    }
+    MoveTo(378, 202);
     DrawString("\pScrollRect delta: ");
     NumToString(gSpriteScrollDelta, number);
     DrawString(number);
     DrawString("\p px");
-    MoveTo(378, 210);
+    MoveTo(378, 218);
     DrawString("\pUpdate strip: ");
-    DrawString(gSpriteScrolled ? "\pright" : "\pleft");
+    if (gSpriteScrollDelta == 0) {
+        DrawString("\pnone");
+    } else {
+        DrawString(gSpriteScrolled ? "\pright" : "\pleft");
+    }
     MoveTo(378, 234);
     DrawString(gSpriteRegionError == noErr ? "\pAll mask operations returned noErr."
                                            : "\pBitMapToRegion returned an error.");
