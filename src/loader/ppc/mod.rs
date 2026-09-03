@@ -15388,16 +15388,21 @@ fn dispatch_supported_import(
                 {
                     PPC_PARAM_ERR
                 } else if let Some(source_handle) = memory.read_u32_be(handle_variable) {
-                    if let Some(source) = handles
-                        .iter()
-                        .find(|record| record.handle == source_handle)
-                        .copied()
-                        .or_else(|| ppc_system_handle_record(memory, source_handle))
+                    // Inside Macintosh: Memory (1992), pp. 2-62--2-64: resolve
+                    // process-owned handles through the canonical manager so
+                    // HandToHand has identical semantics across CPU adapters.
+                    match process_memory_manager
+                        .copy_process_handle_from_native_import(memory, source_handle)
                     {
-                        if let Some(bytes) = ppc_memory_read_bytes(memory, source.ptr, source.size)
-                        {
-                            let copy = process_memory_manager
-                                .copy_bytes_to_new_native_handle(memory, &bytes);
+                        Ok(copy) => {
+                            // The caller range was preflighted above. Process
+                            // allocation may append writable mappings, but it
+                            // cannot remove or downgrade one while this
+                            // serialized import runs, so publication cannot
+                            // fail after the copy has been committed.
+                            memory
+                                .write_u32_be(handle_variable, copy)
+                                .expect("preflighted Handle variable remains writable");
                             ppc_apply_process_native_allocator(
                                 process_memory_manager,
                                 memory,
@@ -15409,19 +15414,45 @@ fn dispatch_supported_import(
                                 handles,
                                 copy,
                             );
-                            if copy == 0 {
-                                *last_mem_error
-                            } else if memory.write_u32_be(handle_variable, copy).is_none() {
-                                process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
-                                PPC_PARAM_ERR
-                            } else {
-                                PPC_NO_ERR
-                            }
-                        } else {
-                            PPC_PARAM_ERR
+                            PPC_NO_ERR
                         }
-                    } else {
-                        PPC_NIL_HANDLE_ERR
+                        Err(error) if source_handle == PPC_MAIN_CTABLE_HANDLE => {
+                            if let Some(source) = ppc_system_handle_record(memory, source_handle) {
+                                if let Some(bytes) =
+                                    ppc_memory_read_bytes(memory, source.ptr, source.size)
+                                {
+                                    let copy = process_memory_manager
+                                        .copy_bytes_to_new_native_handle(memory, &bytes);
+                                    if copy == 0 {
+                                        process_memory_manager
+                                            .native_heap_state()
+                                            .map(|heap| heap.last_mem_error)
+                                            .unwrap_or(PPC_MEM_FULL_ERR)
+                                    } else {
+                                        memory
+                                            .write_u32_be(handle_variable, copy)
+                                            .expect("preflighted Handle variable remains writable");
+                                        ppc_apply_process_native_allocator(
+                                            process_memory_manager,
+                                            memory,
+                                            heap_cursor,
+                                            last_mem_error,
+                                        );
+                                        ppc_apply_process_native_handle(
+                                            process_memory_manager,
+                                            handles,
+                                            copy,
+                                        );
+                                        PPC_NO_ERR
+                                    }
+                                } else {
+                                    PPC_PARAM_ERR
+                                }
+                            } else {
+                                error
+                            }
+                        }
+                        Err(error) => error,
                     }
                 } else {
                     PPC_PARAM_ERR
@@ -87446,18 +87477,7 @@ fn ppc_largest_free_ptr_block(
 }
 
 fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
-    for offset in 0..len {
-        let Some(byte_addr) = addr.checked_add(offset) else {
-            return false;
-        };
-        let Some(value) = memory.read_u8(byte_addr) else {
-            return false;
-        };
-        if memory.write_u8(byte_addr, value).is_none() {
-            return false;
-        }
-    }
-    true
+    memory.preflight_writable_range(addr, len)
 }
 
 fn ppc_init_zone_header(
@@ -96654,6 +96674,370 @@ pub(crate) mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    fn ppc_hand_to_hand_copies_a_process_owned_classic_handle_across_isa() {
+        let pef = synthetic_pef_with_import(b"HandToHand");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        classic_bus.attach_guest_address_space(native.memory.shared_view());
+
+        let payload = b"classic HandToHand source";
+        let (source_handle, source_ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, payload.len() as u32)
+            .unwrap();
+        classic_bus.write_bytes(source_ptr, payload);
+        let memory_manager = context.memory_manager_handle().clone();
+        memory_manager
+            .borrow_mut()
+            .set_state_for_handle(source_handle, 0xe0);
+
+        let handle_variable = PPC_DATA_BASE + 0x2100;
+        native.memory.add_region(handle_variable, vec![0; 4]);
+        native
+            .memory
+            .write_u32_be(handle_variable, source_handle)
+            .unwrap();
+        let mut detached = native.clone();
+
+        native.cpu.gpr[3] = handle_variable;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::HandToHand,
+            &memory_manager,
+        );
+
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let copy_handle = native.memory.read_u32_be(handle_variable).unwrap();
+        assert_ne!(copy_handle, source_handle);
+        let copy_ptr = classic_bus.read_long(copy_handle);
+        assert_ne!(copy_ptr, 0);
+        assert_eq!(classic_bus.get_alloc_size(copy_handle), Some(4));
+        assert_eq!(
+            classic_bus.get_alloc_size(copy_ptr),
+            Some(payload.len() as u32)
+        );
+        assert_eq!(classic_bus.read_bytes(copy_ptr, payload.len()), payload);
+        assert_eq!(classic_bus.read_long(source_handle), source_ptr);
+        assert_eq!(classic_bus.read_bytes(source_ptr, payload.len()), payload);
+        assert_eq!(memory_manager.borrow().native_allocation(copy_handle), None);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(copy_ptr), Some(copy_handle));
+        assert_eq!(memory_manager.borrow().handle_for_ptr(source_ptr), Some(source_handle));
+        assert_eq!(memory_manager.borrow().state_for_handle(copy_handle), Some(0));
+        assert_eq!(classic.handle_state_bits(copy_handle), Some(0));
+        assert_eq!(memory_manager.borrow().state_for_handle(source_handle), Some(0xe0));
+
+        let mut classic_cpu = crate::trap::test_helpers::MockCpu::new();
+        classic_cpu.write_reg(Register::A0, copy_ptr);
+        classic
+            .dispatch_memory(false, 0x28, &mut classic_cpu, &mut classic_bus)
+            .expect("68K RecoverHandle should be handled")
+            .expect("68K RecoverHandle should succeed");
+        assert_eq!(classic_cpu.read_reg(Register::A0), copy_handle);
+        assert_eq!(classic_cpu.read_reg(Register::D0), 0);
+        assert_eq!(classic.handle_for_ptr(copy_ptr), Some(copy_handle));
+
+        let detached_manager = detached.process_memory_manager.0.borrow();
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, source_handle),
+            Some(source_ptr)
+        );
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached.memory, handle_variable),
+            Some(source_handle)
+        );
+        assert_eq!(detached_manager.classic_allocation_size(source_handle), Some(4));
+        assert_eq!(
+            detached_manager.classic_allocation_size(source_ptr),
+            Some(payload.len() as u32)
+        );
+        assert_eq!(detached_manager.classic_allocation_size(copy_handle), None);
+        assert_eq!(detached_manager.classic_allocation_size(copy_ptr), None);
+        assert_eq!(detached_manager.native_allocation(copy_handle), None);
+        assert_eq!(detached_manager.handle_for_ptr(source_ptr), Some(source_handle));
+        assert_eq!(detached_manager.handle_for_ptr(copy_ptr), None);
+        assert_eq!(detached_manager.state_for_handle(source_handle), Some(0xe0));
+    }
+
+    #[test]
+    fn ppc_hand_to_hand_rejects_a_foreign_classic_data_block_atomically() {
+        let pef = synthetic_pef_with_import(b"HandToHand");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+
+        let (source_handle, source_ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 16)
+            .unwrap();
+        let (other_handle, other_ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 24)
+            .unwrap();
+        let source_bytes = (0x20..=0x2f).collect::<Vec<_>>();
+        let other_bytes = (0x80..=0x97).collect::<Vec<_>>();
+        classic_bus.write_bytes(source_ptr, &source_bytes);
+        classic_bus.write_bytes(other_ptr, &other_bytes);
+        classic_bus.write_long(source_handle, other_ptr);
+
+        let handle_variable = PPC_DATA_BASE + 0x2100;
+        native.memory.add_region(handle_variable, vec![0; 4]);
+        native
+            .memory
+            .write_u32_be(handle_variable, source_handle)
+            .unwrap();
+        let memory_manager = context.memory_manager_handle().clone();
+        let allocator_before = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator is attached");
+        let handles_before = memory_manager.borrow().native_handle_records().to_vec();
+        let classic_cursor_before = context.classic_heap_bump_ptr();
+
+        native.cpu.gpr[3] = handle_variable;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::HandToHand,
+            &memory_manager,
+        );
+
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_MEM_WZ_ERR));
+        assert_eq!(native.memory.read_u32_be(handle_variable), Some(source_handle));
+        assert_eq!(classic_bus.read_long(source_handle), other_ptr);
+        assert_eq!(classic_bus.read_long(other_handle), other_ptr);
+        assert_eq!(classic_bus.get_alloc_size(source_ptr), Some(16));
+        assert_eq!(classic_bus.get_alloc_size(other_ptr), Some(24));
+        assert_eq!(classic_bus.read_bytes(source_ptr, 16), source_bytes);
+        assert_eq!(classic_bus.read_bytes(other_ptr, 24), other_bytes);
+        assert_eq!(context.classic_heap_bump_ptr(), classic_cursor_before);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(source_ptr), Some(source_handle));
+        assert_eq!(memory_manager.borrow().handle_for_ptr(other_ptr), Some(other_handle));
+        assert_eq!(memory_manager.borrow().native_handle_records(), handles_before);
+        let allocator_after = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator remains attached");
+        assert_eq!(allocator_after.heap.heap_cursor, allocator_before.heap.heap_cursor);
+        assert_eq!(allocator_after.ptrs, allocator_before.ptrs);
+        assert_eq!(allocator_after.free_ptr_blocks, allocator_before.free_ptr_blocks);
+        assert_eq!(
+            allocator_after.free_handle_blocks,
+            allocator_before.free_handle_blocks
+        );
+        assert_eq!(allocator_after.heap.last_mem_error, PPC_MEM_WZ_ERR);
+    }
+
+    #[test]
+    fn ppc_hand_to_hand_rejects_a_disposed_classic_source_atomically() {
+        let pef = synthetic_pef_with_import(b"HandToHand");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic_bus =
+            attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+        let payload = b"disposed classic source";
+        let (source_handle, source_ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, payload.len() as u32)
+            .unwrap();
+        classic_bus.write_bytes(source_ptr, payload);
+        let memory_manager = context.memory_manager_handle().clone();
+        assert!(memory_manager
+            .borrow_mut()
+            .dispose_process_handle_from_native_import(&mut native.memory, source_handle));
+
+        let stale_master = classic_bus.read_long(source_handle);
+        let stale_bytes = classic_bus.read_bytes(source_ptr, payload.len());
+        let handle_variable = PPC_DATA_BASE + 0x2100;
+        native.memory.add_region(handle_variable, vec![0; 4]);
+        native
+            .memory
+            .write_u32_be(handle_variable, source_handle)
+            .unwrap();
+        let classic_cursor_before = context.classic_heap_bump_ptr();
+        let allocator_before = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator is attached");
+        let handles_before = memory_manager.borrow().native_handle_records().to_vec();
+        let reverse_before = memory_manager.borrow().handle_for_ptr(source_ptr);
+
+        native.cpu.gpr[3] = handle_variable;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::HandToHand,
+            &memory_manager,
+        );
+
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NIL_HANDLE_ERR));
+        assert_eq!(native.memory.read_u32_be(handle_variable), Some(source_handle));
+        assert_eq!(classic_bus.read_long(source_handle), stale_master);
+        assert_eq!(classic_bus.read_bytes(source_ptr, payload.len()), stale_bytes);
+        assert_eq!(context.classic_heap_bump_ptr(), classic_cursor_before);
+        assert_eq!(memory_manager.borrow().classic_allocation_size(source_handle), None);
+        assert_eq!(memory_manager.borrow().classic_allocation_size(source_ptr), None);
+        assert_eq!(memory_manager.borrow().handle_for_ptr(source_ptr), reverse_before);
+        assert_eq!(memory_manager.borrow().state_for_handle(source_handle), None);
+        assert_eq!(memory_manager.borrow().native_handle_records(), handles_before);
+        let allocator_after = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator remains attached");
+        assert_eq!(allocator_after.heap.heap_cursor, allocator_before.heap.heap_cursor);
+        assert_eq!(allocator_after.ptrs, allocator_before.ptrs);
+        assert_eq!(allocator_after.free_ptr_blocks, allocator_before.free_ptr_blocks);
+        assert_eq!(
+            allocator_after.free_handle_blocks,
+            allocator_before.free_handle_blocks
+        );
+        assert_eq!(allocator_after.heap.last_mem_error, PPC_NIL_HANDLE_ERR);
+    }
+
+    #[test]
+    fn ppc_hand_to_hand_rejects_a_readonly_handle_variable_before_allocating() {
+        let pef = synthetic_pef_with_import(b"HandToHand");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let memory_manager = context.memory_manager_handle().clone();
+        let source_handle = memory_manager
+            .borrow_mut()
+            .copy_bytes_to_new_native_handle(&mut native.memory, b"source");
+        assert_ne!(source_handle, 0);
+
+        let handle_variable = PPC_DATA_BASE + 0x2100;
+        native
+            .memory
+            .add_readonly_region(handle_variable, source_handle.to_be_bytes().to_vec());
+        let allocator_before = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator is attached");
+        let handles_before = memory_manager.borrow().native_handle_records().to_vec();
+
+        native.cpu.gpr[3] = handle_variable;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::HandToHand,
+            &memory_manager,
+        );
+
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(native.memory.read_u32_be(handle_variable), Some(source_handle));
+        assert_eq!(memory_manager.borrow().native_handle_records(), handles_before);
+        let allocator_after = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator remains attached");
+        assert_eq!(allocator_after.heap.heap_cursor, allocator_before.heap.heap_cursor);
+        assert_eq!(allocator_after.ptrs, allocator_before.ptrs);
+        assert_eq!(allocator_after.free_ptr_blocks, allocator_before.free_ptr_blocks);
+        assert_eq!(
+            allocator_after.free_handle_blocks,
+            allocator_before.free_handle_blocks
+        );
+        assert_eq!(allocator_after.heap.last_mem_error, PPC_PARAM_ERR);
+    }
+
+    #[test]
+    fn ppc_hand_to_hand_preserves_the_toolbox_color_table_fallback() {
+        let pef = synthetic_pef_with_import(b"HandToHand");
+        let mut native = load_pef_application(&pef).unwrap();
+        ppc_seed_main_color_table(&mut native.memory).unwrap();
+        let expected = ppc_memory_read_bytes(
+            &mut native.memory,
+            PPC_MAIN_CTABLE,
+            PPC_MAIN_CTABLE_SIZE,
+        )
+        .unwrap();
+        let handle_variable = PPC_DATA_BASE + 0x2100;
+        native.memory.add_region(handle_variable, vec![0; 4]);
+        native
+            .memory
+            .write_u32_be(handle_variable, PPC_MAIN_CTABLE_HANDLE)
+            .unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let memory_manager = context.memory_manager_handle().clone();
+
+        native.cpu.gpr[3] = handle_variable;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::HandToHand,
+            &memory_manager,
+        );
+
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let copy_handle = native.memory.read_u32_be(handle_variable).unwrap();
+        assert_ne!(copy_handle, PPC_MAIN_CTABLE_HANDLE);
+        let copy = memory_manager
+            .borrow()
+            .native_allocation(copy_handle)
+            .expect("Toolbox-owned data should retain the native fallback");
+        assert_eq!(copy.size, PPC_MAIN_CTABLE_SIZE);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, copy.ptr, copy.size),
+            Some(expected)
+        );
+        assert_eq!(memory_manager.borrow().state_for_handle(copy_handle), Some(0));
+    }
+
+    #[test]
+    fn ppc_hand_to_hand_color_table_heap_failure_is_atomic() {
+        let pef = synthetic_pef_with_import(b"HandToHand");
+        let mut native = load_pef_application(&pef).unwrap();
+        ppc_seed_main_color_table(&mut native.memory).unwrap();
+        let handle_variable = PPC_DATA_BASE + 0x2100;
+        native.memory.add_region(handle_variable, vec![0; 4]);
+        native
+            .memory
+            .write_u32_be(handle_variable, PPC_MAIN_CTABLE_HANDLE)
+            .unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let memory_manager = context.memory_manager_handle().clone();
+        let allocator_before = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator is attached");
+        memory_manager
+            .borrow_mut()
+            .set_native_heap_limit(allocator_before.heap.heap_cursor + PPC_HEAP_ALIGNMENT);
+
+        native.cpu.gpr[3] = handle_variable;
+        run_test_import_with_process_memory_manager(
+            &mut native,
+            PpcImportDispatcherTarget::HandToHand,
+            &memory_manager,
+        );
+
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+        assert_eq!(
+            native.memory.read_u32_be(handle_variable),
+            Some(PPC_MAIN_CTABLE_HANDLE)
+        );
+        assert!(memory_manager.borrow().native_handle_records().is_empty());
+        let allocator_after = memory_manager
+            .borrow()
+            .native_allocator_snapshot()
+            .expect("native allocator remains attached");
+        assert_eq!(allocator_after.heap.heap_cursor, allocator_before.heap.heap_cursor);
+        assert_eq!(allocator_after.ptrs, allocator_before.ptrs);
+        assert_eq!(allocator_after.free_ptr_blocks, allocator_before.free_ptr_blocks);
+        assert_eq!(
+            allocator_after.free_handle_blocks,
+            allocator_before.free_handle_blocks
+        );
+        assert_eq!(allocator_after.heap.last_mem_error, PPC_MEM_FULL_ERR);
     }
 
     #[test]
