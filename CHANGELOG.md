@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.30.0](https://github.com/benletchford/systemless/compare/v0.29.0...v0.30.0) (2026-09-03)
+
+
+### Features
+
+* **controls:** support scrollbar thumb dragging and window resizing ([#1309](https://github.com/benletchford/systemless/issues/1309)) ([#1310](https://github.com/benletchford/systemless/issues/1310)) ([f8e486d](https://github.com/benletchford/systemless/commit/f8e486df11eb090a3f1a53a614a318ff397b0dd6))
+* **showcase:** add masked sprite scrolling page ([#1300](https://github.com/benletchford/systemless/issues/1300)) ([6443d05](https://github.com/benletchford/systemless/commit/6443d05d7d2e51f2106f14788b1a0d4e3f1a11ad))
+
+
+### Bug Fixes
+
+* **memory:** copy classic handles through PowerPC ([4b4755a](https://github.com/benletchford/systemless/commit/4b4755a760fe55e7fe89a634dae65b57893734cb))
+* **resource:** support deferred size queries in showcase ([#1298](https://github.com/benletchford/systemless/issues/1298)) ([7eedc64](https://github.com/benletchford/systemless/commit/7eedc64ab1f894315e3032973a7024940487f5eb))
+* **resource:** synchronize PowerPC handle state ([d4dabb1](https://github.com/benletchford/systemless/commit/d4dabb1c5ba974bf9b95272561d7cd8aa742ffc2))
+
+
+### Code Refactoring
+
+* **apple-events:** make launch delivery state process-owned ([#1323](https://github.com/benletchford/systemless/issues/1323)) ([c224627](https://github.com/benletchford/systemless/commit/c22462718c57834f3fe2df89accbe2cd5e8af7ea))
+* **file:** keep records process-owned during execution ([6daefc9](https://github.com/benletchford/systemless/commit/6daefc9b903d469f724666b2b5fe179fe0b87cfb))
+* **files:** make launched application path process-owned ([#1320](https://github.com/benletchford/systemless/issues/1320)) ([a7b0902](https://github.com/benletchford/systemless/commit/a7b090257a187728ad3c24f4a49d144af37f1bed))
+* **memory:** own PowerPC application limits by process ([535e433](https://github.com/benletchford/systemless/commit/535e43360daeb781f141c3cd388205e46b252727))
+* **mixed-mode:** own PPC-to-68K gateway storage by process ([#1315](https://github.com/benletchford/systemless/issues/1315)) ([09ffef3](https://github.com/benletchford/systemless/commit/09ffef386fb38de67dc031f81e88935952143085))
+* **quickdraw:** share highlight color across CPU adapters ([#1321](https://github.com/benletchford/systemless/issues/1321)) ([aab1f22](https://github.com/benletchford/systemless/commit/aab1f22d5e314dbf7ff00e27a910e4497fdeaaa1))
+* **quickdraw:** share operation color across CPU adapters ([#1317](https://github.com/benletchford/systemless/issues/1317)) ([466ed7f](https://github.com/benletchford/systemless/commit/466ed7fe9cc9d3b4775b8acdff98b1799e6d7aa3))
+* **resource:** keep native resource records process-owned during execution ([#1316](https://github.com/benletchford/systemless/issues/1316)) ([5b6e33e](https://github.com/benletchford/systemless/commit/5b6e33e4d6ab3f5a4cb677b0b97c12901a5dcd29))
+* **resource:** remove duplicate manager ownership ([61e950e](https://github.com/benletchford/systemless/commit/61e950ee8910feb266c700f92e60a0ac55cf9f88))
+
 ## [0.29.0](https://github.com/benletchford/systemless/compare/v0.28.5...v0.29.0) (2026-09-02)
 
 

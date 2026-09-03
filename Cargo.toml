@@ -1,6 +1,6 @@
 [package]
 name = "systemless"
-version = "0.29.0"
+version = "0.30.0"
 edition = "2021"
 rust-version = "1.93"
 # Emulator code is GPL-3.0-or-later; the bitmap font artwork in
