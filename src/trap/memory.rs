@@ -636,7 +636,7 @@ impl super::TrapDispatcher {
             let vbl_phase = bus.read_word(task_ptr + 12) as i16;
             eprintln!(
                 "[VBL] install tick={} task=${:08X} qType={} addr=${:08X} count={} phase={} slot={:?}",
-                self.tick_count, task_ptr, q_type, vbl_addr, vbl_count, vbl_phase, slot
+                self.current_tick(), task_ptr, q_type, vbl_addr, vbl_count, vbl_phase, slot
             );
         }
         if task_ptr == 0 || bus.read_word(task_ptr + 4) as i16 != 1 {
@@ -3234,8 +3234,8 @@ impl super::TrapDispatcher {
                 self.current_selector_operation = operation.map(|route| route.operation_id);
                 match raw_trap_route(self.current_trap_word).os_routine_variant {
                     OsRoutineVariant::PowerIdleUpdate => {
-                        self.power_idle_last_update_tick = self.tick_count;
-                        cpu.write_reg(Register::D0, self.tick_count);
+                        self.power_idle_last_update_tick = self.current_tick();
+                        cpu.write_reg(Register::D0, self.current_tick());
                     }
                     OsRoutineVariant::PowerIdleState => {
                         let selector = cpu.read_reg(Register::D0) as i32;

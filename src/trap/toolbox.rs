@@ -4806,7 +4806,7 @@ impl super::TrapDispatcher {
     /// controller's MCIdle so playback is timeline-driven rather than jumping
     /// straight to the movie's end.
     fn advance_and_render_active_movies(&mut self, bus: &mut MacMemoryBus) {
-        let now = self.tick_count;
+        let now = self.current_tick();
         let movie_ptrs: Vec<u32> = self.movie_states.keys().copied().collect();
         for movie in movie_ptrs {
             let (finished, target_time, has_video) = {
@@ -5438,7 +5438,7 @@ impl super::TrapDispatcher {
             // TickCount ($A975): Returns tick count from low-memory global `$016A`
             (true, 0x175) => {
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_long(sp, self.tick_count);
+                bus.write_long(sp, self.current_tick());
                 Ok(())
             }
 
@@ -10211,13 +10211,13 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] GetKeys tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
-                        self.tick_count, trap_pc, keys_ptr, self.input_state.key_map
+                        self.current_tick(), trap_pc, keys_ptr, self.input_state.key_map
                     );
                 }
                 if trace_getkeys_nonzero_enabled() && self.input_state.key_map.iter().any(|&byte| byte != 0) {
                     eprintln!(
                         "[INPUT] GetKeys nonzero tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
-                        self.tick_count, trap_pc, keys_ptr, self.input_state.key_map
+                        self.current_tick(), trap_pc, keys_ptr, self.input_state.key_map
                     );
                 }
                 if self.input_state.key_map.iter().any(|&byte| byte != 0) {
@@ -11583,6 +11583,7 @@ impl super::TrapDispatcher {
                         let mut double_click = false;
                         let mut draw_state = None;
                         let mut draw_cells = Vec::new();
+                        let tick = self.current_tick();
 
                         if let Some(state) = self.list_states.get_mut(&list_handle) {
                             let previous_selected = state.selected.clone();
@@ -11609,13 +11610,13 @@ impl super::TrapDispatcher {
                             if let Some(cell) = cell {
                                 state.selected.insert(cell);
                                 double_click = state.last_click == cell
-                                    && self.tick_count.saturating_sub(state.last_click_tick)
+                                    && tick.saturating_sub(state.last_click_tick)
                                         <= Self::LIST_DOUBLE_CLICK_TICKS;
                                 state.last_click = cell;
-                                state.last_click_tick = self.tick_count;
+                                state.last_click_tick = tick;
                             } else {
                                 state.last_click = Self::list_no_click_cell();
-                                state.last_click_tick = self.tick_count;
+                                state.last_click_tick = tick;
                             }
                             if state.draw_enabled {
                                 draw_cells = previous_selected
@@ -14127,7 +14128,7 @@ impl super::TrapDispatcher {
                         // Inside Macintosh: QuickTime 1993, pp. 2-111 to 2-112.
                         let sp = cpu.read_reg(Register::A7);
                         let movie = bus.read_long(sp);
-                        let now = self.tick_count;
+                        let now = self.current_tick();
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.active = true;
                             state.rate = state.preferred_rate;
@@ -15757,13 +15758,14 @@ impl super::TrapDispatcher {
                         // block holds theMovie among its longs; find it by
                         // matching a known movie handle.
                         0x0017 => {
+                            let tick = self.current_tick();
                             for off in (4..4 + param_size).step_by(4) {
                                 let candidate = bus.read_long(sp + off);
                                 if self.movie_states.contains_key(&candidate) {
                                     self.movie_by_controller.insert(instance, candidate);
                                     if let Some(state) = self.movie_states.get_mut(&candidate) {
                                         state.active = true;
-                                        state.last_service_tick = Some(self.tick_count);
+                                        state.last_service_tick = Some(tick);
                                     }
                                     break;
                                 }
@@ -15772,6 +15774,7 @@ impl super::TrapDispatcher {
                         // MCDoAction(mc, action, params). Pascal push order puts
                         // params(long) at sp+4 and action(word) at sp+8.
                         0x0009 => {
+                            let tick = self.current_tick();
                             let action = bus.read_word(sp + 8);
                             let param = bus.read_long(sp + 4);
                             if let Some(&movie) = self.movie_by_controller.get(&instance) {
@@ -15782,7 +15785,7 @@ impl super::TrapDispatcher {
                                             let rate = param as i32;
                                             state.rate = if rate != 0 { rate } else { 0x0001_0000 };
                                             state.active = true;
-                                            state.last_service_tick = Some(self.tick_count);
+                                            state.last_service_tick = Some(tick);
                                         }
                                         // mcActionStop(2)/mcActionSetPlayRate not
                                         // separately tracked; stop clears the rate.

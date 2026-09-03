@@ -826,7 +826,7 @@ impl super::TrapDispatcher {
                     eprintln!(
                         "[DIALOG-PORT] SetPort pc=${:08X} tick={} port=${:08X}",
                         cpu.read_reg(Register::PC).wrapping_sub(2),
-                        self.tick_count,
+                        self.current_tick(),
                         port
                     );
                 }
@@ -2672,7 +2672,7 @@ impl super::TrapDispatcher {
                         self.bg_color.0,
                         self.bg_color.1,
                         self.bg_color.2,
-                        self.tick_count
+                        self.current_tick()
                     );
                 }
                 if trace_eraserect_enabled() {
@@ -2765,7 +2765,7 @@ impl super::TrapDispatcher {
                         self.bg_color.0,
                         self.bg_color.1,
                         self.bg_color.2,
-                        self.tick_count,
+                        self.current_tick(),
                     );
                 }
                 self.draw_rect(cpu, bus, &r, ShapeOp::Fill(pat));
@@ -3163,13 +3163,13 @@ impl super::TrapDispatcher {
                 });
 
                 if trace_title_diag_enabled()
-                    && self.tick_count >= 68
-                    && self.tick_count <= 110
+                    && self.current_tick() >= 68
+                    && self.current_tick() <= 110
                     && dst_info.base == self.screen_mode.0
                 {
                     eprintln!(
                         "[TITLE-DIAG] CopyBits tick={} pc=${:08X} port=${:08X} srcBits=${:08X} dstBits=${:08X} srcBase=${:08X} dstBase=${:08X} srcRect=({},{}..{},{} ) dstRect=({},{}..{},{} ) mode={} srcCTab=${:08X} dstCTab=${:08X}",
-                        self.tick_count,
+                        self.current_tick(),
                         trap_pc,
                         *self.current_port,
                         src_bits_ptr,
@@ -3420,7 +3420,7 @@ impl super::TrapDispatcher {
                     let src_rb = src_info.row_bytes;
                     eprintln!(
                         "[OFFSCREEN-002EAD50] tick={} src_rect=({},{}..{},{}) rb={}",
-                        self.tick_count, src_top, src_left, src_bottom, src_right, src_rb,
+                        self.current_tick(), src_top, src_left, src_bottom, src_right, src_rb,
                     );
                     for row_y in [0i32, 1, 2, 3, 4, 5, 30, 53, 54, 55, 56, 57, 58] {
                         let mut sample = String::new();
@@ -3723,7 +3723,7 @@ impl super::TrapDispatcher {
                     let calling_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                     eprintln!(
                         "[COPYBITS] tick={} pc=${:08X} srcBase=${:08X} dstBase=${:08X} src={}bpp dst={}bpp mode={} src=({},{}..{},{} ) dst=({},{}..{},{} ) mask=${:08X} translate={} srcSeed={:?} dstSeed={:?}",
-                        self.tick_count,
+                        self.current_tick(),
                         calling_pc,
                         src_info.base,
                         dst_info.base,
@@ -4140,7 +4140,7 @@ impl super::TrapDispatcher {
                                             }) {
                                                 eprintln!(
                                                     "[COPYBITS-HUD] tick={} dx={} dy={} mode={} src_idx={} src_rgb=({:04X},{:04X},{:04X}) transparent=true bg_rgb=({:04X},{:04X},{:04X}) srcBase=${:08X} dstBase=${:08X} srcCTab=${:08X} dstCTab=${:08X} srcSeed={:?} dstSeed={:?}",
-                                                    self.tick_count,
+                                                    self.current_tick(),
                                                     dx,
                                                     dy,
                                                     mode_base,
@@ -4196,7 +4196,7 @@ impl super::TrapDispatcher {
                                             .unwrap_or([0, 0, 0]);
                                         eprintln!(
                                             "[COPYBITS-HUD] tick={} dx={} dy={} mode={} src_idx={} src_rgb=({:04X},{:04X},{:04X}) dst_idx={} dst_rgb=({:04X},{:04X},{:04X}) translate={} bg_rgb=({:04X},{:04X},{:04X}) srcBase=${:08X} dstBase=${:08X} srcCTab=${:08X} dstCTab=${:08X} srcSeed={:?} dstSeed={:?}",
-                                            self.tick_count,
+                                            self.current_tick(),
                                             dx,
                                             dy,
                                             mode_base,
@@ -4621,7 +4621,7 @@ impl super::TrapDispatcher {
                         self.fg_color.0,
                         self.fg_color.1,
                         self.fg_color.2,
-                        self.tick_count,
+                        self.current_tick(),
                     );
                 }
                 if trace_dialog_text_enabled() {
@@ -4655,7 +4655,7 @@ impl super::TrapDispatcher {
                         self.bg_color.0,
                         self.bg_color.1,
                         self.bg_color.2,
-                        self.tick_count
+                        self.current_tick()
                     );
                 }
                 if trace_dialog_text_enabled() {
@@ -4697,7 +4697,7 @@ impl super::TrapDispatcher {
                         *self.current_port,
                         color_ptr,
                         r, g, b,
-                        self.tick_count,
+                        self.current_tick(),
                     );
                 }
                 Ok(())
@@ -4725,7 +4725,7 @@ impl super::TrapDispatcher {
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] RGBBackColor port=${:08X} ptr=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
-                        *self.current_port, color_ptr, r, g, b, self.tick_count
+                        *self.current_port, color_ptr, r, g, b, self.current_tick()
                     );
                 }
                 Ok(())
@@ -5089,7 +5089,7 @@ impl super::TrapDispatcher {
                 if trace_palette_enabled() {
                     eprintln!(
                         "[PALETTE] NewPalette tick={} entries={} src_colors=${:08X} usage={} tolerance={}",
-                        self.tick_count, entries, src_colors, src_usage, src_tolerance
+                        self.current_tick(), entries, src_colors, src_usage, src_tolerance
                     );
                 }
                 let palette = self.create_palette_from_ctab(
@@ -5196,7 +5196,7 @@ impl super::TrapDispatcher {
                 if trace_palette_enabled() {
                     eprintln!(
                         "[PALETTE] ActivatePalette(trap) tick={} window=${:08X}",
-                        self.tick_count, window
+                        self.current_tick(), window
                     );
                 }
                 self.activate_associated_palette_for_window(bus, window);
@@ -5262,7 +5262,7 @@ impl super::TrapDispatcher {
                 if trace_palette_enabled() {
                     eprintln!(
                         "[PALETTE] GetPalette(trap) tick={} window=${:08X} -> handle=${:08X}",
-                        self.tick_count,
+                        self.current_tick(),
                         window,
                         self.window_palette_handle_exact(window)
                     );
@@ -5317,7 +5317,7 @@ impl super::TrapDispatcher {
                             self.fg_color.0,
                             self.fg_color.1,
                             self.fg_color.2,
-                            self.tick_count,
+                            self.current_tick(),
                         );
                     }
                 }
@@ -5366,7 +5366,7 @@ impl super::TrapDispatcher {
                             self.bg_color.0,
                             self.bg_color.1,
                             self.bg_color.2,
-                            self.tick_count,
+                            self.current_tick(),
                         );
                     }
                 }
@@ -8429,12 +8429,14 @@ impl super::TrapDispatcher {
                     );
 
                     let picture_info = self.loaded_handles.get(&pic_handle).copied();
-                    if trace_title_diag_enabled() && self.tick_count >= 80 && self.tick_count <= 110
+                    if trace_title_diag_enabled()
+                        && self.current_tick() >= 80
+                        && self.current_tick() <= 110
                     {
                         if let Some((_, res_type, res_id)) = picture_info {
                             eprintln!(
                                 "[TITLE-DIAG] DrawPicture tick={} port=${:08X} base=${:08X} handle=${:08X} type='{}' id={} rect=({},{}..{},{} )",
-                                self.tick_count,
+                                self.current_tick(),
                                 *self.current_port,
                                 port_base,
                                 pic_handle,
@@ -8448,7 +8450,7 @@ impl super::TrapDispatcher {
                         } else {
                             eprintln!(
                                 "[TITLE-DIAG] DrawPicture tick={} port=${:08X} base=${:08X} handle=${:08X} rect=({},{}..{},{} )",
-                                self.tick_count,
+                                self.current_tick(),
                                 *self.current_port,
                                 port_base,
                                 pic_handle,
@@ -8472,7 +8474,7 @@ impl super::TrapDispatcher {
                         if let Some(fetch) = recent_resource_ctable_fetch.as_ref() {
                             eprintln!(
                                 "[PALETTE] DrawPictureUsingFetchedCTable tick={} trap={} port=${:08X} ct_id={} picHandle=${:08X}",
-                                self.tick_count,
+                                self.current_tick(),
                                 self.trap_count,
                                 port,
                                 fetch.ct_id,
@@ -8507,7 +8509,7 @@ impl super::TrapDispatcher {
                                         *self.color_manager_clut = pict_clut_array;
                                         self.seeded_picture_palette = pict_clut_array;
                                         self.seeded_picture_palette_until_tick =
-                                            self.tick_count.saturating_add(48);
+                                            self.current_tick().saturating_add(48);
                                         self.sync_canonical_offscreen_ctabs_to_clut(
                                             bus,
                                             &pict_clut_array,
@@ -8652,7 +8654,7 @@ impl super::TrapDispatcher {
                             .unwrap_or(false);
                         eprintln!(
                             "[PALETTE] DrawPicture-seed-gate tick={} ok={} port_ps={} port_base=${:08X} screen_base=${:08X} port_rb={} screen_rb={} recent_fetch={} fetch_clut={} ctab_nonzero={} pict_clut={} picHandle=${:08X}",
-                            self.tick_count, ok, port_ps, port_base,
+                            self.current_tick(), ok, port_ps, port_base,
                             self.screen_mode.0, port_rb, self.screen_mode.1,
                             recent_resource_ctable_fetch.is_some(),
                             recent_resource_ctable_clut.is_some(),
@@ -8688,14 +8690,14 @@ impl super::TrapDispatcher {
                                             let pict0 = pict_clut_array[0];
                                             eprintln!(
                                             "[CM-WRITE] PictSeed@6097 tick={} cm[0]=({:04X},{:04X},{:04X}) <- pict[0]=({:04X},{:04X},{:04X})",
-                                            self.tick_count, cm_before[0], cm_before[1], cm_before[2], pict0[0], pict0[1], pict0[2]
+                                            self.current_tick(), cm_before[0], cm_before[1], cm_before[2], pict0[0], pict0[1], pict0[2]
                                         );
                                         }
                                         *self.device_clut = pict_clut_array;
                                         *self.color_manager_clut = pict_clut_array;
                                         self.seeded_picture_palette = pict_clut_array;
                                         self.seeded_picture_palette_until_tick =
-                                            self.tick_count.saturating_add(48);
+                                            self.current_tick().saturating_add(48);
                                         self.sync_canonical_offscreen_ctabs_to_clut(
                                             bus,
                                             &pict_clut_array,
@@ -8725,7 +8727,7 @@ impl super::TrapDispatcher {
                                         if trace_palette_enabled() {
                                             eprintln!(
                                             "[PALETTE] SeedFromPicture tick={} picHandle=${:08X} picPtr=${:08X} cm[0]=({:04X},{:04X},{:04X}) cm[1]=({:04X},{:04X},{:04X}) cm[16]=({:04X},{:04X},{:04X}) cm[42]=({:04X},{:04X},{:04X}) cm[128]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
-                                            self.tick_count,
+                                            self.current_tick(),
                                             pic_handle,
                                             pic_ptr,
                                             self.color_manager_clut[0][0],
@@ -8795,7 +8797,7 @@ impl super::TrapDispatcher {
                                     if trace_palette_enabled() {
                                         eprintln!(
                                             "[PALETTE] PreserveOffscreenPictureIndices tick={} port=${:08X} picHandle=${:08X} rgb16=({:04X},{:04X},{:04X}) rgb42=({:04X},{:04X},{:04X}) rgb128=({:04X},{:04X},{:04X})",
-                                            self.tick_count,
+                                            self.current_tick(),
                                             port,
                                             pic_handle,
                                             raw_pict_array[16][0],
@@ -8846,7 +8848,7 @@ impl super::TrapDispatcher {
                                     if trace_palette_enabled() {
                                         eprintln!(
                                             "[PALETTE] SeedOffscreenFromPicture tick={} port=${:08X} ctab=${:08X} picHandle=${:08X} rgb16=({:04X},{:04X},{:04X}) rgb42=({:04X},{:04X},{:04X}) rgb128=({:04X},{:04X},{:04X})",
-                                            self.tick_count,
+                                            self.current_tick(),
                                             port,
                                             port_ctab_handle,
                                             pic_handle,
@@ -9191,7 +9193,7 @@ impl super::TrapDispatcher {
                     if first_r == 0x0AAA {
                         eprintln!(
                             "[FADE-TRACE] SetEntries wrote 0AAA at tick={} pc=${:08X}",
-                            self.tick_count, trap_pc
+                            self.current_tick(), trap_pc
                         );
                         self.fade_trace_remaining = 30;
                     }
@@ -9989,7 +9991,7 @@ impl super::TrapDispatcher {
                             .unwrap_or(0);
                         eprintln!(
                             "[REGION] tick={} BitMapToRegion bmap=${:08X} rgn=${:08X} base=${:08X} rowBytes={} bounds=({},{}..{},{}) pixelSize={} wrote={} bbox={:?} size={}",
-                            self.tick_count,
+                            self.current_tick(),
                             bmap_ptr,
                             rgn_handle,
                             info.base,
@@ -10335,7 +10337,7 @@ impl super::TrapDispatcher {
                     if trace_region_ops_enabled() {
                         eprintln!(
                             "[REGION] tick={} SectRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
-                            self.tick_count,
+                            self.current_tick(),
                             src_a,
                             Self::region_bbox(bus, src_a),
                             src_b,
@@ -10370,7 +10372,7 @@ impl super::TrapDispatcher {
                     if trace_region_ops_enabled() {
                         eprintln!(
                             "[REGION] tick={} UnionRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
-                            self.tick_count,
+                            self.current_tick(),
                             src_a,
                             Self::region_bbox(bus, src_a),
                             src_b,
@@ -10405,7 +10407,7 @@ impl super::TrapDispatcher {
                     if trace_region_ops_enabled() {
                         eprintln!(
                             "[REGION] tick={} DiffRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
-                            self.tick_count,
+                            self.current_tick(),
                             src_a,
                             Self::region_bbox(bus, src_a),
                             src_b,
@@ -10440,7 +10442,7 @@ impl super::TrapDispatcher {
                     if trace_region_ops_enabled() {
                         eprintln!(
                             "[REGION] tick={} XorRgn a=${:08X} bbox={:?} b=${:08X} bbox={:?} dst=${:08X} bbox={:?} size={}",
-                            self.tick_count,
+                            self.current_tick(),
                             src_a,
                             Self::region_bbox(bus, src_a),
                             src_b,
@@ -10464,9 +10466,9 @@ impl super::TrapDispatcher {
                 let pt_h = bus.read_word(sp + 6) as i16;
                 let in_rgn = Self::region_contains_point(bus, rgn_handle, pt_v, pt_h);
                 if trace_region_ops_enabled() {
-                    eprintln!(
-                        "[REGION] tick={} PtInRgn pt=({}, {}) rgn=${:08X} bbox={:?} size={} -> {}",
-                        self.tick_count,
+                        eprintln!(
+                            "[REGION] tick={} PtInRgn pt=({}, {}) rgn=${:08X} bbox={:?} size={} -> {}",
+                        self.current_tick(),
                         pt_v,
                         pt_h,
                         rgn_handle,
@@ -10505,9 +10507,9 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 let in_rgn = Self::rect_in_rgn(bus, rgn_handle, rect_ptr);
                 if trace_region_ops_enabled() {
-                    eprintln!(
-                        "[REGION] tick={} RectInRgn rect=({},{}..{},{}) rgn=${:08X} bbox={:?} size={} -> {}",
-                        self.tick_count,
+                        eprintln!(
+                            "[REGION] tick={} RectInRgn rect=({},{}..{},{}) rgn=${:08X} bbox={:?} size={} -> {}",
+                        self.current_tick(),
                         bus.read_word(rect_ptr) as i16,
                         bus.read_word(rect_ptr + 2) as i16,
                         bus.read_word(rect_ptr + 4) as i16,
@@ -17767,12 +17769,12 @@ impl super::TrapDispatcher {
         preserve_active_window: bool,
     ) -> u32 {
         if preserve_active_window
-            && self.tick_count < self.seeded_picture_palette_until_tick
+            && self.current_tick() < self.seeded_picture_palette_until_tick
             && !Self::uses_canonical_system_8bpp_clut(&self.seeded_picture_palette)
         {
             self.seeded_picture_palette_until_tick
         } else {
-            self.tick_count.saturating_add(extend_by_ticks)
+            self.current_tick().saturating_add(extend_by_ticks)
         }
     }
 
@@ -17781,12 +17783,12 @@ impl super::TrapDispatcher {
             ct_id,
             ctab_handle,
             port: *self.current_port,
-            tick: self.tick_count,
+            tick: self.current_tick(),
         });
         if trace_palette_enabled() {
             eprintln!(
                 "[PALETTE] RememberGetCTable tick={} trap={} port=${:08X} ct_id={} handle=${:08X}",
-                self.tick_count, self.trap_count, *self.current_port, ct_id, ctab_handle,
+                self.current_tick(), self.trap_count, *self.current_port, ct_id, ctab_handle,
             );
         }
     }
@@ -17799,7 +17801,7 @@ impl super::TrapDispatcher {
         port_ps: u16,
     ) -> Option<RecentColorTableFetch> {
         let recent = self.recent_resource_ctable_fetch?;
-        let stale = self.tick_count > recent.tick.saturating_add(1);
+        let stale = self.current_tick() > recent.tick.saturating_add(1);
         if stale {
             self.recent_resource_ctable_fetch = None;
             return None;
@@ -17845,7 +17847,7 @@ impl super::TrapDispatcher {
         if trace_palette_enabled() {
             eprintln!(
                 "[PALETTE] PublishFetchedCTableForOffscreenDrawPicture tick={} port=${:08X} ct_id={} entries={} ctab=${:08X} device[8]=({:04X},{:04X},{:04X}) device[9]=({:04X},{:04X},{:04X})",
-                self.tick_count,
+                self.current_tick(),
                 port,
                 fetch.ct_id,
                 entries,
@@ -17892,7 +17894,7 @@ impl super::TrapDispatcher {
             eprintln!(
                 "[PALETTE] {} tick={} picHandle=${:08X} picPtr=${:08X} scale={:.3} cm[0]=({:04X},{:04X},{:04X}) cm[1]=({:04X},{:04X},{:04X}) cm[16]=({:04X},{:04X},{:04X}) cm[42]=({:04X},{:04X},{:04X}) cm[128]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
                 event,
-                self.tick_count,
+                self.current_tick(),
                 pic_handle,
                 pic_ptr,
                 scale,
@@ -17946,7 +17948,7 @@ impl super::TrapDispatcher {
         if trace_ctab_seed_enabled() {
             eprintln!(
                 "[CTAB-SEED] tick={} next_ct_seed -> {}",
-                self.tick_count, seed,
+                self.current_tick(), seed,
             );
         }
         seed
@@ -17964,7 +17966,7 @@ impl super::TrapDispatcher {
         if trace_ctab_seed_enabled() {
             eprintln!(
                 "[CTAB-SEED-WRITE] tick={} label={} ctab_ptr=${:08X} seed={}",
-                self.tick_count, label, ctab_ptr, seed,
+                self.current_tick(), label, ctab_ptr, seed,
             );
         }
     }
@@ -18468,7 +18470,7 @@ impl super::TrapDispatcher {
             if trace_palette_enabled() {
                 eprintln!(
                     "[PALETTE] SyncOffscreenCtab tick={} port=${:08X} ctab=${:08X} rgb16=({:04X},{:04X},{:04X}) rgb42=({:04X},{:04X},{:04X}) rgb128=({:04X},{:04X},{:04X})",
-                    self.tick_count,
+                    self.current_tick(),
                     port,
                     ctab_handle,
                     clut[16][0],
@@ -18703,7 +18705,7 @@ impl super::TrapDispatcher {
     ) -> Option<[[u16; 3]; 256]> {
         if explicit_ctab_handle != 0
             || source_gdevice != self.main_gdevice_handle
-            || self.tick_count >= self.seeded_picture_palette_until_tick
+            || self.current_tick() >= self.seeded_picture_palette_until_tick
             || Self::uses_canonical_system_8bpp_clut(&self.seeded_picture_palette)
         {
             None
@@ -23530,7 +23532,7 @@ impl super::TrapDispatcher {
             {
                 eprintln!(
                     "[PALETTE] SetEntries tick={} start={} count={} table=${:08X} first=value:{} rgb=({:04X},{:04X},{:04X}) last=value:{} rgb=({:04X},{:04X},{:04X}) device[0]=({:04X},{:04X},{:04X}) device[1]=({:04X},{:04X},{:04X}) device[16]=({:04X},{:04X},{:04X}) device[42]=({:04X},{:04X},{:04X}) device[128]=({:04X},{:04X},{:04X}) device[255]=({:04X},{:04X},{:04X}) cm[0]=({:04X},{:04X},{:04X}) cm[1]=({:04X},{:04X},{:04X}) cm[16]=({:04X},{:04X},{:04X}) cm[42]=({:04X},{:04X},{:04X}) cm[128]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
-                    self.tick_count,
+                    self.current_tick(),
                     start,
                     count,
                     table_ptr,
@@ -23633,7 +23635,7 @@ impl super::TrapDispatcher {
         // Inside Macintosh Volume V, V-143.
         let preserve_seeded_picture_palette = self.set_entries_target_is_screen(bus)
             && incoming_default_palette
-            && self.tick_count < self.seeded_picture_palette_until_tick
+            && self.current_tick() < self.seeded_picture_palette_until_tick
             && !Self::uses_canonical_system_8bpp_clut(&self.seeded_picture_palette);
         if preserve_seeded_picture_palette && !strict_palette && !palette_as_game_wrote_enabled() {
             self.screen_palette_fade_active = true;
@@ -23657,11 +23659,11 @@ impl super::TrapDispatcher {
             // by ~4 points (old scene palette leaks into new scene's
             // canonical fade-ups). +64 is the safe maximum that
             // avoids cross-scene leakage.
-            self.seeded_picture_palette_until_tick = self.tick_count.saturating_add(64);
+            self.seeded_picture_palette_until_tick = self.current_tick().saturating_add(64);
             if trace_palette_enabled() {
                 eprintln!(
                     "[PALETTE] PreserveSeededPicture tick={} table=${:08X} until_tick={} device[0]=({:04X},{:04X},{:04X}) device[1]=({:04X},{:04X},{:04X}) device[42]=({:04X},{:04X},{:04X}) device[128]=({:04X},{:04X},{:04X}) device[255]=({:04X},{:04X},{:04X})",
-                    self.tick_count,
+                    self.current_tick(),
                     table_ptr,
                     self.seeded_picture_palette_until_tick,
                     self.device_clut[0][0],
@@ -23686,7 +23688,7 @@ impl super::TrapDispatcher {
                 let seed = self.seeded_picture_palette[0];
                 eprintln!(
                     "[CM-WRITE] PreserveSeeded@13177 tick={} cm[0]=({:04X},{:04X},{:04X}) <- seeded[0]=({:04X},{:04X},{:04X})",
-                    self.tick_count, cm_before[0], cm_before[1], cm_before[2], seed[0], seed[1], seed[2]
+                    self.current_tick(), cm_before[0], cm_before[1], cm_before[2], seed[0], seed[1], seed[2]
                 );
             }
             *self.color_manager_clut = self.seeded_picture_palette;
@@ -23752,14 +23754,14 @@ impl super::TrapDispatcher {
                 let dev0 = self.device_clut[0];
                 eprintln!(
                     "[CM-WRITE] PublishCm@13220 tick={} cm[0]=({:04X},{:04X},{:04X}) <- device[0]=({:04X},{:04X},{:04X})",
-                    self.tick_count, cm_before[0], cm_before[1], cm_before[2], dev0[0], dev0[1], dev0[2]
+                    self.current_tick(), cm_before[0], cm_before[1], cm_before[2], dev0[0], dev0[1], dev0[2]
                 );
             }
             *self.color_manager_clut = *self.device_clut;
             if trace_palette_enabled() {
                 eprintln!(
                     "[PALETTE] PublishCm tick={} — fresh full palette install cm[0]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
-                    self.tick_count,
+                    self.current_tick(),
                     self.color_manager_clut[0][0],
                     self.color_manager_clut[0][1],
                     self.color_manager_clut[0][2],

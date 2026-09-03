@@ -1888,7 +1888,7 @@ impl FixtureRunner {
     }
 
     pub fn guest_tick(&self) -> u32 {
-        self.bus.read_long(0x016A)
+        self.dispatcher.current_tick()
     }
 
     pub fn host_now(&self) -> Instant {
@@ -3280,7 +3280,7 @@ impl FixtureRunner {
         replacement.bus.write_long(addr::TICKS, launch_tick);
         replacement.bus.write_long(addr::TIME, launch_time);
         replacement.bus.write_long(addr::RND_SEED, launch_rnd_seed);
-        replacement.dispatcher.tick_count = launch_tick;
+        replacement.dispatcher.set_tick_count(launch_tick);
         if let Some(ppc_app) = replacement.ppc_app.as_mut() {
             ppc_app.set_tick_count(launch_tick);
         }
@@ -3530,7 +3530,7 @@ impl FixtureRunner {
                 DEFAULT_LAUNCH_TICKS.max(floor)
             });
         self.bus.write_long(addr::TICKS, launch_ticks);
-        self.dispatcher.tick_count = launch_ticks;
+        self.dispatcher.set_tick_count(launch_ticks);
         let time = self
             .app_start_time
             .unwrap_or_else(current_mac_epoch_seconds);
@@ -3920,7 +3920,7 @@ impl FixtureRunner {
         self.bus.write_long(addr::MEM_TOP, ram_size);
         let launch_ticks = self.launch_ticks_override.unwrap_or(0);
         self.bus.write_long(addr::TICKS, launch_ticks);
-        self.dispatcher.tick_count = launch_ticks;
+        self.dispatcher.set_tick_count(launch_ticks);
         ppc_app.set_tick_count(launch_ticks);
         let time = self
             .app_start_time
@@ -4318,11 +4318,11 @@ impl FixtureRunner {
         let target_tick = captured_tick.wrapping_add(1);
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => {
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 true
             }
             AdvanceResult::Advanced => {
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 false
             }
             AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
@@ -4407,11 +4407,11 @@ impl FixtureRunner {
         let target_tick = base_tick.wrapping_add(delay as u32);
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => {
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 true
             }
             AdvanceResult::Advanced => {
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 false
             }
             AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
@@ -4484,7 +4484,7 @@ impl FixtureRunner {
         self.idle_cycle_probe = None;
         self.idle_cycle_last_seen = None;
 
-        let tick = self.dispatcher.tick_count;
+        let tick = self.dispatcher.current_tick();
         self.idle_cycle_sleep = Some(ProvenIdleCycleSleep {
             trap_pc,
             wake_tick,
@@ -4511,7 +4511,11 @@ impl FixtureRunner {
         let memory_unchanged = self.bus.finish_write_probe_unchanged();
         let cpu_unchanged = sleep.cpu == CpuArchitecturalSnapshot::capture(&self.cpu.core);
         let tick_unchanged =
-            self.dispatcher.tick_count == sleep.tick && self.bus.read_long(0x016A) == sleep.tick;
+            self.dispatcher.current_tick() == sleep.tick
+                // The canonical process clock owns the value, while this
+                // second check verifies its low-memory guest projection did
+                // not diverge during the idle probe.
+                && self.bus.read_long(0x016A) == sleep.tick;
         let host_unchanged = sleep.host == IdleCycleHostSnapshot::capture(&self.dispatcher);
         let can_observe_events = self.active_interrupt_callback.is_none()
             && self.dispatcher.input_state.key_repeat.is_none()
@@ -4607,7 +4611,7 @@ impl FixtureRunner {
         wake_tick: u32,
         tick_cap: Option<u32>,
     ) -> bool {
-        let tick = self.dispatcher.tick_count;
+        let tick = self.dispatcher.current_tick();
         if self.idle_cycle_site_is_busy(trap_pc, tick) {
             // This site spent its probe budget (or overflowed a journal)
             // this tick: it is working between polls, not waiting.
@@ -4777,12 +4781,12 @@ impl FixtureRunner {
             // anchor across other permitted polling sites. A nested event
             // loop may alternate A → B → A; replacing the anchor at B would
             // prevent the complete A-to-A cycle from ever being observed.
-            if anchor_pc != trap_pc && anchor_tick == self.dispatcher.tick_count {
+            if anchor_pc != trap_pc && anchor_tick == self.dispatcher.current_tick() {
                 return false;
             }
         }
 
-        let wake_tick = self.dispatcher.tick_count.wrapping_add(1);
+        let wake_tick = self.dispatcher.current_tick().wrapping_add(1);
         self.try_exact_idle_cycle_fastfwd(trap_pc, wake_tick, tick_cap)
     }
 
@@ -4876,11 +4880,11 @@ impl FixtureRunner {
 
         match self.advance_until_tick(exit_tick, tick_cap) {
             AdvanceResult::CapHit => {
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 true
             }
             AdvanceResult::Advanced => {
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 false
             }
             AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
@@ -4932,12 +4936,12 @@ impl FixtureRunner {
                 // Refresh it so the resumed comparison observes the same tick
                 // that a real busy loop would obtain on its next iteration.
                 let sp = self.cpu.core.a(7);
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 true
             }
             AdvanceResult::Advanced => {
                 let sp = self.cpu.core.a(7);
-                self.bus.write_long(sp, self.dispatcher.tick_count);
+                self.bus.write_long(sp, self.dispatcher.current_tick());
                 false
             }
             AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
@@ -4993,7 +4997,7 @@ impl FixtureRunner {
 
         // Synthesise exit: Dn = final_tick - imm = Dm (by definition of
         // the fall-through condition), A7 += 4, PC past BHI.S.
-        let final_tick = self.dispatcher.tick_count;
+        let final_tick = self.dispatcher.current_tick();
         let sp = self.cpu.core.a(7);
         self.cpu.core.set_a(7, sp.wrapping_add(4));
         self.cpu.core.set_d(dn, final_tick.wrapping_sub(imm));
@@ -5077,7 +5081,7 @@ impl FixtureRunner {
 
         // Synthesise exit: Dn = final_tick, A7 += 4, PC past the branch.
         // body_size: MOVE.L (2) + CMP.L w/d16 (4) + Bcc.S (2) = 8 bytes.
-        let final_tick = self.dispatcher.tick_count;
+        let final_tick = self.dispatcher.current_tick();
         let sp = self.cpu.core.a(7);
         self.cpu.core.set_a(7, sp.wrapping_add(4));
         self.cpu.core.set_d(dn, final_tick);
@@ -5125,7 +5129,7 @@ impl FixtureRunner {
             AdvanceResult::Advanced => {}
         }
 
-        let final_tick = self.dispatcher.tick_count;
+        let final_tick = self.dispatcher.current_tick();
         let sp = self.cpu.core.a(7);
         self.cpu.core.set_a(7, sp.wrapping_add(4));
         self.cpu.core.set_d(dn, final_tick);
@@ -5139,14 +5143,14 @@ impl FixtureRunner {
     /// Shared helper: advance guest ticks until `target_tick` is
     /// reached.
     fn advance_until_tick(&mut self, target_tick: u32, tick_cap: Option<u32>) -> AdvanceResult {
-        let current_tick = self.dispatcher.tick_count;
+        let current_tick = self.dispatcher.current_tick();
         let ticks_to_advance = target_tick.wrapping_sub(current_tick);
         if ticks_to_advance > SPIN_FASTFWD_MAX_TICKS {
             return AdvanceResult::TooFar;
         }
         for _ in 0..ticks_to_advance {
             if let Some(cap) = tick_cap {
-                if self.bus.read_long(0x016A) >= cap {
+                if self.guest_tick() >= cap {
                     return AdvanceResult::CapHit;
                 }
             }
@@ -5538,7 +5542,7 @@ impl FixtureRunner {
                 crate::memory::bus::set_current_pc(pc);
             }
 
-            let trace_pc_range_hit = trace_pc_range_contains(pc, self.dispatcher.tick_count);
+            let trace_pc_range_hit = trace_pc_range_contains(pc, self.dispatcher.current_tick());
             if trace_pc_range_hit {
                 let sp = self.cpu.read_reg(Register::A7);
                 let a6 = self.cpu.read_reg(Register::A6);
@@ -5831,7 +5835,7 @@ impl FixtureRunner {
                                     && self.frozen_ticks.is_none()
                                     && tracking_refire_should_freeze_ticks(opcode)
                                 {
-                                    self.frozen_ticks = Some(self.bus.read_long(0x016A));
+                                    self.frozen_ticks = Some(self.guest_tick());
                                 }
                                 if yield_for_ui
                                     && self.frozen_ticks.is_some()
@@ -6092,6 +6096,7 @@ impl FixtureRunner {
                 self.halted_sp = Some(self.cpu.read_reg(Register::A7));
                 self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
             }
+            self.dispatcher.refresh_tick_projection();
             if foreground {
                 self.ppc_app = Some(ppc_app);
             } else {
@@ -6103,7 +6108,7 @@ impl FixtureRunner {
             }
             return (mixed_steps, running);
         }
-        let ppc_start_tick = self.dispatcher.tick_count;
+        let ppc_start_tick = self.dispatcher.current_tick();
         let ppc_start_time = self.bus.read_long(crate::memory::globals::addr::TIME);
         let profile_ppc = ppc_profile_enabled();
         let profile_total_start = profile_ppc.then(Instant::now);
@@ -6159,7 +6164,7 @@ impl FixtureRunner {
             (Vec::new(), Vec::new())
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
-            let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
+            let elapsed_ticks = self.dispatcher.current_tick().wrapping_sub(ppc_start_tick);
             ppc_app.with_process_memory_manager(
                 |app, memory_manager| {
                     Self::fire_ppc_tick_callbacks(
@@ -6274,7 +6279,7 @@ impl FixtureRunner {
                     max_steps,
                     cycles,
                     total_instructions: self.total_instructions,
-                    tick: self.dispatcher.tick_count,
+                    tick: self.dispatcher.current_tick(),
                     pc,
                     lr: ppc_app.cpu.lr,
                     current_gworld: *ppc_app.current_gworld,
@@ -6358,6 +6363,7 @@ impl FixtureRunner {
             }
         }
 
+        self.dispatcher.refresh_tick_projection();
         if foreground {
             self.ppc_app = Some(ppc_app);
         } else {
@@ -6800,11 +6806,9 @@ impl FixtureRunner {
     }
 
     fn prepare_ppc_execution_clock(&self, ppc_app: &mut PpcLoadedApp) {
-        use crate::memory::globals::addr;
-
         // The guest-visible clock bytes are shared memory. Keep only the
         // CPU-local HLE timing base aligned with that canonical TickCount.
-        ppc_app.set_tick_count(self.bus.read_long(addr::TICKS));
+        ppc_app.set_tick_count(self.dispatcher.current_tick());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6827,11 +6831,12 @@ impl FixtureRunner {
         let mut timer_probes = Vec::new();
         let mut callback_time = start_time;
         for tick_offset in 0..elapsed_ticks {
-            let callback_tick = start_tick.wrapping_add(tick_offset).wrapping_add(1);
+            let callback_tick = ppc_app.publish_tick(
+                start_tick.wrapping_add(tick_offset).wrapping_add(1),
+            );
             if callback_tick.is_multiple_of(60) {
                 callback_time = callback_time.wrapping_add(1);
             }
-            ppc_app.set_tick_count(callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TICKS, callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TIME, callback_time);
             vbl_probes.extend(
@@ -7323,7 +7328,7 @@ impl FixtureRunner {
                 Self::queue_ppc_doubleback(
                     &mut ppc_app.sound.manager,
                     index,
-                    self.dispatcher.tick_count,
+                    self.dispatcher.current_tick(),
                     self.total_instructions,
                 );
                 continue;
@@ -7487,7 +7492,7 @@ impl FixtureRunner {
             Self::queue_ppc_doubleback(
                 &mut ppc_app.sound.manager,
                 index,
-                self.dispatcher.tick_count,
+                self.dispatcher.current_tick(),
                 self.total_instructions,
             );
             ppc_app.sound.manager.double_buffer_playbacks[index].current_buffer_index =
@@ -7748,9 +7753,9 @@ impl FixtureRunner {
                 channel: chan_ptr,
                 completion: callback_addr,
                 command,
-                tick: self.dispatcher.tick_count,
+                tick: self.dispatcher.current_tick(),
                 instruction_count: self.total_instructions,
-                scheduled_tick: self.dispatcher.tick_count,
+                scheduled_tick: self.dispatcher.current_tick(),
                 scheduled_instruction_count: self.total_instructions,
             };
             let probe = ppc_app.with_process_memory_manager(
@@ -8369,7 +8374,7 @@ impl FixtureRunner {
             self.tick_budget = 0;
             if self.frozen_ticks.is_none() {
                 if let Some(cap) = tick_cap {
-                    if self.bus.read_long(0x016A) >= cap {
+                    if self.guest_tick() >= cap {
                         return true;
                     }
                 }
@@ -8384,12 +8389,12 @@ impl FixtureRunner {
         let Some(cap) = tick_cap else {
             return max_steps;
         };
-        if self.frozen_ticks.is_some() || self.bus.read_long(0x016A) >= cap {
+        if self.frozen_ticks.is_some() || self.guest_tick() >= cap {
             return 0;
         }
 
         let mut budget = u64::try_from(max_steps).unwrap_or(u64::MAX);
-        let mut ticks_remaining = u64::from(cap.wrapping_sub(self.bus.read_long(0x016A)));
+        let mut ticks_remaining = u64::from(cap.wrapping_sub(self.guest_tick()));
         if ticks_remaining == 0 {
             return 0;
         }
@@ -8524,7 +8529,7 @@ impl FixtureRunner {
         self.tick_budget -= units;
         while self.tick_budget <= 0 && self.frozen_ticks.is_none() {
             if let Some(cap) = tick_cap {
-                if self.bus.read_long(0x016A) >= cap {
+                if self.guest_tick() >= cap {
                     return true;
                 }
             }
@@ -8534,7 +8539,7 @@ impl FixtureRunner {
                 return false;
             }
             if let Some(cap) = tick_cap {
-                if self.bus.read_long(0x016A) >= cap {
+                if self.guest_tick() >= cap {
                     return true;
                 }
             }
@@ -8548,9 +8553,10 @@ impl FixtureRunner {
         self.cancel_idle_cycle_detector();
         self.dispatcher
             .refresh_menu_bar_policy_from_guest(&self.bus);
-        let new_tick = self.bus.read_long(0x016A).wrapping_add(1);
+        let new_tick = self.dispatcher.advance_tick();
+        // Low-memory Ticks ($016A) is the guest projection of process time,
+        // not its owner. Inside Macintosh Volume I (1985), p. I-260.
         self.bus.write_long(0x016A, new_tick);
-        self.dispatcher.tick_count = new_tick;
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
@@ -8766,7 +8772,7 @@ impl FixtureRunner {
         // if the time expires with no event pending, the app receives a null
         // event. Inside Macintosh: Processes 1994, p. 2-8.
         if let Some(cap) = tick_cap {
-            while self.dispatcher.pending_wait_sleep_ticks > 0 && self.bus.read_long(0x016A) < cap {
+            while self.dispatcher.pending_wait_sleep_ticks > 0 && self.guest_tick() < cap {
                 self.dispatcher.pending_wait_sleep_ticks -= 1;
                 self.advance_guest_tick();
                 self.tick_budget = self.instructions_per_tick as i32;
@@ -8778,7 +8784,7 @@ impl FixtureRunner {
             // Yield to the host if the frame tick cap was reached while the
             // process is still suspended; the next frame will continue draining
             // the remaining sleep without delivering another null event early.
-            if self.dispatcher.pending_wait_sleep_ticks > 0 && self.bus.read_long(0x016A) >= cap {
+            if self.dispatcher.pending_wait_sleep_ticks > 0 && self.guest_tick() >= cap {
                 return true;
             }
             self.dispatcher.pending_wait_next_event_return = None;
@@ -8840,7 +8846,7 @@ impl FixtureRunner {
         // In GUI mode with a tick_cap, yield if we reach the cap.
         while self.dispatcher.pending_delay_ticks > 0 {
             if let Some(cap) = tick_cap {
-                if self.bus.read_long(0x016A) >= cap {
+                if self.guest_tick() >= cap {
                     return true;
                 }
             }
@@ -8853,7 +8859,7 @@ impl FixtureRunner {
         }
 
         if self.dispatcher.pending_delay_ticks == 0 {
-            let final_ticks = self.bus.read_long(0x016A);
+            let final_ticks = self.guest_tick();
             self.cpu.write_reg(Register::D0, final_ticks);
         }
 
@@ -8866,7 +8872,7 @@ impl FixtureRunner {
         }
 
         if let Some(cap) = tick_cap {
-            if self.bus.read_long(0x016A) >= cap {
+            if self.guest_tick() >= cap {
                 return true;
             }
         }
@@ -8875,7 +8881,7 @@ impl FixtureRunner {
         self.tick_budget = self.instructions_per_tick as i32;
 
         tick_cap
-            .map(|cap| self.bus.read_long(0x016A) >= cap)
+            .map(|cap| self.guest_tick() >= cap)
             .unwrap_or(true)
     }
 
@@ -8885,7 +8891,7 @@ impl FixtureRunner {
             self.bus.write_long(0x016A, target_tick);
             // Keep `dispatcher.tick_count` in sync with $016A.
             // `advance_guest_tick` does this during ordinary advancement.
-            self.dispatcher.tick_count = target_tick;
+            self.dispatcher.set_tick_count(target_tick);
         }
     }
 
@@ -9673,7 +9679,7 @@ impl FixtureRunner {
                     .join(" ");
                 eprintln!(
                     "[SOUND-DB] fire-doubleback tick={} chan=${:08X} header=${:08X} idx={} buf=${:08X} frames={} flags_before=${:08X} callback=${:08X} sr=${:04X} first={}",
-                    self.bus.read_long(0x016A),
+                    self.guest_tick(),
                     cb.chan_ptr,
                     cb.header_ptr,
                     cb.exhausted_buffer_index,
@@ -10063,7 +10069,7 @@ impl FixtureRunner {
     fn dialog_filter_null_event_already_sent_this_tick(&self, dialog_ptr: u32) -> bool {
         self.dialog_filter_last_null_event_tick
             .is_some_and(|(sent_dialog, sent_tick)| {
-                sent_dialog == dialog_ptr && sent_tick == self.dispatcher.tick_count
+                sent_dialog == dialog_ptr && sent_tick == self.dispatcher.current_tick()
             })
     }
 
@@ -10076,7 +10082,7 @@ impl FixtureRunner {
             |(sent_dialog, sent_window, sent_tick)| {
                 sent_dialog == dialog_ptr
                     && sent_window == update_window
-                    && sent_tick == self.dispatcher.tick_count
+                    && sent_tick == self.dispatcher.current_tick()
             },
         )
     }
@@ -10190,7 +10196,7 @@ impl FixtureRunner {
         // Clear the filter result before each invocation.
         self.bus.write_word(result_addr, 0);
 
-        let ticks = self.bus.read_long(0x016A);
+        let ticks = self.guest_tick();
 
         // Consume the next actionable event from the queue, mirroring the real
         // Mac ModalDialog which calls GetNextEvent before invoking the filter.
@@ -10257,7 +10263,7 @@ impl FixtureRunner {
         } else {
             self.dialog_filter_last_null_event_tick = None;
         }
-        self.dispatcher.tick_count = ticks;
+        self.dispatcher.set_tick_count(ticks);
         self.dispatcher.write_event_record(
             &mut self.bus,
             evt,
@@ -11162,7 +11168,7 @@ mod tests {
     use crate::menu_manager::TrackedMenuPaneView;
     use crate::process_context::{
         PendingFileCompletion, ProcessFileSystemState, SharedProcessFileSystem,
-        SharedProcessValue,
+        SharedProcessTickState, SharedProcessValue,
     };
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
@@ -12141,6 +12147,39 @@ mod tests {
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
         assert_eq!(ppc_app.tick_count, 42);
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(42));
+    }
+
+    #[test]
+    fn process_tick_advance_overwrites_a_stale_low_memory_projection() {
+        use crate::memory::globals::addr;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(41, 0x1234_5678, 0);
+        runner.init_app(&app);
+
+        // Ticks is an observable guest projection, not the scheduler's source
+        // of truth. A stale or guest-written cell must not make process time
+        // jump when the runner advances the canonical clock.
+        runner.bus.write_long(addr::TICKS, 9_000);
+        assert_eq!(runner.advance_guest_tick(), 42);
+        assert_eq!(runner.dispatcher.current_tick(), 42);
+        assert_eq!(runner.bus.read_long(addr::TICKS), 42);
+        assert_eq!(
+            runner
+                .ppc_app
+                .as_mut()
+                .expect("PPC app installed")
+                .memory
+                .read_u32_be(addr::TICKS),
+            Some(42)
+        );
     }
 
     #[test]
@@ -13626,6 +13665,8 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             tick_count: 0,
+            tick_state: SharedProcessTickState::default(),
+            last_projected_tick: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
             native_exception_handler: 0,
@@ -15984,6 +16025,8 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             tick_count: 0,
+            tick_state: SharedProcessTickState::default(),
+            last_projected_tick: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
             native_exception_handler: 0,
@@ -16835,6 +16878,8 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             tick_count: 0,
+            tick_state: SharedProcessTickState::default(),
+            last_projected_tick: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
             native_exception_handler: 0,
@@ -16990,6 +17035,8 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             tick_count: 0,
+            tick_state: SharedProcessTickState::default(),
+            last_projected_tick: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
             native_exception_handler: 0,
@@ -17377,6 +17424,8 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             tick_count: 0,
+            tick_state: SharedProcessTickState::default(),
+            last_projected_tick: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
             native_exception_handler: 0,
@@ -17658,6 +17707,8 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             tick_count: 0,
+            tick_state: SharedProcessTickState::default(),
+            last_projected_tick: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
             native_exception_handler: 0,

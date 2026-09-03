@@ -3319,7 +3319,7 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
 
-                    let tick = self.tick_count;
+                    let tick = self.current_tick();
                     let callback_due = if let Some(tracking) = self.control_tracking.as_mut() {
                         tracking.scrollbar_idle_refires =
                             tracking.scrollbar_idle_refires.saturating_add(1);
@@ -3540,7 +3540,7 @@ impl super::TrapDispatcher {
                                                 stack_ptr: sp,
                                                 scrollbar_action_proc: action_proc,
                                                 scrollbar_part: part,
-                                                scrollbar_last_action_tick: self.tick_count,
+                                                scrollbar_last_action_tick: self.current_tick(),
                                                 scrollbar_idle_refires: 0,
                                                 scrollbar_callback_pending: true,
                                             });

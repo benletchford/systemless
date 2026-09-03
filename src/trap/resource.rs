@@ -1778,7 +1778,7 @@ impl super::TrapDispatcher {
                 if trace_getresource_enabled() {
                     eprintln!(
                         "[GETRESOURCE] tick={} type='{}' id={}",
-                        self.tick_count,
+                        self.current_tick(),
                         format_ostype(res_type),
                         res_id,
                     );

@@ -2304,7 +2304,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
         bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
-        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
         bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
         bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, h_text);
@@ -2476,7 +2476,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, dest_rect.1 as u16);
         bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, 0);
-        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
         bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_JUST_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, 0);
@@ -2718,7 +2718,7 @@ impl super::TrapDispatcher {
         }
 
         let last_toggle = bus.read_long(te_ptr + Self::TE_CARET_TIME_OFFSET);
-        if self.tick_count.wrapping_sub(last_toggle) < Self::TE_CARET_BLINK_TICKS {
+        if self.current_tick().wrapping_sub(last_toggle) < Self::TE_CARET_BLINK_TICKS {
             return;
         }
 
@@ -2732,7 +2732,7 @@ impl super::TrapDispatcher {
             te_ptr + Self::TE_CARET_STATE_OFFSET,
             if caret_state == 0 { 1 } else { 0 },
         );
-        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
         self.draw_te_contents(cpu, bus, te_handle, true);
     }
 
@@ -5003,7 +5003,7 @@ impl super::TrapDispatcher {
         // activating an item must make that record active before later null
         // events call TEIdle for caret blinking.
         bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
-        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+        bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
         bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
         self.draw_te_contents(cpu, bus, text_handle, true);
         true
@@ -15615,7 +15615,7 @@ impl super::TrapDispatcher {
                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                 if te_ptr != 0 {
                     bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
-                    bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
+                    bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
                     bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
                     self.draw_te_contents(cpu, bus, te_handle, true);
                 }

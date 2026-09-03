@@ -84,7 +84,7 @@ use crate::process_context::{
     DEFAULT_QUICKDRAW_HILITE_COLOR, SharedProcessMenuTracking,
     SharedProcessMixedModeM68kState,
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
-    SharedProcessQuickDrawPixelStates,
+    SharedProcessQuickDrawPixelStates, SharedProcessTickState,
     SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
 };
 use crate::quickdraw::fonts::heuristics::{
@@ -3451,7 +3451,14 @@ pub struct PpcLoadedApp {
     pub stack_base: u32,
     pub stack_size: u32,
     pub stack_pointer: u32,
+    /// Guest-visible projection of the process-owned wrapping Macintosh tick
+    /// counter. Keep this field as a `u32` for loader/test compatibility; the
+    /// private `tick_state` is authoritative once the adapter is attached.
+    /// Inside Macintosh Volume I (1985), p. I-260; Volume II (1985),
+    /// pp. II-349--II-350.
     pub tick_count: u32,
+    pub(crate) tick_state: SharedProcessTickState,
+    pub(crate) last_projected_tick: u32,
     pub clock_cycles_per_tick: u32,
     pub clock_cycle_phase: u32,
     pub native_exception_handler: u32,
@@ -4035,6 +4042,13 @@ impl PpcLoadedApp {
         context.attach_file_system(&mut self.process_file_system);
         self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
+        // Preserve the old public `tick_count` field as an input projection
+        // at adapter boundaries, then make the process handle authoritative.
+        // A direct public write is intentional fixture/loader input; ordinary
+        // execution reads and publishes through `tick_state` below.
+        self.import_public_tick_projection();
+        context.attach_tick_state(&mut self.tick_state);
+        self.refresh_tick_projection();
         context.attach_callback_tasks(
             &mut self.timer_tasks,
             &mut self.vbl_tasks,
@@ -4180,11 +4194,40 @@ impl PpcLoadedApp {
     }
 
     pub fn set_tick_count(&mut self, tick_count: u32) {
-        self.tick_count = tick_count;
+        self.import_public_tick_projection();
+        self.tick_state.set_tick(tick_count);
+        self.refresh_tick_projection();
         self.callback_scheduling.current_subtick = self
             .callback_scheduling
             .current_subtick
             .max(u64::from(tick_count) * 1_000_000);
+    }
+
+    fn import_public_tick_projection(&mut self) {
+        if self.tick_count != self.last_projected_tick {
+            self.tick_state.set_tick(self.tick_count);
+            self.last_projected_tick = self.tick_count;
+        }
+    }
+
+    fn refresh_tick_projection(&mut self) -> u32 {
+        let tick = self.tick_state.current_tick();
+        self.tick_count = tick;
+        self.last_projected_tick = tick;
+        tick
+    }
+
+    fn current_tick(&mut self) -> u32 {
+        self.import_public_tick_projection();
+        self.refresh_tick_projection()
+    }
+
+    pub(crate) fn publish_tick(&mut self, candidate: u32) -> u32 {
+        self.import_public_tick_projection();
+        let tick = self.tick_state.publish_tick(candidate);
+        self.tick_count = tick;
+        self.last_projected_tick = tick;
+        tick
     }
 
     pub fn set_clock_cycle_timing(&mut self, cycles_per_tick: u32, cycle_phase: u32) {
@@ -6848,7 +6891,7 @@ impl PpcLoadedApp {
         }
         for tick_offset in 0..elapsed_ticks {
             let current_tick = start_tick.wrapping_add(tick_offset).wrapping_add(1);
-            self.tick_count = current_tick;
+            let current_tick = self.publish_tick(current_tick);
             self.callback_scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
             loop {
                 if probes.len() >= max_callbacks {
@@ -6964,7 +7007,7 @@ impl PpcLoadedApp {
                 callback,
                 callback_entry: target.entry,
                 callback_rtoc: target.rtoc,
-                tick: self.tick_count,
+                tick: self.current_tick(),
                 cycles,
                 end_pc,
                 end_sp,
@@ -7035,7 +7078,10 @@ impl PpcLoadedApp {
             return probes;
         }
         for tick_offset in 0..elapsed_ticks {
-            self.tick_count = start_tick.wrapping_add(tick_offset).wrapping_add(1);
+            let current_tick = self.publish_tick(
+                start_tick.wrapping_add(tick_offset).wrapping_add(1),
+            );
+            self.callback_scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
             let tasks = (*self.vbl_tasks).clone();
             for task in tasks {
                 if task.architecture != CallbackTaskArchitecture::PowerPc {
@@ -7153,7 +7199,7 @@ impl PpcLoadedApp {
                 callback,
                 callback_entry: target.entry,
                 callback_rtoc: target.rtoc,
-                tick: self.tick_count,
+                tick: self.current_tick(),
                 cycles,
                 end_pc,
                 end_sp,
@@ -7329,7 +7375,8 @@ impl PpcLoadedApp {
         let input = self.current_input_snapshot();
         let mut event_queue = std::mem::take(&mut self.event_queue);
         let process_memory_manager = process_memory_manager.native_mut();
-        let tick_count = self.tick_count;
+        self.current_tick();
+        let tick_state = self.tick_state.shared_handle();
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
         let mut process_file_system = self.process_file_system.shared_handle();
@@ -7503,8 +7550,14 @@ impl PpcLoadedApp {
                     return PpcImportAction::Halt;
                 }
                 last_import_index = Some(index);
+                // A Mixed Mode callback can advance process time while the
+                // native slice is suspended. Refresh the whole-tick baseline
+                // before every import so TickCount and EventRecord.when use
+                // the same canonical process clock while retaining this
+                // slice's native cycle phase.
+                let process_tick = tick_state.current_tick();
                 let mut import_tick_count = ppc_virtual_tick_count(
-                    tick_count,
+                    process_tick,
                     clock_cycles_per_tick,
                     clock_cycle_phase,
                     elapsed,
@@ -7660,7 +7713,7 @@ impl PpcLoadedApp {
                             cpu,
                             memory,
                             ppc_virtual_microseconds(
-                                tick_count,
+                                process_tick,
                                 clock_cycles_per_tick,
                                 clock_cycle_phase,
                                 elapsed,
@@ -7860,7 +7913,7 @@ impl PpcLoadedApp {
                     cpu,
                     memory,
                     ppc_virtual_microseconds(
-                        tick_count,
+                        process_tick,
                         clock_cycles_per_tick,
                         clock_cycle_phase,
                         elapsed,
@@ -8313,7 +8366,12 @@ impl PpcLoadedApp {
         };
         drop(fetch_observer);
 
-        self.tick_count = tick_count;
+        // `tick_count` is only the execution-slice baseline used to produce
+        // virtual PPC clock reads. Do not write it back here: a nested Mixed
+        // Mode callback may have advanced the process-owned clock while this
+        // slice was running, and restoring the stale baseline would regress
+        // both adapters. The runner publishes elapsed ticks at its boundary.
+        self.refresh_tick_projection();
         self.native_exception_handler = native_exception_handler.get();
         self.native_exception_stack = native_exception_stack;
         self.stdc_qsort_stack = stdc_qsort_stack;
@@ -13005,6 +13063,8 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         stack_size,
         stack_pointer,
         tick_count: 0,
+        tick_state: SharedProcessTickState::default(),
+        last_projected_tick: 0,
         clock_cycles_per_tick: 1,
         clock_cycle_phase: 0,
         native_exception_handler: 0,
