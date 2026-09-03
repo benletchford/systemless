@@ -6369,7 +6369,10 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
 
-                        let app_path = self.launched_app_path.clone().unwrap_or_default();
+                        let app_path = self
+                            .launched_app_path()
+                            .map(str::to_owned)
+                            .unwrap_or_default();
                         let app_name = if app_path.is_empty() {
                             "Application".to_string()
                         } else {
@@ -7547,8 +7550,8 @@ impl super::TrapDispatcher {
                     // resource forks into open_files as "__rsrc__<path>" so
                     // FSRead/FSWrite can share the data-fork code path.
                     let resolved_fcb = if ref_num == 0 {
-                        self.launched_app_path
-                            .clone()
+                        self.launched_app_path()
+                            .map(str::to_owned)
                             .map(|vfs_name| (vfs_name, true))
                     } else if let Some(vfs_name) = self.open_files.get(&ref_num).cloned() {
                         let is_resource_fork = vfs_name.starts_with("__rsrc__");

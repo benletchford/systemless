@@ -20836,7 +20836,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(bus.read_word(0x0936), 0xFFFF);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("LaunchTargets/Legacy Helper")
         );
         assert_eq!(
@@ -20872,7 +20872,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(bus.read_word(0x0936), 1);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("LaunchTargets/NoSuchApp")
         );
         assert!(
@@ -20923,7 +20923,7 @@ mod tests {
         assert_eq!(bus.read_long(launch_pb + 32), 0);
         assert_eq!(bus.read_long(launch_pb + 36), 0);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("LaunchTargets/NoSuchApp")
         );
         assert_eq!(*disp.default_dir_id, target_dir_id);
@@ -20972,7 +20972,7 @@ mod tests {
         assert_eq!(bus.read_long(launch_pb + 32), 0);
         assert_eq!(bus.read_long(launch_pb + 36), 0);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("LaunchTargets/NoSuchApp")
         );
         assert_eq!(*disp.default_dir_id, target_dir_id);
@@ -21018,7 +21018,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("LaunchTargets/Register Helper")
         );
         assert!(
@@ -21070,7 +21070,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("LaunchTargets/Register Helper")
         );
         assert_eq!(
@@ -21120,7 +21120,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("LaunchTargets/Register Helper")
         );
         assert!(
@@ -21165,7 +21165,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(bus.read_word(0x0936), 0x0001);
         assert_eq!(
-            disp.launched_app_path.as_deref(),
+            disp.launched_app_path(),
             Some("ChainTargets/NoSuchApp")
         );
         assert_eq!(*disp.default_dir_id, target_dir_id);

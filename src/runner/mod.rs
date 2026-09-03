@@ -114,10 +114,12 @@ fn resource_manager_snapshot_powerpc(
     ppc_app: &mut PpcLoadedApp,
 ) -> ResourceManagerSnapshot {
     let current_file = ppc_app.current_resource_refnum();
-    let app_path = ppc_app.launched_app_path.as_deref();
+    let app_path = ppc_app.launched_app_path().map(str::to_owned);
     let include_record = |resource: &&crate::process_context::ProcessVfsResourceRecord| {
         resource.ref_num == current_file
-            && app_path.is_none_or(|path| resource.path.eq_ignore_ascii_case(path))
+            && app_path
+                .as_deref()
+                .is_none_or(|path| resource.path.eq_ignore_ascii_case(path))
     };
 
     let mut counts = BTreeMap::new();
@@ -2971,8 +2973,8 @@ impl FixtureRunner {
     ) -> std::result::Result<(), String> {
         let app_path = self
             .dispatcher
-            .launched_app_path
-            .clone()
+            .launched_app_path()
+            .map(str::to_owned)
             .ok_or_else(|| "launched app path is not available".to_string())?;
         let app_parent = TrapDispatcher::vfs_parent_path(&app_path);
         if app_parent.is_empty() {
@@ -3311,7 +3313,7 @@ impl FixtureRunner {
     fn seed_current_application_file_manager_state(&mut self) {
         use crate::memory::globals::addr;
 
-        let Some(app_path) = self.dispatcher.launched_app_path.clone() else {
+        let Some(app_path) = self.dispatcher.launched_app_path().map(str::to_owned) else {
             return;
         };
         self.dispatcher.ensure_vfs_file_metadata(&app_path);
@@ -3574,7 +3576,7 @@ impl FixtureRunner {
         // AppParmHandle is allocated below, after the zone header is reserved.
         // Inside Macintosh Volume II, II-57 to II-58
         self.bus.write_word(addr::CUR_APREF_NUM, 0);
-        if let Some(app_path) = &self.dispatcher.launched_app_path {
+        if let Some(app_path) = self.dispatcher.launched_app_path() {
             let app_name = crate::trap::dispatch::TrapDispatcher::vfs_basename(app_path);
             let name_bytes = app_name.as_bytes();
             let len = name_bytes.len().min(31);
@@ -13096,7 +13098,7 @@ mod tests {
             "queued helper launch should not halt the runner"
         );
         assert_eq!(
-            runner.dispatcher.launched_app_path.as_deref(),
+            runner.dispatcher.launched_app_path(),
             Some("Apps/Register Helper")
         );
         assert_eq!(
@@ -13183,7 +13185,7 @@ mod tests {
             "immediate queued helper launch should not halt the runner"
         );
         assert_eq!(
-            runner.dispatcher.launched_app_path.as_deref(),
+            runner.dispatcher.launched_app_path(),
             Some("Apps/Register Helper")
         );
         assert_eq!(
@@ -13630,7 +13632,6 @@ mod tests {
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
             cursor_state: crate::process_context::SharedProcessCursorState::default(),
-            launched_app_path: None,
             param_text: Default::default(),
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -16044,7 +16045,6 @@ mod tests {
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
             cursor_state: crate::process_context::SharedProcessCursorState::default(),
-            launched_app_path: None,
             param_text: Default::default(),
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -16837,7 +16837,6 @@ mod tests {
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
             cursor_state: crate::process_context::SharedProcessCursorState::default(),
-            launched_app_path: None,
             param_text: Default::default(),
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -16991,7 +16990,6 @@ mod tests {
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
             cursor_state: crate::process_context::SharedProcessCursorState::default(),
-            launched_app_path: None,
             param_text: Default::default(),
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -17404,7 +17402,6 @@ mod tests {
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
             cursor_state: crate::process_context::SharedProcessCursorState::default(),
-            launched_app_path: None,
             param_text: Default::default(),
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -17717,7 +17714,6 @@ mod tests {
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
             cursor_state: crate::process_context::SharedProcessCursorState::default(),
-            launched_app_path: None,
             param_text: Default::default(),
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -23048,7 +23044,7 @@ mod tests {
         );
         assert!(!runner.is_halted());
         assert_eq!(
-            runner.dispatcher.launched_app_path.as_deref(),
+            runner.dispatcher.launched_app_path(),
             Some("Apps/Register Helper")
         );
     }

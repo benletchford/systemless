@@ -864,6 +864,10 @@ pub struct ProcessFileSystemState {
     pub(crate) classic_next_vfs_timestamp: SharedProcessValue<u32>,
     pub(crate) vfs_files: ProcessVfsFileRecords,
     pub(crate) deleted_vfs_file_paths: Vec<String>,
+    /// Normalized VFS path of the launched application, shared by every CPU
+    /// adapter in the process. Inside Macintosh Volume II (1985), pp. II-57--
+    /// II-58.
+    pub(crate) launched_app_path: Option<String>,
     pub(crate) resource_manager: SharedProcessResourceManager,
     pub(crate) next_file_ref_num: i16,
 }
@@ -889,6 +893,7 @@ impl Default for ProcessFileSystemState {
             classic_next_vfs_timestamp: SharedProcessValue::from_value(1),
             vfs_files: ProcessVfsFileRecords::default(),
             deleted_vfs_file_paths: Vec::new(),
+            launched_app_path: None,
             resource_manager: SharedProcessResourceManager::default(),
             next_file_ref_num: 128,
         }
@@ -903,6 +908,16 @@ impl ProcessFileSystemState {
         );
         if self.files.is_empty() {
             self.files = std::mem::take(&mut source.files);
+        }
+        match (&self.launched_app_path, &source.launched_app_path) {
+            (Some(target), Some(source)) => assert!(
+                target.eq_ignore_ascii_case(source),
+                "cannot attach two different launched application paths"
+            ),
+            (None, Some(_)) => {
+                self.launched_app_path = source.launched_app_path.take();
+            }
+            _ => {}
         }
         if !Rc::ptr_eq(&self.writable_refnums.0, &source.writable_refnums.0) {
             self.writable_refnums
@@ -1008,6 +1023,7 @@ impl ProcessFileSystemState {
         snapshot.classic_next_vfs_file_id = self.classic_next_vfs_file_id.clone();
         snapshot.classic_next_vfs_timestamp = self.classic_next_vfs_timestamp.clone();
         snapshot.vfs_files = self.vfs_files.clone();
+        snapshot.launched_app_path = self.launched_app_path.clone();
         snapshot.resource_manager.vfs_resource_files = self.vfs_resource_files.clone();
         snapshot
     }
@@ -8128,6 +8144,52 @@ mod tests {
         assert_eq!(detached.vfs_volumes[0].file_count, 1);
         assert_eq!(detached.next_vfs_dir_id, 16);
         assert_eq!(detached.default_dir_id, 2);
+    }
+
+    #[test]
+    fn attached_file_systems_share_launched_application_path_while_detaching_clones() {
+        let context = ProcessContext::default();
+        let mut source = SharedProcessFileSystem::from_state(ProcessFileSystemState {
+            launched_app_path: Some("Apps/Main App".to_string()),
+            ..ProcessFileSystemState::default()
+        });
+        let mut native = SharedProcessFileSystem::default();
+
+        context.attach_file_system(&mut source);
+        context.attach_file_system(&mut native);
+        assert!(source.ptr_eq(&native));
+        assert_eq!(native.launched_app_path.as_deref(), Some("Apps/Main App"));
+
+        let detached_clone = native.clone();
+        let detached_snapshot = native.detached_vfs_snapshot();
+        native.launched_app_path = Some("Apps/Other App".to_string());
+
+        assert_eq!(source.launched_app_path.as_deref(), Some("Apps/Other App"));
+        assert_eq!(
+            detached_clone.launched_app_path.as_deref(),
+            Some("Apps/Main App")
+        );
+        assert_eq!(
+            detached_snapshot.launched_app_path.as_deref(),
+            Some("Apps/Main App")
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot attach two different launched application paths")]
+    fn attaching_file_systems_rejects_conflicting_launched_application_paths() {
+        let context = ProcessContext::default();
+        let mut first = SharedProcessFileSystem::from_state(ProcessFileSystemState {
+            launched_app_path: Some("Apps/Main App".to_string()),
+            ..ProcessFileSystemState::default()
+        });
+        let mut second = SharedProcessFileSystem::from_state(ProcessFileSystemState {
+            launched_app_path: Some("Apps/Other App".to_string()),
+            ..ProcessFileSystemState::default()
+        });
+
+        context.attach_file_system(&mut first);
+        context.attach_file_system(&mut second);
     }
 
     #[test]
