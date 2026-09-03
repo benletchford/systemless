@@ -12878,14 +12878,11 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         ppc_seed_main_gworld(&mut memory),
         ppc_seed_dsp_back_gworld(&mut memory),
     ];
-    // NewGWorld defaults to non-purgeable pixel storage. Seed the two
-    // loader-owned worlds before either ISA attaches so their shared state is
-    // immediately available to native and classic QuickDraw calls. Inside
-    // Macintosh: Imaging With QuickDraw (1994), pp. 6-16--6-21 and 6-34.
+    // Loader-owned screen worlds remain lazy compatibility projections so two
+    // pristine adapters can attach to the same process without presenting
+    // duplicate populated registries. The first pixel-state operation adopts
+    // their non-purgeable mirror; NewGWorld records are registered eagerly.
     let gworld_pixel_states = SharedProcessQuickDrawPixelStates::default();
-    for record in &gworlds {
-        gworld_pixel_states.set_quickdraw_pixel_state(record.pixmap_handle, 0);
-    }
     if let Some((base, len)) = system_reservation {
         let reservation_start = u64::from(base);
         let reservation_end = reservation_start + u64::from(len);
