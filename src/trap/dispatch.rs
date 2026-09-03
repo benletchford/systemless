@@ -23,7 +23,7 @@ use crate::process_context::{
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
     SharedProcessOpenFilePositions, SharedProcessOpenFiles,
-    SharedProcessQuickDrawOpColors,
+    SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessScrapState, SharedProcessSoundManager, SharedProcessTextEditManager,
     SharedProcessValue,
 };
@@ -2060,11 +2060,6 @@ pub struct TrapDispatcher {
     /// HLE keeps the source RGB so color fills can resolve it for the current
     /// destination depth at draw time.
     pub(crate) makergbpat_colors: HashMap<u32, (u16, u16, u16)>,
-    /// Current hilite color (RGBColor: R, G, B). Set by HiliteColor
-    /// ($AA22) and conceptually stored in the cGrafPort's grafVars
-    /// handle per IM:V V-149. Systemless uses a single dispatcher field
-    /// since most apps only have one cGrafPort active at a time.
-    pub hilite_color: (u16, u16, u16),
     /// Extra horizontal pixels added to each non-space character
     /// when drawing text, expressed as a Fixed16.16 value. Set by
     /// CharExtra ($AA23) per IM:V V-149.
@@ -2406,6 +2401,10 @@ pub struct TrapDispatcher {
     /// allocator-managed GrafVars handle. A valid guest GrafVars record is
     /// always preferred by OpColor reads and writes.
     pub(crate) quickdraw_op_colors: SharedProcessQuickDrawOpColors,
+    /// Process-owned fallback for ports whose guest record has no
+    /// allocator-managed GrafVars handle. A valid guest GrafVars record is
+    /// always preferred by HiliteColor reads and writes.
+    pub(crate) quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
     /// Whether the attached process's current CGrafPort record is canonical
     /// for draw state shared with the native QuickDraw adapter.
     pub(crate) process_quickdraw_port_state_attached: bool,
@@ -2838,6 +2837,7 @@ impl TrapDispatcher {
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
         context.attach_quickdraw_error(&mut self.quickdraw_error);
         context.attach_quickdraw_op_colors(&mut self.quickdraw_op_colors);
+        context.attach_quickdraw_hilite_colors(&mut self.quickdraw_hilite_colors);
         self.process_quickdraw_port_state_attached = true;
         context.attach_display_color_state(
             &mut self.device_clut,
@@ -3846,10 +3846,6 @@ impl TrapDispatcher {
             pm_fg_color: None,
             pm_bg_color: None,
             makergbpat_colors: HashMap::new(),
-            // Default HiliteRGB used before an application calls HiliteColor.
-            // The System 7.5.3 BasiliskII reference resolves this to EV's
-            // darker selected-list green rather than a saturated primary.
-            hilite_color: (0x0000, 0x8000, 0x0000),
             char_extra: 0,
             bk_pat: [0x00; 8],
             pn_loc: (0, 0),
@@ -3978,6 +3974,7 @@ impl TrapDispatcher {
             current_port: SharedProcessValue::from_value(0),
             quickdraw_error: SharedProcessValue::from_value(0),
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
+            quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             process_quickdraw_port_state_attached: false,
             port_draw_states: HashMap::new(),
             resolved_port_color_fields: HashMap::new(),

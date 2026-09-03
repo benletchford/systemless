@@ -80,7 +80,9 @@ use crate::process_context::{
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
-    SharedProcessMenuTracking, SharedProcessMixedModeM68kState, SharedProcessQuickDrawOpColors,
+    DEFAULT_QUICKDRAW_HILITE_COLOR, SharedProcessMenuTracking,
+    SharedProcessMixedModeM68kState,
+    SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
 };
 use crate::quickdraw::fonts::heuristics::{
@@ -1085,6 +1087,7 @@ pub enum PpcImportDispatcherTarget {
     RGBForeColor,
     RGBBackColor,
     OpColor,
+    HiliteColor,
     PmForeColor,
     PmBackColor,
     Color2Index,
@@ -3504,6 +3507,7 @@ pub struct PpcLoadedApp {
     pub current_gworld: SharedProcessValue<u32>,
     pub current_gdevice: SharedProcessValue<u32>,
     pub(crate) quickdraw_op_colors: SharedProcessQuickDrawOpColors,
+    pub(crate) quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
     pub screen_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
@@ -4039,6 +4043,7 @@ impl PpcLoadedApp {
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
         context.attach_quickdraw_op_colors(&mut self.quickdraw_op_colors);
+        context.attach_quickdraw_hilite_colors(&mut self.quickdraw_hilite_colors);
         self.process_quickdraw_port_state_attached = true;
         context.attach_quickdraw_error(&mut self.toolbox_startup.last_quickdraw_error);
         context.attach_display_color_state(
@@ -7401,6 +7406,7 @@ impl PpcLoadedApp {
         let mut current_gworld = self.current_gworld.shared_handle();
         let mut current_gdevice = self.current_gdevice.shared_handle();
         let quickdraw_op_colors = self.quickdraw_op_colors.shared_handle();
+        let quickdraw_hilite_colors = self.quickdraw_hilite_colors.shared_handle();
         let mut screen_clut = self.screen_clut.shared_handle();
         let mut color_manager_clut = self.color_manager_clut.shared_handle();
         let mut device_gamma = self.device_gamma.shared_handle();
@@ -7982,6 +7988,7 @@ impl PpcLoadedApp {
                             &mut current_gworld,
                             &mut current_gdevice,
                             &quickdraw_op_colors,
+                            &quickdraw_hilite_colors,
                             &mut screen_clut,
                             &mut color_manager_clut,
                             &mut device_gamma,
@@ -13036,6 +13043,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
         current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
         quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
+        quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
         screen_clut: SharedProcessValue::from_value(screen_clut),
         color_manager_clut: SharedProcessValue::from_value(color_manager_clut),
         device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -14242,6 +14250,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "RGBForeColor") => PpcImportDispatcherTarget::RGBForeColor,
         ("InterfaceLib", "RGBBackColor") => PpcImportDispatcherTarget::RGBBackColor,
         ("InterfaceLib", "OpColor") => PpcImportDispatcherTarget::OpColor,
+        ("InterfaceLib", "HiliteColor") => PpcImportDispatcherTarget::HiliteColor,
         ("InterfaceLib", "PmForeColor") => PpcImportDispatcherTarget::PmForeColor,
         ("InterfaceLib", "PmBackColor") => PpcImportDispatcherTarget::PmBackColor,
         ("InterfaceLib", "Color2Index") => PpcImportDispatcherTarget::Color2Index,
@@ -15301,6 +15310,7 @@ fn dispatch_supported_import(
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     quickdraw_op_colors: &SharedProcessQuickDrawOpColors,
+    quickdraw_hilite_colors: &SharedProcessQuickDrawHiliteColors,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
     device_gamma: &mut crate::display::DisplayGamma,
@@ -17578,6 +17588,21 @@ fn dispatch_supported_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::HiliteColor => {
+            if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
+                // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62
+                // and 4-64: HiliteColor updates the current CGrafPort's
+                // GrafVars.rgbHiliteColor. Static ports without a valid
+                // handle use the process-owned per-port fallback.
+                ppc_write_port_hilite_color(
+                    memory,
+                    *current_gworld,
+                    color,
+                    quickdraw_hilite_colors,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::PmForeColor => {
             // Inside Macintosh Volume VI 1991, p. 20-21: courteous and
             // tolerant entries select their palette RGB, while explicit
@@ -19644,6 +19669,7 @@ fn dispatch_supported_import(
             if let Some(record) = disposed {
                 quickdraw_fore_indices.remove(&port);
                 quickdraw_op_colors.remove_quickdraw_op_color(port);
+                quickdraw_hilite_colors.remove_quickdraw_hilite_color(port);
                 let allocation = toolbox_startup.gworld_allocations.remove(&port);
                 let saved_ctable = toolbox_startup
                     .indexed_screen_ctables
@@ -19787,6 +19813,8 @@ fn dispatch_supported_import(
                 handles,
                 vfs_resources,
                 *current_resource_refnum,
+                *current_gworld,
+                quickdraw_hilite_colors,
             );
             if ppc_hle_trace_enabled() {
                 eprintln!(
@@ -20068,6 +20096,7 @@ fn dispatch_supported_import(
                 quickdraw_fore_indices.remove(&port);
             }
             quickdraw_op_colors.remove_quickdraw_op_color(port);
+            quickdraw_hilite_colors.remove_quickdraw_hilite_color(port);
             if was_current && *current_gworld != port {
                 ppc_restore_port_colors(
                     memory,
@@ -57474,7 +57503,7 @@ fn ppc_standard_screen_clut(depth: u32, is_color: bool) -> Option<([[u16; 3]; 25
         // 2-bit screen uses the enhanced standard table, whose spare entry
         // carries the current highlight color. PPC currently exposes the
         // System 7 default highlight green used by the shared 68k Toolbox.
-        (clut, _) = TrapDispatcher::standard_mac_enhanced_clut(2, (0, 0x8000, 0))?;
+        (clut, _) = TrapDispatcher::standard_mac_enhanced_clut(2, DEFAULT_QUICKDRAW_HILITE_COLOR)?;
     }
     Some((clut, entry_count))
 }
@@ -58738,6 +58767,81 @@ fn ppc_write_port_op_color(
     // allocator-managed GrafVars handle. Keep their per-port fallback live
     // across attached 68K and PowerPC adapters.
     quickdraw_op_colors.set_quickdraw_op_color(port, (color.red, color.green, color.blue));
+}
+
+fn ppc_port_hilite_color_from_graf_vars(
+    memory: &mut PpcSectionMem,
+    port: u32,
+) -> Option<PpcRgbColor> {
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64:
+    // a CGrafPort's GrafVars.rgbHiliteColor follows rgbOpColor at offset 6.
+    // Do not consult the fallback map when a valid guest record is present;
+    // guest memory is the authoritative representation for that port.
+    if memory.read_u16_be(port.checked_add(6)?)? & 0xc000 != 0xc000 {
+        return None;
+    }
+    let graf_vars_handle = memory.read_u32_be(port.checked_add(PPC_CGRAF_PORT_GRAF_VARS_OFFSET)?)?;
+    if graf_vars_handle == 0 || !ppc_memory_can_write_bytes(memory, graf_vars_handle, 4) {
+        return None;
+    }
+    let graf_vars = memory.read_u32_be(graf_vars_handle)?;
+    let hilite_color = graf_vars.checked_add(6)?;
+    if graf_vars == 0 || !ppc_memory_can_write_bytes(memory, hilite_color, 6) {
+        return None;
+    }
+    ppc_read_rgb_color(memory, hilite_color)
+}
+
+fn ppc_current_hilite_color(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    quickdraw_hilite_colors: &SharedProcessQuickDrawHiliteColors,
+) -> PpcRgbColor {
+    ppc_port_hilite_color_from_graf_vars(memory, port)
+        .or_else(|| {
+            quickdraw_hilite_colors
+                .quickdraw_hilite_color(port)
+                .map(|(red, green, blue)| PpcRgbColor { red, green, blue })
+        })
+        .unwrap_or_else(|| {
+            let (red, green, blue) = DEFAULT_QUICKDRAW_HILITE_COLOR;
+            PpcRgbColor { red, green, blue }
+        })
+}
+
+fn ppc_write_port_hilite_color(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    color: PpcRgbColor,
+    quickdraw_hilite_colors: &SharedProcessQuickDrawHiliteColors,
+) {
+    let Some(port_version) = port.checked_add(6).and_then(|address| memory.read_u16_be(address))
+    else {
+        return;
+    };
+    if port_version & 0xc000 != 0xc000 {
+        return;
+    }
+    let graf_vars_handle = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_GRAF_VARS_OFFSET))
+        .unwrap_or(0);
+    if let Some(graf_vars) = (graf_vars_handle != 0)
+        .then(|| memory.read_u32_be(graf_vars_handle).unwrap_or(0))
+        .filter(|graf_vars| *graf_vars != 0)
+        .and_then(|graf_vars| graf_vars.checked_add(6))
+        .filter(|graf_vars| {
+            ppc_memory_can_write_bytes(memory, *graf_vars, 6)
+        })
+    {
+        let _ = ppc_write_rgb_color(memory, graf_vars, color);
+    }
+    // Static process ports (including the seeded main port) do not own an
+    // allocator-managed GrafVars handle. Keep their per-port fallback live
+    // across attached 68K and PowerPC adapters.
+    quickdraw_hilite_colors.set_quickdraw_hilite_color(
+        port,
+        (color.red, color.green, color.blue),
+    );
 }
 
 fn ppc_write_port_rgb_color(
@@ -65737,28 +65841,44 @@ fn ppc_get_ctable(
     handles: &mut Vec<PpcHandleRecord>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    current_gworld: u32,
+    quickdraw_hilite_colors: &SharedProcessQuickDrawHiliteColors,
 ) -> u32 {
     let ct_id = cpu.gpr[3] as u16 as i16;
     // Imaging With QuickDraw 1994, 4-92 through 4-93: GetCTable returns a
     // newly allocated ColorTable handle copied from a 'clut' resource, and
     // recognizes the standard depth IDs 1, 2, 4, and 8.
-    let data = if let Ok(depth) = u16::try_from(ct_id) {
-        TrapDispatcher::standard_mac_indexed_clut(depth).map(|(clut, entry_count)| {
-            let mut data = Vec::with_capacity(8 + entry_count * 8);
-            data.extend_from_slice(&(u32::from(depth)).to_be_bytes());
-            data.extend_from_slice(&0u16.to_be_bytes());
-            data.extend_from_slice(&((entry_count - 1) as u16).to_be_bytes());
-            for (index, rgb) in clut.into_iter().take(entry_count).enumerate() {
-                data.extend_from_slice(&(index as u16).to_be_bytes());
-                data.extend_from_slice(&rgb[0].to_be_bytes());
-                data.extend_from_slice(&rgb[1].to_be_bytes());
-                data.extend_from_slice(&rgb[2].to_be_bytes());
-            }
-            data
-        })
-    } else {
-        None
+    let data = match ct_id {
+        1 | 2 | 4 | 8 => TrapDispatcher::standard_mac_indexed_clut(ct_id as u16)
+            .map(|(clut, entry_count)| (clut, entry_count, ct_id as u32)),
+        66 | 68 | 72 => {
+            let depth = (ct_id - 64) as u16;
+            let hilite = ppc_current_hilite_color(
+                memory,
+                current_gworld,
+                quickdraw_hilite_colors,
+            );
+            TrapDispatcher::standard_mac_enhanced_clut(
+                depth,
+                (hilite.red, hilite.green, hilite.blue),
+            )
+            .map(|(clut, entry_count)| (clut, entry_count, u32::from(depth)))
+        }
+        _ => None,
     }
+    .map(|(clut, entry_count, seed)| {
+        let mut data = Vec::with_capacity(8 + entry_count * 8);
+        data.extend_from_slice(&seed.to_be_bytes());
+        data.extend_from_slice(&0u16.to_be_bytes());
+        data.extend_from_slice(&((entry_count - 1) as u16).to_be_bytes());
+        for (index, rgb) in clut.into_iter().take(entry_count).enumerate() {
+            data.extend_from_slice(&(index as u16).to_be_bytes());
+            data.extend_from_slice(&rgb[0].to_be_bytes());
+            data.extend_from_slice(&rgb[1].to_be_bytes());
+            data.extend_from_slice(&rgb[2].to_be_bytes());
+        }
+        data
+    })
     .or_else(|| {
         let index = ppc_vfs_resource_index(
             vfs_resources,
@@ -158176,6 +158296,235 @@ pub(crate) mod tests {
         assert_eq!(
             loaded.quickdraw_op_colors.quickdraw_op_color(PPC_MAIN_GWORLD),
             Some((color.red, color.green, color.blue))
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_hilite_color_records_the_highlight_operand() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "HiliteColor"),
+            PpcImportDispatcherTarget::HiliteColor
+        );
+        let pef = synthetic_pef_with_import(b"HiliteColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let color_ptr = PPC_DATA_BASE + 0x1000;
+        let color = PpcRgbColor {
+            red: 0x1234,
+            green: 0x5678,
+            blue: 0x9abc,
+        };
+        loaded.memory.add_region(color_ptr, vec![0; 6]);
+        ppc_write_rgb_color(&mut loaded.memory, color_ptr, color).unwrap();
+        loaded.cpu.gpr[3] = color_ptr;
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+
+        assert_eq!(
+            loaded
+                .quickdraw_hilite_colors
+                .quickdraw_hilite_color(PPC_MAIN_GWORLD),
+            Some((color.red, color.green, color.blue))
+        );
+        assert_eq!(
+            ppc_current_hilite_color(
+                &mut loaded.memory,
+                PPC_MAIN_GWORLD,
+                &loaded.quickdraw_hilite_colors,
+            ),
+            color
+        );
+    }
+
+    #[test]
+    fn classic_hilite_color_is_immediately_visible_to_attached_native_get_ctable() {
+        let pef = synthetic_pef_with_import(b"GetCTable");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        classic_bus.attach_guest_address_space(native.memory.shared_view());
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let mut classic_cpu = MockCpu::new();
+        let sp = 0x0100;
+        let color_ptr = 0x0120;
+        classic_cpu.write_reg(Register::A7, sp);
+        classic_bus.write_long(sp, color_ptr);
+        classic_bus.write_word(color_ptr, 0x1357);
+        classic_bus.write_word(color_ptr + 2, 0x2468);
+        classic_bus.write_word(color_ptr + 4, 0x369a);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x222, &mut classic_cpu, &mut classic_bus)
+            .expect("HiliteColor trap")
+            .is_ok());
+        assert_eq!(classic_cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(
+            native
+                .quickdraw_hilite_colors
+                .quickdraw_hilite_color(PPC_MAIN_GWORLD),
+            Some((0x1357, 0x2468, 0x369a))
+        );
+
+        native.cpu.gpr[3] = 66;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetCTable);
+        let ctable = native.cpu.gpr[3];
+        let ctable_ptr = native
+            .memory
+            .read_u32_be(ctable)
+            .expect("native enhanced ColorTable handle");
+        assert_eq!(native.memory.read_u16_be(ctable_ptr + 6), Some(3));
+        assert_eq!(native.memory.read_u16_be(ctable_ptr + 8 + 2 * 8 + 2), Some(0x1357));
+        assert_eq!(native.memory.read_u16_be(ctable_ptr + 8 + 2 * 8 + 4), Some(0x2468));
+        assert_eq!(native.memory.read_u16_be(ctable_ptr + 8 + 2 * 8 + 6), Some(0x369a));
+    }
+
+    #[test]
+    fn native_hilite_color_is_immediately_visible_to_attached_classic_grafvars() {
+        let pef = synthetic_pef_with_import(b"HiliteColor");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+
+        let base = PPC_HEAP_BASE + 0x15_000;
+        let port = base;
+        let graf_vars_handle = base + 0x100;
+        let graf_vars = base + 0x110;
+        let color_ptr = base + 0x120;
+        native.memory.add_region(base, vec![0; 0x140]);
+        native.memory.write_u16_be(port + 6, 0xc000).unwrap();
+        native
+            .memory
+            .write_u32_be(port + PPC_CGRAF_PORT_GRAF_VARS_OFFSET, graf_vars_handle)
+            .unwrap();
+        native.memory.write_u32_be(graf_vars_handle, graf_vars).unwrap();
+        let color = PpcRgbColor {
+            red: 0x1357,
+            green: 0x2468,
+            blue: 0x369a,
+        };
+        ppc_write_rgb_color(&mut native.memory, color_ptr, color).unwrap();
+        *native.current_gworld = port;
+
+        native.cpu.gpr[3] = color_ptr;
+        run_test_import(&mut native, PpcImportDispatcherTarget::HiliteColor);
+
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        classic_bus.attach_guest_address_space(native.memory.shared_view());
+        context.attach_classic_memory_bus(&mut classic_bus);
+        assert_eq!(*classic.current_port, port);
+        assert_eq!(classic_bus.read_word(graf_vars + 6), color.red);
+        assert_eq!(classic_bus.read_word(graf_vars + 8), color.green);
+        assert_eq!(classic_bus.read_word(graf_vars + 10), color.blue);
+        assert_eq!(classic.current_hilite_color(&classic_bus), (color.red, color.green, color.blue));
+    }
+
+    #[test]
+    fn hilite_color_keeps_distinct_values_when_switching_between_ports() {
+        let pef = synthetic_pef_with_import(b"HiliteColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let base = PPC_HEAP_BASE + 0x16_000;
+        let first_port = base;
+        let second_port = base + 0x40;
+        let basic_port = base + 0x80;
+        let first_color_ptr = base + 0x100;
+        let second_color_ptr = base + 0x110;
+        let basic_color_ptr = base + 0x120;
+        loaded.memory.add_region(base, vec![0; 0x140]);
+        for port in [first_port, second_port] {
+            loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
+        }
+        loaded.memory.write_u16_be(basic_port + 6, 0).unwrap();
+        let first_color = PpcRgbColor {
+            red: 0x1111,
+            green: 0x2222,
+            blue: 0x3333,
+        };
+        let second_color = PpcRgbColor {
+            red: 0xaaaa,
+            green: 0xbbbb,
+            blue: 0xcccc,
+        };
+        let basic_color = PpcRgbColor {
+            red: 0xdddd,
+            green: 0xeeee,
+            blue: 0xffff,
+        };
+        ppc_write_rgb_color(&mut loaded.memory, first_color_ptr, first_color).unwrap();
+        ppc_write_rgb_color(&mut loaded.memory, second_color_ptr, second_color).unwrap();
+        ppc_write_rgb_color(&mut loaded.memory, basic_color_ptr, basic_color).unwrap();
+
+        *loaded.current_gworld = first_port;
+        loaded.cpu.gpr[3] = first_color_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+        *loaded.current_gworld = second_port;
+        loaded.cpu.gpr[3] = second_color_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+
+        assert_eq!(
+            ppc_current_hilite_color(
+                &mut loaded.memory,
+                first_port,
+                &loaded.quickdraw_hilite_colors,
+            ),
+            first_color
+        );
+        assert_eq!(
+            ppc_current_hilite_color(
+                &mut loaded.memory,
+                second_port,
+                &loaded.quickdraw_hilite_colors,
+            ),
+            second_color
+        );
+
+        *loaded.current_gworld = basic_port;
+        loaded.cpu.gpr[3] = basic_color_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+        assert_eq!(
+            loaded
+                .quickdraw_hilite_colors
+                .quickdraw_hilite_color(basic_port),
+            None
+        );
+        let (red, green, blue) = DEFAULT_QUICKDRAW_HILITE_COLOR;
+        assert_eq!(
+            ppc_current_hilite_color(
+                &mut loaded.memory,
+                basic_port,
+                &loaded.quickdraw_hilite_colors,
+            ),
+            PpcRgbColor { red, green, blue }
+        );
+    }
+
+    #[test]
+    fn detached_ppc_clone_has_independent_quickdraw_hilite_colors() {
+        let pef = synthetic_pef_with_import(b"HiliteColor");
+        let loaded = load_pef_application(&pef).unwrap();
+        let port = PPC_HEAP_BASE + 0x17_000;
+        loaded
+            .quickdraw_hilite_colors
+            .set_quickdraw_hilite_color(port, (0x1111, 0x2222, 0x3333));
+        let detached = loaded.clone();
+        loaded
+            .quickdraw_hilite_colors
+            .set_quickdraw_hilite_color(port, (0xaaaa, 0xbbbb, 0xcccc));
+
+        assert_eq!(
+            loaded
+                .quickdraw_hilite_colors
+                .quickdraw_hilite_color(port),
+            Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
+        assert_eq!(
+            detached
+                .quickdraw_hilite_colors
+                .quickdraw_hilite_color(port),
+            Some((0x1111, 0x2222, 0x3333))
         );
     }
 
