@@ -73,13 +73,15 @@ use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAppleEventHandler, ProcessContext, ProcessCursorState, ProcessFileSystemState,
     ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState, ProcessMemoryManager,
+    ProcessMixedModeM68kState,
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
     ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
-    SharedProcessMenuTracking, SharedProcessTimerTasks, SharedProcessValue,
+    SharedProcessMenuTracking, SharedProcessMixedModeM68kState, SharedProcessTimerTasks,
+    SharedProcessValue,
     SharedProcessVblTasks,
 };
 use crate::quickdraw::fonts::heuristics::{
@@ -3023,10 +3025,9 @@ pub struct PpcToolboxStartupState {
     popup_menu_call: Option<PpcPopUpMenuCall>,
     /// Reused guest storage for the by-reference MDEF rectangle and item.
     menu_def_scratch: u32,
-    /// Process-owned 68k switch marker/gateway and stack used whenever native
-    /// PowerPC enters classic code through Mixed Mode.
-    mixed_mode_m68k_gateway: u32,
-    mixed_mode_m68k_stack_top: u32,
+    /// Process-owned 68k switch marker/gateway and compatibility stack used
+    /// whenever native PowerPC enters classic code through Mixed Mode.
+    mixed_mode_m68k: SharedProcessMixedModeM68kState,
     guest_calls: SharedGuestCallStack,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
@@ -3095,8 +3096,7 @@ impl Default for PpcToolboxStartupState {
             menu_definition_saved_gworld: None,
             popup_menu_call: None,
             menu_def_scratch: 0,
-            mixed_mode_m68k_gateway: 0,
-            mixed_mode_m68k_stack_top: 0,
+            mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             guest_calls: SharedGuestCallStack::default(),
             go_away_tracking: None,
             drag_window_tracking: None,
@@ -4081,6 +4081,7 @@ impl PpcLoadedApp {
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
         context.attach_guest_calls(&mut self.toolbox_startup.guest_calls);
+        context.attach_mixed_mode_m68k_state(&mut self.toolbox_startup.mixed_mode_m68k);
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
     }
 
@@ -43709,37 +43710,52 @@ fn ppc_mixed_mode_m68k_storage(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
-    startup: &mut PpcToolboxStartupState,
+    storage: &mut SharedProcessMixedModeM68kState,
 ) -> Option<(u32, u32)> {
-    if startup.mixed_mode_m68k_gateway == 0 {
-        startup.mixed_mode_m68k_gateway =
-            if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
-                ppc_process_heap_alloc(
-                    memory_manager,
-                    memory,
-                    heap_cursor,
-                    PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
-                    true,
-                )
-            } else {
-                ppc_heap_alloc(
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
-                    true,
-                )
-            };
-        if startup.mixed_mode_m68k_gateway == 0 {
+    let state: &mut ProcessMixedModeM68kState = &mut **storage;
+    match (state.gateway, state.stack_top) {
+        (0, 0) => {}
+        (gateway, stack_top) if gateway != 0 && stack_top != 0 => {
+            return Some((gateway, stack_top));
+        }
+        _ => return None,
+    }
+
+    // The gateway and stack are one process-owned allocation transaction. Do
+    // not expose either address until both allocations and the gateway's
+    // return marker have succeeded. Inside Macintosh: PowerPC System Software
+    // (1994), pp. 2-12--2-20.
+    let initial_heap_cursor = *heap_cursor;
+    let native_snapshot = process_memory_manager
+        .as_deref()
+        .map(ProcessNativeMemoryManager::detached_clone);
+    let pair = (|| {
+        let gateway = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
+            ppc_process_heap_alloc(
+                memory_manager,
+                memory,
+                heap_cursor,
+                PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
+                true,
+            )
+        } else {
+            ppc_heap_alloc(
+                memory,
+                heap_cursor,
+                heap_limit,
+                PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
+                true,
+            )
+        };
+        if gateway == 0 {
             return None;
         }
         memory.write_u16_be(
-            startup.mixed_mode_m68k_gateway + PPC_MIXED_MODE_M68K_RETURN_OFFSET,
+            gateway.checked_add(PPC_MIXED_MODE_M68K_RETURN_OFFSET)?,
             0x4e71,
         )?;
-    }
-    if startup.mixed_mode_m68k_stack_top == 0 {
-        let base = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
+
+        let stack_base = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
             ppc_process_heap_alloc(
                 memory_manager,
                 memory,
@@ -43756,15 +43772,36 @@ fn ppc_mixed_mode_m68k_storage(
                 true,
             )
         };
-        if base == 0 {
+        if stack_base == 0 {
             return None;
         }
-        startup.mixed_mode_m68k_stack_top = base.checked_add(PPC_MIXED_MODE_M68K_STACK_SIZE)?;
-    }
-    Some((
-        startup.mixed_mode_m68k_gateway,
-        startup.mixed_mode_m68k_stack_top,
-    ))
+        let stack_top = stack_base.checked_add(PPC_MIXED_MODE_M68K_STACK_SIZE)?;
+        Some((gateway, stack_top))
+    })();
+
+    let Some((gateway, stack_top)) = pair else {
+        *heap_cursor = initial_heap_cursor;
+        if let (Some(memory_manager), Some(snapshot)) = (
+            process_memory_manager.as_deref_mut(),
+            native_snapshot,
+        ) {
+            memory_manager.restore_native_snapshot(snapshot);
+        }
+        let allocation_limit = process_memory_manager
+            .as_deref()
+            .and_then(|memory_manager| {
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| memory_manager.native_allocation_limit(heap.heap_limit))
+            })
+            .unwrap_or(heap_limit);
+        ppc_update_zone_free_bytes(memory, *heap_cursor, allocation_limit);
+        return None;
+    };
+
+    state.gateway = gateway;
+    state.stack_top = stack_top;
+    Some((gateway, stack_top))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -43983,7 +44020,7 @@ fn ppc_begin_m68k_universal_proc(
         memory,
         heap_cursor,
         heap_limit,
-        startup,
+        &mut startup.mixed_mode_m68k,
     )?;
     let return_pc = gateway.checked_add(PPC_MIXED_MODE_M68K_RETURN_OFFSET)?;
     if stack_top < 4 {
@@ -62416,8 +62453,7 @@ fn ppc_process_apple_event(
             } else {
                 handler.procedure.proc_info
             };
-            let saved_gateway = toolbox_startup.mixed_mode_m68k_gateway;
-            let saved_stack_top = toolbox_startup.mixed_mode_m68k_stack_top;
+            let saved_mixed_mode_m68k = *toolbox_startup.mixed_mode_m68k;
             let action = ppc_begin_m68k_universal_proc(
                 cpu,
                 Some(process_memory_manager),
@@ -62436,8 +62472,7 @@ fn ppc_process_apple_event(
                 action
             } else {
                 apple_events.pending_dispatches.pop();
-                toolbox_startup.mixed_mode_m68k_gateway = saved_gateway;
-                toolbox_startup.mixed_mode_m68k_stack_top = saved_stack_top;
+                *toolbox_startup.mixed_mode_m68k = saved_mixed_mode_m68k;
                 for handle in [event_handle, reply_handle] {
                     let _ = memory.write_u32_be(handle, 0);
                 }
@@ -73677,7 +73712,7 @@ fn ppc_begin_m68k_menu_definition(
         memory,
         heap_cursor,
         heap_limit,
-        startup,
+        &mut startup.mixed_mode_m68k,
     )?;
     if stack_top < 4 {
         return None;
@@ -98391,8 +98426,126 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
         assert!(loaded.guest_calls.is_empty());
-        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k_gateway, 0);
-        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k_stack_top, 0);
+        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
+        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
+    }
+
+    #[test]
+    fn mixed_mode_storage_does_not_publish_a_partial_pair_on_allocation_failure() {
+        let mut memory = PpcSectionMem::new();
+        let mut storage = SharedProcessMixedModeM68kState::default();
+        let initial_heap_cursor = 0x1000;
+        let mut heap_cursor = initial_heap_cursor;
+        let gateway_size = ppc_allocation_size(PPC_MIXED_MODE_M68K_GATEWAY_SIZE).unwrap();
+        let heap_limit = initial_heap_cursor + gateway_size + 16;
+
+        assert_eq!(
+            ppc_mixed_mode_m68k_storage(
+                None,
+                &mut memory,
+                &mut heap_cursor,
+                heap_limit,
+                &mut storage,
+            ),
+            None
+        );
+        assert_eq!(storage.gateway, 0);
+        assert_eq!(storage.stack_top, 0);
+        assert_eq!(heap_cursor, initial_heap_cursor);
+    }
+
+    #[test]
+    fn attached_mixed_mode_adapters_reuse_storage_without_allocating() {
+        let pef = synthetic_pef_with_import(b"TestImport");
+        let mut first = load_pef_application(&pef).unwrap();
+        let mut second = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        first.attach_process_context(&mut context);
+        second.attach_process_context(&mut context);
+        assert!(first
+            .toolbox_startup
+            .mixed_mode_m68k
+            .ptr_eq(&second.toolbox_startup.mixed_mode_m68k));
+
+        let first_manager_handle = first.process_memory_manager.0.clone();
+        let mut first_manager = first_manager_handle.borrow_mut();
+        let initial_heap = first_manager.native_heap_state().unwrap();
+        let mut heap_cursor = initial_heap.heap_cursor;
+        let pair = ppc_mixed_mode_m68k_storage(
+            Some(first_manager.native_mut()),
+            &mut first.memory,
+            &mut heap_cursor,
+            initial_heap.heap_limit,
+            &mut first.toolbox_startup.mixed_mode_m68k,
+        )
+        .unwrap();
+        drop(first_manager);
+        assert_eq!(second.toolbox_startup.mixed_mode_m68k.gateway, pair.0);
+        assert_eq!(second.toolbox_startup.mixed_mode_m68k.stack_top, pair.1);
+
+        let second_manager_handle = second.process_memory_manager.0.clone();
+        let mut second_manager = second_manager_handle.borrow_mut();
+        let second_heap_cursor_before = second_manager.native_heap_state().unwrap().heap_cursor;
+        let mut impossible_heap_cursor = 0;
+        assert_eq!(
+            ppc_mixed_mode_m68k_storage(
+                Some(second_manager.native_mut()),
+                &mut second.memory,
+                &mut impossible_heap_cursor,
+                0,
+                &mut second.toolbox_startup.mixed_mode_m68k,
+            ),
+            Some(pair)
+        );
+        assert_eq!(impossible_heap_cursor, 0);
+        assert_eq!(
+            second_manager.native_heap_state().unwrap().heap_cursor,
+            second_heap_cursor_before
+        );
+    }
+
+    #[test]
+    fn mixed_mode_storage_rolls_back_native_allocator_on_failure() {
+        let heap_base = 0x1000;
+        let gateway_size = ppc_allocation_size(PPC_MIXED_MODE_M68K_GATEWAY_SIZE).unwrap();
+        let heap_limit = heap_base + gateway_size + 16;
+        let mut memory_manager = ProcessNativeMemoryManager::default();
+        memory_manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base,
+                heap_cursor: heap_base,
+                heap_limit,
+                last_mem_error: PPC_NO_ERR,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let allocator_before = memory_manager.native_allocator_snapshot();
+        let mut memory = PpcSectionMem::new();
+        let mut heap_cursor = heap_base;
+        let mut storage = SharedProcessMixedModeM68kState::default();
+
+        assert_eq!(
+            ppc_mixed_mode_m68k_storage(
+                Some(&mut memory_manager),
+                &mut memory,
+                &mut heap_cursor,
+                heap_limit,
+                &mut storage,
+            ),
+            None
+        );
+        assert_eq!(storage.gateway, 0);
+        assert_eq!(storage.stack_top, 0);
+        assert_eq!(heap_cursor, heap_base);
+        assert_eq!(memory_manager.native_allocator_snapshot(), allocator_before);
+        assert_eq!(
+            memory_manager.native_heap_state().unwrap().heap_cursor,
+            heap_base
+        );
     }
 
     #[test]

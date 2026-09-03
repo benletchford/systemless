@@ -1256,6 +1256,7 @@ pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
+pub(crate) type SharedProcessMixedModeM68kState = SharedProcessValue<ProcessMixedModeM68kState>;
 pub(crate) type SharedProcessScrapState = SharedProcessValue<ProcessScrapState>;
 pub(crate) type SharedProcessControlManager = SharedProcessValue<ProcessControlManagerState>;
 pub(crate) type SharedProcessListManager = SharedProcessValue<ProcessListManagerState>;
@@ -1307,6 +1308,22 @@ pub(crate) struct ProcessKeyRepeatState {
     pub(crate) key_code: u8,
     pub(crate) char_code: u8,
     pub(crate) next_tick: u32,
+}
+
+/// Process-owned storage for the generated 68K gateway and compatibility
+/// stack used by native Mixed Mode callbacks. Both CPU adapters use one
+/// logical bridge for a process. Inside Macintosh: PowerPC System Software
+/// (1994), pp. 2-12--2-20.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessMixedModeM68kState {
+    pub(crate) gateway: u32,
+    pub(crate) stack_top: u32,
+}
+
+impl ProcessMixedModeM68kState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Canonical mouse and keyboard device state for one Macintosh process.
@@ -5575,6 +5592,7 @@ pub(crate) struct ProcessContext {
     timer_tasks: SharedProcessTimerTasks,
     vbl_tasks: SharedProcessVblTasks,
     callback_scheduling: SharedProcessCallbackScheduling,
+    mixed_mode_m68k: SharedProcessMixedModeM68kState,
     scrap_state: SharedProcessScrapState,
     control_manager: SharedProcessControlManager,
     list_manager: SharedProcessListManager,
@@ -5607,6 +5625,7 @@ impl Default for ProcessContext {
             timer_tasks: SharedProcessTimerTasks::default(),
             vbl_tasks: SharedProcessVblTasks::default(),
             callback_scheduling: SharedProcessCallbackScheduling::default(),
+            mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             scrap_state: SharedProcessScrapState::default(),
             control_manager: SharedProcessControlManager::default(),
             list_manager: SharedProcessListManager::default(),
@@ -5708,6 +5727,16 @@ impl ProcessContext {
         scheduling.attach_to(&self.callback_scheduling, |state| {
             state == &Default::default()
         });
+    }
+
+    pub(crate) fn attach_mixed_mode_m68k_state(
+        &self,
+        adapter: &mut SharedProcessMixedModeM68kState,
+    ) {
+        adapter.attach_copy_to(
+            &self.mixed_mode_m68k,
+            ProcessMixedModeM68kState::is_pristine,
+        );
     }
 
     pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
@@ -6559,6 +6588,29 @@ mod tests {
         assert_eq!(native_calls.len(), 1);
         assert!(native_calls.complete_m68k(0x2002, 0x3000));
         assert!(classic_calls.is_empty());
+    }
+
+    #[test]
+    fn mixed_mode_state_shares_as_one_pair_and_detaches_with_clone() {
+        let context = ProcessContext::default();
+        let mut first = SharedProcessMixedModeM68kState::default();
+        let mut second = SharedProcessMixedModeM68kState::default();
+
+        context.attach_mixed_mode_m68k_state(&mut first);
+        first.gateway = 0x1000;
+        first.stack_top = 0x20_0000;
+        context.attach_mixed_mode_m68k_state(&mut second);
+
+        assert!(first.ptr_eq(&second));
+        assert_eq!(second.gateway, 0x1000);
+        assert_eq!(second.stack_top, 0x20_0000);
+
+        let mut detached = first.clone();
+        detached.gateway = 0x3000;
+        detached.stack_top = 0x30_0000;
+        assert!(!first.ptr_eq(&detached));
+        assert_eq!(first.gateway, 0x1000);
+        assert_eq!(first.stack_top, 0x20_0000);
     }
 
     #[test]
