@@ -3359,11 +3359,10 @@ impl Clone for PpcProcessMemoryManager {
 impl PpcProcessMemoryManager {
     pub(crate) fn with_heap(heap_cursor: u32, heap_limit: u32) -> Self {
         let memory_manager = Self::default();
-        memory_manager
-            .0
-            .borrow_mut()
-            .native_mut()
-            .publish_native_allocator(
+        {
+            let mut process_memory_manager = memory_manager.0.borrow_mut();
+            let process_memory_manager = process_memory_manager.native_mut();
+            process_memory_manager.publish_native_allocator(
                 ProcessNativeHeapState {
                     heap_base: PPC_HEAP_BASE,
                     heap_cursor,
@@ -3376,6 +3375,11 @@ impl PpcProcessMemoryManager {
                 &[],
                 &[],
             );
+            // Inside Macintosh: Memory (1992), pp. 2-83--2-85: the
+            // application limit is an API-visible heap/stack boundary, not
+            // the allocator's physical mapping ceiling.
+            process_memory_manager.set_application_heap_limit(heap_limit);
+        }
         memory_manager
     }
 
@@ -3406,6 +3410,12 @@ impl PpcProcessMemoryManager {
             .borrow()
             .native_heap_state()
             .map_or(0, |heap| heap.last_mem_error)
+    }
+
+    fn application_heap_limit(&self, fallback: u32) -> u32 {
+        self.0
+            .borrow()
+            .application_heap_limit(fallback)
     }
     #[cfg(test)]
     fn heap_cursor_mut(&self) -> PpcTestHeapCursor {
@@ -3638,6 +3648,13 @@ impl PpcLoadedApp {
         self.process_memory_manager.heap_limit(self.stack_base)
     }
 
+    /// Return the process-owned application heap limit used by
+    /// `GetApplLimit`, distinct from the native heap mapping ceiling.
+    pub fn application_heap_limit(&self) -> u32 {
+        self.process_memory_manager
+            .application_heap_limit(self.stack_base)
+    }
+
     /// Return the last process-owned native Memory Manager error.
     pub fn last_mem_error(&self) -> i16 {
         self.process_memory_manager.last_mem_error()
@@ -3831,8 +3848,12 @@ impl PpcLoadedApp {
         }
     }
 
-    fn refresh_process_native_zone(&mut self, heap: ProcessNativeHeapState) {
-        ppc_update_zone_free_bytes(&mut self.memory, heap.heap_cursor, heap.heap_limit);
+    fn refresh_process_native_zone(
+        &mut self,
+        heap: ProcessNativeHeapState,
+        allocation_limit: u32,
+    ) {
+        ppc_update_zone_free_bytes(&mut self.memory, heap.heap_cursor, allocation_limit);
     }
 
     pub(crate) fn prepare_shared_system_reservation(&mut self, base: u32, len: u32) -> bool {
@@ -3974,6 +3995,30 @@ impl PpcLoadedApp {
         context.attach_memory_manager(&mut attached_memory_manager);
         let attached_memory_manager =
             attached_memory_manager.expect("process context supplies a Memory Manager");
+        // A runner shares low memory before attaching the native adapter. If
+        // a classic adapter has already initialized a compatible ApplLimit,
+        // adopt that value as the process seed instead of allowing the
+        // detached native default to overwrite it. Reject values outside the
+        // native heap's physical range: a classic-only partition may use a
+        // different address ceiling and is not a valid native allocation
+        // boundary. Inside Macintosh: Memory (1992), pp. 2-83--2-85.
+        let low_memory_application_limit = self
+            .memory
+            .read_u32_be(crate::memory::globals::addr::APPL_LIMIT)
+            .filter(|limit| *limit != 0)
+            .filter(|limit| {
+                self.process_memory_manager
+                    .0
+                    .borrow()
+                    .native_heap_state()
+                    .is_none_or(|heap| *limit >= heap.heap_cursor && *limit <= heap.heap_limit)
+            });
+        if let Some(low_memory_application_limit) = low_memory_application_limit {
+            let mut memory_manager = attached_memory_manager.borrow_mut();
+            if !memory_manager.application_heap_limit_is_set() {
+                memory_manager.set_application_heap_limit(low_memory_application_limit);
+            }
+        }
         if !self.process_memory_manager.ptr_eq(&attached_memory_manager) {
             let standalone_memory_manager = self.process_memory_manager.0.borrow();
             let memory_manager = attached_memory_manager.borrow();
@@ -4014,12 +4059,24 @@ impl PpcLoadedApp {
                 let mut memory_manager = attached_memory_manager.borrow_mut();
                 memory_manager.adopt_process_memory_manager(&mut standalone_memory_manager);
                 if let Some(heap) = memory_manager.native_heap_state() {
-                    self.refresh_process_native_zone(heap);
+                    let allocation_limit = memory_manager.native_allocation_limit(heap.heap_limit);
+                    self.refresh_process_native_zone(heap, allocation_limit);
                 }
             }
             self.process_memory_manager
                 .attach_to(attached_memory_manager);
         }
+        // APPL_LIMIT is a low-memory projection of the process-owned value.
+        // Synchronize it on attachment so a nested 68K callback and a later
+        // native import observe the same boundary immediately. Inside
+        // Macintosh: Memory (1992), pp. 2-83--2-85.
+        let application_heap_limit = self
+            .process_memory_manager
+            .application_heap_limit(self.stack_base);
+        let _ = self.memory.write_u32_be(
+            crate::memory::globals::addr::APPL_LIMIT,
+            application_heap_limit,
+        );
         context
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
@@ -7741,7 +7798,13 @@ impl PpcLoadedApp {
                     .native_heap_state()
                     .expect("native allocator registered during execution");
                 let mut heap_cursor = native_heap.heap_cursor;
-                let mut heap_limit = native_heap.heap_limit;
+                let native_heap_ceiling = native_heap.heap_limit;
+                // Allocation and capacity imports observe ApplLimit inside
+                // the mapped native heap. Keep the physical ceiling separate
+                // for SetApplLimit validation and stack protection. Inside
+                // Macintosh: Memory (1992), pp. 2-42--2-44 and 2-83--2-85.
+                let heap_limit = process_memory_manager
+                    .native_allocation_limit(native_heap_ceiling);
                 let mut last_mem_error = native_heap.last_mem_error;
                 if process_quickdraw_port_state_attached {
                     ppc_restore_process_port_draw_state(
@@ -7837,8 +7900,7 @@ impl PpcLoadedApp {
                         &mut *process_memory_manager,
                         &mut heap_cursor,
                         heap_limit,
-                        &mut heap_limit,
-                        self.stack_base,
+                        native_heap_ceiling,
                         &mut last_mem_error,
                         &mut import_tick_count,
                         clock_cycles_per_tick,
@@ -7945,7 +8007,6 @@ impl PpcLoadedApp {
                 // Toolbox helper reports it through the native ABI cache.
                 // Publish at the import boundary so a following 68K callback
                 // observes the result immediately, not at slice teardown.
-                process_memory_manager.set_native_heap_limit(heap_limit);
                 process_memory_manager.set_native_mem_error(last_mem_error);
                 let _ = memory.write_u16_be(
                     crate::memory::globals::addr::RES_ERR,
@@ -15078,7 +15139,12 @@ fn ppc_apply_process_native_allocator(
     };
     *heap_cursor = heap.heap_cursor;
     *last_mem_error = heap.last_mem_error;
-    ppc_update_zone_free_bytes(memory, *heap_cursor, heap.heap_limit);
+    // The zone's free-byte projection follows the guest-visible application
+    // boundary, while the native heap record retains the physical mapping
+    // ceiling for stack protection and loader validation. Inside Macintosh:
+    // Memory (1992), pp. 2-83--2-85.
+    let allocation_limit = memory_manager.native_allocation_limit(heap.heap_limit);
+    ppc_update_zone_free_bytes(memory, *heap_cursor, allocation_limit);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -15133,7 +15199,8 @@ fn ppc_apply_process_native_resource_handle(
     if let Some(heap) = memory_manager.native_heap_state() {
         *heap_cursor = heap.heap_cursor;
         *last_mem_error = heap.last_mem_error;
-        ppc_update_zone_free_bytes(memory, *heap_cursor, heap.heap_limit);
+        let allocation_limit = memory_manager.native_allocation_limit(heap.heap_limit);
+        ppc_update_zone_free_bytes(memory, *heap_cursor, allocation_limit);
     }
     ppc_apply_process_native_handle(memory_manager, handles, handle);
 }
@@ -15146,8 +15213,7 @@ fn dispatch_supported_import(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     heap_cursor: &mut u32,
     heap_limit: u32,
-    application_heap_limit: &mut u32,
-    application_heap_ceiling: u32,
+    native_heap_ceiling: u32,
     last_mem_error: &mut i16,
     tick_count: &mut u32,
     cycles_per_tick: u32,
@@ -15785,14 +15851,26 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetApplLimit => {
             // Inside Macintosh: Memory (1992), 2-84: the returned pointer is
             // the first byte beyond the expandable application heap.
-            Some(PpcImportAction::Return(*application_heap_limit))
+            Some(PpcImportAction::Return(
+                process_memory_manager.application_heap_limit(heap_limit),
+            ))
         }
         PpcImportDispatcherTarget::SetApplLimit => {
             // The heap cannot be contracted below its current extent or
             // expanded into the fixed native stack mapping.
             let requested = cpu.gpr[3];
-            if requested >= *heap_cursor && requested <= application_heap_ceiling {
-                *application_heap_limit = requested;
+            let current_heap_cursor = process_memory_manager
+                .native_heap_state()
+                .map_or(*heap_cursor, |heap| heap.heap_cursor);
+            if requested >= current_heap_cursor && requested <= native_heap_ceiling {
+                process_memory_manager.set_application_heap_limit(requested);
+                // Keep the classic low-memory slot as a projection of the
+                // process value when the adapters share the process mapping.
+                // Inside Macintosh: Memory (1992), pp. 2-83--2-85.
+                let _ = memory.write_u32_be(
+                    crate::memory::globals::addr::APPL_LIMIT,
+                    requested,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -26353,7 +26431,6 @@ fn dispatch_supported_import(
             memory,
             heap_cursor,
             heap_limit,
-            *application_heap_limit,
             last_mem_error,
             handles,
         ),
@@ -86981,7 +87058,8 @@ fn ppc_process_heap_alloc(
     let ptr = memory_manager.reserve_native_bytes(memory, size, clear);
     if let Some(heap) = memory_manager.native_heap_state() {
         *heap_cursor = heap.heap_cursor;
-        ppc_update_zone_free_bytes(memory, heap.heap_cursor, heap.heap_limit);
+        let allocation_limit = memory_manager.native_allocation_limit(heap.heap_limit);
+        ppc_update_zone_free_bytes(memory, heap.heap_cursor, allocation_limit);
     }
     ptr
 }
@@ -87393,7 +87471,6 @@ fn ppc_dispatch_legacy_memory_utility(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
-    application_heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &[PpcHandleRecord],
 ) -> Option<PpcImportAction> {
@@ -87460,6 +87537,7 @@ fn ppc_dispatch_legacy_memory_utility(
                 .saturating_add(
                     free_ptr_blocks
                         .iter()
+                        .filter(|block| ppc_free_ptr_block_fits_limit(block, heap_limit))
                         .fold(0u32, |sum, block| sum.saturating_add(block.size)),
                 );
             let contiguous =
@@ -87477,7 +87555,9 @@ fn ppc_dispatch_legacy_memory_utility(
             Some(PpcImportAction::ReturnPreserve)
         }
         "StackSpace" => Some(PpcImportAction::Return(
-            cpu.gpr[1].saturating_sub(application_heap_limit),
+            cpu.gpr[1].saturating_sub(
+                process_memory_manager.application_heap_limit(heap_limit),
+            ),
         )),
         "TempFreeMem" => Some(PpcImportAction::Return(
             ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0,
@@ -87494,10 +87574,17 @@ fn ppc_largest_free_ptr_block(
 ) -> u32 {
     free_ptr_blocks
         .iter()
+        .filter(|record| ppc_free_ptr_block_fits_limit(record, heap_limit))
         .map(|record| record.size)
         .max()
         .unwrap_or(0)
         .max(ppc_heap_free_capacity(memory, heap_cursor, heap_limit).1)
+}
+
+fn ppc_free_ptr_block_fits_limit(record: &ProcessPtrRecord, heap_limit: u32) -> bool {
+    ppc_allocation_size(record.size)
+        .and_then(|capacity| record.ptr.checked_add(capacity))
+        .is_some_and(|end| end <= heap_limit)
 }
 
 fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
@@ -107168,19 +107255,108 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn native_import_heap_limit_remains_process_owned_between_slices() {
+    fn native_import_application_limit_is_distinct_from_heap_ceiling() {
         let pef = synthetic_pef_with_import(b"SetApplLimit");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let native_heap_limit = loaded.heap_limit();
         let requested = loaded.heap_cursor() + 0x1000;
-        assert!(requested < loaded.heap_limit());
+        assert!(requested < native_heap_limit);
 
         loaded.cpu.gpr[3] = requested;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::SetApplLimit);
-        assert_eq!(loaded.heap_limit(), requested);
+        assert_eq!(loaded.heap_limit(), native_heap_limit);
+        assert_eq!(loaded.application_heap_limit(), requested);
 
         loaded.cpu.gpr[3] = 0;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::GetApplLimit);
         assert_eq!(loaded.cpu.gpr[3], requested);
+    }
+
+    #[test]
+    fn native_import_allocations_honor_application_limit_within_physical_heap() {
+        // Inside Macintosh: Memory (1992), pp. 2-42--2-44 and 2-83--2-85:
+        // NewPtr must stay below the current application boundary, while
+        // SetApplLimit may raise that boundary without changing the native
+        // heap's physical mapping ceiling.
+        let pef = synthetic_pef_with_import(b"NewPtr");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let initial_cursor = loaded.heap_cursor();
+        let native_heap_ceiling = loaded.heap_limit();
+        let lowered_limit = initial_cursor + (2 * PPC_HEAP_ALIGNMENT);
+        assert!(lowered_limit < native_heap_ceiling);
+
+        loaded.cpu.gpr[3] = lowered_limit;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetApplLimit);
+        assert_eq!(loaded.application_heap_limit(), lowered_limit);
+        assert_eq!(loaded.heap_limit(), native_heap_ceiling);
+
+        loaded.cpu.gpr[3] = PPC_HEAP_ALIGNMENT;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPtr { clear: true });
+        let first_ptr = loaded.cpu.gpr[3];
+        assert_eq!(first_ptr, initial_cursor);
+        assert_eq!(loaded.heap_cursor(), initial_cursor + PPC_HEAP_ALIGNMENT);
+
+        // A second aligned allocation would cross the lowered boundary. The
+        // failed import is transactional: the cursor and pointer records stay
+        // unchanged while MemError reports memFullErr.
+        loaded.cpu.gpr[3] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPtr { clear: true });
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.heap_cursor(), initial_cursor + PPC_HEAP_ALIGNMENT);
+        assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
+        assert_eq!(loaded.ptrs().len(), 1);
+
+        // Raising ApplLimit re-enables the remaining physical heap space; the
+        // native ceiling itself never changed during the logical update.
+        loaded.cpu.gpr[3] = native_heap_ceiling;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetApplLimit);
+        loaded.cpu.gpr[3] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPtr { clear: true });
+        assert_eq!(loaded.cpu.gpr[3], initial_cursor + PPC_HEAP_ALIGNMENT);
+        assert_eq!(loaded.heap_limit(), native_heap_ceiling);
+    }
+
+    #[test]
+    fn native_import_reusable_blocks_honor_application_limit() {
+        // Inside Macintosh: Memory (1992), pp. 2-42--2-44: a disposed fixed
+        // block can satisfy a later NewPtr, but the application limit still
+        // bounds every address that the Memory Manager may reuse.
+        let pef = synthetic_pef_with_import(b"NewPtr");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let initial_cursor = loaded.heap_cursor();
+        let native_heap_ceiling = loaded.heap_limit();
+        let lowered_limit = initial_cursor + (2 * PPC_HEAP_ALIGNMENT);
+        let deferred_block = initial_cursor + (4 * PPC_HEAP_ALIGNMENT);
+
+        loaded.with_process_memory_manager(|_, manager| {
+            manager.set_application_heap_limit(lowered_limit);
+            manager.mutate_native_allocator(|allocator| {
+                allocator.free_ptr_blocks.push(ProcessPtrRecord {
+                    ptr: deferred_block,
+                    size: PPC_HEAP_ALIGNMENT,
+                });
+            });
+        });
+
+        loaded.cpu.gpr[3] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPtr { clear: true });
+        assert_eq!(loaded.cpu.gpr[3], initial_cursor);
+        assert_eq!(loaded.heap_cursor(), initial_cursor + PPC_HEAP_ALIGNMENT);
+
+        loaded.cpu.gpr[3] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MaxMem);
+        assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_ALIGNMENT);
+
+        // The same reusable block becomes eligible when the logical boundary
+        // is raised; the physical native ceiling remains unchanged.
+        loaded.with_process_memory_manager(|_, manager| {
+            manager.set_application_heap_limit(native_heap_ceiling);
+        });
+        loaded.cpu.gpr[3] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPtr { clear: true });
+        assert_eq!(loaded.cpu.gpr[3], deferred_block);
+        assert_eq!(loaded.heap_cursor(), initial_cursor + PPC_HEAP_ALIGNMENT);
+        assert_eq!(loaded.heap_limit(), native_heap_ceiling);
     }
 
     #[test]
@@ -157633,6 +157809,61 @@ pub(crate) mod tests {
             .unwrap()
             .is_ok());
         assert!(native.policy.res_purge);
+    }
+
+    #[test]
+    fn attached_application_limit_mutations_cross_isa_immediately() {
+        // Inside Macintosh: Memory (1992), pp. 2-83--2-85: SetApplLimit
+        // changes the guest-visible application boundary without changing
+        // the allocator's physical heap ceiling.
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+        native.attach_process_context(&mut context);
+
+        let native_heap_ceiling = native.heap_limit();
+        assert_eq!(
+            classic_bus.read_long(crate::memory::globals::addr::APPL_LIMIT),
+            native.application_heap_limit(),
+            "native attachment must synchronize the initial low-memory projection"
+        );
+        let requested = native.heap_cursor() + 0x1000;
+        assert!(requested < native_heap_ceiling);
+        native.cpu.gpr[3] = requested;
+        run_test_import(&mut native, PpcImportDispatcherTarget::SetApplLimit);
+        assert_eq!(native.application_heap_limit(), requested);
+        assert_eq!(
+            classic_bus.read_long(crate::memory::globals::addr::APPL_LIMIT),
+            requested,
+            "native SetApplLimit must publish the process value through low memory"
+        );
+
+        let classic_requested = requested + 0x1000;
+        classic_bus.write_long(crate::memory::globals::addr::HEAP_END, native.heap_cursor());
+        classic_bus.write_long(
+            crate::memory::globals::addr::APPL_LIMIT,
+            requested,
+        );
+        classic_cpu.write_reg(Register::A0, classic_requested);
+        assert!(classic
+            .dispatch_memory(false, 0x2D, &mut classic_cpu, &mut classic_bus)
+            .expect("SetApplLimit should be handled")
+            .is_ok());
+
+        // The immediately following native import is the nested cross-ISA
+        // observation point: it must read process state, not a stale adapter
+        // snapshot or the native allocator ceiling.
+        assert_eq!(native.application_heap_limit(), classic_requested);
+        native.cpu.gpr[3] = 0;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetApplLimit);
+        assert_eq!(native.cpu.gpr[3], classic_requested);
+        assert_eq!(native.heap_limit(), native_heap_ceiling);
     }
 
     #[test]
