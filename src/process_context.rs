@@ -3573,7 +3573,16 @@ impl ProcessNativeMemoryManager {
             memory.add_region(ptr, vec![0; required]);
             return true;
         }
-        !clear || (0..required).all(|offset| PpcMemory::write_u8(memory, ptr + offset, 0).is_some())
+        if !memory.preflight_writable_range(ptr, required) {
+            return false;
+        }
+        if clear {
+            for offset in 0..required {
+                PpcMemory::write_u8(memory, ptr + offset, 0)
+                    .expect("preflighted native allocation remains writable");
+            }
+        }
+        true
     }
 
     /// Reserve process-owned native heap bytes for Toolbox records that are
@@ -3910,6 +3919,167 @@ impl ProcessNativeMemoryManager {
         }
         self.set_native_mem_error(Self::PARAM_ERR);
         0
+    }
+
+    fn copy_bytes_to_new_classic_handle_from_native_import(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        bytes: &[u8],
+    ) -> Result<u32, i16> {
+        let Ok(size) = u32::try_from(bytes.len()) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        };
+        let Some(allocator) = self.classic_allocator.clone() else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        };
+        let allocator_before = allocator.0.borrow().clone();
+        let ptr = allocator.allocate(size, 4, self.classic_heap_ceiling());
+        if ptr == 0 && size > 0 {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        }
+        let handle = allocator.allocate(4, 4, self.classic_heap_ceiling());
+        if handle == 0 {
+            *allocator.0.borrow_mut() = allocator_before;
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        }
+
+        if (size > 0 && !memory.preflight_writable_range(ptr, size))
+            || !memory.preflight_writable_range(handle, 4)
+        {
+            *allocator.0.borrow_mut() = allocator_before;
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Err(Self::PARAM_ERR);
+        }
+        let mut data_before = vec![0; bytes.len()];
+        let mut master_before = [0; 4];
+        if (size > 0 && memory.read_bytes_into(ptr, &mut data_before).is_none())
+            || memory
+                .read_bytes_into(handle, &mut master_before)
+                .is_none()
+        {
+            *allocator.0.borrow_mut() = allocator_before;
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Err(Self::PARAM_ERR);
+        }
+        if (size > 0 && memory.write_bytes(ptr, bytes).is_none())
+            || memory.write_bytes(handle, &ptr.to_be_bytes()).is_none()
+        {
+            if size > 0 {
+                let _ = memory.write_bytes(ptr, &data_before);
+            }
+            let _ = memory.write_bytes(handle, &master_before);
+            *allocator.0.borrow_mut() = allocator_before;
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Err(Self::PARAM_ERR);
+        }
+
+        self.ptr_to_handle.insert(ptr, handle);
+        self.set_state_for_handle(handle, 0);
+        self.set_native_mem_error(Self::NO_ERR);
+        Ok(handle)
+    }
+
+    /// Copy a native or classic relocatable block through the process address
+    /// space used by native imports.
+    ///
+    /// The source is validated and read completely before allocating the new
+    /// handle in the source allocator. The copy is unlocked, unpurgeable, and
+    /// not a resource. Inside Macintosh: Memory (1992), pp. 2-62--2-64.
+    pub(crate) fn copy_process_handle_from_native_import(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+    ) -> Result<u32, i16> {
+        if handle == 0 {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Err(Self::NIL_HANDLE_ERR);
+        }
+
+        let (ptr, size, capacity, source_is_native) =
+            if let Some(record) = self.native_allocation(handle) {
+                let Some(master_ptr) = PpcMemory::read_u32_be(memory, handle) else {
+                    self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+                    return Err(Self::NIL_HANDLE_ERR);
+                };
+                if master_ptr == 0 {
+                    self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+                    return Err(Self::NIL_HANDLE_ERR);
+                }
+                if master_ptr != record.ptr
+                    || self.ptr_to_handle.get(&master_ptr) != Some(handle)
+                    || record.size > record.capacity
+                {
+                    self.set_native_mem_error(Self::MEM_WZ_ERR);
+                    return Err(Self::MEM_WZ_ERR);
+                }
+                (master_ptr, record.size, record.capacity, true)
+            } else {
+                let Some(allocator) = self.classic_allocator.clone() else {
+                    self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+                    return Err(Self::NIL_HANDLE_ERR);
+                };
+                if allocator.allocation_size(handle) != Some(4) {
+                    self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+                    return Err(Self::NIL_HANDLE_ERR);
+                }
+                let Some(master_ptr) = PpcMemory::read_u32_be(memory, handle) else {
+                    self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+                    return Err(Self::NIL_HANDLE_ERR);
+                };
+                if master_ptr == 0 {
+                    self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+                    return Err(Self::NIL_HANDLE_ERR);
+                }
+                let Some(size) = allocator.allocation_size(master_ptr) else {
+                    self.set_native_mem_error(Self::MEM_WZ_ERR);
+                    return Err(Self::MEM_WZ_ERR);
+                };
+                let Some(capacity) = allocator.allocation_capacity(master_ptr) else {
+                    self.set_native_mem_error(Self::MEM_WZ_ERR);
+                    return Err(Self::MEM_WZ_ERR);
+                };
+                if self.ptr_to_handle.get(&master_ptr) != Some(handle)
+                    || size > capacity
+                    || master_ptr == handle
+                    || handle.checked_add(4).is_some_and(|master_end| {
+                        master_ptr < master_end
+                            && handle < master_ptr.saturating_add(capacity)
+                    })
+                {
+                    self.set_native_mem_error(Self::MEM_WZ_ERR);
+                    return Err(Self::MEM_WZ_ERR);
+                }
+                (master_ptr, size, capacity, false)
+            };
+
+        let Ok(byte_count) = usize::try_from(size) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        };
+        let mut bytes = vec![0; byte_count];
+        if size > capacity || memory.read_bytes_into(ptr, &mut bytes).is_none() {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Err(Self::PARAM_ERR);
+        }
+
+        let copy = if source_is_native {
+            let copy = self.copy_bytes_to_new_native_handle(memory, &bytes);
+            if copy == 0 {
+                return Err(self
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error)
+                    .unwrap_or(Self::MEM_FULL_ERR));
+            }
+            copy
+        } else {
+            self.copy_bytes_to_new_classic_handle_from_native_import(memory, &bytes)?
+        };
+        self.set_native_mem_error(Self::NO_ERR);
+        Ok(copy)
     }
 
     /// Resize a native or classic fixed block from a native import without
@@ -4364,13 +4534,9 @@ impl ProcessNativeMemoryManager {
         let Some(record) = self.native_allocation(handle) else {
             return 0;
         };
-        if bytes.iter().copied().enumerate().any(|(offset, byte)| {
-            PpcMemory::write_u8(memory, record.ptr + offset as u32, byte).is_none()
-        }) {
-            let _ = self.dispose_native_handle(memory, handle);
-            self.set_native_mem_error(Self::PARAM_ERR);
-            return 0;
-        }
+        memory
+            .write_bytes(record.ptr, bytes)
+            .expect("allocated native handle storage remains writable");
         self.set_state_for_handle(handle, 0);
         handle
     }
@@ -6866,6 +7032,42 @@ mod tests {
         assert_eq!(
             allocator.free_ptr_blocks,
             vec![ProcessPtrRecord { ptr, size: 20 }]
+        );
+    }
+
+    #[test]
+    fn native_handle_copy_rejects_readonly_heap_storage_before_commit() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_readonly_region(HEAP_BASE, vec![0xcc; 0x100]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x100,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+
+        assert_eq!(
+            manager.copy_bytes_to_new_native_handle(&mut native, b"copy"),
+            0
+        );
+        assert_eq!(native.read_u8(HEAP_BASE), Some(0xcc));
+        assert!(manager.native_handle_records().is_empty());
+        let allocator = manager.native_allocator().unwrap();
+        assert_eq!(allocator.heap.heap_cursor, HEAP_BASE);
+        assert!(allocator.free_ptr_blocks.is_empty());
+        assert!(allocator.free_handle_blocks.is_empty());
+        assert_eq!(
+            allocator.heap.last_mem_error,
+            ProcessMemoryManager::MEM_FULL_ERR
         );
     }
 
