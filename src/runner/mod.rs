@@ -3475,9 +3475,12 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
 
-        self.dispatcher.application_high_level_event_aware = app
+        let high_level_event_aware = app
             .size_resource
             .is_some_and(ApplicationSizeResource::is_high_level_event_aware);
+        self.dispatcher
+            .apple_event_launch_state
+            .reset_for_launch(high_level_event_aware);
 
         // Classic Mac OS application code runs in supervisor mode with the
         // processor priority open to level-1 VBL interrupts. The m68k core
@@ -3877,6 +3880,22 @@ impl FixtureRunner {
 
     fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
         use crate::memory::globals::addr;
+
+        // A native application carries its parsed SIZE capability before it
+        // attaches to the runner-owned process state. Start this launch with
+        // that capability and a fresh process-wide OAPP claim so a prior
+        // application cannot suppress or duplicate delivery. Inside
+        // Macintosh: Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90.
+        let high_level_event_aware = ppc_app
+            .apple_events
+            .apple_event_launch_state
+            .is_high_level_event_aware();
+        ppc_app
+            .apple_events
+            .apple_event_launch_state
+            .reset_for_launch(high_level_event_aware);
+        self.process_context
+            .reset_apple_event_launch_state_for_launch(high_level_event_aware);
 
         self.bus.detach_guest_address_space();
         self.adopt_ppc_process_memory_image(&mut ppc_app);
@@ -12573,7 +12592,10 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let unaware_app = runner.load_app(&unaware_fork).expect("load unaware app");
         runner.init_app(&unaware_app);
-        assert!(!runner.dispatcher.application_high_level_event_aware);
+        assert!(!runner
+            .dispatcher
+            .apple_event_launch_state
+            .is_high_level_event_aware());
 
         let aware_size = size_resource_bytes(
             ApplicationSizeResource::HIGH_LEVEL_EVENT_AWARE,
@@ -12587,7 +12609,10 @@ mod tests {
         let aware_fork = ResourceFork::parse(&aware_fork_bytes).expect("parse aware app fork");
         let aware_app = runner.load_app(&aware_fork).expect("load aware app");
         runner.init_app(&aware_app);
-        assert!(runner.dispatcher.application_high_level_event_aware);
+        assert!(runner
+            .dispatcher
+            .apple_event_launch_state
+            .is_high_level_event_aware());
     }
 
     #[test]
@@ -20915,7 +20940,7 @@ mod tests {
             "the parked sleep keeps a write guard armed across the frontend boundary"
         );
 
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
         assert!(runner.try_resume_proven_idle_cycle(Some(110)));
         assert_eq!(runner.dispatcher.tick_count, 110);
         assert_eq!(runner.bus.read_long(sp), 100);
@@ -21555,7 +21580,7 @@ mod tests {
         runner.bus.write_word(flag_base + 48, 0);
         runner.bus.write_long(0x016A, 100);
         runner.dispatcher.tick_count = 100;
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
 
         let (_, running) = runner.run_steps_internal(1_000, Some(100), 0, true, false, false);
         assert!(running);
@@ -21583,7 +21608,7 @@ mod tests {
         runner.cpu.write_reg(Register::A7, sp);
         runner.bus.write_long(0x016A, 100);
         runner.dispatcher.tick_count = 100;
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
 
         runner.park_proven_idle_cycle(trap_pc, 103);
         assert!(!runner.try_resume_proven_idle_cycle(Some(110)));
@@ -23362,7 +23387,7 @@ mod tests {
         runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.bus.write_word(result_ptr, 0);
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
             .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
@@ -23404,7 +23429,7 @@ mod tests {
         let result_ptr = 0x0020_0020;
 
         runner.bus.write_word(result_ptr, 0);
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
             .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
@@ -23441,7 +23466,7 @@ mod tests {
 
         runner.set_mouse_position(20, 25);
         runner.bus.write_word(result_ptr, 0);
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
             .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
@@ -23488,7 +23513,7 @@ mod tests {
         runner.dispatcher.tick_count = 100;
         runner.tick_budget = 0;
         runner.bus.write_word(result_ptr, 0xFFFF);
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner.dispatcher.write_event_record(
             &mut runner.bus,
             event_ptr,
@@ -23551,7 +23576,7 @@ mod tests {
         let interrupted_sp = 0x007F_FFC0;
 
         runner.bus.write_word(result_ptr, 0);
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
             .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
@@ -23608,7 +23633,7 @@ mod tests {
         runner.cpu.write_reg(Register::PC, stale_pc);
         runner.cpu.write_reg(Register::A7, parked_sp);
         runner.bus.write_word(result_ptr, 0xA582);
-        runner.dispatcher.sent_open_app_event = true;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
             .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);

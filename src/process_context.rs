@@ -1280,6 +1280,26 @@ pub(crate) type SharedProcessTextEditManager = SharedProcessValue<ProcessTextEdi
 /// Detached-by-default attachment handle for Dialog Manager `ParamText` slots.
 pub type SharedProcessDialogText = SharedProcessValue<[Vec<u8>; 4]>;
 
+/// Launch-time AppleEvent state owned by the emulated process rather than by
+/// either CPU gateway. The Event Manager's high-level-event awareness comes
+/// from the application's `SIZE` resource, while the one-shot bit prevents
+/// both attached gateways from manufacturing a second `kAEOpenApplication`.
+/// Inside Macintosh: Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessAppleEventLaunchState {
+    pub(crate) high_level_event_aware: bool,
+    pub(crate) open_application_event_sent: bool,
+}
+
+impl ProcessAppleEventLaunchState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+pub(crate) type SharedProcessAppleEventLaunchState =
+    SharedProcessValue<ProcessAppleEventLaunchState>;
+
 /// Canonical per-color-port arithmetic transfer colors. The guest-visible
 /// `CGrafPort.grafVars` record is the primary representation; this process
 /// index keeps the value live across adapters when a port is one of the
@@ -1494,6 +1514,67 @@ impl<T> SharedProcessValue<T> {
     #[cfg(test)]
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl SharedProcessValue<ProcessAppleEventLaunchState> {
+    /// Read the launch capability without returning a reference into the
+    /// process-owned `UnsafeCell`. A callback may enter the other ISA gateway
+    /// after this operation returns, so no borrow can cross that boundary.
+    pub(crate) fn is_high_level_event_aware(&self) -> bool {
+        // SAFETY: the runner serializes attached adapter access; this method
+        // copies the bit before returning and exposes no reference.
+        unsafe { (&*self.0.get()).high_level_event_aware }
+    }
+
+    /// Update the process launch capability while keeping the mutable access
+    /// scoped to this operation.
+    pub(crate) fn set_high_level_event_aware(&self, aware: bool) {
+        // SAFETY: see `is_high_level_event_aware`.
+        unsafe {
+            (&mut *self.0.get()).high_level_event_aware = aware;
+        }
+    }
+
+    /// Return whether the process-wide synthetic `kAEOpenApplication` has
+    /// already been claimed by either attached Event Manager gateway.
+    #[cfg(test)]
+    pub(crate) fn is_open_application_event_sent(&self) -> bool {
+        // SAFETY: see `is_high_level_event_aware`.
+        unsafe { (&*self.0.get()).open_application_event_sent }
+    }
+
+    /// Set the process-wide one-shot state for a test fixture.
+    pub(crate) fn set_open_application_event_sent(&self, sent: bool) {
+        // SAFETY: see `is_high_level_event_aware`.
+        unsafe {
+            (&mut *self.0.get()).open_application_event_sent = sent;
+        }
+    }
+
+    /// Start a new application launch with the capability parsed from its
+    /// `SIZE` resource and no previously delivered synthetic event.
+    pub(crate) fn reset_for_launch(&self, high_level_event_aware: bool) {
+        // SAFETY: see `is_high_level_event_aware`.
+        unsafe {
+            let state = &mut *self.0.get();
+            state.high_level_event_aware = high_level_event_aware;
+            state.open_application_event_sent = false;
+        }
+    }
+
+    /// Atomically claim the process-wide one-shot launch event. The caller
+    /// must still check its event mask before invoking this method.
+    pub(crate) fn claim_open_application_event(&self) -> bool {
+        // SAFETY: see `is_high_level_event_aware`.
+        unsafe {
+            let state = &mut *self.0.get();
+            if !state.high_level_event_aware || state.open_application_event_sent {
+                return false;
+            }
+            state.open_application_event_sent = true;
+            true
+        }
     }
 }
 
@@ -5683,6 +5764,7 @@ pub(crate) struct ProcessContext {
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
+    apple_event_launch_state: SharedProcessAppleEventLaunchState,
     file_system: SharedProcessFileSystem,
     sound_manager: SharedProcessSoundManager,
     timer_tasks: SharedProcessTimerTasks,
@@ -5718,6 +5800,7 @@ impl Default for ProcessContext {
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             guest_calls: SharedGuestCallStack::default(),
             apple_event_handlers: SharedProcessAppleEventHandlers::default(),
+            apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             file_system: SharedProcessFileSystem::default(),
             sound_manager: SharedProcessSoundManager::default(),
             timer_tasks: SharedProcessTimerTasks::default(),
@@ -6121,6 +6204,24 @@ impl ProcessContext {
         adapter: &mut SharedProcessAppleEventHandlers,
     ) {
         adapter.attach_to(&self.apple_event_handlers);
+    }
+
+    pub(crate) fn attach_apple_event_launch_state(
+        &self,
+        adapter: &mut SharedProcessAppleEventLaunchState,
+    ) {
+        adapter.attach_copy_to(
+            &self.apple_event_launch_state,
+            ProcessAppleEventLaunchState::is_pristine,
+        );
+    }
+
+    pub(crate) fn reset_apple_event_launch_state_for_launch(
+        &self,
+        high_level_event_aware: bool,
+    ) {
+        self.apple_event_launch_state
+            .reset_for_launch(high_level_event_aware);
     }
 }
 
@@ -7975,6 +8076,28 @@ mod tests {
         assert_eq!(classic.len(), 1);
         assert_eq!(native.len(), 1);
         assert_eq!(detached.len(), 0);
+    }
+
+    #[test]
+    fn attached_apple_event_launch_state_shares_one_shot_claim_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessAppleEventLaunchState::default();
+        let mut native = SharedProcessAppleEventLaunchState::default();
+        context.attach_apple_event_launch_state(&mut classic);
+        context.attach_apple_event_launch_state(&mut native);
+        let detached = native.clone();
+
+        classic.reset_for_launch(true);
+        assert!(native.is_high_level_event_aware());
+        assert!(classic.claim_open_application_event());
+        assert!(native.is_open_application_event_sent());
+        assert!(!native.claim_open_application_event());
+        assert!(!detached.is_high_level_event_aware());
+        assert!(!detached.is_open_application_event_sent());
+
+        native.reset_for_launch(false);
+        assert!(!classic.is_high_level_event_aware());
+        assert!(!classic.claim_open_application_event());
     }
 
     #[test]
