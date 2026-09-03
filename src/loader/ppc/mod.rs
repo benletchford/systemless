@@ -7391,16 +7391,13 @@ impl PpcLoadedApp {
         let mut timer_tasks = std::mem::take(&mut self.timer_tasks);
         let mut vbl_tasks = std::mem::take(&mut self.vbl_tasks);
         let mut callback_scheduling = std::mem::take(&mut self.callback_scheduling);
-        // Keep the File Manager's open-file table in the process-owned file
-        // system for the whole native execution slice. The classic adapter
-        // can enter through Mixed Mode while an import is running, so taking
-        // these records out and restoring them at slice teardown would leave
-        // the process temporarily with an empty File Manager view.
-        // (Inside Macintosh: Files, 1992, pp. 1-7–1-9.)
-        let mut resource_files = std::mem::take(&mut self.resource_files);
-        let mut vfs_resource_files = std::mem::take(&mut self.vfs_resource_files);
-        let mut vfs_resources = std::mem::take(&mut self.vfs_resources);
-        let mut next_file_ref_num = self.next_file_ref_num;
+        // Keep File and Resource Manager records in their process-owned
+        // managers for the whole native execution slice. The classic
+        // adapter can enter through Mixed Mode while an import is running,
+        // so taking these records out and restoring them at slice teardown
+        // would leave the process temporarily with an empty manager view.
+        // (Inside Macintosh: Files, 1992, pp. 1-7–1-9; Inside Macintosh
+        // Volume I, 1985, pp. I-109–I-110.)
         let mut current_gworld = self.current_gworld.shared_handle();
         let mut current_gdevice = self.current_gdevice.shared_handle();
         let mut screen_clut = self.screen_clut.shared_handle();
@@ -7880,20 +7877,30 @@ impl PpcLoadedApp {
                 ) {
                     Some(action)
                 } else {
-                    // Borrow the process-owned records only for this import.
-                    // A Mixed Mode continuation may expose another adapter
-                    // between imports, so no mutable reference into an
-                    // UnsafeCell-backed process collection may outlive this
-                    // dispatch call.
-                    let ProcessFileSystemState {
-                        files,
-                        writable_refnums,
-                        stdio_streams,
-                        vfs_files,
-                        deleted_vfs_file_paths,
-                        ..
-                    } = &mut *process_file_system;
-                    dispatch_supported_import(
+                    // Borrow process-owned File and Resource Manager records
+                    // only for this import. A Mixed Mode continuation may
+                    // expose another adapter between imports, so no mutable
+                    // reference into an UnsafeCell-backed process collection
+                    // may outlive this dispatch call or be retained in its
+                    // returned action.
+                    let action = {
+                        let ProcessFileSystemState {
+                            files,
+                            writable_refnums,
+                            stdio_streams,
+                            vfs_files,
+                            deleted_vfs_file_paths,
+                            resource_manager,
+                            next_file_ref_num,
+                            ..
+                        } = &mut *process_file_system;
+                        let ProcessResourceManagerState {
+                            resource_files,
+                            vfs_resource_files,
+                            vfs_resources,
+                            ..
+                        } = &mut **resource_manager;
+                        dispatch_supported_import(
                         binding,
                         cpu,
                         memory,
@@ -7961,44 +7968,46 @@ impl PpcLoadedApp {
                         &mut timer_tasks,
                         &mut vbl_tasks,
                         &mut callback_scheduling,
-                        &mut **files,
-                        &mut **writable_refnums,
-                        vfs_files,
-                        stdio_streams,
-                        deleted_vfs_file_paths,
-                        &mut resource_files,
-                        &mut vfs_resource_files,
-                        &mut vfs_resources,
-                        &mut next_file_ref_num,
-                        &mut current_gworld,
-                        &mut current_gdevice,
-                        &mut screen_clut,
-                        &mut color_manager_clut,
-                        &mut device_gamma,
-                        &mut device_gamma_explicit,
-                        &mut quickdraw_fore_color,
-                        &mut quickdraw_fore_indices,
-                        &mut quickdraw_back_color,
-                        &mut quickdraw_pen_h,
-                        &mut quickdraw_pen_v,
-                        &mut quickdraw_text_mode,
-                        &mut quickdraw_text_size,
-                        &mut cursor_state,
-                        &vfs_volumes,
-                        &mut vfs_directories,
-                        &mut next_vfs_dir_id,
-                        *default_dir_id,
-                        &mut working_directories,
-                        &mut next_working_directory_ref_num,
-                        &mut application_working_directory_ref_num,
-                        self.launched_app_path.as_deref(),
-                        &mut param_text,
-                        &mut scrap,
-                        &mut list_manager,
-                        input,
-                        &mut event_queue,
-                        &mut draw_sprocket,
-                    )
+                            &mut **files,
+                            &mut **writable_refnums,
+                            vfs_files,
+                            stdio_streams,
+                            deleted_vfs_file_paths,
+                            resource_files,
+                            vfs_resource_files,
+                            vfs_resources,
+                            next_file_ref_num,
+                            &mut current_gworld,
+                            &mut current_gdevice,
+                            &mut screen_clut,
+                            &mut color_manager_clut,
+                            &mut device_gamma,
+                            &mut device_gamma_explicit,
+                            &mut quickdraw_fore_color,
+                            &mut quickdraw_fore_indices,
+                            &mut quickdraw_back_color,
+                            &mut quickdraw_pen_h,
+                            &mut quickdraw_pen_v,
+                            &mut quickdraw_text_mode,
+                            &mut quickdraw_text_size,
+                            &mut cursor_state,
+                            &vfs_volumes,
+                            &mut vfs_directories,
+                            &mut next_vfs_dir_id,
+                            *default_dir_id,
+                            &mut working_directories,
+                            &mut next_working_directory_ref_num,
+                            &mut application_working_directory_ref_num,
+                            self.launched_app_path.as_deref(),
+                            &mut param_text,
+                            &mut scrap,
+                            &mut list_manager,
+                            input,
+                            &mut event_queue,
+                            &mut draw_sprocket,
+                        )
+                    };
+                    action
                 };
 
                 ppc_sync_process_window_list(memory, &window_list);
@@ -8018,11 +8027,14 @@ impl PpcLoadedApp {
                 // through its byte map. Publish every dirty parsed mutation at
                 // the import boundary so a following 68K callback observes it
                 // without waiting for runner teardown or host persistence.
-                ppc_publish_resource_fork_bytes(
-                    &mut vfs_resource_files,
-                    &vfs_resources,
-                    true,
-                );
+                {
+                    let resource_manager = &mut *process_file_system.resource_manager;
+                    ppc_publish_resource_fork_bytes(
+                        &mut resource_manager.vfs_resource_files,
+                        &resource_manager.vfs_resources,
+                        true,
+                    );
+                }
 
                 *default_dir_id = memory
                     .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
@@ -8334,10 +8346,6 @@ impl PpcLoadedApp {
         self.timer_tasks = timer_tasks;
         self.vbl_tasks = vbl_tasks;
         self.callback_scheduling = callback_scheduling;
-        self.resource_files = resource_files;
-        self.vfs_resource_files = vfs_resource_files;
-        self.vfs_resources = vfs_resources;
-        self.next_file_ref_num = next_file_ref_num;
         self.quickdraw_fore_color = quickdraw_fore_color;
         self.quickdraw_fore_indices = quickdraw_fore_indices;
         self.quickdraw_back_color = quickdraw_back_color;
@@ -94005,6 +94013,178 @@ pub(crate) mod tests {
                 .map(String::as_str),
             Some("Shared/Native.bin")
         );
+    }
+
+    #[test]
+    fn attached_native_adapters_share_process_resource_mutations_immediately() {
+        let pef = synthetic_pef_with_import(b"TestImport");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic = TrapDispatcher::new();
+        classic.attach_process_context(&mut context);
+
+        native.resource_files.push(PpcResourceFileRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Shared/Native.rsrc".to_string(),
+        });
+        native
+            .vfs_resource_files
+            .push(PpcVfsResourceFileRecord {
+                path: "Shared/Native.rsrc".to_string(),
+                creator: u32::from_be_bytes(*b"TEST"),
+                file_type: u32::from_be_bytes(*b"rsrc"),
+                finder_flags: 0x0200,
+                resource_len: 4,
+                raw_data: Some(b"fork".to_vec().into()),
+                map_attrs: 0,
+                dirty: true,
+            });
+        native.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Shared/Native.rsrc".to_string(),
+            res_type: u32::from_be_bytes(*b"TEST"),
+            res_id: 128,
+            name: b"Shared".to_vec(),
+            data: b"resource".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0x2200,
+        });
+        native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
+
+        assert_eq!(classic.resource_files[0].path, "Shared/Native.rsrc");
+        assert_eq!(classic.vfs_resource_files[0].finder_flags, 0x0200);
+        assert_eq!(
+            classic
+                .vfs_resource_files
+                .fork("Shared/Native.rsrc")
+                .map(AsRef::<[u8]>::as_ref),
+            Some(b"fork".as_slice())
+        );
+        assert_eq!(classic.vfs_resources[0].data, b"resource");
+        assert_eq!(
+            classic.allocate_process_file_refnum(),
+            (PPC_FIRST_FILE_REF_NUM + 1) as u16
+        );
+        assert_eq!(native.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 2);
+
+        classic.vfs_resources[0].attrs = 0x0040;
+        classic.vfs_resource_files[0].dirty = false;
+        assert_eq!(native.vfs_resources[0].attrs, 0x0040);
+        assert!(!native.vfs_resource_files[0].dirty);
+    }
+
+    #[test]
+    fn process_resource_records_remain_canonical_during_native_execution_panic_cross_isa() {
+        let pef = synthetic_pef_with_import(b"TestImport");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic = TrapDispatcher::new();
+        classic.attach_process_context(&mut context);
+
+        native.resource_files.push(PpcResourceFileRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Shared/Native.rsrc".to_string(),
+        });
+        native
+            .vfs_resource_files
+            .push(PpcVfsResourceFileRecord {
+                path: "Shared/Native.rsrc".to_string(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                resource_len: 0,
+                raw_data: None,
+                map_attrs: 0,
+                dirty: false,
+            });
+        native.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Shared/Native.rsrc".to_string(),
+            res_type: u32::from_be_bytes(*b"TEST"),
+            res_id: 128,
+            name: b"Shared".to_vec(),
+            data: b"resource".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
+
+        assert_eq!(classic.resource_files.len(), 1);
+        assert_eq!(classic.vfs_resource_files.len(), 1);
+        assert_eq!(classic.vfs_resources.len(), 1);
+        assert_eq!(native.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 1);
+
+        // The return handler expects a native heap. Running it with an empty
+        // process Memory Manager reliably unwinds execution after the native
+        // records are live. Process-owned Resource Manager records must stay
+        // visible to the classic adapter even on this early exit.
+        let action = PpcImportAction::CallNative {
+            entry: native.entry_pc,
+            rtoc: native.rtoc,
+            return_pc: PPC_GUEST_CALL_RETURN_PC,
+            final_pc: native.entry_pc,
+            restore_rtoc: native.rtoc,
+            return_gpr3: PpcNativeReturnGpr3::Preserve,
+        };
+        assert!(matches!(
+            native
+                .guest_calls
+                .externalize_powerpc_action(&mut native.cpu, action),
+            PpcImportAction::Continue
+        ));
+        native.cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+        let mut empty_memory_manager = ProcessMemoryManager::default();
+        struct ResourceRecordProbe<'a> {
+            classic: &'a TrapDispatcher,
+            observed: &'a std::cell::Cell<bool>,
+        }
+        impl Drop for ResourceRecordProbe<'_> {
+            fn drop(&mut self) {
+                self.observed.set(
+                    self.classic.resource_files.len() == 1
+                        && self.classic.vfs_resource_files.len() == 1
+                        && self.classic.vfs_resources.len() == 1
+                        && self.classic.vfs_resources[0].data == b"resource",
+                );
+            }
+        }
+        let observed_during_unwind = std::cell::Cell::new(false);
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _probe = ResourceRecordProbe {
+                classic: &classic,
+                observed: &observed_during_unwind,
+            };
+            native.run_with_process_memory_manager(
+                64,
+                false,
+                false,
+                &mut empty_memory_manager,
+            );
+        }));
+        assert!(panic_result.is_err());
+        assert!(
+            observed_during_unwind.get(),
+            "classic Resource Manager lost native records during unwind"
+        );
+
+        assert_eq!(native.resource_files.len(), 1);
+        assert_eq!(native.vfs_resource_files.len(), 1);
+        assert_eq!(native.vfs_resources.len(), 1);
+        assert_eq!(native.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 1);
+        assert_eq!(classic.resource_files[0].path, "Shared/Native.rsrc");
+        assert_eq!(classic.vfs_resource_files[0].path, "Shared/Native.rsrc");
+        assert_eq!(classic.vfs_resources[0].data, b"resource");
+        assert_eq!(
+            classic.allocate_process_file_refnum(),
+            (PPC_FIRST_FILE_REF_NUM + 1) as u16
+        );
+        assert_eq!(native.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 2);
     }
 
     #[test]
