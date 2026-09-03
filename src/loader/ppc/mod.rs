@@ -22635,6 +22635,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::LActivate => {
             let active = cpu.gpr[3] != 0;
             if let Some(record) = list_manager.get_mut(&cpu.gpr[4]) {
+                record.active = active;
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     let _ = memory.write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, u8::from(active));
                     for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
@@ -70392,6 +70393,7 @@ fn ppc_list_new(
         visible,
         port: cpu.gpr[7],
         draw_enabled,
+        active: true,
         cells: std::collections::HashMap::new(),
         selected: std::collections::BTreeSet::new(),
         last_click: (-1, -1),
@@ -157313,6 +157315,7 @@ pub(crate) mod tests {
                 visible: (0, 0, 2, 1),
                 port: PPC_MAIN_GWORLD,
                 draw_enabled: true,
+                active: true,
                 cells: [((0, 0), b"Original".to_vec())].into(),
                 selected: [(0, 0)].into(),
                 last_click: (0, 0),
@@ -157334,6 +157337,7 @@ pub(crate) mod tests {
                 visible: (0, 0, 1, 1),
                 port: PPC_MAIN_GWORLD,
                 draw_enabled: false,
+                active: true,
                 cells: Default::default(),
                 selected: Default::default(),
                 last_click: (-1, -1),

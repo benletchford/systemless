@@ -18,6 +18,7 @@ pub struct ProcessListRecord {
     pub(crate) visible: (i16, i16, i16, i16),
     pub(crate) port: u32,
     pub(crate) draw_enabled: bool,
+    pub(crate) active: bool,
     pub(crate) cells: HashMap<(i16, i16), Vec<u8>>,
     pub(crate) selected: BTreeSet<(i16, i16)>,
     pub(crate) last_click: (i16, i16),
