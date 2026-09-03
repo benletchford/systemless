@@ -95,6 +95,7 @@
 #define iStyledText 11
 #define iStandardFile 12
 #define iResources 13
+#define iSprites 14
 
 /* State menu items */
 #define iButtonState 1
@@ -147,6 +148,7 @@
 #define pageStyledText 11
 #define pageStandardFile 12
 #define pageResources 13
+#define pageSprites 14
 
 #define kResourceBrowserRows 3
 #define resourceStatusEnumerated 1
@@ -501,6 +503,28 @@ static Handle gResourceEditHandle;
 static short gResourceStatus;
 static short gResourceError;
 static Boolean gResourceBrowserReady = false;
+
+/* Page 14: Sprites, Masks & Scrolling */
+#define kSpriteWorldWidth 320
+#define kSpriteWorldHeight 128
+#define kSpriteSize 48
+static GWorldPtr gSpriteWorld;
+static GWorldPtr gSpriteSource;
+static GWorldPtr gSpriteMask;
+static GWorldPtr gSpriteDeepMask;
+static RgnHandle gSpriteRegion;
+static RgnHandle gSpriteUpdateRegion;
+static ControlHandle gSpriteAnimate;
+static ControlHandle gSpriteScroll;
+static ControlHandle gSpriteReset;
+static Boolean gSpriteReady = false;
+static Boolean gSpriteAnimated = false;
+static Boolean gSpriteScrolled = false;
+static Boolean gSpritePixelVerified = false;
+static Boolean gSpriteRegionVerified = false;
+static Boolean gSpriteUpdateRegionVerified = false;
+static OSErr gSpriteRegionError = noErr;
+static short gSpriteScrollDelta;
 
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
@@ -2738,6 +2762,351 @@ static void DrawStandardFilePage(void)
     DrawControls(gMainWindow);
 }
 
+/*
+ * Page 14: Sprites, Masks & Scrolling.
+ *
+ * The scene is deliberately rendered into an 8-bit offscreen GWorld before
+ * one CopyBits call presents it in the window. This keeps the source pixels
+ * and the 1-bit matte stable while the destination exercises both the 8-bit
+ * indexed 68K screen and the direct-color PowerPC screen. CopyMask is the
+ * classic sprite operation; CopyDeepMask applies the same source through an
+ * 8-bit deep mask and a BitMapToRegion-derived clip. ScrollRect then moves
+ * the existing offscreen raster and reports its vacated strip through an
+ * update region. Imaging With QuickDraw (1994), pp. 2-20--2-24,
+ * 2-43--2-50, 3-119--3-122, and 6-22--6-46.
+ */
+static void BuildSpriteSource(void)
+{
+    GWorldPtr savedWorld;
+    GDHandle savedDevice;
+    Rect full;
+    Rect body;
+    Rect visor;
+    RGBColor background;
+    RGBColor bodyColor;
+    RGBColor highlight;
+    RGBColor black;
+    RGBColor white;
+
+    background.red = 0x1111; background.green = 0x2222; background.blue = 0x5555;
+    bodyColor.red = gSpriteAnimated ? 0x22ff : 0xff22;
+    bodyColor.green = gSpriteAnimated ? 0xdddd : 0x3333;
+    bodyColor.blue = gSpriteAnimated ? 0xffff : 0x2222;
+    highlight.red = gSpriteAnimated ? 0xffff : 0xffaa;
+    highlight.green = gSpriteAnimated ? 0xffff : 0xaa22;
+    highlight.blue = gSpriteAnimated ? 0x3333 : 0x1111;
+    black.red = black.green = black.blue = 0;
+    white.red = white.green = white.blue = 0xffff;
+
+    GetGWorld(&savedWorld, &savedDevice);
+    SetGWorld(gSpriteSource, nil);
+    SetRect(&full, 0, 0, kSpriteSize, kSpriteSize);
+    RGBBackColor(&background);
+    EraseRect(&full);
+
+    SetRect(&body, 4, 5, 44, 44);
+    RGBForeColor(&bodyColor);
+    PaintOval(&body);
+    RGBForeColor(&black);
+    FrameOval(&body);
+
+    SetRect(&visor, 11, 14, 37, 25);
+    RGBForeColor(&highlight);
+    PaintRoundRect(&visor, 5, 5);
+    RGBForeColor(&black);
+    FrameRoundRect(&visor, 5, 5);
+
+    /* A pair of white engine lights makes frame changes obvious. */
+    SetRect(&body, 14, 31, 21, 37);
+    RGBForeColor(&white);
+    PaintOval(&body);
+    SetRect(&body, 27, 31, 34, 37);
+    PaintOval(&body);
+    RGBForeColor(&black);
+    SetGWorld(savedWorld, savedDevice);
+}
+
+static void BuildSpriteMask(void)
+{
+    GWorldPtr savedWorld;
+    GDHandle savedDevice;
+    Rect full;
+    Rect body;
+    RGBColor black;
+    RGBColor white;
+
+    black.red = black.green = black.blue = 0;
+    white.red = white.green = white.blue = 0xffff;
+
+    GetGWorld(&savedWorld, &savedDevice);
+    SetGWorld(gSpriteMask, nil);
+    SetRect(&full, 0, 0, kSpriteSize, kSpriteSize);
+    RGBBackColor(&white);
+    EraseRect(&full);
+    SetRect(&body, 4, 5, 44, 44);
+    RGBForeColor(&black);
+    PaintOval(&body);
+    SetGWorld(savedWorld, savedDevice);
+}
+
+static void BuildSpriteDeepMask(void)
+{
+    GWorldPtr savedWorld;
+    GDHandle savedDevice;
+    Rect full;
+    Rect inner;
+    RGBColor black;
+    RGBColor white;
+
+    black.red = black.green = black.blue = 0;
+    white.red = white.green = white.blue = 0xffff;
+
+    GetGWorld(&savedWorld, &savedDevice);
+    SetGWorld(gSpriteDeepMask, nil);
+    SetRect(&full, 0, 0, kSpriteSize, kSpriteSize);
+    /* The canonical 8-bit GWorld palette maps white to index 0. Keep
+       transparent pixels at zero and paint the opaque deep-mask oval black,
+       whose nonzero index is accepted by CopyDeepMask. */
+    RGBBackColor(&white);
+    EraseRect(&full);
+    SetRect(&inner, 8, 8, 40, 40);
+    RGBForeColor(&black);
+    PaintOval(&inner);
+    SetGWorld(savedWorld, savedDevice);
+}
+
+static void PrepareSpriteScene(void)
+{
+    GWorldPtr savedWorld;
+    GDHandle savedDevice;
+    PixMapHandle sourcePixels;
+    PixMapHandle maskPixels;
+    PixMapHandle deepMaskPixels;
+    PixMapHandle worldPixels;
+    Rect worldRect;
+    Rect sourceRect;
+    Rect firstSpriteRect;
+    Rect secondSpriteRect;
+    Rect stripe;
+    RGBColor background;
+    RGBColor stripeColor;
+    RGBColor accent;
+    RGBColor probe;
+    RGBColor observed;
+    Point regionProbe;
+    short x;
+    short y;
+
+    gSpritePixelVerified = false;
+    gSpriteRegionVerified = false;
+    gSpriteUpdateRegionVerified = false;
+    gSpriteRegionError = noErr;
+    gSpriteScrollDelta = 0;
+    gSpriteScrolled = false;
+    if (!gSpriteReady) return;
+
+    background.red = 0x1111; background.green = 0x2222; background.blue = 0x5555;
+    stripeColor.red = 0x2222; stripeColor.green = 0x5555; stripeColor.blue = 0x8888;
+    accent.red = gSpriteAnimated ? 0xeeee : 0x6666;
+    accent.green = gSpriteAnimated ? 0xeeee : 0x2222;
+    accent.blue = gSpriteAnimated ? 0x3333 : 0xdddd;
+    probe.red = 0xffff; probe.green = 0x4444; probe.blue = 0x1111;
+
+    BuildSpriteSource();
+    BuildSpriteMask();
+    BuildSpriteDeepMask();
+
+    GetGWorld(&savedWorld, &savedDevice);
+    SetGWorld(gSpriteWorld, nil);
+    SetRect(&worldRect, 0, 0, kSpriteWorldWidth, kSpriteWorldHeight);
+    RGBBackColor(&background);
+    EraseRect(&worldRect);
+
+    /* Layered bands provide landmarks before and after ScrollRect. */
+    RGBForeColor(&stripeColor);
+    SetRect(&stripe, 0, 24, kSpriteWorldWidth, 28);
+    PaintRect(&stripe);
+    SetRect(&stripe, 0, 96, kSpriteWorldWidth, 100);
+    PaintRect(&stripe);
+    RGBForeColor(&accent);
+    for (x = 0; x < kSpriteWorldWidth; x += 32) {
+        MoveTo(x, 105);
+        LineTo(x + 16, 105);
+    }
+
+    /* SetCPixel/GetCPixel are intentionally performed in the offscreen port. */
+    SetCPixel(15, 12, &probe);
+    GetCPixel(15, 12, &observed);
+    gSpritePixelVerified = observed.red > 0x8000 && observed.green < 0x8000;
+    for (y = 0; y < 5; y++) {
+        SetCPixel(24 + y * 7, 14 + y * 3, &probe);
+    }
+
+    SetRect(&sourceRect, 0, 0, kSpriteSize, kSpriteSize);
+    SetRect(&firstSpriteRect, 38, 38, 38 + kSpriteSize, 38 + kSpriteSize);
+    SetRect(&secondSpriteRect, 214, 38, 214 + kSpriteSize, 38 + kSpriteSize);
+    sourcePixels = GetGWorldPixMap(gSpriteSource);
+    maskPixels = GetGWorldPixMap(gSpriteMask);
+    deepMaskPixels = GetGWorldPixMap(gSpriteDeepMask);
+    worldPixels = GetGWorldPixMap(gSpriteWorld);
+    if (sourcePixels == nil || maskPixels == nil || deepMaskPixels == nil || worldPixels == nil) {
+        SetGWorld(savedWorld, savedDevice);
+        return;
+    }
+
+    /* CopyMask is a transparent, unscaled sprite transfer. */
+    CopyMask((BitMap *)*sourcePixels, (BitMap *)*maskPixels, (BitMap *)*worldPixels,
+             &sourceRect, &sourceRect, &firstSpriteRect);
+
+    /* Rebuild the region from the 1-bit matte, then move it to the second sprite. */
+    gSpriteRegionError = BitMapToRegion(gSpriteRegion, (BitMap *)*maskPixels);
+    OffsetRgn(gSpriteRegion, secondSpriteRect.left, secondSpriteRect.top);
+    regionProbe.v = secondSpriteRect.top + 24;
+    regionProbe.h = secondSpriteRect.left + 24;
+    gSpriteRegionVerified = gSpriteRegionError == noErr
+        && !EmptyRgn(gSpriteRegion)
+        && PtInRgn(regionProbe, gSpriteRegion);
+
+    /* CopyDeepMask adds a second frame through an 8-bit mask and region clip. */
+    CopyDeepMask((BitMap *)*sourcePixels, (BitMap *)*deepMaskPixels, (BitMap *)*worldPixels,
+                 &sourceRect, &sourceRect, &secondSpriteRect, srcCopy, gSpriteRegion);
+
+    SetGWorld(savedWorld, savedDevice);
+}
+
+static void ScrollSpriteScene(void)
+{
+    GWorldPtr savedWorld;
+    GDHandle savedDevice;
+    Rect scrollRect;
+    Rect exposed;
+    RGBColor background;
+    RGBColor accent;
+    Point updateProbe;
+
+    if (!gSpriteReady) return;
+    background.red = 0x1111; background.green = 0x2222; background.blue = 0x5555;
+    accent.red = 0xeeee; accent.green = 0xeeee; accent.blue = 0x3333;
+
+    GetGWorld(&savedWorld, &savedDevice);
+    SetGWorld(gSpriteWorld, nil);
+    SetRect(&scrollRect, 0, 0, kSpriteWorldWidth, kSpriteWorldHeight);
+    SetEmptyRgn(gSpriteUpdateRegion);
+    ScrollRect(&scrollRect, gSpriteScrolled ? 24 : -24, 0, gSpriteUpdateRegion);
+
+    /* Repaint the vacated strip with a deterministic landmark after scrolling. */
+    if (gSpriteScrolled) {
+        SetRect(&exposed, 0, 0, 24, kSpriteWorldHeight);
+    } else {
+        SetRect(&exposed, kSpriteWorldWidth - 24, 0,
+                kSpriteWorldWidth, kSpriteWorldHeight);
+    }
+    RGBForeColor(&background);
+    PaintRect(&exposed);
+    RGBForeColor(&accent);
+    MoveTo(exposed.left + 4, 18);
+    LineTo(exposed.right - 4, 18);
+    MoveTo(exposed.left + 4, 110);
+    LineTo(exposed.right - 4, 110);
+
+    updateProbe.v = kSpriteWorldHeight / 2;
+    updateProbe.h = gSpriteScrolled ? 12 : kSpriteWorldWidth - 12;
+    gSpriteUpdateRegionVerified = PtInRgn(updateProbe, gSpriteUpdateRegion);
+    gSpriteScrollDelta = gSpriteScrolled ? 24 : -24;
+    gSpriteScrolled = !gSpriteScrolled;
+    SetGWorld(savedWorld, savedDevice);
+}
+
+static void DrawSpritesPage(void)
+{
+    GWorldPtr savedWorld;
+    GDHandle savedDevice;
+    PixMapHandle worldPixels;
+    PixMapHandle windowPixels;
+    Rect worldRect;
+    Rect displayRect;
+    Rect panel;
+    RGBColor black;
+    Str255 number;
+
+    black.red = black.green = black.blue = 0;
+    DrawHeading("\pSprites, masks, and scrolling");
+
+    SetRect(&panel, 20, 48, 360, 260);
+    DrawBeveledBox(&panel, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 62);
+    DrawString("\pOffscreen indexed sprite scene");
+    TextFace(0);
+
+    SetRect(&displayRect, 24, 80, 344, 208);
+    if (gSpriteReady) {
+        GetGWorld(&savedWorld, &savedDevice);
+        SetGWorld((GWorldPtr)gMainWindow, nil);
+        worldPixels = GetGWorldPixMap(gSpriteWorld);
+        windowPixels = GetGWorldPixMap((GWorldPtr)gMainWindow);
+        SetRect(&worldRect, 0, 0, kSpriteWorldWidth, kSpriteWorldHeight);
+        if (worldPixels != nil && windowPixels != nil) {
+            CopyBits((BitMap *)*worldPixels, (BitMap *)*windowPixels,
+                     &worldRect, &displayRect, srcCopy, nil);
+        }
+        RGBForeColor(&black);
+        FrameRect(&displayRect);
+        SetGWorld(savedWorld, savedDevice);
+    } else {
+        DrawBeveledBox(&displayRect, true);
+    }
+
+    SetRect(&panel, 370, 48, 535, 260);
+    DrawBeveledBox(&panel, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(378, 62);
+    DrawString("\pQuickDraw pipeline");
+    TextFace(0);
+    MoveTo(378, 82);
+    DrawString("\pCopyMask: 1-bit matte");
+    MoveTo(378, 98);
+    DrawString("\pCopyDeepMask: deep mask");
+    MoveTo(378, 114);
+    DrawString("\pBitMapToRegion: shape clip");
+    MoveTo(378, 130);
+    DrawString("\pSetCPixel/GetCPixel: sample");
+    MoveTo(378, 154);
+    DrawString("\pPixel round-trip: ");
+    DrawString(gSpritePixelVerified ? "\pverified" : "\pnot verified");
+    MoveTo(378, 170);
+    DrawString("\pRegion round-trip: ");
+    DrawString(gSpriteRegionVerified ? "\pverified" : "\pnot verified");
+    MoveTo(378, 178);
+    DrawString("\pUpdate region: ");
+    DrawString(gSpriteUpdateRegionVerified ? "\pverified" : "\pnot verified");
+    MoveTo(378, 194);
+    DrawString("\pScrollRect delta: ");
+    NumToString(gSpriteScrollDelta, number);
+    DrawString(number);
+    DrawString("\p px");
+    MoveTo(378, 210);
+    DrawString("\pUpdate strip: ");
+    DrawString(gSpriteScrolled ? "\pright" : "\pleft");
+    MoveTo(378, 234);
+    DrawString(gSpriteRegionError == noErr ? "\pAll mask operations returned noErr."
+                                           : "\pBitMapToRegion returned an error.");
+
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(24, 280);
+    DrawString("\pCopyMask preserves the scene behind the sprite; CopyDeepMask clips a second frame.");
+    MoveTo(24, 294);
+    DrawString("\pScroll the existing raster to expose a deterministic update region.");
+    MoveTo(24, 344);
+    DrawString("\pThe same source runs through the 68K indexed and PowerPC direct-color paths.");
+    DrawControls(gMainWindow);
+}
+
 static void DrawMainWindow(void)
 {
     RGBColor white;
@@ -2790,6 +3159,9 @@ static void DrawMainWindow(void)
         case pageResources:
             DrawResourceBrowserPage();
             break;
+        case pageSprites:
+            DrawSpritesPage();
+            break;
     }
 }
 
@@ -2816,6 +3188,7 @@ static void ShowAllControls(short page)
     Boolean isSound = (page == pageSound);
     Boolean isStandardFile = (page == pageStandardFile);
     Boolean isResources = (page == pageResources);
+    Boolean isSprites = (page == pageSprites);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -2949,6 +3322,17 @@ static void ShowAllControls(short page)
         HideControl(gResourceLoad);
         HideControl(gResourceRelease);
     }
+
+    /* Page 14: Sprites, Masks & Scrolling */
+    if (isSprites) {
+        ShowControl(gSpriteAnimate);
+        ShowControl(gSpriteScroll);
+        ShowControl(gSpriteReset);
+    } else {
+        HideControl(gSpriteAnimate);
+        HideControl(gSpriteScroll);
+        HideControl(gSpriteReset);
+    }
 }
 
 static void SyncMenuState(void)
@@ -2961,7 +3345,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 13; i++) {
+        for (i = 1; i <= 14; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -3087,6 +3471,9 @@ static void SetPage(short page)
     if (page == pageResources) {
         PrepareResourceBrowser();
     }
+    if (page == pageSprites) {
+        PrepareSpriteScene();
+    }
     ShowAllControls(page);
     SyncMenuState();
 
@@ -3111,6 +3498,7 @@ static void Initialize(void)
     MenuHandle hMenu;
     Rect r;
     Rect dataBounds;
+    Rect sourceRect;
     Point cellSize;
 
     InitGraf(&qd.thePort);
@@ -3334,6 +3722,32 @@ static void Initialize(void)
     gResourceRelease = NewControl(gMainWindow, &r, "\pRelease Handle", false, 0, 0, 1,
                                   pushButProc, 0);
 
+    /* Page 14: Sprites, Masks & Scrolling */
+    SetRect(&dataBounds, 0, 0, kSpriteWorldWidth, kSpriteWorldHeight);
+    SetRect(&sourceRect, 0, 0, kSpriteSize, kSpriteSize);
+    gSpriteWorld = nil;
+    gSpriteSource = nil;
+    gSpriteMask = nil;
+    gSpriteDeepMask = nil;
+    gSpriteRegion = NewRgn();
+    gSpriteUpdateRegion = NewRgn();
+    if (NewGWorld(&gSpriteWorld, 8, &dataBounds, nil, nil, 0) == noErr
+        && NewGWorld(&gSpriteSource, 8, &sourceRect, nil, nil, 0) == noErr
+        && NewGWorld(&gSpriteMask, 1, &sourceRect, nil, nil, 0) == noErr
+        && NewGWorld(&gSpriteDeepMask, 8, &sourceRect, nil, nil, 0) == noErr
+        && gSpriteRegion != nil && gSpriteUpdateRegion != nil) {
+        gSpriteReady = true;
+    }
+    SetRect(&r, 35, 304, 145, 328);
+    gSpriteAnimate = NewControl(gMainWindow, &r, "\pAnimate Sprite", false, 0, 0, 1,
+                                pushButProc, 0);
+    SetRect(&r, 153, 304, 263, 328);
+    gSpriteScroll = NewControl(gMainWindow, &r, "\pScroll Scene", false, 0, 0, 1,
+                               pushButProc, 0);
+    SetRect(&r, 271, 304, 365, 328);
+    gSpriteReset = NewControl(gMainWindow, &r, "\pReset Scene", false, 0, 0, 1,
+                              pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -3345,7 +3759,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iResources) {
+    if (menuID == mPages && item >= iGraphics && item <= iSprites) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -3585,6 +3999,14 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         LoadNamedResourceBrowserEntry();
     } else if (control == gResourceRelease) {
         ReleaseNamedResourceBrowserEntry();
+    } else if (control == gSpriteAnimate) {
+        gSpriteAnimated = !gSpriteAnimated;
+        PrepareSpriteScene();
+    } else if (control == gSpriteScroll) {
+        ScrollSpriteScene();
+    } else if (control == gSpriteReset) {
+        gSpriteAnimated = false;
+        PrepareSpriteScene();
     }
     DrawMainWindow();
 }

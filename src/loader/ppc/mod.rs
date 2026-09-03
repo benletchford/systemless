@@ -470,6 +470,7 @@ const PPC_CGRAF_PORT_VIS_RGN_OFFSET: u32 = 24;
 const PPC_CGRAF_PORT_CLIP_RGN_OFFSET: u32 = 28;
 const PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET: u32 = 36;
 const PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET: u32 = 42;
+const PPC_CGRAF_PORT_BK_PIXPAT_OFFSET: u32 = 32;
 const PPC_CGRAF_PORT_TX_FONT_OFFSET: u32 = 68;
 const PPC_CGRAF_PORT_TX_FACE_OFFSET: u32 = 70;
 const PPC_CGRAF_PORT_TX_MODE_OFFSET: u32 = 72;
@@ -3067,6 +3068,10 @@ pub struct PpcToolboxStartupState {
     clut_protected_by_device: HashMap<u32, [bool; 256]>,
     clut_reserved_by_device: HashMap<u32, [bool; 256]>,
     pub quickdraw_pen_pattern: [u8; 8],
+    /// Current Color QuickDraw background pattern. A set bit selects the
+    /// foreground color and a clear bit selects the background color, as in
+    /// the classic `Pattern` record used by BackPat.
+    pub quickdraw_back_pattern: [u8; 8],
     pub quickdraw_op_color: PpcRgbColor,
     pub ae_interaction_allowed: u8,
     pub(crate) stdc_signal_state: PpcStdSignalState,
@@ -3129,6 +3134,7 @@ impl Default for PpcToolboxStartupState {
             clut_protected_by_device: HashMap::new(),
             clut_reserved_by_device: HashMap::new(),
             quickdraw_pen_pattern: [0xff; 8],
+            quickdraw_back_pattern: [0x00; 8],
             quickdraw_op_color: PPC_RGB_BLACK,
             ae_interaction_allowed: 1,
             stdc_signal_state: PpcStdSignalState::default(),
@@ -10859,6 +10865,56 @@ fn ppc_quickdraw_surface_color_pixel(
     }
 }
 
+fn ppc_quickdraw_background_pattern(
+    memory: &mut PpcSectionMem,
+    current_gworld: u32,
+    fallback: [u8; 8],
+) -> [u8; 8] {
+    // A color port's bkPixPat field is at the same offset as documented by
+    // Color QuickDraw. Its pat1Data member remains the required monochrome
+    // fallback for one-bit patterns and for destinations without a usable
+    // pixel map (Inside Macintosh: Imaging With QuickDraw, pp. 4-80--4-82).
+    let Some(pattern_handle) = memory
+        .read_u32_be(current_gworld.wrapping_add(32))
+        .filter(|handle| *handle != 0)
+    else {
+        return fallback;
+    };
+    let Some(pattern_ptr) = memory
+        .read_u32_be(pattern_handle)
+        .filter(|ptr| *ptr != 0)
+    else {
+        return fallback;
+    };
+    let mut pattern = [0u8; 8];
+    memory
+        .read_bytes_into(pattern_ptr.wrapping_add(20), &mut pattern)
+        .is_some()
+        .then_some(pattern)
+        .unwrap_or(fallback)
+}
+
+fn ppc_quickdraw_surface_background_pixel(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    local_point: (i32, i32),
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    explicit_back_index: Option<u8>,
+    pattern: [u8; 8],
+) -> Option<u16> {
+    let (x, y) = local_point;
+    let global_x = i32::from(surface.left).checked_add(x)?;
+    let global_y = i32::from(surface.top).checked_add(y)?;
+    let row = pattern[global_y.rem_euclid(8) as usize];
+    let is_foreground = row & (0x80 >> (global_x.rem_euclid(8) as u8)) != 0;
+    if is_foreground {
+        ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, None)
+    } else {
+        ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, explicit_back_index)
+    }
+}
+
 fn ppc_quickdraw_surface_fore_pixel(
     memory: &mut PpcSectionMem,
     surface: PpcQuickDrawSurface,
@@ -14852,12 +14908,14 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility,
         (
             "InterfaceLib",
-            "AnimateEntry" | "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyMask"
+            "AnimateEntry" | "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyDeepMask"
+            | "CopyMask"
             | "CopyPalette" | "CTab2Palette" | "DisposeGDevice" | "DisposePalette" | "Exp1to3"
             | "Exp1to6" | "GetCPixel" | "GetEntryUsage" | "GetItemIcon" | "GetItemStyle"
             | "ClosePicture" | "GetNewPalette" | "NewGDevice" | "NewPalette" | "OpenPicture"
             | "PenPat" | "PlotIcon" | "Palette2CTab" | "ScrollRect" | "SetEntryColor"
-            | "SetEntryUsage" | "SetItemIcon" | "SetItemStyle" | "SetStdCProcs" | "SetStdProcs",
+            | "SetEntryUsage" | "SetItemIcon" | "SetItemStyle" | "SetCPixel" | "SetStdCProcs"
+            | "SetStdProcs",
         ) => PpcImportDispatcherTarget::QuickDrawCompatibility,
         (
             "InterfaceLib",
@@ -27080,10 +27138,24 @@ fn ppc_dispatch_quickdraw_compatibility(
     color_manager_clut: &mut [[u16; 3]; 256],
     fore_color: PpcRgbColor,
     fore_index: Option<u8>,
-    _back_color: PpcRgbColor,
+    back_color: PpcRgbColor,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     match binding.symbol_name.as_str() {
+        "SetCPixel" => {
+            let color = ppc_read_rgb_color(memory, cpu.gpr[5]);
+            let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
+            if let (Some(color), Some(surface)) = (color, surface) {
+                let point = surface.local_point((
+                    cpu.gpr[3] as u16 as i16 as i32,
+                    cpu.gpr[4] as u16 as i16 as i32,
+                ));
+                if let Some(pixel) = ppc_quickdraw_surface_color_pixel(memory, surface, color) {
+                    let _ = ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, point, pixel);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
         "GetCPixel" => {
             let color = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)
                 .and_then(|surface| {
@@ -27536,28 +27608,121 @@ fn ppc_dispatch_quickdraw_compatibility(
             let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
             if let (Some(port_rect), Some(surface)) = (rect, surface) {
                 let front = surface.front_buffer;
-                let rect = surface.local_rect(port_rect);
+                if !matches!(front.depth, 1 | 2 | 4 | 8 | 16) {
+                    return PpcImportAction::ReturnPreserve;
+                }
+                let requested_rect = surface.local_rect(port_rect);
+                // ScrollRect operates on the intersection of the requested
+                // rectangle and the live PixMap. Keep both the source
+                // snapshot and every destination write inside that
+                // intersection; otherwise a positive delta can overwrite
+                // pixels outside r.
+                let rect = (
+                    requested_rect.0.clamp(0, front.height as i32),
+                    requested_rect.1.clamp(0, front.width as i32),
+                    requested_rect.2.clamp(0, front.height as i32),
+                    requested_rect.3.clamp(0, front.width as i32),
+                );
                 let dh = cpu.gpr[4] as u16 as i16 as i32;
                 let dv = cpu.gpr[5] as u16 as i16 as i32;
-                let mut pixels = Vec::new();
-                for y in rect.0..rect.2 {
-                    for x in rect.1..rect.3 {
-                        if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front, (x, y)) {
-                            pixels.push((x + dh, y + dv, pixel));
+                if rect.0 < rect.2 && rect.1 < rect.3 {
+                    let width = (rect.3 - rect.1) as usize;
+                    let height = (rect.2 - rect.0) as usize;
+                    let background_pattern = ppc_quickdraw_background_pattern(
+                        memory,
+                        current_gworld,
+                        toolbox_startup.quickdraw_back_pattern,
+                    );
+                    let mut pixels = vec![0; width * height];
+                    for y in rect.0..rect.2 {
+                        for x in rect.1..rect.3 {
+                            if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front, (x, y))
+                            {
+                                pixels[((y - rect.0) as usize) * width + (x - rect.1) as usize] =
+                                    pixel;
+                            }
+                        }
+                    }
+                    // Read all pixels before writing any destination pixel so
+                    // overlapping scrolls use the original raster. Exposed
+                    // cells retain the port's background color/pattern pixel.
+                    for y in rect.0..rect.2 {
+                        for x in rect.1..rect.3 {
+                            let src_x = x - dh;
+                            let src_y = y - dv;
+                            let pixel = if src_x >= rect.1
+                                && src_x < rect.3
+                                && src_y >= rect.0
+                                && src_y < rect.2
+                            {
+                                pixels[((src_y - rect.0) as usize) * width
+                                    + (src_x - rect.1) as usize]
+                            } else {
+                                ppc_quickdraw_surface_background_pixel(
+                                    memory,
+                                    surface,
+                                    (x, y),
+                                    fore_color,
+                                    back_color,
+                                    toolbox_startup
+                                        .quickdraw_back_indices
+                                        .get(&current_gworld)
+                                        .copied(),
+                                    background_pattern,
+                                )
+                                .unwrap_or(0)
+                            };
+                            let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), pixel);
                         }
                     }
                 }
-                for (x, y, pixel) in pixels {
-                    let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), pixel);
-                }
                 if cpu.gpr[6] != 0 {
-                    let _ = ppc_set_rect_rgn(
+                    let top = ppc_i32_to_i16_saturating(i32::from(surface.top) + rect.0);
+                    let left = ppc_i32_to_i16_saturating(i32::from(surface.left) + rect.1);
+                    let bottom = ppc_i32_to_i16_saturating(i32::from(surface.top) + rect.2);
+                    let right = ppc_i32_to_i16_saturating(i32::from(surface.left) + rect.3);
+                    let width = i32::from(right) - i32::from(left);
+                    let height = i32::from(bottom) - i32::from(top);
+                    let horizontal_exposed = dh.unsigned_abs().min(width.max(0) as u32) as i32;
+                    let vertical_exposed = dv.unsigned_abs().min(height.max(0) as u32) as i32;
+                    let mut rows = vec![Vec::new(); height.max(0) as usize];
+                    for row in 0..height.max(0) {
+                        let full_row = (dv > 0 && row < vertical_exposed)
+                            || (dv < 0 && row >= height - vertical_exposed);
+                        rows[row as usize] = if full_row {
+                            vec![left, right]
+                        } else if horizontal_exposed > 0 && dh > 0 {
+                            vec![
+                                left,
+                                ppc_i32_to_i16_saturating(
+                                    i32::from(left) + horizontal_exposed,
+                                ),
+                            ]
+                        } else if horizontal_exposed > 0 && dh < 0 {
+                            vec![
+                                ppc_i32_to_i16_saturating(
+                                    i32::from(right) - horizontal_exposed,
+                                ),
+                                right,
+                            ]
+                        } else {
+                            Vec::new()
+                        };
+                    }
+                    let storage = ppc_region_storage_from_rows(top, &rows)
+                        .unwrap_or_else(|| vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let _ = ppc_write_region_storage(
+                        Some(&mut allocator),
                         memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
                         cpu.gpr[6],
-                        port_rect.1,
-                        port_rect.0,
-                        port_rect.3,
-                        port_rect.2,
+                        &storage,
                     );
                 }
             }
@@ -27565,6 +27730,10 @@ fn ppc_dispatch_quickdraw_compatibility(
         }
         "CopyMask" => {
             let _ = ppc_copy_mask(cpu, memory, gworlds, color_manager_clut);
+            PpcImportAction::ReturnPreserve
+        }
+        "CopyDeepMask" => {
+            let _ = ppc_copy_deep_mask(cpu, memory, gworlds, color_manager_clut);
             PpcImportAction::ReturnPreserve
         }
         "SetEntryColor" => {
@@ -27794,7 +27963,47 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "SetStdCProcs" | "SetStdProcs" | "BackPat" | "BackPixPat" | "Exp1to3" | "Exp1to6" => {
+        "BackPat" => {
+            let mut pattern = [0u8; 8];
+            if memory.read_bytes_into(cpu.gpr[3], &mut pattern).is_some() {
+                // BackPat changes the legacy pattern used to fill exposed
+                // ScrollRect pixels. A prior PixPat must not continue to
+                // shadow the newly installed Pattern (IM:V V-72).
+                toolbox_startup.quickdraw_back_pattern = pattern;
+                let _ = memory.write_u32_be(
+                    current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
+                    0,
+                );
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        "BackPixPat" => {
+            let pattern_handle = cpu.gpr[3];
+            if pattern_handle != 0 {
+                // Keep the handle in the live CGrafPort so subsequent
+                // ScrollRect calls see exactly the PixPat selected by the
+                // application. Its pat1Data shadow is used by the common
+                // monochrome fallback path.
+                let _ = memory.write_u32_be(
+                    current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
+                    pattern_handle,
+                );
+                if let Some(pattern_ptr) = memory
+                    .read_u32_be(pattern_handle)
+                    .filter(|ptr| *ptr != 0)
+                {
+                    let mut pattern = [0u8; 8];
+                    if memory
+                        .read_bytes_into(pattern_ptr.wrapping_add(20), &mut pattern)
+                        .is_some()
+                    {
+                        toolbox_startup.quickdraw_back_pattern = pattern;
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        "SetStdCProcs" | "SetStdProcs" | "Exp1to3" | "Exp1to6" => {
             PpcImportAction::ReturnPreserve
         }
         _ => PpcImportAction::ReturnPreserve,
@@ -55464,6 +55673,111 @@ fn ppc_read_pixmap_raw_pixel(
     }
 }
 
+fn ppc_pixmap_pixel_rgb(
+    bits: PpcPixMapBits,
+    pixel: u32,
+    clut: Option<&[[u16; 3]; 256]>,
+) -> Option<[u16; 3]> {
+    match bits.depth {
+        1 => Some(if pixel == 0 {
+            [u16::MAX; 3]
+        } else {
+            [0; 3]
+        }),
+        _depth @ (2 | 4 | 8) => clut?.get(pixel as usize).copied(),
+        16 => Some(ppc_rgb555_to_rgb16(pixel as u16)),
+        32 => Some([
+            u16::from(((pixel >> 16) & 0xff) as u8) * 0x0101,
+            u16::from(((pixel >> 8) & 0xff) as u8) * 0x0101,
+            u16::from((pixel & 0xff) as u8) * 0x0101,
+        ]),
+        _ => None,
+    }
+}
+
+fn ppc_rgb_to_pixmap_pixel(
+    bits: PpcPixMapBits,
+    rgb: [u16; 3],
+    clut: Option<&[[u16; 3]; 256]>,
+) -> Option<u32> {
+    match bits.depth {
+        1 => {
+            let black_distance = u64::from(rgb[0]).pow(2)
+                + u64::from(rgb[1]).pow(2)
+                + u64::from(rgb[2]).pow(2);
+            let white_distance = u64::from(u16::MAX - rgb[0]).pow(2)
+                + u64::from(u16::MAX - rgb[1]).pow(2)
+                + u64::from(u16::MAX - rgb[2]).pow(2);
+            Some(u32::from(black_distance <= white_distance))
+        }
+        depth @ (2 | 4 | 8) => Some(u32::from(ppc_rgb_color_to_index_in_clut(
+            PpcRgbColor {
+                red: rgb[0],
+                green: rgb[1],
+                blue: rgb[2],
+            },
+            clut?,
+            ppc_indexed_depth_entry_count(depth)?,
+        ))),
+        16 => Some(u32::from(ppc_rgb_color_to_rgb555(PpcRgbColor {
+            red: rgb[0],
+            green: rgb[1],
+            blue: rgb[2],
+        }))),
+        32 => Some(
+            (u32::from(rgb[0] >> 8) << 16)
+                | (u32::from(rgb[1] >> 8) << 8)
+                | u32::from(rgb[2] >> 8),
+        ),
+        _ => None,
+    }
+}
+
+fn ppc_blend_deep_mask_rgb(source: [u16; 3], destination: [u16; 3], mask: [u16; 3]) -> [u16; 3] {
+    std::array::from_fn(|component| {
+        let source = u64::from(source[component]);
+        let destination = u64::from(destination[component]);
+        let mask = u64::from(mask[component]);
+        ((source * (u64::from(u16::MAX) - mask) + destination * mask + 32_767)
+            / u64::from(u16::MAX)) as u16
+    })
+}
+
+fn ppc_deep_mask_boolean_pixel(source: u32, destination: u32, depth: u32, mode: u16) -> u32 {
+    if depth == 1 {
+        let source = u32::from(source != 0);
+        let destination = u32::from(destination != 0);
+        return match mode {
+            0 => source,
+            1 => source | destination,
+            2 => source ^ destination,
+            3 => (!source) & destination & 1,
+            4 => 1 - source,
+            5 => (1 - source) | destination,
+            6 => (1 - source) ^ destination,
+            7 => source & destination,
+            _ => source,
+        };
+    }
+    let value_mask = match depth {
+        2 | 4 | 8 => (1u32 << depth) - 1,
+        16 => u32::from(u16::MAX),
+        32 => u32::MAX,
+        _ => 0,
+    };
+    match mode {
+        0 => source,
+        1 => source | destination,
+        2 => source ^ destination,
+        3 => (!source) & destination & value_mask,
+        4 => !source & value_mask,
+        5 => (!source & value_mask) | destination,
+        6 => (!source & value_mask) ^ destination,
+        7 => source & destination,
+        _ => source,
+    }
+}
+
 fn ppc_write_pixmap_raw_pixel(
     memory: &mut PpcSectionMem,
     bits: PpcPixMapBits,
@@ -56473,6 +56787,247 @@ fn ppc_copy_mask(
         } else {
             eprintln!(
                 "[PPC-TRACE] CopyMask src=${src_bits_ptr:08X} mask=${mask_bits_ptr:08X} dst=${dst_bits_ptr:08X} copied={copied} reason={reason}"
+            );
+        }
+    }
+    copied
+}
+
+fn ppc_copy_deep_mask(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    color_manager_clut: &[[u16; 3]; 256],
+) -> bool {
+    let src_bits_ptr = cpu.gpr[3];
+    let mask_bits_ptr = cpu.gpr[4];
+    let dst_bits_ptr = cpu.gpr[5];
+    let src_rect_ptr = cpu.gpr[6];
+    let mask_rect_ptr = cpu.gpr[7];
+    let dst_rect_ptr = cpu.gpr[8];
+    let mode = cpu.gpr[9] as u16 & 0x3f;
+    let mask_rgn = cpu.gpr[10];
+    let mut reason = "ok";
+    let mut trace_details = None;
+    let copied = (|| {
+        let Some(src_bits) = ppc_resolve_pixmap_bits(memory, gworlds, src_bits_ptr) else {
+            reason = "src-bits";
+            return None;
+        };
+        let Some(mask_bits) = ppc_resolve_pixmap_bits(memory, gworlds, mask_bits_ptr) else {
+            reason = "mask-bits";
+            return None;
+        };
+        let Some(dst_bits) = ppc_resolve_pixmap_bits(memory, gworlds, dst_bits_ptr) else {
+            reason = "dst-bits";
+            return None;
+        };
+        if !matches!(src_bits.depth, 1 | 2 | 4 | 8 | 16 | 32)
+            || !matches!(dst_bits.depth, 1 | 2 | 4 | 8 | 16 | 32)
+            || !matches!(mask_bits.depth, 1 | 2 | 4 | 8 | 16 | 32)
+        {
+            reason = "depth";
+            return None;
+        }
+        let src_rect = ppc_read_rect(memory, src_rect_ptr)?;
+        let mask_rect = ppc_read_rect(memory, mask_rect_ptr)?;
+        let dst_rect = ppc_read_rect(memory, dst_rect_ptr)?;
+        trace_details = Some((src_bits, mask_bits, dst_bits, src_rect, mask_rect, dst_rect));
+
+        let src_width = i64::from(src_rect.3) - i64::from(src_rect.1);
+        let src_height = i64::from(src_rect.2) - i64::from(src_rect.0);
+        let mask_width = i64::from(mask_rect.3) - i64::from(mask_rect.1);
+        let mask_height = i64::from(mask_rect.2) - i64::from(mask_rect.0);
+        let dst_width = i64::from(dst_rect.3) - i64::from(dst_rect.1);
+        let dst_height = i64::from(dst_rect.2) - i64::from(dst_rect.0);
+        if src_width <= 0
+            || src_height <= 0
+            || mask_width <= 0
+            || mask_height <= 0
+            || dst_width <= 0
+            || dst_height <= 0
+        {
+            reason = "empty-rect";
+            return None;
+        }
+
+        let mask_storage = if mask_rgn == 0 {
+            None
+        } else {
+            let Some(storage) = ppc_region_storage(memory, mask_rgn) else {
+                reason = "mask-rgn";
+                return None;
+            };
+            Some(storage)
+        };
+        let src_clut = ppc_indexed_depth_entry_count(src_bits.depth).map(|_| {
+            ppc_resolve_pixmap_ctable_handle(memory, gworlds, src_bits_ptr)
+                .map(|handle| ppc_copy_bits_clut(memory, handle, color_manager_clut))
+                .unwrap_or(*color_manager_clut)
+        });
+        let dst_clut = ppc_indexed_depth_entry_count(dst_bits.depth).map(|_| {
+            ppc_resolve_pixmap_ctable_handle(memory, gworlds, dst_bits_ptr)
+                .map(|handle| ppc_copy_bits_clut(memory, handle, color_manager_clut))
+                .unwrap_or(*color_manager_clut)
+        });
+        let mask_clut = ppc_indexed_depth_entry_count(mask_bits.depth).map(|_| {
+            ppc_resolve_pixmap_ctable_handle(memory, gworlds, mask_bits_ptr)
+                .map(|handle| ppc_copy_bits_clut(memory, handle, color_manager_clut))
+                .unwrap_or(*color_manager_clut)
+        });
+
+        let copy_left = i32::from(dst_rect.1).max(i32::from(dst_bits.left));
+        let copy_top = i32::from(dst_rect.0).max(i32::from(dst_bits.top));
+        let copy_right = i32::from(dst_rect.3).min(i32::from(dst_bits.right));
+        let copy_bottom = i32::from(dst_rect.2).min(i32::from(dst_bits.bottom));
+        if copy_left >= copy_right || copy_top >= copy_bottom {
+            reason = "clipped-empty";
+            return None;
+        }
+
+        // Imaging With QuickDraw (1994), pp. 3-120--3-122: CopyDeepMask
+        // scales the source and deep mask into dstRect, then clips the
+        // transfer to maskRgn. For a deep mask, black selects the source,
+        // white preserves the destination, and intermediate RGB components
+        // weight the source and destination independently.
+        let mut writes = Vec::new();
+        for dst_y in copy_top..copy_bottom {
+            let rel_y = i64::from(dst_y) - i64::from(dst_rect.0);
+            let src_y = i64::from(src_rect.0) + rel_y * src_height / dst_height;
+            let mask_y = i64::from(mask_rect.0) + rel_y * mask_height / dst_height;
+            let (Ok(src_y), Ok(mask_y)) = (i32::try_from(src_y), i32::try_from(mask_y)) else {
+                continue;
+            };
+            for dst_x in copy_left..copy_right {
+                if mask_storage.as_ref().is_some_and(|storage| {
+                    !ppc_point_in_region_storage(storage, dst_y as i16, dst_x as i16)
+                }) {
+                    continue;
+                }
+                let rel_x = i64::from(dst_x) - i64::from(dst_rect.1);
+                let src_x = i64::from(src_rect.1) + rel_x * src_width / dst_width;
+                let mask_x = i64::from(mask_rect.1) + rel_x * mask_width / dst_width;
+                let (Ok(src_x), Ok(mask_x)) = (i32::try_from(src_x), i32::try_from(mask_x)) else {
+                    continue;
+                };
+                let Some(src_pixel) = ppc_read_pixmap_raw_pixel(memory, src_bits, src_x, src_y)
+                else {
+                    continue;
+                };
+                let Some(source_rgb) =
+                    ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())
+                else {
+                    continue;
+                };
+                let Some(destination_pixel) =
+                    ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)
+                else {
+                    continue;
+                };
+                let Some(destination_rgb) = ppc_pixmap_pixel_rgb(
+                    dst_bits,
+                    destination_pixel,
+                    dst_clut.as_ref(),
+                ) else {
+                    continue;
+                };
+
+                let Some(mask_pixel) = ppc_read_pixmap_raw_pixel(memory, mask_bits, mask_x, mask_y)
+                else {
+                    continue;
+                };
+                if mask_bits.depth == 1 {
+                    // A one-bit mask uses the historical BitMap convention:
+                    // a set (black) bit copies the source and a clear (white)
+                    // bit leaves the destination unchanged.
+                    if mask_pixel == 0 {
+                        continue;
+                    }
+                    let source_for_destination = ppc_rgb_to_pixmap_pixel(
+                        dst_bits,
+                        source_rgb,
+                        dst_clut.as_ref(),
+                    )?;
+                    let pixel = if mode <= 7 {
+                        ppc_deep_mask_boolean_pixel(
+                            source_for_destination,
+                            destination_pixel,
+                            dst_bits.depth,
+                            mode,
+                        )
+                    } else {
+                        source_for_destination
+                    };
+                    writes.push((dst_x, dst_y, pixel));
+                    continue;
+                }
+
+                let Some(mask_rgb) =
+                    ppc_pixmap_pixel_rgb(mask_bits, mask_pixel, mask_clut.as_ref())
+                else {
+                    continue;
+                };
+                let source_for_blend = if mode <= 7 && mode != 0 {
+                    let source_for_destination = ppc_rgb_to_pixmap_pixel(
+                        dst_bits,
+                        source_rgb,
+                        dst_clut.as_ref(),
+                    )?;
+                    let mode_pixel = ppc_deep_mask_boolean_pixel(
+                        source_for_destination,
+                        destination_pixel,
+                        dst_bits.depth,
+                        mode,
+                    );
+                    ppc_pixmap_pixel_rgb(dst_bits, mode_pixel, dst_clut.as_ref())?
+                } else {
+                    source_rgb
+                };
+                let blended_rgb = ppc_blend_deep_mask_rgb(
+                    source_for_blend,
+                    destination_rgb,
+                    mask_rgb,
+                );
+                let pixel = ppc_rgb_to_pixmap_pixel(dst_bits, blended_rgb, dst_clut.as_ref())?;
+                writes.push((dst_x, dst_y, pixel));
+            }
+        }
+        if writes.is_empty() {
+            reason = "no-pixels";
+            return None;
+        }
+        for (x, y, pixel) in writes {
+            ppc_write_pixmap_raw_pixel(memory, dst_bits, x, y, pixel)?;
+        }
+        Some(())
+    })();
+    let copied = copied.is_some();
+    if ppc_hle_trace_enabled() {
+        if let Some((src, mask, dst, src_rect, mask_rect, dst_rect)) = trace_details {
+            eprintln!(
+                "[PPC-TRACE] CopyDeepMask src=${src_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] mask=${mask_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] dst=${dst_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] srcRect={src_rect:?} maskRect={mask_rect:?} dstRect={dst_rect:?} mode={mode} maskRgn=${mask_rgn:08X} copied={copied} reason={reason}",
+                src.row_bytes,
+                src.depth,
+                src.top,
+                src.left,
+                src.bottom,
+                src.right,
+                mask.row_bytes,
+                mask.depth,
+                mask.top,
+                mask.left,
+                mask.bottom,
+                mask.right,
+                dst.row_bytes,
+                dst.depth,
+                dst.top,
+                dst.left,
+                dst.bottom,
+                dst.right,
+            );
+        } else {
+            eprintln!(
+                "[PPC-TRACE] CopyDeepMask src=${src_bits_ptr:08X} mask=${mask_bits_ptr:08X} dst=${dst_bits_ptr:08X} mode={mode} maskRgn=${mask_rgn:08X} copied={copied} reason={reason}"
             );
         }
     }
@@ -144807,6 +145362,363 @@ pub(crate) mod tests {
             "unused tail fields must survive the packed read-modify-write"
         );
         assert_eq!(loaded.memory.read_u8(dst_pixels + 3), Some(0xcc));
+    }
+
+    #[test]
+    fn hle_import_runner_copydeepmask_scales_deep_mask_and_region_clip() {
+        let pef = synthetic_pef_with_import(b"CopyDeepMask");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x13a00;
+        let src_pixels = scratch;
+        let mask_pixels = scratch + 0x10;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let mask_pixmap = scratch + 0x80;
+        let dst_pixmap = scratch + 0xc0;
+        let rects = scratch + 0x100;
+        let region_handle = scratch + 0x120;
+        let region_ptr = scratch + 0x124;
+        loaded.memory.add_region(scratch, vec![0; 0x180]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 4, 0, 0, 1, 4, 8)
+            .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            mask_pixmap,
+            mask_pixels,
+            8,
+            0,
+            0,
+            1,
+            8,
+            8,
+        )
+        .unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 8, 0, 0, 1, 8, 8)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(src_pixels, &[10, 20, 30, 40])
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(mask_pixels, &[0xff; 8])
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(dst_pixels, &[42; 8])
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(region_handle, region_ptr)
+            .unwrap();
+        ppc_set_rect_rgn(&mut loaded.memory, region_handle, 4, 0, 8, 1).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 4).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 8).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 16, 0, 0, 1, 8).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = mask_pixmap;
+        loaded.cpu.gpr[5] = dst_pixmap;
+        loaded.cpu.gpr[6] = rects;
+        loaded.cpu.gpr[7] = rects + 8;
+        loaded.cpu.gpr[8] = rects + 16;
+        loaded.cpu.gpr[9] = 0; // srcCopy
+        loaded.cpu.gpr[10] = region_handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut result = [0; 8];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut result)
+            .unwrap();
+        assert_eq!(
+            result,
+            [42, 42, 42, 42, 30, 30, 40, 40],
+            "CopyDeepMask should scale the 8-bit source and honor maskRgn"
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copydeepmask_blends_direct_color_with_weighted_mask() {
+        let pef = synthetic_pef_with_import(b"CopyDeepMask");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x13c00;
+        let src_pixels = scratch;
+        let mask_pixels = scratch + 0x10;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let mask_pixmap = scratch + 0x80;
+        let dst_pixmap = scratch + 0xc0;
+        let rects = scratch + 0x100;
+        loaded.memory.add_region(scratch, vec![0; 0x180]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 2, 0, 0, 1, 1, 16)
+            .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            mask_pixmap,
+            mask_pixels,
+            2,
+            0,
+            0,
+            1,
+            1,
+            16,
+        )
+        .unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 2, 0, 0, 1, 1, 16)
+            .unwrap();
+        let source_pixel = 0x7c00u16; // red in RGB555
+        let destination_pixel = 0x001fu16; // blue in RGB555
+        let mask_pixel = 0x4210u16; // a non-extreme, approximately half-weight mask
+        loaded.memory.write_u16_be(src_pixels, source_pixel).unwrap();
+        loaded.memory.write_u16_be(mask_pixels, mask_pixel).unwrap();
+        loaded
+            .memory
+            .write_u16_be(dst_pixels, destination_pixel)
+            .unwrap();
+        for offset in [0, 8, 16] {
+            ppc_write_rect(&mut loaded.memory, rects + offset, 0, 0, 1, 1).unwrap();
+        }
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = mask_pixmap;
+        loaded.cpu.gpr[5] = dst_pixmap;
+        loaded.cpu.gpr[6] = rects;
+        loaded.cpu.gpr[7] = rects + 8;
+        loaded.cpu.gpr[8] = rects + 16;
+        loaded.cpu.gpr[9] = 0; // srcCopy
+        loaded.cpu.gpr[10] = 0; // no maskRgn
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let source_rgb = ppc_rgb555_to_rgb16(source_pixel);
+        let destination_rgb = ppc_rgb555_to_rgb16(destination_pixel);
+        let mask_rgb = ppc_rgb555_to_rgb16(mask_pixel);
+        let expected_rgb = ppc_blend_deep_mask_rgb(source_rgb, destination_rgb, mask_rgb);
+        let expected = ppc_rgb_color_to_rgb555(PpcRgbColor {
+            red: expected_rgb[0],
+            green: expected_rgb[1],
+            blue: expected_rgb[2],
+        });
+        assert_eq!(
+            loaded.memory.read_u16_be(dst_pixels),
+            Some(expected),
+            "deep masks must blend each direct-color component instead of treating nonzero as opaque"
+        );
+        assert_ne!(expected, source_pixel);
+        assert_ne!(expected, destination_pixel);
+    }
+
+    #[test]
+    fn hle_import_runner_copydeepmask_preserves_transparent_and_region_excluded_pixels() {
+        let pef = synthetic_pef_with_import(b"CopyDeepMask");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x13e00;
+        let src_pixels = scratch;
+        let mask_pixels = scratch + 0x20;
+        let dst_pixels = scratch + 0x40;
+        let src_pixmap = scratch + 0x80;
+        let mask_pixmap = scratch + 0xc0;
+        let dst_pixmap = scratch + 0x100;
+        let rects = scratch + 0x140;
+        let region_handle = scratch + 0x160;
+        let region_ptr = scratch + 0x164;
+        loaded.memory.add_region(scratch, vec![0; 0x220]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 4, 0, 0, 2, 4, 8)
+            .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            mask_pixmap,
+            mask_pixels,
+            4,
+            0,
+            0,
+            2,
+            4,
+            8,
+        )
+        .unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 4, 0, 0, 2, 4, 8)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(src_pixels, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        // Index 255 is black in the canonical 8-bit ColorTable (opaque); 0
+        // is white (transparent for the one-bit-style semantic at this
+        // endpoint), so the second pixel exercises an in-region transparent
+        // mask while the region shape exercises exact membership.
+        loaded
+            .memory
+            .write_bytes(mask_pixels, &[255, 0, 255, 255, 255, 255, 255, 255])
+            .unwrap();
+        loaded.memory.write_bytes(dst_pixels, &[42; 8]).unwrap();
+        loaded
+            .memory
+            .write_u32_be(region_handle, region_ptr)
+            .unwrap();
+        let rows = vec![vec![0, 2], vec![1, 4]];
+        let storage = ppc_region_storage_from_rows(0, &rows).unwrap();
+        loaded.memory.write_bytes(region_ptr, &storage).unwrap();
+        for offset in [0, 8, 16] {
+            ppc_write_rect(&mut loaded.memory, rects + offset, 0, 0, 2, 4).unwrap();
+        }
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = mask_pixmap;
+        loaded.cpu.gpr[5] = dst_pixmap;
+        loaded.cpu.gpr[6] = rects;
+        loaded.cpu.gpr[7] = rects + 8;
+        loaded.cpu.gpr[8] = rects + 16;
+        loaded.cpu.gpr[9] = 0; // srcCopy
+        loaded.cpu.gpr[10] = region_handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut result = [0; 8];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut result)
+            .unwrap();
+        assert_eq!(
+            result,
+            [1, 42, 42, 42, 42, 6, 7, 8],
+            "transparent mask pixels and points outside the exact L-shaped maskRgn must preserve dst"
+        );
+        assert!(ppc_point_in_region_storage(&storage, 0, 0));
+        assert!(!ppc_point_in_region_storage(&storage, 0, 2));
+        assert!(ppc_point_in_region_storage(&storage, 1, 3));
+        assert!(!ppc_point_in_region_storage(&storage, 1, 0));
+    }
+
+    #[test]
+    fn hle_import_runner_scrollrect_clips_and_reports_exact_l_shape() {
+        let pef = synthetic_pef_with_import(b"ScrollRect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x14000;
+        let rect_ptr = scratch + 0x80;
+        let pixpat_handle = scratch + 0x1c0;
+        let pixpat_ptr = scratch + 0x1c4;
+        loaded.memory.add_region(scratch, vec![0; 0x300]);
+        // Replace the main PixMap's live base/bounds with a small test raster;
+        // the live-port resolver must follow these fields rather than the
+        // creation-time GWorld record.
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            PPC_MAIN_PIXMAP,
+            scratch,
+            8,
+            0,
+            0,
+            6,
+            6,
+            8,
+        )
+        .unwrap();
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                loaded
+                    .memory
+                    .write_u8(scratch + y * 8 + x, (100 + y * 8 + x) as u8)
+                    .unwrap();
+            }
+        }
+        // A live bkPixPat should supply the fill pattern in preference to
+        // the legacy cache. The differing fallback makes that precedence
+        // observable in the first exposed row.
+        loaded
+            .memory
+            .write_u32_be(pixpat_handle, pixpat_ptr)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(pixpat_ptr + 20, &[0x80, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_BK_PIXPAT_OFFSET, pixpat_handle)
+            .unwrap();
+        loaded.toolbox_startup.quickdraw_back_pattern = [0; 8];
+        let region = {
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+            loaded.cpu.gpr[3]
+        };
+        ppc_write_rect(&mut loaded.memory, rect_ptr, -1, -1, 5, 5).unwrap();
+        loaded.cpu.gpr[3] = rect_ptr;
+        loaded.cpu.gpr[4] = 2;
+        loaded.cpu.gpr[5] = 2;
+        loaded.cpu.gpr[6] = region;
+
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickDrawCompatibility,
+        );
+
+        // The requested rect is clipped to [0,5)×[0,5), and the source is
+        // snapshotted before overlapping writes. x=5/y=5 remain untouched.
+        assert_eq!(loaded.memory.read_u8(scratch), Some(255));
+        assert_eq!(loaded.memory.read_u8(scratch + 1), Some(0));
+        assert_eq!(loaded.memory.read_u8(scratch + 8), Some(0));
+        assert_eq!(loaded.memory.read_u8(scratch + 2 + 2 * 8), Some(100));
+        assert_eq!(loaded.memory.read_u8(scratch + 5), Some(105));
+        assert_eq!(loaded.memory.read_u8(scratch + 5 * 8), Some(140));
+
+        let storage = ppc_region_storage(&mut loaded.memory, region).unwrap();
+        assert_eq!(ppc_region_storage_bbox(&storage), Some((0, 0, 5, 5)));
+        assert!(ppc_point_in_region_storage(&storage, 0, 4));
+        assert!(ppc_point_in_region_storage(&storage, 1, 0));
+        assert!(ppc_point_in_region_storage(&storage, 2, 1));
+        assert!(!ppc_point_in_region_storage(&storage, 2, 2));
+        assert!(!ppc_point_in_region_storage(&storage, 4, 2));
+        assert!(!ppc_point_in_region_storage(&storage, 5, 0));
+        assert_eq!(loaded.cpu.gpr[3], rect_ptr);
+    }
+
+    #[test]
+    fn hle_import_runner_backpat_and_backpixpat_install_fill_patterns() {
+        let backpat_pef = synthetic_pef_with_import(b"BackPat");
+        let mut loaded = load_pef_application(&backpat_pef).unwrap();
+        let pattern_ptr = PPC_HEAP_BASE + 0x14200;
+        loaded.memory.add_region(pattern_ptr, vec![0; 8]);
+        loaded.memory.write_bytes(pattern_ptr, &[0x80; 8]).unwrap();
+        loaded.cpu.gpr[3] = pattern_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QuickDrawCompatibility);
+        assert_eq!(loaded.toolbox_startup.quickdraw_back_pattern, [0x80; 8]);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
+            Some(0),
+            "BackPat must clear a stale bkPixPat so its Pattern is authoritative"
+        );
+
+        let pixpat_pef = synthetic_pef_with_import(b"BackPixPat");
+        let mut loaded = load_pef_application(&pixpat_pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x14400;
+        let pattern_handle = scratch;
+        let pattern_record = scratch + 4;
+        loaded.memory.add_region(scratch, vec![0; 0x40]);
+        loaded.memory.write_u32_be(pattern_handle, pattern_record).unwrap();
+        loaded
+            .memory
+            .write_bytes(pattern_record + 20, &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0])
+            .unwrap();
+        loaded.cpu.gpr[3] = pattern_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QuickDrawCompatibility);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
+            Some(pattern_handle)
+        );
+        assert_eq!(
+            loaded.toolbox_startup.quickdraw_back_pattern,
+            [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0]
+        );
     }
 
     #[test]

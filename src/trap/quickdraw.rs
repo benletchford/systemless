@@ -5665,7 +5665,12 @@ impl super::TrapDispatcher {
                     if pm == 0 {
                         return Some(Ok(()));
                     }
-                    base_addr = bus.read_long(pm);
+                    // Offscreen CGrafPort PixMaps store baseAddr as a
+                    // movable-memory handle. Resolve the handle before
+                    // reading or writing pixels; using the field itself
+                    // would scroll the handle cell rather than the GWorld
+                    // raster. Imaging With QuickDraw (1994), pp. 6-38--6-39.
+                    base_addr = Self::offscreen_pixmap_base_ptr(bus, pm);
                     row_bytes_raw = bus.read_word(pm + 4) & 0x3FFF;
                     let bounds_top = bus.read_word(pm + 6) as i16;
                     let bounds_left = bus.read_word(pm + 8) as i16;
@@ -14408,10 +14413,11 @@ impl super::TrapDispatcher {
             // Reuses the same mask-gated pixel loop as CopyMask ($A817),
             // but maps destination pixels back through srcRect and
             // maskRect so differing dstRect dimensions scale like CopyBits.
-            // The `mode` parameter is honored for 1bpp dst (srcCopy vs
-            // Or/Xor/Bic + their notSrc variants); 8bpp dst follows srcCopy
-            // semantics for now.
-            // CopyDeepMask ($AA51): Scaled mask-gated CopyBits that clips to maskRgn, honors boolean transfer modes for 1bpp dst, and treats non-zero mask pixels as opaque for 1/8bpp masks per Inside Macintosh VI 17-25 / Imaging With QuickDraw 3-120..3-122
+            // The `mode` parameter is honored for indexed and direct-color
+            // destinations. A one-bit mask gates the transfer, while a deep
+            // mask blends source and destination RGB components according to
+            // the mask's own components per Imaging With QuickDraw,
+            // pp. 3-120--3-122.
             (true, 0x251) => {
                 let sp = cpu.read_reg(Register::A7);
                 let mask_rgn = bus.read_long(sp);
@@ -14441,6 +14447,29 @@ impl super::TrapDispatcher {
                 let dst_bottom = bus.read_word(dst_rect_ptr + 4) as i16;
                 let dst_right = bus.read_word(dst_rect_ptr + 6) as i16;
                 let mode_base = (mode & 0x3F) as u16;
+
+                // CopyDeepMask follows CopyBits' color model for every
+                // PixMap depth: indexed pixels are interpreted through their
+                // logical ColorTable, while 16/32-bit pixels are blended in
+                // RGB space. The destination table is the current GDevice's
+                // table for a screen target and the destination PixMap table
+                // for an offscreen target (Imaging With QuickDraw,
+                // pp. 3-117, 3-120--3-122, 4-31).
+                let dst_ctab_handle =
+                    self.copy_bits_destination_ctab_handle(bus, *self.current_port, &dst_info);
+                let screen_destination = dst_info.base == self.screen_mode.0
+                    && dst_info.row_bytes == self.screen_mode.1
+                    && dst_info.pixel_size == u32::from(self.screen_mode.4);
+                let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
+                    .then(|| self.read_port_clut(bus, src_info.ctab_handle));
+                let mask_clut = matches!(mask_info.pixel_size, 2 | 4 | 8)
+                    .then(|| self.read_port_clut(bus, mask_info.ctab_handle));
+                let dst_clut = self.read_indexed_destination_clut(
+                    bus,
+                    dst_ctab_handle,
+                    dst_info.pixel_size,
+                    screen_destination,
+                );
 
                 if src_bottom <= src_top
                     || src_right <= src_left
@@ -14536,67 +14565,119 @@ impl super::TrapDispatcher {
                             };
                             mx
                         } as i16;
-                        let Some(mask_pixel) = Self::read_bitmap_pixel(bus, &mask_info, my, mx)
+                        let Some(mask_pixel) =
+                            Self::read_bitmap_raw_pixel(bus, &mask_info, my, mx)
                         else {
                             continue;
                         };
-                        if mask_pixel == 0 {
-                            continue;
-                        }
-                        let Some(src_pixel) = Self::read_bitmap_pixel(bus, &src_info, sy, sx)
+                        let deep_mask = mask_info.pixel_size != 1;
+                        let mask_rgb = if deep_mask {
+                            let Some(mask_rgb) = Self::bitmap_pixel_rgb(
+                                bus,
+                                &mask_info,
+                                mask_pixel,
+                                mask_clut.as_ref(),
+                            ) else {
+                                continue;
+                            };
+                            Some(mask_rgb)
+                        } else {
+                            // A one-bit mask follows the classic BitMap
+                            // convention: black (set) selects the source;
+                            // white (clear) preserves the destination.
+                            if mask_pixel == 0 {
+                                continue;
+                            }
+                            None
+                        };
+                        let Some(src_pixel) =
+                            Self::read_bitmap_raw_pixel(bus, &src_info, sy, sx)
                         else {
                             continue;
                         };
-                        let row = (dy - dst_info.bounds_top) as u32;
-                        let col = (dx - dst_info.bounds_left) as u32;
-                        match dst_info.pixel_size {
-                            1 => {
-                                let addr = dst_info.base + row * dst_info.row_bytes + (col / 8);
-                                let bit = 7 - (col % 8);
-                                let byte = bus.read_byte(addr);
-                                let dst_bit = (byte >> bit) & 1;
-                                let src_bit = if src_pixel != 0 { 1 } else { 0 };
-                                let result_bit: u8 = match mode_base {
-                                    0 => src_bit,                  // srcCopy
-                                    1 => src_bit | dst_bit,        // srcOr
-                                    2 => src_bit ^ dst_bit,        // srcXor
-                                    3 => (!src_bit) & dst_bit & 1, // srcBic
-                                    4 => 1 - src_bit,              // notSrcCopy
-                                    5 => (1 - src_bit) | dst_bit,  // notSrcOr
-                                    6 => (1 - src_bit) ^ dst_bit,  // notSrcXor
-                                    7 => src_bit & dst_bit,        // notSrcBic
-                                    _ => src_bit,
-                                };
-                                let new_byte = if result_bit != 0 {
-                                    byte | (1 << bit)
-                                } else {
-                                    byte & !(1 << bit)
-                                };
-                                bus.write_byte(addr, new_byte);
-                            }
-                            8 => {
-                                // 8bpp: boolean transfer modes perform
-                                // bitwise ops on the source + destination
-                                // color indices per IM:V V-11. The
-                                // arithmetic modes (addOver, addPin, blend,
-                                // hilite) are not yet implemented.
-                                let addr = dst_info.base + row * dst_info.row_bytes + col;
-                                let dst_byte = bus.read_byte(addr);
-                                let new_byte: u8 = match mode_base {
-                                    0 => src_pixel,             // srcCopy
-                                    1 => src_pixel | dst_byte,  // srcOr
-                                    2 => src_pixel ^ dst_byte,  // srcXor
-                                    3 => !src_pixel & dst_byte, // srcBic
-                                    4 => !src_pixel,            // notSrcCopy
-                                    5 => !src_pixel | dst_byte, // notSrcOr
-                                    6 => !src_pixel ^ dst_byte, // notSrcXor
-                                    7 => src_pixel & dst_byte,  // notSrcBic
-                                    _ => src_pixel,
-                                };
-                                bus.write_byte(addr, new_byte);
-                            }
-                            _ => {}
-                        }
+                        let Some(source_rgb) = Self::bitmap_pixel_rgb(
+                            bus,
+                            &src_info,
+                            src_pixel,
+                            src_clut.as_ref(),
+                        ) else {
+                            continue;
+                        };
+                        let Some(destination_pixel) =
+                            Self::read_bitmap_raw_pixel(bus, &dst_info, dy, dx)
+                        else {
+                            continue;
+                        };
+                        let Some(destination_rgb) = Self::bitmap_pixel_rgb(
+                            bus,
+                            &dst_info,
+                            destination_pixel,
+                            dst_clut.as_ref(),
+                        ) else {
+                            continue;
+                        };
+
+                        // Convert the source into the destination pixel space
+                        // before applying boolean modes. This preserves
+                        // palette translation for indexed blits and gives
+                        // direct-color destinations their documented packed
+                        // representation. Arithmetic modes are represented by
+                        // the RGB source and destination values below; the
+                        // deep-mask weighting itself is always component-wise.
+                        let Some(source_for_destination) = Self::bitmap_rgb_to_pixel(
+                            &dst_info,
+                            source_rgb,
+                            dst_clut.as_ref(),
+                        ) else {
+                            continue;
+                        };
+                        let source_for_blend = if mode_base <= 7 && mode_base != 0 {
+                            let mode_pixel = Self::deep_mask_boolean_pixel(
+                                source_for_destination,
+                                destination_pixel,
+                                dst_info.pixel_size,
+                                mode_base,
+                            );
+                            let Some(mode_rgb) = Self::bitmap_pixel_rgb(
+                                bus,
+                                &dst_info,
+                                mode_pixel,
+                                dst_clut.as_ref(),
+                            ) else {
+                                continue;
+                            };
+                            mode_rgb
+                        } else {
+                            source_rgb
+                        };
+                        let output_pixel = if let Some(mask_rgb) = mask_rgb {
+                            let blended =
+                                Self::blend_deep_mask_rgb(source_for_blend, destination_rgb, mask_rgb);
+                            let Some(output) = Self::bitmap_rgb_to_pixel(
+                                &dst_info,
+                                blended,
+                                dst_clut.as_ref(),
+                            ) else {
+                                continue;
+                            };
+                            output
+                        } else if mode_base <= 7 {
+                            Self::deep_mask_boolean_pixel(
+                                source_for_destination,
+                                destination_pixel,
+                                dst_info.pixel_size,
+                                mode_base,
+                            )
+                        } else {
+                            source_for_destination
+                        };
+                        let _ = Self::write_bitmap_raw_pixel(
+                            bus,
+                            &dst_info,
+                            dy,
+                            dx,
+                            output_pixel,
+                        );
                     }
                 }
                 Ok(())
@@ -21301,6 +21382,200 @@ impl super::TrapDispatcher {
                 Some(if (byte & (1 << bit)) != 0 { 255 } else { 0 })
             }
             _ => None,
+        }
+    }
+
+    fn read_bitmap_raw_pixel(
+        bus: &MacMemoryBus,
+        info: &CopyBitmapInfo,
+        y: i16,
+        x: i16,
+    ) -> Option<u32> {
+        if y < info.bounds_top
+            || y >= info.bounds_bottom
+            || x < info.bounds_left
+            || x >= info.bounds_right
+        {
+            return None;
+        }
+        let row = u32::try_from(i32::from(y) - i32::from(info.bounds_top)).ok()?;
+        let col = u32::try_from(i32::from(x) - i32::from(info.bounds_left)).ok()?;
+        let row_base = info.base.checked_add(row.checked_mul(info.row_bytes)?)?;
+        match info.pixel_size {
+            1 | 2 | 4 => {
+                let pixels_per_byte = 8 / info.pixel_size;
+                let byte = bus.read_byte(
+                    row_base.checked_add(col.checked_div(pixels_per_byte)?)?,
+                );
+                let shift = 8 - info.pixel_size - (col % pixels_per_byte) * info.pixel_size;
+                Some(u32::from((byte >> shift) & ((1u8 << info.pixel_size) - 1)))
+            }
+            8 => Some(u32::from(bus.read_byte(row_base.checked_add(col)?))),
+            16 => Some(u32::from(
+                bus.read_word(row_base.checked_add(col.checked_mul(2)?)?),
+            )),
+            32 => Some(bus.read_long(row_base.checked_add(col.checked_mul(4)?)?)),
+            _ => None,
+        }
+    }
+
+    fn write_bitmap_raw_pixel(
+        bus: &mut MacMemoryBus,
+        info: &CopyBitmapInfo,
+        y: i16,
+        x: i16,
+        pixel: u32,
+    ) -> bool {
+        if y < info.bounds_top
+            || y >= info.bounds_bottom
+            || x < info.bounds_left
+            || x >= info.bounds_right
+        {
+            return false;
+        }
+        let Some(row) = u32::try_from(i32::from(y) - i32::from(info.bounds_top)).ok() else {
+            return false;
+        };
+        let Some(col) = u32::try_from(i32::from(x) - i32::from(info.bounds_left)).ok() else {
+            return false;
+        };
+        let Some(row_base) = info
+            .base
+            .checked_add(row.saturating_mul(info.row_bytes))
+        else {
+            return false;
+        };
+        match info.pixel_size {
+            1 | 2 | 4 => {
+                let pixels_per_byte = 8 / info.pixel_size;
+                let Some(addr) = row_base.checked_add(col / pixels_per_byte) else {
+                    return false;
+                };
+                let shift = 8 - info.pixel_size - (col % pixels_per_byte) * info.pixel_size;
+                let value_mask = (1u8 << info.pixel_size) - 1;
+                let field_mask = value_mask << shift;
+                let byte = bus.read_byte(addr);
+                bus.write_byte(
+                    addr,
+                    (byte & !field_mask) | (((pixel as u8) & value_mask) << shift),
+                );
+                true
+            }
+            8 => {
+                bus.write_byte(row_base + col, pixel as u8);
+                true
+            }
+            16 => {
+                bus.write_word(row_base + col.saturating_mul(2), pixel as u16);
+                true
+            }
+            32 => {
+                bus.write_long(row_base + col.saturating_mul(4), pixel);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn bitmap_pixel_rgb(
+        _bus: &MacMemoryBus,
+        info: &CopyBitmapInfo,
+        pixel: u32,
+        clut: Option<&[[u16; 3]; 256]>,
+    ) -> Option<[u16; 3]> {
+        match info.pixel_size {
+            1 => Some(if pixel == 0 {
+                [0xFFFF, 0xFFFF, 0xFFFF]
+            } else {
+                [0, 0, 0]
+            }),
+            2 | 4 | 8 => clut?.get(usize::try_from(pixel).ok()?).copied(),
+            16 => {
+                let packed = pixel as u16;
+                let expand5 = |component: u16| {
+                    (component << 11) | (component << 6) | (component << 1) | (component >> 4)
+                };
+                Some([
+                    expand5((packed >> 10) & 0x1F),
+                    expand5((packed >> 5) & 0x1F),
+                    expand5(packed & 0x1F),
+                ])
+            }
+            32 => {
+                // 32-bit PixMaps carry an unused byte followed by R, G, B.
+                Some([
+                    ((pixel >> 16) as u8 as u16) * 0x0101,
+                    ((pixel >> 8) as u8 as u16) * 0x0101,
+                    (pixel as u8 as u16) * 0x0101,
+                ])
+            }
+            _ => None,
+        }
+    }
+
+    fn bitmap_rgb_to_pixel(
+        info: &CopyBitmapInfo,
+        rgb: [u16; 3],
+        clut: Option<&[[u16; 3]; 256]>,
+    ) -> Option<u32> {
+        match info.pixel_size {
+            1 => {
+                let white_distance = u64::from(0xFFFFu16.saturating_sub(rgb[0])).pow(2)
+                    + u64::from(0xFFFFu16.saturating_sub(rgb[1])).pow(2)
+                    + u64::from(0xFFFFu16.saturating_sub(rgb[2])).pow(2);
+                let black_distance = u64::from(rgb[0]).pow(2)
+                    + u64::from(rgb[1]).pow(2)
+                    + u64::from(rgb[2]).pow(2);
+                Some(u32::from(black_distance <= white_distance))
+            }
+            depth @ (2 | 4 | 8) => Some(u32::from(Self::nearest_palette_index_with_entry_count(
+                clut?,
+                rgb,
+                1usize << depth,
+            ))),
+            16 => Some(u32::from(
+                ((rgb[0] >> 11) << 10) | ((rgb[1] >> 11) << 5) | (rgb[2] >> 11),
+            )),
+            32 => Some(
+                (u32::from(rgb[0] >> 8) << 16)
+                    | (u32::from(rgb[1] >> 8) << 8)
+                    | u32::from(rgb[2] >> 8),
+            ),
+            _ => None,
+        }
+    }
+
+    fn blend_deep_mask_rgb(
+        source: [u16; 3],
+        destination: [u16; 3],
+        mask: [u16; 3],
+    ) -> [u16; 3] {
+        std::array::from_fn(|component| {
+            let source = u64::from(source[component]);
+            let destination = u64::from(destination[component]);
+            let mask = u64::from(mask[component]);
+            ((source * (u64::from(u16::MAX) - mask) + destination * mask + 32_767)
+                / u64::from(u16::MAX)) as u16
+        })
+    }
+
+    fn deep_mask_boolean_pixel(source: u32, destination: u32, depth: u32, mode: u16) -> u32 {
+        let mask = match depth {
+            1 | 2 | 4 | 8 => (1u32 << depth) - 1,
+            16 => u32::from(u16::MAX),
+            32 => u32::MAX,
+            _ => 0,
+        };
+        match mode {
+            0 => source,
+            1 => source | destination,
+            2 => source ^ destination,
+            3 => (!source) & destination & mask,
+            4 => (!source) & mask,
+            5 => ((!source) & mask) | destination,
+            6 => ((!source) & mask) ^ destination,
+            7 => source & destination,
+            _ => source,
         }
     }
 
@@ -34655,6 +34930,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn copydeepmask_blends_direct_color_with_weighted_mask() {
+        // Imaging With QuickDraw (1994), pp. 3-120--3-122: a deep mask is
+        // an RGB weighting mask, so each component interpolates source and
+        // destination independently; a nonzero mask is not simply opaque.
+        let (mut d, mut cpu, mut bus) = setup();
+        let src_bits = bus.alloc(50);
+        let mask_bits = bus.alloc(50);
+        let dst_bits = bus.alloc(50);
+        let src_base = bus.alloc(2);
+        let mask_base = bus.alloc(2);
+        let dst_base = bus.alloc(2);
+        write_direct_pixmap(&mut bus, src_bits, src_base, 1, 1, 16);
+        write_direct_pixmap(&mut bus, mask_bits, mask_base, 1, 1, 16);
+        write_direct_pixmap(&mut bus, dst_bits, dst_base, 1, 1, 16);
+        let source_pixel = 0x7c00u16; // red in RGB555
+        let destination_pixel = 0x001fu16; // blue in RGB555
+        let mask_pixel = 0x4210u16; // an intermediate RGB555 weight
+        bus.write_word(src_base, source_pixel);
+        bus.write_word(mask_base, mask_pixel);
+        bus.write_word(dst_base, destination_pixel);
+
+        let src_rect = bus.alloc(8);
+        let mask_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, mask_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0); // no maskRgn
+        bus.write_word(TEST_SP + 4, 0); // srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, mask_rect);
+        bus.write_long(TEST_SP + 14, src_rect);
+        bus.write_long(TEST_SP + 18, dst_bits);
+        bus.write_long(TEST_SP + 22, mask_bits);
+        bus.write_long(TEST_SP + 26, src_bits);
+
+        let result = d.dispatch_quickdraw(true, 0x251, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let expand5 = |component: u16| {
+            (component << 11) | (component << 6) | (component << 1) | (component >> 4)
+        };
+        let rgb = |pixel: u16| {
+            [
+                expand5((pixel >> 10) & 0x1F),
+                expand5((pixel >> 5) & 0x1F),
+                expand5(pixel & 0x1F),
+            ]
+        };
+        let expected_rgb = TrapDispatcher::blend_deep_mask_rgb(
+            rgb(source_pixel),
+            rgb(destination_pixel),
+            rgb(mask_pixel),
+        );
+        let expected = (expected_rgb[0] >> 11) << 10
+            | (expected_rgb[1] >> 11) << 5
+            | (expected_rgb[2] >> 11);
+        assert_eq!(bus.read_word(dst_base), expected);
+        assert_ne!(expected, source_pixel);
+        assert_ne!(expected, destination_pixel);
+    }
+
     // ==================== CopyBits ====================
 
     #[test]
@@ -39126,6 +39464,91 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EF, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+    }
+
+    #[test]
+    fn scrollrect_writes_to_offscreen_gworld_base_pointer_not_handle_cell() {
+        // Imaging With QuickDraw (1994), pp. 6-38--6-39: an offscreen
+        // PixMap stores a movable pixel buffer handle in baseAddr, while
+        // drawing routines operate on the pointer held by that handle.
+        // ScrollRect must move the GWorld pixels, not overwrite the handle
+        // cell itself.
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds_ptr = 0x300000u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 4, 8);
+
+        // QDExtensions selector 0 (NewGWorld), 8-bit indexed pixels.
+        bus.write_long(TEST_SP, 0u32);
+        bus.write_long(TEST_SP + 4, 0u32);
+        bus.write_long(TEST_SP + 8, 0u32);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8u16);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        assert!(d
+            .dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let gdh = d.gworld_devices.get(&gworld).copied().unwrap_or(0);
+        assert_ne!(gdh, 0);
+        let pm_handle = bus.read_long(gworld + 2);
+        let pm_ptr = bus.read_long(pm_handle);
+        let base_handle = bus.read_long(pm_ptr);
+        let base_ptr = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm_ptr);
+        let row_bytes = (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32;
+        assert_ne!(base_handle, base_ptr);
+        assert_ne!(base_ptr, 0);
+
+        // QDExtensions selector 6 (SetGWorld): new_gd, new_port.
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0008_0006);
+        bus.write_long(TEST_SP, gdh);
+        bus.write_long(TEST_SP + 4, gworld);
+        assert!(d
+            .dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(*d.current_port, gworld);
+
+        // Give each pixel a distinct value so a two-pixel left scroll is
+        // observable without depending on the GWorld's color table.
+        for row in 0..4u32 {
+            for column in 0..8u32 {
+                bus.write_byte(base_ptr + row * row_bytes + column, (10 + row * 16 + column) as u8);
+            }
+        }
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, 0, 0, 4, 8);
+        let update_ptr = bus.alloc(10);
+        let update_handle = bus.alloc(4);
+        make_rgn(&mut bus, update_ptr, update_handle, 0, 0, 0, 0);
+
+        // ScrollRect(r, dh=-2, dv=0, updateRgn).
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, update_handle);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_word(TEST_SP + 6, (-2i16) as u16);
+        bus.write_long(TEST_SP + 8, rect_ptr);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EF, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_long(pm_ptr), base_handle);
+        assert_eq!(bus.read_long(base_handle), base_ptr);
+        assert_eq!(d.debug_scroll_rect_last_base, base_ptr);
+        assert_eq!(
+            bus.read_bytes(base_ptr, 8),
+            vec![12, 13, 14, 15, 16, 17, 0, 0],
+            "ScrollRect should move pixels in the offscreen buffer and fill the exposed strip"
+        );
+        assert_eq!(
+            read_rgn_bbox(&bus, update_handle),
+            (0, 6, 4, 8),
+            "ScrollRect updateRgn should describe the vacated right strip"
+        );
     }
 
     #[test]

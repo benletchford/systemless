@@ -57,6 +57,10 @@ test protocol. Its Pages menu selects thirteen interactive views:
     `Count1Resources`, `Get1IndResource`, `GetResInfo`, `GetResAttrs`, and
     `GetResourceSizeOnDisk`, then demonstrates deferred `GetNamedResource`/
     `LoadResource`, `ReleaseResource`, and reload of the same map reference.
+14. Sprites, Masks & Scrolling builds an indexed offscreen scene, transfers a
+    sprite through `CopyMask`, transfers a second frame through `CopyDeepMask`
+    and a `BitMapToRegion` clip, samples pixels with `SetCPixel`/`GetCPixel`,
+    and scrolls the existing raster with `ScrollRect`.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -80,8 +84,11 @@ Standard File follows
 *Inside Macintosh: Files* (1992), pp. 3-42–3-54.
 Resource enumeration, metadata, deferred loading, handle release, and reload
 follow *Inside Macintosh: More Macintosh Toolbox* (1993), pp. 1-75–1-82,
-with the Resource Manager overview and lifecycle contracts cross-checked
+and the Resource Manager overview and lifecycle contracts are cross-checked
 against *Inside Macintosh Volume I* (1985), pp. I-118–I-125.
+Sprite masking, offscreen worlds, pixel sampling, regions, and scrolling
+follow *Inside Macintosh: Imaging With QuickDraw* (1994), pp. 2-20–2-24,
+2-43–2-50, 3-119–3-122, and 6-22–6-46.
 
 ## Rebuild and verify
 
@@ -161,6 +168,14 @@ exact Systemless framebuffer references while performing the same sequence:
     `DATA` 201–203 and the `MENU`/`WIND` counts, refresh the map, load the
     named `DATA` 203 record, release its handle, and load it again. Capture
     the enumeration, loaded, and released lifecycle states.
+22. Activate Sprites, Masks & Scrolling (item 14), and verify the two masked
+    sprites, pixel probe, region status, and initial scene.
+23. Click Animate Sprite and capture the changed source frame after the
+    offscreen scene is rebuilt.
+24. Click Scroll Scene and verify the sprite moves left by 24 pixels, the
+    right-hand strip is repainted, and `ScrollRect` reports the exposed update
+    region. The integration checkpoints are `26-sprites.png`,
+    `27-sprites-animated.png`, and `28-sprites-scrolled.png`.
 
 For a manual launch from the public repository:
 
@@ -173,7 +188,7 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the twenty-one interaction steps above. Use an 800×600
+PowerPC slice, then follow the twenty-four interaction steps above. Use an 800×600
 8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
 SheepShaver for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
@@ -195,6 +210,11 @@ names `Text Document` with type `TEXT`, the Save name is the single edited
 name, and canceled calls leave `sfGood`/`good` false. Standard File window
 placement and font rasterization remain presentation variance between system
 software versions.
+
+The Sprites checkpoints show the shared offscreen scene after `CopyMask` and
+`CopyDeepMask`, the animated source frame, and the 24-pixel `ScrollRect`
+movement with its exposed update strip. Classic-Mac rasterization and indexed
+versus direct-color quantization remain presentation variance.
 
 ## Reference screenshots
 
@@ -251,6 +271,9 @@ indexed paths.
 | 23. Resource Browser | <img src="reference/systemless-68k/23-resource-browser.png" alt="Resource Browser enumeration in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/23-resource-browser.png" alt="Resource Browser enumeration in BasiliskII" width="360"> |
 | 24. Resource Browser loaded | <img src="reference/systemless-68k/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in BasiliskII" width="360"> |
 | 25. Resource Browser released | <img src="reference/systemless-68k/25-resource-browser-released.png" alt="Released Resource Browser record in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/25-resource-browser-released.png" alt="Released Resource Browser record in BasiliskII" width="360"> |
+| 26. Sprites, masks & scrolling | <img src="reference/systemless-68k/26-sprites.png" alt="Masked offscreen sprites in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/26-sprites.png" alt="Masked offscreen sprites in BasiliskII" width="360"> |
+| 27. Animated sprite | <img src="reference/systemless-68k/27-sprites-animated.png" alt="Animated masked sprites in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/27-sprites-animated.png" alt="Animated masked sprites in BasiliskII" width="360"> |
+| 28. Scrolled sprite scene | <img src="reference/systemless-68k/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in BasiliskII" width="360"> |
 
 ### PowerPC
 
@@ -281,9 +304,12 @@ indexed paths.
 | 23. Resource Browser | <img src="reference/systemless-ppc/23-resource-browser.png" alt="Resource Browser enumeration in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/23-resource-browser.png" alt="Resource Browser enumeration in SheepShaver" width="360"> |
 | 24. Resource Browser loaded | <img src="reference/systemless-ppc/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in SheepShaver" width="360"> |
 | 25. Resource Browser released | <img src="reference/systemless-ppc/25-resource-browser-released.png" alt="Released Resource Browser record in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/25-resource-browser-released.png" alt="Released Resource Browser record in SheepShaver" width="360"> |
+| 26. Sprites, masks & scrolling | <img src="reference/systemless-ppc/26-sprites.png" alt="Masked offscreen sprites in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/26-sprites.png" alt="Masked offscreen sprites in SheepShaver" width="360"> |
+| 27. Animated sprite | <img src="reference/systemless-ppc/27-sprites-animated.png" alt="Animated masked sprites in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/27-sprites-animated.png" alt="Animated masked sprites in SheepShaver" width="360"> |
+| 28. Scrolled sprite scene | <img src="reference/systemless-ppc/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all twenty-five rendered
+state rather than relying on fixed delays, and compares all twenty-eight rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 
