@@ -4394,7 +4394,7 @@ impl super::TrapDispatcher {
 
         let selected = state.selected.contains(&(row, col));
         let bg = if selected {
-            self.hilite_color
+            self.hilite_color_for_port(bus, state.port)
         } else if self.list_cell_background_is_dark(bus, state.port, rect) {
             (0x0000, 0x0000, 0x0000)
         } else {
@@ -25011,7 +25011,8 @@ mod tests {
             *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
             disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
             disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
-            disp.hilite_color = hilite;
+            disp.quickdraw_hilite_colors
+                .set_quickdraw_hilite_color(owner_port, hilite);
             bus.write_long(0x0824, screen_base);
             bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
             disp.init_cgraf_window(
@@ -25215,7 +25216,8 @@ mod tests {
         *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
         disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
         disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
-        disp.hilite_color = hilite;
+        disp.quickdraw_hilite_colors
+            .set_quickdraw_hilite_color(window_ptr, hilite);
         bus.write_long(0x0824, screen_base);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
         for offset in 0..(row_bytes * 96) {

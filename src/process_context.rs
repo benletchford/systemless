@@ -1288,6 +1288,19 @@ pub type SharedProcessDialogText = SharedProcessValue<[Vec<u8>; 4]>;
 pub(crate) type SharedProcessQuickDrawOpColors =
     SharedProcessValue<HashMap<u32, (u16, u16, u16)>>;
 
+/// Default HiliteRGB used when a color graphics port has not received a
+/// HiliteColor call. The selected-list green matches the System 7.5.3
+/// BasiliskII reference used by the QuickDraw HLE.
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+pub(crate) const DEFAULT_QUICKDRAW_HILITE_COLOR: (u16, u16, u16) = (0x0000, 0x8000, 0x0000);
+
+/// Canonical per-color-port highlight colors. The guest-visible
+/// `CGrafPort.grafVars.rgbHiliteColor` record remains authoritative when it
+/// exists; this process index covers static ports without owned GrafVars.
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+pub(crate) type SharedProcessQuickDrawHiliteColors =
+    SharedProcessValue<HashMap<u32, (u16, u16, u16)>>;
+
 /// Canonical desktop scrap for one Macintosh process.
 ///
 /// The Scrap Manager exposes one ordered collection of typed flavors to every
@@ -1510,6 +1523,33 @@ impl SharedProcessValue<HashMap<u32, (u16, u16, u16)>> {
     /// Drop a disposed port's fallback operation color.
     pub(crate) fn remove_quickdraw_op_color(&self, port: u32) {
         // SAFETY: see `quickdraw_op_color`.
+        unsafe {
+            (&mut *self.0.get()).remove(&port);
+        }
+    }
+
+    /// Read one Color QuickDraw highlight color without exposing a reference
+    /// into the process-owned map to adapter code.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn quickdraw_hilite_color(&self, port: u32) -> Option<(u16, u16, u16)> {
+        // SAFETY: process adapters are serialized by the runner. The map is
+        // accessed only for the duration of this operation; no reference is
+        // returned to the UnsafeCell-backed value.
+        unsafe { (&*self.0.get()).get(&port).copied() }
+    }
+
+    /// Update one process-owned Color QuickDraw highlight color.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn set_quickdraw_hilite_color(&self, port: u32, color: (u16, u16, u16)) {
+        // SAFETY: see `quickdraw_hilite_color`.
+        unsafe {
+            (&mut *self.0.get()).insert(port, color);
+        }
+    }
+
+    /// Drop a disposed port's fallback highlight color.
+    pub(crate) fn remove_quickdraw_hilite_color(&self, port: u32) {
+        // SAFETY: see `quickdraw_hilite_color`.
         unsafe {
             (&mut *self.0.get()).remove(&port);
         }
@@ -5656,6 +5696,7 @@ pub(crate) struct ProcessContext {
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
     quickdraw_op_colors: SharedProcessQuickDrawOpColors,
+    quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
     quickdraw_error: SharedProcessValue<i16>,
@@ -5690,6 +5731,7 @@ impl Default for ProcessContext {
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
+            quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
             quickdraw_error: SharedProcessValue::from_value(0),
@@ -5833,6 +5875,17 @@ impl ProcessContext {
         adapter: &mut SharedProcessQuickDrawOpColors,
     ) {
         adapter.attach_to(&self.quickdraw_op_colors, |colors| colors.is_empty());
+    }
+
+    /// Attach Color QuickDraw's per-port `GrafVars.rgbHiliteColor` index.
+    /// Ordinary clones remain detached while attached 68K and PowerPC
+    /// adapters observe updates immediately.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn attach_quickdraw_hilite_colors(
+        &self,
+        adapter: &mut SharedProcessQuickDrawHiliteColors,
+    ) {
+        adapter.attach_to(&self.quickdraw_hilite_colors, |colors| colors.is_empty());
     }
 
     /// Attach a CPU adapter to the process's current QuickDraw port and device.

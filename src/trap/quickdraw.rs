@@ -6,6 +6,7 @@ use crate::cpu::{CpuOps, Register};
 use crate::display::{self, CursorImage};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::process_context::DEFAULT_QUICKDRAW_HILITE_COLOR;
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
 use crate::trap::pict;
@@ -1413,6 +1414,8 @@ impl super::TrapDispatcher {
                 self.resolved_port_color_fields.remove(&port_ptr);
                 self.quickdraw_op_colors
                     .remove_quickdraw_op_color(port_ptr);
+                self.quickdraw_hilite_colors
+                    .remove_quickdraw_hilite_color(port_ptr);
                 Ok(())
             }
 
@@ -6937,7 +6940,8 @@ impl super::TrapDispatcher {
                 let ct_handle = if let Some((depth, enhanced)) = standard_ctable {
                     self.recent_resource_ctable_fetch = None;
                     let (std_clut, entry_count) = if enhanced {
-                        Self::standard_mac_enhanced_clut(depth, self.hilite_color).unwrap()
+                        Self::standard_mac_enhanced_clut(depth, self.current_hilite_color(bus))
+                            .unwrap()
                     } else {
                         Self::standard_mac_indexed_clut(depth).unwrap()
                     };
@@ -12051,23 +12055,25 @@ impl super::TrapDispatcher {
             //
             // Documented behaviour: when color != NIL, three RGB words
             // (red, green, blue) are read from [color..color+6] and
-            // stored in the cGrafPort's grafVars handle (rgbHiliteColor
-            // field). When color == NIL both BII System 7.5.3 ROM Color
-            // QuickDraw and Systemless HLE take an early-exit no-op path
-            // before touching grafVars. Systemless stores the hilite color
-            // on the dispatcher (self.hilite_color) rather than per-port
-            // grafVars; this matches the single-port assumption used by
-            // fg_color / bg_color and differs from BII's WMgrCPort
-            // grafVars write on the non-NIL path. The NIL early-exit path
-            // shares the Pascal PROCEDURE pop-4 calling convention with BII.
+            // stored in the current cGrafPort's grafVars handle
+            // (rgbHiliteColor field). Static cGrafPort records without an
+            // owned grafVars handle use the process-owned per-port index as
+            // the same live state across attached adapters. When color ==
+            // NIL both BII System 7.5.3 ROM Color QuickDraw and Systemless
+            // HLE take an early-exit no-op path before touching grafVars.
+            // The NIL early-exit path shares the Pascal PROCEDURE pop-4
+            // calling convention with BII.
             (true, 0x222) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rgb_ptr = bus.read_long(sp);
-                if rgb_ptr != 0 {
-                    let r = bus.read_word(rgb_ptr);
-                    let g = bus.read_word(rgb_ptr + 2);
-                    let b = bus.read_word(rgb_ptr + 4);
-                    self.hilite_color = (r, g, b);
+                if rgb_ptr != 0 && Self::guest_range_in_ram(bus, rgb_ptr, 6) {
+                    let color = (
+                        bus.read_word(rgb_ptr),
+                        bus.read_word(rgb_ptr + 2),
+                        bus.read_word(rgb_ptr + 4),
+                    );
+                    let port = *self.current_port;
+                    self.write_port_hilite_color(bus, port, color);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -16214,6 +16220,8 @@ impl super::TrapDispatcher {
         bus.write_long(port + 96, 0); // +96 rgnSave
         bus.write_long(port + 100, 0); // +100 polySave
         bus.write_long(port + 104, 0); // +104 grafProcs
+        self.quickdraw_hilite_colors
+            .remove_quickdraw_hilite_color(port);
         self.port_draw_states.insert(port, PortDrawState::default());
     }
 
@@ -18874,6 +18882,8 @@ impl super::TrapDispatcher {
         self.port_draw_states.remove(&port);
         self.resolved_port_color_fields.remove(&port);
         self.quickdraw_op_colors.remove_quickdraw_op_color(port);
+        self.quickdraw_hilite_colors
+            .remove_quickdraw_hilite_color(port);
     }
 
     pub(super) fn effective_destination_ctab_handle(
@@ -19070,6 +19080,78 @@ impl super::TrapDispatcher {
         // authoritative read path above.
         self.quickdraw_op_colors
             .set_quickdraw_op_color(port, color);
+    }
+
+    /// Read the current Color QuickDraw port's highlight color. A valid
+    /// guest GrafVars record is authoritative; static ports use the
+    /// process-owned per-port fallback, then the default HiliteRGB value.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn current_hilite_color(&self, bus: &MacMemoryBus) -> (u16, u16, u16) {
+        self.hilite_color_for_port(bus, *self.current_port)
+    }
+
+    pub(crate) fn hilite_color_for_port(
+        &self,
+        bus: &MacMemoryBus,
+        port: u32,
+    ) -> (u16, u16, u16) {
+        self.port_hilite_color_from_graf_vars(bus, port)
+            .or_else(|| self.quickdraw_hilite_colors.quickdraw_hilite_color(port))
+            .unwrap_or(DEFAULT_QUICKDRAW_HILITE_COLOR)
+    }
+
+    fn port_hilite_color_from_graf_vars(
+        &self,
+        bus: &MacMemoryBus,
+        port: u32,
+    ) -> Option<(u16, u16, u16)> {
+        let port_range_mapped = port.checked_add(14).is_some_and(|end| {
+            end <= bus.ram_size()
+                || (port..end).all(|address| bus.is_foreign_ordinary_sparse_address(address))
+        });
+        if port == 0
+            || !port_range_mapped
+            || (bus.read_word(port + 6) & 0xC000) != 0xC000
+        {
+            return None;
+        }
+        let graf_vars_handle = bus.read_long(port + 8);
+        if !Self::handle_points_to_guest_range(bus, graf_vars_handle, 12) {
+            return None;
+        }
+        let graf_vars = bus.read_long(graf_vars_handle);
+        Some((
+            bus.read_word(graf_vars + 6),
+            bus.read_word(graf_vars + 8),
+            bus.read_word(graf_vars + 10),
+        ))
+    }
+
+    fn write_port_hilite_color(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        port: u32,
+        color: (u16, u16, u16),
+    ) {
+        let port_range_mapped = port.checked_add(14).is_some_and(|end| {
+            end <= bus.ram_size()
+                || (port..end).all(|address| bus.is_foreign_ordinary_sparse_address(address))
+        });
+        if port == 0 || !port_range_mapped || (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+            return;
+        }
+        let graf_vars_handle = bus.read_long(port + 8);
+        if Self::handle_points_to_guest_range(bus, graf_vars_handle, 12) {
+            let graf_vars = bus.read_long(graf_vars_handle);
+            bus.write_word(graf_vars + 6, color.0);
+            bus.write_word(graf_vars + 8, color.1);
+            bus.write_word(graf_vars + 10, color.2);
+        }
+        // Keep a process-owned per-port index for static records without a
+        // valid GrafVars handle. A valid guest GrafVars record remains the
+        // authoritative read path above.
+        self.quickdraw_hilite_colors
+            .set_quickdraw_hilite_color(port, color);
     }
 
     fn capture_port_region(
@@ -47496,7 +47578,7 @@ mod tests {
     #[test]
     fn test_get_ctable_enhanced_standard_ids() {
         let (mut d, mut cpu, mut bus) = setup();
-        let hilite = d.hilite_color;
+        let hilite = d.current_hilite_color(&bus);
 
         bus.write_word(TEST_SP, 66u16);
         d.dispatch_quickdraw(true, 0x218, &mut cpu, &mut bus)
