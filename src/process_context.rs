@@ -1540,6 +1540,14 @@ impl std::ops::DerefMut for SharedProcessFileSystem {
 }
 
 impl SharedProcessFileSystem {
+    /// Return another handle to this process file system without detaching
+    /// its records. Execution adapters use this when a long-running call
+    /// needs scoped mutable access to process-owned state while retaining
+    /// access to their own adapter fields.
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
     pub(crate) fn from_state(state: ProcessFileSystemState) -> Self {
         Self(Rc::new(UnsafeCell::new(state)))
     }
@@ -7815,6 +7823,94 @@ mod tests {
         assert_eq!(detached.vfs_volumes[0].file_count, 1);
         assert_eq!(detached.next_vfs_dir_id, 16);
         assert_eq!(detached.default_dir_id, 2);
+    }
+
+    #[test]
+    fn attached_file_systems_share_open_stdio_vfs_and_deletion_records_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessFileSystem::default();
+        classic.files.push(ProcessOpenFileRecord {
+            ref_num: 7,
+            path: "Classic/first.bin".to_string(),
+            position: 3,
+        });
+        classic.stdio_streams.insert(
+            0x1000,
+            ProcessStdioStreamRecord {
+                ref_num: Some(7),
+                path: Some("Classic/first.bin".to_string()),
+                position: 3,
+                standard: false,
+                readable: true,
+                writable: false,
+                append: false,
+                closed: false,
+                eof: false,
+                error: false,
+            },
+        );
+        classic.vfs_files.push(ProcessVfsFileRecord {
+            path: "Classic/first.bin".to_string(),
+            data: b"classic".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        classic
+            .deleted_vfs_file_paths
+            .push("Classic/removed.bin".to_string());
+
+        let mut native = SharedProcessFileSystem::default();
+        context.attach_file_system(&mut classic);
+        context.attach_file_system(&mut native);
+        assert!(classic.ptr_eq(&native));
+        let detached = native.clone();
+
+        native.files.push(ProcessOpenFileRecord {
+            ref_num: 8,
+            path: "Native/second.bin".to_string(),
+            position: 11,
+        });
+        native.stdio_streams.insert(
+            0x2000,
+            ProcessStdioStreamRecord {
+                ref_num: Some(8),
+                path: Some("Native/second.bin".to_string()),
+                position: 11,
+                standard: false,
+                readable: true,
+                writable: true,
+                append: true,
+                closed: false,
+                eof: false,
+                error: false,
+            },
+        );
+        native.vfs_files.push(ProcessVfsFileRecord {
+            path: "Native/second.bin".to_string(),
+            data: b"native".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: true,
+        });
+        native
+            .deleted_vfs_file_paths
+            .push("Native/removed.bin".to_string());
+
+        assert_eq!(classic.files[1].path, "Native/second.bin");
+        assert_eq!(classic.stdio_streams[&0x2000].position, 11);
+        assert_eq!(classic.vfs_files[1].data, b"native");
+        assert_eq!(
+            classic.deleted_vfs_file_paths,
+            ["Classic/removed.bin", "Native/removed.bin"]
+        );
+
+        assert_eq!(detached.files.len(), 1);
+        assert_eq!(detached.stdio_streams.len(), 1);
+        assert_eq!(detached.vfs_files.len(), 1);
+        assert_eq!(detached.deleted_vfs_file_paths, ["Classic/removed.bin"]);
     }
 
     #[test]

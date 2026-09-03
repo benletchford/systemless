@@ -7261,15 +7261,15 @@ impl PpcLoadedApp {
         let tick_count = self.tick_count;
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
-        let mut current_resource_refnum = self
-            .process_file_system
+        let mut process_file_system = self.process_file_system.shared_handle();
+        let mut current_resource_refnum = process_file_system
             .current_resource_file
             .shared_handle();
         let mut last_resource_error = self
             .memory
             .read_u16_be(crate::memory::globals::addr::RES_ERR)
             .unwrap_or(0) as i16;
-        let mut resource_policy = self.process_file_system.policy.shared_handle();
+        let mut resource_policy = process_file_system.policy.shared_handle();
         let native_exception_handler = Cell::new(self.native_exception_handler);
         let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
@@ -7334,11 +7334,12 @@ impl PpcLoadedApp {
         let mut timer_tasks = std::mem::take(&mut self.timer_tasks);
         let mut vbl_tasks = std::mem::take(&mut self.vbl_tasks);
         let mut callback_scheduling = std::mem::take(&mut self.callback_scheduling);
-        let mut files = std::mem::take(&mut self.files);
-        let mut writable_refnums = self.process_file_system.writable_refnums.shared_handle();
-        let mut stdio_streams = std::mem::take(&mut self.stdio_streams);
-        let mut vfs_files = std::mem::take(&mut self.vfs_files);
-        let mut deleted_vfs_file_paths = std::mem::take(&mut self.deleted_vfs_file_paths);
+        // Keep the File Manager's open-file table in the process-owned file
+        // system for the whole native execution slice. The classic adapter
+        // can enter through Mixed Mode while an import is running, so taking
+        // these records out and restoring them at slice teardown would leave
+        // the process temporarily with an empty File Manager view.
+        // (Inside Macintosh: Files, 1992, pp. 1-7–1-9.)
         let mut resource_files = std::mem::take(&mut self.resource_files);
         let mut vfs_resource_files = std::mem::take(&mut self.vfs_resource_files);
         let mut vfs_resources = std::mem::take(&mut self.vfs_resources);
@@ -7816,6 +7817,19 @@ impl PpcLoadedApp {
                 ) {
                     Some(action)
                 } else {
+                    // Borrow the process-owned records only for this import.
+                    // A Mixed Mode continuation may expose another adapter
+                    // between imports, so no mutable reference into an
+                    // UnsafeCell-backed process collection may outlive this
+                    // dispatch call.
+                    let ProcessFileSystemState {
+                        files,
+                        writable_refnums,
+                        stdio_streams,
+                        vfs_files,
+                        deleted_vfs_file_paths,
+                        ..
+                    } = &mut *process_file_system;
                     dispatch_supported_import(
                         binding,
                         cpu,
@@ -7885,11 +7899,11 @@ impl PpcLoadedApp {
                         &mut timer_tasks,
                         &mut vbl_tasks,
                         &mut callback_scheduling,
-                        &mut files,
-                        &mut writable_refnums,
-                        &mut vfs_files,
-                        &mut stdio_streams,
-                        &mut deleted_vfs_file_paths,
+                        &mut **files,
+                        &mut **writable_refnums,
+                        vfs_files,
+                        stdio_streams,
+                        deleted_vfs_file_paths,
                         &mut resource_files,
                         &mut vfs_resource_files,
                         &mut vfs_resources,
@@ -8259,10 +8273,6 @@ impl PpcLoadedApp {
         self.timer_tasks = timer_tasks;
         self.vbl_tasks = vbl_tasks;
         self.callback_scheduling = callback_scheduling;
-        self.files = files;
-        self.stdio_streams = stdio_streams;
-        self.vfs_files = vfs_files;
-        self.deleted_vfs_file_paths = deleted_vfs_file_paths;
         self.resource_files = resource_files;
         self.vfs_resource_files = vfs_resource_files;
         self.vfs_resources = vfs_resources;
@@ -8275,7 +8285,7 @@ impl PpcLoadedApp {
         self.quickdraw_text_mode = quickdraw_text_mode;
         self.quickdraw_text_size = quickdraw_text_size;
         self.cursor_state = cursor_state;
-        self.process_file_system.publish_native_vfs_catalogue();
+        process_file_system.publish_native_vfs_catalogue();
         self.param_text = param_text;
         self.scrap = scrap;
         self.list_manager = list_manager;
@@ -93803,6 +93813,111 @@ pub(crate) mod tests {
         assert_eq!(first.vfs_directories.last().unwrap().path, "Shared Folder");
         assert_eq!(first.next_vfs_dir_id, PPC_FIRST_DYNAMIC_DIR_ID + 1);
         assert_eq!(first.default_dir_id, PPC_FIRST_DYNAMIC_DIR_ID);
+    }
+
+    #[test]
+    fn process_file_records_remain_canonical_during_native_execution_panic_cross_isa() {
+        let pef = synthetic_pef_with_import(b"TestImport");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic = TrapDispatcher::new();
+        classic.attach_process_context(&mut context);
+
+        native
+            .files
+            .push(crate::process_context::ProcessOpenFileRecord {
+                ref_num: PPC_FIRST_FILE_REF_NUM,
+                path: "Shared/Native.bin".to_string(),
+                position: 4,
+            });
+        native.process_file_system.stdio_streams.insert(
+            0x2200,
+            crate::process_context::ProcessStdioStreamRecord {
+                ref_num: Some(PPC_FIRST_FILE_REF_NUM),
+                path: Some("Shared/Native.bin".to_string()),
+                position: 4,
+                standard: false,
+                readable: true,
+                writable: true,
+                append: false,
+                closed: false,
+                eof: false,
+                error: false,
+            },
+        );
+        native.vfs_files.push(PpcVfsFileRecord {
+            path: "Shared/Native.bin".to_string(),
+            data: b"native".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        native
+            .deleted_vfs_file_paths
+            .push("Shared/Deleted.bin".to_string());
+
+        assert_eq!(
+            classic
+                .open_files
+                .get(&(PPC_FIRST_FILE_REF_NUM as u16))
+                .map(String::as_str),
+            Some("Shared/Native.bin")
+        );
+        assert_eq!(
+            classic
+                .vfs
+                .get("Shared/Native.bin")
+                .map(Vec::as_slice),
+            Some(b"native".as_slice())
+        );
+
+        // Drive the native return-import path with an intentionally empty
+        // process Memory Manager. The return handler expects a native heap,
+        // so this reliably unwinds execution after the file records have
+        // been made live. A process-owned collection must remain populated
+        // even when a native execution slice exits abnormally.
+        let action = PpcImportAction::CallNative {
+            entry: native.entry_pc,
+            rtoc: native.rtoc,
+            return_pc: PPC_GUEST_CALL_RETURN_PC,
+            final_pc: native.entry_pc,
+            restore_rtoc: native.rtoc,
+            return_gpr3: PpcNativeReturnGpr3::Preserve,
+        };
+        assert!(matches!(
+            native
+                .guest_calls
+                .externalize_powerpc_action(&mut native.cpu, action),
+            PpcImportAction::Continue
+        ));
+        native.cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+        let mut empty_memory_manager = ProcessMemoryManager::default();
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            native.run_with_process_memory_manager(
+                64,
+                false,
+                false,
+                &mut empty_memory_manager,
+            );
+        }));
+        assert!(panic_result.is_err());
+
+        assert_eq!(native.files.len(), 1);
+        assert_eq!(
+            native.process_file_system.stdio_streams[&0x2200].position,
+            4
+        );
+        assert_eq!(native.vfs_files[0].data, b"native");
+        assert_eq!(native.deleted_vfs_file_paths, ["Shared/Deleted.bin"]);
+        assert_eq!(
+            classic
+                .open_files
+                .get(&(PPC_FIRST_FILE_REF_NUM as u16))
+                .map(String::as_str),
+            Some("Shared/Native.bin")
+        );
     }
 
     #[test]
