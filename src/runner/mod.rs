@@ -3109,7 +3109,7 @@ impl FixtureRunner {
         Some(app)
     }
 
-    fn clear_startup_framebuffer(&mut self) {
+    pub(crate) fn clear_startup_framebuffer(&mut self) {
         if self.menu_bar_visible() {
             let (scrn_base, row_bytes, screen_width, screen_height, pixel_size) =
                 self.dispatcher.screen_mode;
@@ -3126,6 +3126,58 @@ impl FixtureRunner {
                 screen_width as i16,
                 [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
             );
+            if let Some(ppc_app) = self.ppc_app.as_mut() {
+                if let Some(front_buffer) = ppc_app.presented_front_buffer() {
+                    let pattern: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+                    if front_buffer.depth == 16 {
+                        let black = [0x00u8, 0x00u8];
+                        let white = [0x7Fu8, 0xFFu8];
+                        let rows: Vec<Vec<u8>> = (0..8)
+                            .map(|py| {
+                                let bits = pattern[py];
+                                (0..front_buffer.width)
+                                    .flat_map(|x| {
+                                        if (bits >> (7 - (x % 8))) & 1 != 0 {
+                                            black
+                                        } else {
+                                            white
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .collect();
+                        for y in 0..front_buffer.height {
+                            let addr = front_buffer
+                                .base_addr
+                                .saturating_add(y.saturating_mul(front_buffer.row_bytes));
+                            let _ = ppc_app.memory.write_bytes(addr, &rows[(y % 8) as usize]);
+                        }
+                    } else if front_buffer.depth == 8 {
+                        let black = 0xFFu8;
+                        let white = 0x00u8;
+                        let rows: Vec<Vec<u8>> = (0..8)
+                            .map(|py| {
+                                let bits = pattern[py];
+                                (0..front_buffer.width)
+                                    .map(|x| {
+                                        if (bits >> (7 - (x % 8))) & 1 != 0 {
+                                            black
+                                        } else {
+                                            white
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .collect();
+                        for y in 0..front_buffer.height {
+                            let addr = front_buffer
+                                .base_addr
+                                .saturating_add(y.saturating_mul(front_buffer.row_bytes));
+                            let _ = ppc_app.memory.write_bytes(addr, &rows[(y % 8) as usize]);
+                        }
+                    }
+                }
+            }
             return;
         }
 
