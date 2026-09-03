@@ -17102,6 +17102,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::AddResource => {
             *last_resource_error = ppc_add_resource(
                 cpu,
+                process_memory_manager,
                 memory,
                 handles,
                 resource_files,
@@ -17129,6 +17130,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::RemoveResource => {
             ppc_remove_resource(
                 cpu,
+                process_memory_manager,
                 vfs_resource_files,
                 vfs_resources,
                 *current_resource_refnum,
@@ -62395,6 +62397,7 @@ fn ppc_complete_apple_event_dispatch(
 
 fn ppc_add_resource(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     resource_files: &[PpcResourceFileRecord],
@@ -62416,11 +62419,19 @@ fn ppc_add_resource(
         return PPC_ADD_RES_FAILED;
     };
     let path = ppc_resource_file_path(resource_files, current_resource_refnum);
+    let mut replaced_handles = Vec::new();
     vfs_resources.retain(|record| {
-        !(record.ref_num == current_resource_refnum
+        let replaced = record.ref_num == current_resource_refnum
             && record.res_type == res_type
-            && record.res_id == res_id)
+            && record.res_id == res_id;
+        if replaced {
+            replaced_handles.push(record.handle);
+        }
+        !replaced
     });
+    for replaced_handle in replaced_handles {
+        process_memory_manager.set_process_handle_resource(replaced_handle, false);
+    }
     vfs_resources.push(PpcVfsResourceRecord {
         ref_num: current_resource_refnum,
         path: path.clone(),
@@ -62433,6 +62444,7 @@ fn ppc_add_resource(
         attrs: PPC_RES_CHANGED_ATTR,
         handle,
     });
+    process_memory_manager.set_process_handle_resource(handle, true);
     ppc_mark_resource_file_contents_dirty(vfs_resource_files, &path);
     PPC_NO_ERR
 }
@@ -62503,6 +62515,7 @@ fn ppc_drop_raw_resource_data(record: &mut PpcVfsResourceRecord) {
 
 fn ppc_remove_resource(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
@@ -62523,6 +62536,7 @@ fn ppc_remove_resource(
     }
     let path = record.path.clone();
     vfs_resources.remove(index);
+    process_memory_manager.set_process_handle_resource(handle, false);
     ppc_mark_resource_file_contents_dirty(vfs_resource_files, &path);
     *last_resource_error = PPC_NO_ERR;
 }
@@ -96252,6 +96266,98 @@ pub(crate) mod tests {
                     .any(|record| record.handle == handle));
             },
         );
+    }
+
+    #[test]
+    fn ppc_resource_imports_mutate_process_handle_state_across_isa() {
+        let pef = synthetic_pef_with_import(b"NewHandleClear");
+        let mut native = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let name_ptr = scratch;
+        native.memory.add_region(scratch, vec![0; 0x40]);
+        write_ppc_pstring(&mut native.memory, name_ptr, b"Shared");
+        native.set_current_resource_refnum(PPC_FIRST_FILE_REF_NUM);
+        native.cpu.gpr[3] = 16;
+
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic = TrapDispatcher::new();
+        classic.attach_process_context(&mut context);
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            let handle = native.cpu.gpr[3];
+            assert_ne!(handle, 0);
+            memory_manager.set_state_for_handle(handle, 0xc0);
+            let detached = memory_manager.detached_clone();
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::AddResource;
+            native.cpu.gpr[3] = handle;
+            native.cpu.gpr[4] = u32::from_be_bytes(*b"TEST");
+            native.cpu.gpr[5] = 128;
+            native.cpu.gpr[6] = 0xdead_beef;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.test_resource_error(), PPC_ADD_RES_FAILED);
+            assert_eq!(memory_manager.handle_state(handle), 0xc0);
+            assert_eq!(classic.handle_state_bits(handle), Some(0xc0));
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[6] = name_ptr;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.test_resource_error(), PPC_NO_ERR);
+            assert_eq!(memory_manager.handle_state(handle), 0xe0);
+            assert_eq!(classic.handle_state_bits(handle), Some(0xe0));
+            assert_eq!(detached.state_for_handle(handle), Some(0xc0));
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target =
+                PpcImportDispatcherTarget::NewHandle { clear: true };
+            native.cpu.gpr[3] = 8;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            let replacement = native.cpu.gpr[3];
+            memory_manager.set_state_for_handle(replacement, 0x80);
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::AddResource;
+            native.cpu.gpr[3] = replacement;
+            native.cpu.gpr[4] = u32::from_be_bytes(*b"TEST");
+            native.cpu.gpr[5] = 128;
+            native.cpu.gpr[6] = name_ptr;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.test_resource_error(), PPC_NO_ERR);
+            assert_eq!(memory_manager.handle_state(handle), 0xc0);
+            assert_eq!(classic.handle_state_bits(handle), Some(0xc0));
+            assert_eq!(memory_manager.handle_state(replacement), 0xa0);
+            assert_eq!(classic.handle_state_bits(replacement), Some(0xa0));
+            assert_eq!(detached.state_for_handle(replacement), None);
+
+            native.set_current_resource_refnum(PPC_FIRST_FILE_REF_NUM + 1);
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::RemoveResource;
+            native.cpu.gpr[3] = replacement;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.test_resource_error(), PPC_RMV_RES_FAILED);
+            assert_eq!(memory_manager.handle_state(replacement), 0xa0);
+            assert_eq!(classic.handle_state_bits(replacement), Some(0xa0));
+
+            native.set_current_resource_refnum(PPC_FIRST_FILE_REF_NUM);
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.test_resource_error(), PPC_NO_ERR);
+            assert_eq!(memory_manager.handle_state(handle), 0xc0);
+            assert_eq!(classic.handle_state_bits(handle), Some(0xc0));
+            assert_eq!(memory_manager.handle_state(replacement), 0x80);
+            assert_eq!(classic.handle_state_bits(replacement), Some(0x80));
+            assert_eq!(detached.state_for_handle(handle), Some(0xc0));
+            assert!(native.process_file_system.vfs_resources.is_empty());
+        });
     }
 
     #[test]
