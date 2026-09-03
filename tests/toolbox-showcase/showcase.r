@@ -6,6 +6,11 @@
 #include "Dialogs.r"
 #include "Palettes.r"
 
+/* Resource Manager records used by the browser demonstration. */
+type 'DATA' {
+    hex string;
+};
+
 #define rMenuBar 128
 #define rMainWindow 128
 #define rPrefDialog 129
@@ -93,7 +98,8 @@ resource 'MENU' (mPages, preload) {
         "Lists & Inventory", noIcon, noKey, noMark, plain;
         "Sound & Channels", noIcon, noKey, noMark, plain;
         "Styled Text & Fonts", noIcon, noKey, noMark, plain;
-        "Standard File", noIcon, noKey, noMark, plain
+        "Standard File", noIcon, noKey, noMark, plain;
+        "Resource Browser", noIcon, noKey, noMark, plain
     }
 };
 
@@ -280,4 +286,23 @@ resource 'vers' (1) {
     verUS,
     "2.0",
     "Toolbox Showcase 2.0"
+};
+
+/*
+ * Named, non-preloaded records for the Resource Browser page. Keeping these
+ * resources out of the preload set makes SetResLoad(FALSE) visibly produce
+ * empty handles before LoadResource materializes the selected record and a
+ * later ReleaseResource returns it to the empty state.
+ * Inside Macintosh: More Macintosh Toolbox (1993), pp. 1-75--1-82.
+ */
+resource 'DATA' (201, "Browser Seed") {
+    $"42524F575345522D534545442D3031"
+};
+
+resource 'DATA' (202, "Deferred Payload") {
+    $"44454645525245442D5041594C4F41442D3032"
+};
+
+resource 'DATA' (203, "Mutable Record") {
+    $"4D555441424C452D5245434F52442D3033"
 };

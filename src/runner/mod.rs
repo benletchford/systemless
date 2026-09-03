@@ -28,6 +28,133 @@ use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+/// One resource-map entry exposed by the fixture introspection snapshot.
+///
+/// This deliberately reports Resource Manager semantics rather than guest
+/// addresses: the Resource Browser integration test can assert stable IDs,
+/// names, attributes, sizes, and whether the resource's data is resident on
+/// both CPU adapters.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceManagerEntrySnapshot {
+    pub res_type: [u8; 4],
+    pub id: i16,
+    pub name: Option<String>,
+    pub attrs: u16,
+    pub size: usize,
+    pub loaded: bool,
+}
+
+/// Deterministic, architecture-neutral view of the current Resource Manager
+/// file used by fixture tests.
+///
+/// The snapshot includes counts for every type in the current file and the
+/// entries of the `DATA` type used by the Resource Browser fixture. It is a
+/// hidden test/diagnostic seam, rather than a public Resource Manager API.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceManagerSnapshot {
+    pub current_file: i16,
+    pub counts: Vec<([u8; 4], usize)>,
+    pub data_entries: Vec<ResourceManagerEntrySnapshot>,
+}
+
+fn resource_manager_snapshot_classic(
+    dispatcher: &TrapDispatcher,
+    bus: &MacMemoryBus,
+) -> ResourceManagerSnapshot {
+    let current_file = dispatcher.current_resource_refnum() as i16;
+    let Some(resources) = dispatcher.resources.as_ref() else {
+        return ResourceManagerSnapshot {
+            current_file,
+            counts: Vec::new(),
+            data_entries: Vec::new(),
+        };
+    };
+    let Some(file) = resources.files.get(&(current_file.max(0) as u16)) else {
+        return ResourceManagerSnapshot {
+            current_file,
+            counts: Vec::new(),
+            data_entries: Vec::new(),
+        };
+    };
+
+    let mut counts = BTreeMap::new();
+    for (res_type, _) in file.loaded.keys() {
+        *counts.entry(*res_type).or_insert(0usize) += 1;
+    }
+
+    let mut data_entries = file
+        .loaded
+        .iter()
+        .filter(|((res_type, _), _)| *res_type == *b"DATA")
+        .map(|((res_type, id), ptr)| ResourceManagerEntrySnapshot {
+            res_type: *res_type,
+            id: *id,
+            name: file.names_by_id.get(&(*res_type, *id)).cloned(),
+            attrs: u16::from(file.attrs.get(&(*res_type, *id)).copied().unwrap_or(0)),
+            size: dispatcher
+                .resource_backing_data
+                .get(&(current_file.max(0) as u16, *res_type, *id))
+                .map_or_else(|| bus.get_alloc_size(*ptr).unwrap_or(0) as usize, Vec::len),
+            loaded: *ptr != 0,
+        })
+        .collect::<Vec<_>>();
+    data_entries.sort_by_key(|entry| entry.id);
+
+    ResourceManagerSnapshot {
+        current_file,
+        counts: counts.into_iter().collect(),
+        data_entries,
+    }
+}
+
+fn resource_manager_snapshot_powerpc(
+    dispatcher: &TrapDispatcher,
+    ppc_app: &mut PpcLoadedApp,
+) -> ResourceManagerSnapshot {
+    let current_file = ppc_app.current_resource_refnum();
+    let app_path = ppc_app.launched_app_path.as_deref();
+    let include_record = |resource: &&crate::process_context::ProcessVfsResourceRecord| {
+        resource.ref_num == current_file
+            && app_path.is_none_or(|path| resource.path.eq_ignore_ascii_case(path))
+    };
+
+    let mut counts = BTreeMap::new();
+    for resource in dispatcher.vfs_resources.iter().filter(include_record) {
+        *counts
+            .entry(resource.res_type.to_be_bytes())
+            .or_insert(0usize) += 1;
+    }
+
+    let mut data_entries = dispatcher
+        .vfs_resources
+        .iter()
+        .filter(include_record)
+        .filter(|resource| resource.res_type == u32::from_be_bytes(*b"DATA"))
+        .map(|resource| ResourceManagerEntrySnapshot {
+            res_type: resource.res_type.to_be_bytes(),
+            id: resource.res_id,
+            name: (!resource.name.is_empty())
+                .then(|| String::from_utf8_lossy(&resource.name).into_owned()),
+            attrs: resource.attrs,
+            size: resource.data.len(),
+            loaded: resource.handle != 0
+                && ppc_app
+                    .memory
+                    .read_u32_be(resource.handle)
+                    .is_some_and(|ptr| ptr != 0),
+        })
+        .collect::<Vec<_>>();
+    data_entries.sort_by_key(|entry| entry.id);
+
+    ResourceManagerSnapshot {
+        current_file,
+        counts: counts.into_iter().collect(),
+        data_entries,
+    }
+}
+
 pub mod audio;
 pub mod idle;
 pub mod interrupt;
@@ -2417,6 +2544,19 @@ impl FixtureRunner {
             ppc_app.guest_menu_snapshot()
         } else {
             self.dispatcher.guest_menu_snapshot(&self.bus)
+        }
+    }
+
+    /// Return a deterministic semantic snapshot of the current Resource
+    /// Manager file for fixture and diagnostic assertions. The outward shape
+    /// is shared by the classic and native PowerPC adapters even though their
+    /// internal resource records differ.
+    #[doc(hidden)]
+    pub fn resource_manager_snapshot(&mut self) -> ResourceManagerSnapshot {
+        if let Some(ppc_app) = self.ppc_app.as_mut() {
+            resource_manager_snapshot_powerpc(&self.dispatcher, ppc_app)
+        } else {
+            resource_manager_snapshot_classic(&self.dispatcher, &self.bus)
         }
     }
 

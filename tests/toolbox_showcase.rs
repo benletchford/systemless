@@ -1,5 +1,5 @@
 //! Integration test exercising Toolbox Showcase for issues #1078, #1081,
-//! #1264, #1265, #1266, and #1267.
+//! #1264, #1265, #1266, #1267, and #1269.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use systemless::display::render_screen_with_gamma;
 use systemless::game::{init_game, load_game, new_runner_with_screen_depth};
 use systemless::menu_model::GuestMenuSnapshot;
-use systemless::runner::FixtureRunner;
+use systemless::runner::{FixtureRunner, ResourceManagerSnapshot};
 
 const SHOWCASE_SIT: &[u8] = include_bytes!("toolbox-showcase/toolbox-showcase.sit");
 
@@ -34,6 +34,7 @@ const ITEM_PAGE_LISTS: i16 = 9;
 const ITEM_PAGE_SOUND: i16 = 10;
 const ITEM_PAGE_STYLED_TEXT: i16 = 11;
 const ITEM_PAGE_STANDARD_FILE: i16 = 12;
+const ITEM_PAGE_RESOURCES: i16 = 13;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -222,6 +223,45 @@ fn update_references() -> bool {
         std::env::var(REFERENCE_UPDATE_ENV).ok().as_deref(),
         Some("1" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES")
     )
+}
+
+fn resource_count(snapshot: &ResourceManagerSnapshot, res_type: [u8; 4]) -> usize {
+    snapshot
+        .counts
+        .iter()
+        .find(|(candidate, _)| *candidate == res_type)
+        .map(|(_, count)| *count)
+        .unwrap_or(0)
+}
+
+fn assert_resource_browser_snapshot(runner: &mut FixtureRunner, loaded_id: Option<i16>) {
+    let snapshot = runner.resource_manager_snapshot();
+    assert_eq!(
+        snapshot.current_file, 0,
+        "application resource file must be current"
+    );
+    assert_eq!(resource_count(&snapshot, *b"DATA"), 3);
+    assert_eq!(resource_count(&snapshot, *b"MENU"), 8);
+    assert_eq!(resource_count(&snapshot, *b"WIND"), 1);
+
+    let expected = [
+        (201i16, "Browser Seed", 15usize),
+        (202i16, "Deferred Payload", 19usize),
+        (203i16, "Mutable Record", 17usize),
+    ];
+    assert_eq!(
+        snapshot.data_entries.len(),
+        expected.len(),
+        "Resource Browser must enumerate exactly the three DATA records"
+    );
+    for (entry, (id, name, size)) in snapshot.data_entries.iter().zip(expected) {
+        assert_eq!(entry.res_type, *b"DATA");
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.name.as_deref(), Some(name));
+        assert_eq!(entry.attrs, 0, "fixture DATA resources must remain clean");
+        assert_eq!(entry.size, size);
+        assert_eq!(entry.loaded, loaded_id == Some(id));
+    }
 }
 
 fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
@@ -572,6 +612,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_STANDARD_FILE),
         "Standard File page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_RESOURCES),
+        "Resource Browser page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -1545,4 +1589,74 @@ fn test_toolbox_showcase() {
 
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "22-standard-file-complete.png");
+
+    // 23. Switch to Resource Browser and exercise map enumeration, named
+    // lookup/deferred loading, handle release, and reload. The controls are
+    // local Rects (252..276) from left to right: Refresh Map, Load Named, and
+    // Release Handle.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_RESOURCES),
+        "failed to queue selection of Resource Browser page"
+    );
+    step_until(&mut runner, "switch to Resource Browser page", |r| {
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_RESOURCES)
+    });
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_RESOURCES
+    ));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_STANDARD_FILE));
+
+    runner.set_mouse_position(550, 760);
+    let enumerated_frame = rendered_rgb(&mut runner).2;
+    assert_resource_browser_snapshot(&mut runner, None);
+    assert_reference_frame(&mut runner, "23-resource-browser.png");
+
+    // Refresh exercises a second Count1Resources/Get1IndResource pass and
+    // must keep map-only enumeration deterministic.
+    click_point(&mut runner, win_top + 264, win_left + 78);
+    run_ticks(&mut runner, "refresh resource map", 1);
+    runner.set_mouse_position(550, 760);
+    assert_eq!(
+        enumerated_frame,
+        rendered_rgb(&mut runner).2,
+        "refreshing the deferred map must preserve the deterministic frame"
+    );
+    assert_resource_browser_snapshot(&mut runner, None);
+
+    click_point(&mut runner, win_top + 264, win_left + 200);
+    run_ticks(&mut runner, "load named resource", 1);
+    runner.set_mouse_position(550, 760);
+    let loaded_frame = rendered_rgb(&mut runner).2;
+    assert_resource_browser_snapshot(&mut runner, Some(203));
+    assert_ne!(
+        enumerated_frame, loaded_frame,
+        "LoadResource must change the visible resource lifecycle state"
+    );
+    assert_reference_frame(&mut runner, "24-resource-browser-loaded.png");
+
+    click_point(&mut runner, win_top + 264, win_left + 328);
+    run_ticks(&mut runner, "release named resource", 1);
+    runner.set_mouse_position(550, 760);
+    let released_frame = rendered_rgb(&mut runner).2;
+    assert_resource_browser_snapshot(&mut runner, None);
+    assert_ne!(
+        loaded_frame, released_frame,
+        "ReleaseResource must change the visible resource lifecycle state"
+    );
+    assert_reference_frame(&mut runner, "25-resource-browser-released.png");
+
+    // Reloading the same named record after ReleaseResource should restore
+    // the exact loaded frame, proving that the map reference can be reused.
+    click_point(&mut runner, win_top + 264, win_left + 200);
+    run_ticks(&mut runner, "reload named resource", 1);
+    runner.set_mouse_position(550, 760);
+    assert_resource_browser_snapshot(&mut runner, Some(203));
+    assert_eq!(
+        loaded_frame,
+        rendered_rgb(&mut runner).2,
+        "released resource must reload to the same deterministic loaded frame"
+    );
 }

@@ -5,10 +5,10 @@ Macintosh fat application. The same `showcase.c` is compiled into a 68K
 `CODE` slice and a native PowerPC PEF slice. The PEF remains in the data fork;
 the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
-The public coverage is tracked by issues #1078, #1081, #1264, and #1265.
+The public coverage is tracked by issues #1078, #1081, and #1264–#1269.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
-test protocol. Its Pages menu selects ten interactive views:
+test protocol. Its Pages menu selects thirteen interactive views:
 
 1. Graphics exercises patterns, clipping, indexed color, lines, shapes, and
    text.
@@ -53,6 +53,10 @@ test protocol. Its Pages menu selects ten interactive views:
     filters the Open list to `TEXT`, navigates into the fixture folder,
     accepts a returned `FSSpec`, edits a Save name, and cancels both legacy
     paths while checking `StandardFileReply` and `SFReply` fields.
+13. Resource Browser enumerates named `DATA` records with
+    `Count1Resources`, `Get1IndResource`, `GetResInfo`, `GetResAttrs`, and
+    `GetResourceSizeOnDisk`, then demonstrates deferred `GetNamedResource`/
+    `LoadResource`, `ReleaseResource`, and reload of the same map reference.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -74,6 +78,10 @@ and Font Manager checks track public issue #1266 and follow *Inside Macintosh:
 Text* (1993), pp. 2-78, 2-98–2-102, 3-81–3-82, and 4-52–4-53.
 Standard File follows
 *Inside Macintosh: Files* (1992), pp. 3-42–3-54.
+Resource enumeration, metadata, deferred loading, handle release, and reload
+follow *Inside Macintosh: More Macintosh Toolbox* (1993), pp. 1-75–1-82,
+with the Resource Manager overview and lifecycle contracts cross-checked
+against *Inside Macintosh Volume I* (1985), pp. I-118–I-125.
 
 ## Rebuild and verify
 
@@ -149,6 +157,10 @@ exact Systemless framebuffer references while performing the same sequence:
     `21-standard-file-open.png`, and `22-standard-file-complete.png`; the
     semantic assertions cover returned `FSSpec`/`SFReply` fields and the
     `FSpCreate`/`FSpDelete` round trip.
+21. Activate Resource Browser (item 13), capture the map-only enumeration of
+    `DATA` 201–203 and the `MENU`/`WIND` counts, refresh the map, load the
+    named `DATA` 203 record, release its handle, and load it again. Capture
+    the enumeration, loaded, and released lifecycle states.
 
 For a manual launch from the public repository:
 
@@ -161,13 +173,19 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the twenty interaction steps above. Use an 800×600
+PowerPC slice, then follow the twenty-one interaction steps above. Use an 800×600
 8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
 SheepShaver for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
 and final page provide the comparison points between runs. Sound checkpoints
 17 and 18 include classic-Mac captures from BasiliskII and SheepShaver; their
 Systemless references document the expected PCM and callback state.
+
+The Resource Browser checkpoint shows the same three named `DATA` records (IDs
+201, 202, and 203), their stable byte sizes, clean attributes, and the
+transitions `enumerated → loaded → released → reloaded`. The named-load step
+leaves only `DATA` 203 resident; releasing it returns that row to an empty
+handle before the reload.
 
 The committed Standard File oracle frames show the page before interaction,
 the filtered Open dialog with `Standard File Fixtures` selected, and the final
@@ -230,6 +248,9 @@ indexed paths.
 | 20. Standard File page | <img src="reference/systemless-68k/20-standard-file-page.png" alt="Standard File page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/20-standard-file-page.png" alt="Standard File page in BasiliskII running the 68K slice" width="360"> |
 | 21. Standard File Open dialog | <img src="reference/systemless-68k/21-standard-file-open.png" alt="Filtered Standard File Open dialog in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/21-standard-file-open.png" alt="Filtered Standard File Open dialog in BasiliskII" width="360"> |
 | 22. Standard File complete | <img src="reference/systemless-68k/22-standard-file-complete.png" alt="Completed Standard File interactions in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/22-standard-file-complete.png" alt="Completed Standard File interactions in BasiliskII" width="360"> |
+| 23. Resource Browser | <img src="reference/systemless-68k/23-resource-browser.png" alt="Resource Browser enumeration in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/23-resource-browser.png" alt="Resource Browser enumeration in BasiliskII" width="360"> |
+| 24. Resource Browser loaded | <img src="reference/systemless-68k/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in BasiliskII" width="360"> |
+| 25. Resource Browser released | <img src="reference/systemless-68k/25-resource-browser-released.png" alt="Released Resource Browser record in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/25-resource-browser-released.png" alt="Released Resource Browser record in BasiliskII" width="360"> |
 
 ### PowerPC
 
@@ -257,9 +278,12 @@ indexed paths.
 | 20. Standard File page | <img src="reference/systemless-ppc/20-standard-file-page.png" alt="Standard File page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/20-standard-file-page.png" alt="Standard File page in SheepShaver running the PowerPC slice" width="360"> |
 | 21. Standard File Open dialog | <img src="reference/systemless-ppc/21-standard-file-open.png" alt="Filtered Standard File Open dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/21-standard-file-open.png" alt="Filtered Standard File Open dialog in SheepShaver" width="360"> |
 | 22. Standard File complete | <img src="reference/systemless-ppc/22-standard-file-complete.png" alt="Completed Standard File interactions in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/22-standard-file-complete.png" alt="Completed Standard File interactions in SheepShaver" width="360"> |
+| 23. Resource Browser | <img src="reference/systemless-ppc/23-resource-browser.png" alt="Resource Browser enumeration in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/23-resource-browser.png" alt="Resource Browser enumeration in SheepShaver" width="360"> |
+| 24. Resource Browser loaded | <img src="reference/systemless-ppc/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/24-resource-browser-loaded.png" alt="Loaded Resource Browser record in SheepShaver" width="360"> |
+| 25. Resource Browser released | <img src="reference/systemless-ppc/25-resource-browser-released.png" alt="Released Resource Browser record in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/25-resource-browser-released.png" alt="Released Resource Browser record in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all twenty-two rendered
+state rather than relying on fixed delays, and compares all twenty-five rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 

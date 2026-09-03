@@ -7,6 +7,9 @@
  * - Menu Manager & Hierarchical Submenus (Macintosh Toolbox Essentials ch 3)
  * - List Manager, default text lists, selection, scrolling, and resizing
  *   (More Macintosh Toolbox ch 4)
+ * - Resource Manager enumeration, named lookup, deferred loading, release,
+ *   and reload behavior
+ *   (Inside Macintosh: More Macintosh Toolbox ch 1)
  * - Styled TextEdit runs, Font Manager lookup, and text measurement
  *   (Inside Macintosh: Text ch 2, 3, and 4)
  * - Standard File Open/Save dialogs, file-type filtering, navigation,
@@ -91,6 +94,7 @@
 #define iSound 10
 #define iStyledText 11
 #define iStandardFile 12
+#define iResources 13
 
 /* State menu items */
 #define iButtonState 1
@@ -142,6 +146,13 @@
 #define pageSound 10
 #define pageStyledText 11
 #define pageStandardFile 12
+#define pageResources 13
+
+#define kResourceBrowserRows 3
+#define resourceStatusEnumerated 1
+#define resourceStatusLoaded 2
+#define resourceStatusReleased 3
+#define resourceStatusError 4
 
 #define kInventoryRowCount 12
 #define listStatusNone 0
@@ -466,6 +477,30 @@ static short gFileLegacyOpenStatus;
 static short gFileSaveStatus;
 static short gFileLegacySaveStatus;
 static SFTypeList gFileTypeList;
+
+/* Page 13: Resource Browser */
+typedef struct {
+    Handle handle;
+    short id;
+    ResType type;
+    Str255 name;
+    short attrs;
+    long size;
+    Boolean loaded;
+    Boolean present;
+} ResourceBrowserEntry;
+
+static ControlHandle gResourceRefresh;
+static ControlHandle gResourceLoad;
+static ControlHandle gResourceRelease;
+static ResourceBrowserEntry gResourceEntries[kResourceBrowserRows];
+static short gResourceCount;
+static short gResourceMenuCount;
+static short gResourceWindowCount;
+static Handle gResourceEditHandle;
+static short gResourceStatus;
+static short gResourceError;
+static Boolean gResourceBrowserReady = false;
 
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
@@ -2042,6 +2077,341 @@ static void DrawListsPage(void)
 }
 
 /*
+ * Page 13: Resource Browser. The map is inspected with loading disabled so
+ * the table can show the difference between a resource reference and its
+ * resident data. The selected named resource then follows the ordinary
+ * SetResLoad(FALSE) -> GetNamedResource -> LoadResource -> ReleaseResource
+ * path, including a subsequent reload of the same map reference.
+ * Inside Macintosh: More Macintosh Toolbox (1993), pp. 1-75--1-82 and
+ * 1-92--1-93; Inside Macintosh Volume I (1985), pp. I-118--I-125.
+ */
+static Boolean ResourceBrowserHandleLoaded(Handle handle)
+{
+    return handle != nil && *handle != nil;
+}
+
+static void ResourceBrowserTypeString(ResType type, Str255 string)
+{
+    string[0] = 4;
+    string[1] = (char)(type >> 24);
+    string[2] = (char)(type >> 16);
+    string[3] = (char)(type >> 8);
+    string[4] = (char)type;
+}
+
+static Boolean ResourceBrowserCheckError(void)
+{
+    gResourceError = ResError();
+    if (gResourceError != noErr) {
+        gResourceStatus = resourceStatusError;
+        return false;
+    }
+    return true;
+}
+
+static void ResourceBrowserRestoreAutomaticLoading(void)
+{
+    short error;
+
+    SetResLoad(true);
+    error = ResError();
+    if (gResourceError == noErr && error != noErr) gResourceError = error;
+    if (gResourceError != noErr) gResourceStatus = resourceStatusError;
+}
+
+static void ResourceBrowserClearEntry(short index)
+{
+    gResourceEntries[index].handle = nil;
+    gResourceEntries[index].id = 0;
+    gResourceEntries[index].type = 0;
+    gResourceEntries[index].name[0] = 0;
+    gResourceEntries[index].attrs = 0;
+    gResourceEntries[index].size = 0;
+    gResourceEntries[index].loaded = false;
+    gResourceEntries[index].present = false;
+}
+
+static Boolean ReadResourceBrowserEntries(void)
+{
+    short i;
+    short visibleCount;
+    Handle handle;
+    ResType resourceType;
+    long resourceSize;
+    Boolean ok;
+    Boolean resLoadDisabled;
+
+    gResourceError = noErr;
+    gResourceCount = 0;
+    gResourceMenuCount = 0;
+    gResourceWindowCount = 0;
+    for (i = 0; i < kResourceBrowserRows; i++) ResourceBrowserClearEntry(i);
+
+    ok = true;
+    resLoadDisabled = false;
+    /* Count1Resources is map-only, so it is safe while automatic loading is
+     * disabled. Keep three counts visible to make the selected map scope
+     * explicit and to compare the custom DATA records with existing UI data.
+     */
+    gResourceCount = Count1Resources('DATA');
+    if (!ResourceBrowserCheckError()) ok = false;
+    if (ok) {
+        gResourceMenuCount = Count1Resources('MENU');
+        if (!ResourceBrowserCheckError()) ok = false;
+    }
+    if (ok) {
+        gResourceWindowCount = Count1Resources('WIND');
+        if (!ResourceBrowserCheckError()) ok = false;
+    }
+
+    if (ok) {
+        SetResLoad(false);
+        resLoadDisabled = true;
+        if (!ResourceBrowserCheckError()) ok = false;
+    }
+    visibleCount = ok ? gResourceCount : 0;
+    if (visibleCount > kResourceBrowserRows) visibleCount = kResourceBrowserRows;
+    for (i = 0; ok && i < visibleCount; i++) {
+        handle = Get1IndResource('DATA', i + 1);
+        if (!ResourceBrowserCheckError()) {
+            ok = false;
+            break;
+        }
+        if (handle == nil) {
+            gResourceError = -192;
+            gResourceStatus = resourceStatusError;
+            ok = false;
+            break;
+        }
+
+        gResourceEntries[i].handle = handle;
+        GetResInfo(handle, &gResourceEntries[i].id, &resourceType,
+                   gResourceEntries[i].name);
+        if (!ResourceBrowserCheckError()) {
+            ok = false;
+            break;
+        }
+        gResourceEntries[i].type = resourceType;
+        gResourceEntries[i].attrs = GetResAttrs(handle);
+        if (!ResourceBrowserCheckError()) {
+            ok = false;
+            break;
+        }
+        gResourceEntries[i].loaded = ResourceBrowserHandleLoaded(handle);
+        gResourceEntries[i].present = true;
+        /* GetResourceSizeOnDisk (also exported as SizeResource) reports the
+         * exact map-backed byte size without materializing an empty handle.
+         * This preserves the deferred state while remaining valid on classic
+         * Resource Manager implementations that invalidate released handles. */
+        resourceSize = GetResourceSizeOnDisk(handle);
+        if (!ResourceBrowserCheckError() || resourceSize < 0) {
+            if (gResourceError == noErr) gResourceError = -192;
+            gResourceStatus = resourceStatusError;
+            ok = false;
+            break;
+        }
+        gResourceEntries[i].size = resourceSize;
+    }
+
+    for (i = visibleCount; i < kResourceBrowserRows; i++) ResourceBrowserClearEntry(i);
+    /* More Macintosh Toolbox warns that callers must restore automatic
+     * loading promptly because other Toolbox managers rely on the default. */
+    if (resLoadDisabled) ResourceBrowserRestoreAutomaticLoading();
+    return ok && gResourceError == noErr;
+}
+
+static Boolean PrepareResourceBrowser(void)
+{
+    if (!gResourceBrowserReady) {
+        if (!ReadResourceBrowserEntries()) return false;
+        gResourceStatus = resourceStatusEnumerated;
+        gResourceBrowserReady = true;
+    }
+    return true;
+}
+
+static void RefreshResourceBrowser(void)
+{
+    if (!PrepareResourceBrowser()) return;
+    if (!ReadResourceBrowserEntries()) return;
+    gResourceStatus = resourceStatusEnumerated;
+}
+
+static void LoadNamedResourceBrowserEntry(void)
+{
+    Handle handle;
+
+    if (!PrepareResourceBrowser()) return;
+    /* First obtain the named reference without reading its data, then restore
+     * the normal policy and explicitly materialize it through LoadResource. */
+    SetResLoad(false);
+    if (!ResourceBrowserCheckError()) {
+        ResourceBrowserRestoreAutomaticLoading();
+        return;
+    }
+    handle = GetNamedResource('DATA', "\pMutable Record");
+    if (!ResourceBrowserCheckError()) {
+        ResourceBrowserRestoreAutomaticLoading();
+        return;
+    }
+    ResourceBrowserRestoreAutomaticLoading();
+    if (gResourceError != noErr) return;
+    if (handle == nil) {
+        gResourceError = -192;
+        gResourceStatus = resourceStatusError;
+        gResourceEditHandle = nil;
+        return;
+    }
+
+    gResourceEditHandle = handle;
+    LoadResource(gResourceEditHandle);
+    if (!ResourceBrowserCheckError() || !ResourceBrowserHandleLoaded(gResourceEditHandle)) {
+        if (gResourceError == noErr) gResourceError = -192;
+        gResourceStatus = resourceStatusError;
+        return;
+    }
+    if (!ReadResourceBrowserEntries()) return;
+    gResourceStatus = resourceStatusLoaded;
+}
+
+static void ReleaseNamedResourceBrowserEntry(void)
+{
+    if (!PrepareResourceBrowser()) return;
+    if (gResourceEditHandle == nil) {
+        gResourceError = -192;
+        gResourceStatus = resourceStatusError;
+        return;
+    }
+
+    ReleaseResource(gResourceEditHandle);
+    if (!ResourceBrowserCheckError()) {
+        if (gResourceError == noErr) gResourceError = -192;
+        gResourceStatus = resourceStatusError;
+        return;
+    }
+    gResourceEditHandle = nil;
+    if (!ReadResourceBrowserEntries()) return;
+    gResourceStatus = resourceStatusReleased;
+}
+
+static void DrawResourceLifecycleStatus(void)
+{
+    Str255 number;
+
+    if (gResourceStatus == resourceStatusLoaded) {
+        DrawString("\ploaded via GetNamedResource + LoadResource");
+    } else if (gResourceStatus == resourceStatusReleased) {
+        DrawString("\preleased; map reference is empty");
+    } else if (gResourceStatus == resourceStatusError) {
+        DrawString("\pResource Manager error ");
+        NumToString(gResourceError, number);
+        DrawString(number);
+    } else {
+        DrawString("\penumerated with SetResLoad(FALSE)");
+    }
+}
+
+static void DrawResourceBrowserPage(void)
+{
+    Rect table;
+    Str255 number;
+    Str255 typeName;
+    short i;
+    short rowTop;
+
+    DrawHeading("\pResource Browser: Resource Manager map and lifecycle");
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(24, 54);
+    DrawString("\pCount1Resources: DATA ");
+    NumToString(gResourceCount, number);
+    DrawString(number);
+    MoveTo(180, 54);
+    DrawString("\pMENU ");
+    NumToString(gResourceMenuCount, number);
+    DrawString(number);
+    MoveTo(310, 54);
+    DrawString("\pWIND ");
+    NumToString(gResourceWindowCount, number);
+    DrawString(number);
+
+    MoveTo(24, 68);
+    DrawString("\pGet1IndResource + GetResInfo + GetResAttrs + GetResourceSizeOnDisk");
+    table.top = 78;
+    table.left = 20;
+    table.bottom = 170;
+    table.right = 540;
+    DrawBeveledBox(&table, true);
+
+    MoveTo(28, 91);
+    TextFace(bold);
+    DrawString("\pType");
+    MoveTo(76, 91);
+    DrawString("\pID");
+    MoveTo(122, 91);
+    DrawString("\pName");
+    MoveTo(318, 91);
+    DrawString("\pAttrs");
+    MoveTo(374, 91);
+    DrawString("\pSize");
+    MoveTo(430, 91);
+    DrawString("\pState");
+    TextFace(0);
+
+    for (i = 0; i < kResourceBrowserRows; i++) {
+        rowTop = 108 + i * 19;
+        MoveTo(28, rowTop);
+        if (gResourceEntries[i].present) {
+            ResourceBrowserTypeString(gResourceEntries[i].type, typeName);
+            DrawString(typeName);
+        } else {
+            DrawString("\p--");
+        }
+        MoveTo(76, rowTop);
+        if (gResourceEntries[i].present) {
+            NumToString(gResourceEntries[i].id, number);
+            DrawString(number);
+        } else {
+            DrawString("\p--");
+        }
+        MoveTo(122, rowTop);
+        if (gResourceEntries[i].present) {
+            DrawString(gResourceEntries[i].name);
+        } else {
+            DrawString("\p(no resource)");
+        }
+        MoveTo(318, rowTop);
+        if ((gResourceEntries[i].attrs & 0x0002) != 0) {
+            DrawString("\p02 changed");
+        } else {
+            DrawString("\p00 clean");
+        }
+        MoveTo(374, rowTop);
+        NumToString((short)gResourceEntries[i].size, number);
+        DrawString(number);
+        MoveTo(430, rowTop);
+        DrawString(gResourceEntries[i].loaded ? "\ploaded" : "\pempty");
+    }
+
+    MoveTo(24, 192);
+    TextFace(bold);
+    DrawString("\pSelected: ");
+    TextFace(0);
+    DrawString("\pDATA 203 \267 Mutable Record");
+    MoveTo(24, 210);
+    TextFace(bold);
+    DrawString("\pLifecycle: ");
+    TextFace(0);
+    DrawResourceLifecycleStatus();
+    MoveTo(24, 228);
+    DrawString("\pThe table stays map-backed while resource data moves in and out of memory.");
+    MoveTo(24, 338);
+    DrawString("\pRefresh re-enumerates deferred references; Load and Release reuse one named record.");
+
+    DrawControls(gMainWindow);
+}
+
+/*
  * Page 11: Styled TextEdit and Font Manager measurements.
  * The upper well is the rendered TextEdit record itself. The lower panels
  * report values returned by the same style and measurement APIs that created
@@ -2417,6 +2787,9 @@ static void DrawMainWindow(void)
         case pageStandardFile:
             DrawStandardFilePage();
             break;
+        case pageResources:
+            DrawResourceBrowserPage();
+            break;
     }
 }
 
@@ -2442,6 +2815,7 @@ static void ShowAllControls(short page)
     Boolean isLists = (page == pageLists);
     Boolean isSound = (page == pageSound);
     Boolean isStandardFile = (page == pageStandardFile);
+    Boolean isResources = (page == pageResources);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -2564,6 +2938,17 @@ static void ShowAllControls(short page)
         HideControl(gFileSave);
         HideControl(gFileLegacySave);
     }
+
+    /* Page 13: Resource Browser */
+    if (isResources) {
+        ShowControl(gResourceRefresh);
+        ShowControl(gResourceLoad);
+        ShowControl(gResourceRelease);
+    } else {
+        HideControl(gResourceRefresh);
+        HideControl(gResourceLoad);
+        HideControl(gResourceRelease);
+    }
 }
 
 static void SyncMenuState(void)
@@ -2576,7 +2961,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 12; i++) {
+        for (i = 1; i <= 13; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -2698,6 +3083,9 @@ static void SetPage(short page)
     }
     if (page == pageSound) {
         EnsureShowcaseSoundChannel();
+    }
+    if (page == pageResources) {
+        PrepareResourceBrowser();
     }
     ShowAllControls(page);
     SyncMenuState();
@@ -2935,6 +3323,17 @@ static void Initialize(void)
     gFileLegacySave = NewControl(gMainWindow, &r, "\pLegacy Save", false, 0, 0, 1,
                                  pushButProc, 0);
 
+    /* Page 13: Resource Browser */
+    SetRect(&r, 24, 252, 132, 276);
+    gResourceRefresh = NewControl(gMainWindow, &r, "\pRefresh Map", false, 0, 0, 1,
+                                  pushButProc, 0);
+    SetRect(&r, 140, 252, 260, 276);
+    gResourceLoad = NewControl(gMainWindow, &r, "\pLoad Named", false, 0, 0, 1,
+                               pushButProc, 0);
+    SetRect(&r, 268, 252, 388, 276);
+    gResourceRelease = NewControl(gMainWindow, &r, "\pRelease Handle", false, 0, 0, 1,
+                                  pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -2946,7 +3345,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iStandardFile) {
+    if (menuID == mPages && item >= iGraphics && item <= iResources) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -3180,6 +3579,12 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         DoLegacyFileSave();
         DrawMainWindow();
         return;
+    } else if (control == gResourceRefresh) {
+        RefreshResourceBrowser();
+    } else if (control == gResourceLoad) {
+        LoadNamedResourceBrowserEntry();
+    } else if (control == gResourceRelease) {
+        ReleaseNamedResourceBrowserEntry();
     }
     DrawMainWindow();
 }
