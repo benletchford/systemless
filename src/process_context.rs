@@ -2261,6 +2261,13 @@ pub(crate) struct ProcessNativeMemoryManager {
     native_allocations: Vec<ProcessHandleRecord>,
     native_allocator: Option<ProcessNativeAllocatorState>,
     native_allocator_dirty: bool,
+    /// Process-owned application heap limit exposed by GetApplLimit and
+    /// SetApplLimit. This is deliberately separate from the native allocator
+    /// ceiling: the PowerPC Memory Manager uses the latter to protect its
+    /// fixed stack mapping, while the former is the guest-visible boundary
+    /// between heap growth and stack space. Inside Macintosh: Memory (1992),
+    /// pp. 2-83--2-85; PowerPC System Software (1994), pp. 1-60, 1-69--1-70.
+    application_heap_limit: Option<u32>,
 }
 
 impl std::ops::Deref for ProcessMemoryManager {
@@ -2330,6 +2337,7 @@ impl ProcessNativeMemoryManager {
             native_allocations: self.native_allocations.clone(),
             native_allocator: self.native_allocator.clone(),
             native_allocator_dirty: self.native_allocator_dirty,
+            application_heap_limit: self.application_heap_limit,
         }
     }
 
@@ -2358,6 +2366,7 @@ impl ProcessNativeMemoryManager {
         self.native_allocations = snapshot.native_allocations;
         self.native_allocator = snapshot.native_allocator;
         self.native_allocator_dirty = snapshot.native_allocator_dirty;
+        self.application_heap_limit = snapshot.application_heap_limit;
     }
 
     fn commit_empty_native_handle(&mut self, record: ProcessHandleRecord) {
@@ -3231,15 +3240,22 @@ impl ProcessNativeMemoryManager {
                 self.set_native_mem_error(Self::MEM_FULL_ERR);
                 return Err(Self::MEM_FULL_ERR);
             };
+            let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
             let reusable = allocator.free_ptr_blocks.iter().any(|free| {
                 free.ptr != record.ptr
                     && ProcessNativeMemoryManager::native_allocation_size(free.size)
-                        .is_some_and(|capacity| capacity >= required)
+                        .is_some_and(|capacity| {
+                            capacity >= required
+                                && free
+                                    .ptr
+                                    .checked_add(capacity)
+                                    .is_some_and(|end| end <= allocation_limit)
+                        })
             });
             if !reusable
                 && ProcessNativeMemoryManager::native_allocation_bounds(
                     allocator.heap.heap_cursor,
-                    allocator.heap.heap_limit,
+                    allocation_limit,
                     required,
                     |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
                 )
@@ -3532,11 +3548,40 @@ impl ProcessNativeMemoryManager {
 
     /// Set the expandable application-heap boundary for subsequent native
     /// allocations. The caller has already enforced the guest stack ceiling.
+    #[cfg(test)]
     pub(crate) fn set_native_heap_limit(&mut self, heap_limit: u32) {
         if let Some(allocator) = &mut self.native_allocator {
             allocator.heap.heap_limit = heap_limit;
             self.native_allocator_dirty = true;
         }
+    }
+
+    /// Return the process-owned application heap limit used by native Memory
+    /// Manager imports. A caller-provided fallback keeps standalone managers
+    /// useful before a native application partition has been initialized.
+    pub(crate) fn application_heap_limit(&self, fallback: u32) -> u32 {
+        self.application_heap_limit.unwrap_or(fallback)
+    }
+
+    pub(crate) fn application_heap_limit_is_set(&self) -> bool {
+        self.application_heap_limit.is_some()
+    }
+
+    /// Return the effective native allocation boundary for the current
+    /// process. The native heap's limit describes the mapped address ceiling;
+    /// `ApplLimit` is the guest-visible boundary within that mapping. Native
+    /// Memory Manager allocations must honor both. Inside Macintosh: Memory
+    /// (1992), pp. 2-42--2-44 and 2-83--2-85.
+    pub(crate) fn native_allocation_limit(&self, native_heap_limit: u32) -> u32 {
+        self.application_heap_limit(native_heap_limit)
+            .min(native_heap_limit)
+    }
+
+    /// Set the process-owned application heap limit without changing the
+    /// native allocator's physical ceiling. Inside Macintosh: Memory (1992),
+    /// pp. 2-83--2-85.
+    pub(crate) fn set_application_heap_limit(&mut self, heap_limit: u32) {
+        self.application_heap_limit = Some(heap_limit);
     }
 
     /// Record that the process application heap has been expanded to its limit.
@@ -3607,9 +3652,10 @@ impl ProcessNativeMemoryManager {
         let Some(heap) = self.native_heap_state() else {
             return 0;
         };
+        let allocation_limit = self.native_allocation_limit(heap.heap_limit);
         let Some((ptr, next)) = Self::native_allocation_bounds(
             heap.heap_cursor,
-            heap.heap_limit,
+            allocation_limit,
             required,
             |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
         ) else {
@@ -3644,9 +3690,10 @@ impl ProcessNativeMemoryManager {
         let Some(heap) = self.native_heap_state() else {
             return 0;
         };
+        let allocation_limit = self.native_allocation_limit(heap.heap_limit);
         let Some((ptr, _)) = Self::native_allocation_bounds(
             heap.heap_cursor,
-            heap.heap_limit,
+            allocation_limit,
             required,
             |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
         ) else {
@@ -3692,13 +3739,19 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
             return 0;
         };
+        let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
         let reusable_index = allocator
             .free_ptr_blocks
             .iter()
             .enumerate()
             .filter_map(|(index, record)| {
                 let capacity = Self::native_allocation_size(record.size)?;
-                (capacity >= required).then_some((index, capacity))
+                (capacity >= required
+                    && record
+                        .ptr
+                        .checked_add(capacity)
+                        .is_some_and(|end| end <= allocation_limit))
+                .then_some((index, capacity))
             })
             .min_by_key(|(_, capacity)| *capacity)
             .map(|(index, _)| index);
@@ -3707,7 +3760,7 @@ impl ProcessNativeMemoryManager {
         } else {
             Self::native_allocation_bounds(
                 allocator.heap.heap_cursor,
-                allocator.heap.heap_limit,
+                allocation_limit,
                 required,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
             )
@@ -4316,9 +4369,10 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
             return Self::MEM_FULL_ERR;
         }
+        let allocation_limit = self.native_allocation_limit(heap.heap_limit);
         let Some((resize_ptr, new_end)) = Self::native_allocation_bounds(
             record.ptr,
-            heap.heap_limit,
+            allocation_limit,
             new_capacity,
             |base, len| memory.readonly_allocation_overlap_end(base, len),
         ) else {
@@ -4402,24 +4456,45 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
             return 0;
         };
+        let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
         let reusable_handle_index = allocator
             .free_handle_blocks
             .iter()
             .enumerate()
             .filter_map(|(index, record)| {
+                let handle_capacity = Self::native_allocation_size(4)?;
+                let handle_fits = record
+                    .handle
+                    .checked_add(handle_capacity)
+                    .is_some_and(|end| end <= allocation_limit);
                 if record.ptr == 0 {
-                    return None;
+                    return handle_fits.then_some((index, 0));
                 }
                 let capacity = Self::native_allocation_size(record.capacity)?;
-                (capacity >= required).then_some((index, capacity))
+                (handle_fits
+                    && capacity >= required
+                    && record
+                        .ptr
+                        .checked_add(capacity)
+                        .is_some_and(|end| end <= allocation_limit))
+                .then_some((index, capacity))
             })
+            .filter(|(_, capacity)| *capacity != 0)
             .min_by_key(|(_, capacity)| *capacity)
             .map(|(index, _)| index)
             .or_else(|| {
                 allocator
                     .free_handle_blocks
                     .iter()
-                    .position(|record| record.ptr == 0)
+                    .enumerate()
+                    .find(|(_, record)| {
+                        record.ptr == 0
+                            && record
+                                .handle
+                                .checked_add(Self::native_allocation_size(4).unwrap_or(0))
+                                .is_some_and(|end| end <= allocation_limit)
+                    })
+                    .map(|(index, _)| index)
             });
         let mut reusable_ptr_index = None;
         let (record, next_cursor) = if let Some(index) = reusable_handle_index {
@@ -4432,7 +4507,12 @@ impl ProcessNativeMemoryManager {
                     .enumerate()
                     .filter_map(|(index, record)| {
                         let capacity = Self::native_allocation_size(record.size)?;
-                        (capacity >= required).then_some((index, capacity))
+                        (capacity >= required
+                            && record
+                                .ptr
+                                .checked_add(capacity)
+                                .is_some_and(|end| end <= allocation_limit))
+                        .then_some((index, capacity))
                     })
                     .min_by_key(|(_, capacity)| *capacity)
                     .map(|(index, _)| index);
@@ -4441,7 +4521,7 @@ impl ProcessNativeMemoryManager {
                 } else {
                     let Some((ptr, next)) = Self::native_allocation_bounds(
                         allocator.heap.heap_cursor,
-                        allocator.heap.heap_limit,
+                        allocation_limit,
                         required,
                         |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
                     ) else {
@@ -4462,7 +4542,7 @@ impl ProcessNativeMemoryManager {
             };
             let Some((handle, after_handle)) = Self::native_allocation_bounds(
                 allocator.heap.heap_cursor,
-                allocator.heap.heap_limit,
+                allocation_limit,
                 handle_required,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
             ) else {
@@ -4471,7 +4551,7 @@ impl ProcessNativeMemoryManager {
             };
             let Some((ptr, after_ptr)) = Self::native_allocation_bounds(
                 after_handle,
-                allocator.heap.heap_limit,
+                allocation_limit,
                 required,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
             ) else {
@@ -4946,13 +5026,19 @@ impl ProcessNativeMemoryManager {
                 self.set_native_mem_error(Self::MEM_FULL_ERR);
                 return Self::MEM_FULL_ERR;
             };
+            let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
             let reusable_ptr_index = allocator
                 .free_ptr_blocks
                 .iter()
                 .enumerate()
                 .filter_map(|(index, free)| {
                     let capacity = Self::native_allocation_size(free.size)?;
-                    (capacity >= required).then_some((index, capacity))
+                    (capacity >= required
+                        && free
+                            .ptr
+                            .checked_add(capacity)
+                            .is_some_and(|end| end <= allocation_limit))
+                    .then_some((index, capacity))
                 })
                 .min_by_key(|(_, capacity)| *capacity)
                 .map(|(index, _)| index);
@@ -4961,7 +5047,7 @@ impl ProcessNativeMemoryManager {
             } else {
                 let Some((ptr, next)) = Self::native_allocation_bounds(
                     allocator.heap.heap_cursor,
-                    allocator.heap.heap_limit,
+                    allocation_limit,
                     required,
                     |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
                 ) else {
@@ -5008,11 +5094,12 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
             return Self::MEM_FULL_ERR;
         };
+        let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
         let can_extend_last = record.ptr.checked_add(old_aligned)
             == Some(allocator.heap.heap_cursor)
             && Self::native_allocation_bounds(
                 record.ptr,
-                allocator.heap.heap_limit,
+                allocation_limit,
                 new_aligned,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
             )
@@ -5022,7 +5109,7 @@ impl ProcessNativeMemoryManager {
         } else {
             let Some((ptr, next)) = Self::native_allocation_bounds(
                 allocator.heap.heap_cursor,
-                allocator.heap.heap_limit,
+                allocation_limit,
                 new_aligned,
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
             ) else {
@@ -5118,6 +5205,7 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::NIL_HANDLE_ERR);
             return Err(Self::NIL_HANDLE_ERR);
         };
+        let allocation_limit = self.native_allocation_limit(allocator.heap.heap_limit);
 
         let mut new_ptr = record.ptr;
         let mut new_cursor = allocator.heap.heap_cursor;
@@ -5130,7 +5218,12 @@ impl ProcessNativeMemoryManager {
                 .enumerate()
                 .filter_map(|(index, free)| {
                     let capacity = Self::native_allocation_size(free.size)?;
-                    (free.ptr != current_ptr && capacity >= new_aligned)
+                    (free.ptr != current_ptr
+                        && capacity >= new_aligned
+                        && free
+                            .ptr
+                            .checked_add(capacity)
+                            .is_some_and(|end| end <= allocation_limit))
                         .then_some((index, capacity))
                 })
                 .min_by_key(|(_, capacity)| *capacity)
@@ -5140,7 +5233,7 @@ impl ProcessNativeMemoryManager {
             } else {
                 let Some((ptr, next)) = Self::native_allocation_bounds(
                     allocator.heap.heap_cursor,
-                    allocator.heap.heap_limit,
+                    allocation_limit,
                     new_aligned,
                     |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
                 ) else {
@@ -5160,7 +5253,7 @@ impl ProcessNativeMemoryManager {
                 == Some(allocator.heap.heap_cursor)
                 && Self::native_allocation_bounds(
                     record.ptr,
-                    allocator.heap.heap_limit,
+                    allocation_limit,
                     new_aligned,
                     |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
                 )
@@ -5170,7 +5263,7 @@ impl ProcessNativeMemoryManager {
             } else {
                 let Some((ptr, next)) = Self::native_allocation_bounds(
                     allocator.heap.heap_cursor,
-                    allocator.heap.heap_limit,
+                    allocation_limit,
                     new_aligned,
                     |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
                 ) else {
@@ -5337,6 +5430,28 @@ impl ProcessNativeMemoryManager {
         }
     }
 
+    fn adopt_application_heap_limit(&mut self, source: &mut Self) {
+        // The process owner is authoritative when an adapter is attached
+        // after another ISA has already established a limit that is valid in
+        // the source address space. A native adapter cannot use a classic
+        // limit below its current native heap cursor (or above its mapped
+        // ceiling), however; carry the native launch value in that case so
+        // attaching a companion does not make every native allocation fail.
+        let source_limit = source.application_heap_limit.take();
+        let target_limit_is_compatible = self.application_heap_limit.is_none_or(|limit| {
+            source.native_heap_state().is_none_or(|heap| {
+                limit >= heap.heap_cursor && limit <= heap.heap_limit
+            })
+        });
+        if target_limit_is_compatible {
+            if self.application_heap_limit.is_none() {
+                self.application_heap_limit = source_limit;
+            }
+        } else {
+            self.application_heap_limit = source_limit;
+        }
+    }
+
     fn adopt_handle_metadata(&mut self, source: &mut Self) {
         self.assert_can_adopt_handle_metadata(source);
         if let Some(source_allocator) = source.classic_allocator.as_ref() {
@@ -5425,6 +5540,10 @@ impl ProcessNativeMemoryManager {
     /// owner after all compatibility checks have passed.
     pub(crate) fn adopt_process_memory_manager(&mut self, source: &mut Self) {
         self.assert_can_adopt_process_memory_manager(source);
+        // Resolve the application boundary while the source still exposes its
+        // native heap ceiling; native allocator adoption clears that source
+        // projection as part of transferring ownership.
+        self.adopt_application_heap_limit(source);
         self.adopt_native_allocator(source);
         self.adopt_handle_metadata(source);
     }
@@ -5993,6 +6112,87 @@ mod tests {
                 .classic_allocation_size(original_ptr),
             Some(24)
         );
+    }
+
+    #[test]
+    fn detached_process_memory_manager_snapshots_application_heap_limit() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        const NATIVE_HEAP_CEILING: u32 = HEAP_BASE + 0x20_000;
+        const APPLICATION_HEAP_LIMIT: u32 = HEAP_BASE + 0x10_000;
+
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE + 0x100,
+                heap_limit: NATIVE_HEAP_CEILING,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        manager.set_application_heap_limit(APPLICATION_HEAP_LIMIT);
+
+        let detached = manager.detached_clone();
+        assert_eq!(detached.application_heap_limit(0), APPLICATION_HEAP_LIMIT);
+        assert_eq!(
+            detached.native_heap_state().unwrap().heap_limit,
+            NATIVE_HEAP_CEILING,
+            "detached application-limit state must not rewrite the native allocator ceiling"
+        );
+
+        manager.set_application_heap_limit(HEAP_BASE + 0x18_000);
+        manager.restore_native_snapshot(detached);
+        assert_eq!(
+            manager.application_heap_limit(0),
+            APPLICATION_HEAP_LIMIT,
+            "transaction restore must roll back the canonical application limit"
+        );
+        assert_eq!(
+            manager.native_heap_state().unwrap().heap_limit,
+            NATIVE_HEAP_CEILING
+        );
+    }
+
+    #[test]
+    fn native_attachment_replaces_an_incompatible_prior_application_limit() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        const NATIVE_CURSOR: u32 = HEAP_BASE + 0x100;
+        const NATIVE_HEAP_CEILING: u32 = HEAP_BASE + 0x2000;
+        const NATIVE_APPLICATION_LIMIT: u32 = HEAP_BASE + 0x1000;
+
+        let mut target = ProcessMemoryManager::default();
+        // A classic-only process may have established a low-memory limit in
+        // its own address range before a native companion is attached.
+        target.set_application_heap_limit(HEAP_BASE - 0x100);
+
+        let mut source = ProcessMemoryManager::default();
+        source.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: NATIVE_CURSOR,
+                heap_limit: NATIVE_HEAP_CEILING,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        source.set_application_heap_limit(NATIVE_APPLICATION_LIMIT);
+
+        target.adopt_process_memory_manager(&mut source);
+
+        assert_eq!(
+            target.application_heap_limit(0),
+            NATIVE_APPLICATION_LIMIT,
+            "native attachment must retain an allocation-valid process boundary"
+        );
+        assert_eq!(source.application_heap_limit(0), 0);
     }
 
     #[test]

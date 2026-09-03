@@ -1492,6 +1492,15 @@ impl super::TrapDispatcher {
                     // the Memory Manager does not cut it back."
                     bus.write_long(crate::memory::globals::addr::APPL_LIMIT, appl_limit);
                 }
+                // Keep the process-owned application limit in step with the
+                // guest global so a nested PowerPC callback observes the same
+                // boundary immediately. The native allocator ceiling remains
+                // independent. Inside Macintosh: Memory (1992), pp. 2-83--2-85.
+                self.process_memory_manager()
+                    .borrow_mut()
+                    .set_application_heap_limit(
+                        bus.read_long(crate::memory::globals::addr::APPL_LIMIT),
+                    );
                 cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
             }
