@@ -61,7 +61,7 @@ impl super::TrapDispatcher {
     const LOWMEM_WMGR_PORT: u32 = 0x09DE;
     const LOWMEM_GRAY_RGN: u32 = 0x09EE;
     const LOWMEM_DRAG_PATTERN: u32 = 0x0A34;
-    const GRAY_DRAG_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+    pub(super) const GRAY_DRAG_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
     const WDEF_WDRAW_MSG: i16 = 0;
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
@@ -282,7 +282,19 @@ impl super::TrapDispatcher {
 
         let start_mouse = (bus.read_word(sp + 14) as i16, bus.read_word(sp + 16) as i16);
         let limit_rect_ptr = bus.read_long(sp + 10);
-        let port_bounds_origin = self.port_bounds_top_left(bus, *self.current_port);
+        let raw_bounds = self.port_bounds_top_left(bus, *self.current_port);
+        let (global_v, global_h) = self.window_tracking_mouse_pos(bus);
+        let local_v = global_v.wrapping_add(raw_bounds.0);
+        let local_h = global_h.wrapping_add(raw_bounds.1);
+        let port_bounds_origin = if (start_mouse.0.wrapping_sub(global_v)).abs() <= 5
+            && (start_mouse.1.wrapping_sub(global_h)).abs() <= 5
+            && ((start_mouse.0.wrapping_sub(local_v)).abs() > 5
+                || (start_mouse.1.wrapping_sub(local_h)).abs() > 5)
+        {
+            (0, 0)
+        } else {
+            raw_bounds
+        };
         let outline_pattern = if use_drag_pattern {
             let mut pattern = [0u8; 8];
             for (offset, byte) in pattern.iter_mut().enumerate() {
@@ -324,7 +336,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn point_in_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
+    pub(super) fn point_in_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
         v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3
     }
 
@@ -1577,7 +1589,7 @@ impl super::TrapDispatcher {
                 && self.has_unmatched_queued_mouse_down())
     }
 
-    fn window_tracking_mouse_pos(&self, bus: &MacMemoryBus) -> (i16, i16) {
+    pub(super) fn window_tracking_mouse_pos(&self, bus: &MacMemoryBus) -> (i16, i16) {
         let v = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2) as i16;
         let h = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2 + 2) as i16;
         if (v, h) != (0, 0) {
@@ -1605,7 +1617,7 @@ impl super::TrapDispatcher {
         strips
     }
 
-    fn save_window_drag_outline_pixels(
+    pub(super) fn save_window_drag_outline_pixels(
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
@@ -1616,7 +1628,7 @@ impl super::TrapDispatcher {
             .collect()
     }
 
-    fn restore_window_drag_outline_pixels(
+    pub(super) fn restore_window_drag_outline_pixels(
         &self,
         bus: &mut MacMemoryBus,
         pixels: &[(i16, i16, i16, i16, Vec<u8>)],
@@ -1810,6 +1822,53 @@ impl super::TrapDispatcher {
             glyph_left.saturating_add(11),
         );
         Some((hit_rect, highlight_rect))
+    }
+
+    fn standard_grow_rect(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> Option<(i16, i16, i16, i16)> {
+        if window_ptr == 0
+            || !self.window_is_active_for_standard_go_away(bus, window_ptr)
+            || bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) == 0
+        {
+            return None;
+        }
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        if !matches!(proc_id, 0 | 8) {
+            return None;
+        }
+
+        let (_, _, bottom, right) = self.window_global_port_rect(bus, window_ptr);
+        Some((
+            bottom.saturating_sub(15),
+            right.saturating_sub(15),
+            bottom,
+            right,
+        ))
+    }
+
+    fn standard_zoom_rect(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> Option<(i16, i16, i16, i16)> {
+        if window_ptr == 0
+            || !self.window_is_active_for_standard_go_away(bus, window_ptr)
+            || bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) == 0
+        {
+            return None;
+        }
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        if !matches!(proc_id, 8 | 12) {
+            return None;
+        }
+
+        let (top, _, _, right) = self.window_global_port_rect(bus, window_ptr);
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        let title_top = top.saturating_sub(18).max(menu_bar_height);
+        Some((title_top, right.saturating_sub(24), top, right.saturating_sub(6)))
     }
 
     fn window_is_active_for_standard_go_away(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
@@ -2087,6 +2146,13 @@ impl super::TrapDispatcher {
             if !self.window_visible(bus, window_ptr) {
                 continue;
             }
+            if self
+                .standard_grow_rect(bus, window_ptr)
+                .is_some_and(|hit_rect| Self::point_in_rect(pt_v, pt_h, hit_rect))
+            {
+                return (5, window_ptr);
+            }
+
             let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
             if Self::point_in_rect(pt_v, pt_h, (top, left, bottom, right)) {
                 return (3, window_ptr);
@@ -2102,6 +2168,28 @@ impl super::TrapDispatcher {
                 .is_some_and(|(hit_rect, _)| Self::point_in_rect(pt_v, pt_h, hit_rect))
             {
                 return (6, window_ptr);
+            }
+
+            if self
+                .standard_zoom_rect(bus, window_ptr)
+                .is_some_and(|hit_rect| Self::point_in_rect(pt_v, pt_h, hit_rect))
+            {
+                let data_handle = bus.read_long(window_ptr + Self::WINDOW_DATA_HANDLE_OFFSET);
+                let is_zoomed_out = if data_handle != 0 {
+                    let data_ptr = bus.read_long(data_handle);
+                    if data_ptr != 0 {
+                        let std_t = bus.read_word(data_ptr + 8) as i16;
+                        let std_l = bus.read_word(data_ptr + 10) as i16;
+                        let std_b = bus.read_word(data_ptr + 12) as i16;
+                        let std_r = bus.read_word(data_ptr + 14) as i16;
+                        (top, left, bottom, right) == (std_t, std_l, std_b, std_r)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                return (if is_zoomed_out { 7 } else { 8 }, window_ptr);
             }
 
             // The title/drag region sits above the content rect for ordinary
@@ -5801,11 +5889,53 @@ impl super::TrapDispatcher {
             // FUNCTION TrackBox(theWindow: WindowPtr; thePt: Point; partCode: INTEGER): BOOLEAN;
             // Inside Macintosh Volume IV, IV-66
             // Stack: SP+0: partCode(2), SP+2: thePt(4), SP+6: theWindow(4). Result at SP+10. Pop 10.
-            // TrackBox ($A83B): Returns FALSE (no zoom-box click tracking) per IM:IV IV-66
             (true, 0x03B) => {
+                if let Some(tracking) = self.zoom_box_tracking.take() {
+                    let mouse = self.window_tracking_mouse_pos(bus);
+                    let inside = Self::point_in_rect(mouse.0, mouse.1, tracking.hit_rect);
+                    if self.window_tracking_button_down(bus) {
+                        cpu.write_reg(Register::A7, tracking.stack_ptr);
+                        self.zoom_box_tracking = Some(tracking);
+                        return Some(Ok(()));
+                    }
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+                    bus.write_word(tracking.stack_ptr + 10, if inside { 0x0100 } else { 0 });
+                    cpu.write_reg(Register::A7, tracking.stack_ptr + 10);
+                    return Some(Ok(()));
+                }
+
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_word(sp + 10, 0); // FALSE
-                cpu.write_reg(Register::A7, sp + 10);
+                let the_window = bus.read_long(sp + 6);
+                let initial_point = (bus.read_word(sp + 2) as i16, bus.read_word(sp + 4) as i16);
+                let Some(hit_rect) = self.standard_zoom_rect(bus, the_window) else {
+                    bus.write_word(sp + 10, 0);
+                    cpu.write_reg(Register::A7, sp + 10);
+                    return Some(Ok(()));
+                };
+
+                if !Self::point_in_rect(initial_point.0, initial_point.1, hit_rect)
+                    || !self.window_tracking_button_down(bus)
+                {
+                    bus.write_word(
+                        sp + 10,
+                        if Self::point_in_rect(initial_point.0, initial_point.1, hit_rect) {
+                            0x0100
+                        } else {
+                            0
+                        },
+                    );
+                    cpu.write_reg(Register::A7, sp + 10);
+                    return Some(Ok(()));
+                }
+
+                self.zoom_box_tracking = Some(super::dispatch::ZoomBoxTrackingState {
+                    _window_ptr: the_window,
+                    stack_ptr: sp,
+                    hit_rect,
+                });
+                cpu.write_reg(Register::A7, sp);
                 Ok(())
             }
 

@@ -1280,6 +1280,31 @@ impl super::TrapDispatcher {
             return;
         }
 
+        if pixel_size == 16 {
+            let black = [0x00u8, 0x00u8];
+            let white = [0x7Fu8, 0xFFu8];
+            let width = (right - left) as usize;
+            let rows: Vec<Vec<u8>> = (0..8)
+                .map(|pattern_row| {
+                    let bits = pattern[pattern_row];
+                    (left..right)
+                        .flat_map(|x| {
+                            if (bits >> (7 - x.rem_euclid(8))) & 1 != 0 {
+                                black
+                            } else {
+                                white
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            for y in top..bottom {
+                let addr = screen_base + (y as u32) * row_bytes + (left as u32) * 2;
+                bus.write_bytes(addr, &rows[y.rem_euclid(8) as usize][..width * 2]);
+            }
+            return;
+        }
+
         for y in top..bottom {
             let row = pattern[y.rem_euclid(8) as usize];
             for x in left..right {

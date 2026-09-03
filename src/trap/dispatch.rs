@@ -694,6 +694,36 @@ pub(crate) struct ControlTrackingState {
     pub scrollbar_callback_pending: bool,
 }
 
+/// Retained state for TrackControl while dragging a scrollbar indicator thumb.
+#[derive(Clone, Debug)]
+pub(crate) struct ScrollbarThumbTrackingState {
+    pub _ctrl_handle: u32,
+    pub ctrl_ptr: u32,
+    pub stack_ptr: u32,
+    pub start_mouse: (i16, i16),
+    pub start_thumb_pos: i16,
+    pub start_value: i16,
+    pub min: i16,
+    pub max: i16,
+    pub track_start: i16,
+    pub travel: i16,
+    pub cross_start: i16,
+    pub cross_end: i16,
+    pub is_vertical: bool,
+    pub thumb_size: i16,
+    pub slop_rect: (i16, i16, i16, i16),
+    pub outline_rect: Option<(i16, i16, i16, i16)>,
+    pub saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+}
+
+/// Retained state for TrackBox while the mouse button remains down.
+#[derive(Clone, Debug)]
+pub(crate) struct ZoomBoxTrackingState {
+    pub _window_ptr: u32,
+    pub stack_ptr: u32,
+    pub hit_rect: (i16, i16, i16, i16),
+}
+
 /// Retained state for DragWindow while the mouse button remains down.
 /// DragWindow owns a mouse-tracking loop and does not return until release;
 /// the GUI runner therefore refires the trap at presentation boundaries.
@@ -2200,10 +2230,14 @@ pub struct TrapDispatcher {
     pub(crate) pending_native_menu_event_tick: Option<u32>,
     /// Active control tracking state (currently popup-menu TrackControl).
     pub(crate) control_tracking: Option<ControlTrackingState>,
+    /// Active scrollbar thumb indicator tracking state.
+    pub(crate) scrollbar_thumb_tracking: Option<ScrollbarThumbTrackingState>,
     /// Active DragWindow tracking state.
     pub(crate) window_tracking: Option<WindowTrackingState>,
     /// Active TrackGoAway close-box tracking state.
     pub(crate) go_away_tracking: Option<GoAwayTrackingState>,
+    /// Active TrackBox zoom-box tracking state.
+    pub(crate) zoom_box_tracking: Option<ZoomBoxTrackingState>,
     /// Active GrowWindow size tracking state.
     pub(crate) grow_window_tracking: Option<GrowWindowTrackingState>,
     /// Active DragGrayRgn / DragTheRgn tracking state.
@@ -3869,8 +3903,10 @@ impl TrapDispatcher {
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
             control_tracking: None,
+            scrollbar_thumb_tracking: None,
             window_tracking: None,
             go_away_tracking: None,
+            zoom_box_tracking: None,
             grow_window_tracking: None,
             region_tracking: None,
             underline_info: None,
@@ -4147,6 +4183,7 @@ impl TrapDispatcher {
         let is_control_refire = trap_no_autopop == 0xA968;
         let is_window_refire = trap_no_autopop == 0xA925;
         let is_go_away_refire = trap_no_autopop == 0xA91E;
+        let is_track_box_refire = trap_no_autopop == 0xA83B;
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
         (is_menu_refire && is_menu_tracking)
@@ -4154,9 +4191,11 @@ impl TrapDispatcher {
             || (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
-            || (is_control_refire && self.is_control_tracking())
+            || (is_control_refire
+                && (self.is_control_tracking() || self.scrollbar_thumb_tracking.is_some()))
             || (is_window_refire && self.is_window_tracking())
             || (is_go_away_refire && self.is_go_away_tracking())
+            || (is_track_box_refire && self.zoom_box_tracking.is_some())
             || (is_grow_window_refire && self.is_grow_window_tracking())
             || (is_region_refire && self.is_region_tracking())
     }

@@ -15,7 +15,6 @@ use crate::loader::ppc::{
 };
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
-use crate::memory::MemoryBus;
 use crate::runner::{FixtureRunner, FixtureRunnerConfig};
 use std::io::{Cursor, Read};
 use std::path::Component;
@@ -253,35 +252,7 @@ pub fn load_game_from_path(
 /// screen so the initial framebuffer is a known state for screenshots.
 pub fn init_game(runner: &mut FixtureRunner, app: &LoadedApp) {
     runner.init_app(app);
-
-    {
-        if runner.menu_bar_visible() {
-            let (scrn_base, row_bytes, screen_width, screen_height, pixel_size) =
-                runner.dispatcher().screen_mode;
-            crate::trap::TrapDispatcher::fb_fill_pattern_rect(
-                runner.bus_mut(),
-                scrn_base,
-                row_bytes,
-                pixel_size,
-                screen_width as i16,
-                screen_height as i16,
-                0,
-                0,
-                screen_height as i16,
-                screen_width as i16,
-                [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
-            );
-            return;
-        }
-
-        // Clear screen memory to black.
-        // For 8bpp, index 255 = black in the standard Mac CLUT.
-        // For 1bpp, 0xFF = black (all bits set).
-        let (scrn_base, row_bytes, _, scrn_height, _) = runner.dispatcher().screen_mode;
-        runner
-            .bus_mut()
-            .fill_bytes(scrn_base, row_bytes * scrn_height as u32, 0xFF);
-    }
+    runner.clear_startup_framebuffer();
 }
 
 /// Decompress the forks of every file entry, in archive order.

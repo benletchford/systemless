@@ -3234,6 +3234,69 @@ impl super::TrapDispatcher {
             // simple push/checkbox/radio controls across refires; preserves
             // the old immediate hit-test path when the mouse is already up.
             (true, 0x168) => {
+                if let Some(mut tracking) = self.scrollbar_thumb_tracking.take() {
+                    let mouse = self.window_tracking_mouse_pos(bus);
+                    let inside_slop = Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect);
+                    if self.control_tracking_button_down(bus) {
+                        if inside_slop {
+                            let mouse_axis = if tracking.is_vertical { mouse.0 } else { mouse.1 };
+                            let start_axis = if tracking.is_vertical { tracking.start_mouse.0 } else { tracking.start_mouse.1 };
+                            let delta = mouse_axis.wrapping_sub(start_axis);
+                            let new_pos = (tracking.start_thumb_pos + delta).clamp(tracking.track_start, tracking.track_start + tracking.travel);
+                            let new_outline = if tracking.is_vertical {
+                                (new_pos, tracking.cross_start, new_pos + tracking.thumb_size, tracking.cross_end)
+                            } else {
+                                (tracking.cross_start, new_pos, tracking.cross_end, new_pos + tracking.thumb_size)
+                            };
+                            if tracking.outline_rect != Some(new_outline) {
+                                if let Some(_) = tracking.outline_rect {
+                                    self.restore_window_drag_outline_pixels(bus, &tracking.saved_pixels);
+                                }
+                                tracking.outline_rect = Some(new_outline);
+                                tracking.saved_pixels = self.save_window_drag_outline_pixels(bus, new_outline);
+                                self.draw_drag_outline_pattern(bus, new_outline, Self::GRAY_DRAG_PATTERN);
+                            }
+                        } else if let Some(_) = tracking.outline_rect.take() {
+                            self.restore_window_drag_outline_pixels(bus, &tracking.saved_pixels);
+                            tracking.saved_pixels.clear();
+                        }
+                        cpu.write_reg(Register::A7, tracking.stack_ptr);
+                        self.scrollbar_thumb_tracking = Some(tracking);
+                        return Some(Ok(()));
+                    }
+
+                    if let Some(_) = tracking.outline_rect.take() {
+                        self.restore_window_drag_outline_pixels(bus, &tracking.saved_pixels);
+                    }
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+
+                    let part_code = if inside_slop {
+                        let mouse_axis = if tracking.is_vertical { mouse.0 } else { mouse.1 };
+                        let start_axis = if tracking.is_vertical { tracking.start_mouse.0 } else { tracking.start_mouse.1 };
+                        let delta = mouse_axis.wrapping_sub(start_axis);
+                        let final_pos = (tracking.start_thumb_pos + delta).clamp(tracking.track_start, tracking.track_start + tracking.travel);
+                        let range = (tracking.max - tracking.min) as i32;
+                        let new_value = if tracking.travel > 0 && range > 0 {
+                            let rel = (final_pos - tracking.track_start) as i32;
+                            tracking.min + ((rel * range + tracking.travel as i32 / 2) / tracking.travel as i32) as i16
+                        } else {
+                            tracking.start_value
+                        }.clamp(tracking.min, tracking.max);
+
+                        bus.write_word(tracking.ctrl_ptr + 18, new_value as u16);
+                        self.draw_control(cpu, bus, tracking.ctrl_ptr);
+                        129u16
+                    } else {
+                        0u16
+                    };
+
+                    bus.write_word(tracking.stack_ptr + 12, part_code);
+                    cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                    return Some(Ok(()));
+                }
+
                 if self
                     .control_tracking
                     .as_ref()
@@ -3483,6 +3546,69 @@ impl super::TrapDispatcher {
                                             });
                                             return Some(Ok(()));
                                         }
+                                    }
+                                    if part == 129 && self.input_state.mouse_button {
+                                        let window_ptr = bus.read_long(ctrl_ptr + 4);
+                                        let (scr_top, scr_left, _, _) =
+                                            Self::dialog_screen_bounds(bus, window_ptr);
+                                        let val = bus.read_word(ctrl_ptr + 18) as i16;
+                                        let min = bus.read_word(ctrl_ptr + 20) as i16;
+                                        let max = bus.read_word(ctrl_ptr + 22) as i16;
+                                        let is_vertical = (r_bottom - r_top) > (r_right - r_left);
+                                        let arrow_len = if is_vertical {
+                                            (r_right - r_left).min((r_bottom - r_top) / 2)
+                                        } else {
+                                            (r_bottom - r_top).min((r_right - r_left) / 2)
+                                        };
+                                        let thumb_size = 16i16;
+                                        let (track_start, track_end, cross_start, cross_end) = if is_vertical {
+                                            (scr_top + r_top + arrow_len, scr_top + r_bottom - arrow_len, scr_left + r_left, scr_left + r_right)
+                                        } else {
+                                            (scr_left + r_left + arrow_len, scr_left + r_right - arrow_len, scr_top + r_top, scr_top + r_bottom)
+                                        };
+                                        let travel = (track_end - track_start - thumb_size).max(0);
+                                        let range = (max - min) as i32;
+                                        let thumb_pos = if travel > 0 && range > 0 {
+                                            track_start + (((val - min) as i32 * travel as i32) / range) as i16
+                                        } else {
+                                            track_start
+                                        };
+                                        let slop_rect = (
+                                            scr_top + r_top - 30,
+                                            scr_left + r_left - 30,
+                                            scr_top + r_bottom + 30,
+                                            scr_left + r_right + 30,
+                                        );
+                                        let initial_outline = if is_vertical {
+                                            (thumb_pos, cross_start, thumb_pos + thumb_size, cross_end)
+                                        } else {
+                                            (cross_start, thumb_pos, cross_end, thumb_pos + thumb_size)
+                                        };
+                                        let saved_pixels = self.save_window_drag_outline_pixels(bus, initial_outline);
+                                        self.draw_drag_outline_pattern(bus, initial_outline, Self::GRAY_DRAG_PATTERN);
+
+                                        let mouse = (pt_v + scr_top, pt_h + scr_left);
+                                        self.scrollbar_thumb_tracking = Some(super::dispatch::ScrollbarThumbTrackingState {
+                                            _ctrl_handle: ctrl_handle,
+                                            ctrl_ptr,
+                                            stack_ptr: sp,
+                                            start_mouse: mouse,
+                                            start_thumb_pos: thumb_pos,
+                                            start_value: val,
+                                            min,
+                                            max,
+                                            track_start,
+                                            travel,
+                                            cross_start,
+                                            cross_end,
+                                            is_vertical,
+                                            thumb_size,
+                                            slop_rect,
+                                            outline_rect: Some(initial_outline),
+                                            saved_pixels,
+                                        });
+                                        cpu.write_reg(Register::A7, sp);
+                                        return Some(Ok(()));
                                     }
                                     cpu.write_reg(Register::A7, sp + 12);
                                     return Some(Ok(()));
