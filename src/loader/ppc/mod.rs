@@ -80,9 +80,8 @@ use crate::process_context::{
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
-    SharedProcessMenuTracking, SharedProcessMixedModeM68kState, SharedProcessTimerTasks,
-    SharedProcessValue,
-    SharedProcessVblTasks,
+    SharedProcessMenuTracking, SharedProcessMixedModeM68kState, SharedProcessQuickDrawOpColors,
+    SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
 };
 use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -470,6 +469,7 @@ const PPC_CGRAF_PORT_PN_MODE_OFFSET: u32 = 56;
 const PPC_CGRAF_PORT_PN_VIS_OFFSET: u32 = 66;
 const PPC_CGRAF_PORT_VIS_RGN_OFFSET: u32 = 24;
 const PPC_CGRAF_PORT_CLIP_RGN_OFFSET: u32 = 28;
+const PPC_CGRAF_PORT_GRAF_VARS_OFFSET: u32 = 8;
 const PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET: u32 = 36;
 const PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET: u32 = 42;
 const PPC_CGRAF_PORT_BK_PIXPAT_OFFSET: u32 = 32;
@@ -3073,7 +3073,6 @@ pub struct PpcToolboxStartupState {
     /// foreground color and a clear bit selects the background color, as in
     /// the classic `Pattern` record used by BackPat.
     pub quickdraw_back_pattern: [u8; 8],
-    pub quickdraw_op_color: PpcRgbColor,
     pub ae_interaction_allowed: u8,
     pub(crate) stdc_signal_state: PpcStdSignalState,
 }
@@ -3135,7 +3134,6 @@ impl Default for PpcToolboxStartupState {
             clut_reserved_by_device: HashMap::new(),
             quickdraw_pen_pattern: [0xff; 8],
             quickdraw_back_pattern: [0x00; 8],
-            quickdraw_op_color: PPC_RGB_BLACK,
             ae_interaction_allowed: 1,
             stdc_signal_state: PpcStdSignalState::default(),
         }
@@ -3505,6 +3503,7 @@ pub struct PpcLoadedApp {
     pub(crate) process_file_system: SharedProcessFileSystem,
     pub current_gworld: SharedProcessValue<u32>,
     pub current_gdevice: SharedProcessValue<u32>,
+    pub(crate) quickdraw_op_colors: SharedProcessQuickDrawOpColors,
     pub screen_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
@@ -4040,6 +4039,7 @@ impl PpcLoadedApp {
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
+        context.attach_quickdraw_op_colors(&mut self.quickdraw_op_colors);
         self.process_quickdraw_port_state_attached = true;
         context.attach_quickdraw_error(&mut self.toolbox_startup.last_quickdraw_error);
         context.attach_display_color_state(
@@ -7401,6 +7401,7 @@ impl PpcLoadedApp {
         // Volume I, 1985, pp. I-109–I-110.)
         let mut current_gworld = self.current_gworld.shared_handle();
         let mut current_gdevice = self.current_gdevice.shared_handle();
+        let quickdraw_op_colors = self.quickdraw_op_colors.shared_handle();
         let mut screen_clut = self.screen_clut.shared_handle();
         let mut color_manager_clut = self.color_manager_clut.shared_handle();
         let mut device_gamma = self.device_gamma.shared_handle();
@@ -7980,6 +7981,7 @@ impl PpcLoadedApp {
                             next_file_ref_num,
                             &mut current_gworld,
                             &mut current_gdevice,
+                            &quickdraw_op_colors,
                             &mut screen_clut,
                             &mut color_manager_clut,
                             &mut device_gamma,
@@ -13029,6 +13031,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         process_file_system: ppc_initial_process_file_system(),
         current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
         current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+        quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
         screen_clut: SharedProcessValue::from_value(screen_clut),
         color_manager_clut: SharedProcessValue::from_value(color_manager_clut),
         device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -15294,6 +15297,7 @@ fn dispatch_supported_import(
     next_file_ref_num: &mut i16,
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
+    quickdraw_op_colors: &SharedProcessQuickDrawOpColors,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
     device_gamma: &mut crate::display::DisplayGamma,
@@ -17562,13 +17566,12 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::OpColor => {
-            // Inside Macintosh Volume V (1986), p. V-77: OpColor stores
-            // the RGB operand used by addPin, subPin, and blend transfer
-            // modes in the current color port's grafVars record. PPC color
-            // ports share the loader's QuickDraw state until those modes
-            // need distinct per-port rendering state.
             if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
-                toolbox_startup.quickdraw_op_color = color;
+                // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62
+                // and 4-64: OpColor updates the current CGrafPort's
+                // GrafVars.rgbOpColor. Static ports without a valid handle
+                // use the process-owned per-port fallback.
+                ppc_write_port_op_color(memory, *current_gworld, color, quickdraw_op_colors);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -18449,6 +18452,7 @@ fn dispatch_supported_import(
                     let _ = ppc_record_copy_bits(cpu, memory, gworlds, commands);
                 }
             }
+            let op_color = ppc_current_op_color(memory, *current_gworld, quickdraw_op_colors);
             let _ = ppc_copy_bits(
                 cpu,
                 memory,
@@ -18464,7 +18468,7 @@ fn dispatch_supported_import(
                     .quickdraw_back_indices
                     .get(current_gworld)
                     .copied(),
-                toolbox_startup.quickdraw_op_color,
+                op_color,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -19636,6 +19640,7 @@ fn dispatch_supported_import(
             gworlds.retain(|gworld| gworld.port == PPC_MAIN_GWORLD || gworld.port != port);
             if let Some(record) = disposed {
                 quickdraw_fore_indices.remove(&port);
+                quickdraw_op_colors.remove_quickdraw_op_color(port);
                 let allocation = toolbox_startup.gworld_allocations.remove(&port);
                 let saved_ctable = toolbox_startup
                     .indexed_screen_ctables
@@ -20059,6 +20064,7 @@ fn dispatch_supported_import(
                     .remove(&pixmap_handle);
                 quickdraw_fore_indices.remove(&port);
             }
+            quickdraw_op_colors.remove_quickdraw_op_color(port);
             if was_current && *current_gworld != port {
                 ppc_restore_port_colors(
                     memory,
@@ -58647,6 +58653,72 @@ fn ppc_port_rgb_colors(
     ))
 }
 
+fn ppc_port_op_color_from_graf_vars(
+    memory: &mut PpcSectionMem,
+    port: u32,
+) -> Option<PpcRgbColor> {
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64:
+    // a CGrafPort's GrafVars record begins with rgbOpColor. Do not consult
+    // the fallback map when a valid guest record is present; guest memory is
+    // the authoritative representation for that port.
+    if memory.read_u16_be(port.checked_add(6)?)? & 0xc000 != 0xc000 {
+        return None;
+    }
+    let graf_vars_handle = memory.read_u32_be(port.checked_add(PPC_CGRAF_PORT_GRAF_VARS_OFFSET)?)?;
+    if graf_vars_handle == 0 || !ppc_memory_can_write_bytes(memory, graf_vars_handle, 4) {
+        return None;
+    }
+    let graf_vars = memory.read_u32_be(graf_vars_handle)?;
+    if graf_vars == 0 || !ppc_memory_can_write_bytes(memory, graf_vars, 6) {
+        return None;
+    }
+    ppc_read_rgb_color(memory, graf_vars)
+}
+
+fn ppc_current_op_color(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    quickdraw_op_colors: &SharedProcessQuickDrawOpColors,
+) -> PpcRgbColor {
+    ppc_port_op_color_from_graf_vars(memory, port)
+        .or_else(|| {
+            quickdraw_op_colors
+                .quickdraw_op_color(port)
+                .map(|(red, green, blue)| PpcRgbColor { red, green, blue })
+        })
+        .unwrap_or(PPC_RGB_BLACK)
+}
+
+fn ppc_write_port_op_color(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    color: PpcRgbColor,
+    quickdraw_op_colors: &SharedProcessQuickDrawOpColors,
+) {
+    let Some(port_version) = port.checked_add(6).and_then(|address| memory.read_u16_be(address))
+    else {
+        return;
+    };
+    if port_version & 0xc000 != 0xc000 {
+        return;
+    }
+    let graf_vars_handle = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_GRAF_VARS_OFFSET))
+        .unwrap_or(0);
+    if let Some(graf_vars) = (graf_vars_handle != 0)
+        .then(|| memory.read_u32_be(graf_vars_handle).unwrap_or(0))
+        .filter(|graf_vars| {
+            *graf_vars != 0 && ppc_memory_can_write_bytes(memory, *graf_vars, 6)
+        })
+    {
+        let _ = ppc_write_rgb_color(memory, graf_vars, color);
+    }
+    // Static process ports (including the seeded main port) do not own an
+    // allocator-managed GrafVars handle. Keep their per-port fallback live
+    // across attached 68K and PowerPC adapters.
+    quickdraw_op_colors.set_quickdraw_op_color(port, (color.red, color.green, color.blue));
+}
+
 fn ppc_write_port_rgb_color(
     memory: &mut PpcSectionMem,
     port: u32,
@@ -88384,7 +88456,7 @@ pub(crate) mod tests {
     use crate::managers::resource::serialize_resource_fork;
     use crate::memory::MemoryBus;
     use crate::sound::PendingSoundCallback;
-    use crate::trap::test_helpers::{setup_with_port, TEST_SP};
+    use crate::trap::test_helpers::{setup_with_port, MockCpu, TEST_SP};
     use ppc::PpcMemory;
 
     fn test_q3_object(object: u32, object_type: u32) -> PpcQ3ObjectRecord {
@@ -144636,11 +144708,15 @@ pub(crate) mod tests {
         loaded.memory.write_u16_be(src_pixels, 0x7c00).unwrap();
         loaded.memory.write_u16_be(dst_pixels, 0x001f).unwrap();
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
-        loaded.toolbox_startup.quickdraw_op_color = PpcRgbColor {
+        let op_color = PpcRgbColor {
             red: 0x8000,
             green: 0x8000,
             blue: 0x8000,
         };
+        loaded.quickdraw_op_colors.set_quickdraw_op_color(
+            PPC_MAIN_GWORLD,
+            (op_color.red, op_color.green, op_color.blue),
+        );
         loaded.cpu.gpr[3] = src_pixmap;
         loaded.cpu.gpr[4] = dst_pixmap;
         loaded.cpu.gpr[5] = rect;
@@ -158002,7 +158078,195 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.toolbox_startup.quickdraw_op_color, color);
+        assert_eq!(
+            loaded.quickdraw_op_colors.quickdraw_op_color(PPC_MAIN_GWORLD),
+            Some((color.red, color.green, color.blue))
+        );
+    }
+
+    #[test]
+    fn classic_op_color_is_consumed_by_attached_native_copybits() {
+        // The native CopyBits implementation is the current arithmetic-mode
+        // consumer. Exercise the actual 68K -> process state -> PPC path.
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        classic_bus.attach_guest_address_space(native.memory.shared_view());
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let mut classic_cpu = MockCpu::new();
+        let sp = 0x0100;
+        let color_ptr = 0x0120;
+        classic_cpu.write_reg(Register::A7, sp);
+        classic_bus.write_long(sp, color_ptr);
+        classic_bus.write_word(color_ptr, 0x8000);
+        classic_bus.write_word(color_ptr + 2, 0x8000);
+        classic_bus.write_word(color_ptr + 4, 0x8000);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x221, &mut classic_cpu, &mut classic_bus)
+            .expect("OpColor trap")
+            .is_ok());
+        assert_eq!(classic_cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(
+            native.quickdraw_op_colors.quickdraw_op_color(PPC_MAIN_GWORLD),
+            Some((0x8000, 0x8000, 0x8000))
+        );
+
+        let scratch = PPC_HEAP_BASE + 0x11600;
+        let src_pixels = scratch;
+        let dst_pixels = scratch + 4;
+        let src_pixmap = scratch + 8;
+        let dst_pixmap = scratch + 64;
+        let rect = scratch + 120;
+        native.memory.add_region(scratch, vec![0; 128]);
+        ppc_write_pixmap(
+            &mut native.memory,
+            src_pixmap,
+            src_pixels,
+            2,
+            0,
+            0,
+            1,
+            1,
+            16,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut native.memory,
+            dst_pixmap,
+            dst_pixels,
+            2,
+            0,
+            0,
+            1,
+            1,
+            16,
+        )
+        .unwrap();
+        native.memory.write_u16_be(src_pixels, 0x7c00).unwrap();
+        native.memory.write_u16_be(dst_pixels, 0x001f).unwrap();
+        ppc_write_rect(&mut native.memory, rect, 0, 0, 1, 1).unwrap();
+        native.cpu.gpr[3] = src_pixmap;
+        native.cpu.gpr[4] = dst_pixmap;
+        native.cpu.gpr[5] = rect;
+        native.cpu.gpr[6] = rect;
+        native.cpu.gpr[7] = 32;
+        native.cpu.gpr[8] = 0;
+
+        run_test_import(&mut native, PpcImportDispatcherTarget::CopyBits);
+
+        assert_eq!(native.memory.read_u16_be(dst_pixels), Some(0x3c0f));
+    }
+
+    #[test]
+    fn native_op_color_is_immediately_visible_to_attached_classic_grafvars() {
+        let pef = synthetic_pef_with_import(b"OpColor");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+
+        let base = PPC_HEAP_BASE + 0x12_000;
+        let port = base;
+        let graf_vars_handle = base + 0x100;
+        let graf_vars = base + 0x110;
+        let color_ptr = base + 0x120;
+        native.memory.add_region(base, vec![0; 0x140]);
+        native.memory.write_u16_be(port + 6, 0xc000).unwrap();
+        native
+            .memory
+            .write_u32_be(port + PPC_CGRAF_PORT_GRAF_VARS_OFFSET, graf_vars_handle)
+            .unwrap();
+        native.memory.write_u32_be(graf_vars_handle, graf_vars).unwrap();
+        let color = PpcRgbColor {
+            red: 0x1234,
+            green: 0x5678,
+            blue: 0x9abc,
+        };
+        ppc_write_rgb_color(&mut native.memory, color_ptr, color).unwrap();
+        *native.current_gworld = port;
+
+        native.cpu.gpr[3] = color_ptr;
+        run_test_import(&mut native, PpcImportDispatcherTarget::OpColor);
+
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        classic_bus.attach_guest_address_space(native.memory.shared_view());
+        context.attach_classic_memory_bus(&mut classic_bus);
+        assert_eq!(*classic.current_port, port);
+        assert_eq!(classic_bus.read_word(graf_vars), color.red);
+        assert_eq!(classic_bus.read_word(graf_vars + 2), color.green);
+        assert_eq!(classic_bus.read_word(graf_vars + 4), color.blue);
+    }
+
+    #[test]
+    fn op_color_keeps_distinct_values_when_switching_between_ports() {
+        let pef = synthetic_pef_with_import(b"OpColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let base = PPC_HEAP_BASE + 0x13_000;
+        let first_port = base;
+        let second_port = base + 0x40;
+        let first_color_ptr = base + 0x80;
+        let second_color_ptr = base + 0x90;
+        loaded.memory.add_region(base, vec![0; 0xa0]);
+        for port in [first_port, second_port] {
+            loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
+        }
+        let first_color = PpcRgbColor {
+            red: 0x1111,
+            green: 0x2222,
+            blue: 0x3333,
+        };
+        let second_color = PpcRgbColor {
+            red: 0xaaaa,
+            green: 0xbbbb,
+            blue: 0xcccc,
+        };
+        ppc_write_rgb_color(&mut loaded.memory, first_color_ptr, first_color).unwrap();
+        ppc_write_rgb_color(&mut loaded.memory, second_color_ptr, second_color).unwrap();
+
+        *loaded.current_gworld = first_port;
+        loaded.cpu.gpr[3] = first_color_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::OpColor);
+        *loaded.current_gworld = second_port;
+        loaded.cpu.gpr[3] = second_color_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::OpColor);
+
+        assert_eq!(
+            ppc_current_op_color(&mut loaded.memory, first_port, &loaded.quickdraw_op_colors),
+            first_color
+        );
+        assert_eq!(
+            ppc_current_op_color(&mut loaded.memory, second_port, &loaded.quickdraw_op_colors),
+            second_color
+        );
+    }
+
+    #[test]
+    fn detached_ppc_clone_has_independent_quickdraw_op_colors() {
+        let pef = synthetic_pef_with_import(b"OpColor");
+        let loaded = load_pef_application(&pef).unwrap();
+        let port = PPC_HEAP_BASE + 0x14_000;
+        loaded
+            .quickdraw_op_colors
+            .set_quickdraw_op_color(port, (0x1111, 0x2222, 0x3333));
+        let detached = loaded.clone();
+        loaded
+            .quickdraw_op_colors
+            .set_quickdraw_op_color(port, (0xaaaa, 0xbbbb, 0xcccc));
+
+        assert_eq!(
+            loaded.quickdraw_op_colors.quickdraw_op_color(port),
+            Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
+        assert_eq!(
+            detached.quickdraw_op_colors.quickdraw_op_color(port),
+            Some((0x1111, 0x2222, 0x3333))
+        );
     }
 
     #[test]

@@ -1411,6 +1411,8 @@ impl super::TrapDispatcher {
                 self.cport_ports.remove(&port_ptr);
                 self.cport_original_pixmaps.remove(&port_ptr);
                 self.resolved_port_color_fields.remove(&port_ptr);
+                self.quickdraw_op_colors
+                    .remove_quickdraw_op_color(port_ptr);
                 Ok(())
             }
 
@@ -12001,24 +12003,22 @@ impl super::TrapDispatcher {
             //
             // Documented behaviour: when color != NIL, three RGB words
             // (red, green, blue) are read from [color..color+6] and
-            // stored in the cGrafPort's grafVars handle. When color ==
-            // NIL both BII System 7.5.3 ROM Color QuickDraw and Systemless
-            // HLE take an early-exit no-op path before touching
-            // grafVars: the 4-byte pop is still performed but no field
-            // write happens. Systemless stores the RGB on the dispatcher
-            // (self.op_color) rather than per-port grafVars; this
-            // matches the single-port assumption used by fg_color /
-            // bg_color and differs from BII's WMgrCPort grafVars write
-            // on the non-NIL path. The NIL early-exit path shares the
-            // Pascal PROCEDURE pop-4 calling convention with BII.
+            // stored in the current cGrafPort's grafVars handle. When
+            // color == NIL the 4-byte pop is still performed but no field
+            // write happens. Static cGrafPort records without an owned
+            // grafVars handle use the process-owned per-port index as the
+            // same live state across attached adapters.
             (true, 0x221) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rgb_ptr = bus.read_long(sp);
-                if rgb_ptr != 0 {
-                    let r = bus.read_word(rgb_ptr);
-                    let g = bus.read_word(rgb_ptr + 2);
-                    let b = bus.read_word(rgb_ptr + 4);
-                    self.op_color = (r, g, b);
+                if rgb_ptr != 0 && Self::guest_range_in_ram(bus, rgb_ptr, 6) {
+                    let color = (
+                        bus.read_word(rgb_ptr),
+                        bus.read_word(rgb_ptr + 2),
+                        bus.read_word(rgb_ptr + 4),
+                    );
+                    let port = *self.current_port;
+                    self.write_port_op_color(bus, port, color);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -18873,6 +18873,7 @@ impl super::TrapDispatcher {
         }
         self.port_draw_states.remove(&port);
         self.resolved_port_color_fields.remove(&port);
+        self.quickdraw_op_colors.remove_quickdraw_op_color(port);
     }
 
     pub(super) fn effective_destination_ctab_handle(
@@ -19042,6 +19043,33 @@ impl super::TrapDispatcher {
         self.tx_mode = state.tx_mode;
         self.tx_size = state.tx_size;
         self.sync_port_draw_state(bus, port);
+    }
+
+    fn write_port_op_color(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        port: u32,
+        color: (u16, u16, u16),
+    ) {
+        let port_range_mapped = port.checked_add(14).is_some_and(|end| {
+            end <= bus.ram_size()
+                || (port..end).all(|address| bus.is_foreign_ordinary_sparse_address(address))
+        });
+        if port == 0 || !port_range_mapped || (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+            return;
+        }
+        let graf_vars_handle = bus.read_long(port + 8);
+        if Self::handle_points_to_guest_range(bus, graf_vars_handle, 6) {
+            let graf_vars = bus.read_long(graf_vars_handle);
+            bus.write_word(graf_vars, color.0);
+            bus.write_word(graf_vars + 2, color.1);
+            bus.write_word(graf_vars + 4, color.2);
+        }
+        // Keep a process-owned per-port index for static records without a
+        // valid GrafVars handle. A valid guest GrafVars record remains the
+        // authoritative read path above.
+        self.quickdraw_op_colors
+            .set_quickdraw_op_color(port, color);
     }
 
     fn capture_port_region(

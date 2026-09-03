@@ -1264,6 +1264,14 @@ pub(crate) type SharedProcessTextEditManager = SharedProcessValue<ProcessTextEdi
 /// Detached-by-default attachment handle for Dialog Manager `ParamText` slots.
 pub type SharedProcessDialogText = SharedProcessValue<[Vec<u8>; 4]>;
 
+/// Canonical per-color-port arithmetic transfer colors. The guest-visible
+/// `CGrafPort.grafVars` record is the primary representation; this process
+/// index keeps the value live across adapters when a port is one of the
+/// static records that cannot own an allocator-managed GrafVars handle.
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+pub(crate) type SharedProcessQuickDrawOpColors =
+    SharedProcessValue<HashMap<u32, (u16, u16, u16)>>;
+
 /// Canonical desktop scrap for one Macintosh process.
 ///
 /// The Scrap Manager exposes one ordered collection of typed flavors to every
@@ -1457,6 +1465,38 @@ impl<T> SharedProcessValue<T> {
     #[cfg(test)]
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl SharedProcessValue<HashMap<u32, (u16, u16, u16)>> {
+    /// Read one Color QuickDraw operation color without exposing a reference
+    /// into the process-owned map to adapter code. This keeps any mutable
+    /// borrow inside the individual operation, so a Mixed Mode callback can
+    /// safely enter the other attached adapter afterwards.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn quickdraw_op_color(&self, port: u32) -> Option<(u16, u16, u16)> {
+        // SAFETY: process adapters are serialized by the runner. The map is
+        // accessed only for the duration of this operation; no reference is
+        // returned to the UnsafeCell-backed value.
+        unsafe { (&*self.0.get()).get(&port).copied() }
+    }
+
+    /// Update one process-owned Color QuickDraw operation color while keeping
+    /// the UnsafeCell borrow scoped to this statement.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn set_quickdraw_op_color(&self, port: u32, color: (u16, u16, u16)) {
+        // SAFETY: see `quickdraw_op_color`.
+        unsafe {
+            (&mut *self.0.get()).insert(port, color);
+        }
+    }
+
+    /// Drop a disposed port's fallback operation color.
+    pub(crate) fn remove_quickdraw_op_color(&self, port: u32) {
+        // SAFETY: see `quickdraw_op_color`.
+        unsafe {
+            (&mut *self.0.get()).remove(&port);
+        }
     }
 }
 
@@ -5599,6 +5639,7 @@ pub(crate) struct ProcessContext {
     text_edit_manager: SharedProcessTextEditManager,
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
+    quickdraw_op_colors: SharedProcessQuickDrawOpColors,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
     quickdraw_error: SharedProcessValue<i16>,
@@ -5632,6 +5673,7 @@ impl Default for ProcessContext {
             text_edit_manager: SharedProcessTextEditManager::default(),
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
+            quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
             quickdraw_error: SharedProcessValue::from_value(0),
@@ -5764,6 +5806,17 @@ impl ProcessContext {
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
         adapter.attach_to(&self.cursor_state, ProcessCursorState::is_pristine);
+    }
+
+    /// Attach Color QuickDraw's per-port `GrafVars.rgbOpColor` index. The
+    /// ordinary clone path of `SharedProcessValue` remains detached, while
+    /// attached 68K and PowerPC adapters observe updates immediately.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn attach_quickdraw_op_colors(
+        &self,
+        adapter: &mut SharedProcessQuickDrawOpColors,
+    ) {
+        adapter.attach_to(&self.quickdraw_op_colors, |colors| colors.is_empty());
     }
 
     /// Attach a CPU adapter to the process's current QuickDraw port and device.

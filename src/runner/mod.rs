@@ -13613,6 +13613,7 @@ mod tests {
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            quickdraw_op_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -16026,6 +16027,7 @@ mod tests {
             ),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            quickdraw_op_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -16818,6 +16820,7 @@ mod tests {
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            quickdraw_op_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -16971,6 +16974,7 @@ mod tests {
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            quickdraw_op_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -17383,6 +17387,7 @@ mod tests {
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            quickdraw_op_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -17695,6 +17700,7 @@ mod tests {
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            quickdraw_op_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
