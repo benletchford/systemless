@@ -142,7 +142,8 @@ where
             return;
         }
         let target_tick = runner.guest_tick().saturating_add(1);
-        let (_steps, still_running) = runner.run_steps_with_audio(BATCH_STEPS, Some(target_tick), 0);
+        let (_steps, still_running) =
+            runner.run_steps_with_audio(BATCH_STEPS, Some(target_tick), 0);
         if !still_running || runner.is_halted() {
             panic!(
                 "Emulation halted unexpectedly while waiting for '{label}' at iteration {iteration}:\n\
@@ -173,6 +174,21 @@ fn click_point(runner: &mut FixtureRunner, v: i16, h: i16) {
     runner.push_mouse_up(v, h);
 }
 
+fn drag_mouse(runner: &mut FixtureRunner, from_v: i16, from_h: i16, to_v: i16, to_h: i16) {
+    runner.set_mouse_position(from_v, from_h);
+    runner.push_mouse_down(from_v, from_h);
+    run_ticks(runner, "mouse down registered", 1);
+    let steps = 4;
+    for step in 1..=steps {
+        let v = from_v + (to_v - from_v) * step / steps;
+        let h = from_h + (to_h - from_h) * step / steps;
+        runner.set_mouse_position(v, h);
+        run_ticks(runner, "mouse drag step", 1);
+    }
+    runner.push_mouse_up(to_v, to_h);
+    run_ticks(runner, "mouse up registered", 1);
+}
+
 fn sound_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_left: i16) -> bool {
     // SetPage updates the menu state before DrawMainWindow paints the page.
     // The right-hand lifecycle panel is only present after DrawSoundPage has
@@ -180,17 +196,21 @@ fn sound_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_left: i16) 
     // Include the filled panel, its heading, and the final Dispose button:
     // outer panel borders are drawn before their contents and DrawControls,
     // so border-only checks can still catch a partial frame.
-    [(82, 420), (160, 420), (94, 318), (237, 420), (160, 305), (160, 534),
-     (290, 153), (313, 153)]
-        .iter()
-        .all(|(v, h)| {
-            let [red, green, blue] = screen_rgb(
-                runner,
-                (win_top + v) as u16,
-                (win_left + h) as u16,
-            );
-            red < 250 || green < 250 || blue < 250
-        })
+    [
+        (82, 420),
+        (160, 420),
+        (94, 318),
+        (237, 420),
+        (160, 305),
+        (160, 534),
+        (290, 153),
+        (313, 153),
+    ]
+    .iter()
+    .all(|(v, h)| {
+        let [red, green, blue] = screen_rgb(runner, (win_top + v) as u16, (win_left + h) as u16);
+        red < 250 || green < 250 || blue < 250
+    })
 }
 
 fn screen_rgb(runner: &mut FixtureRunner, v: u16, h: u16) -> [u8; 3] {
@@ -321,7 +341,11 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         .count();
     let actual_path = std::env::temp_dir().join(format!(
         "systemless-toolbox-showcase-{}-{filename}",
-        if runner.is_powerpc_app() { "ppc" } else { "68k" }
+        if runner.is_powerpc_app() {
+            "ppc"
+        } else {
+            "68k"
+        }
     ));
     write_rgb(&actual_path, width, height, actual);
     panic!(
@@ -479,27 +503,47 @@ fn assert_styled_text_page_rendered(runner: &mut FixtureRunner, win_top: i16, wi
     let text_bottom = win_top + 114;
     let text_right = win_left + 521;
     assert!(
-        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
-            rgb[2] > rgb[0].saturating_add(20) && rgb[2] > rgb[1].saturating_add(10)
-        }),
+        region_contains_color(
+            runner,
+            text_top,
+            text_left,
+            text_bottom,
+            text_right,
+            |rgb| { rgb[2] > rgb[0].saturating_add(20) && rgb[2] > rgb[1].saturating_add(10) }
+        ),
         "styled TextEdit blue run was not rendered"
     );
     assert!(
-        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
-            rgb[0] > rgb[1].saturating_add(25) && rgb[0] > rgb[2].saturating_add(25)
-        }),
+        region_contains_color(
+            runner,
+            text_top,
+            text_left,
+            text_bottom,
+            text_right,
+            |rgb| { rgb[0] > rgb[1].saturating_add(25) && rgb[0] > rgb[2].saturating_add(25) }
+        ),
         "styled TextEdit red run was not rendered"
     );
     assert!(
-        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
-            rgb[1] > rgb[0].saturating_add(15) && rgb[1] > rgb[2].saturating_add(15)
-        }),
+        region_contains_color(
+            runner,
+            text_top,
+            text_left,
+            text_bottom,
+            text_right,
+            |rgb| { rgb[1] > rgb[0].saturating_add(15) && rgb[1] > rgb[2].saturating_add(15) }
+        ),
         "styled TextEdit green run was not rendered"
     );
     assert!(
-        region_contains_color(runner, text_top, text_left, text_bottom, text_right, |rgb| {
-            rgb[0] > 45 && rgb[2] > 45 && rgb[1].saturating_add(20) < rgb[0].min(rgb[2])
-        }),
+        region_contains_color(
+            runner,
+            text_top,
+            text_left,
+            text_bottom,
+            text_right,
+            |rgb| { rgb[0] > 45 && rgb[2] > 45 && rgb[1].saturating_add(20) < rgb[0].min(rgb[2]) }
+        ),
         "styled TextEdit purple run was not rendered"
     );
 
@@ -507,21 +551,36 @@ fn assert_styled_text_page_rendered(runner: &mut FixtureRunner, win_top: i16, wi
     // MeasureText, respectively. Their colors and non-zero extents are
     // generated from those API results by the fixture.
     assert!(
-        region_contains_color(runner, win_top + 263, win_left + 399, win_top + 270, win_left + 450, |rgb| {
-            rgb[2] > rgb[0].saturating_add(20)
-        }),
+        region_contains_color(
+            runner,
+            win_top + 263,
+            win_left + 399,
+            win_top + 270,
+            win_left + 450,
+            |rgb| { rgb[2] > rgb[0].saturating_add(20) }
+        ),
         "CharWidth result ruler was not rendered"
     );
     assert!(
-        region_contains_color(runner, win_top + 278, win_left + 399, win_top + 285, win_left + 500, |rgb| {
-            rgb[1] > rgb[0].saturating_add(15)
-        }),
+        region_contains_color(
+            runner,
+            win_top + 278,
+            win_left + 399,
+            win_top + 285,
+            win_left + 500,
+            |rgb| { rgb[1] > rgb[0].saturating_add(15) }
+        ),
         "TextWidth result ruler was not rendered"
     );
     assert!(
-        region_contains_color(runner, win_top + 293, win_left + 399, win_top + 300, win_left + 500, |rgb| {
-            rgb[0] > 45 && rgb[2] > 45
-        }),
+        region_contains_color(
+            runner,
+            win_top + 293,
+            win_left + 399,
+            win_top + 300,
+            win_left + 500,
+            |rgb| { rgb[0] > 45 && rgb[2] > 45 }
+        ),
         "MeasureText result ruler was not rendered"
     );
 }
@@ -534,11 +593,21 @@ fn assert_sprites_page_rendered(
     // The page copies the 320×128 GWorld into local Rect(24, 80, 344, 208).
     // The first sprite's body center is world (62, 70), and its matte corner
     // at (38, 38) must leave the scene background untouched.
-    let first_body = screen_rgb(runner, (win_top + 80 + 70) as u16, (win_left + 24 + 62) as u16);
-    let matte_outside =
-        screen_rgb(runner, (win_top + 80 + 38) as u16, (win_left + 24 + 38) as u16);
-    let scene_background =
-        screen_rgb(runner, (win_top + 80 + 8) as u16, (win_left + 24 + 8) as u16);
+    let first_body = screen_rgb(
+        runner,
+        (win_top + 80 + 70) as u16,
+        (win_left + 24 + 62) as u16,
+    );
+    let matte_outside = screen_rgb(
+        runner,
+        (win_top + 80 + 38) as u16,
+        (win_left + 24 + 38) as u16,
+    );
+    let scene_background = screen_rgb(
+        runner,
+        (win_top + 80 + 8) as u16,
+        (win_left + 24 + 8) as u16,
+    );
     assert_ne!(
         first_body, scene_background,
         "CopyMask sprite body must differ from the offscreen scene background"
@@ -550,8 +619,11 @@ fn assert_sprites_page_rendered(
 
     // The second sprite is centered at world (238, 70). Its center is both
     // inside the deep mask and inside the BitMapToRegion-derived clip.
-    let second_body =
-        screen_rgb(runner, (win_top + 80 + 70) as u16, (win_left + 24 + 238) as u16);
+    let second_body = screen_rgb(
+        runner,
+        (win_top + 80 + 70) as u16,
+        (win_left + 24 + 238) as u16,
+    );
     assert_ne!(
         second_body, scene_background,
         "CopyDeepMask's deep-mask center must render inside the region clip"
@@ -559,7 +631,11 @@ fn assert_sprites_page_rendered(
 
     // SetCPixel/GetCPixel writes a red probe at world (15, 12), outside both
     // sprites, and the page copies that pixel to the visible scene.
-    let probe = screen_rgb(runner, (win_top + 80 + 12) as u16, (win_left + 24 + 15) as u16);
+    let probe = screen_rgb(
+        runner,
+        (win_top + 80 + 12) as u16,
+        (win_left + 24 + 15) as u16,
+    );
     assert!(
         probe[0] > probe[1].saturating_add(30),
         "SetCPixel/GetCPixel probe must retain its red component: rgb={probe:?}"
@@ -867,6 +943,18 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "03-windows.png");
 
+    // 3b. Drag auxiliary window by title bar and return it
+    drag_mouse(&mut runner, 145, 250, 175, 280);
+    run_ticks(&mut runner, "aux window dragged", 2);
+    drag_mouse(&mut runner, 175, 280, 145, 250);
+    run_ticks(&mut runner, "aux window returned", 2);
+
+    // 3c. Resize auxiliary window using its grow box and restore it
+    drag_mouse(&mut runner, 292, 562, 322, 602);
+    run_ticks(&mut runner, "aux window resized", 2);
+    drag_mouse(&mut runner, 322, 602, 292, 562);
+    run_ticks(&mut runner, "aux window resize restored", 2);
+
     // 4. Switch to Drawing & 3D Bevels page (disposing auxiliary window).
     let completed_qd3d_frames = runner.completed_qd3d_frame_count();
     assert!(
@@ -880,13 +968,15 @@ fn test_toolbox_showcase() {
         let one_window = r.window_count() == 1;
         page_checked && aux_cleared && one_window
     });
-    step_until(&mut runner, "Drawing page and native QuickDraw 3D to finish", |r| {
-        let [red, green, blue] =
-            screen_rgb(r, (win_top + 110) as u16, (win_left + 345) as u16);
-        let drawing_finished = red > 150 && green > 100 && blue < 100;
-        drawing_finished
-            && (!powerpc || r.completed_qd3d_frame_count() > completed_qd3d_frames)
-    });
+    step_until(
+        &mut runner,
+        "Drawing page and native QuickDraw 3D to finish",
+        |r| {
+            let [red, green, blue] = screen_rgb(r, (win_top + 110) as u16, (win_left + 345) as u16);
+            let drawing_finished = red > 150 && green > 100 && blue < 100;
+            drawing_finished && (!powerpc || r.completed_qd3d_frame_count() > completed_qd3d_frames)
+        },
+    );
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING));
     runner.set_mouse_position(550, 760);
@@ -974,7 +1064,25 @@ fn test_toolbox_showcase() {
         menu_item_checked(&snapshot, MENU_RENDERER, ITEM_RENDERER_BEVEL)
     });
 
-    // Move volume scrollbar
+    // Exercise volume scrollbar: step left arrow, drag thumb, and step right arrow
+    click_point(&mut runner, win_top + 203, win_left + 43);
+    run_ticks(&mut runner, "step volume left", 1);
+    drag_mouse(
+        &mut runner,
+        win_top + 203,
+        win_left + 158,
+        win_top + 203,
+        win_left + 110,
+    );
+    run_ticks(&mut runner, "drag volume thumb left", 1);
+    drag_mouse(
+        &mut runner,
+        win_top + 203,
+        win_left + 110,
+        win_top + 203,
+        win_left + 158,
+    );
+    run_ticks(&mut runner, "drag volume thumb right", 1);
     click_point(&mut runner, win_top + 203, win_left + 207);
     run_ticks(&mut runner, "Preferences page to settle", 1);
     runner.set_mouse_position(550, 760);
@@ -1044,11 +1152,7 @@ fn test_toolbox_showcase() {
         "failed to queue selection of TextEdit page"
     );
     step_until(&mut runner, "switch to TextEdit page", |r| {
-        menu_item_checked(
-            &r.guest_menu_snapshot(),
-            MENU_PAGES,
-            ITEM_PAGE_TEXTEDIT,
-        )
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_TEXTEDIT)
     });
     // Click Center alignment radio: local (178, 445)
     click_point(&mut runner, win_top + 178, win_left + 445);
@@ -1064,15 +1168,10 @@ fn test_toolbox_showcase() {
         "failed to queue selection of Palettes page"
     );
     step_until(&mut runner, "switch to Palettes page", |r| {
-        menu_item_checked(
-            &r.guest_menu_snapshot(),
-            MENU_PAGES,
-            ITEM_PAGE_PALETTES,
-        )
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_PALETTES)
     });
     step_until(&mut runner, "indexed PICT transfer to render", |r| {
-        screen_rgb(r, (win_top + 280) as u16, (win_left + 340) as u16)
-            != [255, 255, 255]
+        screen_rgb(r, (win_top + 280) as u16, (win_left + 340) as u16) != [255, 255, 255]
     });
     let indexed_picture_rgb = [340, 365, 382, 400, 421, 450, 480, 500, 520]
         .map(|x| screen_rgb(&mut runner, (win_top + 280) as u16, (win_left + x) as u16));
@@ -1105,13 +1204,11 @@ fn test_toolbox_showcase() {
         },
         "DrawPicture and CopyBits must preserve the exact architecture-specific indexed PICT color sequence across CTables"
     );
-    let initial_device_rgb = screen_rgb(
-        &mut runner,
-        (win_top + 130) as u16,
-        (win_left + 100) as u16,
-    );
+    let initial_device_rgb =
+        screen_rgb(&mut runner, (win_top + 130) as u16, (win_left + 100) as u16);
     assert_ne!(
-        initial_device_rgb, [0, 0, 0],
+        initial_device_rgb,
+        [0, 0, 0],
         "mixed-usage palette must populate the indexed device CLUT with non-zero RGB"
     );
     let sample_x = win_left + 350;
@@ -1121,21 +1218,11 @@ fn test_toolbox_showcase() {
         pict_band_sample != [0, 0, 0],
         "indexed PICT band must resolve to non-black indexed pixels via offscreen GWorld and destination palette"
     );
-    let same_device_left = screen_rgb(
-        &mut runner,
-        (win_top + 310) as u16,
-        (win_left + 345) as u16,
-    );
-    let same_device_middle = screen_rgb(
-        &mut runner,
-        (win_top + 310) as u16,
-        (win_left + 410) as u16,
-    );
-    let same_device_right = screen_rgb(
-        &mut runner,
-        (win_top + 310) as u16,
-        (win_left + 505) as u16,
-    );
+    let same_device_left = screen_rgb(&mut runner, (win_top + 310) as u16, (win_left + 345) as u16);
+    let same_device_middle =
+        screen_rgb(&mut runner, (win_top + 310) as u16, (win_left + 410) as u16);
+    let same_device_right =
+        screen_rgb(&mut runner, (win_top + 310) as u16, (win_left + 505) as u16);
     assert!(
         same_device_left != [0, 0, 0]
             && same_device_middle != [0, 0, 0]
@@ -1148,11 +1235,8 @@ fn test_toolbox_showcase() {
             && same_device_left != same_device_right,
         "same-device indexed CopyBits must preserve three distinct positional device indexes"
     );
-    let inverse_table_band = screen_rgb(
-        &mut runner,
-        (win_top + 331) as u16,
-        (win_left + 450) as u16,
-    );
+    let inverse_table_band =
+        screen_rgb(&mut runner, (win_top + 331) as u16, (win_left + 450) as u16);
     if powerpc {
         assert!(
             inverse_table_band[0] < 16
@@ -1276,15 +1360,15 @@ fn test_toolbox_showcase() {
         "failed to queue selection of Lists & Inventory page"
     );
     step_until(&mut runner, "switch to Lists & Inventory page", |r| {
-        menu_item_checked(
-            &r.guest_menu_snapshot(),
-            MENU_PAGES,
-            ITEM_PAGE_LISTS,
-        )
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_LISTS)
     });
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS));
-    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS));
+    assert!(!menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_GRAPHICS
+    ));
     assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SOUND));
 
     runner.set_mouse_position(550, 760);
@@ -1515,11 +1599,7 @@ fn test_toolbox_showcase() {
         "failed to queue selection of Styled Text & Fonts page"
     );
     step_until(&mut runner, "switch to Styled Text & Fonts page", |r| {
-        menu_item_checked(
-            &r.guest_menu_snapshot(),
-            MENU_PAGES,
-            ITEM_PAGE_STYLED_TEXT,
-        )
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_STYLED_TEXT)
     });
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(
@@ -1618,20 +1698,14 @@ fn test_toolbox_showcase() {
     click_point(&mut runner, win_top + 216, win_left + 480);
     runner.set_mouse_position(550, 760);
     step_until_gui(&mut runner, "legacy SFPutFile dialog", |r| {
-        screen_rgb(
-            r,
-            legacy_save_sample_point.0,
-            legacy_save_sample_point.1,
-        ) != page_legacy_save_sample
+        screen_rgb(r, legacy_save_sample_point.0, legacy_save_sample_point.1)
+            != page_legacy_save_sample
     });
     runner.push_key_down(0x35, 0);
     runner.push_key_up(0x35, 0);
     step_until_gui(&mut runner, "legacy SFPutFile cancellation", |r| {
-        screen_rgb(
-            r,
-            legacy_save_sample_point.0,
-            legacy_save_sample_point.1,
-        ) == page_legacy_save_sample
+        screen_rgb(r, legacy_save_sample_point.0, legacy_save_sample_point.1)
+            == page_legacy_save_sample
     });
 
     runner.set_mouse_position(550, 760);
@@ -1654,7 +1728,11 @@ fn test_toolbox_showcase() {
         MENU_PAGES,
         ITEM_PAGE_RESOURCES
     ));
-    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_STANDARD_FILE));
+    assert!(!menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_STANDARD_FILE
+    ));
 
     runner.set_mouse_position(550, 760);
     let enumerated_frame = rendered_rgb(&mut runner).2;
@@ -1715,16 +1793,18 @@ fn test_toolbox_showcase() {
         runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_SPRITES),
         "failed to queue selection of Sprites, Masks & Scrolling page"
     );
-    step_until(&mut runner, "switch to Sprites, Masks & Scrolling page", |r| {
-        menu_item_checked(
-            &r.guest_menu_snapshot(),
-            MENU_PAGES,
-            ITEM_PAGE_SPRITES,
-        )
-    });
+    step_until(
+        &mut runner,
+        "switch to Sprites, Masks & Scrolling page",
+        |r| menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_SPRITES),
+    );
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SPRITES));
-    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_RESOURCES));
+    assert!(!menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_RESOURCES
+    ));
     run_ticks(&mut runner, "sprite scene to settle", 1);
     runner.set_mouse_position(550, 760);
     let (initial_first_body, initial_second_body) =
@@ -1764,16 +1844,8 @@ fn test_toolbox_showcase() {
         // TrapDispatcher, so use the visible offscreen result as the
         // architecture-neutral ScrollRect checkpoint.
         step_until(&mut runner, "ScrollRect to move sprite scene", |r| {
-            let shifted = screen_rgb(
-                r,
-                (win_top + 80 + 70) as u16,
-                (win_left + 24 + 38) as u16,
-            );
-            let old = screen_rgb(
-                r,
-                (win_top + 80 + 70) as u16,
-                (win_left + 24 + 62) as u16,
-            );
+            let shifted = screen_rgb(r, (win_top + 80 + 70) as u16, (win_left + 24 + 38) as u16);
+            let old = screen_rgb(r, (win_top + 80 + 70) as u16, (win_left + 24 + 62) as u16);
             shifted == animated_first_body && old != animated_first_body
         });
     } else {

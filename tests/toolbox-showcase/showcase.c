@@ -3167,6 +3167,8 @@ static void DrawMainWindow(void)
 
 static void DrawAuxWindow(void)
 {
+    Str255 sizeStr;
+    short width, height;
     if (gAuxWindow == nil) {
         return;
     }
@@ -3175,6 +3177,16 @@ static void DrawAuxWindow(void)
     DrawHeading("\pAuxiliary window");
     MoveTo(24, 68);
     DrawString("\pCreated and destroyed through ordinary Window Manager calls.");
+    width = gAuxWindow->portRect.right - gAuxWindow->portRect.left;
+    height = gAuxWindow->portRect.bottom - gAuxWindow->portRect.top;
+    MoveTo(24, 92);
+    DrawString("\pWindow dimensions: ");
+    NumToString(width, sizeStr);
+    DrawString(sizeStr);
+    DrawString("\p x ");
+    NumToString(height, sizeStr);
+    DrawString(sizeStr);
+    DrawGrowIcon(gAuxWindow);
 }
 
 static void ShowAllControls(short page)
@@ -3480,7 +3492,7 @@ static void SetPage(short page)
     if (page == pageWindows && gAuxWindow == nil) {
         SetRect(&bounds, 180, 155, 570, 300);
         gAuxWindow = NewCWindow(nil, &bounds, "\pAuxiliary Window", true,
-                                documentProc, (WindowPtr)-1, true, 0);
+                                zoomDocProc, (WindowPtr)-1, true, 0);
         CheckItem(StateMenu(), iWindowState, gAuxWindow != nil);
         DrawAuxWindow();
     } else if (page != pageWindows && gAuxWindow != nil) {
@@ -4030,6 +4042,20 @@ static void DoEvent(EventRecord *event)
                 }
             } else if (part == inDrag) {
                 DragWindow(window, event->where, &qd.screenBits.bounds);
+            } else if (part == inGrow) {
+                Rect sizeRect;
+                long growResult;
+                SetRect(&sizeRect, 180, 100, 520, 350);
+                growResult = GrowWindow(window, event->where, &sizeRect);
+                if (growResult != 0) {
+                    SizeWindow(window, LoWord(growResult), HiWord(growResult), true);
+                    SetPort(window);
+                    InvalRect(&window->portRect);
+                }
+            } else if ((part == inZoomIn || part == inZoomOut) && TrackBox(window, event->where, part)) {
+                ZoomWindow(window, part, window == FrontWindow());
+                SetPort(window);
+                InvalRect(&window->portRect);
             } else if (part == inGoAway && TrackGoAway(window, event->where)) {
                 if (window == gAuxWindow) {
                     DisposeWindow(gAuxWindow);

@@ -1115,6 +1115,7 @@ fn tracking_refire_should_freeze_ticks(opcode: u16) -> bool {
         || trap_no_autopop == 0xA80B // PopUpMenuSelect / MenuKey tracking
         || trap_no_autopop == 0xA968 // TrackControl
         || trap_no_autopop == 0xA91E // TrackGoAway
+        || trap_no_autopop == 0xA83B // TrackBox
         || trap_no_autopop == 0xA925 // DragWindow
         || trap_no_autopop == 0xA905 // DragGrayRgn
         || trap_no_autopop == 0xA926 // DragTheRgn

@@ -53456,6 +53456,17 @@ fn ppc_find_window_at_point(
         else {
             continue;
         };
+        let is_front = front_window == Some(window);
+        let proc_id = ppc_window_proc_id(memory, window);
+        if is_front && matches!(proc_id, 0 | 8) {
+            if v >= bottom.saturating_sub(15)
+                && v < bottom
+                && h >= right.saturating_sub(15)
+                && h < right
+            {
+                return (5, window);
+            }
+        }
         if v >= top && v < bottom && h >= left && h < right {
             return (3, window);
         }
@@ -53465,8 +53476,15 @@ fn ppc_find_window_at_point(
                 .read_u8(window.wrapping_add(PPC_CWINDOW_GO_AWAY_OFFSET))
                 .unwrap_or(0)
                 != 0;
-            if front_window == Some(window) && go_away && h < left.saturating_add(18) {
+            if is_front && go_away && h < left.saturating_add(18) {
                 return (6, window);
+            }
+            if is_front
+                && matches!(proc_id, 8 | 12)
+                && h >= right.saturating_sub(24)
+                && h < right.saturating_sub(6)
+            {
+                return (7, window);
             }
             return (4, window);
         }
@@ -67091,6 +67109,49 @@ fn ppc_dispatch_legacy_control(
                     "[INPUT] PPC TrackControl control=${:08X} point=({}, {}) action=${:08X} -> {}",
                     cpu.gpr[3], v, h, cpu.gpr[5], part
                 );
+            }
+            if part == 129 {
+                if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
+                    if let Some((top, left, bottom, right)) =
+                        ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)
+                    {
+                        let vertical = bottom.saturating_sub(top) >= right.saturating_sub(left);
+                        let axis_start = if vertical { top } else { left };
+                        let axis_end = if vertical { bottom } else { right };
+                        let arrow = (axis_end - axis_start).min(16).max(1);
+                        let track_start = axis_start.saturating_add(arrow);
+                        let track_end = axis_end.saturating_sub(arrow);
+                        let track = i32::from(track_end.saturating_sub(track_start)).max(1);
+                        let thumb = 8i32.min(track);
+                        let travel = track.saturating_sub(thumb).max(1);
+                        let min = memory
+                            .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
+                            .unwrap_or(0) as i16;
+                        let max = memory
+                            .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
+                            .unwrap_or(0) as i16;
+                        let coord = if vertical { v } else { h };
+                        let rel_coord =
+                            (i32::from(coord) - i32::from(track_start)).clamp(0, travel);
+                        let span = i32::from(max).saturating_sub(i32::from(min));
+                        let new_val =
+                            (i32::from(min) + (rel_coord * span + travel / 2) / travel) as i16;
+                        let _ = memory.write_u16_be(
+                            control + PPC_CONTROL_VALUE_OFFSET,
+                            new_val as u16,
+                        );
+                        let _ = ppc_draw_control(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            current_resource_refnum,
+                            cpu.gpr[3],
+                        );
+                    }
+                }
+                return Some(PpcImportAction::Return(ppc_i16_result(129)));
             }
             if part == 0 || cpu.gpr[5] == 0 {
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
