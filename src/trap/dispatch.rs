@@ -24,6 +24,7 @@ use crate::process_context::{
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
     SharedProcessOpenFilePositions, SharedProcessOpenFiles,
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
+    SharedProcessQuickDrawPixelStates,
     SharedProcessScrapState, SharedProcessSoundManager, SharedProcessTextEditManager,
     SharedProcessValue,
 };
@@ -2414,11 +2415,12 @@ pub struct TrapDispatcher {
     /// CopyBits calls when guest code passes a stale/clobbered cGrafPort
     /// portBits record whose live handle/pixmap fields are invalid.
     pub(crate) disposed_gworld_portbits: HashMap<u32, CachedCopyBitmapInfo>,
-    /// Pixel-state flags keyed by offscreen PixMapHandle. Tracks the
-    /// `keepLocal`, `pixelsPurgeable`, and `pixelsLocked` subset surfaced by
+    /// Process-owned pixel-state flags keyed by offscreen PixMapHandle. The
+    /// `keepLocal`, `pixelsPurgeable`, and `pixelsLocked` subset is surfaced by
     /// GetPixelsState / SetPixelsState and the direct LockPixels /
-    /// UnlockPixels aliases. Imaging With QuickDraw 1994, 6-36..6-38.
-    pub(crate) gworld_pixel_states: HashMap<u32, u32>,
+    /// UnlockPixels aliases; guest storage and adapter allocation records stay
+    /// outside this non-owning registry. Imaging With QuickDraw 1994, 6-36..6-38.
+    pub(crate) gworld_pixel_states: SharedProcessQuickDrawPixelStates,
     /// Non-GWorld CGrafPorts opened via OpenCPort/InitCPort, tracked so
     /// sync_canonical_offscreen_ctabs_to_clut can reach their pixmaps.
     pub(crate) cport_ports: HashSet<u32>,
@@ -2831,6 +2833,7 @@ impl TrapDispatcher {
         context.attach_quickdraw_error(&mut self.quickdraw_error);
         context.attach_quickdraw_op_colors(&mut self.quickdraw_op_colors);
         context.attach_quickdraw_hilite_colors(&mut self.quickdraw_hilite_colors);
+        context.attach_quickdraw_pixel_states(&mut self.gworld_pixel_states);
         self.process_quickdraw_port_state_attached = true;
         context.attach_display_color_state(
             &mut self.device_clut,
@@ -3974,7 +3977,7 @@ impl TrapDispatcher {
             resolved_port_color_fields: HashMap::new(),
             gworld_devices: HashMap::new(),
             disposed_gworld_portbits: HashMap::new(),
-            gworld_pixel_states: HashMap::new(),
+            gworld_pixel_states: SharedProcessQuickDrawPixelStates::default(),
             cport_ports: HashSet::new(),
             cport_original_pixmaps: HashMap::new(),
             manual_cport_presented_port: 0,

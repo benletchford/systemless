@@ -33,7 +33,15 @@ pub struct PpcGWorldRecord {
     pub height: u32,
     pub depth: u32,
     pub row_bytes: u32,
+    /// Compatibility mirror only. The process-owned PixMapHandle registry is
+    /// authoritative for LockPixels/GetPixelsState and is synchronized at
+    /// native import boundaries. Inside Macintosh: Imaging With QuickDraw
+    /// (1994), pp. 6-32--6-38.
     pub pixels_locked: bool,
+    /// Compatibility mirror only. The process-owned PixMapHandle registry is
+    /// authoritative for purgeability state and is synchronized at native
+    /// import boundaries. Inside Macintosh: Imaging With QuickDraw (1994),
+    /// pp. 6-34--6-38.
     pub pixels_no_purge: bool,
 }
 
