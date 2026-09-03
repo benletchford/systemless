@@ -26,7 +26,7 @@ use crate::process_context::{
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessQuickDrawPixelStates,
     SharedProcessScrapState, SharedProcessSoundManager, SharedProcessTextEditManager,
-    SharedProcessValue,
+    SharedProcessTickState, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -2091,8 +2091,14 @@ pub struct TrapDispatcher {
     pub(crate) outline_preferred: bool,
     /// Font Manager glyph-preservation preference (`SetPreserveGlyph` / `GetPreserveGlyph`).
     pub(crate) preserve_glyph: bool,
-    /// Simulated tick count
+    /// Guest-visible projection of the process-owned wrapping Macintosh tick
+    /// counter. The private `tick_state` is authoritative after process
+    /// attachment; this scalar remains for existing fixture/adapter callers.
+    /// Inside Macintosh Volume I (1985), p. I-260; Volume II (1985),
+    /// pp. II-349--II-350.
     pub(crate) tick_count: u32,
+    tick_state: SharedProcessTickState,
+    last_projected_tick: std::cell::Cell<u32>,
     /// Tick at which IdleUpdate last reset the Power Manager activity timer.
     /// Inside Macintosh: Devices (1994), p. 6-29.
     pub(crate) power_idle_last_update_tick: u32,
@@ -2818,6 +2824,9 @@ impl TrapDispatcher {
             .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_sound_manager(&mut self.sound_manager);
+        self.import_public_tick_projection();
+        context.attach_tick_state(&mut self.tick_state);
+        self.refresh_tick_projection();
         context.attach_callback_tasks(
             &mut self.timer_tasks,
             &mut self.vbl_tasks,
@@ -3163,7 +3172,7 @@ impl TrapDispatcher {
         let safe_label = sanitize_gui_capture_label(label);
         let filename = format!(
             "{:06}_t{:06}_tr{:08}_{}.png",
-            frame, self.tick_count, self.trap_count, safe_label
+            frame, self.current_tick(), self.trap_count, safe_label
         );
         let path = dir.join(&filename);
         let mut rgba = crate::display::render_screen_with_gamma(
@@ -3203,7 +3212,7 @@ impl TrapDispatcher {
                 frame,
                 filename,
                 safe_label,
-                self.tick_count,
+                self.current_tick(),
                 self.trap_count,
                 self.game_trap_count,
                 self.current_trap_word,
@@ -3277,9 +3286,48 @@ impl TrapDispatcher {
     }
 
     /// Test-only: set the tick count.
+    /// Return the process-owned wrapping Macintosh tick counter.
+    pub(crate) fn current_tick(&self) -> u32 {
+        self.import_public_tick_projection();
+        self.tick_state.current_tick()
+    }
+
+    fn import_public_tick_projection(&self) {
+        if self.tick_count != self.last_projected_tick.get() {
+            self.tick_state.set_tick(self.tick_count);
+            self.last_projected_tick.set(self.tick_count);
+        }
+    }
+
+    pub(crate) fn refresh_tick_projection(&mut self) -> u32 {
+        let tick = self.tick_state.current_tick();
+        self.tick_count = tick;
+        self.last_projected_tick.set(tick);
+        tick
+    }
+
+    /// Set the process clock for an explicit runner/fixture synchronization.
+    /// Native slice teardown uses the process state's monotonic publication
+    /// rules instead of restoring a local snapshot.
+    pub(crate) fn set_tick_count(&mut self, tick: u32) {
+        self.tick_state.set_tick(tick);
+        self.tick_count = tick;
+        self.last_projected_tick.set(tick);
+    }
+
+    /// Advance the canonical process clock by one wrapping tick and refresh
+    /// its low-memory-facing scalar projection.
+    pub(crate) fn advance_tick(&mut self) -> u32 {
+        self.import_public_tick_projection();
+        let tick = self.tick_state.advance_ticks(1);
+        self.tick_count = tick;
+        self.last_projected_tick.set(tick);
+        tick
+    }
+
     /// Production code uses advance_guest_tick() to update tick_count.
     pub fn set_tick_count_for_test(&mut self, tick: u32) {
-        self.tick_count = tick;
+        self.set_tick_count(tick);
     }
 
     /// Test-only: mark the synthetic kAEOpenApplication event as
@@ -3505,6 +3553,7 @@ impl TrapDispatcher {
             if event == "copybits_screen" {
                 self.copybits_screen_secs.push(self.screen_event_count);
             }
+            let tick = self.current_tick();
             self.trace_sink
                 .as_mut()
                 .expect("trace_sink checked above")
@@ -3513,7 +3562,7 @@ impl TrapDispatcher {
                     self.screen_mode,
                     &self.device_clut,
                     self.screen_event_count,
-                    self.tick_count,
+                    tick,
                     self.instruction_count,
                 )
                 .map_err(Error::Trace)?;
@@ -3525,7 +3574,7 @@ impl TrapDispatcher {
             .source();
         let trace_event = TraceEvent {
             source,
-            tick: self.tick_count,
+            tick: self.current_tick(),
             instructions: self.instruction_count,
             pc,
             trap_count: self.trap_count,
@@ -3859,6 +3908,8 @@ impl TrapDispatcher {
             outline_preferred: false,
             preserve_glyph: false,
             tick_count: 0,
+            tick_state: SharedProcessTickState::default(),
+            last_projected_tick: std::cell::Cell::new(0),
             power_idle_last_update_tick: 0,
             power_idle_disable_count: 0,
             serial_port_a_powered: false,
@@ -5716,7 +5767,9 @@ impl TrapDispatcher {
             self.input_state.key_repeat = Some(ProcessKeyRepeatState {
                 key_code,
                 char_code,
-                next_tick: self.tick_count.wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS),
+                next_tick: self
+                    .current_tick()
+                    .wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS),
             });
         }
     }
@@ -7823,7 +7876,7 @@ impl TrapDispatcher {
                 "[FADE-TRACE] trap=${:04X} pc=${:08X} tick={} d0=${:08X} a0=${:08X}",
                 trap,
                 pc.wrapping_sub(2),
-                self.tick_count,
+                self.current_tick(),
                 cpu.read_reg(Register::D0),
                 cpu.read_reg(Register::A0),
             );
@@ -7838,7 +7891,7 @@ impl TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 eprintln!(
                     "[TRACE-PC] trap=${:04X} pc=${:08X} tick={} sp=${:08X}",
-                    trap, trap_pc, self.tick_count, sp
+                    trap, trap_pc, self.current_tick(), sp
                 );
                 eprintln!(
                     "[TRACE-PC]   d0=${:08X} d1=${:08X} d2=${:08X} d3=${:08X} d4=${:08X} d5=${:08X} d6=${:08X} d7=${:08X}",
@@ -7906,10 +7959,10 @@ impl TrapDispatcher {
         // `SYSTEMLESS_TRACE_ATRAPS_WINDOW=LO-HI` logs trap+pc+tick for every
         // trap whose `tick_count` is in `[LO, HI]`.
         if let Some((lo, hi)) = trace_atraps_window() {
-            if self.tick_count >= lo && self.tick_count <= hi {
+            if self.current_tick() >= lo && self.current_tick() <= hi {
                 eprintln!(
                     "[ATRAP-WIN] tick={} trap=${:04X} pc=${:08X}",
-                    self.tick_count,
+                    self.current_tick(),
                     trap,
                     pc.wrapping_sub(2),
                 );
@@ -8299,6 +8352,7 @@ impl TrapDispatcher {
                 self.trap_time_ns[(trap & 0xFFF) as usize].saturating_add(ns);
         }
 
+        self.refresh_tick_projection();
         result
     }
 }

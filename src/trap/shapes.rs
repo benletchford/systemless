@@ -432,7 +432,7 @@ impl super::TrapDispatcher {
                     r.right,
                     area,
                     *self.current_port,
-                    self.tick_count,
+                    self.current_tick(),
                 );
             }
         }
@@ -1365,7 +1365,7 @@ impl super::TrapDispatcher {
                         dst_right: r.right,
                     };
                     let candidate_area = i64::from(width) * i64::from(height);
-                    let current_area = if self.last_screen_frame_rect_tick == self.tick_count {
+                    let current_area = if self.last_screen_frame_rect_tick == self.current_tick() {
                         self.last_screen_frame_rect
                             .map(|current| {
                                 i64::from(current.dst_right.saturating_sub(current.dst_left))
@@ -1375,11 +1375,11 @@ impl super::TrapDispatcher {
                     } else {
                         0
                     };
-                    if self.last_screen_frame_rect_tick != self.tick_count
+                    if self.last_screen_frame_rect_tick != self.current_tick()
                         || candidate_area > current_area
                     {
                         self.last_screen_frame_rect = Some(candidate);
-                        self.last_screen_frame_rect_tick = self.tick_count;
+                        self.last_screen_frame_rect_tick = self.current_tick();
                     }
                 }
             }

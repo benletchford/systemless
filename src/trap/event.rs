@@ -308,7 +308,7 @@ impl super::TrapDispatcher {
         bus.write_word(ptr + 4, Self::EVQEL_QTYPE);
         bus.write_word(ptr + Self::EVQEL_WHAT_OFFSET, event.what);
         bus.write_long(ptr + Self::EVQEL_MESSAGE_OFFSET, event.message);
-        bus.write_long(ptr + Self::EVQEL_WHEN_OFFSET, self.tick_count);
+        bus.write_long(ptr + Self::EVQEL_WHEN_OFFSET, self.current_tick());
         bus.write_word(ptr + Self::EVQEL_WHERE_V_OFFSET, event.where_v as u16);
         bus.write_word(ptr + Self::EVQEL_WHERE_H_OFFSET, event.where_h as u16);
         bus.write_word(ptr + Self::EVQEL_MODIFIERS_OFFSET, event.modifiers);
@@ -374,7 +374,7 @@ impl super::TrapDispatcher {
         if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
             eprintln!(
                 "[INVAL] remember_flushed_update_event window=${:08X} tick={}",
-                event.message, self.tick_count
+                event.message, self.current_tick()
             );
         }
         self.flushed_update_events.push_back(event.clone());
@@ -419,12 +419,13 @@ impl super::TrapDispatcher {
             self.input_state.key_repeat = None;
             return;
         }
-        if !Self::tick_has_reached(self.tick_count, repeat.next_tick) {
+        if !Self::tick_has_reached(self.current_tick(), repeat.next_tick) {
             return;
         }
 
+        let tick = self.current_tick();
         if let Some(state) = self.input_state.key_repeat.as_mut() {
-            state.next_tick = self.tick_count.wrapping_add(Self::AUTO_KEY_RATE_TICKS);
+            state.next_tick = tick.wrapping_add(Self::AUTO_KEY_RATE_TICKS);
         }
 
         let message = ((repeat.key_code as u32) << 8) | (repeat.char_code as u32);
@@ -448,7 +449,7 @@ impl super::TrapDispatcher {
         &self,
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
-        if self.pending_native_menu_event_tick == Some(self.tick_count) {
+        if self.pending_native_menu_event_tick == Some(self.current_tick()) {
             return None;
         }
         self.pending_native_menu_event
@@ -470,11 +471,11 @@ impl super::TrapDispatcher {
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
         let event = self.peek_pending_native_menu_event(event_mask)?;
-        self.pending_native_menu_event_tick = Some(self.tick_count);
+        self.pending_native_menu_event_tick = Some(self.current_tick());
         if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
             eprintln!(
                 "[INPUT] present latched native-menu mouseDown where=({}, {}) mask=${:04X} tick={}",
-                event.where_v, event.where_h, event_mask, self.tick_count
+                event.where_v, event.where_h, event_mask, self.current_tick()
             );
         }
         Some(event)
@@ -725,7 +726,7 @@ impl super::TrapDispatcher {
         // Pack the 16-byte EventRecord into one big-endian buffer and issue
         // a single bus.write_bytes call (faster than 6 word/long writes for
         // hot paths like WaitNextEvent).
-        let when = self.tick_count;
+        let when = self.current_tick();
         let rec: [u8; 16] = [
             (what >> 8) as u8,
             what as u8,

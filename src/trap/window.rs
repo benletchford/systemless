@@ -2281,7 +2281,7 @@ impl super::TrapDispatcher {
             let rect = Self::region_handle_rect(bus, update_handle);
             eprintln!(
                 "[INVAL] BeginUpdate window=${:08X} update_handle=${:08X} update_rect_before={:?} tick={}",
-                window, update_handle, rect, self.tick_count
+                window, update_handle, rect, self.current_tick()
             );
         }
         let Some(update_rect) = self.window_update_rect(bus, window) else {
@@ -3155,7 +3155,7 @@ impl super::TrapDispatcher {
         if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
             eprintln!(
                 "[INVAL] queue_window_update_event window=${:08X} tick={}",
-                window_ptr, self.tick_count
+                window_ptr, self.current_tick()
             );
         }
         self.event_queue.push_back(QueuedEvent {
@@ -3205,7 +3205,7 @@ impl super::TrapDispatcher {
                 clipped_global.1,
                 clipped_global.2,
                 clipped_global.3,
-                self.tick_count
+                self.current_tick()
             );
         }
         self.queue_window_update_event(window_ptr);
@@ -4206,7 +4206,7 @@ impl super::TrapDispatcher {
                         requested_window,
                         the_window,
                         self.front_window,
-                        self.tick_count
+                        self.current_tick()
                     );
                 }
                 // A userItem ProcPtr is not a WindowPtr.
@@ -4297,7 +4297,7 @@ impl super::TrapDispatcher {
                         cpu.read_reg(Register::PC).wrapping_sub(2),
                         the_window,
                         self.front_window,
-                        self.tick_count
+                        self.current_tick()
                     );
                 }
                 // A userItem ProcPtr is not a WindowPtr. Treat ProcPtrs
@@ -5111,7 +5111,7 @@ impl super::TrapDispatcher {
                 if trace_inval_enabled() {
                     eprintln!(
                         "[INVAL] InvalRect tick={} port=${:08X} window=${:08X} front=${:08X}",
-                        self.tick_count, *self.current_port, target_window, self.front_window
+                        self.current_tick(), *self.current_port, target_window, self.front_window
                     );
                 }
                 if target_window != 0 && rect_ptr != 0 {
