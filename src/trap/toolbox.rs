@@ -4154,7 +4154,7 @@ impl super::TrapDispatcher {
                 data_offset,
                 (row, col),
                 rect_ptr,
-                state.selected.contains(&(row, col)),
+                state.active && state.selected.contains(&(row, col)),
                 message,
                 proc_addr,
                 return_slot,
@@ -4392,7 +4392,7 @@ impl super::TrapDispatcher {
         }
         bus.write_long(state.port.wrapping_add(28), cell_clip_handle);
 
-        let selected = state.selected.contains(&(row, col));
+        let selected = state.active && state.selected.contains(&(row, col));
         let bg = if selected {
             self.hilite_color_for_port(bus, state.port)
         } else if self.list_cell_background_is_dark(bus, state.port, rect) {
@@ -11044,6 +11044,7 @@ impl super::TrapDispatcher {
                             visible,
                             port: window,
                             draw_enabled: draw_it,
+                            active: true,
                             cells: std::collections::HashMap::new(),
                             selected: std::collections::BTreeSet::new(),
                             last_click: Self::list_no_click_cell(),
@@ -11703,13 +11704,25 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let d_rows = bus.read_word(sp + 6) as i16;
                         let d_cols = bus.read_word(sp + 8) as i16;
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        let should_draw = if let Some(state) = self.list_states.get_mut(&list_handle) {
                             Self::set_list_visible_origin(
                                 state,
                                 state.visible.0.saturating_add(d_rows),
                                 state.visible.1.saturating_add(d_cols),
                             );
                             Self::sync_list_state_to_guest(bus, list_handle, state);
+                            state.draw_enabled
+                        } else {
+                            false
+                        };
+                        if should_draw {
+                            self.draw_list_scrollbars(cpu, bus, list_handle);
+                            if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10) {
+                                    return Some(Ok(()));
+                                }
+                                self.draw_list_fallback(cpu, bus, &state, None);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 10);
                         Ok(())
@@ -11720,7 +11733,7 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let height = bus.read_word(sp + 6) as i16;
                         let width = bus.read_word(sp + 8) as i16;
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        let should_draw = if let Some(state) = self.list_states.get_mut(&list_handle) {
                             let old_origin = (state.visible.0, state.visible.1);
                             state.view_rect.2 = state.view_rect.0.saturating_add(height.max(0));
                             state.view_rect.3 = state.view_rect.1.saturating_add(width.max(0));
@@ -11731,14 +11744,70 @@ impl super::TrapDispatcher {
                             );
                             Self::set_list_visible_origin(state, old_origin.0, old_origin.1);
                             Self::sync_list_state_to_guest(bus, list_handle, state);
+                            state.draw_enabled
+                        } else {
+                            false
+                        };
+                        if should_draw {
+                            self.draw_list_scrollbars(cpu, bus, list_handle);
+                            if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10) {
+                                    return Some(Ok(()));
+                                }
+                                self.draw_list_fallback(cpu, bus, &state, None);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 10);
                         Ok(())
                     }
 
-                    // LAutoScroll/LActivate remain accepted for stack discipline.
-                    // Inside Macintosh Volume IV, IV-274 to IV-276
-                    0x00 | 0x10 => self.pack0_fallback(cpu, bus, sp, selector),
+                    // LActivate (selector 0 / $00)
+                    // Activates or deactivates the list and its scroll bars.
+                    // PROCEDURE LActivate(act: BOOLEAN; lHandle: ListHandle);
+                    // Inside Macintosh Volume IV, IV-276.
+                    0x00 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let act = Self::stack_bool_slot(bus, sp + 6);
+                        let list_ptr = Self::list_record_ptr(bus, list_handle);
+                        let should_draw = if let Some(state) = self.list_states.get_mut(&list_handle) {
+                            state.active = act;
+                            if list_ptr != 0 {
+                                bus.write_byte(list_ptr + Self::LIST_ACTIVE_OFFSET, if act { 1 } else { 0 });
+                                for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
+                                    let control_handle = bus.read_long(list_ptr + offset);
+                                    let control = if control_handle != 0 {
+                                        bus.read_long(control_handle)
+                                    } else {
+                                        0
+                                    };
+                                    if control != 0 {
+                                        // Inside Macintosh: More Macintosh Toolbox (1993),
+                                        // pp. 4-75--4-76: an inactive list disables its
+                                        // standard scroll bars through contrlHilite.
+                                        bus.write_byte(control + 17, if act { 0 } else { 255 });
+                                    }
+                                }
+                            }
+                            state.draw_enabled
+                        } else {
+                            false
+                        };
+                        if should_draw {
+                            self.draw_list_scrollbars(cpu, bus, list_handle);
+                            if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 8) {
+                                    return Some(Ok(()));
+                                }
+                                self.draw_list_fallback(cpu, bus, &state, None);
+                            }
+                        }
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
+
+                    // LAutoScroll remains accepted for stack discipline.
+                    // Inside Macintosh Volume IV, IV-274.
+                    0x10 => self.pack0_fallback(cpu, bus, sp, selector),
 
                     // LDispose (selector 40 / $28)
                     // Disposes of the list.
@@ -12109,6 +12178,7 @@ impl super::TrapDispatcher {
                             visible,
                             port: window,
                             draw_enabled: draw_it,
+                            active: true,
                             cells: std::collections::HashMap::new(),
                             selected: std::collections::BTreeSet::new(),
                             last_click: Self::list_no_click_cell(),
@@ -24083,6 +24153,69 @@ mod tests {
             1,
             "lActive should default to TRUE"
         );
+    }
+
+    #[test]
+    fn pack0_lactivate_updates_lactive_and_scrollbars() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let view_rect_ptr = 0x350000u32;
+        let data_bounds_ptr = 0x350100u32;
+        let window_ptr = 0x210000u32;
+
+        bus.write_word(view_rect_ptr, 0);
+        bus.write_word(view_rect_ptr + 2, 0);
+        bus.write_word(view_rect_ptr + 4, 40);
+        bus.write_word(view_rect_ptr + 6, 80);
+        bus.write_word(data_bounds_ptr, 0);
+        bus.write_word(data_bounds_ptr + 2, 0);
+        bus.write_word(data_bounds_ptr + 4, 2);
+        bus.write_word(data_bounds_ptr + 6, 1);
+
+        bus.write_word(sp, 0x0044); // LNew
+        bus.write_word(sp + 2, 0x0100); // scrollVert = TRUE
+        bus.write_word(sp + 4, 0); // scrollHoriz = FALSE
+        bus.write_word(sp + 6, 0); // hasGrow = FALSE
+        bus.write_word(sp + 8, 0); // drawIt = FALSE
+        bus.write_long(sp + 10, window_ptr);
+        bus.write_word(sp + 14, 0); // default LDEF
+        bus.write_word(sp + 16, 0);
+        bus.write_word(sp + 18, 0);
+        bus.write_long(sp + 20, data_bounds_ptr);
+        bus.write_long(sp + 24, view_rect_ptr);
+        bus.write_long(sp + 28, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let list_handle = bus.read_long(sp + 28);
+        let list_ptr = bus.read_long(list_handle);
+        let v_scroll_handle = bus.read_long(list_ptr + TrapDispatcher::LIST_VSCROLL_OFFSET);
+        assert_ne!(v_scroll_handle, 0);
+        let v_scroll_ptr = bus.read_long(v_scroll_handle);
+        assert_eq!(bus.read_byte(list_ptr + 37), 1, "initial lActive must be 1");
+        assert_eq!(bus.read_byte(v_scroll_ptr + 17), 0, "initial contrlHilite must be 0");
+
+        // Call LActivate(FALSE, list)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0000); // LActivate selector
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0x0000); // act = FALSE
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_byte(list_ptr + 37), 0, "lActive must be 0 when deactivated");
+        assert_eq!(bus.read_byte(v_scroll_ptr + 17), 255, "scrollbar contrlHilite must be 255 when deactivated");
+
+        // Call LActivate(TRUE, list)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0000); // LActivate selector
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, 0x0100); // act = TRUE
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_byte(list_ptr + 37), 1, "lActive must be 1 when reactivated");
+        assert_eq!(bus.read_byte(v_scroll_ptr + 17), 0, "scrollbar contrlHilite must be 0 when reactivated");
     }
 
     #[test]
