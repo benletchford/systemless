@@ -2005,8 +2005,6 @@ pub struct TrapDispatcher {
     pub(crate) next_vfs_timestamp: SharedProcessValue<u32>,
     /// Next working directory reference number.
     pub(crate) next_working_dir_refnum: SharedProcessValue<i16>,
-    /// Normalized VFS path of the launched application, if known.
-    pub(crate) launched_app_path: Option<String>,
     /// Foreground application launch queued by LaunchApplication. When
     /// `after_event_yield` is set, the runner starts it after the current
     /// app next yields through WaitNextEvent/EventAvail/GetNextEvent.
@@ -3805,7 +3803,6 @@ impl TrapDispatcher {
             next_vfs_file_id: SharedProcessValue::from_value(32),
             next_vfs_timestamp: SharedProcessValue::from_value(1),
             next_working_dir_refnum,
-            launched_app_path: None,
             pending_launch_app: None,
             default_dir_id: SharedProcessValue::from_value(2),
             app_wd_refnum,
@@ -4829,11 +4826,11 @@ impl TrapDispatcher {
                 *self.app_wd_refnum = wd_ref;
             }
         }
-        self.launched_app_path = Some(normalized);
+        self.process_file_system.launched_app_path = Some(normalized);
     }
 
     pub fn launched_app_path(&self) -> Option<&str> {
-        self.launched_app_path.as_deref()
+        self.process_file_system.launched_app_path.as_deref()
     }
 
     pub fn materialize_quilt_resources(&mut self) -> usize {
@@ -5013,7 +5010,7 @@ impl TrapDispatcher {
             return true;
         }
 
-        let Some(app_path) = self.launched_app_path.clone() else {
+        let Some(app_path) = self.launched_app_path().map(str::to_owned) else {
             return false;
         };
         let parent = Self::vfs_parent_path(&app_path);
@@ -7441,7 +7438,7 @@ impl TrapDispatcher {
     /// Load resources into guest memory for trap access.
     /// Loads ALL resource types from the fork (not just a hardcoded whitelist).
     pub fn load_resources(&mut self, fork: &ResourceFork, bus: &mut MacMemoryBus) {
-        if let Some(app_path) = self.launched_app_path.as_ref() {
+        if let Some(app_path) = self.launched_app_path().map(str::to_owned) {
             self.vfs
                 .insert(format!("__rsrc__{}", app_path), fork.serialized().to_vec());
         }

@@ -3519,7 +3519,6 @@ pub struct PpcLoadedApp {
     pub quickdraw_text_mode: i16,
     pub quickdraw_text_size: i16,
     pub(crate) cursor_state: SharedProcessCursorState,
-    pub launched_app_path: Option<String>,
     pub param_text: SharedProcessDialogText,
     pub scrap: PpcScrapState,
     pub list_manager: PpcListManagerState,
@@ -7886,6 +7885,7 @@ impl PpcLoadedApp {
                     // may outlive this dispatch call or be retained in its
                     // returned action.
                     let action = {
+                        let launched_app_path = process_file_system.launched_app_path.clone();
                         let ProcessFileSystemState {
                             files,
                             writable_refnums,
@@ -8001,7 +8001,7 @@ impl PpcLoadedApp {
                             &mut working_directories,
                             &mut next_working_directory_ref_num,
                             &mut application_working_directory_ref_num,
-                            self.launched_app_path.as_deref(),
+                            launched_app_path.as_deref(),
                             &mut param_text,
                             &mut scrap,
                             &mut list_manager,
@@ -8424,8 +8424,12 @@ impl PpcLoadedApp {
     }
 
     pub fn set_launched_app_path(&mut self, path: impl Into<String>) {
-        self.launched_app_path = Some(ppc_normalize_vfs_path(&path.into()));
+        self.process_file_system.launched_app_path = Some(ppc_normalize_vfs_path(&path.into()));
         self.refresh_apple_event_launch_capability();
+    }
+
+    pub fn launched_app_path(&self) -> Option<&str> {
+        self.process_file_system.launched_app_path.as_deref()
     }
 
     pub fn seed_cfm_library_fragments(&mut self, fragments: Vec<PpcCfmLibraryFragment>) {
@@ -8454,7 +8458,7 @@ impl PpcLoadedApp {
     }
 
     fn refresh_apple_event_launch_capability(&mut self) {
-        let size_resource = self.launched_app_path.as_deref().and_then(|path| {
+        let size_resource = self.launched_app_path().and_then(|path| {
             [0, -1].into_iter().find_map(|id| {
                 self.vfs_resources
                     .iter()
@@ -8473,7 +8477,7 @@ impl PpcLoadedApp {
             eprintln!(
                 "[PPC-TRACE] launch AppleEvents aware={} path={:?} SIZE={:?}",
                 self.apple_events.application_high_level_event_aware,
-                self.launched_app_path,
+                self.launched_app_path(),
                 size_resource,
             );
         }
@@ -13045,7 +13049,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
         cursor_state: SharedProcessCursorState::default(),
-        launched_app_path: None,
         param_text: SharedProcessDialogText::default(),
         scrap: PpcScrapState::default(),
         list_manager: PpcListManagerState::default(),
@@ -94181,6 +94184,37 @@ pub(crate) mod tests {
         classic.vfs_resource_files[0].dirty = false;
         assert_eq!(native.vfs_resources[0].attrs, 0x0040);
         assert!(!native.vfs_resource_files[0].dirty);
+    }
+
+    #[test]
+    fn launched_application_path_crosses_adapters_and_native_imports_without_clone_aliasing() {
+        let pef = synthetic_pef_with_import(b"LMGetCurApName");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic = TrapDispatcher::new();
+        classic.attach_process_context(&mut context);
+
+        classic.set_launched_app_path("Apps/Classic App");
+        assert_eq!(native.launched_app_path(), Some("Apps/Classic App"));
+        run_test_import(&mut native, PpcImportDispatcherTarget::SystemCompatibility);
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut native.memory, PPC_IMPORT_CUR_AP_NAME),
+            Some(b"Classic App".to_vec())
+        );
+
+        native.set_launched_app_path("Apps/Native App");
+        assert_eq!(classic.launched_app_path(), Some("Apps/Native App"));
+        run_test_import(&mut native, PpcImportDispatcherTarget::SystemCompatibility);
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut native.memory, PPC_IMPORT_CUR_AP_NAME),
+            Some(b"Native App".to_vec())
+        );
+
+        let detached_clone = native.clone();
+        native.set_launched_app_path("Apps/Current App");
+        assert_eq!(classic.launched_app_path(), Some("Apps/Current App"));
+        assert_eq!(detached_clone.launched_app_path(), Some("Apps/Native App"));
     }
 
     #[test]
