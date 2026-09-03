@@ -17784,7 +17784,7 @@ mod tests {
     #[test]
     fn test_get_next_event_empty() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
+        disp.set_sent_open_app_event_for_test(true); // suppress synthetic oapp event
         let sp = TEST_SP;
         // SP+0: event_ptr(4), SP+4: eventMask(2), SP+6: result(2)
         let event_ptr = 0x200000u32;
@@ -17805,7 +17805,7 @@ mod tests {
     #[test]
     fn test_get_next_event_with_event() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
+        disp.set_sent_open_app_event_for_test(true); // suppress synthetic oapp event
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -17835,7 +17835,7 @@ mod tests {
     #[test]
     fn get_next_event_delivers_visible_window_update_after_flushevents_drops_queue_entry() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         let bounds_rect_ptr = 0x300000u32;
         bus.write_word(bounds_rect_ptr, 40);
@@ -18135,7 +18135,7 @@ mod tests {
     #[test]
     fn test_get_next_event_mask_miss_returns_null_and_preserves_queue() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
+        disp.set_sent_open_app_event_for_test(true); // suppress synthetic oapp event
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -18195,7 +18195,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         // Mark the synthetic kAEOpenApplication as already sent so this tests
         // the normal empty-queue path.
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
         let sp = TEST_SP;
         // SP+0: mouseRgn(4), SP+4: sleep(4), SP+8: event_ptr(4), SP+12: eventMask(2), SP+14: result(2)
         bus.write_long(sp, 0); // mouseRgn
@@ -18218,7 +18218,7 @@ mod tests {
     #[test]
     fn test_wait_next_event_zero_mask_takes_null_event_path() {
         let (mut disp, mut cpu, mut bus) = setup();
-        assert!(!disp.sent_open_app_event);
+        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
 
@@ -18236,14 +18236,14 @@ mod tests {
         assert_eq!(bus.read_word(sp + 14), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 14);
         assert_eq!(bus.read_word(event_ptr), 0);
-        assert!(!disp.sent_open_app_event);
+        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
         assert_eq!(disp.pending_wait_sleep_ticks, 1);
     }
 
     #[test]
     fn wait_next_event_mouse_rgn_outside_returns_mouse_moved_os_event() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
         disp.input_state.mouse_pos = (50, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
@@ -18271,7 +18271,7 @@ mod tests {
     #[test]
     fn wait_next_event_mouse_rgn_inside_takes_null_sleep_path() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
         disp.input_state.mouse_pos = (20, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
@@ -18295,7 +18295,7 @@ mod tests {
     #[test]
     fn wait_next_event_empty_mouse_rgn_suppresses_mouse_moved_event() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
         disp.input_state.mouse_pos = (50, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
@@ -18319,7 +18319,7 @@ mod tests {
     #[test]
     fn wait_next_event_mouse_rgn_respects_event_mask() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
         disp.input_state.mouse_pos = (50, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
@@ -18344,8 +18344,8 @@ mod tests {
     #[test]
     fn test_wait_next_event_synthesizes_open_app() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.application_high_level_event_aware = true;
-        assert!(!disp.sent_open_app_event);
+        disp.apple_event_launch_state.set_high_level_event_aware(true);
+        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, 0); // mouseRgn
@@ -18368,7 +18368,7 @@ mod tests {
         assert_eq!(bus.read_word(event_ptr + 10), 0x6F61); // where.v
         assert_eq!(bus.read_word(event_ptr + 12), 0x7070); // where.h
                                                            // Flag should be set
-        assert!(disp.sent_open_app_event);
+        assert!(disp.apple_event_launch_state.is_open_application_event_sent());
 
         // Second call should NOT return synthetic event
         cpu.write_reg(Register::A7, sp);
@@ -18399,14 +18399,14 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_word(sp + 14), 0);
         assert_eq!(bus.read_word(event_ptr), 0);
-        assert!(!disp.sent_open_app_event);
+        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
     }
 
     // EventAvail ($A971) — with event (peeks, does not remove)
     #[test]
     fn test_event_avail_with_event() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
+        disp.set_sent_open_app_event_for_test(true); // suppress synthetic oapp event
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         // SP+0: event_ptr(4), SP+4: eventMask(2), SP+6: result(2)
@@ -18438,7 +18438,7 @@ mod tests {
     #[test]
     fn test_event_avail_empty() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
+        disp.set_sent_open_app_event_for_test(true); // suppress synthetic oapp event
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -18461,7 +18461,7 @@ mod tests {
     #[test]
     fn test_event_avail_mask_miss_returns_null_and_preserves_queue() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
+        disp.set_sent_open_app_event_for_test(true); // suppress synthetic oapp event
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -18491,7 +18491,7 @@ mod tests {
     #[test]
     fn test_event_avail_then_get_next_event_returns_same_event() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
+        disp.set_sent_open_app_event_for_test(true); // suppress synthetic oapp event
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -18531,7 +18531,7 @@ mod tests {
     #[test]
     fn test_event_avail_synthesizes_open_app_without_consuming() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.application_high_level_event_aware = true;
+        disp.apple_event_launch_state.set_high_level_event_aware(true);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -18552,7 +18552,7 @@ mod tests {
     #[test]
     fn test_get_next_event_synthesizes_open_app() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.application_high_level_event_aware = true;
+        disp.apple_event_launch_state.set_high_level_event_aware(true);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);

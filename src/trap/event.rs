@@ -385,14 +385,12 @@ impl super::TrapDispatcher {
         // whose 'SIZE' resource declares isHighLevelEventAware. Applications
         // without that resource or flag default to false.
         // Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32 and 5-90.
-        if !self.application_high_level_event_aware
-            || self.sent_open_app_event
-            || (event_mask & Self::HIGH_LEVEL_EVENT_MASK) == 0
+        if (event_mask & Self::HIGH_LEVEL_EVENT_MASK) == 0
+            || !self.apple_event_launch_state.claim_open_application_event()
         {
             return;
         }
 
-        self.sent_open_app_event = true;
         self.event_queue.push_front(super::dispatch::QueuedEvent {
             what: Self::K_HIGH_LEVEL_EVENT,
             message: Self::K_CORE_EVENT_CLASS,
@@ -1409,7 +1407,7 @@ mod tests {
     #[test]
     fn held_key_generates_autokey_after_default_threshold() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x7D, 31); // Down Arrow
         let (what, message, _, _, _, has_event) =
@@ -1471,7 +1469,7 @@ mod tests {
     #[test]
     fn autokey_is_posted_when_ticks_advance_before_the_next_poll() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x00, b'a');
         let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
@@ -1494,7 +1492,7 @@ mod tests {
     #[test]
     fn default_system_event_mask_suppresses_keyup_but_clears_keymap() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x24, 13);
         let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
@@ -1543,7 +1541,7 @@ mod tests {
         // Event Manager emits one keyDown followed by timed autoKey records.
         // Inside Macintosh Volume I, I-246.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x30, 9); // Tab
         let first_repeat_tick = disp.input_state.key_repeat.expect("Tab should arm autoKey").next_tick;
@@ -1567,7 +1565,7 @@ mod tests {
     #[test]
     fn event_avail_peeks_autokey_without_duplicating_it() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x7D, 31);
         let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
@@ -1596,7 +1594,7 @@ mod tests {
     #[test]
     fn modifier_keys_update_keymap_without_generating_keyboard_events() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x38, 0); // Shift
         let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
@@ -1621,7 +1619,7 @@ mod tests {
     #[test]
     fn caps_lock_latches_keymap_and_alpha_lock_until_second_press() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x39, 0);
         assert!(disp.key_is_down(0x39), "first press should latch Caps Lock");
@@ -1679,7 +1677,7 @@ mod tests {
     #[test]
     fn command_modifier_is_reported_on_following_character_event() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x37, 0); // Command
         disp.push_key_down(0x01, b's');

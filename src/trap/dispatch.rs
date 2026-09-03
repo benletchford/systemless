@@ -18,7 +18,7 @@ use crate::process_context::{
     ProcessKeyRepeatState, ProcessLoadedResources, ProcessResourceFileMap,
     ProcessResourceManagerState, ProcessWorkingDirectory,
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord,
-    SharedProcessAppleEventHandlers,
+    SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
@@ -1743,6 +1743,8 @@ pub struct TrapDispatcher {
     pub(crate) segment_map: HashMap<i16, u32>,
     /// Process-owned application and system AppleEvent dispatch tables.
     pub(crate) ae_handlers: SharedProcessAppleEventHandlers,
+    /// Process-owned launch awareness and one-shot synthetic OAPP state.
+    pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
     /// Synthetic AppleEvent descriptors currently visible to guest
     /// handlers. Key is the guest address of the AEDesc record.
     pub(crate) ae_events: HashMap<u32, SyntheticAppleEvent>,
@@ -1878,8 +1880,8 @@ pub struct TrapDispatcher {
     pub(crate) saved_draw_old_regions: HashMap<u32, DrawOldState>,
     /// Whether the registered `kAEOpenApplication` handler has already
     /// been fired via an `AEProcessAppleEvent` dispatch. Distinct from
-    /// `sent_open_app_event` (which tracks the synthetic OAPP queued
-    /// for `WaitNextEvent` delivery): an app may call
+    /// the process launch state's one-shot bit (which tracks the synthetic
+    /// OAPP queued for `WaitNextEvent` delivery): an app may call
     /// `AEProcessAppleEvent` directly without ever pumping events
     /// through WNE, and vice versa, so the two state bits cannot
     /// share a flag.
@@ -2306,15 +2308,6 @@ pub struct TrapDispatcher {
     /// One-shot update events recovered after FlushEvents drops queue entries
     /// while the Window Manager update region remains dirty.
     pub(crate) flushed_update_events: VecDeque<QueuedEvent>,
-    /// Whether the synthetic kAEOpenApplication event has been delivered.
-    /// On a real Mac, the Finder sends this Apple Event at launch.
-    /// Macintosh Toolbox Essentials 1992, p. 5-90
-    pub(crate) sent_open_app_event: bool,
-    /// Whether the application's `'SIZE'` resource declares
-    /// `isHighLevelEventAware`. The Process Manager defaults this capability
-    /// to false when the resource or flag is absent.
-    /// Macintosh Toolbox Essentials 1992, pp. 2-30 to 2-32.
-    pub(crate) application_high_level_event_aware: bool,
     /// Full trap word currently being dispatched. Some OS traps share the
     /// low 8-bit trap number and require bit 8 to distinguish variants.
     pub(crate) current_trap_word: u16,
@@ -2864,6 +2857,7 @@ impl TrapDispatcher {
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
+        context.attach_apple_event_launch_state(&mut self.apple_event_launch_state);
     }
 
     pub(crate) fn process_memory_manager(&self) -> SharedProcessMemoryManager {
@@ -3289,7 +3283,8 @@ impl TrapDispatcher {
     /// already delivered so the next GetNextEvent/WaitNextEvent
     /// returns a real null event instead of the boot-time oapp stub.
     pub fn set_sent_open_app_event_for_test(&mut self, sent: bool) {
-        self.sent_open_app_event = sent;
+        self.apple_event_launch_state
+            .set_open_application_event_sent(sent);
     }
 
     /// Test-only: set the screen mode (base, rowBytes, width, height, depth).
@@ -3762,6 +3757,7 @@ impl TrapDispatcher {
             dialogs_drawn_by_app: std::collections::HashSet::new(),
             segment_map: HashMap::new(),
             ae_handlers: SharedProcessAppleEventHandlers::default(),
+            apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             ae_events: HashMap::new(),
             ae_descriptors: HashMap::new(),
             ae_descriptor_backing: HashMap::new(),
@@ -3945,8 +3941,6 @@ impl TrapDispatcher {
             pending_modal_dialog_mouse_up: false,
             pending_modal_dialog_mouse_down: None,
             flushed_update_events: VecDeque::new(),
-            sent_open_app_event: false,
-            application_high_level_event_aware: false,
             current_trap_word: 0,
             current_trap_operation: 0,
             current_trap_adapter: TrapAdapterId::Nonterminal,

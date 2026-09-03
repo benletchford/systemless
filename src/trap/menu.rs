@@ -10533,7 +10533,7 @@ mod tests {
     #[test]
     fn invalmenubar_defers_and_coalesces_one_draw_until_a_toolbox_event_scan() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
         disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         let (base, row_bytes, width, height, depth) = disp.get_screen_params();

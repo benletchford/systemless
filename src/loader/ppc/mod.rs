@@ -77,6 +77,7 @@ use crate::process_context::{
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
     ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
+    SharedProcessAppleEventLaunchState,
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
@@ -2812,8 +2813,7 @@ struct PpcAppleEventDispatchAllocation {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PpcAppleEventState {
-    application_high_level_event_aware: bool,
-    sent_open_application_event: bool,
+    pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
     handlers: SharedProcessAppleEventHandlers,
     pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
 }
@@ -4087,6 +4087,9 @@ impl PpcLoadedApp {
         context.attach_guest_calls(&mut self.toolbox_startup.guest_calls);
         context.attach_mixed_mode_m68k_state(&mut self.toolbox_startup.mixed_mode_m68k);
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
+        context.attach_apple_event_launch_state(
+            &mut self.apple_events.apple_event_launch_state,
+        );
     }
 
     /// Run one native operation with every process manager continuously attached.
@@ -8478,12 +8481,15 @@ impl PpcLoadedApp {
                     .filter(|size| size.preferred_partition_size().is_some())
             })
         });
-        self.apple_events.application_high_level_event_aware =
+        let high_level_event_aware =
             size_resource.is_some_and(ApplicationSizeResource::is_high_level_event_aware);
+        self.apple_events
+            .apple_event_launch_state
+            .set_high_level_event_aware(high_level_event_aware);
         if ppc_hle_trace_enabled() {
             eprintln!(
                 "[PPC-TRACE] launch AppleEvents aware={} path={:?} SIZE={:?}",
-                self.apple_events.application_high_level_event_aware,
+                high_level_event_aware,
                 self.launched_app_path(),
                 size_resource,
             );
@@ -62485,13 +62491,13 @@ fn ppc_enqueue_open_application_event_if_needed(
     // Finder posts kAEOpenApplication once at launch for applications whose
     // SIZE resource sets isHighLevelEventAware. The EventRecord carries the
     // core class in message and the event ID split across the Point fields.
-    if !apple_events.application_high_level_event_aware
-        || apple_events.sent_open_application_event
-        || event_mask & PPC_HIGH_LEVEL_EVENT_MASK == 0
+    if event_mask & PPC_HIGH_LEVEL_EVENT_MASK == 0
+        || !apple_events
+            .apple_event_launch_state
+            .claim_open_application_event()
     {
         return;
     }
-    apple_events.sent_open_application_event = true;
     event_queue.push_front(PpcQueuedEvent {
         what: PPC_HIGH_LEVEL_EVENT,
         message: PPC_CORE_EVENT_CLASS,
@@ -93770,6 +93776,189 @@ pub(crate) mod tests {
 
         assert_eq!(context.event_queue().len(), 1);
         assert!(!context.event_queue().menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn attached_event_launch_state_shares_native_first_and_classic_first_oapp_once() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let pef = synthetic_pef_with_import(b"GetNextEvent");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        assert!(classic
+            .apple_event_launch_state
+            .ptr_eq(&native.apple_events.apple_event_launch_state));
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+
+        let native_event = PPC_DATA_BASE + 0x3000;
+        native.memory.add_region(native_event, vec![0; 16]);
+        let classic_event = 0x0020_0000;
+        let detached = native.apple_events.apple_event_launch_state.clone();
+
+        // Native-first: the classic gateway must observe the same claimed
+        // OAPP after native GetNextEvent consumes it.
+        classic
+            .apple_event_launch_state
+            .reset_for_launch(true);
+        native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+        native.cpu.gpr[4] = native_event;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+        assert_eq!(native.cpu.gpr[3], 1);
+        assert!(context.event_queue().is_empty());
+        assert!(classic
+            .apple_event_launch_state
+            .is_open_application_event_sent());
+
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_bus.write_long(TEST_SP, classic_event);
+        classic_bus.write_word(TEST_SP + 4, u32::from(PPC_HIGH_LEVEL_EVENT_MASK) as u16);
+        classic_bus.write_word(TEST_SP + 6, 0xbeef);
+        assert!(classic
+            .dispatch_toolbox(true, 0x170, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0);
+        assert_eq!(classic_bus.read_word(classic_event), 0);
+        assert!(context.event_queue().is_empty());
+
+        // Classic-first: reset only the process launch state, then make the
+        // native gateway poll after classic GetNextEvent consumed OAPP.
+        classic
+            .apple_event_launch_state
+            .reset_for_launch(true);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_bus.write_long(TEST_SP, classic_event);
+        classic_bus.write_word(TEST_SP + 4, u32::from(PPC_HIGH_LEVEL_EVENT_MASK) as u16);
+        classic_bus.write_word(TEST_SP + 6, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x170, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0xffff);
+        assert_eq!(classic_bus.read_word(classic_event), 23);
+        assert!(context.event_queue().is_empty());
+
+        native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+        native.cpu.gpr[4] = native_event;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert_eq!(native.memory.read_u16_be(native_event), Some(0));
+        assert!(context.event_queue().is_empty());
+
+        assert!(!detached.is_high_level_event_aware());
+        assert!(!detached.is_open_application_event_sent());
+    }
+
+    #[test]
+    fn attached_event_launch_state_shares_eventavail_peek_without_duplicate_oapp() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let pef = synthetic_pef_with_import(b"EventAvail");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+
+        let native_event = PPC_DATA_BASE + 0x3100;
+        native.memory.add_region(native_event, vec![0; 16]);
+        let classic_event = 0x0020_0000;
+        classic
+            .apple_event_launch_state
+            .reset_for_launch(true);
+
+        native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+        native.cpu.gpr[4] = native_event;
+        run_test_import(&mut native, PpcImportDispatcherTarget::EventAvail);
+        assert_eq!(native.cpu.gpr[3], 1);
+        assert_eq!(context.event_queue().len(), 1);
+        assert_eq!(native.memory.read_u16_be(native_event), Some(23));
+
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_bus.write_long(TEST_SP, classic_event);
+        classic_bus.write_word(TEST_SP + 4, u32::from(PPC_HIGH_LEVEL_EVENT_MASK) as u16);
+        classic_bus.write_word(TEST_SP + 6, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x171, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0xffff);
+        assert_eq!(classic_bus.read_word(classic_event), 23);
+        assert_eq!(context.event_queue().len(), 1);
+
+        native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+        native.cpu.gpr[4] = native_event;
+        run_test_import(&mut native, PpcImportDispatcherTarget::EventAvail);
+        assert_eq!(native.cpu.gpr[3], 1);
+        assert_eq!(context.event_queue().len(), 1);
+        assert!(native
+            .apple_events
+            .apple_event_launch_state
+            .is_open_application_event_sent());
+    }
+
+    #[test]
+    fn attached_event_launch_state_requires_awareness_and_high_level_mask() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let pef = synthetic_pef_with_import(b"GetNextEvent");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+
+        let native_event = PPC_DATA_BASE + 0x3200;
+        native.memory.add_region(native_event, vec![0; 16]);
+        let classic_event = 0x0020_0000;
+
+        classic
+            .apple_event_launch_state
+            .reset_for_launch(false);
+        native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+        native.cpu.gpr[4] = native_event;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert!(!native
+            .apple_events
+            .apple_event_launch_state
+            .is_open_application_event_sent());
+        assert!(context.event_queue().is_empty());
+
+        classic
+            .apple_event_launch_state
+            .reset_for_launch(true);
+        native.cpu.gpr[3] = 0x0008;
+        native.cpu.gpr[4] = native_event;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert!(!native
+            .apple_events
+            .apple_event_launch_state
+            .is_open_application_event_sent());
+        assert!(context.event_queue().is_empty());
+
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_bus.write_long(TEST_SP, classic_event);
+        classic_bus.write_word(TEST_SP + 4, 0x0008);
+        classic_bus.write_word(TEST_SP + 6, 0xbeef);
+        assert!(classic
+            .dispatch_toolbox(true, 0x170, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0);
+        assert!(!classic
+            .apple_event_launch_state
+            .is_open_application_event_sent());
+        assert!(context.event_queue().is_empty());
     }
 
     #[test]
@@ -162081,7 +162270,10 @@ pub(crate) mod tests {
         );
         loaded.set_launched_app_path("Test App");
 
-        assert!(loaded.apple_events.application_high_level_event_aware);
+        assert!(loaded
+            .apple_events
+            .apple_event_launch_state
+            .is_high_level_event_aware());
     }
 
     #[test]
@@ -162122,7 +162314,10 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.apple_events.handlers.len(), 1);
 
-        loaded.apple_events.application_high_level_event_aware = true;
+        loaded
+            .apple_events
+            .apple_event_launch_state
+            .set_high_level_event_aware(true);
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNextEvent;

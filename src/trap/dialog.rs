@@ -27256,7 +27256,7 @@ mod tests {
                 ..DialogItem::default()
             }],
         );
-        disp.sent_open_app_event = true;
+        disp.set_sent_open_app_event_for_test(true);
     }
 
     fn seed_retained_modal_dialog(
