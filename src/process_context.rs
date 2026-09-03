@@ -5561,6 +5561,7 @@ impl ProcessContext {
         adapter.attach_to(&self.file_system);
     }
 
+    #[cfg(test)]
     pub(crate) fn attach_resource_manager(&self, adapter: &mut SharedProcessResourceManager) {
         adapter.attach_resource_manager_to(&self.file_system.resource_manager);
     }

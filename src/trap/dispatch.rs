@@ -22,7 +22,7 @@ use crate::process_context::{
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
-    SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessResourceManager,
+    SharedProcessOpenFilePositions, SharedProcessOpenFiles,
     SharedProcessScrapState, SharedProcessSoundManager, SharedProcessTextEditManager,
     SharedProcessValue,
 };
@@ -1661,8 +1661,9 @@ impl TrapTableProfile {
 pub struct TrapDispatcher {
     /// Synthetic keyboard and mouse entries exposed by the ADB Manager.
     pub(crate) adb: crate::adb::AdbManager,
-    /// Process-owned Resource Manager state shared by attached CPU adapters.
-    process_resource_manager: SharedProcessResourceManager,
+    /// Process-owned File Manager and Resource Manager state shared by the
+    /// attached CPU adapters. Inside Macintosh: Files (1992), pp. 1-7--1-9;
+    /// Inside Macintosh Volume I (1985), pp. I-109--I-110.
     process_file_system: SharedProcessFileSystem,
     /// Per-page hold refcounts for `HoldMemory`/`UnholdMemory`.
     /// Keys are 4 KiB page numbers in logical address space.
@@ -2728,13 +2729,13 @@ impl std::ops::Deref for TrapDispatcher {
     type Target = ProcessResourceManagerState;
 
     fn deref(&self) -> &Self::Target {
-        &self.process_resource_manager
+        &self.process_file_system.resource_manager
     }
 }
 
 impl std::ops::DerefMut for TrapDispatcher {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.process_resource_manager
+        &mut self.process_file_system.resource_manager
     }
 }
 
@@ -2790,7 +2791,6 @@ impl TrapDispatcher {
             .next_vfs_volume_ref_num
             .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
-        context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
         context.attach_callback_tasks(
             &mut self.timer_tasks,
@@ -3714,7 +3714,6 @@ impl TrapDispatcher {
 
         let mut dispatcher = Self {
             adb: crate::adb::AdbManager::new(),
-            process_resource_manager: SharedProcessResourceManager::default(),
             process_file_system,
             vm_held_page_counts: HashMap::new(),
             vm_held_page_history: HashSet::new(),
@@ -11095,6 +11094,89 @@ mod tests {
         assert!(context.event_queue().menu_bar_is_invalid());
         assert_eq!(dispatcher.event_queue.len(), 2);
         assert!(dispatcher.event_queue.menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn fresh_dispatcher_uses_filesystem_resource_manager_owner() {
+        let mut dispatcher = TrapDispatcher::new();
+        let owner: &ProcessResourceManagerState = &dispatcher.process_file_system.resource_manager;
+
+        assert!(std::ptr::eq(&*dispatcher, owner));
+
+        let key = (7, *b"TEST", 128);
+        dispatcher
+            .resource_backing_data
+            .insert(key, b"fresh".to_vec());
+        assert_eq!(
+            dispatcher
+                .process_file_system
+                .resource_manager
+                .resource_backing_data
+                .get(&key),
+            Some(&b"fresh".to_vec())
+        );
+    }
+
+    #[test]
+    fn attached_dispatchers_share_filesystem_resource_manager_owner() {
+        let mut context = ProcessContext::default();
+        let mut first = TrapDispatcher::new();
+        let mut second = TrapDispatcher::new();
+
+        first.attach_process_context(&mut context);
+        second.attach_process_context(&mut context);
+
+        assert!(first
+            .process_file_system
+            .resource_manager
+            .ptr_eq(&second.process_file_system.resource_manager));
+        assert!(std::ptr::eq(
+            &*first,
+            &*first.process_file_system.resource_manager
+        ));
+        assert!(std::ptr::eq(
+            &*second,
+            &*second.process_file_system.resource_manager
+        ));
+
+        let key = (7, *b"TEST", 128);
+        first
+            .resource_backing_data
+            .insert(key, b"attached".to_vec());
+        assert_eq!(
+            second.resource_backing_data.get(&key),
+            Some(&b"attached".to_vec())
+        );
+    }
+
+    #[test]
+    fn detached_filesystem_resource_manager_clone_is_independent() {
+        let mut dispatcher = TrapDispatcher::new();
+        let key = (7, *b"TEST", 128);
+        dispatcher
+            .resource_backing_data
+            .insert(key, b"original".to_vec());
+
+        let mut detached = dispatcher.process_file_system.clone();
+        assert!(!dispatcher.process_file_system.ptr_eq(&detached));
+        assert_eq!(
+            detached.resource_backing_data.get(&key),
+            Some(&b"original".to_vec())
+        );
+
+        detached
+            .resource_backing_data
+            .get_mut(&key)
+            .expect("cloned resource backing data")
+            .extend_from_slice(b"-detached");
+        assert_eq!(
+            dispatcher.resource_backing_data.get(&key),
+            Some(&b"original".to_vec())
+        );
+        assert_eq!(
+            detached.resource_backing_data.get(&key),
+            Some(&b"original-detached".to_vec())
+        );
     }
 
     #[test]
