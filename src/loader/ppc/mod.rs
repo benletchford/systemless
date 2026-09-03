@@ -84,6 +84,7 @@ use crate::process_context::{
     DEFAULT_QUICKDRAW_HILITE_COLOR, SharedProcessMenuTracking,
     SharedProcessMixedModeM68kState,
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
+    SharedProcessQuickDrawPixelStates,
     SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
 };
 use crate::quickdraw::fonts::heuristics::{
@@ -1300,6 +1301,7 @@ pub enum PpcImportDispatcherTarget {
     UnlockPixels,
     GetPixelsState,
     SetPixelsState,
+    AllowPurgePixels,
     NoPurgePixels,
     SetRect,
     SectRect,
@@ -3463,6 +3465,9 @@ pub struct PpcLoadedApp {
     pub(crate) controls: SharedProcessControlManager,
     pub aliases: Vec<PpcAliasRecord>,
     pub gworlds: Vec<PpcGWorldRecord>,
+    /// Process-owned state bits keyed by PixMapHandle. GWorld geometry,
+    /// allocation, and rendering records remain in `gworlds`.
+    pub(crate) gworld_pixel_states: SharedProcessQuickDrawPixelStates,
     pub q3_objects: Vec<PpcQ3ObjectRecord>,
     pub q3_object_refs: Vec<PpcQ3ObjectReferenceRecord>,
     pub next_q3_object: u32,
@@ -4046,6 +4051,7 @@ impl PpcLoadedApp {
         context.attach_quickdraw_hilite_colors(&mut self.quickdraw_hilite_colors);
         self.process_quickdraw_port_state_attached = true;
         context.attach_quickdraw_error(&mut self.toolbox_startup.last_quickdraw_error);
+        context.attach_quickdraw_pixel_states(&mut self.gworld_pixel_states);
         context.attach_display_color_state(
             &mut self.screen_clut,
             &mut self.color_manager_clut,
@@ -7346,6 +7352,7 @@ impl PpcLoadedApp {
         let mut controls = std::mem::take(&mut self.controls);
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
+        let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
         let mut window_list = self.window_list.shared_handle();
         if window_list.is_empty() {
             window_list.extend(
@@ -7938,6 +7945,7 @@ impl PpcLoadedApp {
                         &mut controls,
                         &mut aliases,
                         &mut gworlds,
+                        &gworld_pixel_states,
                         &mut window_list,
                         &mut q3_objects,
                         &mut q3_object_refs,
@@ -12870,6 +12878,11 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         ppc_seed_main_gworld(&mut memory),
         ppc_seed_dsp_back_gworld(&mut memory),
     ];
+    // Loader-owned screen worlds remain lazy compatibility projections so two
+    // pristine adapters can attach to the same process without presenting
+    // duplicate populated registries. The first pixel-state operation adopts
+    // their non-purgeable mirror; NewGWorld records are registered eagerly.
+    let gworld_pixel_states = SharedProcessQuickDrawPixelStates::default();
     if let Some((base, len)) = system_reservation {
         let reservation_start = u64::from(base);
         let reservation_end = reservation_start + u64::from(len);
@@ -13005,6 +13018,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         controls: SharedProcessControlManager::default(),
         aliases: Vec::new(),
         gworlds,
+        gworld_pixel_states,
         q3_objects: Vec::new(),
         q3_object_refs: Vec::new(),
         next_q3_object: PPC_Q3_OBJECT_BASE,
@@ -14539,6 +14553,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "UnlockPixels") => PpcImportDispatcherTarget::UnlockPixels,
         ("InterfaceLib", "GetPixelsState") => PpcImportDispatcherTarget::GetPixelsState,
         ("InterfaceLib", "SetPixelsState") => PpcImportDispatcherTarget::SetPixelsState,
+        ("InterfaceLib", "AllowPurgePixels") => PpcImportDispatcherTarget::AllowPurgePixels,
         ("InterfaceLib", "NoPurgePixels") => PpcImportDispatcherTarget::NoPurgePixels,
         ("InterfaceLib", "SetRect") => PpcImportDispatcherTarget::SetRect,
         ("InterfaceLib", "SectRect") => PpcImportDispatcherTarget::SectRect,
@@ -15263,6 +15278,7 @@ fn dispatch_supported_import(
     controls: &mut Vec<PpcControlRecord>,
     aliases: &mut Vec<PpcAliasRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    gworld_pixel_states: &SharedProcessQuickDrawPixelStates,
     window_list: &mut Vec<u32>,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
@@ -15344,6 +15360,11 @@ fn dispatch_supported_import(
     event_queue: &mut EventQueue,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> Option<PpcImportAction> {
+    // The process registry is authoritative. Refresh the legacy vector
+    // booleans at each native boundary so rendering/debugging code that still
+    // reads them sees any classic-side transition before this import runs.
+    ppc_sync_gworld_pixel_state_mirrors(gworlds, gworld_pixel_states);
+
     // Toolbox helpers use an import-scoped read view for guest ABI decoding.
     // Allocation ownership remains in the process Memory Manager, and the
     // next import observes its canonical records immediately.
@@ -19629,6 +19650,23 @@ fn dispatch_supported_import(
                 &mut toolbox_startup.gworld_allocations,
                 *current_gdevice,
             );
+            if result == PPC_NO_ERR {
+                let out_ptr = cpu.gpr[3];
+                let flags = cpu.gpr[8];
+                let port = memory.read_u32_be(out_ptr).unwrap_or(0);
+                let pixmap_handle = memory.read_u32_be(port.wrapping_add(2)).unwrap_or(0);
+                if pixmap_handle != 0 {
+                    let mut state = 0;
+                    if flags & (1 << 0) != 0 {
+                        state |= PPC_PIXELS_PURGEABLE;
+                    }
+                    if flags & PPC_KEEP_LOCAL != 0 {
+                        state |= PPC_KEEP_LOCAL;
+                    }
+                    gworld_pixel_states.set_quickdraw_pixel_state(pixmap_handle, state);
+                    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, state);
+                }
+            }
             // Imaging With QuickDraw (1994), pp. 6-20 and 6-24: QDError
             // reports NewGWorld and UpdateGWorld failures, and a successful
             // call clears the previous QuickDraw error.
@@ -19636,6 +19674,15 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::UpdateGWorld => {
+            let old_port = memory.read_u32_be(cpu.gpr[3]).unwrap_or(0);
+            let old_pixmap_handle = ppc_gworld_pixmap(memory, gworlds, old_port);
+            if old_pixmap_handle != 0 {
+                let _ = ppc_ensure_gworld_pixel_state(
+                    gworlds,
+                    gworld_pixel_states,
+                    old_pixmap_handle,
+                );
+            }
             let result = ppc_update_gworld(
                 cpu,
                 process_memory_manager,
@@ -20047,6 +20094,16 @@ fn dispatch_supported_import(
                 gworlds,
                 *current_gdevice,
             ) {
+                let pixmap_handle = ppc_gworld_pixmap(memory, gworlds, cpu.gpr[3]);
+                if pixmap_handle != 0 && !gworld_pixel_states.has_quickdraw_pixel_state(pixmap_handle)
+                {
+                    gworld_pixel_states.set_quickdraw_pixel_state(pixmap_handle, 0);
+                }
+                ppc_sync_gworld_pixel_state_mirror(
+                    gworlds,
+                    pixmap_handle,
+                    gworld_pixel_states.quickdraw_pixel_state(pixmap_handle),
+                );
                 quickdraw_fore_indices.remove(&cpu.gpr[3]);
                 *current_gworld = cpu.gpr[3];
                 ppc_restore_port_colors(
@@ -20073,6 +20130,14 @@ fn dispatch_supported_import(
                 gworlds,
                 *current_gdevice,
             ) {
+                let pixmap_handle = ppc_gworld_pixmap(memory, gworlds, cpu.gpr[3]);
+                if pixmap_handle != 0 {
+                    // A newly opened CPort starts with non-purgeable pixels;
+                    // this record is not a GWorld allocation owner. Inside
+                    // Macintosh: Imaging With QuickDraw (1994), pp. 6-34--6-35.
+                    gworld_pixel_states.set_quickdraw_pixel_state(pixmap_handle, 0);
+                    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, 0);
+                }
                 quickdraw_fore_indices.remove(&cpu.gpr[3]);
                 *current_gworld = cpu.gpr[3];
                 ppc_restore_port_colors(
@@ -20130,36 +20195,33 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(base))
         }
         PpcImportDispatcherTarget::LockPixels => Some(PpcImportAction::Return(ppc_lock_pixels(
-            gworlds, cpu.gpr[3],
+            gworlds,
+            gworld_pixel_states,
+            cpu.gpr[3],
         ))),
         PpcImportDispatcherTarget::UnlockPixels => {
-            ppc_unlock_pixels(gworlds, cpu.gpr[3]);
+            ppc_unlock_pixels(gworlds, gworld_pixel_states, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPixelsState => {
-            let state = gworlds
-                .iter()
-                .find(|record| record.pixmap_handle == cpu.gpr[3])
-                .map(|record| {
-                    (u32::from(!record.pixels_no_purge) << 6)
-                        | (u32::from(record.pixels_locked) << 7)
-                })
+            let state = ppc_ensure_gworld_pixel_state(gworlds, gworld_pixel_states, cpu.gpr[3])
                 .unwrap_or(0);
             Some(PpcImportAction::Return(state))
         }
         PpcImportDispatcherTarget::SetPixelsState => {
-            if let Some(record) = gworlds
-                .iter_mut()
-                .find(|record| record.pixmap_handle == cpu.gpr[3])
-            {
-                let state = cpu.gpr[4];
-                record.pixels_no_purge = state & (1 << 6) == 0;
-                record.pixels_locked = state & (1 << 7) != 0;
-            }
+            ppc_set_gworld_pixel_state(gworlds, gworld_pixel_states, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::AllowPurgePixels => {
+            // Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-34--6-35:
+            // AllowPurgePixels marks unlocked pixel storage purgeable. The
+            // HLE models the state bit; actual Memory Manager purging remains
+            // outside this process-state migration.
+            ppc_allow_purge_pixels(gworlds, gworld_pixel_states, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::NoPurgePixels => {
-            ppc_no_purge_pixels(gworlds, cpu.gpr[3]);
+            ppc_no_purge_pixels(gworlds, gworld_pixel_states, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetRect => {
@@ -50449,7 +50511,7 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         depth: PPC_MAIN_PIXEL_DEPTH,
         row_bytes,
         pixels_locked: false,
-        pixels_no_purge: false,
+        pixels_no_purge: true,
     };
     let front_buffer = PpcFrontBuffer {
         base_addr: record.base_addr,
@@ -50639,7 +50701,7 @@ fn ppc_seed_dsp_back_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         depth: PPC_MAIN_PIXEL_DEPTH,
         row_bytes,
         pixels_locked: false,
-        pixels_no_purge: false,
+        pixels_no_purge: true,
     }
 }
 
@@ -50772,7 +50834,7 @@ fn ppc_open_port(
         depth: bits.depth,
         row_bytes: bits.row_bytes,
         pixels_locked: false,
-        pixels_no_purge: false,
+        pixels_no_purge: true,
     });
     *last_mem_error = PPC_NO_ERR;
     true
@@ -50914,7 +50976,7 @@ fn ppc_open_cport(
         depth: bits.depth,
         row_bytes: bits.row_bytes,
         pixels_locked: false,
-        pixels_no_purge: false,
+        pixels_no_purge: true,
     });
     *last_mem_error = PPC_NO_ERR;
     true
@@ -51337,7 +51399,7 @@ fn ppc_new_cwindow(
         depth,
         row_bytes,
         pixels_locked: false,
-        pixels_no_purge: false,
+        pixels_no_purge: true,
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
     if visible && proc_id == 1 {
@@ -52542,7 +52604,7 @@ fn ppc_new_gworld(
         depth,
         row_bytes,
         pixels_locked: false,
-        pixels_no_purge: false,
+        pixels_no_purge: true,
     });
     gworld_allocations.insert(
         port,
@@ -55649,43 +55711,142 @@ fn ppc_point_in_rounded_rect(
     dx * dx + dy * dy <= 1.0
 }
 
-fn ppc_lock_pixels(gworlds: &mut [PpcGWorldRecord], pixmap_handle: u32) -> u32 {
+const PPC_PIXELS_PURGEABLE: u32 = 1 << 6;
+const PPC_PIXELS_LOCKED: u32 = 1 << 7;
+const PPC_KEEP_LOCAL: u32 = 1 << 3;
+
+fn ppc_gworld_pixel_state_from_mirror(record: &PpcGWorldRecord) -> u32 {
+    (u32::from(!record.pixels_no_purge) * PPC_PIXELS_PURGEABLE)
+        | (u32::from(record.pixels_locked) * PPC_PIXELS_LOCKED)
+}
+
+fn ppc_sync_gworld_pixel_state_mirrors(
+    gworlds: &mut [PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+) {
+    for record in gworlds {
+        if record.pixmap_handle == 0 {
+            continue;
+        }
+        if !pixel_states.has_quickdraw_pixel_state(record.pixmap_handle) {
+            // Synthetic/native records created before the process registry
+            // existed contribute their old booleans exactly once; after this
+            // adoption the registry is canonical.
+            pixel_states.set_quickdraw_pixel_state(
+                record.pixmap_handle,
+                ppc_gworld_pixel_state_from_mirror(record),
+            );
+        }
+        let state = pixel_states.quickdraw_pixel_state(record.pixmap_handle);
+        record.pixels_locked = state & PPC_PIXELS_LOCKED != 0;
+        record.pixels_no_purge = state & PPC_PIXELS_PURGEABLE == 0;
+    }
+}
+
+/// Return a process-owned state word, adopting a legacy native mirror only
+/// for a record that predates the shared registry. This compatibility path is
+/// intentionally one-way: every subsequent transition writes the registry.
+fn ppc_ensure_gworld_pixel_state(
+    gworlds: &[PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+    pixmap_handle: u32,
+) -> Option<u32> {
     if pixmap_handle == 0 {
+        return None;
+    }
+    if pixel_states.has_quickdraw_pixel_state(pixmap_handle) {
+        return Some(pixel_states.quickdraw_pixel_state(pixmap_handle));
+    }
+    let state = gworlds
+        .iter()
+        .find(|record| record.pixmap_handle == pixmap_handle)
+        .map(ppc_gworld_pixel_state_from_mirror)?;
+    pixel_states.set_quickdraw_pixel_state(pixmap_handle, state);
+    Some(state)
+}
+
+fn ppc_sync_gworld_pixel_state_mirror(
+    gworlds: &mut [PpcGWorldRecord],
+    pixmap_handle: u32,
+    state: u32,
+) {
+    if let Some(record) = gworlds
+        .iter_mut()
+        .find(|record| record.pixmap_handle == pixmap_handle)
+    {
+        record.pixels_locked = state & PPC_PIXELS_LOCKED != 0;
+        record.pixels_no_purge = state & PPC_PIXELS_PURGEABLE == 0;
+    }
+}
+
+fn ppc_set_gworld_pixel_state(
+    gworlds: &mut [PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+    pixmap_handle: u32,
+    state: u32,
+) {
+    let Some(existing) = ppc_ensure_gworld_pixel_state(gworlds, pixel_states, pixmap_handle)
+    else {
+        return;
+    };
+    let masked = state & (PPC_KEEP_LOCAL | PPC_PIXELS_PURGEABLE | PPC_PIXELS_LOCKED);
+    let preserved = existing & !(PPC_PIXELS_PURGEABLE | PPC_PIXELS_LOCKED);
+    let next = preserved | masked;
+    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
+    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+}
+
+fn ppc_lock_pixels(
+    gworlds: &mut [PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+    pixmap_handle: u32,
+) -> u32 {
+    let Some(state) = ppc_ensure_gworld_pixel_state(gworlds, pixel_states, pixmap_handle) else {
         return 0;
-    }
-    if let Some(record) = gworlds
-        .iter_mut()
-        .find(|record| record.pixmap_handle == pixmap_handle)
-    {
-        record.pixels_locked = true;
-        1
-    } else {
-        0
-    }
+    };
+    let next = state | PPC_PIXELS_LOCKED;
+    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
+    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+    1
 }
 
-fn ppc_unlock_pixels(gworlds: &mut [PpcGWorldRecord], pixmap_handle: u32) {
-    if pixmap_handle == 0 {
+fn ppc_unlock_pixels(
+    gworlds: &mut [PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+    pixmap_handle: u32,
+) {
+    let Some(state) = ppc_ensure_gworld_pixel_state(gworlds, pixel_states, pixmap_handle) else {
         return;
-    }
-    if let Some(record) = gworlds
-        .iter_mut()
-        .find(|record| record.pixmap_handle == pixmap_handle)
-    {
-        record.pixels_locked = false;
-    }
+    };
+    let next = state & !PPC_PIXELS_LOCKED;
+    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
+    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
 }
 
-fn ppc_no_purge_pixels(gworlds: &mut [PpcGWorldRecord], pixmap_handle: u32) {
-    if pixmap_handle == 0 {
+fn ppc_allow_purge_pixels(
+    gworlds: &mut [PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+    pixmap_handle: u32,
+) {
+    let Some(state) = ppc_ensure_gworld_pixel_state(gworlds, pixel_states, pixmap_handle) else {
         return;
-    }
-    if let Some(record) = gworlds
-        .iter_mut()
-        .find(|record| record.pixmap_handle == pixmap_handle)
-    {
-        record.pixels_no_purge = true;
-    }
+    };
+    let next = state | PPC_PIXELS_PURGEABLE;
+    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
+    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
+}
+
+fn ppc_no_purge_pixels(
+    gworlds: &mut [PpcGWorldRecord],
+    pixel_states: &SharedProcessQuickDrawPixelStates,
+    pixmap_handle: u32,
+) {
+    let Some(state) = ppc_ensure_gworld_pixel_state(gworlds, pixel_states, pixmap_handle) else {
+        return;
+    };
+    let next = state & !PPC_PIXELS_PURGEABLE;
+    pixel_states.set_quickdraw_pixel_state(pixmap_handle, next);
+    ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, next);
 }
 
 fn ppc_read_pixmap_bits(memory: &mut PpcSectionMem, pixmap: u32) -> Option<PpcPixMapBits> {
@@ -94262,6 +94423,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn attached_quickdraw_pixel_states_cross_isa_and_detach_with_clone() {
+        // Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-32--6-38:
+        // the PixMapHandle state word is process-visible independently of
+        // which CPU gateway performs LockPixels or SetPixelsState.
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"GetPixelsState")).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        assert!(classic
+            .gworld_pixel_states
+            .ptr_eq(&native.gworld_pixel_states));
+        let detached = native.clone();
+        assert!(!native
+            .gworld_pixel_states
+            .ptr_eq(&detached.gworld_pixel_states));
+
+        let pmh = PPC_MAIN_PIXMAP_HANDLE;
+        assert_eq!(native.gworld_pixel_states.quickdraw_pixel_state(pmh), 0);
+
+        // Classic SetPixelsState publishes keepLocal + pixelsPurgeable to
+        // the process registry; native GetPixelsState must observe both bits.
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_cpu.write_reg(Register::D0, 0x0008_000E);
+        classic_bus.write_long(TEST_SP, (1 << 3) | (1 << 6));
+        classic_bus.write_long(TEST_SP + 4, pmh);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x31D, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(native.gworld_pixel_states.quickdraw_pixel_state(pmh), 0x48);
+
+        native.cpu.gpr[3] = pmh;
+        run_test_import(&mut native, PpcImportDispatcherTarget::LockPixels);
+        assert_eq!(native.cpu.gpr[3], 1);
+        assert_eq!(native.gworld_pixel_states.quickdraw_pixel_state(pmh), 0xc8);
+
+        // The classic selector sees the native LockPixels transition through
+        // the same attached process handle.
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_cpu.write_reg(Register::D0, 0x0004_000D);
+        classic_bus.write_long(TEST_SP, pmh);
+        classic_bus.write_long(TEST_SP + 4, 0);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x31D, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_long(TEST_SP + 4), 0xc8);
+
+        native.cpu.gpr[3] = pmh;
+        run_test_import(&mut native, PpcImportDispatcherTarget::NoPurgePixels);
+        assert_eq!(native.gworld_pixel_states.quickdraw_pixel_state(pmh), 0x88);
+        assert_eq!(detached.gworld_pixel_states.quickdraw_pixel_state(pmh), 0);
+    }
+
+    #[test]
     fn attached_quickdraw_error_crosses_isa_and_detaches_with_clone() {
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut native =
@@ -102945,6 +103164,18 @@ pub(crate) mod tests {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "UnlockPixels"),
             PpcImportDispatcherTarget::UnlockPixels
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "GetPixelsState"),
+            PpcImportDispatcherTarget::GetPixelsState
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetPixelsState"),
+            PpcImportDispatcherTarget::SetPixelsState
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "AllowPurgePixels"),
+            PpcImportDispatcherTarget::AllowPurgePixels
         );
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "NoPurgePixels"),
@@ -143321,6 +143552,9 @@ pub(crate) mod tests {
             .iter()
             .find(|world| world.port == port)
             .unwrap();
+        assert!(native
+            .gworld_pixel_states
+            .has_quickdraw_pixel_state(world.pixmap_handle));
         let ctable_handle = native.memory.read_u32_be(world.pixmap + 42).unwrap();
         let ctable = context
             .memory_manager_mut()
@@ -143357,6 +143591,12 @@ pub(crate) mod tests {
 
         native.cpu.gpr[3] = port;
         run_test_import(&mut native, PpcImportDispatcherTarget::DisposeGWorld);
+        assert!(
+            native
+                .gworld_pixel_states
+                .has_quickdraw_pixel_state(world.pixmap_handle),
+            "local disposal must not delete non-owning process pixel state"
+        );
         let allocator = context
             .memory_manager_mut()
             .native_allocator_snapshot()
@@ -144987,6 +145227,120 @@ pub(crate) mod tests {
             .iter()
             .any(|record| record.pixmap_handle == 0x0bad_cafe
                 || (record.pixmap_handle == PPC_MAIN_PIXMAP_HANDLE && record.pixels_locked)));
+    }
+
+    #[test]
+    fn native_gworld_pixel_state_flags_update_and_preserve_local_records() {
+        // Imaging With QuickDraw (1994), pp. 6-16--6-21 and 6-34--6-38:
+        // pixPurge seeds purgeability, keepLocal is retained in the state
+        // word, and UpdateGWorld does not discard state for a retained PMH.
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"NewGWorld")).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1800;
+        let bounds_ptr = scratch;
+        let first_out_ptr = scratch + 8;
+        let second_out_ptr = scratch + 12;
+        loaded.memory.add_region(scratch, vec![0; 32]);
+        ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 4, 4).unwrap();
+        let initial_gworlds = loaded.gworlds.len();
+
+        loaded.cpu.gpr[3] = first_out_ptr;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = bounds_ptr;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+        let first_port = loaded.memory.read_u32_be(first_out_ptr).unwrap();
+        let first_pmh = ppc_gworld_pixmap(&mut loaded.memory, &loaded.gworlds, first_port);
+        assert_ne!(first_pmh, 0);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(first_pmh), 0);
+        assert!(loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == first_port)
+            .unwrap()
+            .pixels_no_purge);
+
+        loaded.cpu.gpr[3] = second_out_ptr;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = bounds_ptr;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = (1 << 0) | (1 << 3); // pixPurge + keepLocal
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+        let second_port = loaded.memory.read_u32_be(second_out_ptr).unwrap();
+        let second_pmh = ppc_gworld_pixmap(&mut loaded.memory, &loaded.gworlds, second_port);
+        assert_ne!(second_pmh, first_pmh);
+        assert_eq!(
+            loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh),
+            (1 << 6) | (1 << 3)
+        );
+        let second_record = loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == second_port)
+            .unwrap();
+        assert_eq!((second_record.width, second_record.height), (4, 4));
+        assert!(!second_record.pixels_no_purge);
+        assert_eq!(loaded.gworlds.len(), initial_gworlds + 2);
+        assert!(loaded
+            .gworlds
+            .iter()
+            .any(|record| record.port == PPC_MAIN_GWORLD));
+
+        loaded.cpu.gpr[3] = second_pmh;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPixelsState);
+        assert_eq!(loaded.cpu.gpr[3], 0x48);
+        loaded.cpu.gpr[3] = second_pmh;
+        loaded.cpu.gpr[4] = 1 << 7;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPixelsState);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh), 0x88);
+
+        loaded.cpu.gpr[3] = second_pmh;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AllowPurgePixels);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh), 0xc8);
+        loaded.cpu.gpr[3] = second_pmh;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LockPixels);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh), 0xc8);
+        assert!(loaded
+            .gworlds
+            .iter()
+            .find(|record| record.pixmap_handle == second_pmh)
+            .unwrap()
+            .pixels_locked);
+        loaded.cpu.gpr[3] = second_pmh;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NoPurgePixels);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh), 0x88);
+        assert!(loaded
+            .gworlds
+            .iter()
+            .find(|record| record.pixmap_handle == second_pmh)
+            .unwrap()
+            .pixels_no_purge);
+        loaded.cpu.gpr[3] = second_pmh;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AllowPurgePixels);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh), 0xc8);
+        loaded.cpu.gpr[3] = second_pmh;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NoPurgePixels);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh), 0x88);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(first_pmh), 0);
+
+        // A same-sized UpdateGWorld keeps the PMH and therefore its process
+        // state, while the geometry/allocation record remains native-local.
+        loaded.cpu.gpr[3] = second_out_ptr;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = bounds_ptr;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::UpdateGWorld);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(second_pmh), 0x88);
+        assert_eq!(loaded.gworld_pixel_states.quickdraw_pixel_state(first_pmh), 0);
+        assert!(loaded
+            .gworlds
+            .iter()
+            .any(|record| record.port == second_port && record.pixmap_handle == second_pmh));
     }
 
     #[test]

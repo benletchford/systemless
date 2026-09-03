@@ -18637,8 +18637,10 @@ impl super::TrapDispatcher {
             return C_NO_MEM_ERR;
         }
         bus.write_long(pixmap_handle, pixmap);
-        self.gworld_pixel_states
-            .insert(pixmap_handle, if purgeable { 1 << 6 } else { 0 });
+        self.gworld_pixel_states.set_quickdraw_pixel_state(
+            pixmap_handle,
+            if purgeable { 1 << 6 } else { 0 },
+        );
 
         bus.write_long(gdh_out_ptr, gdh);
         bus.write_long(offscreen_pixmap_out_ptr, pixmap_handle);
@@ -18673,7 +18675,10 @@ impl super::TrapDispatcher {
             bus.free(pixmap_ptr);
         }
 
-        self.gworld_pixel_states.remove(&offscreen_pixmap);
+        // Pixel-state entries are process-owned but non-owning. The native
+        // adapter may still retain a local record for this PixMapHandle, so
+        // disposal cannot remove shared state until process-wide liveness is
+        // proven. Allocation ownership remains local to this adapter.
         bus.free(offscreen_pixmap);
     }
 
@@ -18739,11 +18744,12 @@ impl super::TrapDispatcher {
             state |= KEEP_LOCAL;
         }
 
-        self.gworld_pixel_states.insert(pmh, state);
+        self.gworld_pixel_states
+            .set_quickdraw_pixel_state(pmh, state);
     }
 
     fn gworld_pixels_state(&self, pmh: u32) -> u32 {
-        self.gworld_pixel_states.get(&pmh).copied().unwrap_or(0)
+        self.gworld_pixel_states.quickdraw_pixel_state(pmh)
     }
 
     fn set_gworld_pixels_state(&mut self, pmh: u32, state: u32) {
@@ -18757,7 +18763,8 @@ impl super::TrapDispatcher {
         let existing = self.gworld_pixels_state(pmh);
         let masked = state & (KEEP_LOCAL | PIXELS_PURGEABLE | PIXELS_LOCKED);
         let preserved = existing & !(PIXELS_PURGEABLE | PIXELS_LOCKED);
-        self.gworld_pixel_states.insert(pmh, preserved | masked);
+        self.gworld_pixel_states
+            .set_quickdraw_pixel_state(pmh, preserved | masked);
     }
 
     fn set_gworld_pixels_purgeable(&mut self, pmh: u32, purgeable: bool) {
@@ -18827,7 +18834,9 @@ impl super::TrapDispatcher {
 
         let attached_gdevice = self.gworld_devices.remove(&port).unwrap_or(0);
         let pixmap_handle = bus.read_long(port + 2);
-        self.gworld_pixel_states.remove(&pixmap_handle);
+        // The shared state registry does not own the PixMap allocation. Leave
+        // this entry intact because the native adapter may still represent the
+        // same handle; disposal ownership is intentionally out of scope.
         let owns_attached_gdevice = if attached_gdevice != 0 {
             let gd_ptr = bus.read_long(attached_gdevice);
             gd_ptr
@@ -43894,7 +43903,8 @@ mod tests {
         let purgeable = 1u32 << 6;
         let locked = 1u32 << 7;
 
-        d.gworld_pixel_states.insert(pmh, keep_local);
+        d.gworld_pixel_states
+            .set_quickdraw_pixel_state(pmh, keep_local);
         assert_eq!(d.gworld_pixels_state(pmh), keep_local);
 
         d.set_gworld_pixels_state(pmh, purgeable);

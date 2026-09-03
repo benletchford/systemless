@@ -1321,6 +1321,14 @@ pub(crate) const DEFAULT_QUICKDRAW_HILITE_COLOR: (u16, u16, u16) = (0x0000, 0x80
 pub(crate) type SharedProcessQuickDrawHiliteColors =
     SharedProcessValue<HashMap<u32, (u16, u16, u16)>>;
 
+/// Canonical process-owned pixel-state bits keyed by `PixMapHandle`.
+/// Guest PixMap bytes are process-memory-backed, while geometry, allocation,
+/// rendering, and device records remain adapter-local; only the QuickDraw
+/// state bits that `GetPixelsState` and `SetPixelsState` expose cross the
+/// adapter boundary. Inside Macintosh: Imaging With QuickDraw (1994), pp.
+/// 6-30--6-38.
+pub(crate) type SharedProcessQuickDrawPixelStates = SharedProcessValue<HashMap<u32, u32>>;
+
 /// Canonical desktop scrap for one Macintosh process.
 ///
 /// The Scrap Manager exposes one ordered collection of typed flavors to every
@@ -1633,6 +1641,35 @@ impl SharedProcessValue<HashMap<u32, (u16, u16, u16)>> {
         // SAFETY: see `quickdraw_hilite_color`.
         unsafe {
             (&mut *self.0.get()).remove(&port);
+        }
+    }
+}
+
+impl SharedProcessValue<HashMap<u32, u32>> {
+    /// Read one process-owned QuickDraw pixel-state word without returning a
+    /// reference into the attached adapter's `UnsafeCell`.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-32--6-38.
+    pub(crate) fn quickdraw_pixel_state(&self, pixmap_handle: u32) -> u32 {
+        // SAFETY: process adapters are serialized by the runner and this
+        // method copies the value before returning it.
+        unsafe { (&*self.0.get()).get(&pixmap_handle).copied().unwrap_or(0) }
+    }
+
+    /// Report whether a PixMapHandle has an explicitly registered state word.
+    /// A missing entry is distinct from a registered all-zero default while a
+    /// native adapter is adopting legacy records during the migration.
+    pub(crate) fn has_quickdraw_pixel_state(&self, pixmap_handle: u32) -> bool {
+        // SAFETY: see `quickdraw_pixel_state`.
+        unsafe { (&*self.0.get()).contains_key(&pixmap_handle) }
+    }
+
+    /// Register or replace one process-owned QuickDraw pixel-state word.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-34--6-38.
+    pub(crate) fn set_quickdraw_pixel_state(&self, pixmap_handle: u32, state: u32) {
+        // SAFETY: process adapters are serialized by the runner; the mutable
+        // borrow is scoped to this map update.
+        unsafe {
+            (&mut *self.0.get()).insert(pixmap_handle, state);
         }
     }
 }
@@ -5779,6 +5816,7 @@ pub(crate) struct ProcessContext {
     cursor_state: SharedProcessCursorState,
     quickdraw_op_colors: SharedProcessQuickDrawOpColors,
     quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
+    quickdraw_pixel_states: SharedProcessQuickDrawPixelStates,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
     quickdraw_error: SharedProcessValue<i16>,
@@ -5815,6 +5853,7 @@ impl Default for ProcessContext {
             cursor_state: SharedProcessCursorState::default(),
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
+            quickdraw_pixel_states: SharedProcessQuickDrawPixelStates::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
             quickdraw_error: SharedProcessValue::from_value(0),
@@ -5969,6 +6008,17 @@ impl ProcessContext {
         adapter: &mut SharedProcessQuickDrawHiliteColors,
     ) {
         adapter.attach_to(&self.quickdraw_hilite_colors, |colors| colors.is_empty());
+    }
+
+    /// Attach the process-wide `PixMapHandle` pixel-state registry. Ordinary
+    /// adapter clones remain detached; only adapters explicitly attached to
+    /// this context observe each other's Lock/Unlock/SetPixelsState changes.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-32--6-38.
+    pub(crate) fn attach_quickdraw_pixel_states(
+        &self,
+        adapter: &mut SharedProcessQuickDrawPixelStates,
+    ) {
+        adapter.attach_to(&self.quickdraw_pixel_states, |states| states.is_empty());
     }
 
     /// Attach a CPU adapter to the process's current QuickDraw port and device.
