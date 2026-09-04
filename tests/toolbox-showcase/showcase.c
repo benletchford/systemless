@@ -2893,6 +2893,8 @@ static void PrepareSpriteScene(void)
     RGBColor accent;
     RGBColor probe;
     RGBColor observed;
+    RGBColor black;
+    RGBColor white;
     Point regionProbe;
     short x;
     short y;
@@ -2911,6 +2913,8 @@ static void PrepareSpriteScene(void)
     accent.green = gSpriteAnimated ? 0xeeee : 0x2222;
     accent.blue = gSpriteAnimated ? 0x3333 : 0xdddd;
     probe.red = 0xffff; probe.green = 0x4444; probe.blue = 0x1111;
+    black.red = black.green = black.blue = 0;
+    white.red = white.green = white.blue = 0xffff;
 
     BuildSpriteSource();
     BuildSpriteMask();
@@ -2953,6 +2957,12 @@ static void PrepareSpriteScene(void)
         SetGWorld(savedWorld, savedDevice);
         return;
     }
+
+    /* Boolean source modes apply the current foreground and background
+       colors. Black and white reproduce the source colors unchanged.
+       Imaging With QuickDraw (1994), pp. 4-32--4-34. */
+    RGBForeColor(&black);
+    RGBBackColor(&white);
 
     /* CopyMask is a transparent, unscaled sprite transfer. */
     CopyMask((BitMap *)*sourcePixels, (BitMap *)*maskPixels, (BitMap *)*worldPixels,

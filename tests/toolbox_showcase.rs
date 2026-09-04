@@ -1809,6 +1809,16 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     let (initial_first_body, initial_second_body) =
         assert_sprites_page_rendered(&mut runner, win_top, win_left);
+    assert!(
+        initial_first_body[0] > initial_first_body[1].saturating_add(80)
+            && initial_first_body[0] > initial_first_body[2].saturating_add(80),
+        "initial CopyMask sprite must preserve its red source color: rgb={initial_first_body:?}"
+    );
+    assert!(
+        initial_second_body[0] > initial_second_body[1].saturating_add(80)
+            && initial_second_body[0] > initial_second_body[2].saturating_add(80),
+        "initial CopyDeepMask sprite must preserve its red source color: rgb={initial_second_body:?}"
+    );
     let initial_frame = rendered_rgb(&mut runner).2;
     assert_reference_frame(&mut runner, "26-sprites.png");
 
@@ -1819,6 +1829,16 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "animated sprite to settle", 1);
     let (animated_first_body, animated_second_body) =
         assert_sprites_page_rendered(&mut runner, win_top, win_left);
+    assert!(
+        animated_first_body[1] > animated_first_body[0].saturating_add(80)
+            && animated_first_body[2] > animated_first_body[0].saturating_add(80),
+        "animated CopyMask sprite must preserve its cyan source color: rgb={animated_first_body:?}"
+    );
+    assert!(
+        animated_second_body[1] > animated_second_body[0].saturating_add(80)
+            && animated_second_body[2] > animated_second_body[0].saturating_add(80),
+        "animated CopyDeepMask sprite must preserve its cyan source color: rgb={animated_second_body:?}"
+    );
     assert_ne!(
         initial_first_body, animated_first_body,
         "Animate Sprite must change the CopyMask sprite frame"
