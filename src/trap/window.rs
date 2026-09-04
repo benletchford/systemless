@@ -1702,35 +1702,18 @@ impl super::TrapDispatcher {
         self.draw_window_drag_outline(bus, tracking.outline_rect);
     }
 
-    fn window_grow_dimensions(
-        content: (i16, i16, i16, i16),
-        size_rect: (i16, i16, i16, i16),
-        mouse: (i16, i16),
-    ) -> (i16, i16) {
-        let min_height = size_rect.0.max(1);
-        let min_width = size_rect.1.max(1);
-        let max_height = size_rect.2.max(min_height);
-        let max_width = size_rect.3.max(min_width);
-        (
-            mouse
-                .0
-                .saturating_sub(content.0)
-                .clamp(min_height, max_height),
-            mouse
-                .1
-                .saturating_sub(content.1)
-                .clamp(min_width, max_width),
-        )
-    }
-
     fn refresh_window_grow_outline(
         &self,
         bus: &mut MacMemoryBus,
         tracking: &mut super::dispatch::GrowWindowTrackingState,
         mouse: (i16, i16),
     ) {
-        let (height, width) =
-            Self::window_grow_dimensions(tracking.original_content_rect, tracking.size_rect, mouse);
+        let (height, width) = crate::window_manager::grow_dimensions_from_drag(
+            tracking.original_content_rect,
+            tracking.size_rect,
+            tracking.start_point,
+            mouse,
+        );
         let old_height = tracking
             .original_content_rect
             .2
@@ -5076,9 +5059,10 @@ impl super::TrapDispatcher {
                         self.event_queue.remove(index);
                     }
                     let result = if valid_surface && valid_window {
-                        let (height, width) = Self::window_grow_dimensions(
+                        let (height, width) = crate::window_manager::grow_dimensions_from_drag(
                             tracking.original_content_rect,
                             tracking.size_rect,
+                            tracking.start_point,
                             mouse,
                         );
                         let old_height = tracking
@@ -5138,6 +5122,7 @@ impl super::TrapDispatcher {
                     screen_mode: self.screen_mode,
                     original_content_rect,
                     original_outline_rect,
+                    start_point: (bus.read_word(sp + 4) as i16, bus.read_word(sp + 6) as i16),
                     size_rect,
                     outline_rect: original_outline_rect,
                     outline_saved_pixels: Vec::new(),
@@ -13016,7 +13001,8 @@ mod tests {
         cpu.write_reg(Register::A1, 0x3333_4444);
         cpu.write_reg(Register::D1, 0x5555_6666);
         bus.write_long(sp, size_rect);
-        bus.write_long(sp + 4, 0x008C_00DC);
+        // The event point is inside the box; the live cursor has already moved.
+        bus.write_long(sp + 4, (135u32 << 16) | 210);
         bus.write_long(sp + 8, window);
         bus.write_long(sp + 12, 0xDEAD_BEEF);
         disp.push_mouse_down(140, 220);
@@ -13060,7 +13046,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
-        assert_eq!(bus.read_long(sp + 12), (150u32 << 16) | 260);
+        assert_eq!(bus.read_long(sp + 12), (155u32 << 16) | 260);
         assert!(disp.grow_window_tracking.is_none());
         assert!(disp.event_queue.iter().all(|event| event.what != 2));
         assert_eq!(cpu.read_reg(Register::A0), 0x1111_2222);

@@ -70799,27 +70799,6 @@ fn ppc_grow_window_call(cpu: &PpcCpu) -> PpcGrowWindowCall {
     }
 }
 
-fn ppc_grow_window_dimensions(
-    content: (i16, i16, i16, i16),
-    limits: (i16, i16, i16, i16),
-    mouse: (i16, i16),
-) -> (i16, i16) {
-    let min_height = limits.0.max(1);
-    let min_width = limits.1.max(1);
-    let max_height = limits.2.max(min_height);
-    let max_width = limits.3.max(min_width);
-    (
-        mouse
-            .0
-            .saturating_sub(content.0)
-            .clamp(min_height, max_height),
-        mouse
-            .1
-            .saturating_sub(content.1)
-            .clamp(min_width, max_width),
-    )
-}
-
 fn ppc_restore_grow_window_outline(memory: &mut PpcSectionMem, state: &PpcGrowWindowTrackingState) {
     for (x, y, pixel) in state.saved_pixels.iter().copied() {
         let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
@@ -70832,8 +70811,12 @@ fn ppc_refresh_grow_window_outline(
     state: &mut PpcGrowWindowTrackingState,
     mouse: (i16, i16),
 ) {
-    let (height, width) =
-        ppc_grow_window_dimensions(state.original_content, state.size_limits, mouse);
+    let (height, width) = crate::window_manager::grow_dimensions_from_drag(
+        state.original_content,
+        state.size_limits,
+        ((state.call.start_point >> 16) as i16, state.call.start_point as i16),
+        mouse,
+    );
     let proposed_content = (
         state.original_content.0,
         state.original_content.1,
@@ -70923,9 +70906,10 @@ fn ppc_dispatch_grow_window(
         if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
             event_queue.remove(index);
         }
-        let (height, width) = ppc_grow_window_dimensions(
+        let (height, width) = crate::window_manager::grow_dimensions_from_drag(
             state.original_content,
             state.size_limits,
+            ((state.call.start_point >> 16) as i16, state.call.start_point as i16),
             (input.mouse_v, input.mouse_h),
         );
         let old_height = state
@@ -140690,7 +140674,8 @@ pub(crate) mod tests {
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
             loaded.cpu.gpr[3] = window;
-            loaded.cpu.gpr[4] = (200u32 << 16) | 300;
+            // Retain the event point even when the live cursor has moved.
+            loaded.cpu.gpr[4] = (195u32 << 16) | 290;
             loaded.cpu.gpr[5] = scratch + 24;
             let original_sp = loaded.cpu.gpr[1];
             let original_args = [loaded.cpu.gpr[3], loaded.cpu.gpr[4], loaded.cpu.gpr[5]];
@@ -140742,7 +140727,7 @@ pub(crate) mod tests {
             });
             let probe = loaded.run_with_hle_imports(64);
             assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
-            assert_eq!(loaded.cpu.gpr[3], (150u32 << 16) | 260);
+            assert_eq!(loaded.cpu.gpr[3], (155u32 << 16) | 260);
             assert!(loaded.toolbox_startup.grow_window_tracking.is_none());
             assert!(!loaded.event_queue.iter().any(|event| event.what == 2));
             assert_eq!(
@@ -140759,7 +140744,8 @@ pub(crate) mod tests {
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
             loaded.cpu.gpr[3] = window;
-            loaded.cpu.gpr[4] = (200u32 << 16) | 300;
+            // Retain the event point even when the live cursor has moved.
+            loaded.cpu.gpr[4] = (195u32 << 16) | 290;
             loaded.cpu.gpr[5] = scratch + 24;
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: true,
@@ -140771,8 +140757,8 @@ pub(crate) mod tests {
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: false,
-                mouse_v: 200,
-                mouse_h: 300,
+                mouse_v: 195,
+                mouse_h: 290,
                 ..PpcInputSnapshot::default()
             });
             let probe = loaded.run_with_hle_imports(64);

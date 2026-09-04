@@ -11,6 +11,27 @@ pub(crate) fn standard_desktop_pattern_is_ink(h: i32, v: i32) -> bool {
 
 pub(crate) type WindowRect = (i16, i16, i16, i16);
 
+/// GrowWindow follows displacement from the mouse-down point, retaining
+/// the pointer's offset inside the size box. Toolbox Essentials (1992),
+/// pp. 4-99--4-100; confirmed on both Mac OS 8.1 CPU slices.
+pub(crate) fn grow_dimensions_from_drag(
+    content: WindowRect,
+    limits: WindowRect,
+    start: (i16, i16),
+    mouse: (i16, i16),
+) -> (i16, i16) {
+    let dimension = |origin: i16, end: i16, down: i16, now: i16, min: i16, max: i16| {
+        let min = i32::from(min.max(1));
+        let max = i32::from(max).max(min);
+        (i32::from(end) - i32::from(origin) + i32::from(now) - i32::from(down)).clamp(min, max)
+            as i16
+    };
+    (
+        dimension(content.0, content.2, start.0, mouse.0, limits.0, limits.2),
+        dimension(content.1, content.3, start.1, mouse.1, limits.1, limits.3),
+    )
+}
+
 /// Architecture-neutral inspection of one live Window Manager record.
 ///
 /// This is intentionally a semantic seam for deterministic fixtures and
@@ -332,6 +353,23 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grow_retains_the_pointer_offset_inside_the_size_box() {
+        let content = (185, 215, 430, 535);
+        let limits = (64, 64, 600, 800);
+        assert_eq!(
+            super::grow_dimensions_from_drag(content, limits, (425, 525), (450, 550)),
+            (270, 345)
+        );
+        assert_eq!(
+            super::grow_dimensions_from_drag(content, limits, (425, 525), (425, 525)),
+            (245, 320)
+        );
+        assert_eq!(
+            super::grow_dimensions_from_drag(content, limits, (425, 525), (-100, -100)),
+            (64, 64)
+        );
+    }
     use super::*;
 
     #[test]

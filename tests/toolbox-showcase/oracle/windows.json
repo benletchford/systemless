@@ -1,0 +1,299 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 59,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_up",
+      "v": 59,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-windows.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 240,
+      "h": 210
+    },
+    {
+      "type": "mouse_down",
+      "v": 240,
+      "h": 210
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 240,
+      "h": 210
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_up",
+      "v": 240,
+      "h": 210
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-windows-aux-activated.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 143,
+      "h": 200
+    },
+    {
+      "type": "mouse_down",
+      "v": 143,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 173,
+      "h": 235
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_up",
+      "v": 173,
+      "h": 235
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-windows-moved.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 425,
+      "h": 525
+    },
+    {
+      "type": "mouse_down",
+      "v": 425,
+      "h": 525
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 450,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_up",
+      "v": 450,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-windows-resized.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 480,
+      "h": 500
+    },
+    {
+      "type": "mouse_down",
+      "v": 480,
+      "h": 500
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 480,
+      "h": 500
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_up",
+      "v": 480,
+      "h": 500
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-windows-hit-test.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 238,
+      "h": 335
+    },
+    {
+      "type": "mouse_down",
+      "v": 238,
+      "h": 335
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 238,
+      "h": 335
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_up",
+      "v": 238,
+      "h": 335
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-windows-promoted.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 175,
+      "h": 223
+    },
+    {
+      "type": "mouse_down",
+      "v": 175,
+      "h": 223
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 175,
+      "h": 223
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_up",
+      "v": 175,
+      "h": 223
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-windows-main-promoted.png"
+    }
+  ]
+}
