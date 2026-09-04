@@ -1846,17 +1846,7 @@ fn draw_systemless_menu_title_chrome(
 ) {
     if state.highlighted {
         ctx.fill_rect(state.rect, palette.selection);
-    } else if state.enabled {
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.bottom - 2,
-                left: state.rect.left + 3,
-                bottom: state.rect.bottom - 1,
-                right: state.rect.right - 3,
-            },
-            palette.selection,
-        );
-    } else {
+    } else if !state.enabled {
         ctx.frame_rect(inset_rect(state.rect, 2), palette.frame_dark);
     }
 }
@@ -2897,6 +2887,30 @@ mod tests {
         assert_eq!(classic.height(), 96);
         assert_eq!(classic.rgba().len(), 160 * 96 * 4);
         assert_ne!(classic.rgba(), themed.rgba());
+    }
+
+    #[test]
+    fn systemless_enabled_menu_title_has_no_resting_decoration() {
+        let theme = UiThemeId::SystemlessDefault.provider();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(72, 18, palette.window_background);
+        let before = bitmap.rgba().to_vec();
+
+        theme.draw_menu_title(
+            &mut ThemeDrawCtx::new(&mut bitmap),
+            MenuTitleState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: 18,
+                    right: 72,
+                },
+                enabled: true,
+                highlighted: false,
+            },
+        );
+
+        assert_eq!(bitmap.rgba(), before.as_slice());
     }
 
     #[test]
