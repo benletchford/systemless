@@ -17,12 +17,16 @@
         31,
         41,
         72
-      ]
+      ],
+      "lighting_comparison": {
+        "region": "face interior, excluding one-pixel contour",
+        "maximum_rgb_channel_difference": 8,
+        "minimum_compared_pixels": 400
+      }
     },
     "m68k": {
       "visible_fallback": "raised bevel and sunken gauge"
-    },
-    "lighting_follow_up": "https://github.com/benletchford/systemless/issues/1398"
+    }
   },
   "runs": [
     {

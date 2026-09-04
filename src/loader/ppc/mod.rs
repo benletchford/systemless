@@ -5072,6 +5072,23 @@ impl PpcLoadedApp {
                             }
                         }
                     }
+                    if uses_normals && vertices.iter().any(|vertex| vertex.normal.is_none()) {
+                        // An unannotated TriMesh still has a geometric surface normal.
+                        // Generate it in object space so it follows the same orientation
+                        // and inverse-transpose transform as explicit normal attributes.
+                        let normal = ppc_q3_software_geometric_normal(
+                            triangle.points.map(|index| points[index]),
+                            ppc_q3_software_orientation_style(&command.material),
+                        )
+                        .and_then(|normal| {
+                            ppc_q3_software_transform_normal(normal, command.local_to_world)
+                        });
+                        for vertex in &mut vertices {
+                            if vertex.normal.is_none() {
+                                vertex.normal = normal;
+                            }
+                        }
+                    }
                     let clipped = ppc_q3_software_clip_projected_triangle(
                         command.camera,
                         front_buffer,
@@ -8992,7 +9009,8 @@ fn ppc_q3_software_material_diffuse_color(
                 ppc_q3_read_f32_from_slice(&record.data, 8)?,
             ))
         })
-        .unwrap_or((1.0, 1.0, 1.0))
+        // QuickDraw 3D 1.5.4, View Objects, p. 907: default view attributes.
+        .unwrap_or((0.5, 0.5, 0.5))
 }
 
 fn ppc_q3_software_material_ambient_coefficient(material: &PpcQ3SubmissionMaterialRecord) -> f32 {
@@ -9020,7 +9038,8 @@ fn ppc_q3_software_material_specular_color(
                 ppc_q3_read_f32_from_slice(&record.data, 8)?,
             ))
         })
-        .unwrap_or((0.0, 0.0, 0.0))
+        // QuickDraw 3D 1.5.4, View Objects, p. 907: default view attributes.
+        .unwrap_or((0.5, 0.5, 0.5))
 }
 
 fn ppc_q3_software_material_specular_control(material: &PpcQ3SubmissionMaterialRecord) -> f32 {
@@ -9029,8 +9048,9 @@ fn ppc_q3_software_material_specular_control(material: &PpcQ3SubmissionMaterialR
         .iter()
         .find(|record| record.attribute_type == PPC_Q3_ATTRIBUTE_TYPE_SPECULAR_CONTROL)
         .and_then(|record| ppc_q3_read_f32_from_slice(&record.data, 0))
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(0.0)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        // QuickDraw 3D 1.5.4, View Objects, p. 907: default view attributes.
+        .unwrap_or(4.0)
 }
 
 fn ppc_q3_software_material_highlight_state(material: &PpcQ3SubmissionMaterialRecord) -> bool {
@@ -9166,16 +9186,16 @@ fn ppc_q3_software_material_shaded_output(
             )
         })
         .unwrap_or(diffuse);
-    let specular_control = if highlight_state.unwrap_or(sample.highlight_state) {
-        specular_control.unwrap_or(sample.specular_control)
+    let specular_color = if highlight_state.unwrap_or(sample.highlight_state) {
+        specular_color.unwrap_or(sample.specular_color)
     } else {
-        0.0
+        (0.0, 0.0, 0.0)
     };
     let color = ppc_q3_software_apply_lights(
         color,
         ambient_coefficient.unwrap_or(sample.ambient_coefficient),
-        specular_color.unwrap_or(sample.specular_color),
-        specular_control,
+        specular_color,
+        specular_control.unwrap_or(sample.specular_control),
         sample.illumination_type,
         lights,
         normal,
@@ -9239,6 +9259,22 @@ fn ppc_q3_software_transform_uv(
     } else {
         Some((tu, tv))
     }
+}
+
+fn ppc_q3_software_geometric_normal(
+    points: [(f32, f32, f32); 3],
+    orientation: u32,
+) -> Option<(f32, f32, f32)> {
+    let normal = ppc_q3_vector3d_cross_values(
+        ppc_q3_vector3d_sub(points[1], points[0]),
+        ppc_q3_vector3d_sub(points[2], points[0]),
+    );
+    let normal = if orientation == PPC_Q3_ORIENTATION_STYLE_CLOCKWISE {
+        (-normal.0, -normal.1, -normal.2)
+    } else {
+        normal
+    };
+    ppc_q3_vector3d_normalized_value(normal)
 }
 
 fn ppc_q3_software_transform_normal(
@@ -9813,7 +9849,8 @@ fn ppc_q3_software_specular_contribution(
     specular_color: (f32, f32, f32),
     specular_control: f32,
 ) -> Option<(f32, f32, f32)> {
-    if diffuse_intensity <= 0.0 || specular_control <= 0.0 {
+    // QuickDraw 3D 1.5.4, 3D Metafile Reference, p. 1396 permits exponent zero.
+    if diffuse_intensity <= 0.0 || specular_control < 0.0 {
         return None;
     }
     let view_direction = view_direction.and_then(ppc_q3_vector3d_normalized_value)?;
@@ -130146,7 +130183,8 @@ pub(crate) mod tests {
                         },
                         kind: PpcQ3LightKind::Directional {
                             casts_shadows: 0,
-                            direction: (0.0, 0.0, -1.0),
+                            // The triangle winding produces a -Z surface normal.
+                            direction: (0.0, 0.0, 1.0),
                         },
                     },
                     PpcQ3LightRecord {
@@ -130170,6 +130208,14 @@ pub(crate) mod tests {
         assert_eq!(
             loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
             Some(0x4100)
+        );
+        // Omitting diffuse attributes uses the view's half-grey material,
+        // so both enabled light channels contribute half the previous color.
+        loaded.q3_submission_materials[0].attributes.clear();
+        loaded.render_q3_scene_commands_to_front_buffer();
+        assert_eq!(
+            loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+            Some(0x2080)
         );
     }
 
@@ -131431,6 +131477,19 @@ pub(crate) mod tests {
             ),
             None
         );
+        // A zero exponent is a valid broad highlight, not an absent attribute.
+        assert_eq!(
+            ppc_q3_software_specular_contribution(
+                &light,
+                (0.0, 0.0, 1.0),
+                (0.0, 0.0, -1.0),
+                Some((0.0, 1.0, 1.0)),
+                1.0,
+                (0.5, 0.5, 0.5),
+                0.0,
+            ),
+            Some((0.5, 0.5, 0.5))
+        );
     }
 
     #[test]
@@ -132531,7 +132590,8 @@ pub(crate) mod tests {
                     primary: trimesh_data,
                     secondary: 0,
                     shader: 0,
-                    illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
+                    // Isolate diffuse normal handling from specular highlights.
+                    illumination_type: PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
                     styles: Vec::new(),
                     fog_style: None,
                     attributes: vec![diffuse_attribute(attribute_set)],
@@ -132565,6 +132625,41 @@ pub(crate) mod tests {
             loaded.memory.read_u16_be(front_base + 4 * 16 + 5 * 2),
             Some(0x2000)
         );
+
+        // Both triangles have counterclockwise geometry. Omitting the normal
+        // attributes must light both like the explicit +Z normal, rather than
+        // retaining the right triangle's deliberately opposing vertex normal.
+        for data in [left_trimesh_data, right_trimesh_data] {
+            loaded
+                .memory
+                .write_u32_be(data + PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET, 0)
+                .unwrap();
+        }
+        let stats = loaded.render_q3_scene_commands_to_front_buffer();
+        assert_eq!(stats.triangles, 2);
+        for x in [1, 5] {
+            assert_eq!(
+                loaded.memory.read_u16_be(front_base + 4 * 16 + x * 2),
+                Some(0x22e0)
+            );
+        }
+
+        // Clockwise front faces reverse generated normals; ambient lighting
+        // remains, but a light from +Z no longer illuminates either surface.
+        for material in &mut loaded.q3_submission_materials {
+            material.styles.push(PpcQ3StyleRecord {
+                style: 0,
+                kind: PpcQ3StyleKind::Orientation,
+                value: PPC_Q3_ORIENTATION_STYLE_CLOCKWISE,
+            });
+        }
+        loaded.render_q3_scene_commands_to_front_buffer();
+        for x in [1, 5] {
+            assert_eq!(
+                loaded.memory.read_u16_be(front_base + 4 * 16 + x * 2),
+                Some(0x2000)
+            );
+        }
     }
 
     #[test]

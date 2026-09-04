@@ -153,7 +153,7 @@ exact Systemless framebuffer references while performing the same sequence:
    `03-windows-promoted.png`, and `03-windows-main-promoted.png`.
 4. Choose Drawing & 3D Bevels (item 4), verify representative QuickDraw
    output, require a completed native PowerPC frame, and compare its visible
-   geometry silhouette with the SheepShaver capture.
+   geometry silhouette and interior lighting with the SheepShaver capture.
 5. Choose Game Preferences (item 5), change its controls, verify the matching
    hierarchical-menu checkmarks, then change menu items and verify the panel.
 6. Open File → Game Options and capture the nested submenu while it is live.
@@ -291,11 +291,11 @@ capture identities in [`oracle/drawing-capture.json`](oracle/drawing-capture.jso
 The native PowerPC scene is no longer overwritten by the bevel fallback.
 Both Systemless and SheepShaver show the blue geometry against the dark clear
 color; the test requires overlapping geometry silhouettes, allowing small
-rasterization differences at the edges. SheepShaver's lighting gradient is the
-native reference. Systemless currently renders a uniform face when normal
-attributes are absent; [#1398](https://github.com/benletchford/systemless/issues/1398)
-tracks that separate renderer defect. The 68K checkpoint retains its labelled
-bevel and gauge fallback.
+rasterization differences at the edges. The entire face interior must match
+SheepShaver's lighting gradient within eight levels per RGB channel, allowing
+one 5-bit display quantization step. This exercises geometric normals and the
+default specular material when the application omits those attributes. The 68K
+checkpoint retains its labelled bevel and gauge fallback.
 
 The TextEdit replay is [`oracle/textedit.json`](oracle/textedit.json), with
 artifact identities and reviewed native results in
@@ -351,9 +351,9 @@ animation behavior are strict comparison points rather than presentation
 variance. Cursor placement can differ between captures. Checkpoints 5 and 6
 use the documented final preference state: Veteran difficulty, full audio,
 QD3D Bevels, and 80% volume. The PowerPC run also submits native QuickDraw 3D
-geometry into a visible pane. Its silhouette and clear color are checked
-against SheepShaver; lighting without explicit normals remains a known
-discrepancy tracked in [#1398](https://github.com/benletchford/systemless/issues/1398).
+geometry into a visible pane. Its silhouette, clear color and interior lighting
+gradient are checked against SheepShaver, including the case with no explicit
+normal or specular attributes.
 Classic operating-system presentation remains environment-dependent.
 
 SheepShaver's oracle display is 32-bit direct color, so its animation checkpoint

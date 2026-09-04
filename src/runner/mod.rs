@@ -18852,7 +18852,7 @@ mod tests {
         assert_eq!((row_bytes, width, height, depth), (16, 8, 8, 16));
         assert_eq!(
             runner.bus.read_word(host_base + 4 * row_bytes + 4 * 2),
-            0x7fff
+            0x4210 // Default diffuse grey, quantized to the 16-bit front buffer.
         );
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(ppc_app.q3_completed_frames.is_empty());
