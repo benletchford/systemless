@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "c1a9be62c7d76459503fc9ae05b46e95f9278a68c758650420ca2e960eab43ef",
+  "fixture_sha256": "4c00ad4e6a3ff0a38e972f6fed76a66804572844a27425fff9c7645891bf74a2",
   "scenario": "oracle/lists.json",
   "scenario_sha256": "cc8bad1ba5fee115e3bf613ec528001cb6b70f9c296c3f68a6febe21dc991dec",
   "capture_date": "2026-09-05",
@@ -33,7 +33,7 @@
         },
         {
           "file": "reference/basiliskii-68k/15-lists-selected.png",
-          "sha256": "5edfc2cbc680a2801c2fc0b1e6f1d0757df20d893fb559c64ae6c1b2627c506d"
+          "sha256": "f783c89625975b53eb01d944caf207ed014ebb5b9414b3109a050288117f6a4f"
         },
         {
           "file": "reference/basiliskii-68k/15-lists-mutated.png",
@@ -96,7 +96,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/16-lists-interacted.png",
-          "sha256": "b9e7c832958ee43e78f05f1670687b8bca0ede3c90e1112072cdaa4db9f75100"
+          "sha256": "0618849907c6e4be861a389b4cb8585e77851890a8a8476d1c18a2092bbbbfb3"
         },
         {
           "file": "reference/sheepshaver-ppc/34-popup-lists.png",

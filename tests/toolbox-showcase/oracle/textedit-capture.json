@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "c1a9be62c7d76459503fc9ae05b46e95f9278a68c758650420ca2e960eab43ef",
+  "fixture_sha256": "4c00ad4e6a3ff0a38e972f6fed76a66804572844a27425fff9c7645891bf74a2",
   "scenario": "oracle/textedit.json",
   "scenario_sha256": "e69a6233f0fd85cbff2036e4b11ad0cc05576e2d709fcc13ebe0d14d163b3a90",
   "capture_date": "2026-09-05",
@@ -96,7 +96,7 @@
         },
         {
           "file": "reference/basiliskii-68k/10-te-mouse-selected.png",
-          "sha256": "bb95c0d473ce0e2daae8e4b7d0bb304e6727a253c218b9909f54dd4b6a53800d"
+          "sha256": "d36ddd58f515713616e1af922b3bb31cebf602ed40ce556ed1ff050c2c6a0aff"
         },
         {
           "file": "reference/basiliskii-68k/10-te-pasted.png",
@@ -112,11 +112,11 @@
         },
         {
           "file": "reference/basiliskii-68k/10-te-typed.png",
-          "sha256": "c4896d27a16bad3d32b1a076db987d85b13643f03cae9870ed8b37eafff4793d"
+          "sha256": "1e317ee56db027f62da8696b18a57dc664b118439777e8350cb8b169b68a691a"
         },
         {
           "file": "reference/basiliskii-68k/10-textedit.png",
-          "sha256": "2a7cef4721a02460112641ddd64eba039713dad33cad821c8cb5d652279bcfac"
+          "sha256": "26ae1a7772ba70ea08f3b905e8dd9b3e87b2a3e1a71add71a1b1d64ba3d108dc"
         }
       ]
     },
@@ -139,7 +139,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-initial.png",
-          "sha256": "a679ebe09d5220a72354c22a0962615be63607685eafcc5325fb5626b9481fb7"
+          "sha256": "7ebaa73aefa9b6efced2ab2507646c3f7ea9a319aaf1a92a88dfce5fa44a2773"
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-mouse-selected.png",
@@ -159,7 +159,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-typed.png",
-          "sha256": "37c64b0ed750d04df4dcae250a3bb255eee5314c1f9743ef615a73eb4b236236"
+          "sha256": "c8b58490706402dc5ad238e293c9b1484d27a802aacf207741b7436a869a79b6"
         },
         {
           "file": "reference/sheepshaver-ppc/10-textedit.png",
