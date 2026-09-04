@@ -1,0 +1,171 @@
+{
+  "fixture_sha256": "c1a9be62c7d76459503fc9ae05b46e95f9278a68c758650420ca2e960eab43ef",
+  "scenario": "oracle/textedit.json",
+  "scenario_sha256": "e69a6233f0fd85cbff2036e4b11ad0cc05576e2d709fcc13ebe0d14d163b3a90",
+  "capture_date": "2026-09-05",
+  "verification": {
+    "initial": {
+      "length": 208,
+      "selection": [
+        0,
+        0
+      ],
+      "lines": 6,
+      "private_scrap_length": 0
+    },
+    "mouse_selected": {
+      "selection": [
+        0,
+        15
+      ]
+    },
+    "copied": {
+      "length": 208,
+      "selection": [
+        0,
+        14
+      ],
+      "private_scrap_length": 14
+    },
+    "cut": {
+      "length": 194,
+      "selection": [
+        0,
+        0
+      ],
+      "lines": 5,
+      "private_scrap_length": 14
+    },
+    "pasted": {
+      "length": 208,
+      "selection": [
+        14,
+        14
+      ],
+      "lines": 6,
+      "private_scrap_length": 14
+    },
+    "typed": {
+      "length": 195,
+      "selection": [
+        1,
+        1
+      ],
+      "lines": 5,
+      "prefix": "xes styled",
+      "private_scrap_length": 14
+    },
+    "reset": {
+      "length": 208,
+      "selection": [
+        0,
+        14
+      ],
+      "lines": 6,
+      "private_scrap_length": 14
+    },
+    "centered": {
+      "justification": 1,
+      "selection": [
+        0,
+        14
+      ]
+    }
+  },
+  "runs": [
+    {
+      "emulator": "basilisk",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "checkpoints": [
+        {
+          "file": "reference/basiliskii-68k/10-te-copied.png",
+          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-cut.png",
+          "sha256": "c59bb3eb543da52b5186ab7e0c8cf82c815c0a6d98b2af15e0cf979a677c78c7"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-initial.png",
+          "sha256": "1524ce4c9e8737fa717f41203fcf37dd00a7778c4ebf4686530085c06120ab18"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-mouse-selected.png",
+          "sha256": "bb95c0d473ce0e2daae8e4b7d0bb304e6727a253c218b9909f54dd4b6a53800d"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-pasted.png",
+          "sha256": "bdef73fe389a93b484cb1b5c2e9023dead5bda9549cf6548adfef36b8421f6aa"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-reset.png",
+          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-selected.png",
+          "sha256": "0fc54ae9871f4bac6f0c82d16c7e13fa7a32df39e08c62a791502ab58f7529b4"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-typed.png",
+          "sha256": "c4896d27a16bad3d32b1a076db987d85b13643f03cae9870ed8b37eafff4793d"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-textedit.png",
+          "sha256": "2a7cef4721a02460112641ddd64eba039713dad33cad821c8cb5d652279bcfac"
+        }
+      ]
+    },
+    {
+      "emulator": "sheepshaver",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 32,
+      "checkpoints": [
+        {
+          "file": "reference/sheepshaver-ppc/10-te-copied.png",
+          "sha256": "845980e92495f859f4cd389c978ba1d95aefec118c0d9092e6c82df9f65c6bb3"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-cut.png",
+          "sha256": "8129133c57985b306cfe396e40f734a33f4460db9ae4d06d4822e848aaf90716"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-initial.png",
+          "sha256": "a679ebe09d5220a72354c22a0962615be63607685eafcc5325fb5626b9481fb7"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-mouse-selected.png",
+          "sha256": "f41650664995bcc1e873feb209165fe38463f2666bd8c8e078371a9cd704e3fc"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-pasted.png",
+          "sha256": "3dda873fea267a48bd48600dc865ad99678191d84ec3e2057c891c34f9575ea6"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-reset.png",
+          "sha256": "e0b263debef37061ba91f7bbeb560e715f4f3e2765ef3c41695dd470348ec52e"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-selected.png",
+          "sha256": "3838fb5241ed48dfd5c5439770c8a15df2af63289e46bbfe29da0dc3b4bf73ea"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-typed.png",
+          "sha256": "37c64b0ed750d04df4dcae250a3bb255eee5314c1f9743ef615a73eb4b236236"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-textedit.png",
+          "sha256": "50bad8cd0968f3f60d5c02c87eb35ce01fc26a41c8a1cd0a068d8fbeab302d8d"
+        }
+      ]
+    }
+  ]
+}

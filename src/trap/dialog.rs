@@ -2951,6 +2951,9 @@ impl super::TrapDispatcher {
         if !Self::port_has_drawable_bitmap(bus, te_port) {
             return;
         }
+        // Theme overlays use screen coordinates; TERec geometry is port-local.
+        // Imaging With QuickDraw (1994), pp. 2-9--2-10.
+        let (port_top, port_left) = self.port_bounds_top_left(bus, te_port);
         let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
         let (font, face, size, color, _, _) = self.te_primary_style(bus, te_handle);
         let styled_runs = if Self::te_is_styled_record(bus, te_ptr) {
@@ -3229,10 +3232,10 @@ impl super::TrapDispatcher {
                     let caret_width = self.ui_theme().text_theme().caret_width.max(1);
                     if !self.draw_theme_caret(
                         bus,
-                        line_top,
-                        caret_x,
-                        line_bottom,
-                        caret_x.saturating_add(caret_width),
+                        line_top.wrapping_sub(port_top),
+                        caret_x.wrapping_sub(port_left),
+                        line_bottom.wrapping_sub(port_top),
+                        caret_x.saturating_add(caret_width).wrapping_sub(port_left),
                     ) {
                         self.draw_rect(
                             cpu,
@@ -3308,10 +3311,10 @@ impl super::TrapDispatcher {
                     // while active ranges keep normal highlighted selection chrome.
                     self.draw_theme_text_selection(
                         bus,
-                        line_top,
-                        selection_left,
-                        line_bottom,
-                        selection_right,
+                        line_top.wrapping_sub(port_top),
+                        selection_left.wrapping_sub(port_left),
+                        line_bottom.wrapping_sub(port_top),
+                        selection_right.wrapping_sub(port_left),
                         te_active,
                     );
                 }
@@ -13836,6 +13839,7 @@ impl super::TrapDispatcher {
                 let handle = Self::allocate_te_handle(bus);
                 let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
                 self.initialize_te_record(bus, handle, dest_rect, view_rect);
+                self.textedit_states.register(handle);
                 bus.write_long(sp + stack_pop, handle);
                 cpu.write_reg(Register::A7, sp + stack_pop);
                 Ok(())
@@ -13889,6 +13893,7 @@ impl super::TrapDispatcher {
                 let handle = Self::allocate_te_handle(bus);
                 let (dest_rect, view_rect, stack_pop) = Self::te_new_rect_args(bus, sp);
                 self.initialize_styled_te_record(bus, handle, dest_rect, view_rect);
+                self.textedit_states.register(handle);
                 bus.write_long(sp + stack_pop, handle);
                 cpu.write_reg(Register::A7, sp + stack_pop);
                 Ok(())
@@ -15445,90 +15450,79 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // TEClick ($A9D4)
-            // PROCEDURE TEClick(pt: Point; extend: BOOLEAN; hTE: TEHandle);
-            // Inside Macintosh Volume I, I-376; Inside Macintosh: Text 1993, 2-85
-            //
-            // MPW Universal Headers TextEdit.h:
-            //   EXTERN_API(void) TEClick(Point pt, Boolean fExtend, TEHandle hTE)
-            //       ONEWORDINLINE(0xA9D4);
-            //
-            // IM:I I-376 verbatim: "TEClick controls the placement and
-            // highlighting of the selection range as determined by mouse
-            // events. ... If the mouse button is down outside of the
-            // selection range or if the Shift key was not down when the
-            // mouse button was pressed (depending on the value of
-            // extend), the selection range is set to an insertion point
-            // at the offset corresponding to the position of the mouse."
-            //
-            // Pascal stack frame (args push left-to-right, first
-            // source arg deepest):
-            //   sp+0  hTE: TEHandle           (4) — last arg, shallowest
-            //   sp+4  extend: BOOLEAN         (2) — middle arg (value
-            //                                       in high byte per
-            //                                       MPW C convention)
-            //   sp+6  pt.v: INTEGER           (2) — first arg, second word
-            //   sp+8  pt.h: INTEGER           (2) — first arg, first word
-            // Total pop = 10 bytes; no function-result slot.
-            //
-            // HLE compromise: Systemless doesn't model the interactive
-            // drag-to-select mouse loop that real-Mac TEClick runs.
-            // Per IM:I I-376 a real TEClick would: (a) hit-test the
-            // click point against the TE's destRect, (b) compute
-            // the byte offset in the text corresponding to the
-            // click position, (c) extend or replace the selection
-            // range based on the `extend` flag, (d) loop polling
-            // the mouse for drag-to-select until WaitMouseUp. Steps
-            // (a)..(c) require a working caret-from-pixel mapping
-            // that depends on the current font + size + measured
-            // line widths; step (d) requires interactive mouse
-            // synthesis from the host event source. Neither is
-            // wired up in the current scripted event
-            // model. So the TE record's selStart/selEnd are NOT
-            // updated to reflect the click — apps that depend on
-            // click-to-position-cursor will not see the cursor
-            // move; apps that programmatically set selStart/selEnd
-            // via TESetSelect ($A9D1, already Complete) work as
-            // expected.
-            //
-            // BasiliskII-vs-Systemless divergence: BII System 7.5.3 ROM
-            // DOES update selStart/selEnd on a TEClick call (collapsing
-            // to the byte offset corresponding to the click position
-            // per IM:I I-376) because it has the real pixel-to-character
-            // mapping. Systemless leaves them unchanged; the two engines
-            // still agree on the active flag, teLength preservation, and
-            // Pascal PROCEDURE stack discipline.
-            //
-            // Both engines DO agree that TEClick must not mutate the
-            // active flag (owned by TEActivate/TEDeactivate per
-            // IM:I I-385) or teLength (owned by
-            // TESetText/TEKey/TEDelete/TEInsert).
-            //
-            // NIL hTE is a defensive no-op (matches the real-Mac
-            // safety contract — TEClick on NIL is undefined but
-            // shouldn't crash the host).
-            //
-            // Regression coverage:
-            //   dialog::tests::teclick_consumes_point_extend_and_tehandle_arguments
-            //   dialog::tests::teclick_empty_text_keeps_insertion_point_at_zero
-            //   dialog::tests::teclick_preserves_terec_active_flag_and_telength
-            //   dialog::tests::teclick_repeated_calls_balance_stack_no_drift
+            // TEClick (0xA9D4)
+            // Positions or extends the selection and owns the mouse until release.
+            // PROCEDURE TEClick (pt: Point; extend: BOOLEAN; hTE: TEHandle);
+            // Inside Macintosh: Text (1993), p. 2-85.
             (true, 0x1D4) => {
                 let sp = cpu.read_reg(Register::A7);
-                if trace_textedit_enabled() {
-                    let te_handle = bus.read_long(sp);
-                    // Pascal BOOLEAN in high byte (MPW C convention).
-                    let extend = bus.read_byte(sp + 4) != 0;
-                    let pt_v = bus.read_word(sp + 6) as i16;
-                    let pt_h = bus.read_word(sp + 8) as i16;
-                    eprintln!(
-                        "[TE] TEClick hTE=${:08X} extend={} pt=({}, {})",
-                        te_handle, extend, pt_v, pt_h
-                    );
+                let te_handle = bus.read_long(sp);
+                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                if te_ptr == 0 {
+                    self.textedit_states.click_tracking = None;
+                    cpu.write_reg(Register::A7, sp + 10);
+                    return Some(Ok(()));
                 }
-                cpu.write_reg(Register::A7, sp + 10);
+                let previous_selection = (
+                    bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET),
+                    bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET),
+                );
+                let tracking = self.textedit_states.click_tracking.take();
+                let point = if tracking.is_some() {
+                    let port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
+                    let (top, left) = self.port_bounds_top_left(bus, port);
+                    let (v, h) = self.window_tracking_mouse_pos(bus);
+                    (v.wrapping_add(top), h.wrapping_add(left))
+                } else {
+                    (bus.read_word(sp + 6) as i16, bus.read_word(sp + 8) as i16)
+                };
+                let offset = self.te_point_to_char(bus, te_handle, point).max(0) as usize;
+                let anchor = tracking.map_or_else(
+                    || {
+                        if bus.read_byte(sp + 4) != 0 {
+                            let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+                            let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
+                            if offset < start {
+                                end
+                            } else {
+                                start
+                            }
+                        } else {
+                            offset
+                        }
+                    },
+                    |tracking| tracking.anchor,
+                );
+                let length = bus.read_word(te_ptr + Self::TE_LENGTH_OFFSET) as usize;
+                let anchor = anchor.min(length);
+                bus.write_word(
+                    te_ptr + Self::TE_SEL_START_OFFSET,
+                    anchor.min(offset) as u16,
+                );
+                bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, anchor.max(offset) as u16);
+                bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET, point.0 as u16);
+                bus.write_word(te_ptr + Self::TE_SEL_POINT_OFFSET + 2, point.1 as u16);
+                bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
+                if previous_selection != (anchor.min(offset) as u16, anchor.max(offset) as u16) {
+                    self.draw_te_contents(cpu, bus, te_handle, true);
+                }
+                if self.window_tracking_button_down(bus) {
+                    self.textedit_states.click_tracking =
+                        Some(crate::text_edit::TextEditClickTracking {
+                            handle: te_handle,
+                            anchor,
+                            native: false,
+                            last_point: point,
+                        });
+                } else {
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+                    cpu.write_reg(Register::A7, sp + 10);
+                }
                 Ok(())
             }
+
 
             // TECopy ($A9D5)
             // PROCEDURE TECopy(hTE: TEHandle);
@@ -33543,6 +33537,60 @@ mod tests {
         assert_eq!(
             bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET),
             pre_telength
+        );
+    }
+
+    #[test]
+    fn teclick_retains_mouse_and_tracks_in_both_directions_until_release() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO WORLD");
+        let te_ptr = bus.read_long(te_handle);
+        let port = bus.read_long(te_ptr + TrapDispatcher::TE_IN_PORT_OFFSET);
+        // A translated port must use local TE coordinates throughout the drag.
+        bus.write_word(port + 8, (-50i16) as u16);
+        bus.write_word(port + 10, (-40i16) as u16);
+        let initial = disp.te_char_to_point(&bus, te_handle, 3);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 6, initial.0 as u16);
+        bus.write_word(TEST_SP + 8, initial.1 as u16);
+        disp.input_state.mouse_button = true;
+        disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert!(disp.is_tracking_refire(0xA9D4));
+        for (offset, expected) in [(8, (3, 8)), (1, (1, 3)), (5, (3, 5))] {
+            let local = disp.te_char_to_point(&bus, te_handle, offset);
+            bus.write_word(
+                crate::memory::globals::addr::MOUSE_LOC2,
+                local.0.wrapping_add(50) as u16,
+            );
+            bus.write_word(
+                crate::memory::globals::addr::MOUSE_LOC2 + 2,
+                local.1.wrapping_add(40) as u16,
+            );
+            disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            assert_eq!(
+                (
+                    bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+                    bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET)
+                ),
+                expected
+            );
+        }
+        disp.input_state.mouse_button = false;
+        disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert!(!disp.is_tracking_refire(0xA9D4));
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO WORLD"
         );
     }
 

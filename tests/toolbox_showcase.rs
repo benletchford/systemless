@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use systemless::display::render_screen_with_gamma;
 use systemless::game::{init_game, load_game, new_runner_with_screen_depth};
 use systemless::menu_model::GuestMenuSnapshot;
-use systemless::runner::{FixtureRunner, ResourceManagerSnapshot, WindowSnapshot};
+use systemless::runner::{
+    FixtureRunner, ResourceManagerSnapshot, TextEditSnapshot, WindowSnapshot,
+};
 use systemless::ui_theme::UiThemeId;
 
 const SHOWCASE_SIT: &[u8] = include_bytes!("toolbox-showcase/toolbox-showcase.sit");
@@ -249,6 +251,15 @@ where
         "Timed out waiting for '{label}' after {} instructions",
         runner.total_instructions()
     );
+}
+
+fn showcase_textedit(runner: &mut FixtureRunner) -> TextEditSnapshot {
+    runner
+        .text_edit_snapshot()
+        .records
+        .into_iter()
+        .find(|record| record.view_rect == (76, 34, 211, 326))
+        .expect("showcase must own its TextEdit buffer")
 }
 
 fn click_point(runner: &mut FixtureRunner, v: i16, h: i16) {
@@ -1654,9 +1665,110 @@ fn test_toolbox_showcase() {
     step_until(&mut runner, "switch to TextEdit page", |r| {
         menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_TEXTEDIT)
     });
+    run_ticks(&mut runner, "TextEdit page to settle", 1);
+    let original_text = concat!(
+        "TextEdit manages styled and plain text formatting, automatic word wrapping, ",
+        "selection highlighting, and clipboard scrap operations.\r\r",
+        "Click to move the insertion point or drag across characters to select text."
+    )
+    .as_bytes()
+    .to_vec();
+    let initial_te = showcase_textedit(&mut runner);
+    assert_eq!(initial_te.text, original_text);
+    assert_eq!(initial_te.selection, (0, 0));
+    assert!(initial_te.active);
+    assert_eq!(initial_te.line_count, 6);
+    assert_reference_frame(&mut runner, "10-te-initial.png");
+
+    drag_mouse(
+        &mut runner,
+        win_top + 82,
+        win_left + 35,
+        win_top + 82,
+        win_left + 110,
+    );
+    run_ticks(&mut runner, "TextEdit mouse selection", 1);
+    let mouse_selection = showcase_textedit(&mut runner);
+    // Both native Mac OS 8.1 oracles select offsets 0 through 15 for this drag.
+    assert_eq!(mouse_selection.selection, (0, 15));
+    assert_eq!(mouse_selection.text, original_text);
+    assert!(mouse_selection.active);
+    assert_reference_frame(&mut runner, "10-te-mouse-selected.png");
+    let (width, _, rgb) = rendered_rgb(&mut runner);
+    // The top edge is highlighted by both classic inverse video and the theme outline.
+    let highlight_pixel = ((win_top as usize + 76) * width as usize + win_left as usize + 50) * 3;
+    assert_ne!(
+        &rgb[highlight_pixel..highlight_pixel + 3],
+        &[255, 255, 255],
+        "the selected text must be visibly highlighted"
+    );
+
+    click_point(&mut runner, win_top + 268, win_left + 297);
+    step_until(&mut runner, "TextEdit reset selects first 14 bytes", |r| {
+        showcase_textedit(r).selection == (0, 14)
+    });
+    assert_reference_frame(&mut runner, "10-te-selected.png");
+    click_point(&mut runner, win_top + 268, win_left + 144);
+    run_ticks(&mut runner, "TextEdit copy", 1);
+    let copied = runner.text_edit_snapshot();
+    assert_eq!(copied.private_scrap_length, 14);
+    assert_eq!(copied.private_scrap, original_text[..14]);
+    assert_eq!(showcase_textedit(&mut runner).text, original_text);
+    assert_eq!(showcase_textedit(&mut runner).selection, (0, 14));
+    assert_reference_frame(&mut runner, "10-te-copied.png");
+
+    click_point(&mut runner, win_top + 268, win_left + 65);
+    step_until(&mut runner, "TextEdit cut", |r| {
+        showcase_textedit(r).text.len() == original_text.len() - 14
+    });
+    assert_eq!(showcase_textedit(&mut runner).text, original_text[14..]);
+    assert_eq!(showcase_textedit(&mut runner).selection, (0, 0));
+    assert_eq!(
+        runner.text_edit_snapshot().private_scrap,
+        original_text[..14]
+    );
+    assert_reference_frame(&mut runner, "10-te-cut.png");
+
+    click_point(&mut runner, win_top + 268, win_left + 220);
+    step_until(&mut runner, "TextEdit paste", |r| {
+        showcase_textedit(r).text == original_text
+    });
+    assert_eq!(showcase_textedit(&mut runner).selection, (14, 14));
+    assert_eq!(
+        runner.text_edit_snapshot().private_scrap,
+        original_text[..14]
+    );
+    assert_reference_frame(&mut runner, "10-te-pasted.png");
+
+    click_point(&mut runner, win_top + 268, win_left + 297);
+    step_until(&mut runner, "TextEdit select before typing", |r| {
+        showcase_textedit(r).selection == (0, 14)
+    });
+    runner.push_key_down(0x07, b'x');
+    runner.push_key_up(0x07, b'x');
+    let mut typed_text = vec![b'x'];
+    typed_text.extend_from_slice(&original_text[14..]);
+    step_until(&mut runner, "TextEdit typing replaces selection", |r| {
+        showcase_textedit(r).text == typed_text
+    });
+    assert_eq!(showcase_textedit(&mut runner).selection, (1, 1));
+    assert_eq!(
+        runner.text_edit_snapshot().private_scrap,
+        original_text[..14]
+    );
+    assert_reference_frame(&mut runner, "10-te-typed.png");
+
+    click_point(&mut runner, win_top + 268, win_left + 297);
+    step_until(&mut runner, "TextEdit reset restores text", |r| {
+        showcase_textedit(r).text == original_text
+    });
+    assert_eq!(showcase_textedit(&mut runner).selection, (0, 14));
+    assert_reference_frame(&mut runner, "10-te-reset.png");
+
     // Click Center alignment radio: local (178, 445)
     click_point(&mut runner, win_top + 178, win_left + 445);
     run_ticks(&mut runner, "center alignment to settle", 2);
+    assert_eq!(showcase_textedit(&mut runner).justification, 1);
 
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "10-textedit.png");

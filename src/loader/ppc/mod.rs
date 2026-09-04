@@ -14850,7 +14850,7 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::TETransferScrap { from_desktop: true }
         }
         ("InterfaceLib", "TEScrapHandle") => PpcImportDispatcherTarget::TEScrapHandle,
-        ("InterfaceLib", "LMGetTEScrpLength") => {
+        ("InterfaceLib", "LMGetTEScrpLength" | "TEGetScrapLength") => {
             PpcImportDispatcherTarget::TEScrapLength { set: false }
         }
         ("InterfaceLib", "LMSetTEScrpLength") => {
@@ -21892,6 +21892,7 @@ fn dispatch_supported_import(
                 *quickdraw_fore_color,
                 styled,
             );
+            scrap.text_edit.register(te_handle);
             *last_mem_error = if te_handle == 0 {
                 PPC_MEM_FULL_ERR
             } else {
@@ -22176,19 +22177,109 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEClick => {
-            // Inside Macintosh: Text (1993), p. 2-85: the native Point is
-            // passed by value; TEClick hit-tests it against the laid-out text
-            // and either replaces or extends the current selection.
-            ppc_te_click(
-                memory,
-                handles,
-                cpu.gpr[5],
-                (cpu.gpr[3] >> 16) as u16 as i16,
-                cpu.gpr[3] as u16 as i16,
-                cpu.gpr[4] != 0,
-                *tick_count,
+            // Inside Macintosh: Text (1993), p. 2-85: retain mouse ownership
+            // until release, expanding or shortening the selection as it moves.
+            let te_handle = cpu.gpr[5];
+            let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+                scrap.text_edit.click_tracking = None;
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let previous_selection = (
+                memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+                memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
             );
-            Some(PpcImportAction::ReturnPreserve)
+            let tracking = if let Some(mut tracking) = scrap.text_edit.click_tracking.take() {
+                let port = memory
+                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+                    .unwrap_or(0);
+                let bounds = memory
+                    .read_u32_be(port + 2)
+                    .and_then(|handle| memory.read_u32_be(handle))
+                    .and_then(|pixmap| ppc_read_rect(memory, pixmap + 6))
+                    .unwrap_or((0, 0, 0, 0));
+                let v = input.mouse_v.wrapping_add(bounds.0);
+                let h = input.mouse_h.wrapping_add(bounds.1);
+                let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
+                if tracking.last_point != (v, h) {
+                    let _ = memory.write_u16_be(
+                        te_ptr + PPC_TE_SEL_START_OFFSET,
+                        tracking.anchor.min(offset) as u16,
+                    );
+                    let _ = memory.write_u16_be(
+                        te_ptr + PPC_TE_SEL_END_OFFSET,
+                        tracking.anchor.max(offset) as u16,
+                    );
+                    tracking.last_point = (v, h);
+                }
+                tracking
+            } else {
+                let v = (cpu.gpr[3] >> 16) as i16;
+                let h = cpu.gpr[3] as i16;
+                let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
+                let old_start = memory
+                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+                    .unwrap_or(0) as usize;
+                let old_end = memory
+                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+                    .unwrap_or(0) as usize;
+                let anchor = if cpu.gpr[4] != 0 {
+                    if offset < old_start {
+                        old_end
+                    } else {
+                        old_start
+                    }
+                } else {
+                    offset
+                };
+                ppc_te_click(
+                    memory,
+                    handles,
+                    te_handle,
+                    v,
+                    h,
+                    cpu.gpr[4] != 0,
+                    *tick_count,
+                );
+                crate::text_edit::TextEditClickTracking {
+                    handle: te_handle,
+                    anchor,
+                    native: true,
+                    last_point: (v, h),
+                }
+            };
+            if previous_selection
+                != (
+                    memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+                    memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
+                )
+            {
+                let port = memory
+                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+                    .unwrap_or(*current_gworld);
+                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+                    let background = ppc_port_rgb_colors(memory, port)
+                        .map_or(*quickdraw_back_color, |colors| colors.1);
+                    ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
+                }
+                ppc_te_draw(
+                    memory,
+                    handles,
+                    gworlds,
+                    te_handle,
+                    *current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices,
+                );
+            }
+            if input.mouse_button {
+                scrap.text_edit.click_tracking = Some(tracking);
+                Some(PpcImportAction::Yield(u64::MAX))
+            } else {
+                if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+                    event_queue.remove(index);
+                }
+                Some(PpcImportAction::ReturnPreserve)
+            }
         }
         PpcImportDispatcherTarget::TEIdle => {
             // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
@@ -56155,6 +56246,15 @@ fn ppc_invert_rect(
     let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
     };
+    ppc_invert_rect_bounds(memory, gworlds, current_gworld, rect)
+}
+
+fn ppc_invert_rect_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
@@ -73600,21 +73700,15 @@ fn ppc_te_metrics(memory: &mut PpcSectionMem, te_ptr: u32) -> (i16, i16, i16, i1
     (font, size, line_height.max(1), ascent.max(0))
 }
 
-fn ppc_te_click(
+fn ppc_te_point_to_offset(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     te_handle: u32,
     v: i16,
     h: i16,
-    extend: bool,
-    tick_count: u32,
-) {
-    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-        return;
-    };
-    let Some(text) = ppc_te_text_bytes(memory, handles, te_handle) else {
-        return;
-    };
+) -> Option<usize> {
+    let te_ptr = ppc_te_record_ptr(memory, te_handle)?;
+    let text = ppc_te_text_bytes(memory, handles, te_handle)?;
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
@@ -73678,6 +73772,28 @@ fn ppc_te_click(
         advance = advance.saturating_add(char_width);
         offset = start + index + 1;
     }
+
+    Some(offset)
+}
+
+fn ppc_te_click(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    te_handle: u32,
+    v: i16,
+    h: i16,
+    extend: bool,
+    tick_count: u32,
+) {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return;
+    };
+    let Some(text) = ppc_te_text_bytes(memory, handles, te_handle) else {
+        return;
+    };
+    let Some(offset) = ppc_te_point_to_offset(memory, handles, te_handle, v, h) else {
+        return;
+    };
 
     let previous_time = memory
         .read_u32_be(te_ptr + PPC_TE_CLICK_TIME_OFFSET)
@@ -74223,6 +74339,17 @@ fn ppc_te_draw(
             .read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET)
             .unwrap_or(0),
     );
+    let active = memory
+        .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
+        .unwrap_or(0)
+        != 0;
+    let selection_start = memory
+        .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+        .unwrap_or(0) as usize;
+    let selection_end = memory
+        .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+        .unwrap_or(0) as usize;
+    let view = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     for line in 0..line_count {
         let start = usize::from(
             memory
@@ -74306,11 +74433,51 @@ fn ppc_te_draw(
                 &text[start..visible_end],
             );
         }
+        if active && selection_start != selection_end {
+            // Text (1993), pp. 2-51--2-52: highlight each selected line segment.
+            let selected_start = selection_start.min(selection_end).max(start);
+            let selected_end = selection_start.max(selection_end).min(visible_end);
+            if selected_start < selected_end {
+                let measure = |end| {
+                    if styled {
+                        ppc_te_measure_text_width_styled(&style_runs, &text, start, end)
+                    } else {
+                        ppc_text_bytes_advance_for_font(&text[start..end], font, size)
+                    }
+                };
+                let selection_left = if selected_start == start && matches!(alignment, 0 | -2) {
+                    left
+                } else {
+                    line_left.saturating_add(measure(selected_start))
+                };
+                let selection_right = line_left.saturating_add(measure(selected_end));
+                let line_top = baseline.saturating_sub(ascent);
+                ppc_invert_rect_bounds(
+                    memory,
+                    gworlds,
+                    port,
+                    (
+                        line_top.max(view.0),
+                        selection_left.max(view.1),
+                        line_top.saturating_add(line_height).min(view.2),
+                        selection_right.min(view.3),
+                    ),
+                );
+            }
+        }
     }
 
-    let sel_start = usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET).unwrap_or(0));
-    let sel_end = usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET).unwrap_or(0));
-    if sel_start == sel_end {
+    let sel_start = usize::from(
+        memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+            .unwrap_or(0),
+    );
+    let sel_end = usize::from(
+        memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+            .unwrap_or(0),
+    );
+    if active && sel_start == sel_end {
         for line in 0..line_count {
             let start = usize::from(
                 memory
@@ -74330,9 +74497,7 @@ fn ppc_te_draw(
             };
             if sel_start >= start && (sel_start <= end || line + 1 == line_count) {
                 let mut visible_end = end;
-                while visible_end > start
-                    && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n')
-                {
+                while visible_end > start && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n') {
                     visible_end -= 1;
                 }
                 let (line_height, _) = if styled {
@@ -74351,7 +74516,8 @@ fn ppc_te_draw(
                     )
                 };
                 let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
-                let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
+                let line_left =
+                    crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
                 let caret_offset = sel_start.min(visible_end).max(start);
                 let measured = if styled {
                     ppc_te_measure_text_width_styled(&style_runs, &text, start, caret_offset)
@@ -162113,7 +162279,7 @@ pub(crate) mod tests {
         assert_eq!(native.cpu.gpr[3], classic_handle);
         run_test_import(
             &mut native,
-            PpcImportDispatcherTarget::TEScrapLength { set: false },
+            dispatcher_target_for_import("InterfaceLib", "TEGetScrapLength"),
         );
         assert_eq!(native.cpu.gpr[3], 7);
         assert_eq!(ppc_te_scrap_bytes(&mut native.memory), b"Classic");

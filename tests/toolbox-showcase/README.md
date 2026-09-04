@@ -160,8 +160,9 @@ exact Systemless framebuffer references while performing the same sequence:
 8. Invoke the system alert, capturing its live modal state on implementations
    that block for a response, then dismiss it or record its return.
 9. Verify the final dialog status after both modal sessions.
-10. Choose TextEdit (item 7), switch paragraph alignment to center, and capture
-    the interactive buffer, `TETextBox` callout, and inspector readouts.
+10. Choose TextEdit (item 7), drag to select text, reset the selection, copy,
+    cut, paste, type over the selection, reset the edited buffer, and center
+    the paragraph. Capture each state and assert the buffer and private scrap.
 11. Activate the Palettes page (item 8), verify the indexed PICT → GWorld → screen
     transfer retains distinct colors across unrelated CTables, verify a
     same-device transfer retains its positional indexes through a transient
@@ -283,6 +284,18 @@ tracking. The longer menu exceeds the viewport even with the classic system's
 smaller window font; the earlier 39-item menu could fit without scrolling.
 Classic fonts and popup CDEF chrome remain presentation variance.
 
+The TextEdit replay is [`oracle/textedit.json`](oracle/textedit.json), with
+artifact identities and reviewed native results in
+[`oracle/textedit-capture.json`](oracle/textedit-capture.json). Both classic
+emulators select offsets 0–15 after the mouse drag. Reset selects the first
+14 bytes; Copy preserves them in the private TextEdit scrap, Cut leaves 194
+bytes, Paste restores 208 bytes, and typing `x` over the reset selection leaves
+195 bytes. Reset then restores the original six-line buffer, and Center keeps
+the selection while changing paragraph alignment. The runtime checks read the
+actual text, selection, line count and private scrap, and require a visible
+selection highlight. The sample uses explicit Macintosh carriage-return bytes
+because MPW translates the C `\r` escape to a line-feed byte.
+
 The complete window replay is [`oracle/windows.json`](oracle/windows.json),
 with fixture and capture identities in [`oracle/windows-capture.json`](oracle/windows-capture.json).
 Both emulators retain the pointer offset inside the grow box: dragging from
@@ -340,7 +353,7 @@ indexed paths.
 
 ### Systemless theme experiment
 
-The complete 49-frame 68K theme audit lives in
+The complete 57-frame 68K theme audit lives in
 [`reference/systemless-theme-68k`](reference/systemless-theme-68k). It follows
 the same deterministic interaction sequence as the classic Systemless baseline,
 including every window activation, move, resize, z-order, dialog, scrollbar,
@@ -365,6 +378,14 @@ palette, scrolling, and popup-menu checkpoint.
 | 7. Modal dialog | <img src="reference/systemless-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in BasiliskII" width="360"> |
 | 8. Alert | <img src="reference/systemless-68k/08-alert.png" alt="System alert in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/08-alert.png" alt="System alert in BasiliskII" width="360"> |
 | 9. Dialog result | <img src="reference/systemless-68k/09-dialogs.png" alt="Dialogs page after modal interactions in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/09-dialogs.png" alt="Dialogs page after modal interactions in BasiliskII" width="360"> |
+| 10. Initial buffer | <img src="reference/systemless-68k/10-te-initial.png" alt="TextEdit Initial buffer in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-initial.png" alt="TextEdit Initial buffer in the native emulator" width="360"> |
+| 10. Mouse selection | <img src="reference/systemless-68k/10-te-mouse-selected.png" alt="TextEdit Mouse selection in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-mouse-selected.png" alt="TextEdit Mouse selection in the native emulator" width="360"> |
+| 10. Reset selection | <img src="reference/systemless-68k/10-te-selected.png" alt="TextEdit Reset selection in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-selected.png" alt="TextEdit Reset selection in the native emulator" width="360"> |
+| 10. Copy | <img src="reference/systemless-68k/10-te-copied.png" alt="TextEdit Copy in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-copied.png" alt="TextEdit Copy in the native emulator" width="360"> |
+| 10. Cut | <img src="reference/systemless-68k/10-te-cut.png" alt="TextEdit Cut in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-cut.png" alt="TextEdit Cut in the native emulator" width="360"> |
+| 10. Paste | <img src="reference/systemless-68k/10-te-pasted.png" alt="TextEdit Paste in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-pasted.png" alt="TextEdit Paste in the native emulator" width="360"> |
+| 10. Type over selection | <img src="reference/systemless-68k/10-te-typed.png" alt="TextEdit Type over selection in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-typed.png" alt="TextEdit Type over selection in the native emulator" width="360"> |
+| 10. Reset edited buffer | <img src="reference/systemless-68k/10-te-reset.png" alt="TextEdit Reset edited buffer in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-te-reset.png" alt="TextEdit Reset edited buffer in the native emulator" width="360"> |
 | 10. TextEdit | <img src="reference/systemless-68k/10-textedit.png" alt="TextEdit interactive buffer in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/10-textedit.png" alt="TextEdit interactive buffer in BasiliskII" width="360"> |
 | 11. Palette activation | <img src="reference/systemless-68k/11-palette.png" alt="Initial mixed-usage palette in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/11-palette.png" alt="Initial mixed-usage palette in BasiliskII" width="360"> |
 | 12. Palette animation | <img src="reference/systemless-68k/12-palette-animated.png" alt="Animated explicit CLUT entries in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/12-palette-animated.png" alt="Animated explicit CLUT entries in BasiliskII" width="360"> |
@@ -419,6 +440,14 @@ palette, scrolling, and popup-menu checkpoint.
 | 7. Modal dialog | <img src="reference/systemless-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in SheepShaver" width="360"> |
 | 8. Alert | <img src="reference/systemless-ppc/08-alert.png" alt="Live system alert in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/08-alert.png" alt="Live system alert in SheepShaver" width="360"> |
 | 9. Dialog result | <img src="reference/systemless-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in SheepShaver" width="360"> |
+| 10. Initial buffer | <img src="reference/systemless-ppc/10-te-initial.png" alt="TextEdit Initial buffer in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-initial.png" alt="TextEdit Initial buffer in the native emulator" width="360"> |
+| 10. Mouse selection | <img src="reference/systemless-ppc/10-te-mouse-selected.png" alt="TextEdit Mouse selection in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-mouse-selected.png" alt="TextEdit Mouse selection in the native emulator" width="360"> |
+| 10. Reset selection | <img src="reference/systemless-ppc/10-te-selected.png" alt="TextEdit Reset selection in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-selected.png" alt="TextEdit Reset selection in the native emulator" width="360"> |
+| 10. Copy | <img src="reference/systemless-ppc/10-te-copied.png" alt="TextEdit Copy in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-copied.png" alt="TextEdit Copy in the native emulator" width="360"> |
+| 10. Cut | <img src="reference/systemless-ppc/10-te-cut.png" alt="TextEdit Cut in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-cut.png" alt="TextEdit Cut in the native emulator" width="360"> |
+| 10. Paste | <img src="reference/systemless-ppc/10-te-pasted.png" alt="TextEdit Paste in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-pasted.png" alt="TextEdit Paste in the native emulator" width="360"> |
+| 10. Type over selection | <img src="reference/systemless-ppc/10-te-typed.png" alt="TextEdit Type over selection in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-typed.png" alt="TextEdit Type over selection in the native emulator" width="360"> |
+| 10. Reset edited buffer | <img src="reference/systemless-ppc/10-te-reset.png" alt="TextEdit Reset edited buffer in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-te-reset.png" alt="TextEdit Reset edited buffer in the native emulator" width="360"> |
 | 10. TextEdit | <img src="reference/systemless-ppc/10-textedit.png" alt="TextEdit interactive buffer in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/10-textedit.png" alt="TextEdit interactive buffer in SheepShaver" width="360"> |
 | 11. Palette activation | <img src="reference/systemless-ppc/11-palette.png" alt="Initial mixed-usage palette in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/11-palette.png" alt="Initial mixed-usage palette in SheepShaver" width="360"> |
 | 12. Palette animation | <img src="reference/systemless-ppc/12-palette-animated.png" alt="Direct-color palette after AnimateEntry in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/12-palette-animated.png" alt="Direct-color palette after AnimateEntry in SheepShaver" width="360"> |
