@@ -37,7 +37,18 @@ brew install benletchford/tap/systemless
 systemless path/to/app-or-game.sit
 ```
 
-Or install from crates.io:
+Install a prebuilt release with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```sh
+cargo binstall systemless
+```
+
+Release archives and SHA-256 checksums are available on
+[GitHub Releases](https://github.com/benletchford/systemless/releases) for macOS,
+Linux (GNU), and Windows (MSVC), each on x86-64 and ARM64. Linux binaries require
+glibc 2.35 or newer and the ALSA runtime library (`libasound2` on Ubuntu 22.04).
+
+Or build and install from crates.io:
 
 ```sh
 cargo install systemless
