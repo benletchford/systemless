@@ -1,5 +1,5 @@
 //! Integration test exercising Toolbox Showcase for issues #1078, #1081,
-//! #1264, #1265, #1266, #1267, #1268, #1269, #1338, and #1353.
+//! #1264, #1265, #1266, #1267, #1268, #1269, #1338, #1353, and #1368.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -859,7 +859,7 @@ fn assert_popup_menu_contract(snapshot: &GuestMenuSnapshot) {
         theme.hierarchical && !theme.visible_in_menu_bar,
         "programmatic popup menu must live in the hierarchical partition"
     );
-    assert_eq!(theme.items.len(), 39);
+    assert_eq!(theme.items.len(), 55);
     assert_eq!(
         theme.items[ITEM_POPUP_THEME_NIGHT as usize - 1].text,
         "Night Operations"
@@ -2708,6 +2708,9 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(win_top + 160, win_left + 180);
     run_popup_tracking_tick(&mut runner, "programmatic popup disabled-row hover");
     runner.push_mouse_up(win_top + 160, win_left + 180);
+    // The unchanged mark is already true while TrackControl is still held.
+    // Consume mouse-up before queuing another mouse-down for this control.
+    run_popup_tracking_tick(&mut runner, "programmatic popup disabled release");
     step_until(
         &mut runner,
         "programmatic popup no-selection restore",
@@ -2726,19 +2729,19 @@ fn test_toolbox_showcase() {
     // 16-pixel content row per retained tracking update.
     let popup_scroll_h = theme_popup_h;
     runner.set_mouse_position(580, popup_scroll_h);
-    for step in 0..20 {
+    for step in 0..40 {
         runner.set_mouse_position(579 + (step % 2), popup_scroll_h);
         run_popup_tracking_tick(&mut runner, "programmatic popup scroll down");
     }
     // Item 36 is the Deep Field Archive row. At the bottom content origin
-    // (-28), its row is y=522..538, safely above the down indicator.
-    runner.set_mouse_position(530, popup_scroll_h);
+    // (-284), its row is y=266..282, safely above the down indicator.
+    runner.set_mouse_position(274, popup_scroll_h);
     run_popup_tracking_tick(&mut runner, "programmatic popup reveal long-row selection");
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "36-popup-lists-scrolled.png");
-    runner.set_mouse_position(530, popup_scroll_h);
+    runner.set_mouse_position(274, popup_scroll_h);
     run_popup_tracking_tick(&mut runner, "programmatic popup restore long-row hover");
-    runner.push_mouse_up(530, popup_scroll_h);
+    runner.push_mouse_up(274, popup_scroll_h);
     step_until(
         &mut runner,
         "programmatic popup long-row selection",
@@ -2749,6 +2752,9 @@ fn test_toolbox_showcase() {
         },
     );
 
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "36-popup-lists-deep-selected.png");
+
     // Reopen with the long item selected. The standard layout initially
     // centers that item near the control, so track upward to reveal item 4
     // before choosing Night Operations. This also verifies the indicator
@@ -2758,7 +2764,7 @@ fn test_toolbox_showcase() {
     run_popup_tracking_tick(&mut runner, "programmatic popup to reopen for Night Operations");
     let popup_scroll_up_h = theme_popup_h;
     runner.set_mouse_position(6, popup_scroll_up_h);
-    for step in 0..24 {
+    for step in 0..40 {
         runner.set_mouse_position(6 + (step % 2), popup_scroll_up_h);
         run_popup_tracking_tick(&mut runner, "programmatic popup scroll up");
     }

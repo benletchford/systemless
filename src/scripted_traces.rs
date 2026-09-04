@@ -150,7 +150,8 @@ pub fn scripted_trackcontrol_popup_menu_input_trace() -> Result<String, String> 
 
     dispatcher.push_mouse_down(15, 25);
     cpu.write_reg(Register::A7, SCRIPT_SP);
-    bus.write_long(SCRIPT_SP, 0);
+    // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80: use the popup CDEF action.
+    bus.write_long(SCRIPT_SP, u32::MAX);
     bus.write_word(SCRIPT_SP + 4, 15);
     bus.write_word(SCRIPT_SP + 6, 25);
     bus.write_long(SCRIPT_SP + 8, ctrl_handle);

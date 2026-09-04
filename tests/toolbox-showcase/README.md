@@ -7,7 +7,7 @@ the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
 
 The public coverage is tracked by issues #1078, #1081, #1264–#1270,
-#1338–#1339, and #1344.
+#1338–#1339, #1344, and #1368.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
 test protocol. Its Pages menu selects sixteen interactive views:
@@ -74,7 +74,7 @@ test protocol. Its Pages menu selects sixteen interactive views:
     a programmatic `NewMenu`/`NewControl` popup. It exercises standard popup
     CDEF tracking, disabled and separator rows, a long label, the
     `popupFixedWidth` and `popupUseWFont` variations, a genuinely scrollable
-    39-item menu, synchronized control values/menu marks, and save-under
+    55-item menu, synchronized control values/menu marks, and save-under
     restoration of the closed controls.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
@@ -270,20 +270,35 @@ The Sprites checkpoints show the shared offscreen scene after `CopyMask` and
 movement with its exposed update strip. Classic-Mac rasterization and indexed
 versus direct-color quantization remain presentation variance.
 
-The Popup & Dropdown Lists classic checkpoints confirm that the resource-backed
-and programmatic standard popup controls render from the same archive in
-BasiliskII and SheepShaver. The deterministic Systemless checkpoints additionally
-cover live disabled/separator tracking, fixed-width clipping, a real
-scroll/reveal of item 36 in the 39-item menu, synchronized values/menu marks,
-and closed-control restoration. The classic pointer harness can depress these
-controls, but the system popup CDEF does not expose its live menu to that
-automation path, so checkpoints 35–37 remain Systemless-only rather than
-claiming unobserved classic behavior. Classic Menu Manager fonts and popup CDEF
-chrome remain presentation variance.
+The Popup & Dropdown Lists checkpoints exercise live standard popup tracking
+on both classic emulators. The fixture passes `Pointer(-1)` to `TrackControl`
+so the popup CDEF performs its action; `nil` only highlights the control.
+The resource popup rejects separator and disabled rows, then selects the long
+enabled label. The programmatic popup rejects its disabled row, scrolls a
+55-item menu to reveal and select item 36 (`Deep Field Archive`), then scrolls
+back to select item 4 (`Night Operations`). The extra
+`36-popup-lists-deep-selected.png` checkpoint records the accepted item 36
+before reopening. Both final controls retain their values and repaint after
+tracking. The longer menu exceeds the viewport even with the classic system's
+smaller window font; the earlier 39-item menu could fit without scrolling.
+Classic fonts and popup CDEF chrome remain presentation variance.
+
+The portable event sequence is [`oracle/popup.json`](oracle/popup.json).
+[`oracle/popup-capture.json`](oracle/popup-capture.json) records the fixture
+hash, emulator source revision, display configuration, checked outcomes, and
+capture hashes. Validate the recorded artifact identities with:
+
+```sh
+python3 tests/toolbox-showcase/oracle/verify_captures.py
+```
+
+This verifies provenance and detects stale artifacts; it does not rerun either
+emulator or replace behavioral review. ROMs and system disks are not distributed.
 
 ## Reference screenshots
 
-These full-frame 800×600 captures all come from the same committed archive.
+These full-frame 800×600 captures compare the shared fat fixture across implementations.
+Capture manifests record the archive revision used for refreshed oracle series.
 The Systemless images are exact RGB baselines checked by the integration test;
 the classic-Mac images are human-review oracles because system fonts, desktop
 patterns, and window chrome can vary between compatible OS installations.
@@ -308,7 +323,7 @@ indexed paths.
 
 ### Systemless theme experiment
 
-The complete 43-frame 68K theme audit lives in
+The complete 44-frame 68K theme audit lives in
 [`reference/systemless-theme-68k`](reference/systemless-theme-68k). It follows
 the same deterministic interaction sequence as the classic Systemless baseline,
 including every window activation, move, resize, z-order, dialog, scrollbar,
@@ -358,9 +373,10 @@ palette, scrolling, and popup-menu checkpoint.
 | 32. Hidden cursor | <img src="reference/systemless-68k/32-events-cursor-hidden.png" alt="Hidden watch cursor state in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/32-events-cursor-hidden.png" alt="Hidden watch cursor state in BasiliskII" width="360"> |
 | 33. Final visible cursor | <img src="reference/systemless-68k/33-events-cursors-final.png" alt="Final visible arrow cursor state in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/33-events-cursors-final.png" alt="Final visible arrow cursor state in BasiliskII" width="360"> |
 | 34. Popup lists | <img src="reference/systemless-68k/34-popup-lists.png" alt="Popup and dropdown lists page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/34-popup-lists.png" alt="Popup and dropdown lists page in BasiliskII running the 68K slice" width="360"> |
-| 35. Popup menu tracking | <img src="reference/systemless-68k/35-popup-lists-open.png" alt="Tracked popup menu with separator and disabled rows in Systemless running the 68K slice" width="360"> | — |
-| 36. Popup scroll/reveal | <img src="reference/systemless-68k/36-popup-lists-scrolled.png" alt="Scrolled programmatic popup revealing item 36 in Systemless running the 68K slice" width="360"> | — |
-| 37. Popup selections | <img src="reference/systemless-68k/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the 68K slice" width="360"> | — |
+| 35. Popup menu tracking | <img src="reference/systemless-68k/35-popup-lists-open.png" alt="Tracked popup menu with separator and disabled rows in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/35-popup-lists-open.png" alt="Classic emulator popup checkpoint" width="360"> |
+| 36. Popup scroll/reveal | <img src="reference/systemless-68k/36-popup-lists-scrolled.png" alt="Scrolled programmatic popup revealing item 36 in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/36-popup-lists-scrolled.png" alt="Classic emulator popup checkpoint" width="360"> |
+| 36a. Deep item accepted | <img src="reference/systemless-68k/36-popup-lists-deep-selected.png" alt="Item 36 accepted in Systemless" width="360"> | <img src="reference/basiliskii-68k/36-popup-lists-deep-selected.png" alt="Item 36 accepted in the classic emulator" width="360"> |
+| 37. Popup selections | <img src="reference/systemless-68k/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/37-popup-lists-selected.png" alt="Classic emulator popup checkpoint" width="360"> |
 
 ### PowerPC
 
@@ -406,9 +422,10 @@ palette, scrolling, and popup-menu checkpoint.
 | 32. Hidden cursor | <img src="reference/systemless-ppc/32-events-cursor-hidden.png" alt="Hidden watch cursor state in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/32-events-cursor-hidden.png" alt="Hidden watch cursor state in SheepShaver" width="360"> |
 | 33. Final visible cursor | <img src="reference/systemless-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in SheepShaver" width="360"> |
 | 34. Popup lists | <img src="reference/systemless-ppc/34-popup-lists.png" alt="Popup and dropdown lists page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/34-popup-lists.png" alt="Popup and dropdown lists page in SheepShaver running the PowerPC slice" width="360"> |
-| 35. Popup menu tracking | <img src="reference/systemless-ppc/35-popup-lists-open.png" alt="Tracked popup menu with separator and disabled rows in Systemless running the PowerPC slice" width="360"> | — |
-| 36. Popup scroll/reveal | <img src="reference/systemless-ppc/36-popup-lists-scrolled.png" alt="Scrolled programmatic popup revealing item 36 in Systemless running the PowerPC slice" width="360"> | — |
-| 37. Popup selections | <img src="reference/systemless-ppc/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the PowerPC slice" width="360"> | — |
+| 35. Popup menu tracking | <img src="reference/systemless-ppc/35-popup-lists-open.png" alt="Tracked popup menu with separator and disabled rows in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/35-popup-lists-open.png" alt="Classic emulator popup checkpoint" width="360"> |
+| 36. Popup scroll/reveal | <img src="reference/systemless-ppc/36-popup-lists-scrolled.png" alt="Scrolled programmatic popup revealing item 36 in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/36-popup-lists-scrolled.png" alt="Classic emulator popup checkpoint" width="360"> |
+| 36a. Deep item accepted | <img src="reference/systemless-ppc/36-popup-lists-deep-selected.png" alt="Item 36 accepted in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/36-popup-lists-deep-selected.png" alt="Item 36 accepted in the classic emulator" width="360"> |
+| 37. Popup selections | <img src="reference/systemless-ppc/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/37-popup-lists-selected.png" alt="Classic emulator popup checkpoint" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
 state rather than relying on fixed delays, and compares all forty-three rendered

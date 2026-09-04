@@ -68593,6 +68593,15 @@ fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
         "TrackControl" => {
+            // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
+            // -1 selects contrlAction; a second -1 invokes the popup CDEF.
+            let action_proc = if cpu.gpr[5] == u32::MAX {
+                ppc_control_ptr(memory, cpu.gpr[3])
+                    .and_then(|control| memory.read_u32_be(control + 32))
+                    .unwrap_or(0)
+            } else {
+                cpu.gpr[5]
+            };
             let v = (cpu.gpr[4] >> 16) as u16 as i16;
             let h = cpu.gpr[4] as u16 as i16;
             let part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
@@ -68602,7 +68611,7 @@ fn ppc_dispatch_legacy_control(
                     cpu.gpr[3], v, h, cpu.gpr[5], part
                 );
             }
-            if part != 0 {
+            if part != 0 && action_proc == u32::MAX {
                 if let Some(action) = ppc_dispatch_popup_track_control(
                     cpu,
                     memory,
@@ -68664,12 +68673,12 @@ fn ppc_dispatch_legacy_control(
                 }
                 return Some(PpcImportAction::Return(ppc_i16_result(129)));
             }
-            if part == 0 || cpu.gpr[5] == 0 {
+            if part == 0 || action_proc == 0 || action_proc == u32::MAX {
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
             }
             let restore_rtoc = cpu.gpr[2];
             let final_pc = cpu.lr;
-            let target = ppc_resolve_callback_target(memory, cpu.gpr[5], restore_rtoc, None)?;
+            let target = ppc_resolve_callback_target(memory, action_proc, restore_rtoc, None)?;
             ppc_install_native_call_arguments(cpu, memory, &[cpu.gpr[3], part as u16 as u32])?;
             Some(
                 GuestCallEffect::call_guest(
@@ -68853,6 +68862,8 @@ fn ppc_new_control_record_values(
         return 0;
     }
     let popup = (1008..=1023).contains(&(proc_id & 0x0fff));
+    // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80.
+    let _ = memory.write_u32_be(control + 32, if popup { u32::MAX } else { 0 });
     controls.retain(|record| record.handle != handle);
     controls.push(PpcControlRecord {
         handle,
@@ -103214,11 +103225,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn popup_track_control_requires_a_visible_enabled_hit() {
-        for (label, visible, hilite, point) in [
-            ("outside", true, 0, (0i16, 0i16)),
-            ("hidden", false, 0, (10, 10)),
-            ("inactive", true, 0xff, (10, 10)),
+    fn popup_track_control_requires_a_visible_enabled_hit_and_cdef_action() {
+        for (label, visible, hilite, point, requested, stored, opens) in [
+            ("outside", true, 0, (0i16, 0i16), u32::MAX, u32::MAX, false),
+            ("hidden", false, 0, (10, 10), u32::MAX, u32::MAX, false),
+            ("inactive", true, 0xff, (10, 10), u32::MAX, u32::MAX, false),
+            ("nil action", true, 0, (10, 10), 0, u32::MAX, false),
+            ("nil stored action", true, 0, (10, 10), u32::MAX, 0, false),
+            ("CDEF action", true, 0, (10, 10), u32::MAX, u32::MAX, true),
         ] {
             let mut loaded =
                 load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
@@ -103264,9 +103278,10 @@ pub(crate) mod tests {
                 .write_u8(control + PPC_CONTROL_HILITE_OFFSET, hilite)
                 .unwrap();
             loaded.cpu.gpr[3] = control_handle;
-            loaded.cpu.gpr[4] =
-                (u32::from(point.0 as u16) << 16) | u32::from(point.1 as u16);
-            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[4] = (u32::from(point.0 as u16) << 16) | u32::from(point.1 as u16);
+            assert_eq!(loaded.memory.read_u32_be(control + 32), Some(u32::MAX));
+            loaded.memory.write_u32_be(control + 32, stored).unwrap();
+            loaded.cpu.gpr[5] = requested;
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: true,
                 mouse_v: point.0,
@@ -103276,8 +103291,24 @@ pub(crate) mod tests {
 
             let probe = loaded.run_with_hle_imports(64);
 
-            assert!(matches!(probe.result, PpcRunResult::Halted { .. }), "{label}");
-            assert_eq!(loaded.cpu.gpr[3], 0, "{label} TrackControl result");
+            if opens {
+                assert!(loaded.toolbox_startup.menu_tracking.is_some(), "{label}");
+                assert!(loaded.toolbox_startup.popup_menu_call.is_some(), "{label}");
+                continue;
+            }
+            assert!(
+                matches!(probe.result, PpcRunResult::Halted { .. }),
+                "{label}"
+            );
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                if visible && hilite == 0 && point == (10, 10) {
+                    10
+                } else {
+                    0
+                },
+                "{label} TrackControl result",
+            );
             assert_eq!(loaded.toolbox_startup.menu_tracking, None, "{label}");
             assert_eq!(loaded.toolbox_startup.popup_menu_call, None, "{label}");
             assert_eq!(
