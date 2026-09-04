@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.32.1](https://github.com/benletchford/systemless/compare/v0.32.0...v0.32.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **window:** align title stripes and zoom glyph ([db7e134](https://github.com/benletchford/systemless/commit/db7e1341d161a9f03da5f3e7148e465623b2f141))
+* **window:** align title-bar chrome ([#1352](https://github.com/benletchford/systemless/issues/1352)) ([f95ca7b](https://github.com/benletchford/systemless/commit/f95ca7bbc3be187b9187888eac03dd5898fb2cfa))
+* **window:** align zoom box with scrollbar ([#1358](https://github.com/benletchford/systemless/issues/1358)) ([3c63ca4](https://github.com/benletchford/systemless/commit/3c63ca4ff97ecceb112fc19bde78ab422a48c000))
+* **window:** clip rear chrome behind front windows ([8a37b15](https://github.com/benletchford/systemless/commit/8a37b15fa23d6fcaa9b3e2edaf3a50b82aa9f283)), closes [#1353](https://github.com/benletchford/systemless/issues/1353)
+* **window:** render zoom and grow controls ([#1345](https://github.com/benletchford/systemless/issues/1345)) ([6feef61](https://github.com/benletchford/systemless/commit/6feef61fce329a82b411b8dbeadf098c0ca82580))
+* **window:** restore classic zoom box glyph ([6ee1d7a](https://github.com/benletchford/systemless/commit/6ee1d7a0658fe880cb973f9e780cf579b98ee44e))
+* **window:** restore desktop after moving windows ([#1348](https://github.com/benletchford/systemless/issues/1348)) ([91fee2e](https://github.com/benletchford/systemless/commit/91fee2ec1102fb8b5badd37a8e0a40d3cf8c9bcb))
+* **window:** restore upper title bar border ([#1360](https://github.com/benletchford/systemless/issues/1360)) ([e0c4439](https://github.com/benletchford/systemless/commit/e0c44398de34f54a945b702877307a2020b27af5))
+
 ## [0.32.0](https://github.com/benletchford/systemless/compare/v0.31.0...v0.32.0) (2026-09-04)
 
 
