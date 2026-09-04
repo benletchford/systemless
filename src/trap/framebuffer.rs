@@ -3917,7 +3917,6 @@ impl super::TrapDispatcher {
             !self.window_title.is_empty(),
             active,
             Self::window_is_document_proc(self.window_proc_id),
-            self.window_proc_id == 5,
             self.go_away_flag,
             matches!(self.window_proc_id, 8 | 12),
         );
@@ -3944,23 +3943,21 @@ impl super::TrapDispatcher {
             active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
         let has_zoom_box = active && matches!(self.window_proc_id, 8 | 12);
 
-        // Draw title bar border. Classic document WDEFs leave the top edge
-        // open; System 7.5.3 paints only side edges, bottom separator, and
-        // active pinstripes. movableDBoxProc keeps the full title-frame top.
-        if is_movable_modal {
-            Self::fb_hline(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                tb_top,
-                tb_left,
-                tb_right,
-                true,
-            );
-        }
+        // The title bar is part of the standard Window Manager frame and is
+        // enclosed by the window outline. Macintosh Toolbox Essentials
+        // (1992), Figure 4-2, pp. 4-5--4-6.
+        Self::fb_hline(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            tb_top,
+            tb_left,
+            tb_right,
+            true,
+        );
         Self::fb_hline(
             bus,
             screen_base,

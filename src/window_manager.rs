@@ -119,7 +119,6 @@ pub(crate) fn standard_window_chrome(
     has_title: bool,
     active: bool,
     document_proc: bool,
-    movable_dialog: bool,
     go_away: bool,
     zoom_box: bool,
 ) -> StandardWindowChrome {
@@ -144,10 +143,11 @@ pub(crate) fn standard_window_chrome(
     } else {
         (tb_right, tb_right)
     };
-    let mut ink = Vec::new();
-    if movable_dialog {
-        ink.push((tb_top, tb_left, tb_top.saturating_add(1), tb_right));
-    }
+    // The standard Window Manager frame comprises the title bar and the
+    // window outline. Keep the title bar enclosed on all four sides.
+    // Macintosh Toolbox Essentials (1992), Figure 4-2, pp. 4-5--4-6;
+    // Macintosh Human Interface Guidelines (1992), Figures 5-2--5-4.
+    let mut ink = vec![(tb_top, tb_left, tb_top.saturating_add(1), tb_right)];
     ink.extend([
         (tb_bottom, tb_left, tb_bottom.saturating_add(1), tb_right),
         (
@@ -362,7 +362,6 @@ mod tests {
             true,
             true,
             true,
-            false,
             true,
             true,
         );
@@ -376,6 +375,7 @@ mod tests {
             .map(|(top, _, _, _)| *top)
             .collect::<Vec<_>>();
         assert_eq!(stripe_rows, [32, 34, 36, 38, 40, 42, 44]);
+        assert!(chrome.ink.contains(&(30, 39, 31, 601)));
         assert!(chrome
             .ink
             .iter()

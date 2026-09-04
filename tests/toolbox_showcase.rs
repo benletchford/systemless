@@ -1241,6 +1241,11 @@ fn test_toolbox_showcase() {
     );
     assert_windows_repainted(&mut runner, "initial stacked windows");
     assert_eq!(
+        screen_rgb(&mut runner, 231, 400),
+        [0, 0, 0],
+        "active zoomDocProc frame must draw its upper title-bar border"
+    );
+    assert_eq!(
         screen_rgb(&mut runner, 240, 572),
         [0, 0, 0],
         "active zoomDocProc frame must align its zoom-box edge with the scrollbar column"
