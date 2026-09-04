@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.31.0](https://github.com/benletchford/systemless/compare/v0.30.0...v0.31.0) (2026-09-04)
+
+
+### Features
+
+* **list:** implement 68k LActivate and automatic list redrawing ([#1330](https://github.com/benletchford/systemless/issues/1330)) ([3855b5d](https://github.com/benletchford/systemless/commit/3855b5dfd781fe8ea7153d9799e09a7d525c1268))
+
+
+### Bug Fixes
+
+* **showcase:** preserve masked sprite source colors ([#1336](https://github.com/benletchford/systemless/issues/1336)) ([cccbc61](https://github.com/benletchford/systemless/commit/cccbc6164c0267bd1223f4bd00219e7f4b25da88))
+* **showcase:** resolve inspector text collisions and un-scrolled status on sprites page ([#1334](https://github.com/benletchford/systemless/issues/1334)) ([16ecb0a](https://github.com/benletchford/systemless/commit/16ecb0a71bf2cbafa7afdc1fa7ae29b7081c098f))
+
+
+### Code Refactoring
+
+* **events:** make the process tick clock canonical ([#1329](https://github.com/benletchford/systemless/issues/1329)) ([1cefe0d](https://github.com/benletchford/systemless/commit/1cefe0d4624ec0fce3b2e3359a3d093934671e79))
+* **quickdraw:** share PixMap pixel state across CPU adapters ([#1326](https://github.com/benletchford/systemless/issues/1326)) ([f95d0c9](https://github.com/benletchford/systemless/commit/f95d0c9f69615b122a0aa8836444042e039deb1c))
+
 ## [0.30.0](https://github.com/benletchford/systemless/compare/v0.29.0...v0.30.0) (2026-09-03)
 
 
