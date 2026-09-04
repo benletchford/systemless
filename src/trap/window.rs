@@ -9922,7 +9922,7 @@ mod tests {
     }
 
     #[test]
-    fn redraw_chrome_does_not_paint_back_window_chrome_through_front_content() {
+    fn direct_chrome_redraw_does_not_paint_back_window_through_front_content() {
         // The Window Manager clips a back window's frame to windows above it.
         // Redrawing raw framebuffer chrome without that clip can leave stale
         // back-window borders inside the front window's content area.
@@ -9972,7 +9972,7 @@ mod tests {
         let protected = screen_base + 60 * 800 + 49;
         bus.write_byte(protected, 0x7B);
 
-        disp.redraw_chrome(&mut bus);
+        disp.draw_single_window_chrome_inline(&mut bus, back, false);
 
         assert_eq!(
             bus.read_byte(protected),

@@ -16916,7 +16916,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DrawGrowIcon => {
-            ppc_draw_grow_icon(memory, gworlds, cpu.gpr[3]);
+            ppc_draw_grow_icon(memory, gworlds, window_list, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
@@ -19150,6 +19150,7 @@ fn dispatch_supported_import(
                     ppc_draw_existing_window_frame(
                         memory,
                         gworlds,
+                        window_list,
                         window,
                         toolbox_startup.host_menu_bar_hidden,
                     );
@@ -19245,6 +19246,7 @@ fn dispatch_supported_import(
                     ppc_draw_existing_window_frame(
                         memory,
                         gworlds,
+                        window_list,
                         window,
                         toolbox_startup.host_menu_bar_hidden,
                     );
@@ -19540,6 +19542,7 @@ fn dispatch_supported_import(
                     ppc_redraw_visible_window_frame(
                         memory,
                         gworlds,
+                        window_list,
                         cpu.gpr[3],
                         toolbox_startup.host_menu_bar_hidden,
                     );
@@ -51729,7 +51732,7 @@ fn ppc_new_cwindow(
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
     if visible && proc_id == 1 {
-        ppc_draw_dialog_box_frame(memory, gworlds, port, local_bottom, local_right);
+        ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
     }
     if ppc_gworld_trace_enabled() {
         eprintln!(
@@ -51835,7 +51838,12 @@ fn ppc_draw_standard_window_frame(
     }
 }
 
-fn ppc_draw_grow_icon(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], window: u32) {
+fn ppc_draw_grow_icon(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
+    window: u32,
+) {
     if window == 0 || !matches!(ppc_window_proc_id(memory, window), 0 | 8) {
         return;
     }
@@ -51849,6 +51857,11 @@ fn ppc_draw_grow_icon(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], w
         .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
         .unwrap_or(0)
         != 0;
+    // DrawGrowIcon is clipped by windows above the target in the Window
+    // Manager port. Preserve that occlusion around native screen-RAM draws.
+    // Macintosh Toolbox Essentials (1992), pp. 4-106 and 4-111--4-112.
+    let preserved_front_pixels =
+        ppc_front_window_occlusion_pixels(memory, gworlds, window_list, window);
     let icon = crate::window_manager::standard_grow_icon(content, active);
     let _ = ppc_paint_rect_bounds(
         memory,
@@ -51868,11 +51881,17 @@ fn ppc_draw_grow_icon(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], w
             None,
         );
     }
+    if let Some(saved) = preserved_front_pixels {
+        for (x, y, pixel) in saved.pixels {
+            let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
+        }
+    }
 }
 
 fn ppc_draw_existing_window_frame(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
     window: u32,
     host_menu_bar_hidden: bool,
 ) {
@@ -51886,6 +51905,16 @@ fn ppc_draw_existing_window_frame(
     // WDEF owns document-window frame pixels. Kiosk presentation suppresses
     // those host-synthesized pixels without changing the guest's window
     // regions, ordering, or visibility. Dialog WDEFs remain visible.
+    // ClipAbove excludes the complete structure region of every visible
+    // window above the WDEF being drawn. Native WDEF chrome targets screen
+    // RAM directly, so save those pixels and restore them after the raw draw.
+    // Macintosh Toolbox Essentials (1992), pp. 4-106 and 4-118--4-119.
+    let preserved_front_pixels = ppc_front_window_occlusion_pixels(
+        memory,
+        gworlds,
+        window_list,
+        window,
+    );
     if ppc_window_proc_has_title_bar(proc_id) && !host_menu_bar_hidden {
         let go_away = memory
             .read_u8(window.wrapping_add(PPC_CWINDOW_GO_AWAY_OFFSET))
@@ -51895,16 +51924,80 @@ fn ppc_draw_existing_window_frame(
     } else if proc_id == 1 {
         ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
     }
+    if let Some(saved) = preserved_front_pixels {
+        for (x, y, pixel) in saved.pixels {
+            let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
+        }
+    }
+}
+
+struct PpcOccludedWindowPixels {
+    front_buffer: PpcFrontBuffer,
+    pixels: Vec<(i32, i32, u16)>,
+}
+
+fn ppc_front_window_occlusion_pixels(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
+    window: u32,
+) -> Option<PpcOccludedWindowPixels> {
+    let front_buffer = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD)?;
+    let target_structure = ppc_window_global_structure_bounds(memory, gworlds, window)?;
+    let mut pixels = Vec::new();
+    for front in crate::window_manager::window_occluders(
+        window_list.iter().copied(),
+        window,
+        |candidate| ppc_window_is_visible(memory, candidate),
+    ) {
+        let Some(front_structure) = ppc_window_global_structure_bounds(memory, gworlds, front)
+        else {
+            continue;
+        };
+        let overlap = (
+            target_structure.0.max(front_structure.0).max(0),
+            target_structure.1.max(front_structure.1).max(0),
+            target_structure
+                .2
+                .min(front_structure.2)
+                .min(ppc_u32_to_i16_saturating(front_buffer.height)),
+            target_structure
+                .3
+                .min(front_structure.3)
+                .min(ppc_u32_to_i16_saturating(front_buffer.width)),
+        );
+        if overlap.0 >= overlap.2 || overlap.1 >= overlap.3 {
+            continue;
+        }
+        for y in i32::from(overlap.0)..i32::from(overlap.2) {
+            for x in i32::from(overlap.1)..i32::from(overlap.3) {
+                if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) {
+                    pixels.push((x, y, pixel));
+                }
+            }
+        }
+    }
+    Some(PpcOccludedWindowPixels {
+        front_buffer,
+        pixels,
+    })
 }
 
 fn ppc_redraw_visible_window_frame(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
     window: u32,
     host_menu_bar_hidden: bool,
 ) {
     if ppc_window_is_visible(memory, window) {
-        ppc_draw_existing_window_frame(memory, gworlds, window, host_menu_bar_hidden);
+        ppc_draw_existing_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            window,
+            host_menu_bar_hidden,
+        );
     }
 }
 
@@ -52142,7 +52235,13 @@ fn ppc_restore_window_removal_exposure(
         if !intersects {
             continue;
         }
-        ppc_redraw_visible_window_frame(memory, gworlds, window, host_menu_bar_hidden);
+        ppc_redraw_visible_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            window,
+            host_menu_bar_hidden,
+        );
         ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
         ppc_enqueue_window_update_event(event_queue, window, when, input);
     }
@@ -52180,12 +52279,24 @@ fn ppc_transition_front_window_chrome(
     if let Some(previous) = previous_front {
         if !preserve_previous_chrome {
             let _ = ppc_set_window_hilited(memory, previous, false);
-            ppc_redraw_visible_window_frame(memory, gworlds, previous, host_menu_bar_hidden);
+            ppc_redraw_visible_window_frame(
+                memory,
+                gworlds,
+                window_list,
+                previous,
+                host_menu_bar_hidden,
+            );
         }
     }
     if let Some(next) = next_front {
         let _ = ppc_set_window_hilited(memory, next, true);
-        ppc_redraw_visible_window_frame(memory, gworlds, next, host_menu_bar_hidden);
+        ppc_redraw_visible_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            next,
+            host_menu_bar_hidden,
+        );
     }
 }
 
@@ -69702,6 +69813,7 @@ fn ppc_dispatch_legacy_window(
                 ppc_redraw_visible_window_frame(
                     memory,
                     gworlds,
+                    window_list,
                     cpu.gpr[3],
                     toolbox_startup.host_menu_bar_hidden,
                 );
@@ -69830,6 +69942,7 @@ fn ppc_dispatch_legacy_window(
             ppc_redraw_visible_window_frame(
                 memory,
                 gworlds,
+                window_list,
                 cpu.gpr[3],
                 toolbox_startup.host_menu_bar_hidden,
             );
@@ -70115,7 +70228,13 @@ fn ppc_new_window_from_cpu(
         host_menu_bar_hidden,
     );
     if cpu.gpr[6] != 0 && ppc_front_visible_process_window(memory, window_list) != Some(window) {
-        ppc_draw_existing_window_frame(memory, gworlds, window, host_menu_bar_hidden);
+        ppc_draw_existing_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            window,
+            host_menu_bar_hidden,
+        );
     }
     *last_mem_error = PPC_NO_ERR;
     window
@@ -139366,6 +139485,56 @@ pub(crate) mod tests {
                 height: record.height,
                 depth: record.depth,
             })
+        );
+    }
+
+    #[test]
+    fn ppc_direct_chrome_redraw_does_not_paint_back_window_through_front_content() {
+        // ClipAbove removes every front structure region before the Window
+        // Manager asks a rear WDEF to draw. Macintosh Toolbox Essentials
+        // (1992), pp. 4-106 and 4-118--4-119.
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let back = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let _front = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (120, 250, 280, 450),
+            0,
+            true,
+            u32::MAX,
+        );
+        let front_buffer =
+            ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let protected = (300, 150);
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            front_buffer,
+            protected,
+            0x7b,
+        ));
+
+        ppc_draw_existing_window_frame(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.window_list,
+            back,
+            false,
+        );
+
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, protected),
+            Some(0x7b),
+            "back-window chrome must be clipped by the front window's content",
         );
     }
 

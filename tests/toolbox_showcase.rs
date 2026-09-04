@@ -1,5 +1,5 @@
 //! Integration test exercising Toolbox Showcase for issues #1078, #1081,
-//! #1264, #1265, #1266, #1267, #1268, #1269, and #1338.
+//! #1264, #1265, #1266, #1267, #1268, #1269, #1338, and #1353.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -1265,6 +1265,11 @@ fn test_toolbox_showcase() {
     assert_ne!(
         initial_overlap, initial_aux_body,
         "overlap must not leak pixels from the window behind it"
+    );
+    assert_eq!(
+        screen_rgb(&mut runner, 330, 485),
+        initial_stack_body,
+        "rear window chrome must not paint through the front window's content"
     );
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "03-windows.png");
