@@ -5,6 +5,7 @@ use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
 use crate::execution_m68k::M68kExecution;
+use crate::execution_native::{NativeEngineRole, NativeExecution};
 use crate::guest_call::ExecutionTaskId;
 use crate::loader::ppc::{
     PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
@@ -22,11 +23,11 @@ use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
+pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 pub use crate::window_manager::WindowSnapshot;
-pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::{Error, Result};
 use m68k::BatchExit;
 use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
@@ -1642,12 +1643,7 @@ impl FixtureRunnerConfig {
 /// See `examples/run_headless.rs` for a runnable end-to-end example.
 pub struct FixtureRunner {
     m68k: M68kExecution,
-    ppc_app: Option<PpcLoadedApp>,
-    /// Native execution adapter retained by a classic foreground process.
-    /// It runs only while the process guest-call stack contains a pending
-    /// 68K-to-PowerPC Mixed Mode transition.
-    ppc_companion: Option<PpcLoadedApp>,
-    staged_ppc_companion: Option<PpcLoadedApp>,
+    native: NativeExecution<PpcLoadedApp>,
     bus: MacMemoryBus,
     dispatcher: TrapDispatcher,
     /// Canonical owner for state shared by this process's CPU ABI adapters.
@@ -1909,9 +1905,7 @@ impl FixtureRunner {
         let dialog_callback_scratch_base = bus.alloc_synthetic(DIALOG_CALLBACK_SCRATCH_SIZE);
         Self {
             m68k: M68kExecution::new(&dispatcher.guest_calls),
-            ppc_app: None,
-            ppc_companion: None,
-            staged_ppc_companion: None,
+            native: NativeExecution::default(),
             bus,
             dispatcher,
             process_context,
@@ -2035,7 +2029,7 @@ impl FixtureRunner {
     /// rendered pixels or 68K/PPC-specific EventRecord offsets.
     pub fn event_manager_snapshot(&self) -> EventManagerSnapshot {
         let queue = self.process_context.event_queue();
-        let ppc_state = self.ppc_app.as_ref().map(|app| &app.toolbox_startup);
+        let ppc_state = self.native.application().map(|app| &app.toolbox_startup);
         let last_record: Option<EventRecordSnapshot> = self
             .dispatcher
             .debug_last_event_record
@@ -2181,7 +2175,7 @@ impl FixtureRunner {
 
     /// Global content bounds of the frontmost visible guest window.
     pub fn window_bounds(&mut self) -> (i16, i16, i16, i16) {
-        self.ppc_app.as_mut().map_or_else(
+        self.native.application_mut().map_or_else(
             || self.dispatcher.window_bounds(),
             PpcLoadedApp::window_bounds,
         )
@@ -2189,7 +2183,7 @@ impl FixtureRunner {
 
     /// Number of live guest windows, independent of the active CPU adapter.
     pub fn window_count(&mut self) -> usize {
-        self.ppc_app.as_mut().map_or_else(
+        self.native.application_mut().map_or_else(
             || self.dispatcher.window_count(),
             PpcLoadedApp::window_count,
         )
@@ -2203,7 +2197,7 @@ impl FixtureRunner {
     /// regions, and pending repaint regions without relying on screenshots.
     #[doc(hidden)]
     pub fn window_stack_snapshot(&mut self) -> Vec<WindowSnapshot> {
-        if let Some(ppc_app) = self.ppc_app.as_mut() {
+        if let Some(ppc_app) = self.native.application_mut() {
             ppc_window_snapshot(ppc_app)
         } else {
             self.dispatcher.window_stack_snapshot(&self.bus)
@@ -2534,7 +2528,7 @@ impl FixtureRunner {
         if !ppc_gworld_dump_enabled() {
             return;
         }
-        let Some(ppc_app) = self.ppc_app.as_mut() else {
+        let Some(ppc_app) = self.native.application_mut() else {
             return;
         };
         eprint!(
@@ -2663,8 +2657,8 @@ impl FixtureRunner {
     }
 
     fn current_oracle_pc(&self) -> u32 {
-        self.ppc_app
-            .as_ref()
+        self.native
+            .application()
             .map(|app| app.cpu.pc)
             .unwrap_or_else(|| self.m68k.cpu.read_reg(Register::PC))
     }
@@ -2751,7 +2745,7 @@ impl FixtureRunner {
     /// Native and web frontends can use this without exposing mutable Toolbox
     /// internals.
     pub fn guest_menu_snapshot(&mut self) -> GuestMenuSnapshot {
-        if let Some(ppc_app) = self.ppc_app.as_mut() {
+        if let Some(ppc_app) = self.native.application_mut() {
             ppc_app.guest_menu_snapshot()
         } else {
             self.dispatcher.guest_menu_snapshot(&self.bus)
@@ -2761,12 +2755,14 @@ impl FixtureRunner {
     /// Inspect caller-created TextEdit records and the process's private scrap.
     #[doc(hidden)]
     pub fn text_edit_snapshot(&mut self) -> TextEditManagerSnapshot {
-        if let Some(app) = self.ppc_app.as_mut() {
+        if let Some(app) = self.native.application_mut() {
             let handles = app.scrap.text_edit.handles();
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| app.memory.read_u8(addr))
         } else {
             let handles = self.dispatcher.textedit_states.handles();
-            crate::text_edit::snapshot_guest_records(&handles, &mut |addr| Some(self.bus.read_byte(addr)))
+            crate::text_edit::snapshot_guest_records(&handles, &mut |addr| {
+                Some(self.bus.read_byte(addr))
+            })
         }
     }
 
@@ -2794,7 +2790,7 @@ impl FixtureRunner {
             };
         // ListRec.vScroll/hScroll: More Macintosh Toolbox, pp. 4-3--4-7.
         // ControlRecord.contrlVis/contrlHilite: Toolbox Essentials, pp. 5-61--5-63.
-        let mut lists = if let Some(app) = self.ppc_app.as_mut() {
+        let mut lists = if let Some(app) = self.native.application_mut() {
             let records = app.list_manager.values().cloned().collect::<Vec<_>>();
             records
                 .iter()
@@ -2848,7 +2844,7 @@ impl FixtureRunner {
     /// internal resource records differ.
     #[doc(hidden)]
     pub fn resource_manager_snapshot(&mut self) -> ResourceManagerSnapshot {
-        if let Some(ppc_app) = self.ppc_app.as_mut() {
+        if let Some(ppc_app) = self.native.application_mut() {
             resource_manager_snapshot_powerpc(&self.dispatcher, ppc_app)
         } else {
             resource_manager_snapshot_classic(&self.dispatcher, &self.bus)
@@ -2863,7 +2859,7 @@ impl FixtureRunner {
         // since the last trap must be visible before the queued EventRecord
         // receives its `when` timestamp.
         self.dispatcher.read_tick_count(&self.bus);
-        if let Some(ppc_app) = self.ppc_app.as_mut() {
+        if let Some(ppc_app) = self.native.application_mut() {
             if !ppc_app.queue_native_menu_selection(menu_id, item_number) {
                 return false;
             }
@@ -3054,7 +3050,7 @@ impl FixtureRunner {
 
     /// Whether the active application executes through the PowerPC runtime.
     pub fn is_powerpc_app(&self) -> bool {
-        self.ppc_app.is_some()
+        self.native.application().is_some()
     }
 
     /// Cap the per-WaitNextEvent-call sleep tick advance in headless mode.
@@ -3111,7 +3107,7 @@ impl FixtureRunner {
                 | crate::sound::PendingSoundCallback::FileCompletion {
                     architecture: CallbackTaskArchitecture::PowerPc,
                     ..
-                } => self.ppc_app.is_some(),
+                } => self.native.application().is_some(),
             });
         self.active_interrupt_callback
             .map(|callback| {
@@ -3228,12 +3224,15 @@ impl FixtureRunner {
     /// Reconstruct resource entries embedded by installers and publish the
     /// complete forks through the virtual filesystem snapshot API.
     pub fn prepare_vfs_resource_forks_for_native_export(&mut self) -> usize {
-        let Some(mut ppc_app) = self.ppc_app.take() else {
+        let Some(mut native_context) = self.native.take(NativeEngineRole::Application) else {
             return 0;
         };
+        let mut ppc_app = native_context.adapter_mut();
         let materialized_count = ppc_app.prepare_vfs_resource_forks_for_native_export();
         self.persist_ppc_vfs_to_host(&mut ppc_app);
-        self.ppc_app = Some(ppc_app);
+        self.native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
         materialized_count
     }
 
@@ -3425,7 +3424,7 @@ impl FixtureRunner {
                 screen_height as i16,
                 screen_width as i16,
             );
-            if let Some(ppc_app) = self.ppc_app.as_mut() {
+            if let Some(ppc_app) = self.native.application_mut() {
                 if let Some(front_buffer) = ppc_app.presented_front_buffer() {
                     let pattern: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
                     if front_buffer.depth == 16 {
@@ -3756,18 +3755,16 @@ impl FixtureRunner {
     /// 0 and spins forever in the globals-decompression loop.
     pub fn init_app(&mut self, app: &LoadedApp) {
         assert!(
-            self.m68k.can_relaunch(),
+            self.m68k.can_relaunch() && self.native.can_relaunch(),
             "cannot relaunch with parked execution contexts"
         );
-        self.ppc_companion = None;
+        assert!(self.native.reset_for_launch(app.ppc.is_some()));
         if let Some(ppc_app) = app.ppc.clone() {
-            self.staged_ppc_companion = None;
             self.init_ppc_app(ppc_app);
             return;
         }
 
         self.bus.detach_guest_address_space();
-        self.ppc_app = None;
 
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
@@ -4160,12 +4157,14 @@ impl FixtureRunner {
     }
 
     pub(crate) fn stage_ppc_companion(&mut self, ppc_companion: PpcLoadedApp) {
-        self.staged_ppc_companion = Some(ppc_companion);
+        self.native
+            .stage_companion(ppc_companion)
+            .unwrap_or_else(|_| panic!("native companion is already installed"));
     }
 
     #[cfg(test)]
     pub(crate) fn has_ppc_companion(&self) -> bool {
-        self.ppc_companion.is_some() || self.staged_ppc_companion.is_some()
+        self.native.companion().is_some() || self.native.has_staged_companion()
     }
 
     fn init_ppc_companion(&mut self, mut ppc_companion: PpcLoadedApp) {
@@ -4173,7 +4172,9 @@ impl FixtureRunner {
         ppc_companion.attach_process_context(&mut self.process_context);
         self.bus
             .attach_guest_address_space(ppc_companion.memory.shared_view());
-        self.ppc_companion = Some(ppc_companion);
+        self.native
+            .install(NativeEngineRole::Companion, ppc_companion)
+            .unwrap_or_else(|_| panic!("native engine slot is occupied"));
     }
 
     fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
@@ -4277,7 +4278,9 @@ impl FixtureRunner {
         self.m68k.cpu.write_reg(Register::PC, 0);
         self.bus
             .attach_guest_address_space(ppc_app.memory.shared_view());
-        self.ppc_app = Some(ppc_app);
+        self.native
+            .install(NativeEngineRole::Application, ppc_app)
+            .unwrap_or_else(|_| panic!("native engine slot is occupied"));
     }
 
     fn share_ppc_process_memory(&mut self, ppc_app: &mut PpcLoadedApp) {
@@ -5474,7 +5477,7 @@ impl FixtureRunner {
         let current_task =
             ExecutionTaskId::from_thread_id(self.dispatcher.guest_calls.current_task().thread_id());
         let native_foreground_task =
-            self.ppc_app.is_some() && current_task == ExecutionTaskId::APPLICATION;
+            self.native.application().is_some() && current_task == ExecutionTaskId::APPLICATION;
         if native_foreground_task {
             if yield_for_ui {
                 return self.run_ppc_steps(
@@ -5531,17 +5534,17 @@ impl FixtureRunner {
             return (count, running);
         }
 
-        if self.ppc_companion.is_none()
-            && self.staged_ppc_companion.is_some()
+        if self.native.companion().is_none()
+            && self.native.has_staged_companion()
             && self.dispatcher.guest_calls.has_powerpc_from_m68k()
         {
             let companion = self
-                .staged_ppc_companion
-                .take()
+                .native
+                .take_staged_companion()
                 .expect("checked staged native companion");
             self.init_ppc_companion(companion);
         }
-        if self.ppc_companion.as_ref().is_some_and(|companion| {
+        if self.native.companion().is_some_and(|companion| {
             companion.guest_calls.pending_powerpc_from_m68k().is_some()
                 || companion.guest_calls.has_powerpc_from_m68k()
                 || companion.guest_calls.has_m68k_execution()
@@ -6333,14 +6336,14 @@ impl FixtureRunner {
 
             self.dispatcher.instruction_count = self.total_instructions;
             let ppc_callback_ready = self
-                .ppc_app
-                .as_ref()
+                .native
+                .application()
                 .is_some_and(|app| app.guest_calls.has_m68k_execution())
-                || self.ppc_companion.as_ref().is_some_and(|companion| {
+                || self.native.companion().is_some_and(|companion| {
                     companion.guest_calls.has_powerpc_from_m68k()
                         || companion.guest_calls.has_m68k_execution()
                 })
-                || (self.staged_ppc_companion.is_some()
+                || (self.native.has_staged_companion()
                     && self.dispatcher.guest_calls.has_powerpc_from_m68k());
             if ppc_callback_ready {
                 break;
@@ -6386,14 +6389,15 @@ impl FixtureRunner {
         }
 
         self.dispatcher.instruction_count = self.total_instructions;
-        let ppc_adapter = if foreground {
-            &mut self.ppc_app
+        let role = if foreground {
+            NativeEngineRole::Application
         } else {
-            &mut self.ppc_companion
+            NativeEngineRole::Companion
         };
-        let Some(mut ppc_app) = ppc_adapter.take() else {
+        let Some(mut native_context) = self.native.take(role) else {
             return (0, !self.halted);
         };
+        let mut ppc_app = native_context.adapter_mut();
 
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
         self.prepare_ppc_execution_clock(&mut ppc_app);
@@ -6411,11 +6415,9 @@ impl FixtureRunner {
             self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
             self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
             self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
-            if foreground {
-                self.ppc_app = Some(ppc_app);
-            } else {
-                self.ppc_companion = Some(ppc_app);
-            }
+            self.native
+                .restore(native_context)
+                .unwrap_or_else(|_| panic!("native context lost its owner"));
             return (0, false);
         }
         if ppc_app.guest_calls.has_m68k_execution() {
@@ -6471,11 +6473,9 @@ impl FixtureRunner {
                 self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
                 self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
             }
-            if foreground {
-                self.ppc_app = Some(ppc_app);
-            } else {
-                self.ppc_companion = Some(ppc_app);
-            }
+            self.native
+                .restore(native_context)
+                .unwrap_or_else(|_| panic!("native context lost its owner"));
             if finish_frame {
                 self.sync_ppc_deferred_host_state();
                 self.finish_host_frame(audio_samples, false);
@@ -6748,11 +6748,9 @@ impl FixtureRunner {
             }
         }
 
-        if foreground {
-            self.ppc_app = Some(ppc_app);
-        } else {
-            self.ppc_companion = Some(ppc_app);
-        }
+        self.native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
         if foreground && exited_via_ppc_exit_to_shell {
             if finish_frame {
                 self.redraw_chrome_outside_idle_journal();
@@ -7003,14 +7001,17 @@ impl FixtureRunner {
     }
 
     fn sync_ppc_deferred_host_state(&mut self) {
-        let Some(mut ppc_app) = self.ppc_app.take() else {
+        let Some(mut native_context) = self.native.take(NativeEngineRole::Application) else {
             return;
         };
+        let mut ppc_app = native_context.adapter_mut();
         let pc = ppc_app.cpu.pc;
         self.render_ppc_completed_frames(&mut ppc_app, pc);
         self.sync_ppc_front_buffer_to_host(&mut ppc_app);
         self.persist_ppc_vfs_to_host(&mut ppc_app);
-        self.ppc_app = Some(ppc_app);
+        self.native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     fn record_ppc_import_trace(&mut self, trace: &[PpcHleImportTraceEntry]) {
@@ -7336,8 +7337,8 @@ impl FixtureRunner {
 
     fn ppc_viewport_offset(&self) -> (i16, i16) {
         let Some(front_buffer) = self
-            .ppc_app
-            .as_ref()
+            .native
+            .application()
             .and_then(PpcLoadedApp::presented_front_buffer)
         else {
             return (0, 0);
@@ -7543,9 +7544,10 @@ impl FixtureRunner {
     }
 
     fn service_ppc_double_buffer_playbacks(&mut self) {
-        let Some(mut ppc_app) = self.ppc_app.take() else {
+        let Some(mut native_context) = self.native.take(NativeEngineRole::Application) else {
             return;
         };
+        let mut ppc_app = native_context.adapter_mut();
 
         for index in 0..ppc_app.sound.manager.double_buffer_playbacks.len() {
             let playback = ppc_app.sound.manager.double_buffer_playbacks[index];
@@ -7591,18 +7593,23 @@ impl FixtureRunner {
         }
 
         self.service_ppc_double_buffer_memory(&mut ppc_app);
-        self.ppc_app = Some(ppc_app);
+        self.native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
         self.fire_pending_ppc_sound_doublebacks();
 
-        let Some(mut ppc_app) = self.ppc_app.take() else {
+        let Some(mut native_context) = self.native.take(NativeEngineRole::Application) else {
             return;
         };
+        let mut ppc_app = native_context.adapter_mut();
         self.service_ppc_double_buffer_memory(&mut ppc_app);
-        self.ppc_app = Some(ppc_app);
+        self.native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     fn fire_pending_ppc_sound_doublebacks(&mut self) {
-        let Some(ppc_app) = self.ppc_app.as_ref() else {
+        let Some(ppc_app) = self.native.application() else {
             return;
         };
         if ppc_app
@@ -7619,9 +7626,10 @@ impl FixtureRunner {
         let trace_ppc_import_hist = ppc_import_hist_enabled();
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
-        let Some(mut ppc_app) = self.ppc_app.take() else {
+        let Some(mut native_context) = self.native.take(NativeEngineRole::Application) else {
             return;
         };
+        let mut ppc_app = native_context.adapter_mut();
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while fired_count < 16 {
@@ -7726,11 +7734,13 @@ impl FixtureRunner {
         }
         self.persist_ppc_vfs_to_host(&mut ppc_app);
         self.service_ppc_sound_adapter(&mut ppc_app);
-        self.ppc_app = Some(ppc_app);
+        self.native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     fn fire_pending_ppc_sound_completions(&mut self) {
-        let Some(ppc_app) = self.ppc_app.as_ref() else {
+        let Some(ppc_app) = self.native.application() else {
             return;
         };
         // Playback and its exhaustion boundary remain process Sound Manager
@@ -7761,9 +7771,10 @@ impl FixtureRunner {
         let trace_ppc_import_hist = ppc_import_hist_enabled();
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
-        let Some(mut ppc_app) = self.ppc_app.take() else {
+        let Some(mut native_context) = self.native.take(NativeEngineRole::Application) else {
             return;
         };
+        let mut ppc_app = native_context.adapter_mut();
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while fired_count < 16 {
@@ -7902,7 +7913,9 @@ impl FixtureRunner {
         }
         self.persist_ppc_vfs_to_host(&mut ppc_app);
         self.service_ppc_sound_adapter(&mut ppc_app);
-        self.ppc_app = Some(ppc_app);
+        self.native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     fn persist_ppc_vfs_to_host(&mut self, ppc_app: &mut PpcLoadedApp) {
@@ -12014,7 +12027,7 @@ mod tests {
         assert_eq!(runner.bus.read_long(addr::TICKS), 4321);
         assert_eq!(runner.guest_tick(), 4321);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(
             ppc_app
                 .memory
@@ -12059,7 +12072,7 @@ mod tests {
         assert_eq!(runner.bus.read_long(addr::TICKS), 0);
         assert_eq!(runner.guest_tick(), 0);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1020_3040);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(0));
         assert_eq!(
             ppc_app.memory.read_u32_be(addr::RND_SEED),
@@ -12086,7 +12099,7 @@ mod tests {
 
         assert_eq!(runner.bus.read_long(addr::TICKS), 4321);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(4321));
         assert_eq!(
             ppc_app.memory.read_u32_be(addr::RND_SEED),
@@ -12113,7 +12126,7 @@ mod tests {
         assert_eq!(runner.bus.read_long(addr::TICKS), 0);
         assert_eq!(runner.guest_tick(), 0);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1020_3040);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(
             ppc_app
                 .memory
@@ -12178,7 +12191,7 @@ mod tests {
                 queue.menu_bar_is_invalid(),
                 "menu_bar_invalid should be true when context was true"
             );
-            let native_queue = &runner.ppc_app.as_ref().unwrap().event_queue;
+            let native_queue = &runner.native.application().unwrap().event_queue;
             assert_eq!(native_queue.len(), 2);
             assert_eq!(native_queue[0].message, 0x1111);
             assert_eq!(native_queue[1].message, 0x2222);
@@ -12229,7 +12242,7 @@ mod tests {
                 queue.menu_bar_is_invalid(),
                 "menu_bar_invalid should be true when detached PPC was true"
             );
-            let native_queue = &runner.ppc_app.as_ref().unwrap().event_queue;
+            let native_queue = &runner.native.application().unwrap().event_queue;
             assert_eq!(native_queue.len(), 2);
             assert_eq!(native_queue[0].message, 0x3333);
             assert_eq!(native_queue[1].message, 0x4444);
@@ -12250,7 +12263,7 @@ mod tests {
 
         runner.init_app(&app);
 
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         let detached = ppc_app.window_list.clone();
         assert_eq!(&*ppc_app.window_list, &[0x1000, 0x2000]);
         ppc_app.window_list.insert(0, 0x3000);
@@ -12288,7 +12301,7 @@ mod tests {
         assert!(running);
         assert_eq!(runner.bus.read_long(addr::TICKS), 42);
         assert_eq!(runner.guest_tick(), 42);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(
             ppc_app
                 .memory
@@ -12322,8 +12335,8 @@ mod tests {
         assert_eq!(runner.bus.read_long(addr::TICKS), 9_001);
         assert_eq!(
             runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .expect("PPC app installed")
                 .memory
                 .read_u32_be(addr::TICKS),
@@ -12384,8 +12397,8 @@ mod tests {
         assert_eq!(runner.guest_tick(), DIRECT_TICKS);
         assert_eq!(
             runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .expect("PPC app installed")
                 .memory
                 .read_u32_be(addr::TICKS),
@@ -12460,7 +12473,7 @@ mod tests {
             let expected_tick = direct_tick.wrapping_add(1);
             assert_eq!(runner.guest_tick(), expected_tick);
             assert_eq!(runner.bus.read_long(addr::TICKS), expected_tick);
-            let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+            let ppc_app = runner.native.application_mut().expect("PPC app installed");
             assert_eq!(
                 ppc_app.memory.read_u32_be(addr::TICKS),
                 Some(expected_tick),
@@ -12543,7 +12556,7 @@ mod tests {
                 assert_eq!(runner.bus.read_long(addr::TICKS), expected_tick);
             }
 
-            let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+            let ppc_app = runner.native.application_mut().expect("PPC app installed");
             for (task_offset, epoch) in [(0, 1), (0x20, 2), (0x40, 3)] {
                 let task_ptr = TASK_BASE + task_offset;
                 assert_eq!(ppc_app.memory.read_u16_be(task_ptr + 10), Some(0));
@@ -12588,7 +12601,11 @@ mod tests {
         assert!(first_result.is_some_and(|result| result.is_ok()));
         assert_eq!(runner.bus.read_long(sp), first);
 
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app installed");
+        let ppc_app = native_context.adapter_mut();
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(first));
 
         // Write through the native view between ABI calls. The shared low
@@ -12644,7 +12661,7 @@ mod tests {
         assert!(running);
         assert_eq!(runner.bus.read_long(addr::TICKS), 60);
         assert_eq!(runner.bus.read_long(addr::TIME), 0x1020_3041);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(60));
         assert_eq!(ppc_app.memory.read_u32_be(addr::TIME), Some(0x1020_3041));
     }
@@ -12714,7 +12731,7 @@ mod tests {
 
         assert!(running);
         assert_eq!(runner.bus.read_long(addr::TICKS), 42);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(ppc_app.memory.read_u32_be(CALLBACK_TICK), Some(42));
     }
 
@@ -12733,7 +12750,11 @@ mod tests {
         runner.set_app_start_time(0x1020_3040);
         runner.set_optional_launch_state(Some(41), None, None);
         runner.init_app(&app);
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app installed");
+        let mut ppc_app = native_context.adapter_mut();
         ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
 
         for (index, count) in [1u16, 2].into_iter().enumerate() {
@@ -12822,7 +12843,7 @@ mod tests {
         let (steps, running) = runner.run_steps(1, None);
         assert_eq!(steps, 1);
         assert!(running);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         assert_eq!(
             ppc_app.memory.read_u32_be(addr::RND_SEED),
             Some(0x89AB_CDEF)
@@ -12843,7 +12864,11 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.set_optional_launch_state(None, Some(1), None);
         runner.init_app(&app);
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app installed");
+        let ppc_app = native_context.adapter_mut();
 
         for (address, ppc_value, runner_value) in [
             (addr::RND_SEED, 0x1234_5678, 0x89ab_cdef),
@@ -12912,7 +12937,11 @@ mod tests {
             ]
         );
 
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app installed");
+        let ppc_app = native_context.adapter_mut();
         ppc_app
             .memory
             .write_u32_be(FIRST_HOLE, 0x0102_0304)
@@ -12942,7 +12971,11 @@ mod tests {
             .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app installed");
+        let ppc_app = native_context.adapter_mut();
 
         assert_eq!(
             runner.bus.read_word(addr::SYS_EVT_MASK),
@@ -14256,7 +14289,7 @@ mod tests {
             0x2000,
             0x3000,
         );
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        let ppc_app = runner.native.application_mut().expect("PPC app");
         assert_eq!(ppc_app.guest_calls.len(), 1);
         assert!(ppc_app.guest_calls.complete_m68k(0x2002, 0x3000));
         assert!(runner.dispatcher.guest_calls.is_empty());
@@ -14269,7 +14302,7 @@ mod tests {
         runner.init_app(&app);
 
         {
-            let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+            let ppc_app = runner.native.application_mut().expect("PPC app");
             assert!(ppc_app
                 .sound
                 .manager
@@ -14297,7 +14330,7 @@ mod tests {
             .sound_manager
             .set_sys_beep_volume(0x0000_2000);
 
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app");
+        let ppc_app = runner.native.application().expect("PPC app");
         assert_eq!(ppc_app.sound.manager.default_output_volume(), 0x0000_8000);
         assert_eq!(ppc_app.sound.manager.sys_beep_volume(), 0x0000_2000);
         assert!(ppc_app
@@ -14326,8 +14359,8 @@ mod tests {
         assert_eq!(runner.dispatcher.current_resource_refnum(), 5);
         assert_eq!(
             runner
-                .ppc_app
-                .as_ref()
+                .native
+                .application()
                 .expect("PPC app")
                 .current_resource_refnum(),
             5
@@ -14338,8 +14371,8 @@ mod tests {
             .set_current_resource_refnum(&mut runner.bus, 9);
         assert_eq!(
             runner
-                .ppc_app
-                .as_ref()
+                .native
+                .application()
                 .expect("PPC app")
                 .current_resource_refnum(),
             9
@@ -14347,17 +14380,17 @@ mod tests {
         assert_eq!(runner.bus.read_word(0x0A5A), 9);
 
         runner
-            .ppc_app
-            .as_mut()
+            .native
+            .application_mut()
             .expect("PPC app")
             .set_current_resource_refnum(5);
         assert_eq!(runner.dispatcher.current_resource_refnum(), 5);
         assert_eq!(runner.bus.read_word(0x0A5A), 5);
 
-        let mut detached = runner.ppc_app.as_ref().expect("PPC app").clone();
+        let mut detached = runner.native.application().expect("PPC app").clone();
         runner
-            .ppc_app
-            .as_mut()
+            .native
+            .application_mut()
             .expect("PPC app")
             .set_current_resource_refnum(9);
         assert_eq!(detached.current_resource_refnum(), 5);
@@ -14366,8 +14399,8 @@ mod tests {
         assert_eq!(runner.bus.read_word(0x0A5A), 9);
 
         runner
-            .ppc_app
-            .as_mut()
+            .native
+            .application_mut()
             .expect("PPC app")
             .set_current_resource_refnum(5);
         assert!(runner
@@ -14387,7 +14420,7 @@ mod tests {
             .dispatcher
             .pending_native_menu_selection
             .stage((128, 2)));
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        let ppc_app = runner.native.application_mut().expect("PPC app");
         assert_eq!(
             ppc_app
                 .toolbox_startup
@@ -14434,7 +14467,7 @@ mod tests {
         runner.init_app(&app);
 
         let framebuffer_before = {
-            let native = runner.ppc_app.as_mut().expect("native app");
+            let native = runner.native.application_mut().expect("native app");
             let front = native.current_front_buffer().expect("front buffer");
             let mut framebuffer = Vec::with_capacity((front.row_bytes * front.height) as usize);
             let mut row = vec![0; front.row_bytes as usize];
@@ -14448,8 +14481,8 @@ mod tests {
         };
         assert_ne!(
             runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .unwrap()
                 .memory
                 .read_u32_be(root_record + 10)
@@ -14486,8 +14519,8 @@ mod tests {
                 "native MenuSelect halted during the 68k MDEF callback"
             );
             let callback_value = runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .unwrap()
                 .memory
                 .read_u32_be(callback_marker);
@@ -14504,8 +14537,8 @@ mod tests {
         assert_eq!(tracking.menu_handle, root_menu);
         assert_eq!(
             runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .unwrap()
                 .memory
                 .read_u32_be(root_menu),
@@ -14514,8 +14547,8 @@ mod tests {
         );
         assert_eq!(
             runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .unwrap()
                 .memory
                 .read_u32_be(root_record + 10)
@@ -14557,7 +14590,10 @@ mod tests {
         assert!(runner.process_context.menu_tracking().is_none());
         assert!(runner.dispatcher.guest_calls.is_empty());
 
-        let native = runner.ppc_app.as_mut().expect("native app retained");
+        let native = runner
+            .native
+            .application_mut()
+            .expect("native app retained");
         assert_eq!(native.cpu.gpr[3], 0, "disabled rows cannot be selected");
         let framebuffer_after = {
             let front = native.current_front_buffer().expect("front buffer");
@@ -14665,8 +14701,8 @@ mod tests {
                 "native MenuSelect halted during the growing 68k callback"
             );
             runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .unwrap()
                 .memory
                 .read_u32_be(callback_marker)
@@ -14678,7 +14714,10 @@ mod tests {
             "the growing real 68k MDEF callback did not return"
         );
 
-        let native = runner.ppc_app.as_mut().expect("native app retained");
+        let native = runner
+            .native
+            .application_mut()
+            .expect("native app retained");
         let relocated_record = native
             .memory
             .read_u32_be(root_menu)
@@ -14748,7 +14787,7 @@ mod tests {
         assert!(runner.process_context.menu_tracking().is_none());
         assert!(runner.dispatcher.guest_calls.is_empty());
         assert_eq!(
-            runner.ppc_app.as_ref().unwrap().cpu.gpr[3],
+            runner.native.application().unwrap().cpu.gpr[3],
             (u32::from(ROOT_MENU_ID as u16) << 16) | u32::from(TARGET_ITEM as u16),
             "native MenuSelect must continue and return the live regular row"
         );
@@ -14767,7 +14806,7 @@ mod tests {
         runner.set_launch_state(41, 1, 0);
         runner.init_app(&app);
 
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        let ppc_app = runner.native.application_mut().expect("PPC app");
         ppc_app.memory.add_region(
             M68K_ENTRY,
             vec![
@@ -14809,7 +14848,7 @@ mod tests {
         assert!(running);
         assert!(!runner.is_halted());
         assert!(runner.dispatcher.guest_calls.is_empty());
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        let ppc_app = runner.native.application_mut().expect("PPC app retained");
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(41));
         assert_eq!(ppc_app.cpu.gpr[3], 41);
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
@@ -14830,7 +14869,7 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
 
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        let ppc_app = runner.native.application_mut().expect("PPC app");
         ppc_app.memory.add_region(
             M68K_ENTRY,
             vec![
@@ -14873,7 +14912,7 @@ mod tests {
 
         assert!(running);
         assert!(runner.dispatcher.guest_calls.is_empty());
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
+        let ppc_app = runner.native.application().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.gpr[3], MARKER);
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
     }
@@ -14938,7 +14977,7 @@ mod tests {
         assert!(running);
         assert!(!runner.is_halted());
         assert!(runner.dispatcher.guest_calls.is_empty());
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        let ppc_app = runner.native.application_mut().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.gpr[3], 1);
         assert_eq!(ppc_app.memory.read_u16_be(OUTPUTS), Some(0x1111));
@@ -15069,7 +15108,7 @@ mod tests {
         assert!(running);
         assert!(!runner.is_halted());
         assert!(runner.dispatcher.guest_calls.is_empty());
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        let ppc_app = runner.native.application_mut().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.gpr[3], ARGUMENT + 7);
         assert_eq!(
@@ -15334,7 +15373,7 @@ mod tests {
         assert!(!runner.is_halted());
         assert!(runner.dispatcher.guest_calls.is_empty());
         assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
+        let ppc_app = runner.native.application().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.gpr[3], u32::from(TRAP));
     }
@@ -15604,7 +15643,7 @@ mod tests {
         assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
         assert!(runner.dispatcher.guest_calls.is_empty());
         assert!(runner.m68k.parked.is_empty());
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
+        let ppc_app = runner.native.application().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         // The outer routine has a void ProcInfo, so its internal callback's
         // transient R3 value must not leak into the parked native caller.
@@ -15803,9 +15842,7 @@ mod tests {
                 runner.m68k.cpu.read_reg(Register::A7),
                 runner.dispatcher.guest_calls.len(),
                 runner.m68k.parked.len(),
-                runner
-                    .ppc_app
-                    .as_ref()
+                runner.native.application()
                     .map_or(0, |ppc_app| ppc_app.cpu.pc),
             );
             maximum_parked = maximum_parked.max(runner.m68k.parked.len());
@@ -15816,11 +15853,18 @@ mod tests {
             }
             if !checked_wrong_boundary && !runner.m68k.parked.is_empty() {
                 let frame_count = runner.dispatcher.guest_calls.len();
-                let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+                let mut native_context = runner
+                    .native
+                    .take(NativeEngineRole::Application)
+                    .expect("PPC app");
+                let mut ppc_app = native_context.adapter_mut();
                 assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
                 assert_eq!(runner.m68k.parked.len(), 1);
                 assert_eq!(ppc_app.guest_calls.len(), frame_count);
-                runner.ppc_app = Some(ppc_app);
+                runner
+                    .native
+                    .restore(native_context)
+                    .unwrap_or_else(|_| panic!("native context lost its owner"));
                 checked_wrong_boundary = true;
             }
             if runner.dispatcher.guest_calls.is_empty() {
@@ -15834,7 +15878,7 @@ mod tests {
         assert!(runner.m68k.parked.is_empty());
         assert!(runner.dispatcher.guest_calls.is_empty());
         assert_eq!(runner.m68k.cpu.core.d(6), OUTER_D6);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        let ppc_app = runner.native.application_mut().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.gpr[3], ARGUMENT + 14);
         assert_eq!(
@@ -15860,7 +15904,11 @@ mod tests {
             0x0010_1000,
             Some(crate::guest_call::M68kResultTarget::Ccr { mask: 0x04 }),
         ));
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app");
+        let mut ppc_app = native_context.adapter_mut();
         let return_pc = 0x01f0_4000;
         ppc_app
             .guest_calls
@@ -15878,7 +15926,10 @@ mod tests {
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x0010_0000);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_1000);
         assert!(ppc_app.guest_calls.is_empty());
-        runner.ppc_app = Some(ppc_app);
+        runner
+            .native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     #[test]
@@ -15889,7 +15940,11 @@ mod tests {
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app");
+        let ppc_app = native_context.adapter_mut();
         ppc_app.memory.add_region(SCRATCH, vec![0; 8]);
 
         runner.m68k.cpu.core.set_ccr(0x13);
@@ -16007,7 +16062,10 @@ mod tests {
             SCRATCH,
             0
         ));
-        runner.ppc_app = Some(ppc_app);
+        runner
+            .native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     #[test]
@@ -16019,7 +16077,11 @@ mod tests {
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app");
+        let ppc_app = native_context.adapter_mut();
         ppc_app.memory.add_region(SCRATCH, vec![0; 0x100]);
         let arguments = |values: &[u32]| PowerPcArguments::from_slice(values).unwrap();
 
@@ -16216,7 +16278,10 @@ mod tests {
             ),
             Err(()),
         );
-        runner.ppc_app = Some(ppc_app);
+        runner
+            .native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     #[test]
@@ -16233,7 +16298,11 @@ mod tests {
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app");
+        let ppc_app = native_context.adapter_mut();
         ppc_app.cpu.gpr[3] = NATIVE_R3;
         let arguments = PowerPcArguments::from_slice(&[0, 0]).unwrap();
         assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
@@ -16345,7 +16414,8 @@ mod tests {
             let app = halted_ppc_app_with_sound(PpcSoundState::default());
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
             runner.init_app(&app);
-            let mut ppc_app = runner.ppc_app.take().unwrap();
+            let mut native_context = runner.native.take(NativeEngineRole::Application).unwrap();
+            let mut ppc_app = native_context.adapter_mut();
             assert!(ppc_app.guest_calls.begin_m68k_to_powerpc(
                 crate::guest_call::GuestCallTarget {
                     isa: crate::guest_procedure::GuestIsa::PowerPc,
@@ -16412,7 +16482,11 @@ mod tests {
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app");
+        let mut ppc_app = native_context.adapter_mut();
         assert!(ppc_app.guest_calls.begin_m68k_to_powerpc(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::PowerPc,
@@ -16527,7 +16601,7 @@ mod tests {
         assert_eq!(runner.guest_tick(), initial_tick);
         assert_eq!(runner.guest_tick(), initial_tick);
         assert_eq!(runner.dispatcher.screen_event_count, initial_screen_events);
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
+        let ppc_app = runner.native.application().expect("PPC app retained");
         assert_eq!(ppc_app.vbl_tasks.len(), 1);
         assert_eq!(ppc_app.timer_tasks[0].last_fired_tick, None);
         assert_eq!(ppc_app.sound.manager.pending_sound_callbacks.len(), 1);
@@ -16652,7 +16726,7 @@ mod tests {
 
         fire_callbacks(&mut runner);
 
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        let ppc_app = runner.native.application_mut().expect("PPC app");
         assert_eq!(
             ppc_app.memory.read_u16_be(PPC_SOUND_EVENT_RECORD + 10),
             Some(120)
@@ -16732,7 +16806,7 @@ mod tests {
             .back()
             .expect("mouseDown");
         assert_eq!((event.where_v, event.where_h), (12, 34));
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app");
+        let ppc_app = runner.native.application().expect("PPC app");
         let native_event = ppc_app.event_queue.back().expect("shared mouseDown");
         assert_eq!((native_event.where_v, native_event.where_h), (12, 34));
         assert_eq!(runner.bus.read_word(addr::M_TEMP), 12);
@@ -16768,7 +16842,7 @@ mod tests {
 
         // The attached PPC adapter observes and mutates the canonical queue directly.
         {
-            let app = runner.ppc_app.as_mut().unwrap();
+            let app = runner.native.application_mut().unwrap();
             assert_eq!(app.event_queue.len(), 1);
             let event = app.event_queue.pop_front().unwrap();
             assert_eq!((event.where_v, event.where_h), (10, 20));
@@ -16830,7 +16904,7 @@ mod tests {
         runner.fire_pending_ppc_sound_doublebacks();
 
         assert!(!runner.is_halted());
-        let sound = &runner.ppc_app.as_ref().expect("PPC app").sound;
+        let sound = &runner.native.application().expect("PPC app").sound;
         assert!(sound.manager.pending_process_doublebacks.is_empty());
         let invocation = sound
             .completion_invocations
@@ -16899,7 +16973,10 @@ mod tests {
         runner.mix_audio(SAMPLES.len());
 
         assert_eq!(runner.drain_audio(), SAMPLES);
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
         let mut memory = ppc_app.memory.clone();
         assert_eq!(memory.read_u32_be(BUFFER), Some(SAMPLES.len() as u32));
         assert_eq!(memory.read_u32_be(BUFFER + 4), Some(0x04));
@@ -16948,8 +17025,8 @@ mod tests {
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x89ab_cdef);
         assert_eq!(
             runner
-                .ppc_app
-                .as_mut()
+                .native
+                .application_mut()
                 .expect("PPC app")
                 .memory
                 .read_u32_be(addr::RND_SEED),
@@ -16993,7 +17070,7 @@ mod tests {
 
         assert_eq!(runner.bus.read_long(addr::TICKS), 43);
         assert_eq!(runner.guest_tick(), 43);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        let ppc_app = runner.native.application_mut().expect("PPC app");
         assert_eq!(
             ppc_app
                 .memory
@@ -17307,18 +17384,18 @@ mod tests {
             .as_slice(),
             fork_bytes.as_slice()
         );
-        assert!(!runner.ppc_app.as_ref().unwrap().vfs_files[0].dirty);
-        assert!(!runner.ppc_app.as_ref().unwrap().vfs_directories[0].dirty);
+        assert!(!runner.native.application().unwrap().vfs_files[0].dirty);
+        assert!(!runner.native.application().unwrap().vfs_directories[0].dirty);
         assert!(runner
-            .ppc_app
-            .as_ref()
+            .native
+            .application()
             .unwrap()
             .deleted_vfs_file_paths
             .is_empty());
-        assert!(!runner.ppc_app.as_ref().unwrap().vfs_resource_files[0].dirty);
+        assert!(!runner.native.application().unwrap().vfs_resource_files[0].dirty);
 
         let prefs_path = "System Folder/Preferences/Test App Prefs";
-        runner.ppc_app.as_mut().unwrap().vfs_files[0]
+        runner.native.application_mut().unwrap().vfs_files[0]
             .data
             .extend_from_slice(b"-native");
         assert_eq!(
@@ -17333,7 +17410,7 @@ mod tests {
             .get_mut(prefs_path)
             .unwrap()
             .extend_from_slice(b"-classic");
-        let native_file = &runner.ppc_app.as_ref().unwrap().vfs_files[0];
+        let native_file = &runner.native.application().unwrap().vfs_files[0];
         let classic_file = runner.dispatcher().vfs.get_shared(prefs_path).unwrap();
         assert!(native_file.data.ptr_eq(classic_file));
         assert_eq!(native_file.data.as_slice(), b"prefs-native-classic");
@@ -17407,8 +17484,8 @@ mod tests {
         assert_eq!(channel.debug_double_buffer_non_silent_frames, 3);
         assert_eq!(channel.debug_double_buffer_captured_samples, expected);
         let playback = runner
-            .ppc_app
-            .as_ref()
+            .native
+            .application()
             .expect("PPC app should stay loaded")
             .sound
             .manager
@@ -17551,7 +17628,10 @@ mod tests {
         assert_eq!(runner.drain_audio(), samples);
         assert_eq!(runner.dispatcher().sound_manager.debug_file_play_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
         assert_eq!(ppc_app.sound.manager.file_playback_paused(channel), None);
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         let mut memory = ppc_app.memory.clone();
@@ -17654,7 +17734,10 @@ mod tests {
         assert_eq!(steps, 1);
         assert!(running);
         {
-            let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+            let ppc_app = runner
+                .native
+                .application()
+                .expect("PPC app should stay loaded");
             assert_eq!(
                 ppc_app.sound.manager.file_playback_paused(channel),
                 Some(false)
@@ -17670,7 +17753,10 @@ mod tests {
         assert_eq!(runner.guest_tick(), 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_file_play_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 0);
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
         assert_eq!(
             ppc_app.sound.manager.file_playback_paused(channel),
             Some(false)
@@ -17681,7 +17767,10 @@ mod tests {
         assert_eq!(steps, 1);
         assert!(running);
         assert_eq!(runner.drain_audio(), samples);
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
         assert_eq!(ppc_app.sound.manager.file_playback_paused(channel), None);
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         let mut memory = ppc_app.memory.clone();
@@ -17740,7 +17829,10 @@ mod tests {
         runner.init_app(&app);
 
         runner.mix_host_audio(samples.len());
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
         assert_eq!(
             ppc_app.sound.manager.file_playback_paused(channel),
             Some(true)
@@ -17753,7 +17845,10 @@ mod tests {
         );
         runner.mix_host_audio(samples.len());
 
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
         assert_eq!(ppc_app.sound.manager.file_playback_paused(channel), None);
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         assert!(ppc_app.sound.completion_invocations.is_empty());
@@ -17771,8 +17866,8 @@ mod tests {
         runner.init_app(&app);
 
         runner
-            .ppc_app
-            .as_mut()
+            .native
+            .application_mut()
             .expect("PPC app installed")
             .memory
             .write_u16_be(crate::memory::globals::addr::SYS_EVT_MASK, 0xffdf)
@@ -17797,7 +17892,7 @@ mod tests {
         data[0] = 0x80;
         let mut mask = [0; 32];
         mask[0] = 0xc0;
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let ppc_app = runner.native.application_mut().expect("PPC app installed");
         ppc_app
             .cursor_state
             .install(crate::display::CursorImage::mono(data, mask, 3, 4));
@@ -17810,8 +17905,8 @@ mod tests {
         runner.dispatcher.cursor_state.show();
         assert_eq!(
             runner
-                .ppc_app
-                .as_ref()
+                .native
+                .application()
                 .expect("PPC app installed")
                 .cursor_level(),
             0
@@ -17989,7 +18084,10 @@ mod tests {
 
         assert!(!running);
         assert_eq!(steps, 2);
-        let ppc_app = runner.ppc_app.as_mut().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application_mut()
+            .expect("PPC app should stay loaded");
         assert_eq!(ppc_app.memory.read_u8(key_map_ptr), Some(0x01));
         assert_eq!(ppc_app.memory.read_u8(key_map_ptr + 6), Some(0x02));
         assert_eq!(ppc_app.memory.read_u8(key_map_ptr + 15), Some(0x08));
@@ -18599,7 +18697,11 @@ mod tests {
             u32::from(crate::display::classic_depth_mode(depth).unwrap())
         );
 
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app should stay loaded");
+        let mut native_context = runner
+            .native
+            .take(NativeEngineRole::Application)
+            .expect("PPC app should stay loaded");
+        let mut ppc_app = native_context.adapter_mut();
         ppc_app.draw_sprocket.last_fade_percent = Some(0);
         ppc_app.draw_sprocket.last_fade_zero_color = None;
         assert_eq!(ppc_app.memory.read_u16_be(presented_base), Some(0x7c00));
@@ -18611,7 +18713,10 @@ mod tests {
         assert_eq!(runner.bus.read_word(host_base + 2), 0x0000);
         assert_eq!(ppc_app.memory.read_u16_be(presented_base), Some(0x7c00));
         assert_eq!(ppc_app.memory.read_u16_be(presented_base + 2), Some(0x03e0));
-        runner.ppc_app = Some(ppc_app);
+        runner
+            .native
+            .restore(native_context)
+            .unwrap_or_else(|_| panic!("native context lost its owner"));
     }
 
     #[test]
@@ -18854,7 +18959,10 @@ mod tests {
             runner.bus.read_word(host_base + 4 * row_bytes + 4 * 2),
             0x4210 // Default diffuse grey, quantized to the 16-bit front buffer.
         );
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let ppc_app = runner
+            .native
+            .application()
+            .expect("PPC app should stay loaded");
         assert!(ppc_app.q3_completed_frames.is_empty());
         assert_eq!(runner.q3_completed_frame_index, 1);
     }
