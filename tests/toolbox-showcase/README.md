@@ -15,7 +15,9 @@ test protocol. Its Pages menu selects fifteen interactive views:
    text.
 2. Controls exercises a push button, checkbox, and scroll bar. Successful
    actions appear as checkmarks in the State menu.
-3. Windows creates an auxiliary document window; leaving the page disposes it.
+3. Windows creates three visibly overlapping document windows; the scripted
+   contract activates, moves, resizes, hit-tests, and closes them while
+   checking Window Manager order and repaint state.
 4. Drawing & 3D Bevels exercises polygons, arcs, regions, pictures, icons,
    fonts, styles, and metrics. The PowerPC slice also builds and submits a lit
    QuickDraw 3D TriMesh through a view, camera, renderer, and draw context,
@@ -124,8 +126,18 @@ exact Systemless framebuffer references while performing the same sequence:
    main window.
 2. Choose Controls (item 2), then click the button, checkbox, and right scroll
    arrow. State menu 130 items 1–3 must become checked.
-3. Choose Windows (item 3). A second window must appear and State item 4 must
-   become checked.
+3. Choose Windows (item 3). Two overlapping document windows must appear and
+   State item 4 must become checked. The semantic Window Manager checkpoint
+   records the front-to-back stack, active window, port/structure geometry,
+   visible regions, and empty update regions after repaint. Probe the overlap,
+   activate the auxiliary document, drag its title bar, resize it with the
+   grow box, and then activate the inspector through an exposed region. Close
+   the inspector and the promoted auxiliary document in turn; each close must
+   promote the predecessor and repaint the newly exposed content. The
+   deterministic Systemless frames are `03-windows.png`,
+   `03-windows-aux-activated.png`, `03-windows-moved.png`,
+   `03-windows-resized.png`, `03-windows-hit-test.png`,
+   `03-windows-promoted.png`, and `03-windows-main-promoted.png`.
 4. Choose Drawing & 3D Bevels (item 4), verify representative QuickDraw
    output, and allow the native PowerPC QuickDraw 3D submission to complete.
 5. Choose Game Preferences (item 5), change its controls, verify the matching
@@ -266,7 +278,13 @@ indexed paths.
 | --- | --- | --- |
 | 1. Graphics | <img src="reference/systemless-68k/01-graphics.png" alt="Graphics page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/01-graphics.png" alt="Graphics page in BasiliskII running the 68K slice" width="360"> |
 | 2. Controls and State menu | <img src="reference/systemless-68k/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/02-controls.png" alt="Interacted Controls page and State menu in BasiliskII" width="360"> |
-| 3. Windows | <img src="reference/systemless-68k/03-windows.png" alt="Windows page and auxiliary window in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows.png" alt="Windows page and auxiliary window in BasiliskII" width="360"> |
+| 3. Windows | <img src="reference/systemless-68k/03-windows.png" alt="Windows page with three overlapping windows in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows.png" alt="Windows page with overlapping windows in BasiliskII" width="360"> |
+| 3a. Auxiliary activated | <img src="reference/systemless-68k/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in BasiliskII" width="360"> |
+| 3b. Auxiliary moved | <img src="reference/systemless-68k/03-windows-moved.png" alt="Moved auxiliary window with the inspector still overlapping in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows-moved.png" alt="Moved auxiliary window with the inspector still overlapping in BasiliskII" width="360"> |
+| 3c. Auxiliary resized | <img src="reference/systemless-68k/03-windows-resized.png" alt="Resized auxiliary window with a repaint-complete overlap in Systemless running the 68K slice" width="360"> | — |
+| 3d. Inspector hit-test | <img src="reference/systemless-68k/03-windows-hit-test.png" alt="Inspector activated through an exposed hit-test region in Systemless running the 68K slice" width="360"> | — |
+| 3e. Inspector disposed | <img src="reference/systemless-68k/03-windows-promoted.png" alt="Auxiliary window promoted after closing the inspector in Systemless running the 68K slice" width="360"> | — |
+| 3f. Main promoted | <img src="reference/systemless-68k/03-windows-main-promoted.png" alt="Main window promoted after closing both auxiliary windows in Systemless running the 68K slice" width="360"> | — |
 | 4. Drawing and 3D fallback | <img src="reference/systemless-68k/04-drawing.png" alt="QuickDraw drawing and 68K bevel fallback in Systemless" width="360"> | <img src="reference/basiliskii-68k/04-drawing.png" alt="QuickDraw drawing and 68K bevel fallback in BasiliskII" width="360"> |
 | 5. Game preferences | <img src="reference/systemless-68k/05-preferences.png" alt="Changed game preferences in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/05-preferences.png" alt="Changed game preferences in BasiliskII" width="360"> |
 | 6. Nested menus | <img src="reference/systemless-68k/06-nested-menus.png" alt="File and nested Game Options menus in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/06-nested-menus.png" alt="File and nested Game Options menus in BasiliskII" width="360"> |
@@ -304,7 +322,13 @@ indexed paths.
 | --- | --- | --- |
 | 1. Graphics | <img src="reference/systemless-ppc/01-graphics.png" alt="Graphics page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/01-graphics.png" alt="Graphics page in SheepShaver running the PowerPC slice" width="360"> |
 | 2. Controls and State menu | <img src="reference/systemless-ppc/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/02-controls.png" alt="Interacted Controls page and State menu in SheepShaver" width="360"> |
-| 3. Windows | <img src="reference/systemless-ppc/03-windows.png" alt="Windows page and auxiliary window in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows.png" alt="Windows page and auxiliary window in SheepShaver" width="360"> |
+| 3. Windows | <img src="reference/systemless-ppc/03-windows.png" alt="Windows page with three overlapping windows in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows.png" alt="Windows page with overlapping windows in SheepShaver" width="360"> |
+| 3a. Auxiliary activated | <img src="reference/systemless-ppc/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in SheepShaver" width="360"> |
+| 3b. Auxiliary moved | <img src="reference/systemless-ppc/03-windows-moved.png" alt="Moved auxiliary window with the inspector still overlapping in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows-moved.png" alt="Moved auxiliary window with the inspector still overlapping in SheepShaver" width="360"> |
+| 3c. Auxiliary resized | <img src="reference/systemless-ppc/03-windows-resized.png" alt="Resized auxiliary window with a repaint-complete overlap in Systemless running the PowerPC slice" width="360"> | — |
+| 3d. Inspector hit-test | <img src="reference/systemless-ppc/03-windows-hit-test.png" alt="Inspector activated through an exposed hit-test region in Systemless running the PowerPC slice" width="360"> | — |
+| 3e. Inspector disposed | <img src="reference/systemless-ppc/03-windows-promoted.png" alt="Auxiliary window promoted after closing the inspector in Systemless running the PowerPC slice" width="360"> | — |
+| 3f. Main promoted | <img src="reference/systemless-ppc/03-windows-main-promoted.png" alt="Main window promoted after closing both auxiliary windows in Systemless running the PowerPC slice" width="360"> | — |
 | 4. Drawing and QuickDraw 3D | <img src="reference/systemless-ppc/04-drawing.png" alt="Shared QuickDraw drawing result after a native QuickDraw 3D submission in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/04-drawing.png" alt="Shared QuickDraw drawing result after a native QuickDraw 3D submission in SheepShaver" width="360"> |
 | 5. Game preferences | <img src="reference/systemless-ppc/05-preferences.png" alt="Changed game preferences in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/05-preferences.png" alt="Changed game preferences in SheepShaver" width="360"> |
 | 6. Nested menus | <img src="reference/systemless-ppc/06-nested-menus.png" alt="File and nested Game Options menus in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/06-nested-menus.png" alt="File and nested Game Options menus in SheepShaver" width="360"> |
@@ -337,9 +361,13 @@ indexed paths.
 | 33. Final visible cursor | <img src="reference/systemless-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all thirty-three rendered
-frames. To review and accept an intentional rendering change, regenerate the
-Systemless sources and inspect the resulting PNG diff before committing it:
+state rather than relying on fixed delays, and compares all thirty-nine rendered
+frames. The six additional Windows frames are deterministic Systemless
+checkpoints; classic-Mac review also covers activation and movement, while the
+remaining repaint lifecycle is asserted semantically because window chrome and
+rasterization vary between host systems. To review and accept
+an intentional rendering change, regenerate the Systemless sources and inspect
+the resulting PNG diff before committing it:
 
 ```sh
 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase

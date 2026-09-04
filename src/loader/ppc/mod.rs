@@ -18473,18 +18473,54 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::InvalRect => {
             // Macintosh Toolbox Essentials 1992, 4-107: InvalRect adds a
-            // local rectangle to the current window's update region. PPC HLE
-            // presents the current GWorld directly every tick, so there is no
-            // deferred Window Manager update region to mutate here.
+            // local rectangle to the current window's update region. Keep the
+            // region live until the matching EndUpdate, just as the classic
+            // Window Manager does, and post one coalesced updateEvt.
+            let window = *current_gworld;
+            if window != PPC_MAIN_GWORLD {
+                if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                    ppc_invalidate_window_local_rect(memory, window, rect);
+                    ppc_enqueue_window_update_event(event_queue, window, *tick_count, input);
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::ValidRect
-        | PpcImportDispatcherTarget::BeginUpdate
-        | PpcImportDispatcherTarget::EndUpdate => {
-            // Macintosh Toolbox Essentials (1992), pp. 4-107--4-109:
-            // these routines subtract from or bracket a deferred window
-            // update region. PPC HLE presents each current GWorld directly,
-            // so there is no deferred region or temporary visRgn to mutate.
+        PpcImportDispatcherTarget::ValidRect => {
+            // ValidRect removes a local rectangle from the current window's
+            // update region. The HLE stores a bounding box, so only clear it
+            // when the caller validates the complete pending box; partial
+            // validation conservatively keeps the pending invalidation.
+            let window = *current_gworld;
+            if window != PPC_MAIN_GWORLD {
+                if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                    ppc_validate_window_local_rect(memory, window, rect);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::BeginUpdate => {
+            // BeginUpdate makes the supplied window the current drawing port
+            // while preserving its pending update region for guest drawing.
+            let window = cpu.gpr[3];
+            if window != 0 && gworlds.iter().any(|record| record.port == window) {
+                *current_gworld = window;
+                *current_gdevice =
+                    ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::EndUpdate => {
+            // EndUpdate commits the guest's redraw and makes the region
+            // valid. Clearing it here makes updateRgn observable and prevents
+            // stale updateEvt delivery after a successful repaint.
+            let window = cpu.gpr[3];
+            if window != 0 {
+                let update_rgn = memory
+                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+                    .unwrap_or(0);
+                let _ = ppc_set_empty_rgn(memory, update_rgn);
+                event_queue.retain(|event| !(event.what == 6 && event.message == window));
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ClipRect => {
@@ -18979,29 +19015,107 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SizeWindow => {
-            let _ = ppc_size_window(cpu, memory, gworlds);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
+            let window = cpu.gpr[3];
+            let was_visible = ppc_window_is_visible(memory, window);
+            let previous_structure =
+                ppc_window_global_structure_bounds(memory, gworlds, window);
+            if ppc_size_window(cpu, memory, gworlds).is_some() {
+                ppc_recalculate_window_vis_regions(
+                    process_memory_manager,
+                    memory,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                );
+                let next_structure =
+                    ppc_window_global_structure_bounds(memory, gworlds, window);
+                ppc_repaint_window_geometry_transition(
+                    memory,
+                    gworlds,
+                    window_list,
+                    window,
+                    was_visible,
+                    previous_structure,
+                    next_structure,
+                    toolbox_startup.host_menu_bar_hidden,
+                    event_queue,
+                    *tick_count,
+                    input,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MoveWindow => {
-            let _ = ppc_move_window(cpu, memory, gworlds);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
+            let window = cpu.gpr[3];
+            let was_visible = ppc_window_is_visible(memory, window);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
+            let bring_to_front = cpu.gpr[6] != 0;
+            let previous_structure =
+                ppc_window_global_structure_bounds(memory, gworlds, window);
+            if ppc_move_window(cpu, memory, gworlds).is_some() {
+                if bring_to_front {
+                    ppc_reorder_window(gworlds, window_list, window, 0, true);
+                }
+                ppc_recalculate_window_vis_regions(
+                    process_memory_manager,
+                    memory,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                );
+                let next_structure =
+                    ppc_window_global_structure_bounds(memory, gworlds, window);
+                ppc_repaint_window_geometry_transition(
+                    memory,
+                    gworlds,
+                    window_list,
+                    window,
+                    was_visible,
+                    previous_structure,
+                    next_structure,
+                    toolbox_startup.host_menu_bar_hidden,
+                    event_queue,
+                    *tick_count,
+                    input,
+                );
+                ppc_transition_front_window_chrome(
+                    memory,
+                    gworlds,
+                    window_list,
+                    previous_front,
+                    toolbox_startup.host_menu_bar_hidden,
+                );
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                if bring_to_front && next_front == Some(window) {
+                    *current_gworld = window;
+                    *current_gdevice =
+                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+                    ppc_register_gdevice(toolbox_startup, *current_gdevice);
+                    ppc_restore_port_colors(
+                        memory,
+                        *current_gworld,
+                        quickdraw_fore_color,
+                        quickdraw_back_color,
+                    );
+                    let _ = ppc_set_window_hilited(memory, window, true);
+                }
+                if next_front != previous_front {
+                    let _ = ppc_activate_front_window_palette(
+                        memory,
+                        gworlds,
+                        *current_gdevice,
+                        screen_clut,
+                        color_manager_clut,
+                        device_gamma,
+                        *device_gamma_explicit,
+                        toolbox_startup,
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ShowWindow => {
@@ -19161,6 +19275,14 @@ fn dispatch_supported_import(
                 toolbox_startup.last_disposed_dialog = window;
             }
             let previous_front = ppc_front_visible_process_window(memory, window_list);
+            let was_visible = ppc_window_is_visible(memory, window);
+            let exposed = was_visible
+                .then(|| {
+                    memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+                })
+                .flatten();
             if window != 0 {
                 let closed_palette = memory
                     .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
@@ -19204,6 +19326,16 @@ fn dispatch_supported_import(
                         ppc_enqueue_window_update_event(event_queue, *current_gworld, *tick_count, input);
                     }
                 }
+                ppc_restore_window_removal_exposure(
+                    memory,
+                    gworlds,
+                    window_list,
+                    exposed,
+                    toolbox_startup.host_menu_bar_hidden,
+                    event_queue,
+                    *tick_count,
+                    input,
+                );
                 if let Some(pixmap_handle) = closed_pixmap_handle {
                     toolbox_startup
                         .indexed_screen_ctables
@@ -19317,6 +19449,7 @@ fn dispatch_supported_import(
                 gworlds,
                 cpu.gpr[3],
                 cpu.gpr[4],
+                toolbox_startup.host_menu_bar_hidden,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -19334,6 +19467,7 @@ fn dispatch_supported_import(
                 gworlds,
                 cpu.gpr[3],
                 cpu.gpr[4],
+                toolbox_startup.host_menu_bar_hidden,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -51720,6 +51854,241 @@ fn ppc_redraw_visible_window_frame(
     }
 }
 
+fn ppc_window_global_structure_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+) -> Option<(i16, i16, i16, i16)> {
+    let content = ppc_window_global_content_bounds(memory, gworlds, window)?;
+    Some(ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content))
+}
+
+fn ppc_union_bounds(
+    first: Option<(i16, i16, i16, i16)>,
+    second: Option<(i16, i16, i16, i16)>,
+) -> Option<(i16, i16, i16, i16)> {
+    let valid = |rect: (i16, i16, i16, i16)| rect.0 < rect.2 && rect.1 < rect.3;
+    match (first.filter(|rect| valid(*rect)), second.filter(|rect| valid(*rect))) {
+        (Some(first), Some(second)) => Some((
+            first.0.min(second.0),
+            first.1.min(second.1),
+            first.2.max(second.2),
+            first.3.max(second.3),
+        )),
+        (Some(rect), None) | (None, Some(rect)) => Some(rect),
+        (None, None) => None,
+    }
+}
+
+fn ppc_invalidate_window_global_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+    global_rect: (i16, i16, i16, i16),
+) {
+    let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
+        return;
+    };
+    let intersection = (
+        content.0.max(global_rect.0),
+        content.1.max(global_rect.1),
+        content.2.min(global_rect.2),
+        content.3.min(global_rect.3),
+    );
+    if intersection.0 >= intersection.2 || intersection.1 >= intersection.3 {
+        return;
+    }
+    let update_rgn = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+        .unwrap_or(0);
+    if ppc_rgn_ptr(memory, update_rgn).is_none() {
+        return;
+    }
+    let local = (
+        intersection.0.saturating_sub(content.0),
+        intersection.1.saturating_sub(content.1),
+        intersection.2.saturating_sub(content.0),
+        intersection.3.saturating_sub(content.1),
+    );
+    ppc_union_window_update_rect(memory, window, local);
+}
+
+fn ppc_union_window_update_rect(
+    memory: &mut PpcSectionMem,
+    window: u32,
+    rect: (i16, i16, i16, i16),
+) {
+    if rect.0 >= rect.2 || rect.1 >= rect.3 {
+        return;
+    }
+    let update_rgn = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+        .unwrap_or(0);
+    if ppc_rgn_ptr(memory, update_rgn).is_none() {
+        return;
+    }
+    let existing = ppc_read_rgn_bbox(memory, update_rgn).unwrap_or((0, 0, 0, 0));
+    let combined = if existing.0 >= existing.2 || existing.1 >= existing.3 {
+        rect
+    } else {
+        (
+            existing.0.min(rect.0),
+            existing.1.min(rect.1),
+            existing.2.max(rect.2),
+            existing.3.max(rect.3),
+        )
+    };
+    let _ = ppc_write_rgn_bbox(
+        memory,
+        update_rgn,
+        combined.0,
+        combined.1,
+        combined.2,
+        combined.3,
+    );
+}
+
+fn ppc_invalidate_window_local_rect(
+    memory: &mut PpcSectionMem,
+    window: u32,
+    rect: (i16, i16, i16, i16),
+) {
+    let Some(content) = ppc_read_rect(memory, window.wrapping_add(16)) else {
+        return;
+    };
+    let clipped = (
+        rect.0.max(content.0),
+        rect.1.max(content.1),
+        rect.2.min(content.2),
+        rect.3.min(content.3),
+    );
+    ppc_union_window_update_rect(memory, window, clipped);
+}
+
+fn ppc_validate_window_local_rect(
+    memory: &mut PpcSectionMem,
+    window: u32,
+    rect: (i16, i16, i16, i16),
+) {
+    let update_rgn = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+        .unwrap_or(0);
+    let Some(update) = ppc_read_rgn_bbox(memory, update_rgn)
+        .filter(|current| current.0 < current.2 && current.1 < current.3)
+    else {
+        return;
+    };
+    if rect.0 <= update.0 && rect.1 <= update.1 && rect.2 >= update.2 && rect.3 >= update.3 {
+        let _ = ppc_set_empty_rgn(memory, update_rgn);
+    }
+}
+
+fn ppc_repaint_window_geometry_transition(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
+    window: u32,
+    was_visible: bool,
+    previous_structure: Option<(i16, i16, i16, i16)>,
+    next_structure: Option<(i16, i16, i16, i16)>,
+    host_menu_bar_hidden: bool,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    when: u32,
+    input: PpcInputSnapshot,
+) {
+    if !was_visible {
+        return;
+    }
+    let Some(exposed) = ppc_union_bounds(previous_structure, next_structure) else {
+        return;
+    };
+    ppc_restore_window_removal_exposure(
+        memory,
+        gworlds,
+        window_list,
+        Some(exposed),
+        host_menu_bar_hidden,
+        event_queue,
+        when,
+        input,
+    );
+    // Keep the moved/resized window's update region explicit even if its new
+    // structure only touches the transition's edge. EndUpdate clears it
+    // after the guest's updateEvt redraws the visible content.
+    ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
+}
+
+fn ppc_restore_window_removal_exposure(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
+    exposed: Option<(i16, i16, i16, i16)>,
+    host_menu_bar_hidden: bool,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    when: u32,
+    input: PpcInputSnapshot,
+) {
+    let Some(exposed) = exposed.filter(|rect| rect.0 < rect.2 && rect.1 < rect.3) else {
+        return;
+    };
+    let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
+        return;
+    };
+
+    // NewCWindow ports share the screen PixMap. Removing one therefore has
+    // to restore the desktop pixels outside any remaining window before the
+    // exposed windows receive their update events. This is the PowerPC
+    // equivalent of the classic adapter's saved-under-pixels path.
+    let menu_bar_height = if host_menu_bar_hidden {
+        0
+    } else {
+        memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16
+    };
+    let paint = (
+        exposed.0.max(menu_bar_height).max(0),
+        exposed.1.max(0),
+        exposed.2.min(PPC_MAIN_SCREEN_HEIGHT as i16),
+        exposed.3.min(PPC_MAIN_SCREEN_WIDTH as i16),
+    );
+    if paint.0 < paint.2 && paint.1 < paint.3 {
+        for v in i32::from(paint.0)..i32::from(paint.2) {
+            for h in i32::from(paint.1)..i32::from(paint.3) {
+                let color = if host_menu_bar_hidden
+                    || crate::window_manager::standard_desktop_pattern_is_ink(h, v)
+                {
+                    PPC_RGB_BLACK
+                } else {
+                    PPC_RGB_WHITE
+                };
+                let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
+            }
+        }
+    }
+
+    // Repaint every remaining visible window whose structure intersects the
+    // exposed area. The update events let guest code redraw only its visible
+    // content, while redrawing the WDEF here restores title bars and frames.
+    for &window in window_list {
+        if !ppc_window_is_visible(memory, window) {
+            continue;
+        }
+        let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
+            continue;
+        };
+        let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
+        let intersects = structure.0 < exposed.2
+            && exposed.0 < structure.2
+            && structure.1 < exposed.3
+            && exposed.1 < structure.3;
+        if !intersects {
+            continue;
+        }
+        ppc_redraw_visible_window_frame(memory, gworlds, window, host_menu_bar_hidden);
+        ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
+        ppc_enqueue_window_update_event(event_queue, window, when, input);
+    }
+}
+
 fn ppc_sync_process_window_list(memory: &mut PpcSectionMem, window_list: &[u32]) {
     const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
     const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
@@ -52122,6 +52491,7 @@ fn ppc_paint_one(
     gworlds: &[PpcGWorldRecord],
     window: u32,
     clobbered_rgn: u32,
+    host_menu_bar_hidden: bool,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
@@ -52134,6 +52504,7 @@ fn ppc_paint_one(
             gworlds,
             0,
             clobbered_rgn,
+            host_menu_bar_hidden,
             heap_cursor,
             heap_limit,
             last_mem_error,
@@ -52332,6 +52703,7 @@ fn ppc_paint_behind(
     gworlds: &[PpcGWorldRecord],
     start_window: u32,
     clobbered_rgn: u32,
+    host_menu_bar_hidden: bool,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
@@ -52426,12 +52798,16 @@ fn ppc_paint_behind(
     }
 
     if start_window == 0 {
-        let desktop = ppc_read_rgn_bbox(memory, PPC_GRAY_RGN_HANDLE).unwrap_or((
-            20,
-            0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16,
-        ));
+        let desktop = if host_menu_bar_hidden {
+            (0, 0, PPC_MAIN_SCREEN_HEIGHT as i16, PPC_MAIN_SCREEN_WIDTH as i16)
+        } else {
+            ppc_read_rgn_bbox(memory, PPC_GRAY_RGN_HANDLE).unwrap_or((
+                20,
+                0,
+                PPC_MAIN_SCREEN_HEIGHT as i16,
+                PPC_MAIN_SCREEN_WIDTH as i16,
+            ))
+        };
         let paint = (
             desktop.0.max(clobbered.0),
             desktop.1.max(clobbered.1),
@@ -52442,7 +52818,8 @@ fn ppc_paint_behind(
             if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
                 for v in i32::from(paint.0)..i32::from(paint.2) {
                     for h in i32::from(paint.1)..i32::from(paint.3) {
-                        let color = if crate::window_manager::standard_desktop_pattern_is_ink(h, v)
+                        let color = if host_menu_bar_hidden
+                            || crate::window_manager::standard_desktop_pattern_is_ink(h, v)
                         {
                             PPC_RGB_BLACK
                         } else {
@@ -69040,6 +69417,14 @@ fn ppc_dispatch_legacy_window(
         "DisposeWindow" => {
             let window = cpu.gpr[3];
             let previous_front = ppc_front_visible_process_window(memory, window_list);
+            let was_visible = ppc_window_is_visible(memory, window);
+            let exposed = was_visible
+                .then(|| {
+                    memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+                })
+                .flatten();
             let disposed_palette = memory
                 .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
                 .unwrap_or(0);
@@ -69083,6 +69468,16 @@ fn ppc_dispatch_legacy_window(
                 window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
+            );
+            ppc_restore_window_removal_exposure(
+                memory,
+                gworlds,
+                window_list,
+                exposed,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                when,
+                input,
             );
             if let Some(pixmap_handle) = disposed_pixmap_handle {
                 toolbox_startup
@@ -69200,12 +69595,19 @@ fn ppc_dispatch_legacy_window(
         }
         "DragWindow" => Some(ppc_dispatch_drag_window(
             cpu,
+            process_memory_manager,
             memory,
             gworlds,
+            window_list,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
             current_gworld,
             toolbox_startup,
             event_queue,
             screen_clut,
+            when,
             input,
         )),
         "GrowWindow" => Some(ppc_dispatch_grow_window(
@@ -69238,7 +69640,73 @@ fn ppc_dispatch_legacy_window(
             input,
         )),
         "ZoomWindow" => {
-            ppc_zoom_window(cpu, memory, gworlds);
+            let window = cpu.gpr[3];
+            let was_visible = ppc_window_is_visible(memory, window);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
+            let previous_structure =
+                ppc_window_global_structure_bounds(memory, gworlds, window);
+            if ppc_zoom_window(cpu, memory, gworlds).is_some() {
+                if cpu.gpr[5] != 0 {
+                    ppc_reorder_window(gworlds, window_list, window, 0, true);
+                }
+                ppc_recalculate_window_vis_regions(
+                    process_memory_manager,
+                    memory,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                );
+                let next_structure =
+                    ppc_window_global_structure_bounds(memory, gworlds, window);
+                ppc_repaint_window_geometry_transition(
+                    memory,
+                    gworlds,
+                    window_list,
+                    window,
+                    was_visible,
+                    previous_structure,
+                    next_structure,
+                    toolbox_startup.host_menu_bar_hidden,
+                    event_queue,
+                    when,
+                    input,
+                );
+                ppc_transition_front_window_chrome(
+                    memory,
+                    gworlds,
+                    window_list,
+                    previous_front,
+                    toolbox_startup.host_menu_bar_hidden,
+                );
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                if cpu.gpr[5] != 0 && next_front == Some(window) {
+                    *current_gworld = window;
+                    *current_gdevice =
+                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+                    ppc_register_gdevice(toolbox_startup, *current_gdevice);
+                    ppc_restore_port_colors(
+                        memory,
+                        *current_gworld,
+                        quickdraw_fore_color,
+                        quickdraw_back_color,
+                    );
+                    let _ = ppc_set_window_hilited(memory, window, true);
+                }
+                if next_front != previous_front {
+                    let _ = ppc_activate_front_window_palette(
+                        memory,
+                        gworlds,
+                        *current_gdevice,
+                        screen_clut,
+                        color_manager_clut,
+                        device_gamma,
+                        device_gamma_explicit,
+                        toolbox_startup,
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         "CalcVis" => {
@@ -69657,16 +70125,20 @@ fn ppc_refresh_drag_window_outline(
     state: &mut PpcDragWindowTrackingState,
     mouse: (i16, i16),
 ) {
-    ppc_restore_drag_window_outline(memory, state);
     let start = (
         (state.call.start_point >> 16) as u16 as i16,
         state.call.start_point as u16 as i16,
     );
-    state.outline = ppc_offset_rect_bounds(
+    let outline = ppc_offset_rect_bounds(
         state.original_structure,
         mouse.0.wrapping_sub(start.0),
         mouse.1.wrapping_sub(start.1),
     );
+    if !state.saved_pixels.is_empty() && state.outline == outline {
+        return;
+    }
+    ppc_restore_drag_window_outline(memory, state);
+    state.outline = outline;
     state.saved_pixels = ppc_drag_outline_points(state.front_buffer, state.outline)
         .into_iter()
         .filter_map(|(x, y)| {
@@ -69696,12 +70168,19 @@ fn ppc_refresh_drag_window_outline(
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_drag_window(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
-    gworlds: &mut [PpcGWorldRecord],
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
     current_gworld: &mut u32,
     startup: &mut PpcToolboxStartupState,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     screen_clut: &[[u16; 3]; 256],
+    when: u32,
     input: PpcInputSnapshot,
 ) -> PpcImportAction {
     // DragWindow owns a synchronous Window Manager loop and moves only a
@@ -69763,6 +70242,39 @@ fn ppc_dispatch_drag_window(
                 as u16 as u32;
             move_cpu.gpr[6] = 1;
             if ppc_move_window(&move_cpu, memory, gworlds).is_some() {
+                let previous_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_reorder_window(gworlds, window_list, call.window, 0, true);
+                ppc_recalculate_window_vis_regions(
+                    process_memory_manager,
+                    memory,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                );
+                let next_structure =
+                    ppc_window_global_structure_bounds(memory, gworlds, call.window);
+                ppc_repaint_window_geometry_transition(
+                    memory,
+                    gworlds,
+                    window_list,
+                    call.window,
+                    true,
+                    Some(state.original_structure),
+                    next_structure,
+                    startup.host_menu_bar_hidden,
+                    event_queue,
+                    when,
+                    input,
+                );
+                ppc_transition_front_window_chrome(
+                    memory,
+                    gworlds,
+                    window_list,
+                    previous_front,
+                    startup.host_menu_bar_hidden,
+                );
                 *current_gworld = call.window;
             }
         }
@@ -69850,7 +70362,6 @@ fn ppc_refresh_grow_window_outline(
     state: &mut PpcGrowWindowTrackingState,
     mouse: (i16, i16),
 ) {
-    ppc_restore_grow_window_outline(memory, state);
     let (height, width) =
         ppc_grow_window_dimensions(state.original_content, state.size_limits, mouse);
     let proposed_content = (
@@ -69859,10 +70370,15 @@ fn ppc_refresh_grow_window_outline(
         state.original_content.0.saturating_add(height),
         state.original_content.1.saturating_add(width),
     );
-    state.outline = ppc_window_structure_bounds(
+    let outline = ppc_window_structure_bounds(
         ppc_window_proc_id(memory, state.call.window),
         proposed_content,
     );
+    if !state.saved_pixels.is_empty() && state.outline == outline {
+        return;
+    }
+    ppc_restore_grow_window_outline(memory, state);
+    state.outline = outline;
     state.saved_pixels = ppc_drag_outline_points(state.front_buffer, state.outline)
         .into_iter()
         .filter_map(|(x, y)| {
@@ -70161,7 +70677,11 @@ fn ppc_dispatch_track_go_away(
     PpcImportAction::Yield(u64::MAX)
 }
 
-fn ppc_zoom_window(cpu: &PpcCpu, memory: &mut PpcSectionMem, gworlds: &mut [PpcGWorldRecord]) {
+fn ppc_zoom_window(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &mut [PpcGWorldRecord],
+) -> Option<()> {
     let window = cpu.gpr[3];
     let part = cpu.gpr[4] as u16 as i16;
     let state = memory
@@ -70169,21 +70689,18 @@ fn ppc_zoom_window(cpu: &PpcCpu, memory: &mut PpcSectionMem, gworlds: &mut [PpcG
         .filter(|handle| *handle != 0)
         .and_then(|handle| memory.read_u32_be(handle))
         .filter(|state| *state != 0);
-    let Some(state) = state else {
-        return;
-    };
+    let state = state?;
     let offset = if part == 8 { 8 } else { 0 };
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, state + offset) else {
-        return;
-    };
+    let (top, left, bottom, right) = ppc_read_rect(memory, state + offset)?;
     let mut move_cpu = cpu.clone();
     move_cpu.gpr[4] = left as u16 as u32;
     move_cpu.gpr[5] = top as u16 as u32;
-    let _ = ppc_move_window(&move_cpu, memory, gworlds);
+    ppc_move_window(&move_cpu, memory, gworlds)?;
     let mut size_cpu = cpu.clone();
     size_cpu.gpr[4] = right.saturating_sub(left) as u16 as u32;
     size_cpu.gpr[5] = bottom.saturating_sub(top) as u16 as u32;
-    let _ = ppc_size_window(&size_cpu, memory, gworlds);
+    ppc_size_window(&size_cpu, memory, gworlds)?;
+    Some(())
 }
 
 fn ppc_text_width(
@@ -89172,6 +89689,30 @@ pub(crate) mod tests {
         drain_test_m68k_guest_calls(loaded);
     }
 
+    fn create_test_cwindow(
+        loaded: &mut PpcLoadedApp,
+        bounds_ptr: u32,
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        visible: bool,
+        behind: u32,
+    ) -> u32 {
+        ppc_write_rect(&mut loaded.memory, bounds_ptr, bounds.0, bounds.1, bounds.2, bounds.3)
+            .unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = bounds_ptr;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = u32::from(visible);
+        loaded.cpu.gpr[7] = proc_id as u16 as u32;
+        loaded.cpu.gpr[8] = behind;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        run_test_import(loaded, PpcImportDispatcherTarget::NewCWindow);
+        let window = loaded.cpu.gpr[3];
+        assert_ne!(window, 0, "test NewCWindow must succeed");
+        window
+    }
+
     fn initialize_test_cgraf_port(bus: &mut MacMemoryBus, port: u32) {
         bus.write_word(port + 6, 0xc000);
         for offset in [36, 38, 40] {
@@ -102138,7 +102679,7 @@ pub(crate) mod tests {
         let mut zoom_cpu = loaded.cpu.clone();
         zoom_cpu.gpr[3] = window;
         zoom_cpu.gpr[4] = 8;
-        ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds);
+        let _ = ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds);
         assert_eq!(
             ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
             Some((
@@ -138695,6 +139236,51 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn ppc_paint_behind_hidden_menu_uses_solid_black_desktop() {
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.toolbox_startup.host_menu_bar_hidden = true;
+        let front = ppc_live_front_buffer_for_gworld(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+        )
+        .unwrap();
+        ppc_write_rgn_bbox(
+            &mut loaded.memory,
+            PPC_GRAY_RGN_HANDLE,
+            0,
+            0,
+            40,
+            40,
+        )
+        .unwrap();
+        let mut heap_cursor = loaded.heap_cursor();
+        let heap_limit = loaded.heap_limit();
+        let mut last_mem_error = loaded.last_mem_error();
+        let mut handles = Vec::new();
+        ppc_paint_behind(
+            None,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            0,
+            PPC_GRAY_RGN_HANDLE,
+            true,
+            &mut heap_cursor,
+            heap_limit,
+            &mut last_mem_error,
+            &mut handles,
+        );
+        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
+            .unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+            Some(black),
+            "hidden-menu desktop exposure must not retain the checkerboard",
+        );
+    }
+
+    #[test]
     fn hle_import_runner_track_go_away_retains_restores_and_uses_release_point() {
         for depth in [1, 2, 4, 8, 16] {
             let pef = synthetic_pef_with_import(b"NewCWindow");
@@ -138988,10 +139574,12 @@ pub(crate) mod tests {
                 "{depth}bpp valid release did not apply the final delta",
             );
             assert_eq!(*loaded.current_gworld, window);
-            assert_eq!(
-                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
-                Some(baseline.clone()),
-                "{depth}bpp accepted drag did not restore the framebuffer",
+            let moved_frame =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+            assert_ne!(
+                moved_frame, baseline,
+                "{depth}bpp accepted drag did not repaint the moved window",
             );
 
             loaded.cpu.pc = loaded.entry_pc;
@@ -139022,7 +139610,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
-                Some(baseline.clone()),
+                Some(moved_frame.clone()),
                 "{depth}bpp cancelled drag did not restore the framebuffer",
             );
 
@@ -139048,7 +139636,7 @@ pub(crate) mod tests {
             assert!(loaded.toolbox_startup.drag_window_tracking.is_none());
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
-                Some(baseline),
+                Some(moved_frame),
                 "{depth}bpp hidden cancellation did not restore the framebuffer",
             );
         }
@@ -139253,6 +139841,260 @@ pub(crate) mod tests {
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
             Some((21, 29, 142, 232))
+        );
+    }
+
+    #[test]
+    fn hidden_ppc_geometry_changes_do_not_repaint_visible_pixels() {
+        let pef = synthetic_pef_with_import(b"MoveWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let visible = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let hidden = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (120, 120, 220, 220),
+            0,
+            false,
+            u32::MAX,
+        );
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        ppc_quickdraw_write_pixel(&mut loaded.memory, front, (160, 160), PPC_RGB_BLACK);
+        let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160));
+        loaded.set_event_queue(std::iter::empty());
+
+        loaded.cpu.gpr[3] = hidden;
+        loaded.cpu.gpr[4] = 140;
+        loaded.cpu.gpr[5] = 140;
+        loaded.cpu.gpr[6] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SizeWindow);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160)),
+            before,
+            "resizing a hidden window must not erase a visible window's content",
+        );
+        assert!(loaded.event_queue().is_empty());
+
+        loaded.cpu.gpr[3] = hidden;
+        loaded.cpu.gpr[4] = 300;
+        loaded.cpu.gpr[5] = 300;
+        loaded.cpu.gpr[6] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveWindow);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160)),
+            before,
+            "moving a hidden window must not erase a visible window's content",
+        );
+        assert!(loaded.event_queue().is_empty());
+        assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(visible));
+    }
+
+    #[test]
+    fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
+        let pef = synthetic_pef_with_import(b"DisposeWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let _visible = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let hidden = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (120, 120, 220, 220),
+            0,
+            false,
+            u32::MAX,
+        );
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        ppc_quickdraw_write_pixel(&mut loaded.memory, front, (160, 160), PPC_RGB_BLACK);
+        let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160));
+        loaded.set_event_queue(std::iter::empty());
+
+        loaded.cpu.gpr[3] = hidden;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160)),
+            before,
+            "disposing a hidden window must not repaint its former structure",
+        );
+        assert!(!loaded
+            .event_queue()
+            .iter()
+            .any(|event| event.message == hidden));
+        assert!(!loaded.window_list.contains(&hidden));
+    }
+
+    #[test]
+    fn ppc_move_window_front_true_reorders_and_activates_window() {
+        let pef = synthetic_pef_with_import(b"MoveWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let back = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let front = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (120, 120, 280, 320),
+            0,
+            true,
+            u32::MAX,
+        );
+        loaded.set_event_queue(std::iter::empty());
+        assert_eq!(loaded.window_list.first().copied(), Some(front));
+
+        loaded.cpu.gpr[3] = back;
+        loaded.cpu.gpr[4] = 100;
+        loaded.cpu.gpr[5] = 100;
+        loaded.cpu.gpr[6] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveWindow);
+
+        assert_eq!(loaded.window_list.first().copied(), Some(back));
+        assert_eq!(
+            ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list),
+            Some(back)
+        );
+        assert_eq!(*loaded.current_gworld, back);
+        assert_eq!(
+            loaded.memory.read_u8(back + PPC_CWINDOW_HILITED_OFFSET),
+            Some(1)
+        );
+        assert_eq!(
+            loaded.memory.read_u8(front + PPC_CWINDOW_HILITED_OFFSET),
+            Some(0)
+        );
+        assert_eq!(
+            ppc_find_window_at_point(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &loaded.window_list,
+                180,
+                180,
+                20,
+            ),
+            (3, back),
+            "front=true must update hit testing as well as the list",
+        );
+    }
+
+    #[test]
+    fn ppc_zoom_window_recalculates_visibility_and_queues_redraw() {
+        let pef = synthetic_pef_with_import(b"ZoomWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let window = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 240, 300),
+            8,
+            true,
+            u32::MAX,
+        );
+        let vis_rgn = loaded
+            .memory
+            .read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+            .unwrap();
+        let old_vis = ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn).unwrap();
+        let update_rgn = loaded
+            .memory
+            .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+            .unwrap();
+        ppc_set_empty_rgn(&mut loaded.memory, update_rgn);
+        loaded.set_event_queue(std::iter::empty());
+
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+
+        assert_eq!(
+            ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+            Some((20, 0, PPC_MAIN_SCREEN_HEIGHT as i16, PPC_MAIN_SCREEN_WIDTH as i16)),
+        );
+        assert_ne!(
+            ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
+            Some(old_vis),
+            "ZoomWindow must recalculate the visible region",
+        );
+        let update = ppc_read_rgn_bbox(&mut loaded.memory, update_rgn).unwrap();
+        assert!(update.0 < update.2 && update.1 < update.3);
+        assert!(loaded
+            .event_queue()
+            .iter()
+            .any(|event| event.what == 6 && event.message == window));
+        assert_eq!(*loaded.current_gworld, window);
+    }
+
+    #[test]
+    fn ppc_zoom_front_promotion_preserves_promoted_window_pixels() {
+        let pef = synthetic_pef_with_import(b"ZoomWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let _formerly_front = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            1,
+            true,
+            u32::MAX,
+        );
+        let _middle = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (120, 120, 280, 320),
+            1,
+            true,
+            0,
+        );
+        let promoted = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (150, 150, 300, 350),
+            1,
+            true,
+            0,
+        );
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
+            .unwrap();
+        // The promoted dialog's top structure edge lies inside both older
+        // windows' content rectangles. A back-to-front repaint must leave
+        // this edge owned by the promoted window.
+        let promoted_edge = (200, 142);
+        loaded.set_event_queue(std::iter::empty());
+        loaded.cpu.gpr[3] = promoted;
+        loaded.cpu.gpr[4] = 4;
+        loaded.cpu.gpr[5] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+
+        assert_eq!(loaded.window_list.first().copied(), Some(promoted));
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, promoted_edge),
+            Some(black),
+            "front-promoted ZoomWindow frame must remain above older overlapping windows",
         );
     }
 
@@ -139937,6 +140779,50 @@ pub(crate) mod tests {
         assert_eq!(record.width, 512);
         assert_eq!(record.height, 384);
         assert_eq!(record.row_bytes, 1280);
+    }
+
+    #[test]
+    fn hle_import_runner_tracks_ppc_update_region_until_end_update() {
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 32]);
+        ppc_write_rect(&mut loaded.memory, scratch, 20, 10, 260, 330).unwrap();
+        ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Document");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[5] = scratch + 8;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = u32::MAX;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+        let window = loaded.cpu.gpr[3];
+        let update_rgn = loaded
+            .memory
+            .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+            .unwrap();
+        let rect_ptr = scratch + 16;
+        ppc_write_rect(&mut loaded.memory, rect_ptr, 4, 6, 40, 50).unwrap();
+
+        loaded.cpu.gpr[3] = rect_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InvalRect);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+            Some((4, 6, 40, 50)),
+            "InvalRect must publish a concrete local update region",
+        );
+
+        loaded.cpu.gpr[3] = window;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::BeginUpdate);
+        assert_eq!(*loaded.current_gworld, window);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::EndUpdate);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+            Some((0, 0, 0, 0)),
+            "EndUpdate must clear the committed update region",
+        );
     }
 
     #[test]
