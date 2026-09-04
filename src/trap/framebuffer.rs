@@ -4100,7 +4100,11 @@ impl super::TrapDispatcher {
             if active {
                 let stripe_left_edge = tb_left + 2;
                 let stripe_right_end = if has_zoom_box {
-                    wind_right - 23
+                    // Keep the pinstripes flush with the rightmost 15-pixel
+                    // zoom/scrollbar control column used by the shared WDEF
+                    // geometry. Macintosh Toolbox Essentials (1992), Figure
+                    // 4-2 and Listing 5-17.
+                    wind_right - 15
                 } else {
                     tb_right - 2
                 };

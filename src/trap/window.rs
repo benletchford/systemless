@@ -1868,7 +1868,10 @@ impl super::TrapDispatcher {
         let (top, _, _, right) = self.window_global_port_rect(bus, window_ptr);
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         let title_top = top.saturating_sub(18).max(menu_bar_height);
-        Some((title_top, right.saturating_sub(24), top, right.saturating_sub(6)))
+        // The zoom box occupies the same rightmost 15-pixel control column as
+        // the vertical scroll bar and grow box. Macintosh Toolbox Essentials
+        // (1992), Figure 4-2 and Listing 5-17.
+        Some((title_top, right.saturating_sub(15), top, right))
     }
 
     fn window_is_active_for_standard_go_away(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
@@ -13336,6 +13339,15 @@ mod tests {
             ),
             (23, 3, screen_height as i16 - 3, screen_width as i16 - 3),
             "stdState must default to the gray region inset by three pixels"
+        );
+        bus.write_byte(
+            window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+        assert_eq!(
+            disp.standard_zoom_rect(&bus, window),
+            Some((32, 635, 50, 650)),
+            "the zoom hit region must share the rightmost scrollbar column"
         );
     }
 
