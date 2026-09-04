@@ -896,12 +896,10 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         self.task_depth(self.current_task())
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.0.borrow().stacks.values().map(Vec::len).sum()
     }
 
-    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -1100,7 +1098,6 @@ impl<T> ExecutionContextBank<T> {
         self.by_call.len()
     }
 
-    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.by_call.is_empty()
     }
