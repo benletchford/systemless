@@ -66,62 +66,95 @@ Play these and more classic Macintosh games in your browser at
 
 Systemless executes classic 68K code with the
 [`m68k`](https://crates.io/crates/m68k) crate and native 32-bit PowerPC code
-with the [`ppc`](https://crates.io/crates/ppc) crate. Both CPU runtimes call the
-same Mac OS Toolbox and operating-system HLE implemented in native Rust. Native
-builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
-uses its portable trace executor.
+with the [`ppc`](https://crates.io/crates/ppc) crate. Native builds enable
+m68k's Cranelift JIT for eligible hot traces, while WebAssembly uses its
+portable trace executor.
 
-68K and PowerPC are execution formats, not separate Macintosh platforms. The
-runtime invariant is one logical Macintosh process, with one guest address space
-and one canonical guest-visible set of Toolbox, event, window, menu, file,
-resource, and callback state, served by architecture-specific CPU adapters. The
-fat-application Toolbox showcase enforces that invariant by running the same
-interaction sequence through both slices and requiring identical semantic state
-and rendered checkpoints. Mixed Mode
-transitions should switch execution engines without copying or synchronizing
-process-visible state, just as original software expects.
+68K and PowerPC are execution formats, not separate Macintosh platforms. Both
+participate in one coherent Macintosh world containing the guest memory map,
+system services, processes, tasks, and Toolbox state. Architecture-specific
+gateways preserve observable 68K trap and PowerPC CFM behavior before
+converging on canonical Macintosh service implementations in Rust.
 
 ```text
-              Classic Macintosh Application
-                         │
-          ┌──────────────┴──────────────┐
-          │                             │
-      68K CODE                      PowerPC PEF
-          │                             │
-          ▼                             ▼
-      m68k CPU                       PPC CPU
-          │                             │
-          │     architecture-specific   │
-          │        execution state      │
-          │                             │
-          └─────────┐         ┌─────────┘
-                    ▼         ▼
-                     Mixed Mode
-                  UPP / ProcInfo
-                  RoutineDescriptor
-                         │
-                         ▼
-              Shared Macintosh Process
-                         │
-       ┌─────────────────┼─────────────────┐
-       │                 │                 │
-       ▼                 ▼                 ▼
-    Memory            QuickDraw          Events
-    Handles           Windows            Input
-    Zones             Regions            Timers
-       │                 │                 │
-       ├────────────┬────┴─────┬──────────┤
-       ▼            ▼          ▼          ▼
-     Menus        Files      Sound      Resources
-       │            │          │          │
-       └────────────┴────┬─────┴──────────┘
-                         ▼
-                  Rust Mac OS HLE
-                         │
-                         ▼
-                   Host Platform
-                macOS / Web / others
+                         APPLICATION
+                              │
+                ┌─────────────┴─────────────┐
+                │                           │
+             68K CODE                  PowerPC PEF
+                │                           │
+                ▼                           ▼
+          68K ABI gateway             PPC ABI gateway
+                │                           │
+                └─────────────┬─────────────┘
+                              ▼
+                       Execution kernel
+                  UPP / ProcInfo / continuations
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │ Macintosh world   │
+                    │ guest memory      │
+                    │ system services   │
+                    │ processes/tasks   │
+                    │ Toolbox services  │
+                    └─────────┬─────────┘
+                              │
+                              ▼
+                       Host presentation
+                    macOS / Web / other hosts
 ```
+
+### Architecture contract
+
+The runtime is converging on these principles:
+
+- Every guest-visible fact has one semantic authority. Guest structures such
+  as menu records, windows, PixMaps, handles, low-memory globals, and trap-table
+  entries remain authoritative in guest memory when original software can
+  inspect or modify them directly.
+- Machine-, process-, task-, CPU-engine-, and host-scoped state are modeled at
+  their proper lifetimes rather than collected into one monolithic process
+  object.
+- Both CPU engines observe one authoritative guest memory map. Different
+  memory interfaces and optimized views are allowed, but writes never require
+  a cross-architecture synchronization pass.
+- CPU gateways decode arguments, preserve guest-visible trap or import routing,
+  and encode results. Architecture-independent Toolbox semantics live in one
+  Macintosh service implementation.
+- Host menus, framebuffers, audio devices, and persistence are derived
+  presentation or policy layers. They do not become the source of guest truth.
+
+State is deliberately scoped:
+
+| Scope | Examples |
+| --- | --- |
+| Macintosh world / machine | Guest memory, system mappings, volumes, clock, devices, display, input, and audio environment. |
+| Process | Application heap and resources, open sessions, UI objects, and process-specific trap state. |
+| Task | Event delivery, Thread Manager state, callbacks, suspended calls, and continuation stacks. |
+| CPU engine | Registers, ABI conventions, execution caches, CODE/PEF metadata, and PowerPC TOC state. |
+| Host | Native menus and windows, textures, audio output, browser input, and save-storage policy. |
+
+### Mixed Mode and callbacks
+
+Universal Procedure Pointers, RoutineDescriptors, and ProcInfo allow either
+architecture to call the other without the caller knowing which ISA implements
+the destination. Mixed Mode transitions are task continuations: the execution
+kernel suspends one engine, marshals the original Macintosh ABI, runs the target
+engine, and resumes the caller with its expected result layout.
+
+Toolbox services may themselves invoke guest procedures. The target service
+contract models menu definition procedures, window and control definitions,
+event handlers, timers, sound callbacks, and asynchronous completions as
+resumable operations. A service releases its runtime state before guest code
+runs and continues when the task returns, allowing callbacks to alternate
+architectures without making either CPU the permanent host.
+
+The fat-application Toolbox showcase runs the same interaction sequence through
+both executable slices and requires matching semantic state and rendered
+checkpoints. Focused Mixed Mode tests additionally exercise shared memory,
+nested cross-ISA calls, trap patches, and callbacks within one live Macintosh
+environment.
 
 ## Status
 
