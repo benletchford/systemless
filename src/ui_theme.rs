@@ -2178,15 +2178,17 @@ fn draw_button_chrome(ctx: &mut ThemeDrawCtx<'_>, palette: UiThemePalette, state
         );
     }
     if state.is_default {
-        ctx.frame_rect(
-            ThemeRect {
-                top: state.rect.top - 4,
-                left: state.rect.left - 4,
-                bottom: state.rect.bottom + 4,
-                right: state.rect.right + 4,
-            },
-            palette.selection,
-        );
+        // Human Interface Guidelines 1992, p. 205: default buttons use a
+        // three-pixel emphasis border separated from the button by one pixel.
+        let outline = ThemeRect {
+            top: state.rect.top - 4,
+            left: state.rect.left - 4,
+            bottom: state.rect.bottom + 4,
+            right: state.rect.right + 4,
+        };
+        for inset in 0..3 {
+            ctx.frame_rect(inset_rect(outline, inset), palette.selection);
+        }
     }
 }
 
@@ -2769,6 +2771,27 @@ mod tests {
         assert_eq!(classic.height(), 48);
         assert_eq!(classic.rgba().len(), 96 * 48 * 4);
         assert_ne!(classic.rgba(), themed.rgba());
+    }
+
+    #[test]
+    fn systemless_default_button_uses_three_pixel_outline_with_one_pixel_gap() {
+        let themed = render_basic_button_preview(UiThemeId::SystemlessDefault);
+        let palette = UiThemeId::SystemlessDefault.provider().palette();
+        let selection = [
+            palette.selection.r,
+            palette.selection.g,
+            palette.selection.b,
+        ];
+        let background = [
+            palette.window_background.r,
+            palette.window_background.g,
+            palette.window_background.b,
+        ];
+
+        assert_eq!(rgb_at(&themed, 14, 10), selection);
+        assert_eq!(rgb_at(&themed, 15, 11), selection);
+        assert_eq!(rgb_at(&themed, 16, 12), selection);
+        assert_eq!(rgb_at(&themed, 17, 13), background);
     }
 
     #[test]
