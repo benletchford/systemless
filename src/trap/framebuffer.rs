@@ -4276,10 +4276,23 @@ impl super::TrapDispatcher {
             return;
         }
         let active = bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) != 0;
-        let icon = crate::window_manager::standard_grow_icon(
-            (content_top, content_left, content_bottom, content_right),
-            active,
-        );
+        // DrawGrowIcon uses the Window Manager port and is clipped by the
+        // structure regions of windows above the target. The HLE renderer
+        // writes screen pixels directly, so preserve those occluded pixels.
+        // Macintosh Toolbox Essentials (1992), pp. 4-106 and 4-111--4-112.
+        let content = (content_top, content_left, content_bottom, content_right);
+        let preserved_front_pixels: Vec<_> = self
+            .window_list
+            .iter()
+            .take_while(|&&front_window| front_window != window_ptr)
+            .filter(|&&front_window| self.window_visible(bus, front_window))
+            .filter_map(|&front_window| {
+                self.window_structure_rect(bus, front_window)
+                    .and_then(|front_structure| Self::rect_intersection(content, front_structure))
+                    .and_then(|overlap| self.save_screen_rect_pixels(bus, overlap))
+            })
+            .collect();
+        let icon = crate::window_manager::standard_grow_icon(content, active);
         Self::fb_fill_rect(
             bus,
             screen_base,
@@ -4307,6 +4320,9 @@ impl super::TrapDispatcher {
                 right,
                 true,
             );
+        }
+        for (top, left, width, height, pixels) in preserved_front_pixels {
+            self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
         }
     }
 
@@ -4476,6 +4492,28 @@ impl super::TrapDispatcher {
         if wind_bottom <= wind_top || wind_right <= wind_left {
             return;
         }
+        // ClipAbove excludes the complete structure region of every visible
+        // window above the WDEF being drawn. The HLE WDEF paints directly into
+        // screen RAM, so preserve those pixels around the raw frame draw.
+        // Macintosh Toolbox Essentials (1992), pp. 4-106 and 4-118--4-119.
+        let target_structure = self.window_structure_global_rect_for_proc(
+            bus,
+            (wind_top, wind_left, wind_bottom, wind_right),
+            proc_id,
+        );
+        let preserved_front_pixels: Vec<_> = self
+            .window_list
+            .iter()
+            .take_while(|&&front_window| front_window != window_ptr)
+            .filter(|&&front_window| self.window_visible(bus, front_window))
+            .filter_map(|&front_window| {
+                self.window_structure_rect(bus, front_window)
+                    .and_then(|front_structure| {
+                        Self::rect_intersection(target_structure, front_structure)
+                    })
+                    .and_then(|overlap| self.save_screen_rect_pixels(bus, overlap))
+            })
+            .collect();
         let saved_bounds = self.window_bounds;
         let saved_title = self.window_title.clone();
         let saved_go_away = self.go_away_flag;
@@ -4503,6 +4541,9 @@ impl super::TrapDispatcher {
         self.window_title = saved_title;
         self.go_away_flag = saved_go_away;
         self.window_proc_id = saved_proc;
+        for (top, left, width, height, pixels) in preserved_front_pixels {
+            self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
+        }
     }
 
     pub(crate) fn draw_window_frame(&self, bus: &mut MacMemoryBus) {
@@ -4869,9 +4910,9 @@ impl super::TrapDispatcher {
         // WindowList is the visual front-to-back order. BringToFront changes
         // that order without changing the active-window cache, so the cache
         // cannot be used as the compositing top layer.
-        // Draw every visible frame in reverse WindowList order, preserving
-        // the content pixels of windows above each frame.
-        // Macintosh Toolbox Essentials (1992), pp. 4-65 and 4-69.
+        // Draw every visible frame in reverse WindowList order. The shared
+        // single-window path applies ClipAbove semantics to each frame.
+        // Macintosh Toolbox Essentials (1992), pp. 4-65 and 4-118--4-119.
         if !skip_chrome && menu_bar_height > 0 {
             let list_snapshot = self.window_list.to_vec();
             for &w in list_snapshot.iter().rev() {
@@ -4885,28 +4926,8 @@ impl super::TrapDispatcher {
                 if bus.read_byte(w + 110u32) == 0 {
                     continue;
                 }
-                let preserved_front_pixels: Vec<_> = self
-                    .window_structure_rect(bus, w)
-                    .map(|back_structure| {
-                        list_snapshot
-                            .iter()
-                            .take_while(|&&front_window| front_window != w)
-                            .filter(|&&front_window| bus.read_byte(front_window + 110u32) != 0)
-                            .filter_map(|&front_window| {
-                                self.window_structure_rect(bus, front_window)
-                                    .and_then(|front_structure| {
-                                        Self::rect_intersection(back_structure, front_structure)
-                                    })
-                                    .and_then(|rect| self.save_screen_rect_pixels(bus, rect))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
                 let hilited = bus.read_byte(w + 111u32) != 0;
                 self.draw_single_window_chrome_inline(bus, w, hilited);
-                for (top, left, width, height, pixels) in preserved_front_pixels {
-                    self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
-                }
             }
         }
         // The kiosk stage is background chrome. Paint it after permanent
