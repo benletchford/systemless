@@ -1,5 +1,5 @@
 //! Integration test exercising Toolbox Showcase for issues #1078, #1081,
-//! #1264, #1265, #1266, #1267, #1268, and #1269.
+//! #1264, #1265, #1266, #1267, #1268, #1269, and #1338.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -37,6 +37,21 @@ const ITEM_PAGE_STANDARD_FILE: i16 = 12;
 const ITEM_PAGE_RESOURCES: i16 = 13;
 const ITEM_PAGE_SPRITES: i16 = 14;
 const ITEM_PAGE_EVENTS_CURSORS: i16 = 15;
+const ITEM_PAGE_POPUP_LISTS: i16 = 16;
+
+const MENU_POPUP_LOADOUT: i16 = 143;
+const MENU_POPUP_THEME: i16 = 144;
+const ITEM_POPUP_LOADOUT_SCOUT: i16 = 1;
+const ITEM_POPUP_LOADOUT_VETERAN: i16 = 2;
+const ITEM_POPUP_LOADOUT_SEPARATOR: i16 = 3;
+const ITEM_POPUP_LOADOUT_LONG: i16 = 4;
+const ITEM_POPUP_LOADOUT_DISABLED: i16 = 5;
+const ITEM_POPUP_LOADOUT_HEAVY: i16 = 6;
+const ITEM_POPUP_THEME_CLASSIC: i16 = 1;
+const ITEM_POPUP_THEME_DISABLED: i16 = 2;
+const ITEM_POPUP_THEME_SEPARATOR: i16 = 3;
+const ITEM_POPUP_THEME_NIGHT: i16 = 4;
+const ITEM_POPUP_THEME_DEEP_FIELD: i16 = 36;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -333,7 +348,7 @@ fn assert_resource_browser_snapshot(runner: &mut FixtureRunner, loaded_id: Optio
         "application resource file must be current"
     );
     assert_eq!(resource_count(&snapshot, *b"DATA"), 3);
-    assert_eq!(resource_count(&snapshot, *b"MENU"), 8);
+    assert_eq!(resource_count(&snapshot, *b"MENU"), 9);
     assert_eq!(resource_count(&snapshot, *b"WIND"), 1);
 
     let expected = [
@@ -561,6 +576,18 @@ fn run_gui_ticks(runner: &mut FixtureRunner, label: &str, ticks: u32) {
     }
 }
 
+fn run_popup_tracking_tick(runner: &mut FixtureRunner, label: &str) {
+    if runner.is_powerpc_app() {
+        // Native PopUpMenuSelect yields at a GUI frame boundary, while the
+        // classic TrackControl refire deliberately freezes guest ticks until
+        // mouse-up. Keep the same visible frame cadence without waiting on a
+        // frozen 68K clock.
+        run_gui_ticks(runner, label, 1);
+    } else {
+        run_ticks(runner, label, 1);
+    }
+}
+
 fn assert_graphics_page_rendered(runner: &mut FixtureRunner) {
     // WIND 128 begins at (50, 40); this samples the center of the red oval
     // drawn at local Rect(205, 55, 325, 135).
@@ -777,6 +804,105 @@ fn assert_sprites_page_rendered(
     (first_body, second_body)
 }
 
+fn assert_popup_menu_contract(snapshot: &GuestMenuSnapshot) {
+    let loadout = snapshot
+        .menus
+        .iter()
+        .find(|menu| menu.id == MENU_POPUP_LOADOUT)
+        .expect("resource-backed popup menu must be present");
+    assert!(
+        loadout.hierarchical && !loadout.visible_in_menu_bar,
+        "resource-backed popup menu must live in the hierarchical partition"
+    );
+    assert_eq!(loadout.items.len(), 6);
+    assert_eq!(
+        loadout.items[ITEM_POPUP_LOADOUT_LONG as usize - 1].text,
+        "Long-range Expedition Loadout"
+    );
+    assert!(
+        loadout.items[ITEM_POPUP_LOADOUT_SEPARATOR as usize - 1].separator,
+        "popup separator must remain a non-selectable row"
+    );
+    assert!(
+        !loadout.items[ITEM_POPUP_LOADOUT_DISABLED as usize - 1].enabled,
+        "popup disabled item must remain unavailable"
+    );
+
+    let theme = snapshot
+        .menus
+        .iter()
+        .find(|menu| menu.id == MENU_POPUP_THEME)
+        .expect("programmatic popup menu must be present");
+    assert!(
+        theme.hierarchical && !theme.visible_in_menu_bar,
+        "programmatic popup menu must live in the hierarchical partition"
+    );
+    assert_eq!(theme.items.len(), 39);
+    assert_eq!(
+        theme.items[ITEM_POPUP_THEME_NIGHT as usize - 1].text,
+        "Night Operations"
+    );
+    assert_eq!(
+        theme.items[ITEM_POPUP_THEME_DEEP_FIELD as usize - 1].text,
+        "Deep Field Archive"
+    );
+    assert!(
+        theme.items[ITEM_POPUP_THEME_SEPARATOR as usize - 1].separator,
+        "programmatic popup separator must remain a non-selectable row"
+    );
+    assert!(
+        !theme.items[ITEM_POPUP_THEME_DISABLED as usize - 1].enabled,
+        "programmatic popup disabled item must remain unavailable"
+    );
+}
+
+fn assert_popup_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_left: i16) {
+    // DrawControls passes the full control rect to the standard popup CDEF;
+    // its left borders land at local rows 100..123 and 136..159, with both
+    // popup title widths place the resource/programmatic box borders at
+    // local columns 250 and 242 respectively. These samples stay
+    // inside each rect so they ensure the real CDEF output is present,
+    // while menu snapshots below provide the semantic value assertions.
+    for (v, h) in [(100, 250), (110, 250), (136, 242), (146, 242)] {
+        let [red, green, blue] = screen_rgb(runner, (win_top + v) as u16, (win_left + h) as u16);
+        assert!(
+            red < 250 || green < 250 || blue < 250,
+            "popup control chrome must be visible at local ({v},{h}): rgb=({red},{green},{blue})"
+        );
+    }
+}
+
+fn assert_popup_selected_title_pixels(
+    runner: &mut FixtureRunner,
+    win_top: i16,
+    win_left: i16,
+    label: &str,
+) {
+    // The programmatic popup begins at local column 190 and reserves 52
+    // pixels for "Theme:". Inspect only
+    // the selected-title interior, away from the frame and arrow; this is a
+    // small architecture-neutral raster assertion that catches a missing
+    // live NewMenu title without depending on font glyph coordinates.
+    let (width, _height, rgb) = rendered_rgb(runner);
+    let mut dark_pixels = 0usize;
+    let title_left = 247;
+    for v in (win_top + 140)..(win_top + 157) {
+        for h in (win_left + title_left)..(win_left + 390) {
+            let offset = (usize::try_from(v).unwrap() * width as usize
+                + usize::try_from(h).unwrap())
+                * 3;
+            let pixel = &rgb[offset..offset + 3];
+            if pixel.iter().all(|channel| *channel < 200) {
+                dark_pixels += 1;
+            }
+        }
+    }
+    assert!(
+        dark_pixels >= 4,
+        "programmatic popup must repaint the {label} selected title (only {dark_pixels} dark pixels)"
+    );
+}
+
 #[test]
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
@@ -809,7 +935,15 @@ fn test_toolbox_showcase() {
         let has_window = r.window_count() >= 1;
         let has_bounds = r.window_bounds() != (0, 0, 0, 0);
         let graphics_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS);
-        has_pages_menu && has_options_menu && has_window && has_bounds && graphics_checked
+        let [red, green, blue] = screen_rgb(r, 145, 305);
+        let graphics_rendered =
+            red > green.saturating_add(80) && red > blue.saturating_add(80);
+        has_pages_menu
+            && has_options_menu
+            && has_window
+            && has_bounds
+            && graphics_checked
+            && graphics_rendered
     });
 
     let snapshot = runner.guest_menu_snapshot();
@@ -876,6 +1010,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SPRITES),
         "Sprites page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_POPUP_LISTS),
+        "Popup & Dropdown Lists page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -2423,4 +2561,189 @@ fn test_toolbox_showcase() {
     assert_eq!(final_events.cursor_level, 0);
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "33-events-cursors-final.png");
+    // 28. Switch to Popup & Dropdown Lists. This page combines a resource-
+    // backed CNTL/MENU popup with a programmatic NewMenu/NewControl popup.
+    // The menu snapshots are the semantic assertions for the Control Manager
+    // values and marks; framebuffer references cover the live dropdown and
+    // the closed-control repaint after retained tracking ends.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_POPUP_LISTS),
+        "failed to queue selection of Popup & Dropdown Lists page"
+    );
+    step_until(&mut runner, "switch to Popup & Dropdown Lists page", |r| {
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_POPUP_LISTS)
+    });
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_POPUP_LISTS
+    ));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SPRITES));
+    assert_popup_menu_contract(&snapshot);
+    assert!(menu_item_checked(
+        &snapshot,
+        MENU_POPUP_LOADOUT,
+        ITEM_POPUP_LOADOUT_SCOUT
+    ));
+    assert!(menu_item_checked(
+        &snapshot,
+        MENU_POPUP_THEME,
+        ITEM_POPUP_THEME_CLASSIC
+    ));
+    run_ticks(&mut runner, "popup page to settle", 1);
+    assert_popup_page_rendered(&mut runner, win_top, win_left);
+    assert_popup_selected_title_pixels(&mut runner, win_top, win_left, "Classic");
+    runner.set_mouse_position(550, 760);
+    let popup_initial_frame = rendered_rgb(&mut runner).2;
+    assert_reference_frame(&mut runner, "34-popup-lists.png");
+
+    // Open the resource-backed popup and move over its separator and then its
+    // disabled row. Both rows must remain unhighlighted and release must
+    // retain item 1. The exact open frame proves the menu is a live overlay,
+    // not just a static redraw of the closed control.
+    let resource_popup_v = win_top + 112;
+    let resource_popup_h = win_left + 280;
+    runner.set_mouse_position(resource_popup_v, resource_popup_h);
+    runner.push_mouse_down(resource_popup_v, resource_popup_h);
+    run_popup_tracking_tick(&mut runner, "resource popup to open");
+    let resource_open_frame = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        popup_initial_frame, resource_open_frame,
+        "resource popup must paint a live dropdown over the page"
+    );
+    // Item 3 is the separator: rows 1 and 2 are 16 pixels each.
+    runner.set_mouse_position(win_top + 135, resource_popup_h);
+    run_popup_tracking_tick(&mut runner, "resource popup separator hover");
+    // Item 5 is disabled: two ordinary rows + six-pixel separator + item 4.
+    runner.set_mouse_position(win_top + 162, resource_popup_h);
+    run_popup_tracking_tick(&mut runner, "resource popup disabled-row hover");
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "35-popup-lists-open.png");
+    runner.push_mouse_up(win_top + 162, resource_popup_h);
+    run_popup_tracking_tick(&mut runner, "resource popup disabled release");
+    step_until(&mut runner, "resource popup no-selection restore", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_POPUP_LOADOUT, ITEM_POPUP_LOADOUT_SCOUT)
+            && !menu_item_checked(&snapshot, MENU_POPUP_LOADOUT, ITEM_POPUP_LOADOUT_LONG)
+    });
+    let restored_after_disabled = rendered_rgb(&mut runner).2;
+    assert_ne!(
+        resource_open_frame, restored_after_disabled,
+        "resource popup release must restore the closed control"
+    );
+
+    // Reopen the same control, choose the long enabled row, and verify its
+    // value/mark changed through the Control Manager path.
+    runner.set_mouse_position(resource_popup_v, resource_popup_h);
+    runner.push_mouse_down(resource_popup_v, resource_popup_h);
+    run_popup_tracking_tick(&mut runner, "resource popup to reopen");
+    runner.set_mouse_position(win_top + 146, resource_popup_h);
+    run_popup_tracking_tick(&mut runner, "resource popup long-row hover");
+    runner.push_mouse_up(win_top + 146, resource_popup_h);
+    step_until(&mut runner, "resource popup long-row selection", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_POPUP_LOADOUT, ITEM_POPUP_LOADOUT_LONG)
+            && !menu_item_checked(&snapshot, MENU_POPUP_LOADOUT, ITEM_POPUP_LOADOUT_SCOUT)
+    });
+
+    // The programmatic fixed-width popup has its own retained tracking path.
+    // First release on its disabled item 2, then scroll a genuinely long
+    // menu through the real MenuRows indicators and choose item 36. This
+    // covers no-selection restoration, content repaint while scrolling, and
+    // a successful selection outside the initial viewport.
+    let theme_popup_v = win_top + 148;
+    let theme_popup_h = win_left + 280;
+    runner.set_mouse_position(theme_popup_v, theme_popup_h);
+    runner.push_mouse_down(theme_popup_v, theme_popup_h);
+    run_popup_tracking_tick(&mut runner, "programmatic popup to open");
+    runner.set_mouse_position(win_top + 160, win_left + 180);
+    run_popup_tracking_tick(&mut runner, "programmatic popup disabled-row hover");
+    runner.push_mouse_up(win_top + 160, win_left + 180);
+    step_until(
+        &mut runner,
+        "programmatic popup no-selection restore",
+        |r| {
+            let snapshot = r.guest_menu_snapshot();
+            menu_item_checked(&snapshot, MENU_POPUP_THEME, ITEM_POPUP_THEME_CLASSIC)
+                && !menu_item_checked(&snapshot, MENU_POPUP_THEME, ITEM_POPUP_THEME_NIGHT)
+        },
+    );
+
+    runner.set_mouse_position(theme_popup_v, theme_popup_h);
+    runner.push_mouse_down(theme_popup_v, theme_popup_h);
+    run_popup_tracking_tick(&mut runner, "programmatic popup to reopen for scrolling");
+    // The shared standard popup layout leaves a small bottom shadow on the
+    // 800x600 fixture. Holding over its down indicator (y=580) advances one
+    // 16-pixel content row per retained tracking update.
+    let popup_scroll_h = theme_popup_h;
+    runner.set_mouse_position(580, popup_scroll_h);
+    for step in 0..20 {
+        runner.set_mouse_position(579 + (step % 2), popup_scroll_h);
+        run_popup_tracking_tick(&mut runner, "programmatic popup scroll down");
+    }
+    // Item 36 is the Deep Field Archive row. At the bottom content origin
+    // (-28), its row is y=522..538, safely above the down indicator.
+    runner.set_mouse_position(530, popup_scroll_h);
+    run_popup_tracking_tick(&mut runner, "programmatic popup reveal long-row selection");
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "36-popup-lists-scrolled.png");
+    runner.set_mouse_position(530, popup_scroll_h);
+    run_popup_tracking_tick(&mut runner, "programmatic popup restore long-row hover");
+    runner.push_mouse_up(530, popup_scroll_h);
+    step_until(
+        &mut runner,
+        "programmatic popup long-row selection",
+        |r| {
+            let snapshot = r.guest_menu_snapshot();
+            menu_item_checked(&snapshot, MENU_POPUP_THEME, ITEM_POPUP_THEME_DEEP_FIELD)
+                && !menu_item_checked(&snapshot, MENU_POPUP_THEME, ITEM_POPUP_THEME_CLASSIC)
+        },
+    );
+
+    // Reopen with the long item selected. The standard layout initially
+    // centers that item near the control, so track upward to reveal item 4
+    // before choosing Night Operations. This also verifies the indicator
+    // direction reverses and the closed control title repaints again.
+    runner.set_mouse_position(theme_popup_v, theme_popup_h);
+    runner.push_mouse_down(theme_popup_v, theme_popup_h);
+    run_popup_tracking_tick(&mut runner, "programmatic popup to reopen for Night Operations");
+    let popup_scroll_up_h = theme_popup_h;
+    runner.set_mouse_position(6, popup_scroll_up_h);
+    for step in 0..24 {
+        runner.set_mouse_position(6 + (step % 2), popup_scroll_up_h);
+        run_popup_tracking_tick(&mut runner, "programmatic popup scroll up");
+    }
+    runner.set_mouse_position(50, popup_scroll_up_h);
+    run_popup_tracking_tick(&mut runner, "programmatic popup item selection");
+    runner.push_mouse_up(50, popup_scroll_up_h);
+    step_until(
+        &mut runner,
+        "programmatic popup Night Operations selection",
+        |r| {
+            let snapshot = r.guest_menu_snapshot();
+            menu_item_checked(&snapshot, MENU_POPUP_THEME, ITEM_POPUP_THEME_NIGHT)
+                && !menu_item_checked(&snapshot, MENU_POPUP_THEME, ITEM_POPUP_THEME_CLASSIC)
+        },
+    );
+    let final_snapshot = runner.guest_menu_snapshot();
+    assert_popup_menu_contract(&final_snapshot);
+    assert!(menu_item_checked(
+        &final_snapshot,
+        MENU_POPUP_LOADOUT,
+        ITEM_POPUP_LOADOUT_LONG
+    ));
+    assert!(menu_item_checked(
+        &final_snapshot,
+        MENU_POPUP_THEME,
+        ITEM_POPUP_THEME_NIGHT
+    ));
+    assert!(!menu_item_checked(
+        &final_snapshot,
+        MENU_POPUP_THEME,
+        ITEM_POPUP_THEME_DEEP_FIELD
+    ));
+    assert_popup_selected_title_pixels(&mut runner, win_top, win_left, "Night Operations");
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "37-popup-lists-selected.png");
 }

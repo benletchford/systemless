@@ -4998,7 +4998,7 @@ impl super::TrapDispatcher {
                     .filter(|tracking| {
                         tracking.active_menu == menu_idx && tracking.dropdown_rect == rect
                     })
-                    .map(|tracking| (tracking.highlighted_item, top))
+                    .map(|tracking| (tracking.highlighted_item, tracking.popup_content_top))
             })
             .or_else(|| {
                 self.dialog_tracking

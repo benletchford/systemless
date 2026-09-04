@@ -18,6 +18,7 @@ type 'DATA' {
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
 #define rShowcaseSound 151
+#define rPopupResourceControl 143
 #define pmAnimatedExplicit 12
 
 #define mApple 128
@@ -29,6 +30,8 @@ type 'DATA' {
 #define mDifficulty 140
 #define mSoundMenu 141
 #define mRendererMenu 142
+#define mPopupLoadout 143
+#define mPopupTheme 144
 
 #ifdef FAT
 Include "showcase.68k" 'CODE';
@@ -101,7 +104,32 @@ resource 'MENU' (mPages, preload) {
         "Standard File", noIcon, noKey, noMark, plain;
         "Resource Browser", noIcon, noKey, noMark, plain;
         "Sprites, Masks & Scrolling", noIcon, noKey, noMark, plain;
-        "Events & Cursors", noIcon, noKey, noMark, plain
+        "Events & Cursors", noIcon, noKey, noMark, plain;
+        "Popup & Dropdown Lists", noIcon, noKey, noMark, plain
+    }
+};
+
+/* Resource-backed popup control. MTE 1992, pp. 5-25--5-27. */
+resource 'CNTL' (rPopupResourceControl, preload, purgeable) {
+    {100, 190, 124, 400},
+    0,              /* popupTitleLeftJust */
+    invisible,
+    60,             /* title width */
+    mPopupLoadout,  /* associated MENU resource */
+    1008,           /* popupMenuCDEFProc */
+    0,
+    "Loadout:"
+};
+
+resource 'MENU' (mPopupLoadout, preload, purgeable) {
+    mPopupLoadout, textMenuProc, allEnabled, enabled, "Loadout",
+    {
+        "Scout Kit", noIcon, noKey, noMark, plain;
+        "Veteran Kit", noIcon, noKey, noMark, plain;
+        "-", noIcon, noKey, noMark, plain;
+        "Long-range Expedition Loadout", noIcon, noKey, noMark, plain;
+        "Locked Prototype", noIcon, noKey, noMark, plain;
+        "Heavy Support", noIcon, noKey, noMark, plain
     }
 };
 
