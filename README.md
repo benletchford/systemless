@@ -366,9 +366,6 @@ heavy display cuts matching their originals' bold weight. Venice (5), London (6)
 and Cairo (11) render as Kurrajong — the reference System has no strike for
 those families and substitutes the application font, which Systemless mirrors.
 
-Render every face on white and black backgrounds for review with
-`cargo run --bin font_specimen` (output in `target/font_specimens/`).
-
 If `SYSTEMLESS_ORIGINAL_FONTS_DIR` is set, Systemless can also load locally
 generated bitmap override blobs ahead of the built-in catalogue.
 

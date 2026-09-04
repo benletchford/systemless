@@ -14,6 +14,7 @@ repository = "https://github.com/benletchford/systemless"
 documentation = "https://docs.rs/systemless"
 # `cargo run` (no `--bin`) routes to the GUI runner for local checkouts.
 default-run = "systemless"
+autobins = false
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
