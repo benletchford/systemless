@@ -7221,7 +7221,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot attach two active guest-procedure continuation stacks")]
+    #[should_panic(expected = "cannot attach two initialized execution owners")]
     fn attaching_two_active_guest_call_stacks_is_always_rejected() {
         fn begin_call(calls: &SharedGuestCallStack, entry: u32) {
             calls.begin_m68k(

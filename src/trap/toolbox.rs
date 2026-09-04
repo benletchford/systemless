@@ -2,6 +2,7 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::execution_kernel::ExecutionTaskState;
+use crate::guest_call::CooperativeThread;
 use crate::guest_call::ExecutionTaskId;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -13,8 +14,8 @@ use std::sync::OnceLock;
 
 use super::dispatch::{
     raw_trap_route, selector_operation_route, AeCoercionHandler, AeDescriptor, AeObjectAccessor,
-    AePrivateHashTable, AeResolveLevel, AeResolveState, CooperativeThread, DialogItem,
-    EventProbeResult, EventRecordSnapshot, MovieState, OsRoutineVariant, SelectorOperationRoute,
+    AePrivateHashTable, AeResolveLevel, AeResolveState, DialogItem, EventProbeResult,
+    EventRecordSnapshot, MovieState, OsRoutineVariant, SelectorOperationRoute,
     StandardFileGetEntry, StandardFileGetTrackingState, StandardFilePutTrackingState,
     SyntheticAppleEvent,
 };
@@ -1195,24 +1196,25 @@ impl super::TrapDispatcher {
     /// `kApplicationThreadID` exists implicitly from launch, so
     /// `GetThreadState`, `SetThreadSwitcher` and friends must find it
     /// without a prior `NewThread`.
-    fn cooperative_thread_mut<C: CpuOps>(
+    fn cooperative_thread_snapshot<C: CpuOps>(
         &mut self,
         cpu: &C,
         thread_id: u32,
-    ) -> Option<&mut CooperativeThread> {
+    ) -> Option<CooperativeThread> {
         if thread_id == Self::APPLICATION_THREAD_ID
             && !self
-                .cooperative_threads
-                .contains(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
+                .guest_calls
+                .cooperative_context(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
+                .is_some()
         {
             let thread = Self::capture_cooperative_thread(cpu, 0);
-            self.cooperative_threads.insert(
+            self.guest_calls.save_cooperative_context(
                 ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID),
                 thread,
             );
         }
-        self.cooperative_threads
-            .get_mut(ExecutionTaskId::from_thread_id(thread_id))
+        self.guest_calls
+            .cooperative_context(ExecutionTaskId::from_thread_id(thread_id))
     }
 
     /// Save the running thread's registers into its record without
@@ -1220,16 +1222,18 @@ impl super::TrapDispatcher {
     fn save_current_cooperative_thread<C: CpuOps>(&mut self, cpu: &C) {
         let current_id = self.guest_calls.current_task().thread_id();
         let saved = Self::capture_cooperative_thread(cpu, 0);
-        match self.cooperative_thread_mut(cpu, current_id) {
-            Some(thread) => {
+        match self.cooperative_thread_snapshot(cpu, current_id) {
+            Some(mut thread) => {
                 thread.d_regs = saved.d_regs;
                 thread.a_regs = saved.a_regs;
                 thread.pc = saved.pc;
                 thread.ccr = saved.ccr;
+                self.guest_calls
+                    .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), thread);
             }
             None => {
-                self.cooperative_threads
-                    .insert(ExecutionTaskId::from_thread_id(current_id), saved);
+                self.guest_calls
+                    .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), saved);
             }
         }
     }
@@ -1248,7 +1252,7 @@ impl super::TrapDispatcher {
     /// Validate the saved adapter context before committing the task switch.
     fn switch_to_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, next_id: u32) -> bool {
         let task = ExecutionTaskId::from_thread_id(next_id);
-        let Some(next) = self.cooperative_threads.get(task).cloned() else {
+        let Some(next) = self.guest_calls.cooperative_context(task) else {
             return false;
         };
         if self.guest_calls.scheduling_state(task) != Some(ExecutionTaskState::Ready)
@@ -1279,23 +1283,11 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
     ) -> bool {
         let task = ExecutionTaskId::from_thread_id(thread_id);
-        // A continuation belongs to the task that created it. Disposing a
-        // different task while one of its calls is suspended would strand a
-        // parked CPU/context and make the next task switch ambiguous. Return
-        // the documented protocol error at the trap boundary instead of
-        // asserting on guest-controlled state.
-        if !self.guest_calls.task_is_empty(task) {
+        let finished = self.guest_calls.cooperative_context(task);
+        if !self.guest_calls.remove_task(task) {
             return false;
         }
-        if thread_id != self.guest_calls.current_task().thread_id()
-            && !self.guest_calls.remove_task(task)
-        {
-            return false;
-        }
-        if let Some(finished) = self
-            .cooperative_threads
-            .remove(ExecutionTaskId::from_thread_id(thread_id))
-        {
+        if let Some(finished) = finished {
             if finished.result_destination != 0 {
                 bus.write_long(finished.result_destination, result);
             }
@@ -1307,50 +1299,35 @@ impl super::TrapDispatcher {
         true
     }
 
-    /// Entered through the return trampoline when a `ThreadEntryProc`
-    /// returns. The proc's `void *` result arrives in A0, per the 68K
-    /// convention for a pointer-valued result.
+    /// ThreadEntryProc returns a pointer in A0 at the 68K ABI edge.
     fn finish_cooperative_thread<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> bool {
-        let finished_id = self.guest_calls.current_task().thread_id();
         let result = cpu.read_reg(Register::A0);
-        if !self.retire_cooperative_thread(finished_id, result, bus) {
+        self.finish_cooperative_thread_with_result(cpu, bus, result)
+    }
+
+    fn finish_cooperative_thread_with_result<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        result: u32,
+    ) -> bool {
+        let finished = self.guest_calls.current_task();
+        if !self.guest_calls.task_is_empty(finished) {
             return false;
         }
-
-        // The finished thread has no context left to return to, so a
-        // successor must be installed. The application thread always has a
-        // live saved context, so it is the backstop.
-        let next = self
-            .next_ready_cooperative_thread(0)
-            .filter(|next_id| *next_id != finished_id);
-        if let Some(next_id) = next {
-            if self.switch_to_cooperative_thread(cpu, next_id) {
-                return self
-                    .guest_calls
-                    .remove_task(ExecutionTaskId::from_thread_id(finished_id));
-            }
+        // Select and validate the successor before releasing the outgoing
+        // snapshot or stack. A failed installation leaves the task retryable.
+        let Some(next) = self.next_ready_cooperative_thread(0) else {
+            return false;
+        };
+        if !self.switch_to_cooperative_thread(cpu, next) {
+            return false;
         }
-        if let Some(application) = self
-            .cooperative_threads
-            .get(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
-            .cloned()
-        {
-            self.guest_calls
-                .switch_to_task(ExecutionTaskId::APPLICATION);
-            Self::install_cooperative_thread(cpu, &application);
-            self.cooperative_threads.insert(
-                ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID),
-                application,
-            );
-            return self
-                .guest_calls
-                .remove_task(ExecutionTaskId::from_thread_id(finished_id));
-        }
-        false
+        self.retire_cooperative_thread(finished.thread_id(), result, bus)
     }
 
     /// Claim a pooled stack of at least `stack_size` bytes, or allocate a
@@ -16336,8 +16313,10 @@ impl super::TrapDispatcher {
                             thread.a_regs[7] = entry_sp;
                             thread.stack_base = stack_base;
                             thread.stack_limit = stack_limit;
-                            self.cooperative_threads
-                                .insert(ExecutionTaskId::from_thread_id(thread_id), thread);
+                            self.guest_calls.save_cooperative_context(
+                                ExecutionTaskId::from_thread_id(thread_id),
+                                thread,
+                            );
                             self.guest_calls.set_scheduling_state(
                                 ExecutionTaskId::from_thread_id(thread_id),
                                 if state == Self::THREAD_STATE_READY {
@@ -16419,7 +16398,7 @@ impl super::TrapDispatcher {
                         } else {
                             let running = thread == self.guest_calls.current_task().thread_id();
                             let current_sp = cpu.read_reg(Register::A7);
-                            match self.cooperative_thread_mut(cpu, thread) {
+                            match self.cooperative_thread_snapshot(cpu, thread) {
                                 None => Self::THREAD_NOT_FOUND_ERR,
                                 Some(record) => {
                                     // The application thread keeps the process
@@ -16448,19 +16427,19 @@ impl super::TrapDispatcher {
                         let thread_to_dump =
                             self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
                         if !self
-                            .cooperative_threads
-                            .contains(ExecutionTaskId::from_thread_id(thread_to_dump))
+                            .guest_calls
+                            .cooperative_context(ExecutionTaskId::from_thread_id(thread_to_dump))
+                            .is_some()
                             && thread_to_dump != Self::APPLICATION_THREAD_ID
                         {
                             Self::THREAD_NOT_FOUND_ERR
                         } else if thread_to_dump == self.guest_calls.current_task().thread_id() {
                             // Threads.h allows a thread to dispose of itself;
                             // the call never returns to it.
-                            if !self.retire_cooperative_thread(thread_to_dump, thread_result, bus) {
-                                Self::THREAD_PROTOCOL_ERR
-                            } else {
-                                self.finish_cooperative_thread(cpu, bus);
+                            if self.finish_cooperative_thread_with_result(cpu, bus, thread_result) {
                                 return Some(Ok(()));
+                            } else {
+                                Self::THREAD_PROTOCOL_ERR
                             }
                         } else {
                             if self.retire_cooperative_thread(thread_to_dump, thread_result, bus) {
@@ -16578,14 +16557,18 @@ impl super::TrapDispatcher {
                         let switch_proc_param = bus.read_long(sp + 2);
                         let thread_switcher = bus.read_long(sp + 6);
                         let thread = self.resolve_cooperative_thread_id(bus.read_long(sp + 10));
-                        match self.cooperative_thread_mut(cpu, thread) {
+                        match self.cooperative_thread_snapshot(cpu, thread) {
                             None => Self::THREAD_NOT_FOUND_ERR,
-                            Some(record) => {
+                            Some(mut record) => {
                                 if switch_in {
                                     record.switch_in = (thread_switcher, switch_proc_param);
                                 } else {
                                     record.switch_out = (thread_switcher, switch_proc_param);
                                 }
+                                self.guest_calls.save_cooperative_context(
+                                    ExecutionTaskId::from_thread_id(thread),
+                                    record,
+                                );
                                 0
                             }
                         }
@@ -16596,10 +16579,14 @@ impl super::TrapDispatcher {
                         let termination_proc_param = bus.read_long(sp);
                         let thread_terminator = bus.read_long(sp + 4);
                         let thread = self.resolve_cooperative_thread_id(bus.read_long(sp + 8));
-                        match self.cooperative_thread_mut(cpu, thread) {
+                        match self.cooperative_thread_snapshot(cpu, thread) {
                             None => Self::THREAD_NOT_FOUND_ERR,
-                            Some(record) => {
+                            Some(mut record) => {
                                 record.terminator = (thread_terminator, termination_proc_param);
+                                self.guest_calls.save_cooperative_context(
+                                    ExecutionTaskId::from_thread_id(thread),
+                                    record,
+                                );
                                 0
                             }
                         }
@@ -27118,7 +27105,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
         assert_eq!(cpu.read_reg(Register::A7), sp + 28);
         assert_eq!(bus.read_long(thread_made), 0, "no ThreadID on failure");
-        assert!(disp.cooperative_threads.is_empty());
+        assert!(disp.guest_calls.is_pristine());
     }
 
     /// `kApplicationThreadID` exists implicitly from launch, so
@@ -27193,8 +27180,8 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
 
         let thread = disp
-            .cooperative_threads
-            .get(ExecutionTaskId::from_thread_id(2))
+            .guest_calls
+            .cooperative_context(ExecutionTaskId::from_thread_id(2))
             .expect("the application thread record must exist");
         assert_eq!(thread.switch_in, (0x0003_0000, 0x1111_2222));
         assert_eq!(thread.switch_out, (0, 0), "switch-out stays unset");
@@ -27241,8 +27228,9 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 10);
         assert!(!disp
-            .cooperative_threads
-            .contains(ExecutionTaskId::from_thread_id(new_id)));
+            .guest_calls
+            .cooperative_context(ExecutionTaskId::from_thread_id(new_id))
+            .is_some());
         assert!(
             disp.guest_calls
                 .scheduling_state(ExecutionTaskId::from_thread_id(new_id))
@@ -27312,6 +27300,33 @@ mod tests {
                 .scheduling_state(ExecutionTaskId::APPLICATION),
             Some(ExecutionTaskState::Running)
         );
+    }
+
+    #[test]
+    fn thread_exit_without_a_successor_context_keeps_the_task_stack_and_result() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let worker = ExecutionTaskId::from_thread_id(3);
+        let result_slot = TEST_SP + 0x100;
+        bus.write_long(result_slot, 0x1234_5678);
+        assert!(disp.guest_calls.register_task(worker));
+        assert!(disp
+            .guest_calls
+            .set_scheduling_state(worker, ExecutionTaskState::Ready));
+        let mut saved = super::CooperativeThread::default();
+        saved.result_destination = result_slot;
+        saved.stack_base = 0x1000;
+        saved.stack_limit = 0x2000;
+        assert!(disp
+            .guest_calls
+            .save_cooperative_context(worker, saved.clone()));
+        assert!(disp.guest_calls.switch_to_task(worker));
+        // The application is ready, but no adapter snapshot exists for it.
+        cpu.write_reg(Register::A0, 0xcafe_babe);
+        assert!(!disp.finish_cooperative_thread(&mut cpu, &mut bus));
+        assert_eq!(disp.guest_calls.current_task(), worker);
+        assert_eq!(disp.guest_calls.cooperative_context(worker), Some(saved));
+        assert_eq!(bus.read_long(result_slot), 0x1234_5678);
+        assert!(disp.cooperative_thread_pool.is_empty());
     }
 
     #[test]
@@ -27534,8 +27549,9 @@ mod tests {
 
         assert_eq!(disp.guest_calls.current_task().thread_id(), 2);
         assert!(!disp
-            .cooperative_threads
-            .contains(ExecutionTaskId::from_thread_id(3)));
+            .guest_calls
+            .cooperative_context(ExecutionTaskId::from_thread_id(3))
+            .is_some());
         assert_eq!(bus.read_long(thread_result), 0xCAFE_BABE);
         assert_eq!(cpu.read_reg(Register::PC), 0x000F_0000);
         assert_eq!(cpu.read_reg(Register::A7), app_sp + 4);
