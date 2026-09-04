@@ -1365,8 +1365,8 @@ fn test_toolbox_showcase() {
     assert_window_geometry(
         &mut runner,
         "Auxiliary Window",
-        (185, 215, 450, 550),
-        (166, 214, 452, 552),
+        (185, 215, 455, 560),
+        (166, 214, 457, 562),
     );
     assert_windows_repainted(&mut runner, "auxiliary resize exposed regions");
     assert_eq!(
@@ -1379,7 +1379,7 @@ fn test_toolbox_showcase() {
     // 3e. The inspector's right-hand body is not covered by the resized
     // auxiliary window.  Clicking there must hit-test the inspector and move
     // it to the front, changing the overlap pixel to the inspector color.
-    click_point(&mut runner, 460, 500);
+    click_point(&mut runner, 480, 500);
     step_until(
         &mut runner,
         "activate stacked inspector through exposed content",

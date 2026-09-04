@@ -1,0 +1,110 @@
+{
+  "fixture_sha256": "b88553c2fd06011752b732d2103a6ae194e65bf9f52d3b5bcce52acf27ee7d7e",
+  "scenario": "oracle/windows.json",
+  "scenario_sha256": "0e574d9865fff550b2ff5103ecc4dd499f81bf8fa2cba534852e1c71504c4189",
+  "capture_date": "2026-09-05",
+  "verification": {
+    "initial_front": "Stacked Inspector",
+    "activated_front": "Auxiliary Window",
+    "moved_content_rect": [
+      185,
+      215,
+      430,
+      535
+    ],
+    "resized_content_rect": [
+      185,
+      215,
+      455,
+      560
+    ],
+    "resized_dimensions": [
+      345,
+      270
+    ],
+    "hit_test_front": "Stacked Inspector",
+    "first_close_front": "Auxiliary Window",
+    "second_close_front": "Toolbox Showcase",
+    "final_window_count": 1
+  },
+  "runs": [
+    {
+      "emulator": "basilisk",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "checkpoints": [
+        {
+          "file": "reference/basiliskii-68k/03-windows.png",
+          "sha256": "880e94fcd9b7c0342ef6d6e3debabb97735e96c4b8cece8f6e97d30923e21a43"
+        },
+        {
+          "file": "reference/basiliskii-68k/03-windows-aux-activated.png",
+          "sha256": "9dac917c5c78fe462c5bf077c39c6f3dc698d17f491ddbbb2b0d6769f11bc219"
+        },
+        {
+          "file": "reference/basiliskii-68k/03-windows-moved.png",
+          "sha256": "7fd988b8018b238e7e4c4c8c2e54449d1a19d87a414d665b83011bf52046a639"
+        },
+        {
+          "file": "reference/basiliskii-68k/03-windows-resized.png",
+          "sha256": "a31d1d2025a3805d84a709064dd734da7af8f3db92b7e502813b39ec993445ba"
+        },
+        {
+          "file": "reference/basiliskii-68k/03-windows-hit-test.png",
+          "sha256": "b16444549a88c5882d79f32de017f8f631a820ce3353d635db8de6bbeab3db5a"
+        },
+        {
+          "file": "reference/basiliskii-68k/03-windows-promoted.png",
+          "sha256": "1fcf122590a76a5206ceaaad368a774f879294be4a1230e6746895c4abf551cf"
+        },
+        {
+          "file": "reference/basiliskii-68k/03-windows-main-promoted.png",
+          "sha256": "f42edfcab46058a601197f7ef97f8ef031e9d580c5bbc1660ea6ca7685e30b3e"
+        }
+      ]
+    },
+    {
+      "emulator": "sheepshaver",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 32,
+      "checkpoints": [
+        {
+          "file": "reference/sheepshaver-ppc/03-windows.png",
+          "sha256": "de708b93d810ffe38fedf5b8ac27cbcb1d82534b0a99de7592b6edbfb373682a"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/03-windows-aux-activated.png",
+          "sha256": "96f4620480164cfb4ab897b9ddd3bca9b6d3a12e92c543dfa577fac575219ed4"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/03-windows-moved.png",
+          "sha256": "79dce93540ccca9f93975694891174c585be09cd64901d187d901e27d966a469"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/03-windows-resized.png",
+          "sha256": "ad150fc9b84007d6d7293b9a7ec4a81d10bb49e04dddf534841400f4d0481103"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/03-windows-hit-test.png",
+          "sha256": "81e06fc5b8c0e00881a655e0303330db53a9aef1eaeb8f293270bd5de9a34e64"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/03-windows-promoted.png",
+          "sha256": "b4538b6096b5d6b1f7c96fbb9b1603c2badd528077e0ebc8487b6c422a377cd7"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/03-windows-main-promoted.png",
+          "sha256": "904bde1b33b145098b7883e11ca5771906816dbf40ac3144464d4ea350d7f011"
+        }
+      ]
+    }
+  ]
+}

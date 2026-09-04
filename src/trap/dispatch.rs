@@ -778,6 +778,7 @@ pub(crate) struct GrowWindowTrackingState {
     pub screen_mode: (u32, u32, u16, u16, u16),
     pub original_content_rect: (i16, i16, i16, i16),
     pub original_outline_rect: (i16, i16, i16, i16),
+    pub start_point: (i16, i16),
     pub size_rect: (i16, i16, i16, i16),
     pub outline_rect: (i16, i16, i16, i16),
     pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
