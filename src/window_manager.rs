@@ -199,45 +199,39 @@ pub(crate) fn standard_window_chrome(
     let has_zoom_box = active && document_proc && zoom_box;
     let mut zoom_ink = Vec::new();
     if has_zoom_box {
-        // The visible zoom glyph is two 8-by-8 frames offset by three pixels,
-        // giving the classic overlapping-window silhouette in an 11-by-11
-        // footprint. It is centered in the standard 18-by-18 TrackBox hit
-        // cell. Macintosh Toolbox Essentials (1992), pp. 4-8 and 4-47.
+        // The visible zoom control is an 11-by-11 outer box with the bottom
+        // and right edges of its smaller state box inset by four pixels. It is
+        // centered in the standard 18-by-18 TrackBox hit cell. Macintosh Human
+        // Interface Guidelines (1992), Figure 5-38, p. 168.
         let box_top = top.saturating_sub(15);
         let box_left = right.saturating_sub(20);
-        for (frame_top, frame_left) in [
-            (box_top, box_left.saturating_add(3)),
-            (box_top.saturating_add(3), box_left),
-        ] {
-            let frame_bottom = frame_top.saturating_add(8);
-            let frame_right = frame_left.saturating_add(8);
-            zoom_ink.extend([
-                (
-                    frame_top,
-                    frame_left,
-                    frame_top.saturating_add(1),
-                    frame_right,
-                ),
-                (
-                    frame_top,
-                    frame_left,
-                    frame_bottom,
-                    frame_left.saturating_add(1),
-                ),
-                (
-                    frame_bottom.saturating_sub(1),
-                    frame_left,
-                    frame_bottom,
-                    frame_right,
-                ),
-                (
-                    frame_top,
-                    frame_right.saturating_sub(1),
-                    frame_bottom,
-                    frame_right,
-                ),
-            ]);
-        }
+        let box_bottom = box_top.saturating_add(11);
+        let box_right = box_left.saturating_add(11);
+        let small_bottom = box_top.saturating_add(7);
+        let small_right = box_left.saturating_add(7);
+        zoom_ink.extend([
+            (box_top, box_left, box_top.saturating_add(1), box_right),
+            (box_top, box_left, box_bottom, box_left.saturating_add(1)),
+            (
+                box_bottom.saturating_sub(1),
+                box_left,
+                box_bottom,
+                box_right,
+            ),
+            (box_top, box_right.saturating_sub(1), box_bottom, box_right),
+            (
+                box_top,
+                small_right.saturating_sub(1),
+                small_bottom,
+                small_right,
+            ),
+            (
+                small_bottom.saturating_sub(1),
+                box_left,
+                small_bottom,
+                small_right,
+            ),
+        ]);
         ink.extend(zoom_ink.iter().copied());
     }
 
@@ -390,16 +384,14 @@ mod tests {
         assert_eq!(
             chrome.zoom_ink,
             [
-                (34, 583, 35, 591),
-                (34, 583, 42, 584),
-                (41, 583, 42, 591),
-                (34, 590, 42, 591),
-                (37, 580, 38, 588),
-                (37, 580, 45, 581),
-                (44, 580, 45, 588),
-                (37, 587, 45, 588),
+                (34, 580, 35, 591),
+                (34, 580, 45, 581),
+                (44, 580, 45, 591),
+                (34, 590, 45, 591),
+                (34, 586, 41, 587),
+                (40, 580, 41, 587),
             ],
-            "the zoom glyph should be two aligned 8-pixel frames in an 11-pixel footprint"
+            "the zoom control should nest its smaller state box inside an 11-pixel frame"
         );
     }
 
