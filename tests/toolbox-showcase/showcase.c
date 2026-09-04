@@ -70,6 +70,7 @@
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
 #define rShowcaseSound 151
+#define rPopupResourceControl 143
 
 #define mApple 128
 #define mPages 129
@@ -80,6 +81,8 @@
 #define mDifficulty 140
 #define mSoundMenu 141
 #define mRendererMenu 142
+#define mPopupLoadout 143
+#define mPopupTheme 144
 
 /* Pages menu items */
 #define iGraphics 1
@@ -97,6 +100,7 @@
 #define iResources 13
 #define iSprites 14
 #define iEventsCursors 15
+#define iPopupLists 16
 
 /* State menu items */
 #define iButtonState 1
@@ -151,6 +155,18 @@
 #define pageResources 13
 #define pageSprites 14
 #define pageEventsCursors 15
+#define pagePopupLists 16
+
+/* Popup Lists state/menu items. */
+#define iPopupLoadoutScout 1
+#define iPopupLoadoutVeteran 2
+#define iPopupLoadoutLong 4
+#define iPopupLoadoutMinimal 5
+#define iPopupLoadoutHeavy 6
+#define iPopupThemeClassic 1
+#define iPopupThemeContrast 2
+#define iPopupThemeNight 4
+#define iPopupThemeDeepField 36
 
 #define kResourceBrowserRows 3
 #define resourceStatusEnumerated 1
@@ -285,9 +301,9 @@ static Boolean gSoundResourceLocked = false;
 static OSErr gSoundLastError = noErr;
 static OSErr gSoundStatusError = noErr;
 
-static void SyncMenuState(void);
-static MenuHandle StateMenu(void);
-static void DrawMainWindow(void);
+void SyncMenuState(void);
+MenuHandle StateMenu(void);
+void DrawMainWindow(void);
 
 /*
  * Sound Manager callbacks run at interrupt time. Store the completion flag
@@ -295,7 +311,9 @@ static void DrawMainWindow(void);
  * does not need to dereference the application's A5 world. Sound (1994),
  * pp. 2-46--2-48 and 2-151--2-152.
  */
-static pascal void ShowcaseSoundCallback(SndChannelPtr chan, SndCommand *cmd)
+#pragma segment Sound
+
+pascal void ShowcaseSoundCallback(SndChannelPtr chan, SndCommand *cmd)
 {
     (void)cmd;
     if (chan != nil && chan->userInfo != 0) {
@@ -303,14 +321,14 @@ static pascal void ShowcaseSoundCallback(SndChannelPtr chan, SndCommand *cmd)
     }
 }
 
-static void MakeShowcaseSoundCommand(SndCommand *cmd, short command, long param2)
+void MakeShowcaseSoundCommand(SndCommand *cmd, short command, long param2)
 {
     cmd->cmd = command;
     cmd->param1 = 0;
     cmd->param2 = param2;
 }
 
-static void EnsureShowcaseSoundChannel(void)
+void EnsureShowcaseSoundChannel(void)
 {
     if (gShowcaseSoundChannel != nil) return;
     if (gShowcaseSound == nil) {
@@ -335,7 +353,7 @@ static void EnsureShowcaseSoundChannel(void)
     }
 }
 
-static void ResetShowcaseSoundChannel(void)
+void ResetShowcaseSoundChannel(void)
 {
     SndCommand cmd;
 
@@ -346,7 +364,7 @@ static void ResetShowcaseSoundChannel(void)
     SndDoImmediate(gShowcaseSoundChannel, &cmd);
 }
 
-static void PlayShowcaseSound(Boolean queueCompletion)
+void PlayShowcaseSound(Boolean queueCompletion)
 {
     SndCommand cmd;
     Boolean lockedHere;
@@ -392,7 +410,7 @@ static void PlayShowcaseSound(Boolean queueCompletion)
     }
 }
 
-static void QueueShowcaseSoundCommands(void)
+void QueueShowcaseSoundCommands(void)
 {
     SndCommand cmd;
 
@@ -406,7 +424,7 @@ static void QueueShowcaseSoundCommands(void)
     }
 }
 
-static void FlushShowcaseSound(void)
+void FlushShowcaseSound(void)
 {
     SndCommand cmd;
 
@@ -416,7 +434,7 @@ static void FlushShowcaseSound(void)
     gSoundFlushed = gSoundLastError == noErr;
 }
 
-static void QuietShowcaseSound(void)
+void QuietShowcaseSound(void)
 {
     SndCommand cmd;
 
@@ -426,7 +444,7 @@ static void QuietShowcaseSound(void)
     gSoundQuieted = gSoundLastError == noErr;
 }
 
-static void DisposeShowcaseSoundChannel(void)
+void DisposeShowcaseSoundChannel(void)
 {
     if (gShowcaseSoundChannel == nil) {
         gSoundDisposed = true;
@@ -457,7 +475,7 @@ static void DisposeShowcaseSoundChannel(void)
     SyncMenuState();
 }
 
-static void RefreshShowcaseSoundStatus(void)
+void RefreshShowcaseSoundStatus(void)
 {
     if (gShowcaseSoundChannel == nil) {
         gSoundStatusError = noErr;
@@ -470,7 +488,7 @@ static void RefreshShowcaseSoundStatus(void)
                                          &gShowcaseSoundStatus);
 }
 
-static void PollShowcaseSound(void)
+void PollShowcaseSound(void)
 {
     RefreshShowcaseSoundStatus();
     CheckItem(StateMenu(), iSoundState, gSoundCompleted);
@@ -479,6 +497,8 @@ static void PollShowcaseSound(void)
         DrawMainWindow();
     }
 }
+
+#pragma segment Main
 
 /* Page 11: Styled TextEdit & Font Manager */
 static TEHandle gStyledTE;
@@ -562,6 +582,17 @@ static Boolean gSpriteRegionVerified = false;
 static Boolean gSpriteUpdateRegionVerified = false;
 static OSErr gSpriteRegionError = noErr;
 static short gSpriteScrollDelta;
+
+/* Page 16: Popup & Dropdown Lists. */
+static ControlHandle gPopupResource;
+static ControlHandle gPopupProgrammatic;
+static MenuHandle gPopupLoadoutMenu;
+static MenuHandle gPopupThemeMenu;
+static short gPopupLoadoutValue = iPopupLoadoutScout;
+static short gPopupThemeValue = iPopupThemeClassic;
+static short gPopupLastSelected = 0;
+static Boolean gPopupOpened = false;
+static Boolean gPopupRestored = false;
 
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
@@ -767,7 +798,7 @@ static short gVolume = 75;
 static short gRenderer = iRendBevel;
 static Boolean gModalDialogCompleted = false;
 
-static MenuHandle StateMenu(void)
+MenuHandle StateMenu(void)
 {
     return GetMenuHandle(mState);
 }
@@ -1114,7 +1145,9 @@ static void RenderQD3DScene(WindowPtr window)
 /*
  * Page 4: Broader Drawing, QuickDraw 3D, Polygons, Arcs, Regions, PICT & Text
  */
-static void DrawDrawingPage(void)
+#pragma segment Drawing
+
+void DrawDrawingPage(void)
 {
     Rect r;
     Rect arcRect;
@@ -1400,6 +1433,8 @@ static void DrawDrawingPage(void)
 /*
  * Page 5: Game Preferences & Settings Panel
  */
+#pragma segment Main
+
 static void DrawPreferencesPage(void)
 {
     Rect r;
@@ -1938,6 +1973,8 @@ static void DrawTextEditPage(void)
     DrawControls(gMainWindow);
 }
 
+#pragma segment Lists
+
 /*
  * Page 9: Lists & Inventory.
  *
@@ -1946,7 +1983,7 @@ static void DrawTextEditPage(void)
  * visible in the same deterministic row geometry on both CPU slices.
  * More Macintosh Toolbox (1993), pp. 4-70--4-76, 4-81--4-84, and 4-90--4-95.
  */
-static short InventoryTextLength(const char *text)
+short InventoryTextLength(const char *text)
 {
     short length;
 
@@ -1955,7 +1992,7 @@ static short InventoryTextLength(const char *text)
     return length;
 }
 
-static void UpdateInventoryList(void)
+void UpdateInventoryList(void)
 {
     RgnHandle updateRegion;
 
@@ -1970,7 +2007,7 @@ static void UpdateInventoryList(void)
     }
 }
 
-static void PopulateInventoryList(void)
+void PopulateInventoryList(void)
 {
     Cell cell;
     short row;
@@ -1990,7 +2027,7 @@ static void PopulateInventoryList(void)
     UpdateInventoryList();
 }
 
-static Boolean InspectInventorySelection(void)
+Boolean InspectInventorySelection(void)
 {
     Cell cell;
     char cellData[96];
@@ -2014,7 +2051,7 @@ static Boolean InspectInventorySelection(void)
     return true;
 }
 
-static void MutateInventorySelection(void)
+void MutateInventorySelection(void)
 {
     Cell cell;
     char cellData[96];
@@ -2049,7 +2086,7 @@ static void MutateInventorySelection(void)
     UpdateInventoryList();
 }
 
-static void ScrollInventoryList(void)
+void ScrollInventoryList(void)
 {
     if (gInventoryList == nil) return;
     LScroll(0, 4, gInventoryList);
@@ -2057,7 +2094,7 @@ static void ScrollInventoryList(void)
     UpdateInventoryList();
 }
 
-static void ResizeInventoryList(void)
+void ResizeInventoryList(void)
 {
     if (gInventoryList == nil) return;
     if (gListResized) {
@@ -2073,7 +2110,7 @@ static void ResizeInventoryList(void)
     UpdateInventoryList();
 }
 
-static void ToggleInventoryActivation(void)
+void ToggleInventoryActivation(void)
 {
     if (gInventoryList == nil) return;
     gListActive = !gListActive;
@@ -2082,7 +2119,7 @@ static void ToggleInventoryActivation(void)
     UpdateInventoryList();
 }
 
-static void DrawListsPage(void)
+void DrawListsPage(void)
 {
     Rect frame;
     Str255 number;
@@ -2137,6 +2174,174 @@ static void DrawListsPage(void)
     DrawControls(gMainWindow);
 }
 
+#pragma segment PopupLists
+
+/*
+ * Page 16: Popup & Dropdown Lists.
+ *
+ * The first control comes from a resource-backed CNTL/MENU pair. The second
+ * is created with NewMenu + AppendMenu and NewControl, with the fixed-width
+ * popup variation deliberately exercising truncation of a long item. Both
+ * controls use the standard popup CDEF, so TrackControl owns the live menu
+ * overlay, item highlighting, value update, and closed-control redraw.
+ * Macintosh Toolbox Essentials (1992), pp. 3-31--3-34 and 5-25--5-27;
+ * Inside Macintosh Volume VI (1991), pp. 3-16--3-19.
+ */
+void SyncPopupMenuMarks(void)
+{
+    short i;
+
+    if (gPopupLoadoutMenu != nil) {
+        for (i = 1; i <= CountMItems(gPopupLoadoutMenu); i++) {
+            CheckItem(gPopupLoadoutMenu, i, false);
+        }
+        if (gPopupLoadoutValue != 3) {
+            CheckItem(gPopupLoadoutMenu, gPopupLoadoutValue, true);
+        }
+    }
+    if (gPopupThemeMenu != nil) {
+        for (i = 1; i <= CountMItems(gPopupThemeMenu); i++) {
+            CheckItem(gPopupThemeMenu, i, false);
+        }
+        if (gPopupThemeValue != 3) {
+            CheckItem(gPopupThemeMenu, gPopupThemeValue, true);
+        }
+    }
+}
+
+void RefreshPopupValues(void)
+{
+    if (gPopupResource != nil) {
+        gPopupLoadoutValue = GetControlValue(gPopupResource);
+    }
+    if (gPopupProgrammatic != nil) {
+        gPopupThemeValue = GetControlValue(gPopupProgrammatic);
+    }
+    SyncPopupMenuMarks();
+}
+
+void DrawPopupSelection(short value, ConstStr255Param label,
+                               Boolean loadout)
+{
+    DrawString(label);
+    if (loadout) {
+        switch (value) {
+            case iPopupLoadoutScout:
+                DrawString("\p1");
+                DrawString("\p: Scout Kit");
+                break;
+            case iPopupLoadoutVeteran:
+                DrawString("\p2");
+                DrawString("\p: Veteran Kit");
+                break;
+            case iPopupLoadoutLong:
+                DrawString("\p4");
+                DrawString("\p: Long-range Expedition Loadout");
+                break;
+            case iPopupLoadoutMinimal:
+                DrawString("\p5");
+                DrawString("\p: Locked Prototype");
+                break;
+            case iPopupLoadoutHeavy:
+                DrawString("\p6");
+                DrawString("\p: Heavy Support");
+                break;
+            default:
+                DrawString("\p0");
+                DrawString("\p: (no selectable item)");
+                break;
+        }
+    } else {
+        switch (value) {
+            case iPopupThemeClassic:
+                DrawString("\p1");
+                DrawString("\p: Classic");
+                break;
+            case iPopupThemeContrast:
+                DrawString("\p2");
+                DrawString("\p: High Contrast");
+                break;
+            case iPopupThemeNight:
+                DrawString("\p4");
+                DrawString("\p: Night Operations");
+                break;
+            case iPopupThemeDeepField:
+                DrawString("\p36");
+                DrawString("\p: Deep Field Archive");
+                break;
+            default:
+                DrawString("\p0");
+                DrawString("\p: (no selectable item)");
+                break;
+        }
+    }
+}
+
+void DrawPopupListsPage(void)
+{
+    Rect panel;
+    Rect restore;
+    Str255 number;
+
+    DrawHeading("\pPopup & Dropdown Lists");
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(24, 54);
+    DrawString("\pThe standard popup CDEF tracks a live dropdown until mouse-up.");
+    MoveTo(24, 66);
+    DrawString("\pTry the disabled row, separator, long label, and fixed-width title.");
+
+    SetRect(&panel, 20, 78, 535, 188);
+    DrawBeveledBox(&panel, false);
+    TextFont(systemFont);
+    TextSize(10);
+    TextFace(bold);
+    MoveTo(28, 94);
+    DrawString("\pControl-backed popup definitions");
+    TextFace(0);
+
+    MoveTo(28, 118);
+    DrawString("\pResource CNTL:");
+    MoveTo(28, 154);
+    DrawString("\pProgrammatic:");
+
+    SetRect(&panel, 20, 200, 535, 300);
+    DrawBeveledBox(&panel, false);
+    TextFont(systemFont);
+    TextSize(10);
+    TextFace(bold);
+    MoveTo(28, 216);
+    DrawString("\pControl values and menu marks");
+    TextFace(0);
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(28, 236);
+    DrawPopupSelection(gPopupLoadoutValue, "\pLoadout value ", true);
+    MoveTo(28, 252);
+    DrawPopupSelection(gPopupThemeValue, "\pTheme value ", false);
+    MoveTo(28, 270);
+    DrawString("\pMarks follow GetControlValue after each selection.");
+    MoveTo(28, 284);
+    DrawString("\pDisabled/separator rows cannot become the selected value.");
+
+    SetRect(&restore, 20, 310, 535, 342);
+    DrawBeveledBox(&restore, true);
+    MoveTo(28, 329);
+    DrawString("\pClosed-control repaint: ");
+    DrawString(gPopupRestored ? "\prestored after release" : "\pnot exercised");
+    MoveTo(328, 329);
+    DrawString("\pLast item: ");
+    NumToString(gPopupLastSelected, number);
+    DrawString(number);
+    DrawString(gPopupOpened ? "\p (tracking)" : "\p (idle)");
+
+    MoveTo(20, 360);
+    DrawString("\pPopup menus are hierarchical MenuList members only while their controls need them.");
+    DrawControls(gMainWindow);
+}
+
+#pragma segment ResourceBrowser
+
 /*
  * Page 13: Resource Browser. The map is inspected with loading disabled so
  * the table can show the difference between a resource reference and its
@@ -2146,12 +2351,12 @@ static void DrawListsPage(void)
  * Inside Macintosh: More Macintosh Toolbox (1993), pp. 1-75--1-82 and
  * 1-92--1-93; Inside Macintosh Volume I (1985), pp. I-118--I-125.
  */
-static Boolean ResourceBrowserHandleLoaded(Handle handle)
+Boolean ResourceBrowserHandleLoaded(Handle handle)
 {
     return handle != nil && *handle != nil;
 }
 
-static void ResourceBrowserTypeString(ResType type, Str255 string)
+void ResourceBrowserTypeString(ResType type, Str255 string)
 {
     string[0] = 4;
     string[1] = (char)(type >> 24);
@@ -2160,7 +2365,7 @@ static void ResourceBrowserTypeString(ResType type, Str255 string)
     string[4] = (char)type;
 }
 
-static Boolean ResourceBrowserCheckError(void)
+Boolean ResourceBrowserCheckError(void)
 {
     gResourceError = ResError();
     if (gResourceError != noErr) {
@@ -2170,7 +2375,7 @@ static Boolean ResourceBrowserCheckError(void)
     return true;
 }
 
-static void ResourceBrowserRestoreAutomaticLoading(void)
+void ResourceBrowserRestoreAutomaticLoading(void)
 {
     short error;
 
@@ -2180,7 +2385,7 @@ static void ResourceBrowserRestoreAutomaticLoading(void)
     if (gResourceError != noErr) gResourceStatus = resourceStatusError;
 }
 
-static void ResourceBrowserClearEntry(short index)
+void ResourceBrowserClearEntry(short index)
 {
     gResourceEntries[index].handle = nil;
     gResourceEntries[index].id = 0;
@@ -2192,7 +2397,7 @@ static void ResourceBrowserClearEntry(short index)
     gResourceEntries[index].present = false;
 }
 
-static Boolean ReadResourceBrowserEntries(void)
+Boolean ReadResourceBrowserEntries(void)
 {
     short i;
     short visibleCount;
@@ -2281,7 +2486,7 @@ static Boolean ReadResourceBrowserEntries(void)
     return ok && gResourceError == noErr;
 }
 
-static Boolean PrepareResourceBrowser(void)
+Boolean PrepareResourceBrowser(void)
 {
     if (!gResourceBrowserReady) {
         if (!ReadResourceBrowserEntries()) return false;
@@ -2291,14 +2496,14 @@ static Boolean PrepareResourceBrowser(void)
     return true;
 }
 
-static void RefreshResourceBrowser(void)
+void RefreshResourceBrowser(void)
 {
     if (!PrepareResourceBrowser()) return;
     if (!ReadResourceBrowserEntries()) return;
     gResourceStatus = resourceStatusEnumerated;
 }
 
-static void LoadNamedResourceBrowserEntry(void)
+void LoadNamedResourceBrowserEntry(void)
 {
     Handle handle;
 
@@ -2335,7 +2540,7 @@ static void LoadNamedResourceBrowserEntry(void)
     gResourceStatus = resourceStatusLoaded;
 }
 
-static void ReleaseNamedResourceBrowserEntry(void)
+void ReleaseNamedResourceBrowserEntry(void)
 {
     if (!PrepareResourceBrowser()) return;
     if (gResourceEditHandle == nil) {
@@ -2355,7 +2560,7 @@ static void ReleaseNamedResourceBrowserEntry(void)
     gResourceStatus = resourceStatusReleased;
 }
 
-static void DrawResourceLifecycleStatus(void)
+void DrawResourceLifecycleStatus(void)
 {
     Str255 number;
 
@@ -2372,7 +2577,7 @@ static void DrawResourceLifecycleStatus(void)
     }
 }
 
-static void DrawResourceBrowserPage(void)
+void DrawResourceBrowserPage(void)
 {
     Rect table;
     Str255 number;
@@ -2479,7 +2684,9 @@ static void DrawResourceBrowserPage(void)
  * that record; no parallel swatch model is used. Inside Macintosh: Text
  * (1993), pp. 2-78, 2-98..2-102, and 3-81..3-82.
  */
-static void SetStyledStyle(TextStyle *style, short font, Style face,
+#pragma segment StyledFiles
+
+void SetStyledStyle(TextStyle *style, short font, Style face,
                            short size, const RGBColor *color)
 {
     style->tsFont = font;
@@ -2488,13 +2695,13 @@ static void SetStyledStyle(TextStyle *style, short font, Style face,
     style->tsColor = *color;
 }
 
-static void ApplyStyledStyle(short start, short end, TextStyle *style)
+void ApplyStyledStyle(short start, short end, TextStyle *style)
 {
     TESetSelect(start, end, gStyledTE);
     TESetStyle(doAll, style, true, gStyledTE);
 }
 
-static void InspectStyledText(void)
+void InspectStyledText(void)
 {
     short textLength;
 
@@ -2512,7 +2719,7 @@ static void InspectStyledText(void)
     TESetSelect(0, 0, gStyledTE);
 }
 
-static void MeasureStyledText(void)
+void MeasureStyledText(void)
 {
     static const char measureText[] = "Styled";
     short charLocations[sizeof(measureText)];
@@ -2528,7 +2735,7 @@ static void MeasureStyledText(void)
     gStyledMeasureWidth = charLocations[count];
 }
 
-static void InitializeStyledText(void)
+void InitializeStyledText(void)
 {
     TextStyle style;
     RGBColor black;
@@ -2577,7 +2784,7 @@ static void InitializeStyledText(void)
     MeasureStyledText();
 }
 
-static void DrawStyledTextPage(void)
+void DrawStyledTextPage(void)
 {
     Rect r;
     Rect well;
@@ -2692,7 +2899,7 @@ static void DrawStyledTextPage(void)
  * begin with an editable default name. Inside Macintosh: Files (1992),
  * pp. 3-42--3-54.
  */
-static void DrawFileStatus(short status)
+void DrawFileStatus(short status)
 {
     if (status == fileStatusAccepted) {
         DrawString("\paccepted");
@@ -2705,20 +2912,20 @@ static void DrawFileStatus(short status)
     }
 }
 
-static void DrawFileStatusLine(short top, ConstStr255Param label, short status)
+void DrawFileStatusLine(short top, ConstStr255Param label, short status)
 {
     MoveTo(32, top);
     DrawString(label);
     DrawFileStatus(status);
 }
 
-static void DoStandardFileOpen(void)
+void DoStandardFileOpen(void)
 {
     StandardGetFile(nil, 1, gFileTypeList, &gFileOpenReply);
     gFileOpenStatus = gFileOpenReply.sfGood ? fileStatusAccepted : fileStatusCancelled;
 }
 
-static void DoLegacyFileOpen(void)
+void DoLegacyFileOpen(void)
 {
     Point where;
 
@@ -2729,7 +2936,7 @@ static void DoLegacyFileOpen(void)
     gFileLegacyOpenStatus = gFileLegacyOpenReply.good ? fileStatusAccepted : fileStatusCancelled;
 }
 
-static void DoStandardFileSave(void)
+void DoStandardFileSave(void)
 {
     OSErr err;
 
@@ -2748,7 +2955,7 @@ static void DoStandardFileSave(void)
     gFileSaveStatus = err == noErr ? fileStatusAccepted : fileStatusError;
 }
 
-static void DoLegacyFileSave(void)
+void DoLegacyFileSave(void)
 {
     Point where;
 
@@ -2759,7 +2966,7 @@ static void DoLegacyFileSave(void)
     gFileLegacySaveStatus = gFileLegacySaveReply.good ? fileStatusAccepted : fileStatusCancelled;
 }
 
-static void DrawStandardFilePage(void)
+void DrawStandardFilePage(void)
 {
     Rect frame;
 
@@ -2812,7 +3019,9 @@ static void DrawStandardFilePage(void)
  * update region. Imaging With QuickDraw (1994), pp. 2-20--2-24,
  * 2-43--2-50, 3-119--3-122, and 6-22--6-46.
  */
-static void BuildSpriteSource(void)
+#pragma segment SpriteEvents
+
+void BuildSpriteSource(void)
 {
     GWorldPtr savedWorld;
     GDHandle savedDevice;
@@ -2863,7 +3072,7 @@ static void BuildSpriteSource(void)
     SetGWorld(savedWorld, savedDevice);
 }
 
-static void BuildSpriteMask(void)
+void BuildSpriteMask(void)
 {
     GWorldPtr savedWorld;
     GDHandle savedDevice;
@@ -2886,7 +3095,7 @@ static void BuildSpriteMask(void)
     SetGWorld(savedWorld, savedDevice);
 }
 
-static void BuildSpriteDeepMask(void)
+void BuildSpriteDeepMask(void)
 {
     GWorldPtr savedWorld;
     GDHandle savedDevice;
@@ -2912,7 +3121,7 @@ static void BuildSpriteDeepMask(void)
     SetGWorld(savedWorld, savedDevice);
 }
 
-static void PrepareSpriteScene(void)
+void PrepareSpriteScene(void)
 {
     GWorldPtr savedWorld;
     GDHandle savedDevice;
@@ -3021,7 +3230,7 @@ static void PrepareSpriteScene(void)
     SetGWorld(savedWorld, savedDevice);
 }
 
-static void ScrollSpriteScene(void)
+void ScrollSpriteScene(void)
 {
     GWorldPtr savedWorld;
     GDHandle savedDevice;
@@ -3073,7 +3282,7 @@ static void ScrollSpriteScene(void)
  * and GetKeys. Macintosh Toolbox Essentials (1992), pp. 2-50--2-71 and
  * Inside Macintosh Volume I (1985), pp. I-258--I-260.
  */
-static void DrawEventKind(short what)
+void DrawEventKind(short what)
 {
     switch (what) {
         case nullEvent:
@@ -3106,12 +3315,12 @@ static void DrawEventKind(short what)
     }
 }
 
-static void DrawEventBoolean(Boolean value)
+void DrawEventBoolean(Boolean value)
 {
     DrawString(value ? "\pyes" : "\pno");
 }
 
-static void DrawEventModifiers(short modifiers)
+void DrawEventModifiers(short modifiers)
 {
     Boolean wrote;
 
@@ -3148,7 +3357,7 @@ static void DrawEventModifiers(short modifiers)
     if (!wrote) DrawString("\pnone");
 }
 
-static void DrawEventHexLong(long value)
+void DrawEventHexLong(long value)
 {
     static const char digits[] = "0123456789ABCDEF";
     Str255 text;
@@ -3163,7 +3372,7 @@ static void DrawEventHexLong(long value)
     DrawString(text);
 }
 
-static void RefreshEventInput(void)
+void RefreshEventInput(void)
 {
     Point mouse;
     KeyMap keys;
@@ -3187,7 +3396,7 @@ static void RefreshEventInput(void)
     }
 }
 
-static void RecordShowcaseEvent(EventRecord *event, Boolean sampleMouse)
+void RecordShowcaseEvent(EventRecord *event, Boolean sampleMouse)
 {
     gEventLastWhat = event->what;
     gEventLastMessage = event->message;
@@ -3212,14 +3421,14 @@ static void RecordShowcaseEvent(EventRecord *event, Boolean sampleMouse)
     }
 }
 
-static void DrawEventButton(const Rect *rect, ConstStr255Param label)
+void DrawEventButton(const Rect *rect, ConstStr255Param label)
 {
     FrameRoundRect(rect, 8, 8);
     MoveTo(rect->left + 7, rect->top + 16);
     DrawString(label);
 }
 
-static void ProbeEventQueue(void)
+void ProbeEventQueue(void)
 {
     EventRecord probe;
 
@@ -3234,7 +3443,7 @@ static void ProbeEventQueue(void)
     gEventTakenWhat = gEventTaken ? probe.what : nullEvent;
 }
 
-static void SetShowcaseCursor(short cursorID)
+void SetShowcaseCursor(short cursorID)
 {
     CursHandle cursor;
 
@@ -3245,7 +3454,7 @@ static void SetShowcaseCursor(short cursorID)
     }
 }
 
-static void DrawEventsPage(void)
+void DrawEventsPage(void)
 {
     Rect panel;
     Str255 number;
@@ -3410,7 +3619,7 @@ static void DrawEventsPage(void)
     DrawString("\pCursor IDs: crossCursor = 2, watchCursor = 4; arrow comes from InitCursor.");
 }
 
-static void DrawSpritesPage(void)
+void DrawSpritesPage(void)
 {
     GWorldPtr savedWorld;
     GDHandle savedDevice;
@@ -3508,7 +3717,9 @@ static void DrawSpritesPage(void)
     DrawControls(gMainWindow);
 }
 
-static void DrawMainWindow(void)
+#pragma segment Main
+
+void DrawMainWindow(void)
 {
     RGBColor white;
     RGBColor black;
@@ -3565,6 +3776,9 @@ static void DrawMainWindow(void)
             break;
         case pageEventsCursors:
             DrawEventsPage();
+            break;
+        case pagePopupLists:
+            DrawPopupListsPage();
             break;
     }
 }
@@ -3635,6 +3849,7 @@ static void ShowAllControls(short page)
     Boolean isStandardFile = (page == pageStandardFile);
     Boolean isResources = (page == pageResources);
     Boolean isSprites = (page == pageSprites);
+    Boolean isPopupLists = (page == pagePopupLists);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -3779,9 +3994,18 @@ static void ShowAllControls(short page)
         HideControl(gSpriteScroll);
         HideControl(gSpriteReset);
     }
+
+    /* Page 16: Popup & Dropdown Lists */
+    if (isPopupLists) {
+        ShowControl(gPopupResource);
+        ShowControl(gPopupProgrammatic);
+    } else {
+        HideControl(gPopupResource);
+        HideControl(gPopupProgrammatic);
+    }
 }
 
-static void SyncMenuState(void)
+void SyncMenuState(void)
 {
     MenuHandle pages;
     MenuHandle hDiff;
@@ -3791,7 +4015,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 15; i++) {
+        for (i = 1; i <= iPopupLists; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -3936,6 +4160,10 @@ static void SetPage(short page)
         ShowCursor();
         gEventCursorMode = 0;
         gEventCursorHidden = false;
+    }
+    if (page == pagePopupLists) {
+        RefreshPopupValues();
+        gPopupRestored = false;
     }
     ShowAllControls(page);
     SyncMenuState();
@@ -4223,6 +4451,39 @@ static void Initialize(void)
     gSpriteReset = NewControl(gMainWindow, &r, "\pReset Scene", false, 0, 0, 1,
                               pushButProc, 0);
 
+    /* Page 16: Popup & Dropdown Lists. The resource-backed control gets its
+       menu from the matching MENU/CNTL resources; the second menu/control is
+       built through the ordinary Menu and Control Manager entry points. */
+    gPopupLoadoutMenu = GetMenu(mPopupLoadout);
+    if (gPopupLoadoutMenu != nil) {
+        InsertMenu(gPopupLoadoutMenu, -1);
+        DisableItem(gPopupLoadoutMenu, iPopupLoadoutMinimal);
+    }
+    gPopupThemeMenu = NewMenu(mPopupTheme, "\pTheme");
+    if (gPopupThemeMenu != nil) {
+        AppendMenu(gPopupThemeMenu,
+                   "\pClassic;High Contrast;-;Night Operations;Archive 05;Archive 06;Archive 07;Archive 08;Archive 09;Archive 10;Archive 11;Archive 12;Archive 13;Archive 14;Archive 15;Archive 16;Archive 17;Archive 18");
+        AppendMenu(gPopupThemeMenu,
+                   "\pArchive 19;Archive 20;Archive 21;Archive 22;Archive 23;Archive 24;Archive 25;Archive 26;Archive 27;Archive 28;Archive 29;Archive 30;Archive 31;Archive 32;Archive 33;Archive 34;Archive 35;Deep Field Archive;Archive 37;Archive 38;Archive 39");
+        InsertMenu(gPopupThemeMenu, -1);
+        DisableItem(gPopupThemeMenu, iPopupThemeContrast);
+    }
+    SyncPopupMenuMarks();
+
+    SetRect(&r, 100, 40, 124, 400);
+    gPopupResource = GetNewControl(rPopupResourceControl, gMainWindow);
+    /* SetRect's C signature is left, top, right, bottom. */
+    SetRect(&r, 190, 136, 400, 160);
+    gPopupProgrammatic = NewControl(gMainWindow, &r, "\pTheme:", false, 0,
+                                    mPopupTheme, 52,
+                                    popupMenuProc + popupFixedWidth + popupUseWFont, 0);
+    if (gPopupResource != nil) {
+        SetControlValue(gPopupResource, gPopupLoadoutValue);
+    }
+    if (gPopupProgrammatic != nil) {
+        SetControlValue(gPopupProgrammatic, gPopupThemeValue);
+    }
+
     SetPage(pageGraphics);
 }
 
@@ -4234,7 +4495,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iEventsCursors) {
+    if (menuID == mPages && item >= iGraphics && item <= iPopupLists) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -4353,13 +4614,31 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
     if (part == 0) {
         return;
     }
+    if (control == gPopupResource || control == gPopupProgrammatic) {
+        /* TrackControl owns the retained mouse-down -> mouse-up dropdown
+           session. Mark the state before entering it; the final read below
+           is the Control Manager's value, not a parallel application model. */
+        gPopupOpened = true;
+    }
     trackedPart = TrackControl(control, where, nil);
     if (trackedPart == 0) {
+        if (control == gPopupResource || control == gPopupProgrammatic) {
+            RefreshPopupValues();
+            gPopupOpened = false;
+            gPopupRestored = true;
+        }
         return;
     }
     part = trackedPart;
 
-    if (control == gButton) {
+    if (control == gPopupResource || control == gPopupProgrammatic) {
+        RefreshPopupValues();
+        gPopupLastSelected = control == gPopupResource
+            ? gPopupLoadoutValue
+            : gPopupThemeValue;
+        gPopupOpened = false;
+        gPopupRestored = true;
+    } else if (control == gButton) {
         gButtonActivated = !gButtonActivated;
         CheckItem(StateMenu(), iButtonState, gButtonActivated);
     } else if (control == gCheckbox) {

@@ -21680,7 +21680,17 @@ fn dispatch_supported_import(
                     control.wrapping_add(PPC_CONTROL_VALUE_OFFSET),
                     cpu.gpr[4] as u16,
                 );
-                ppc_clamp_control_value(memory, control);
+                // Popup CDEF records repurpose contrlMin for the menu ID and
+                // contrlMax for the title width (MTE, pp. 5-25--5-27), so
+                // applying the ordinary range clamp would turn a valid item
+                // value into a menu ID/title-width value.
+                let is_popup = controls.iter().any(|record| {
+                    record.handle == control_handle
+                        && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+                });
+                if !is_popup {
+                    ppc_clamp_control_value(memory, control);
+                }
                 let _ = ppc_draw_control(
                     memory,
                     handles,
@@ -26868,6 +26878,8 @@ fn dispatch_supported_import(
             controls,
             gworlds,
             screen_clut,
+            toolbox_startup,
+            input,
             vfs_resources,
             *current_resource_refnum,
             last_resource_error,
@@ -67990,6 +68002,117 @@ fn ppc_set_control_title(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_popup_track_control(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    startup: &mut PpcToolboxStartupState,
+    input: PpcInputSnapshot,
+    control_handle: u32,
+    start_v: i16,
+    start_h: i16,
+) -> Option<PpcImportAction> {
+    let record = controls.iter().find(|record| {
+        record.handle == control_handle && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+    })?;
+    // TrackControl's CDEF must not begin a retained popup session for an
+    // invisible, inactive, or missed control. Keep this guard in the helper
+    // as well as at the dispatcher call site because direct PPC callers can
+    // enter this adapter without first running FindControl. Macintosh
+    // Toolbox Essentials (1992), pp. 5-67--5-69.
+    ppc_control_part_at_point(memory, controls, control_handle, start_v, start_h)?;
+    let control = ppc_control_ptr(memory, control_handle)?;
+    let owner = memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)?;
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
+    let menu_id = record.popup_menu_id;
+    let current_menu_list = ppc_current_menu_list(memory);
+    let menu_handle = ppc_get_menu_handle(memory, current_menu_list, menu_id);
+    if menu_handle == 0 {
+        return Some(PpcImportAction::Return(0));
+    }
+
+    // TrackControl receives a window-local start point, while the Menu
+    // Manager's PopUpMenuSelect contract is expressed in global screen
+    // coordinates. Reuse the standard retained popup session so CDEF-backed
+    // controls get the same disabled/separator hit testing, save-under, and
+    // repaint behavior as a direct PopUpMenuSelect call.
+    let (control_top, control_left, _, _) =
+        ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
+    let (global_h, global_v) =
+        surface.local_point((i32::from(control_left), i32::from(control_top)));
+    let mut popup_cpu = cpu.clone();
+    popup_cpu.gpr[3] = menu_handle;
+    popup_cpu.gpr[4] = u32::from(ppc_i32_to_i16_saturating(global_v) as u16);
+    popup_cpu.gpr[5] = u32::from(ppc_i32_to_i16_saturating(global_h) as u16);
+    popup_cpu.gpr[6] = memory
+        .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+        .unwrap_or(1) as u32;
+    let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+    let menu_colors = MenuColorTable::new(&menu_color_bytes);
+    let action = ppc_dispatch_pop_up_menu_select(
+        &popup_cpu,
+        memory,
+        gworlds,
+        screen_clut,
+        menu_colors,
+        startup,
+        input,
+        vfs_resources,
+        current_resource_refnum,
+    );
+    Some(match action {
+        PpcImportAction::Return(result) => {
+            let item = result as u16 as i16;
+            if item > 0 && ppc_menu_item_is_selectable(memory, menu_handle, item) {
+                let _ = memory.write_u16_be(
+                    control + PPC_CONTROL_VALUE_OFFSET,
+                    item as u16,
+                );
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    control_handle,
+                );
+                PpcImportAction::Return(ppc_i16_result(10))
+            } else {
+                PpcImportAction::Return(0)
+            }
+        }
+        PpcImportAction::ReturnWithExtraCycles(result, extra_cycles) => {
+            let item = result as u16 as i16;
+            if item > 0 && ppc_menu_item_is_selectable(memory, menu_handle, item) {
+                let _ = memory.write_u16_be(
+                    control + PPC_CONTROL_VALUE_OFFSET,
+                    item as u16,
+                );
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    control_handle,
+                );
+                PpcImportAction::ReturnWithExtraCycles(ppc_i16_result(10), extra_cycles)
+            } else {
+                PpcImportAction::ReturnWithExtraCycles(0, extra_cycles)
+            }
+        }
+        action => action,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_legacy_control(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
@@ -68001,7 +68124,9 @@ fn ppc_dispatch_legacy_control(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &[PpcGWorldRecord],
-    _screen_clut: &[[u16; 3]; 256],
+    screen_clut: &[[u16; 3]; 256],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    input: PpcInputSnapshot,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -68288,6 +68413,25 @@ fn ppc_dispatch_legacy_control(
                     cpu.gpr[3], v, h, cpu.gpr[5], part
                 );
             }
+            if part != 0 {
+                if let Some(action) = ppc_dispatch_popup_track_control(
+                    cpu,
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    screen_clut,
+                    vfs_resources,
+                    current_resource_refnum,
+                    toolbox_startup,
+                    input,
+                    cpu.gpr[3],
+                    v,
+                    h,
+                ) {
+                    return Some(action);
+                }
+            }
             if part == 129 {
                 if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                     if let Some((top, left, bottom, right)) =
@@ -68451,7 +68595,15 @@ fn ppc_new_control_record_values(
     let old_head = memory
         .read_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
         .unwrap_or(0);
-    let initial_value = value.clamp(min.min(max), min.max(max));
+    // Popup CDEF records repurpose contrlMin for the menu ID and contrlMax
+    // for the title width, so their value is a menu item number rather than
+    // an ordinary min/max control value. Macintosh Toolbox Essentials (1992),
+    // pp. 5-25--5-27.
+    let initial_value = if (1008..=1023).contains(&(proc_id & 0x0fff)) {
+        value
+    } else {
+        value.clamp(min.min(max), min.max(max))
+    };
     let wrote = memory
         .write_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET), old_head)
         .is_some()
@@ -68715,11 +68867,29 @@ fn ppc_find_control_at_point(
 }
 
 fn ppc_popup_control_selected_text(
+    memory: &mut PpcSectionMem,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     menu_id: i16,
     selected: usize,
 ) -> Vec<u8> {
+    // A menu created by NewMenu has no MENU resource to consult. The live
+    // MenuHandle is also authoritative after SetItem/AppendMenu mutate an
+    // existing menu, so prefer its guest bytes and use the resource only as
+    // the fallback for resource-backed menus that have not been materialized.
+    let current_menu_list = ppc_current_menu_list(memory);
+    let menu_handle = ppc_get_menu_handle(memory, current_menu_list, menu_id);
+    if let Ok(item_number) = i16::try_from(selected) {
+        if let Some((item_address, item_length)) = ppc_menu_item(memory, menu_handle, item_number) {
+            return ppc_memory_read_bytes(
+                memory,
+                item_address.saturating_add(1),
+                u32::from(item_length),
+            )
+            .unwrap_or_default();
+        }
+    }
+
     ppc_vfs_resource_index(
         vfs_resources,
         current_resource_refnum,
@@ -68731,6 +68901,41 @@ fn ppc_popup_control_selected_text(
     .and_then(|(_, _, items)| selected.checked_sub(1).and_then(|i| items.get(i).cloned()))
     .map(|item| item.text)
     .unwrap_or_default()
+}
+
+fn ppc_popup_control_display_title(
+    title: &[u8],
+    available_width: i16,
+    text_font: i16,
+    text_size: i16,
+) -> Vec<u8> {
+    if available_width <= 0 {
+        return Vec::new();
+    }
+    if ppc_text_bytes_advance_for_font(title, text_font, text_size) <= available_width {
+        return title.to_vec();
+    }
+
+    let ellipsis = b"...";
+    let ellipsis_width = ppc_text_bytes_advance_for_font(ellipsis, text_font, text_size);
+    if ellipsis_width > available_width {
+        return Vec::new();
+    }
+
+    let mut prefix = Vec::new();
+    let mut prefix_width = 0i16;
+    for byte in title {
+        let byte_width = ppc_text_byte_advance_for_font(*byte, text_font, text_size);
+        if prefix_width.saturating_add(byte_width).saturating_add(ellipsis_width)
+            > available_width
+        {
+            break;
+        }
+        prefix.push(*byte);
+        prefix_width = prefix_width.saturating_add(byte_width);
+    }
+    prefix.extend_from_slice(ellipsis);
+    prefix
 }
 
 fn ppc_draw_control(
@@ -69052,6 +69257,20 @@ fn ppc_draw_control_inner(
                     )
                 })
                 .unwrap_or((owner, (top, left, bottom, right)));
+            // popupMenuProc reserves `contrlMax` pixels for the label before
+            // the button. A fixed-width popup uses the rest of the control
+            // rect as its stable button width; omitting this offset makes
+            // the PPC renderer paint the button over its label and gives its
+            // selected title an incorrectly large content area. Macintosh
+            // Toolbox Essentials (1992), pp. 5-25--5-27.
+            let title_width = record
+                .and_then(|record| record.popup_title_width)
+                .unwrap_or(0)
+                .max(0);
+            let draw_left = draw_left.saturating_add(title_width);
+            let draw_top = draw_top.saturating_add(1);
+            let draw_bottom = draw_bottom.saturating_sub(2);
+            let draw_right = draw_right.saturating_sub(1);
             let mut wrote = ppc_paint_rect_bounds(
                 memory,
                 gworlds,
@@ -69129,23 +69348,32 @@ fn ppc_draw_control_inner(
                 .unwrap_or(0) as usize;
             let menu_id = record.map_or(0, |record| record.popup_menu_id);
             let selected_text = ppc_popup_control_selected_text(
+                memory,
                 vfs_resources,
                 current_resource_refnum,
                 menu_id,
                 selected,
             );
-            if !selected_text.is_empty() {
+            let text_left = draw_left.saturating_add(5);
+            let text_right = draw_right.saturating_sub(19).max(text_left);
+            let display_title = ppc_popup_control_display_title(
+                &selected_text,
+                text_right.saturating_sub(text_left),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                PPC_QD_TEXT_SIZE_SYSTEM,
+            );
+            if !display_title.is_empty() {
                 let _ = ppc_draw_text_bytes(
                     memory,
                     gworlds,
                     draw_owner,
-                    (draw_left.saturating_add(5), draw_top.saturating_add(14)),
+                    (text_left, draw_top.saturating_add(14)),
                     PPC_QD_TEXT_FONT_DEFAULT,
                     PPC_QD_TEXT_SIZE_SYSTEM,
                     PPC_QD_TEXT_MODE_SRC_OR,
                     PPC_RGB_BLACK,
                     None,
-                    &selected_text,
+                    &display_title,
                 );
             }
             wrote
@@ -69177,17 +69405,42 @@ fn ppc_draw_control_inner(
             metrics.ascent,
             metrics.descent,
         );
-        let title_h = match proc_id {
-            0 => centered_h,
-            1 => {
-                crate::control_manager::standard_checkbox_layout((top, left, bottom, right))
-                    .label_left
-            }
-            2 => {
-                crate::control_manager::standard_radio_button_layout((top, left, bottom, right))
-                    .label_left
-            }
-            _ => left.saturating_add(16),
+        let popup = (1008..=1023).contains(&proc_id);
+        let (title_h, title) = if popup {
+            // Popup CDEF labels are right-aligned immediately before the
+            // button's reserved title-width region, matching the 68K
+            // draw_popup_control_label path. Keep the label out of the
+            // selected-item content area.
+            let title_width = record
+                .and_then(|record| record.popup_title_width)
+                .unwrap_or(0)
+                .max(0);
+            let popup_left = left.saturating_add(title_width);
+            let text_right = popup_left.saturating_sub(6);
+            let available_width = text_right.saturating_sub(left);
+            (
+                text_right.saturating_sub(advance).max(left),
+                ppc_popup_control_display_title(
+                    &title,
+                    available_width,
+                    PPC_QD_TEXT_FONT_DEFAULT,
+                    PPC_QD_TEXT_SIZE_SYSTEM,
+                ),
+            )
+        } else {
+            let title_h = match proc_id {
+                0 => centered_h,
+                1 => {
+                    crate::control_manager::standard_checkbox_layout((top, left, bottom, right))
+                        .label_left
+                }
+                2 => {
+                    crate::control_manager::standard_radio_button_layout((top, left, bottom, right))
+                        .label_left
+                }
+                _ => left.saturating_add(16),
+            };
+            (title_h, title)
         };
         let title_v = centered_v.min(bottom.saturating_sub(1));
         let _ = ppc_draw_text_bytes(
@@ -75573,8 +75826,22 @@ fn ppc_dispatch_pop_up_menu_select(
         let Some(mut state) = startup.menu_tracking.take() else {
             return PpcImportAction::Return(0);
         };
-        let highlighted_item = ppc_menu_tracking_item(memory, &state, input);
-        state.highlighted_item = highlighted_item;
+        // Popup tracking uses the same retained MenuRows state as MenuSelect.
+        // In particular, this updates content_top and the scrolling globals
+        // while the pointer sits on an indicator; deriving only a hit item
+        // leaves long popup menus visually stuck at their initial viewport.
+        ppc_update_menu_tracking(
+            memory,
+            gworlds,
+            screen_clut,
+            menu_colors,
+            current_menu_list,
+            &mut state,
+            input,
+            resources,
+            current_resource_refnum,
+        );
+        let highlighted_item = state.highlighted_item;
         if !input.mouse_button {
             if highlighted_item == 0 {
                 startup.popup_menu_call = None;
@@ -75730,6 +75997,7 @@ fn ppc_menu_handle_at_title_point(
         .map(|_| (menu_handle, title_left))
 }
 
+#[cfg(test)]
 fn ppc_menu_tracking_hit(
     memory: &mut PpcSectionMem,
     state: &impl TrackedMenuPaneView<
@@ -75820,6 +76088,7 @@ fn ppc_write_standard_menu_choice(memory: &mut PpcSectionMem, menu_handle: u32, 
     );
 }
 
+#[cfg(test)]
 fn ppc_menu_tracking_item(
     memory: &mut PpcSectionMem,
     state: &impl TrackedMenuPaneView<
@@ -102339,6 +102608,62 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn popup_control_records_preserve_item_values_across_set_control_value() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetControlValue"))
+            .unwrap();
+        let mut last_mem_error = loaded.last_mem_error();
+        let handle = ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 180),
+            b"Loadout",
+            true,
+            1,
+            143,
+            60,
+            1008,
+            0,
+        );
+        assert_ne!(handle, 0);
+        let control = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+            Some(1)
+        );
+        assert_eq!(
+            loaded
+                .controls
+                .iter()
+                .find(|record| record.handle == handle)
+                .map(|record| (record.popup_menu_id, record.popup_title_width)),
+            Some((143, Some(60)))
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 4;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+            Some(4)
+        );
+    }
+
+    #[test]
     fn selected_checkbox_draws_indicator_and_checkmark_without_framing_title() {
         let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
         let mut last_mem_error = loaded.last_mem_error();
@@ -102620,6 +102945,84 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 10);
+    }
+
+    #[test]
+    fn popup_track_control_requires_a_visible_enabled_hit() {
+        for (label, visible, hilite, point) in [
+            ("outside", true, 0, (0i16, 0i16)),
+            ("hidden", false, 0, (10, 10)),
+            ("inactive", true, 0xff, (10, 10)),
+        ] {
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
+            let menu_handle = install_test_popup_menu(
+                &mut loaded,
+                PPC_DATA_BASE + 0x1000,
+                304,
+                b"Popup",
+                b"One;Two",
+            );
+            let mut last_mem_error = loaded.last_mem_error();
+            let scratch = ppc_heap_alloc(
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                32,
+                true,
+            );
+            ppc_write_rect(&mut loaded.memory, scratch, 5, 6, 25, 86).unwrap();
+            write_ppc_pstring(&mut loaded.memory, scratch + 8, b"Popup:");
+            let control_handle = ppc_new_control_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                &mut loaded.controls,
+                PPC_MAIN_GWORLD,
+                scratch,
+                scratch + 8,
+                visible,
+                1,
+                304,
+                52,
+                1008,
+                0,
+            );
+            assert_ne!(control_handle, 0, "{label} control allocation");
+            let control = ppc_control_ptr(&mut loaded.memory, control_handle).unwrap();
+            loaded
+                .memory
+                .write_u8(control + PPC_CONTROL_HILITE_OFFSET, hilite)
+                .unwrap();
+            loaded.cpu.gpr[3] = control_handle;
+            loaded.cpu.gpr[4] =
+                (u32::from(point.0 as u16) << 16) | u32::from(point.1 as u16);
+            loaded.cpu.gpr[5] = 0;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: point.0,
+                mouse_h: point.1,
+                ..PpcInputSnapshot::default()
+            });
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }), "{label}");
+            assert_eq!(loaded.cpu.gpr[3], 0, "{label} TrackControl result");
+            assert_eq!(loaded.toolbox_startup.menu_tracking, None, "{label}");
+            assert_eq!(loaded.toolbox_startup.popup_menu_call, None, "{label}");
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+                Some(1),
+                "{label} TrackControl must not mutate the value"
+            );
+            assert_ne!(menu_handle, 0);
+        }
     }
 
     #[test]
@@ -156971,6 +157374,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.controls[0].popup_menu_id, 300);
         assert_eq!(
             ppc_popup_control_selected_text(
+                &mut loaded.memory,
                 &loaded.process_file_system.vfs_resources,
                 *loaded.process_file_system.current_resource_file,
                 300,
@@ -157002,6 +157406,61 @@ pub(crate) mod tests {
                 .memory
                 .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn popup_control_selected_title_reads_live_programmatic_menu_items() {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"NewMenu")).unwrap();
+        install_test_popup_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            305,
+            b"Theme",
+            b"Classic;High Contrast;-;Night Operations",
+        );
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        assert_eq!(
+            ppc_popup_control_selected_text(
+                &mut loaded.memory,
+                &loaded.process_file_system.vfs_resources,
+                current_resource_refnum,
+                305,
+                1,
+            ),
+            b"Classic"
+        );
+        assert_eq!(
+            ppc_popup_control_selected_text(
+                &mut loaded.memory,
+                &loaded.process_file_system.vfs_resources,
+                current_resource_refnum,
+                305,
+                4,
+            ),
+            b"Night Operations"
+        );
+    }
+
+    #[test]
+    fn popup_control_display_title_clips_to_fixed_width() {
+        let title = b"Night Operations: Deep Field Archive";
+        let clipped = ppc_popup_control_display_title(
+            title,
+            52,
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+        );
+        assert!(clipped.ends_with(b"..."));
+        assert_ne!(clipped, title);
+        assert!(
+            ppc_text_bytes_advance_for_font(
+                &clipped,
+                PPC_QD_TEXT_FONT_DEFAULT,
+                PPC_QD_TEXT_SIZE_SYSTEM,
+            ) <= 52,
+            "fixed-width popup title must fit the reserved content width"
         );
     }
 
@@ -157492,21 +157951,19 @@ pub(crate) mod tests {
         );
 
         let popup_left = tracking.popup_left;
-        let current_menu_list = ppc_current_menu_list(&mut loaded.memory);
-        let mut tracking = loaded.toolbox_startup.menu_tracking.take().unwrap();
         for (mouse_v, expected_item, expected_top, expected_bottom) in [
             (28, 15, -204, 436),
             (12, 0, -204, 436),
             (12, 0, -188, 452),
             (3, 0, -172, 468),
         ] {
-            ppc_update_menu_tracking(
+            let action = ppc_dispatch_pop_up_menu_select(
+                &loaded.cpu,
                 &mut loaded.memory,
                 &loaded.gworlds,
                 &loaded.screen_clut,
                 MenuColorTable::new(&[]),
-                current_menu_list,
-                &mut tracking,
+                &mut loaded.toolbox_startup,
                 PpcInputSnapshot {
                     mouse_button: true,
                     mouse_v,
@@ -157516,6 +157973,8 @@ pub(crate) mod tests {
                 &loaded.process_file_system.vfs_resources,
                 *loaded.process_file_system.current_resource_file,
             );
+            assert!(matches!(action, PpcImportAction::Yield(_)));
+            let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
             assert_eq!(tracking.highlighted_item, expected_item);
             assert_eq!(tracking.content_top, expected_top);
             assert_eq!(
@@ -157526,7 +157985,6 @@ pub(crate) mod tests {
                 Some(expected_bottom),
             );
         }
-        *loaded.toolbox_startup.menu_tracking = Some(tracking);
     }
 
     #[test]

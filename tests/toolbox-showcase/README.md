@@ -6,10 +6,11 @@ Macintosh fat application. The same `showcase.c` is compiled into a 68K
 the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
 
-The public coverage is tracked by issues #1078, #1081, and #1264–#1270.
+The public coverage is tracked by issues #1078, #1081, #1264–#1270, and
+#1338–#1339.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
-test protocol. Its Pages menu selects fifteen interactive views:
+test protocol. Its Pages menu selects sixteen interactive views:
 
 1. Graphics exercises patterns, clipping, indexed color, lines, shapes, and
    text.
@@ -69,6 +70,12 @@ test protocol. Its Pages menu selects fifteen interactive views:
     peeks and consumes a posted key event with `EventAvail`, `OSEventAvail`,
     and `GetOSEvent`, and switches standard cursors with `GetCursor`,
     `SetCursor`, `InitCursor`, `HideCursor`, and `ShowCursor`.
+16. Popup & Dropdown Lists combines a resource-backed `CNTL`/`MENU` popup with
+    a programmatic `NewMenu`/`NewControl` popup. It exercises standard popup
+    CDEF tracking, disabled and separator rows, a long label, the
+    `popupFixedWidth` and `popupUseWFont` variations, a genuinely scrollable
+    39-item menu, synchronized control values/menu marks, and save-under
+    restoration of the closed controls.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -97,6 +104,11 @@ cross-checked against *Inside Macintosh Volume I* (1985), pp. I-118–I-125.
 Sprite masking, offscreen worlds, pixel sampling, regions, and scrolling
 follow *Inside Macintosh: Imaging With QuickDraw* (1994), pp. 2-20–2-24,
 2-43–2-50, 3-119–3-122, and 6-22–6-46.
+Popup controls and menus follow *Inside Macintosh: Macintosh Toolbox
+Essentials* (1992), Menu Manager pp. 3-31–3-34 and Control Manager
+pp. 5-25–5-27, cross-checked against *Inside Macintosh, Volume VI* (1991),
+pp. 3-16–3-19 for popup private data, menu IDs, selected-item values, and
+the standard `TrackControl` contract.
 
 ## Rebuild and verify
 
@@ -183,7 +195,7 @@ exact Systemless framebuffer references while performing the same sequence:
     semantic assertions cover returned `FSSpec`/`SFReply` fields and the
     `FSpCreate`/`FSpDelete` round trip.
 21. Activate Resource Browser (item 13), capture the map-only enumeration of
-    `DATA` 201–203 and the `MENU`/`WIND` counts, refresh the map, load the
+    `DATA` 201–203 and the nine `MENU`/one `WIND` counts, refresh the map, load the
     named `DATA` 203 record, release its handle, and load it again. Capture
     the enumeration, loaded, and released lifecycle states.
 22. Activate Sprites, Masks & Scrolling (item 14), and verify the two masked
@@ -205,6 +217,17 @@ exact Systemless framebuffer references while performing the same sequence:
     `EventRecord` plus a nonzero `GetKeys` map. Select cross and watch cursors,
     hide and show the cursor, restore the arrow cursor, and capture the five
     event/cursor frames at checkpoints 29–33.
+28. Activate Popup & Dropdown Lists (item 16), verify the resource-backed and
+    programmatic popup menus, their initial marks, and the closed controls.
+    Capture `34-popup-lists.png`.
+29. Open the resource popup, move across its separator and disabled row, then
+    release without selecting. Verify the original value/mark and restored
+    closed control; reopen it and select the long enabled row.
+30. Open the fixed-width programmatic popup, release on its disabled row, then
+    hold over the down indicator until the long menu reveals item 36, select
+    `Deep Field Archive`, and capture `36-popup-lists-scrolled.png`. Reopen
+    the popup, scroll back to `Night Operations`, and capture the restored
+    controls in `37-popup-lists-selected.png`.
 
 For a manual launch from the public repository:
 
@@ -217,7 +240,7 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the twenty-seven interaction steps above. Use an 800×600
+PowerPC slice, then follow the thirty interaction steps above. Use an 800×600
 8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
 SheepShaver for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
@@ -246,6 +269,17 @@ The Sprites checkpoints show the shared offscreen scene after `CopyMask` and
 `CopyDeepMask`, the animated source frame, and the 24-pixel `ScrollRect`
 movement with its exposed update strip. Classic-Mac rasterization and indexed
 versus direct-color quantization remain presentation variance.
+
+The Popup & Dropdown Lists classic checkpoints confirm that the resource-backed
+and programmatic standard popup controls render from the same archive in
+BasiliskII and SheepShaver. The deterministic Systemless checkpoints additionally
+cover live disabled/separator tracking, fixed-width clipping, a real
+scroll/reveal of item 36 in the 39-item menu, synchronized values/menu marks,
+and closed-control restoration. The classic pointer harness can depress these
+controls, but the system popup CDEF does not expose its live menu to that
+automation path, so checkpoints 35–37 remain Systemless-only rather than
+claiming unobserved classic behavior. Classic Menu Manager fonts and popup CDEF
+chrome remain presentation variance.
 
 ## Reference screenshots
 
@@ -315,6 +349,10 @@ indexed paths.
 | 31. Key modifiers | <img src="reference/systemless-68k/31-events-key-modifiers.png" alt="Shift-modified key event on the Events and Cursors page in Systemless" width="360"> | <img src="reference/basiliskii-68k/31-events-key-modifiers.png" alt="Shift-modified key event in BasiliskII" width="360"> |
 | 32. Hidden cursor | <img src="reference/systemless-68k/32-events-cursor-hidden.png" alt="Hidden watch cursor state in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/32-events-cursor-hidden.png" alt="Hidden watch cursor state in BasiliskII" width="360"> |
 | 33. Final visible cursor | <img src="reference/systemless-68k/33-events-cursors-final.png" alt="Final visible arrow cursor state in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/33-events-cursors-final.png" alt="Final visible arrow cursor state in BasiliskII" width="360"> |
+| 34. Popup lists | <img src="reference/systemless-68k/34-popup-lists.png" alt="Popup and dropdown lists page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/34-popup-lists.png" alt="Popup and dropdown lists page in BasiliskII running the 68K slice" width="360"> |
+| 35. Popup menu tracking | <img src="reference/systemless-68k/35-popup-lists-open.png" alt="Tracked popup menu with separator and disabled rows in Systemless running the 68K slice" width="360"> | — |
+| 36. Popup scroll/reveal | <img src="reference/systemless-68k/36-popup-lists-scrolled.png" alt="Scrolled programmatic popup revealing item 36 in Systemless running the 68K slice" width="360"> | — |
+| 37. Popup selections | <img src="reference/systemless-68k/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the 68K slice" width="360"> | — |
 
 ### PowerPC
 
@@ -359,15 +397,19 @@ indexed paths.
 | 31. Key modifiers | <img src="reference/systemless-ppc/31-events-key-modifiers.png" alt="Shift-modified key event on the Events and Cursors page in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/31-events-key-modifiers.png" alt="Shift-modified key event in SheepShaver" width="360"> |
 | 32. Hidden cursor | <img src="reference/systemless-ppc/32-events-cursor-hidden.png" alt="Hidden watch cursor state in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/32-events-cursor-hidden.png" alt="Hidden watch cursor state in SheepShaver" width="360"> |
 | 33. Final visible cursor | <img src="reference/systemless-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in SheepShaver" width="360"> |
+| 34. Popup lists | <img src="reference/systemless-ppc/34-popup-lists.png" alt="Popup and dropdown lists page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/34-popup-lists.png" alt="Popup and dropdown lists page in SheepShaver running the PowerPC slice" width="360"> |
+| 35. Popup menu tracking | <img src="reference/systemless-ppc/35-popup-lists-open.png" alt="Tracked popup menu with separator and disabled rows in Systemless running the PowerPC slice" width="360"> | — |
+| 36. Popup scroll/reveal | <img src="reference/systemless-ppc/36-popup-lists-scrolled.png" alt="Scrolled programmatic popup revealing item 36 in Systemless running the PowerPC slice" width="360"> | — |
+| 37. Popup selections | <img src="reference/systemless-ppc/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the PowerPC slice" width="360"> | — |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all thirty-nine rendered
+state rather than relying on fixed delays, and compares all forty-three rendered
 frames. The six additional Windows frames are deterministic Systemless
 checkpoints; classic-Mac review also covers activation and movement, while the
 remaining repaint lifecycle is asserted semantically because window chrome and
-rasterization vary between host systems. To review and accept
-an intentional rendering change, regenerate the Systemless sources and inspect
-the resulting PNG diff before committing it:
+rasterization vary between host systems. To review and accept an intentional
+rendering change, regenerate the Systemless sources and inspect the resulting PNG
+diff before committing it:
 
 ```sh
 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase

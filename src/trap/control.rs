@@ -767,34 +767,37 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn control_tracking_item_at_point(
-        &self,
-        bus: &MacMemoryBus,
+    fn update_control_popup_tracking(
+        &mut self,
+        bus: &mut MacMemoryBus,
         mouse_x: i16,
         mouse_y: i16,
     ) -> i16 {
-        let Some(tracking) = self.control_tracking.as_ref() else {
+        let Some((active_menu, dropdown_rect)) = self
+            .control_tracking
+            .as_ref()
+            .map(|tracking| (tracking.active_menu, tracking.dropdown_rect))
+        else {
             return 0;
         };
-        let (top, left, bottom, right) = tracking.dropdown_rect;
-        if mouse_x < left || mouse_x >= right || mouse_y < top || mouse_y >= bottom {
-            return 0;
-        }
-        let Some(menu) = self.menus.get(tracking.active_menu) else {
+        let Some(menu) = self.menus.get(active_menu) else {
             return 0;
         };
-        let mut item_top = top;
-        for (item_idx, item) in menu.items.iter().enumerate() {
-            let item_bottom = item_top + self.menu_item_height(bus, item);
-            if mouse_y >= item_top && mouse_y < item_bottom {
-                if item.text == "-" || !item.enabled {
-                    return 0;
-                }
-                return item_idx as i16 + 1;
-            }
-            item_top = item_bottom;
+        let rows = self.menu_rows(bus, &menu.items);
+        let Some(update) = self.control_tracking.as_mut().map(|tracking| {
+            rows.track_pointer(
+                dropdown_rect,
+                &mut tracking.popup_content_top,
+                &mut tracking.popup_scroll_direction,
+                (mouse_y, mouse_x),
+            )
+        }) else {
+            return 0;
+        };
+        if update.scrolled {
+            self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
         }
-        0
+        update.item
     }
 
     fn set_control_tracking_highlight(&mut self, bus: &mut MacMemoryBus, item: i16) {
@@ -3384,7 +3387,7 @@ impl super::TrapDispatcher {
                                 .map(|tracking| tracking.ctrl_handle)
                                 .unwrap_or(0);
                             let (mv, mh) = self.control_tracking_mouse_pos(bus);
-                            let new_item = self.control_tracking_item_at_point(bus, mh, mv);
+                            let new_item = self.update_control_popup_tracking(bus, mh, mv);
                             let old_item = self
                                 .control_tracking
                                 .as_ref()
@@ -3408,11 +3411,13 @@ impl super::TrapDispatcher {
                                 },
                             );
                         } else {
-                            let selected_item = self
-                                .control_tracking
-                                .as_ref()
-                                .map(|tracking| tracking.highlighted_item)
-                                .unwrap_or(0);
+                            // TrackControl must sample the release position
+                            // even when no retained refire occurred between
+                            // the last move and mouse-up. Otherwise a stale
+                            // highlighted row can be committed.
+                            let (mv, mh) = self.control_tracking_mouse_pos(bus);
+                            let selected_item =
+                                self.update_control_popup_tracking(bus, mh, mv);
                             self.finish_popup_control_tracking(cpu, bus, selected_item);
                         }
                     } else {
@@ -3533,6 +3538,8 @@ impl super::TrapDispatcher {
                                                 highlighted_item: 0,
                                                 saved_pixels: Vec::new(),
                                                 dropdown_rect: (0, 0, 0, 0),
+                                                popup_content_top: 0,
+                                                popup_scroll_direction: None,
                                                 simple_part: 0,
                                                 simple_screen_rect: screen_rect,
                                                 simple_highlighted: false,
@@ -3624,6 +3631,22 @@ impl super::TrapDispatcher {
                                     {
                                         let dropdown_rect = self
                                             .popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
+                                        let popup_content_top = {
+                                            let owner = bus.read_long(ctrl_ptr + 4);
+                                            let (owner_top, _, _, _) =
+                                                Self::dialog_screen_bounds(bus, owner);
+                                            let anchor_top = owner_top
+                                                .saturating_add(bus.read_word(ctrl_ptr + 8) as i16);
+                                            let selected = bus.read_word(ctrl_ptr + 18) as i16;
+                                            let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
+                                            if rows.total_height()
+                                                > dropdown_rect.2.saturating_sub(dropdown_rect.0)
+                                            {
+                                                anchor_top.saturating_sub(rows.offset(selected))
+                                            } else {
+                                                dropdown_rect.0
+                                            }
+                                        };
                                         let saved = self.save_dropdown_pixels(bus, dropdown_rect);
                                         self.control_tracking = Some(ControlTrackingState {
                                             ctrl_handle,
@@ -3633,6 +3656,8 @@ impl super::TrapDispatcher {
                                             highlighted_item: 0,
                                             saved_pixels: saved,
                                             dropdown_rect,
+                                            popup_content_top,
+                                            popup_scroll_direction: None,
                                             simple_part: 0,
                                             simple_screen_rect: (0, 0, 0, 0),
                                             simple_highlighted: false,
@@ -3687,6 +3712,8 @@ impl super::TrapDispatcher {
                                         highlighted_item: 0,
                                         saved_pixels: Vec::new(),
                                         dropdown_rect: (0, 0, 0, 0),
+                                        popup_content_top: 0,
+                                        popup_scroll_direction: None,
                                         simple_part: part,
                                         simple_screen_rect: screen_rect,
                                         simple_highlighted: false,
@@ -3773,44 +3800,11 @@ impl super::TrapDispatcher {
                             }
                             continue;
                         }
-                        let proc_id = self.control_manager.proc_id(ctrl_ptr);
-                        if Self::is_popup_menu_proc_id(proc_id) {
-                            // popupMenuProc needs special MENU resource lookup
-                            let vis = bus.read_byte(ctrl_ptr + 16);
-                            let hilite = bus.read_byte(ctrl_ptr + 17);
-                            if Self::control_vis_is_visible(vis) {
-                                let r_top = bus.read_word(ctrl_ptr + 8) as i16;
-                                let r_left = bus.read_word(ctrl_ptr + 10) as i16;
-                                let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
-                                let r_right = bus.read_word(ctrl_ptr + 14) as i16;
-                                let ctrl_value = bus.read_word(ctrl_ptr + 18) as i16;
-                                let menu_id = self.popup_control_menu_id(
-                                    bus,
-                                    ctrl_ptr,
-                                    bus.read_word(ctrl_ptr + 20) as i16,
-                                );
-                                let (scr_top, scr_left, _, _) =
-                                    Self::dialog_screen_bounds(bus, window_ptr);
-                                let abs_top = scr_top + r_top;
-                                let abs_left = scr_left + r_left;
-                                let abs_bottom = scr_top + r_bottom;
-                                let abs_right = scr_left + r_right;
-                                let selected = ctrl_value.max(1) as usize;
-                                let item_title = self.popup_menu_item_title(bus, menu_id, selected);
-                                self.draw_popup_control_with_state(
-                                    bus,
-                                    abs_top,
-                                    abs_left,
-                                    abs_bottom,
-                                    abs_right,
-                                    &item_title.unwrap_or_default(),
-                                    hilite != 255,
-                                    hilite == 1,
-                                );
-                            }
-                        } else {
-                            self.draw_control(cpu, bus, ctrl_ptr);
-                        }
+                        // The single-control path already handles standard
+                        // popup title geometry, fixed-width clipping, live
+                        // MENU text, and inactive state. Reuse it here so
+                        // DrawControls and Draw1Control stay byte-identical.
+                        self.draw_control(cpu, bus, ctrl_ptr);
                     }
                 }
 
@@ -6202,7 +6196,7 @@ mod tests {
     }
 
     #[test]
-    fn track_control_popup_menu_tracks_and_updates_value_on_release() {
+    fn track_control_popup_menu_samples_final_release_point() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.enable_input_trace_capture();
         let sp = 0x300000u32;
@@ -6273,16 +6267,6 @@ mod tests {
         assert_eq!(bus.read_word(sp + 12), 0xBEEF);
 
         disp.input_state.mouse_pos = (dropdown_top + 16 + 1, dropdown_left + 5);
-        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            disp.control_tracking
-                .as_ref()
-                .map(|tracking| tracking.highlighted_item),
-            Some(2)
-        );
-
         disp.input_state.mouse_button = false;
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
@@ -6295,9 +6279,6 @@ mod tests {
         let trace = disp.input_trace_text();
         assert!(trace.contains("A968 action=start start=(15,25)"));
         assert!(trace.contains("outcome=open_popup_tracking"));
-        assert!(trace.contains("A968 action=tracking_update"));
-        assert!(trace.contains("tracking=menu:idle dialog:idle control:active"));
-        assert!(trace.contains("highlighted_item=2 outcome=popup_item_highlighted"));
         assert!(trace.contains("A968 action=tracking_finish"));
         assert!(trace.contains("part=10 highlighted_item=2 outcome=popup_item_selected"));
     }
