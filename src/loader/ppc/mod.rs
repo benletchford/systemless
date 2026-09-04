@@ -51806,7 +51806,6 @@ fn ppc_draw_standard_window_frame(
         !title.is_empty(),
         active,
         matches!(proc_id, 0 | 4 | 8 | 12),
-        proc_id == 5,
         go_away,
         matches!(proc_id, 8 | 12),
     );
