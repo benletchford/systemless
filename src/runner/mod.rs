@@ -23,6 +23,7 @@ use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcess
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
+pub use crate::window_manager::WindowSnapshot;
 use crate::{Error, Result};
 use m68k::BatchExit;
 use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
@@ -58,6 +59,102 @@ pub struct ResourceManagerSnapshot {
     pub current_file: i16,
     pub counts: Vec<([u8; 4], usize)>,
     pub data_entries: Vec<ResourceManagerEntrySnapshot>,
+}
+
+const PPC_WINDOW_STRUCTURE_RGN_OFFSET: u32 = 114;
+const PPC_WINDOW_UPDATE_RGN_OFFSET: u32 = 122;
+const PPC_WINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
+const PPC_WINDOW_HILITED_OFFSET: u32 = 111;
+const PPC_WINDOW_VISIBLE_OFFSET: u32 = 110;
+
+fn ppc_read_rect(memory: &mut PpcSectionMem, address: u32) -> Option<(i16, i16, i16, i16)> {
+    Some((
+        memory.read_u16_be(address)? as i16,
+        memory.read_u16_be(address + 2)? as i16,
+        memory.read_u16_be(address + 4)? as i16,
+        memory.read_u16_be(address + 6)? as i16,
+    ))
+}
+
+fn ppc_region_bbox(memory: &mut PpcSectionMem, handle: u32) -> Option<(i16, i16, i16, i16)> {
+    let region = memory.read_u32_be(handle).filter(|ptr| *ptr != 0)?;
+    let rect = (memory.read_u16_be(region)? >= 10).then(|| ppc_read_rect(memory, region + 2))??;
+    (rect.2 > rect.0 && rect.3 > rect.1).then_some(rect)
+}
+
+fn ppc_read_title(memory: &mut PpcSectionMem, handle: u32) -> String {
+    let Some(pointer) = memory.read_u32_be(handle).filter(|ptr| *ptr != 0) else {
+        return String::new();
+    };
+    let length = usize::from(memory.read_u8(pointer).unwrap_or(0));
+    let bytes = (0..length)
+        .filter_map(|index| memory.read_u8(pointer + 1 + index as u32))
+        .collect::<Vec<_>>();
+    crate::mac_roman::decode_mac_roman(&bytes)
+}
+
+fn ppc_window_snapshot(app: &mut PpcLoadedApp) -> Vec<WindowSnapshot> {
+    let order = (*app.window_list).clone();
+    let front = order
+        .iter()
+        .copied()
+        .find(|&window| app.memory.read_u8(window + PPC_WINDOW_VISIBLE_OFFSET) == Some(1));
+
+    order
+        .into_iter()
+        .filter(|&window| window != 0)
+        .map(|window| {
+            let visible = app.memory.read_u8(window + PPC_WINDOW_VISIBLE_OFFSET) == Some(1);
+            let port = ppc_read_rect(&mut app.memory, window + 16).unwrap_or((0, 0, 0, 0));
+            let pixmap = app
+                .memory
+                .read_u32_be(window + 2)
+                .and_then(|handle| app.memory.read_u32_be(handle));
+            let surface = pixmap
+                .and_then(|pixmap| ppc_read_rect(&mut app.memory, pixmap + 6))
+                .unwrap_or((0, 0, 0, 0));
+            let bounds = (
+                port.0.saturating_sub(surface.0),
+                port.1.saturating_sub(surface.1),
+                port.2.saturating_sub(surface.0),
+                port.3.saturating_sub(surface.1),
+            );
+            let structure_handle = app
+                .memory
+                .read_u32_be(window + PPC_WINDOW_STRUCTURE_RGN_OFFSET)
+                .unwrap_or(0);
+            let structure_bounds = ppc_region_bbox(&mut app.memory, structure_handle);
+            let visible_handle = app.memory.read_u32_be(window + 24).unwrap_or(0);
+            let visible_region = ppc_region_bbox(&mut app.memory, visible_handle).map(|rect| {
+                (
+                    rect.0.saturating_add(bounds.0),
+                    rect.1.saturating_add(bounds.1),
+                    rect.2.saturating_add(bounds.0),
+                    rect.3.saturating_add(bounds.1),
+                )
+            });
+            let update_handle = app
+                .memory
+                .read_u32_be(window + PPC_WINDOW_UPDATE_RGN_OFFSET)
+                .unwrap_or(0);
+            let update_region = ppc_region_bbox(&mut app.memory, update_handle);
+            let title_handle = app
+                .memory
+                .read_u32_be(window + PPC_WINDOW_TITLE_HANDLE_OFFSET)
+                .unwrap_or(0);
+            let title = ppc_read_title(&mut app.memory, title_handle);
+            WindowSnapshot {
+                title,
+                bounds,
+                structure_bounds,
+                visible_region,
+                update_region,
+                visible,
+                active: front == Some(window)
+                    || app.memory.read_u8(window + PPC_WINDOW_HILITED_OFFSET) == Some(1),
+            }
+        })
+        .collect()
 }
 
 fn resource_manager_snapshot_classic(
@@ -2058,6 +2155,21 @@ impl FixtureRunner {
         self.ppc_app
             .as_mut()
             .map_or_else(|| self.dispatcher.window_count(), PpcLoadedApp::window_count)
+    }
+
+    /// Return the live Window Manager stack in front-to-back order.
+    ///
+    /// This hidden fixture/diagnostic seam deliberately has the same shape for
+    /// classic and native PowerPC execution.  It lets deterministic tests
+    /// assert z-order, geometry, activation, occlusion-derived visible
+    /// regions, and pending repaint regions without relying on screenshots.
+    #[doc(hidden)]
+    pub fn window_stack_snapshot(&mut self) -> Vec<WindowSnapshot> {
+        if let Some(ppc_app) = self.ppc_app.as_mut() {
+            ppc_window_snapshot(ppc_app)
+        } else {
+            self.dispatcher.window_stack_snapshot(&self.bus)
+        }
     }
 
     /// Returns the selected UI theme provider. `classic-system7` is the

@@ -170,6 +170,7 @@
 static QDGlobals qd;
 static WindowPtr gMainWindow;
 static WindowPtr gAuxWindow;
+static WindowPtr gStackWindow;
 
 /* Page 2: Controls */
 static ControlHandle gButton;
@@ -898,11 +899,11 @@ static void DrawControlsPage(void)
 
 static void DrawWindowsPage(void)
 {
-    DrawHeading("\pWindow lifecycle and update events");
+    DrawHeading("\pWindow stacking and update events");
     MoveTo(24, 70);
-    DrawString("\pThis page opens a second document window.");
+    DrawString("\pThree overlapping documents exercise z-order and repaint.");
     MoveTo(24, 92);
-    DrawString("\pChoose another page to dispose it again.");
+    DrawString("\pMove, resize, activate, and close the front window.");
 }
 
 #ifdef SHOWCASE_TARGET_PPC
@@ -3568,20 +3569,49 @@ static void DrawMainWindow(void)
     }
 }
 
-static void DrawAuxWindow(void)
+static void DrawAuxWindow(WindowPtr window)
 {
     Str255 sizeStr;
+    Rect body;
+    RGBColor fill;
+    RGBColor black;
     short width, height;
-    if (gAuxWindow == nil) {
+
+    if (window == nil) {
         return;
     }
-    SetPort(gAuxWindow);
-    EraseRect(&gAuxWindow->portRect);
-    DrawHeading("\pAuxiliary window");
+
+    SetPort(window);
+    EraseRect(&window->portRect);
+    width = window->portRect.right - window->portRect.left;
+    height = window->portRect.bottom - window->portRect.top;
+
+    if (window == gStackWindow) {
+        DrawHeading("\pStacked Inspector");
+        fill.red = 0xffff;
+        fill.green = 0xe000;
+        fill.blue = 0x5555;
+    } else {
+        DrawHeading("\pAuxiliary Window");
+        fill.red = 0x5555;
+        fill.green = 0xd000;
+        fill.blue = 0xffff;
+    }
+    black.red = black.green = black.blue = 0x0000;
+
+    RGBForeColor(&fill);
+    SetRect(&body, 20, 40, width - 20, height - 20);
+    PaintRoundRect(&body, 12, 12);
+    PenNormal();
+    RGBForeColor(&black);
+    FrameRoundRect(&body, 12, 12);
+
     MoveTo(24, 68);
-    DrawString("\pCreated and destroyed through ordinary Window Manager calls.");
-    width = gAuxWindow->portRect.right - gAuxWindow->portRect.left;
-    height = gAuxWindow->portRect.bottom - gAuxWindow->portRect.top;
+    if (window == gStackWindow) {
+        DrawString("\pFront-to-back activation and occlusion probe.");
+    } else {
+        DrawString("\pMove and resize this document to expose repaint work.");
+    }
     MoveTo(24, 92);
     DrawString("\pWindow dimensions: ");
     NumToString(width, sizeStr);
@@ -3589,7 +3619,8 @@ static void DrawAuxWindow(void)
     DrawString("\p x ");
     NumToString(height, sizeStr);
     DrawString(sizeStr);
-    DrawGrowIcon(gAuxWindow);
+    RGBForeColor(&black);
+    DrawGrowIcon(window);
 }
 
 static void ShowAllControls(short page)
@@ -3909,15 +3940,27 @@ static void SetPage(short page)
     ShowAllControls(page);
     SyncMenuState();
 
-    if (page == pageWindows && gAuxWindow == nil) {
-        SetRect(&bounds, 180, 155, 570, 300);
+    if (page == pageWindows && gAuxWindow == nil && gStackWindow == nil) {
+        SetRect(&bounds, 180, 155, 500, 400);
         gAuxWindow = NewCWindow(nil, &bounds, "\pAuxiliary Window", true,
-                                zoomDocProc, (WindowPtr)-1, true, 0);
-        CheckItem(StateMenu(), iWindowState, gAuxWindow != nil);
-        DrawAuxWindow();
-    } else if (page != pageWindows && gAuxWindow != nil) {
-        DisposeWindow(gAuxWindow);
-        gAuxWindow = nil;
+                                zoomDocProc, (WindowPtr)-1, true, 1);
+        SetRect(&bounds, 330, 250, 575, 495);
+        gStackWindow = NewCWindow(nil, &bounds, "\pStacked Inspector", true,
+                                  zoomDocProc, (WindowPtr)-1, true, 2);
+        CheckItem(StateMenu(), iWindowState,
+                  gAuxWindow != nil && gStackWindow != nil);
+        DrawAuxWindow(gAuxWindow);
+        DrawAuxWindow(gStackWindow);
+    } else if (page != pageWindows) {
+        /* Dispose front-to-back so each CloseWindow promotes its predecessor. */
+        if (gStackWindow != nil) {
+            DisposeWindow(gStackWindow);
+            gStackWindow = nil;
+        }
+        if (gAuxWindow != nil) {
+            DisposeWindow(gAuxWindow);
+            gAuxWindow = nil;
+        }
         CheckItem(StateMenu(), iWindowState, false);
     }
 
@@ -4486,11 +4529,23 @@ static void DoEvent(EventRecord *event)
             } else if (part == inContent) {
                 if (window != FrontWindow()) {
                     SelectWindow(window);
+                    if (window == gAuxWindow || window == gStackWindow) {
+                        /* Selecting a covered document exposes its content;
+                         * repaint the newly frontmost visible region before
+                         * the next event-loop frame. */
+                        DrawAuxWindow(window);
+                    }
                 } else {
                     DoContentClick(window, event);
                 }
             } else if (part == inDrag) {
                 DragWindow(window, event->where, &qd.screenBits.bounds);
+                if (window == gAuxWindow || window == gStackWindow) {
+                    /* DragWindow changes the shared screen-backed port
+                     * geometry; redraw the moved content immediately so the
+                     * newly exposed and newly covered regions agree. */
+                    DrawAuxWindow(window);
+                }
             } else if (part == inGrow) {
                 Rect sizeRect;
                 long growResult;
@@ -4500,16 +4555,39 @@ static void DoEvent(EventRecord *event)
                     SizeWindow(window, LoWord(growResult), HiWord(growResult), true);
                     SetPort(window);
                     InvalRect(&window->portRect);
+                    if (window == gAuxWindow || window == gStackWindow) {
+                        /* The updateEvt remains queued for normal event-loop
+                         * semantics, while this redraw makes the resized
+                         * edge deterministic before the next frame. */
+                        DrawAuxWindow(window);
+                    }
                 }
             } else if ((part == inZoomIn || part == inZoomOut) && TrackBox(window, event->where, part)) {
                 ZoomWindow(window, part, window == FrontWindow());
                 SetPort(window);
                 InvalRect(&window->portRect);
             } else if (part == inGoAway && TrackGoAway(window, event->where)) {
-                if (window == gAuxWindow) {
+                if (window == gStackWindow) {
+                    DisposeWindow(gStackWindow);
+                    gStackWindow = nil;
+                    /* The promoted auxiliary window may have been partly
+                     * covered; redraw it explicitly so CloseWindow's
+                     * exposure is visible before the next event-loop pass. */
+                    if (gAuxWindow != nil) {
+                        DrawAuxWindow(gAuxWindow);
+                    }
+                    CheckItem(StateMenu(), iWindowState,
+                              gAuxWindow != nil);
+                } else if (window == gAuxWindow) {
                     DisposeWindow(gAuxWindow);
                     gAuxWindow = nil;
-                    CheckItem(StateMenu(), iWindowState, false);
+                    /* The main page is exposed after the final auxiliary
+                     * window closes. Keep the promotion deterministic on
+                     * both the indexed and direct-color paths. */
+                    SetPort(gMainWindow);
+                    DrawMainWindow();
+                    CheckItem(StateMenu(), iWindowState,
+                              gStackWindow != nil);
                 } else {
                     gQuit = true;
                 }
@@ -4544,7 +4622,9 @@ static void DoEvent(EventRecord *event)
             if (window == gMainWindow) {
                 DrawMainWindow();
             } else if (window == gAuxWindow) {
-                DrawAuxWindow();
+                DrawAuxWindow(gAuxWindow);
+            } else if (window == gStackWindow) {
+                DrawAuxWindow(gStackWindow);
             }
             EndUpdate(window);
             break;

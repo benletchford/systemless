@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use systemless::display::render_screen_with_gamma;
 use systemless::game::{init_game, load_game, new_runner_with_screen_depth};
 use systemless::menu_model::GuestMenuSnapshot;
-use systemless::runner::{FixtureRunner, ResourceManagerSnapshot};
+use systemless::runner::{FixtureRunner, ResourceManagerSnapshot, WindowSnapshot};
 
 const SHOWCASE_SIT: &[u8] = include_bytes!("toolbox-showcase/toolbox-showcase.sit");
 
@@ -95,6 +95,64 @@ fn menu_item_checked(snapshot: &GuestMenuSnapshot, menu_id: i16, item_number: i1
         .unwrap_or(false)
 }
 
+fn assert_window_stack(runner: &mut FixtureRunner, expected_titles: &[&str]) {
+    let snapshots = runner.window_stack_snapshot();
+    let titles = snapshots
+        .iter()
+        .map(|window| window.title.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        titles, expected_titles,
+        "Window Manager order must be front-to-back"
+    );
+    assert_eq!(
+        snapshots.iter().filter(|window| window.active).count(),
+        usize::from(!snapshots.is_empty()),
+        "exactly one live document window must be active"
+    );
+    if let Some(front) = snapshots.first() {
+        assert!(front.active, "front window must be active");
+    }
+}
+
+fn window_snapshot<'a>(snapshots: &'a [WindowSnapshot], title: &str) -> &'a WindowSnapshot {
+    snapshots
+        .iter()
+        .find(|window| window.title == title)
+        .unwrap_or_else(|| panic!("missing window {title:?} in {snapshots:?}"))
+}
+
+fn assert_window_geometry(
+    runner: &mut FixtureRunner,
+    title: &str,
+    bounds: (i16, i16, i16, i16),
+    structure_bounds: (i16, i16, i16, i16),
+) {
+    let snapshots = runner.window_stack_snapshot();
+    let window = window_snapshot(&snapshots, title);
+    assert_eq!(window.bounds, bounds, "{title} content geometry differs");
+    assert_eq!(
+        window.structure_bounds,
+        Some(structure_bounds),
+        "{title} structure geometry differs"
+    );
+    assert!(
+        window.visible_region.is_some(),
+        "{title} must retain a visible content region"
+    );
+}
+
+fn assert_windows_repainted(runner: &mut FixtureRunner, context: &str) {
+    let snapshots = runner.window_stack_snapshot();
+    for window in snapshots.iter().filter(|window| window.visible) {
+        assert_eq!(
+            window.update_region, None,
+            "{context}: {} still has a pending update region",
+            window.title
+        );
+    }
+}
+
 fn step_until<F>(runner: &mut FixtureRunner, label: &str, mut condition: F)
 where
     F: FnMut(&mut FixtureRunner) -> bool,
@@ -173,6 +231,18 @@ fn click_point(runner: &mut FixtureRunner, v: i16, h: i16) {
     runner.set_mouse_position(v, h);
     runner.push_mouse_down(v, h);
     runner.push_mouse_up(v, h);
+}
+
+fn tracking_click(runner: &mut FixtureRunner, v: i16, h: i16) {
+    // TrackGoAway owns the button between its initial mouseDown and the
+    // later mouseUp.  Queueing both records before the guest sees the first
+    // one would clear the held-button state too early and correctly produce
+    // a rejected close-box click.
+    runner.set_mouse_position(v, h);
+    runner.push_mouse_down(v, h);
+    run_ticks(runner, "tracking click down registered", 1);
+    runner.push_mouse_up(v, h);
+    run_ticks(runner, "tracking click up registered", 1);
 }
 
 fn drag_mouse(runner: &mut FixtureRunner, from_v: i16, from_h: i16, to_v: i16, to_h: i16) {
@@ -332,15 +402,22 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
     );
     let mut comparison_actual = actual.clone();
     if filename.contains("events-") {
-        // The raw EventRecord is asserted semantically below. Its timestamp,
-        // pointer-valued message, and mouse coordinates legitimately vary
-        // with the host build profile, so exclude only those rendered values
-        // while retaining strict comparison of their labels and surrounding UI.
-        for v in 148_u32..182 {
-            for h in 136_u32..252 {
-                let offset = ((v * width + h) * 3) as usize;
-                comparison_actual[offset..offset + 3]
-                    .copy_from_slice(&expected.as_raw()[offset..offset + 3]);
+        // The raw values are asserted semantically below. Their timestamp,
+        // pointer-valued message, local mouse coordinates, and prior click
+        // counts legitimately vary with the host build profile and earlier
+        // window-lifecycle probes. Exclude only those rendered value spans
+        // while retaining strict comparison of labels and surrounding UI.
+        for (top, left, bottom, right) in [
+            (148_u32, 100_u32, 182_u32, 252_u32),
+            (136, 430, 150, 492),
+            (198, 174, 211, 252),
+        ] {
+            for v in top..bottom {
+                for h in left..right {
+                    let offset = ((v * width + h) * 3) as usize;
+                    comparison_actual[offset..offset + 3]
+                        .copy_from_slice(&expected.as_raw()[offset..offset + 3]);
+                }
             }
         }
     }
@@ -962,7 +1039,9 @@ fn test_toolbox_showcase() {
     runner.push_mouse_up(10, 108);
     run_ticks(&mut runner, "State menu to close", 1);
 
-    // 3. Switch to Windows and create the auxiliary document window.
+    // 3. Switch to Windows and create two overlapping auxiliary document
+    // windows.  The main window plus these two records give us a real
+    // front-to-back stack to exercise rather than a screenshot-only demo.
     assert!(
         runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_WINDOWS),
         "failed to queue selection of Windows page"
@@ -974,8 +1053,8 @@ fn test_toolbox_showcase() {
             let snapshot = r.guest_menu_snapshot();
             let page_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS);
             let aux_state = menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW);
-            let two_windows = r.window_count() == 2;
-            page_checked && aux_state && two_windows
+            let three_windows = r.window_count() == 3;
+            page_checked && aux_state && three_windows
         },
     );
     let snapshot = runner.guest_menu_snapshot();
@@ -992,30 +1071,205 @@ fn test_toolbox_showcase() {
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS));
     assert_eq!(
         runner.window_count(),
-        2,
-        "auxiliary window must increase window count to 2"
+        3,
+        "two auxiliary windows must increase window count to 3"
     );
     assert!(
         menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW),
         "Auxiliary window state checkmark must be set"
     );
     run_ticks(&mut runner, "Windows page to settle", 1);
+    assert_window_stack(
+        &mut runner,
+        &["Stacked Inspector", "Auxiliary Window", "Toolbox Showcase"],
+    );
+    assert_window_geometry(
+        &mut runner,
+        "Stacked Inspector",
+        (250, 330, 495, 575),
+        (231, 329, 497, 577),
+    );
+    assert_window_geometry(
+        &mut runner,
+        "Auxiliary Window",
+        (155, 180, 400, 500),
+        (136, 179, 402, 502),
+    );
+    assert_window_geometry(
+        &mut runner,
+        "Toolbox Showcase",
+        (50, 40, 420, 600),
+        (31, 39, 422, 602),
+    );
+    assert_windows_repainted(&mut runner, "initial stacked windows");
+
+    // The overlap at (260, 360) must show the front stacked inspector, while
+    // these two probes sample each window's unique colored body.  This is an
+    // occlusion assertion independent of the exact font/chrome raster.
+    let initial_overlap = screen_rgb(&mut runner, 330, 400);
+    let initial_stack_body = screen_rgb(&mut runner, 430, 520);
+    let initial_aux_body = screen_rgb(&mut runner, 220, 240);
+    let initial_aux_edge = screen_rgb(&mut runner, 210, 230);
+    assert_eq!(
+        initial_overlap, initial_stack_body,
+        "front stacked inspector must occlude the auxiliary window"
+    );
+    assert_ne!(
+        initial_overlap, initial_aux_body,
+        "overlap must not leak pixels from the window behind it"
+    );
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "03-windows.png");
 
-    // 3b. Drag auxiliary window by title bar and return it
-    drag_mouse(&mut runner, 145, 250, 175, 280);
-    run_ticks(&mut runner, "aux window dragged", 2);
-    drag_mouse(&mut runner, 175, 280, 145, 250);
-    run_ticks(&mut runner, "aux window returned", 2);
+    // 3b. Hit-test the exposed left side of Auxiliary Window.  It starts
+    // behind Stacked Inspector, so this click must activate and promote it.
+    click_point(&mut runner, 240, 210);
+    step_until(
+        &mut runner,
+        "activate auxiliary window through exposed content",
+        |r| {
+            r.window_stack_snapshot()
+                .first()
+                .is_some_and(|window| window.title == "Auxiliary Window")
+        },
+    );
+    assert_window_stack(
+        &mut runner,
+        &["Auxiliary Window", "Stacked Inspector", "Toolbox Showcase"],
+    );
+    assert_windows_repainted(&mut runner, "auxiliary activation");
+    let promoted_aux_overlap = screen_rgb(&mut runner, 330, 400);
+    assert_eq!(
+        promoted_aux_overlap, initial_aux_body,
+        "activating Auxiliary Window must change the overlap's front pixels"
+    );
+    assert_reference_frame(&mut runner, "03-windows-aux-activated.png");
 
-    // 3c. Resize auxiliary window using its grow box and restore it
-    drag_mouse(&mut runner, 292, 562, 322, 602);
-    run_ticks(&mut runner, "aux window resized", 2);
-    drag_mouse(&mut runner, 322, 602, 292, 562);
-    run_ticks(&mut runner, "aux window resize restored", 2);
+    // 3c. Drag the active auxiliary window by its title bar.  The old
+    // structure area exposes the main/inspector windows and must be repainted.
+    drag_mouse(&mut runner, 143, 200, 173, 235);
+    run_ticks(&mut runner, "auxiliary window dragged", 1);
+    assert_window_stack(
+        &mut runner,
+        &["Auxiliary Window", "Stacked Inspector", "Toolbox Showcase"],
+    );
+    assert_window_geometry(
+        &mut runner,
+        "Auxiliary Window",
+        (185, 215, 430, 535),
+        (166, 214, 432, 537),
+    );
+    assert_windows_repainted(&mut runner, "auxiliary move exposed regions");
+    assert_eq!(
+        screen_rgb(&mut runner, 390, 270),
+        initial_aux_body,
+        "moving Auxiliary Window must repaint its new visible body"
+    );
+    assert_ne!(
+        screen_rgb(&mut runner, 210, 230),
+        initial_aux_edge,
+        "moving Auxiliary Window must repaint the body it exposed"
+    );
+    assert_reference_frame(&mut runner, "03-windows-moved.png");
 
-    // 4. Switch to Drawing & 3D Bevels page (disposing auxiliary window).
+    // 3d. Resize the same front window through its grow box and assert that
+    // both its geometry and the behind-window visible regions are refreshed.
+    drag_mouse(&mut runner, 425, 525, 450, 550);
+    run_ticks(&mut runner, "auxiliary window resized", 1);
+    assert_window_geometry(
+        &mut runner,
+        "Auxiliary Window",
+        (185, 215, 450, 550),
+        (166, 214, 452, 552),
+    );
+    assert_windows_repainted(&mut runner, "auxiliary resize exposed regions");
+    assert_eq!(
+        screen_rgb(&mut runner, 420, 520),
+        initial_aux_body,
+        "resizing Auxiliary Window must repaint its newly exposed body"
+    );
+    assert_reference_frame(&mut runner, "03-windows-resized.png");
+
+    // 3e. The inspector's right-hand body is not covered by the resized
+    // auxiliary window.  Clicking there must hit-test the inspector and move
+    // it to the front, changing the overlap pixel to the inspector color.
+    click_point(&mut runner, 460, 500);
+    step_until(
+        &mut runner,
+        "activate stacked inspector through exposed content",
+        |r| {
+            r.window_stack_snapshot()
+                .first()
+                .is_some_and(|window| window.title == "Stacked Inspector")
+        },
+    );
+    assert_window_stack(
+        &mut runner,
+        &["Stacked Inspector", "Auxiliary Window", "Toolbox Showcase"],
+    );
+    assert_windows_repainted(&mut runner, "inspector activation");
+    let promoted_stack_overlap = screen_rgb(&mut runner, 330, 400);
+    let promoted_stack_body = screen_rgb(&mut runner, 430, 520);
+    let promoted_aux_body = screen_rgb(&mut runner, 240, 250);
+    assert_eq!(
+        promoted_stack_overlap, promoted_stack_body,
+        "activating Stacked Inspector must restore its pixels over the overlap"
+    );
+    assert_ne!(
+        promoted_stack_overlap, promoted_aux_body,
+        "inspector overlap must occlude the moved auxiliary window"
+    );
+    assert_reference_frame(&mut runner, "03-windows-hit-test.png");
+
+    // 3f. Close the front inspector through its go-away box.  DisposeWindow
+    // must promote Auxiliary Window, repaint its newly exposed content, and
+    // remove the closed record from the semantic stack.
+    tracking_click(&mut runner, 240, 340);
+    step_until(
+        &mut runner,
+        "close front inspector and promote auxiliary",
+        |r| {
+            let stack = r.window_stack_snapshot();
+            r.window_count() == 2
+                && stack
+                    .first()
+                    .is_some_and(|window| window.title == "Auxiliary Window")
+                && stack
+                    .iter()
+                    .all(|window| window.title != "Stacked Inspector")
+        },
+    );
+    assert_window_stack(&mut runner, &["Auxiliary Window", "Toolbox Showcase"]);
+    assert_windows_repainted(&mut runner, "front inspector disposal");
+    assert_reference_frame(&mut runner, "03-windows-promoted.png");
+
+    // Dispose the promoted auxiliary too.  The original main document must
+    // become active/frontmost, proving close/dispose promotion through the
+    // complete stack and leaving the later pages' one-window contract intact.
+    tracking_click(&mut runner, 175, 223);
+    step_until(&mut runner, "dispose auxiliary and promote main", |r| {
+        let stack = r.window_stack_snapshot();
+        r.window_count() == 1
+            && stack
+                .first()
+                .is_some_and(|window| window.title == "Toolbox Showcase")
+    });
+    assert_window_stack(&mut runner, &["Toolbox Showcase"]);
+    assert_windows_repainted(&mut runner, "auxiliary disposal");
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(
+        !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW),
+        "window state checkmark must clear after both auxiliary windows close"
+    );
+    let main_heading_pixel = screen_rgb(&mut runner, 75, 65);
+    assert!(
+        main_heading_pixel[0] < 250 || main_heading_pixel[1] < 250 || main_heading_pixel[2] < 250,
+        "promoted main window must repaint representative page content"
+    );
+    assert_reference_frame(&mut runner, "03-windows-main-promoted.png");
+
+    // 4. Switch to Drawing & 3D Bevels page after the complete window-stack
+    // lifecycle has promoted the main document again.
     let completed_qd3d_frames = runner.completed_qd3d_frame_count();
     assert!(
         runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_DRAWING),
@@ -1965,9 +2219,9 @@ fn test_toolbox_showcase() {
     assert_reference_frame(&mut runner, "28-sprites-scrolled.png");
 
     // 25. Visit Windows once more so the Events page records an activation
-    // transition when the main window is selected back from the auxiliary
-    // document. The update event posted for the auxiliary window is retained
-    // in the page's lifecycle summary.
+    // transition when the main window is selected back from the two-window
+    // overlap stack. Their update events are retained in the page's lifecycle
+    // summary.
     assert!(
         runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_WINDOWS),
         "failed to queue selection of Windows page for activation probe"
@@ -1979,12 +2233,12 @@ fn test_toolbox_showcase() {
             let snapshot = r.guest_menu_snapshot();
             menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS)
                 && menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW)
-                && r.window_count() == 2
+                && r.window_count() == 3
         },
     );
-    // The auxiliary window is in global (180,155)-(570,300). Select the main
-    // document outside that rectangle to generate an activateEvt transition.
-    click_point(&mut runner, win_top + 100, win_left + 450);
+    // Select exposed main-document content above and left of both auxiliary
+    // structures to generate an activateEvt transition.
+    click_point(&mut runner, 100, 100);
     run_ticks(&mut runner, "main window activation to settle", 2);
 
     assert!(

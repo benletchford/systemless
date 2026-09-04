@@ -6,6 +6,7 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
 use crate::trap::quickdraw::RegionBooleanOp;
 use crate::trap::types::{Rect, ShapeOp};
+use crate::window_manager::WindowSnapshot;
 use crate::Result;
 use std::sync::OnceLock;
 
@@ -1705,16 +1706,25 @@ impl super::TrapDispatcher {
         tracking: &mut super::dispatch::WindowTrackingState,
         mouse: (i16, i16),
     ) {
-        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
         let delta_v = mouse.0.wrapping_sub(tracking.start_mouse.0);
         let delta_h = mouse.1.wrapping_sub(tracking.start_mouse.1);
         let (top, left, bottom, right) = tracking.original_outline_rect;
-        tracking.outline_rect = (
+        let outline_rect = (
             top.saturating_add(delta_v),
             left.saturating_add(delta_h),
             bottom.saturating_add(delta_v),
             right.saturating_add(delta_h),
         );
+        // DragWindow re-fires its retained trap while the button remains
+        // down.  A stationary mouse must leave the existing outline alone;
+        // repeatedly saving and repainting the same screen strips is both
+        // wasteful and, on indexed displays, needlessly walks the guest
+        // colour table for every outline pixel.
+        if !tracking.outline_saved_pixels.is_empty() && tracking.outline_rect == outline_rect {
+            return;
+        }
+        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+        tracking.outline_rect = outline_rect;
         tracking.outline_saved_pixels =
             self.save_window_drag_outline_pixels(bus, tracking.outline_rect);
         self.draw_window_drag_outline(bus, tracking.outline_rect);
@@ -1747,7 +1757,6 @@ impl super::TrapDispatcher {
         tracking: &mut super::dispatch::GrowWindowTrackingState,
         mouse: (i16, i16),
     ) {
-        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
         let (height, width) =
             Self::window_grow_dimensions(tracking.original_content_rect, tracking.size_rect, mouse);
         let old_height = tracking
@@ -1758,7 +1767,7 @@ impl super::TrapDispatcher {
             .original_content_rect
             .3
             .saturating_sub(tracking.original_content_rect.1);
-        tracking.outline_rect = (
+        let outline_rect = (
             tracking.original_outline_rect.0,
             tracking.original_outline_rect.1,
             tracking
@@ -1770,6 +1779,11 @@ impl super::TrapDispatcher {
                 .3
                 .saturating_add(width.saturating_sub(old_width)),
         );
+        if !tracking.outline_saved_pixels.is_empty() && tracking.outline_rect == outline_rect {
+            return;
+        }
+        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+        tracking.outline_rect = outline_rect;
         tracking.outline_saved_pixels =
             self.save_window_drag_outline_pixels(bus, tracking.outline_rect);
         self.draw_window_drag_outline(bus, tracking.outline_rect);
@@ -2602,6 +2616,55 @@ impl super::TrapDispatcher {
 
     pub(crate) fn window_visible(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
         window_ptr != 0 && bus.read_byte(window_ptr + Self::WINDOW_VISIBLE_OFFSET) != 0
+    }
+
+    /// Return the process Window Manager list in front-to-back order with
+    /// enough guest-visible state for architecture-neutral fixture checks.
+    ///
+    /// Macintosh Toolbox Essentials (1992), pp. 4-63--4-65 and 4-89--4-93:
+    /// WindowList is front-to-back, `hilited` identifies the active window,
+    /// `visRgn` excludes structure regions above the window, and `updateRgn`
+    /// carries pending repaint work.  Keep the WindowPtr itself private so
+    /// deterministic callers compare titles and geometry rather than guest
+    /// allocation addresses.
+    pub(crate) fn window_stack_snapshot(&self, bus: &MacMemoryBus) -> Vec<WindowSnapshot> {
+        self.window_list
+            .iter()
+            .copied()
+            .filter(|&window_ptr| window_ptr != 0)
+            .map(|window_ptr| {
+                let title_handle = bus.read_long(window_ptr + Self::WINDOW_TITLE_HANDLE_OFFSET);
+                let title_ptr = if title_handle != 0 {
+                    bus.read_long(title_handle)
+                } else {
+                    0
+                };
+                let title = if title_ptr != 0 {
+                    decode_mac_roman(&bus.read_pstring(title_ptr))
+                } else {
+                    String::new()
+                };
+                let visible = self.window_visible(bus, window_ptr);
+                let bounds = self.window_global_port_rect(bus, window_ptr);
+                let structure_bounds = Self::region_handle_rect(
+                    bus,
+                    bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
+                );
+                let visible_region = Self::region_handle_rect(bus, bus.read_long(window_ptr + 24))
+                    .map(|rect| self.window_local_rect_to_global(bus, window_ptr, rect));
+                let update_region = self.window_update_rect(bus, window_ptr);
+                WindowSnapshot {
+                    title,
+                    bounds,
+                    structure_bounds,
+                    visible_region,
+                    update_region,
+                    visible,
+                    active: window_ptr == self.front_window
+                        || bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) != 0,
+                }
+            })
+            .collect()
     }
 
     fn frontmost_visible_window_in_list(&self, bus: &MacMemoryBus) -> u32 {

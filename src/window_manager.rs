@@ -11,6 +11,27 @@ pub(crate) fn standard_desktop_pattern_is_ink(h: i32, v: i32) -> bool {
 
 pub(crate) type WindowRect = (i16, i16, i16, i16);
 
+/// Architecture-neutral inspection of one live Window Manager record.
+///
+/// This is intentionally a semantic seam for deterministic fixtures and
+/// diagnostics.  The WindowPtr is not exposed: callers should identify a
+/// window by its title and assert the returned vector's front-to-back order,
+/// geometry, activation, visibility, and pending update region.  Regions are
+/// represented by their QuickDraw bounding boxes because the public fixture
+/// contract only needs to know which screen area is dirty/visible; the guest
+/// region records remain private implementation details.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WindowSnapshot {
+    pub title: String,
+    pub bounds: WindowRect,
+    pub structure_bounds: Option<WindowRect>,
+    pub visible_region: Option<WindowRect>,
+    pub update_region: Option<WindowRect>,
+    pub visible: bool,
+    pub active: bool,
+}
+
 pub(crate) fn standard_window_structure_bounds(content: WindowRect) -> WindowRect {
     (
         content.0.saturating_sub(19),
