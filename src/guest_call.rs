@@ -473,15 +473,6 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.current_task()
     }
 
-    /// Whether `task` has no suspended guest-procedure continuations.
-    ///
-    /// A missing task has no continuations, which lets Thread Manager retire a
-    /// task that never crossed an ISA boundary without first creating an
-    /// otherwise empty stack entry.
-    pub(crate) fn task_is_empty(&self, task: ExecutionTaskId) -> bool {
-        self.0.borrow().kernel.task_is_empty(task)
-    }
-
     /// Select the continuation owner for subsequent guest execution.
     pub(crate) fn register_task(&self, task: ExecutionTaskId) -> bool {
         self.apply_task_effect(ExecutionTaskEffect::Register(task))
@@ -538,17 +529,36 @@ impl SharedGuestCallStack {
     /// Drop a retired task's empty continuation stack.
     ///
     /// A non-empty stack denotes suspended execution and cannot be discarded.
+    #[cfg(test)]
     pub(crate) fn remove_task(&self, task: ExecutionTaskId) -> bool {
         let mut tasks = self.0.borrow_mut();
-        if tasks
-            .kernel
-            .apply_task_effect(ExecutionTaskEffect::Retire(task))
-            .is_err()
-        {
+        if tasks.kernel.retire_task(task).is_err() {
             return false;
         }
         tasks.cooperative_contexts.remove(task);
         true
+    }
+
+    /// Commit result delivery and retirement while the execution owner keeps
+    /// both task identities and their adapter snapshots stable.
+    pub(crate) fn retire_cooperative_context(
+        &self,
+        task: ExecutionTaskId,
+        successor: Option<ExecutionTaskId>,
+        commit: impl FnOnce(&CooperativeThread) -> bool,
+    ) -> Option<(CooperativeThread, Option<CooperativeThread>)> {
+        let mut tasks = self.0.borrow_mut();
+        let finished = tasks.cooperative_contexts.get(task)?.clone();
+        let next = match successor {
+            Some(next) => Some(tasks.cooperative_contexts.get(next)?.clone()),
+            None => None,
+        };
+        tasks
+            .kernel
+            .retire_task_with(task, successor, || commit(&finished))
+            .ok()?;
+        tasks.cooperative_contexts.remove(task);
+        Some((finished, next))
     }
 
     pub(crate) fn cooperative_context(&self, task: ExecutionTaskId) -> Option<CooperativeThread> {
@@ -1329,6 +1339,11 @@ mod tests {
         ));
         assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
         assert!(!calls.remove_task(worker));
+        assert!(calls
+            .retire_cooperative_context(worker, None, |_| {
+                panic!("pending continuations must reject retirement before result delivery")
+            })
+            .is_none());
         assert_eq!(calls.cooperative_context(worker), Some(context.clone()));
         let detached = calls.clone();
         let shared = calls.shared_handle();

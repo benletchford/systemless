@@ -51,7 +51,6 @@ pub(crate) enum ExecutionTaskState {
 pub(crate) enum ExecutionTaskEffect {
     Register(ExecutionTaskId),
     SwitchTo(ExecutionTaskId),
-    Retire(ExecutionTaskId),
 }
 
 /// A request type that identifies the task which owns its continuation.
@@ -365,6 +364,9 @@ pub(crate) enum ContinuationError {
     CommitRefused {
         call_id: CallId,
     },
+    TaskCommitRefused {
+        task: ExecutionTaskId,
+    },
     /// A request's embedded owner disagreed with the task supplied to submit.
     TaskMismatch {
         expected: ExecutionTaskId,
@@ -636,7 +638,6 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         match effect {
             ExecutionTaskEffect::Register(task) => self.register_task(task),
             ExecutionTaskEffect::SwitchTo(task) => self.switch_to_task(task),
-            ExecutionTaskEffect::Retire(task) => self.retire_task(task),
         }
     }
 
@@ -810,7 +811,20 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     /// A selected task is also refused, even when empty, because removing its
     /// stack would leave the task cursor dangling. Switch to a surviving task
     /// first, then call this method.
+    #[cfg(test)]
     pub(crate) fn retire_task(&self, task: ExecutionTaskId) -> Result<(), ContinuationError> {
+        self.retire_task_with(task, None, || true)
+    }
+
+    /// Validate retirement and optional replacement before committing external
+    /// result storage. The callback must be synchronous, non-reentrant and
+    /// leave external state unchanged on failure; it cannot execute guest code.
+    pub(crate) fn retire_task_with(
+        &self,
+        task: ExecutionTaskId,
+        successor: Option<ExecutionTaskId>,
+        commit: impl FnOnce() -> bool,
+    ) -> Result<(), ContinuationError> {
         let mut state = self.0.borrow_mut();
         let Some(stack) = state.stacks.get(&task) else {
             return Err(ContinuationError::TaskUnavailable { task });
@@ -830,13 +844,31 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
             })
             .sum();
         let current = state.current_task == task;
-        if current || depth != 0 || contexts != 0 {
+        if (current && successor.is_none()) || depth != 0 || contexts != 0 {
             return Err(ContinuationError::RetirementRefused {
                 task,
                 depth,
                 contexts,
                 current,
             });
+        }
+        if let Some(next) = successor {
+            if !current
+                || next == task
+                || !state.stacks.contains_key(&next)
+                || state.task_states.get(&next) != Some(&ExecutionTaskState::Ready)
+                || state.critical_depth != 0
+            {
+                return Err(ContinuationError::TaskUnavailable { task: next });
+            }
+        }
+        if !commit() {
+            return Err(ContinuationError::TaskCommitRefused { task });
+        }
+        if let Some(next) = successor {
+            state.current_task = next;
+            state.task_states.insert(next, ExecutionTaskState::Running);
+            state.ready.retain(|queued| *queued != next);
         }
         state.stacks.remove(&task);
         state.retired_tasks.insert(task);
@@ -863,14 +895,17 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         self.task_depth(self.current_task())
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.0.borrow().stacks.values().map(Vec::len).sum()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    #[cfg(test)]
     pub(crate) fn task_is_empty(&self, task: ExecutionTaskId) -> bool {
         let state = self.0.borrow();
         state.stacks.get(&task).is_none_or(Vec::is_empty)
