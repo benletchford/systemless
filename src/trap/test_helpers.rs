@@ -117,8 +117,9 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
     dispatcher.set_screen_mode_for_test(screen_base, row_bytes, width, height, depth);
     bus.write_long(0x0824, screen_base);
     bus.write_word(0x0828, row_bytes as u16);
-    // Sync dispatcher tick_count (normally done by runner's advance_guest_tick)
-    dispatcher.tick_count = 100;
+    // Import the guest-owned low-memory Ticks value into the host pacing
+    // snapshot (normally done at the runner's ABI boundary).
+    dispatcher.read_tick_count(&bus);
 
     (dispatcher, cpu, bus)
 }

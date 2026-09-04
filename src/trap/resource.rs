@@ -1748,6 +1748,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // GetResource ($A9A0)
             // Returns a handle to the resource with the given type and ID.

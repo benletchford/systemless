@@ -10596,6 +10596,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // ========== Dialog Manager ==========
 
@@ -25097,8 +25098,7 @@ mod tests {
                                             bus: &mut MacMemoryBus,
                                             what: u16,
                                             tick: u32| {
-            disp.tick_count = tick;
-            bus.write_long(crate::memory::globals::addr::TICKS, tick);
+            disp.set_tick_count_for_test(bus, tick);
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_word(event_ptr, what);
             bus.write_long(event_ptr + 2, 0);
@@ -33751,8 +33751,7 @@ mod tests {
         bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
         bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 0);
 
-        disp.tick_count = 100;
-        bus.write_long(crate::memory::globals::addr::TICKS, 100);
+        disp.set_tick_count_for_test(&mut bus, 100);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, te_handle);
         let result = disp.dispatch_dialog(true, 0x1D8, &mut cpu, &mut bus);
@@ -33771,8 +33770,7 @@ mod tests {
             0
         );
 
-        disp.tick_count = 131;
-        bus.write_long(crate::memory::globals::addr::TICKS, 131);
+        disp.set_tick_count_for_test(&mut bus, 131);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, te_handle);
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
@@ -33787,8 +33785,7 @@ mod tests {
             0
         );
 
-        disp.tick_count = 132;
-        bus.write_long(crate::memory::globals::addr::TICKS, 132);
+        disp.set_tick_count_for_test(&mut bus, 132);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, te_handle);
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);
@@ -33807,8 +33804,7 @@ mod tests {
             1
         );
 
-        disp.tick_count = 164;
-        bus.write_long(crate::memory::globals::addr::TICKS, 164);
+        disp.set_tick_count_for_test(&mut bus, 164);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, te_handle);
         let result = disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus);

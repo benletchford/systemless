@@ -8,10 +8,18 @@
 //! while each adapter remains responsible for its architectural registers and
 //! ABI frame.
 
+use crate::execution_kernel::TaskOwned;
 use crate::guest_procedure::GuestIsa;
 use ppc::{PpcCpu, PpcImportAction, PpcNativeReturnGpr3};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+
+// Compatibility exports for the first execution-kernel slice. The new
+// semantic IDs/phases/store are CPU-free; the legacy value objects and
+// SharedGuestCallStack below remain here temporarily because its parking and
+// resume methods still carry concrete PowerPC context.
+pub(crate) use crate::execution_kernel::{CallId, ContinuationPhase, ExecutionTaskId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GuestCallTarget {
@@ -32,7 +40,7 @@ struct PowerPcCallOrigin {
     return_pc: u32,
     final_pc: u32,
     restore_rtoc: u32,
-    return_gpr3: PpcNativeReturnGpr3,
+    return_gpr3: GuestCallReturnPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +142,52 @@ pub(crate) enum M68kResultTarget {
     SpecialCase { selector: u8, scratch: u32 },
 }
 
+/// Architecture-neutral policy for placing a guest callback's result in the
+/// caller's result slot.
+///
+/// The PowerPC CPU exposes the same choices through `PpcNativeReturnGpr3`, but
+/// that is an ABI detail. Keeping the policy here lets a 68K or PowerPC edge
+/// describe the same continuation without constructing a CPU action. Inside
+/// Macintosh: PowerPC System Software (1994), pp. 2-12--2-16.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallReturnPolicy {
+    Preserve,
+    Mask(u32),
+    Set(u32),
+    ZeroOrSet { zero: u32, nonzero: u32 },
+    CrBit(u8),
+    XerCa,
+    XerOv,
+}
+
+impl From<PpcNativeReturnGpr3> for GuestCallReturnPolicy {
+    fn from(policy: PpcNativeReturnGpr3) -> Self {
+        match policy {
+            PpcNativeReturnGpr3::Preserve => Self::Preserve,
+            PpcNativeReturnGpr3::Mask(mask) => Self::Mask(mask),
+            PpcNativeReturnGpr3::Set(value) => Self::Set(value),
+            PpcNativeReturnGpr3::ZeroOrSet { zero, nonzero } => Self::ZeroOrSet { zero, nonzero },
+            PpcNativeReturnGpr3::CrBit(bit_index) => Self::CrBit(bit_index),
+            PpcNativeReturnGpr3::XerCa => Self::XerCa,
+            PpcNativeReturnGpr3::XerOv => Self::XerOv,
+        }
+    }
+}
+
+impl From<GuestCallReturnPolicy> for PpcNativeReturnGpr3 {
+    fn from(policy: GuestCallReturnPolicy) -> Self {
+        match policy {
+            GuestCallReturnPolicy::Preserve => Self::Preserve,
+            GuestCallReturnPolicy::Mask(mask) => Self::Mask(mask),
+            GuestCallReturnPolicy::Set(value) => Self::Set(value),
+            GuestCallReturnPolicy::ZeroOrSet { zero, nonzero } => Self::ZeroOrSet { zero, nonzero },
+            GuestCallReturnPolicy::CrBit(bit_index) => Self::CrBit(bit_index),
+            GuestCallReturnPolicy::XerCa => Self::XerCa,
+            GuestCallReturnPolicy::XerOv => Self::XerOv,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PowerPcReturnState {
     pub(crate) gpr3: u32,
@@ -151,6 +205,363 @@ pub(crate) struct M68kResume {
     pub(crate) final_sp: u32,
     pub(crate) result: Option<M68kResultTarget>,
     pub(crate) powerpc: PowerPcReturnState,
+}
+
+/// The architecture-neutral payload supplied to a guest call.
+///
+/// A call into native PowerPC code receives its values through the PPC ABI
+/// registers/parameter area, while a call into 68K code needs the emulated
+/// stack/register interval. Both are represented here so the process-owned
+/// continuation stack does not have to infer an ABI from a CPU action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct M68kCallRequest {
+    pub(crate) entry: u32,
+    pub(crate) initial_sp: u32,
+    pub(crate) final_sp: u32,
+    pub(crate) registers: M68kRegisterState,
+    pub(crate) result: Option<M68kResultSource>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallArguments {
+    None,
+    PowerPc(PowerPcArguments),
+    M68k(M68kCallRequest),
+}
+
+/// One architecture-neutral guest procedure request.
+///
+/// `task` identifies the process execution task that owns the eventual
+/// continuation. ABI adapters may construct a request before the stack's
+/// current task is known; `SharedGuestCallStack::push_effect` stamps its
+/// current task at the scheduling boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuestCallRequest {
+    pub(crate) task: ExecutionTaskId,
+    pub(crate) target: GuestCallTarget,
+    pub(crate) arguments: GuestCallArguments,
+}
+
+impl GuestCallRequest {
+    pub(crate) fn new(target: GuestCallTarget) -> Self {
+        Self::for_task(ExecutionTaskId::APPLICATION, target)
+    }
+
+    pub(crate) fn for_task(task: ExecutionTaskId, target: GuestCallTarget) -> Self {
+        Self {
+            task,
+            target,
+            arguments: GuestCallArguments::None,
+        }
+    }
+
+    pub(crate) fn with_powerpc_arguments(mut self, arguments: PowerPcArguments) -> Self {
+        self.arguments = GuestCallArguments::PowerPc(arguments);
+        self
+    }
+
+    pub(crate) fn with_m68k_request(mut self, request: M68kCallRequest) -> Self {
+        self.arguments = GuestCallArguments::M68k(request);
+        self
+    }
+
+    fn with_task(mut self, task: ExecutionTaskId) -> Self {
+        self.task = task;
+        self
+    }
+}
+
+impl TaskOwned for GuestCallRequest {
+    fn task(&self) -> ExecutionTaskId {
+        self.task
+    }
+}
+
+/// Typed resumption metadata for one guest call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallContinuation {
+    ReturnToM68k {
+        return_pc: u32,
+        final_sp: u32,
+        result: Option<M68kResultTarget>,
+    },
+    ReturnToPowerPc {
+        return_pc: u32,
+        final_pc: u32,
+        restore_rtoc: u32,
+        return_gpr3: GuestCallReturnPolicy,
+    },
+}
+
+impl GuestCallContinuation {
+    pub(crate) const fn to_m68k(
+        return_pc: u32,
+        final_sp: u32,
+        result: Option<M68kResultTarget>,
+    ) -> Self {
+        Self::ReturnToM68k {
+            return_pc,
+            final_sp,
+            result,
+        }
+    }
+
+    pub(crate) fn to_powerpc(
+        return_pc: u32,
+        final_pc: u32,
+        restore_rtoc: u32,
+        return_gpr3: impl Into<GuestCallReturnPolicy>,
+    ) -> Self {
+        Self::ReturnToPowerPc {
+            return_pc,
+            final_pc,
+            restore_rtoc,
+            return_gpr3: return_gpr3.into(),
+        }
+    }
+}
+
+/// Compatibility aliases for the CPU-free semantic store. The concrete frame
+/// map below remains responsible for parked CPU contexts until the runner is
+/// migrated to consume continuation effects directly.
+pub(crate) type ContinuationStore =
+    crate::execution_kernel::ContinuationStore<GuestCallRequest, GuestCallContinuation>;
+
+/// Semantic guest-execution effect emitted by either ABI edge.
+///
+/// `PpcImportAction` is deliberately produced/consumed only by the adapter
+/// methods below. Managers and Mixed Mode code exchange this effect instead
+/// of constructing an architecture-specific native-call action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallEffect {
+    CallGuest {
+        request: GuestCallRequest,
+        continuation: GuestCallContinuation,
+    },
+}
+
+impl GuestCallEffect {
+    pub(crate) const fn call_guest(
+        request: GuestCallRequest,
+        continuation: GuestCallContinuation,
+    ) -> Self {
+        Self::CallGuest {
+            request,
+            continuation,
+        }
+    }
+
+    fn with_task(self, task: ExecutionTaskId) -> Self {
+        match self {
+            Self::CallGuest {
+                request,
+                continuation,
+            } => Self::CallGuest {
+                request: request.with_task(task),
+                continuation,
+            },
+        }
+    }
+
+    pub(crate) fn request(self) -> GuestCallRequest {
+        match self {
+            Self::CallGuest { request, .. } => request,
+        }
+    }
+
+    /// Convert the semantic effect to the PPC CPU's import ABI.
+    ///
+    /// Only a native PowerPC target can be represented by `CallNative`; a
+    /// cross-ISA effect remains in the process continuation owner and returns
+    /// `None` here for the caller to schedule through its other adapter.
+    pub(crate) fn into_ppc_import_action(self) -> Option<PpcImportAction> {
+        let Self::CallGuest {
+            request,
+            continuation:
+                GuestCallContinuation::ReturnToPowerPc {
+                    return_pc,
+                    final_pc,
+                    restore_rtoc,
+                    return_gpr3,
+                },
+        } = self
+        else {
+            return None;
+        };
+        if request.target.isa != GuestIsa::PowerPc
+            || !matches!(request.arguments, GuestCallArguments::None)
+        {
+            return None;
+        }
+        Some(PpcImportAction::CallNative {
+            entry: request.target.entry,
+            rtoc: request.target.rtoc,
+            return_pc,
+            final_pc,
+            restore_rtoc,
+            return_gpr3: return_gpr3.into(),
+        })
+    }
+
+    /// Decode the PPC ABI adapter action back into its neutral effect.
+    pub(crate) fn from_ppc_import_action(action: PpcImportAction) -> Option<Self> {
+        let PpcImportAction::CallNative {
+            entry,
+            rtoc,
+            return_pc,
+            final_pc,
+            restore_rtoc,
+            return_gpr3,
+        } = action
+        else {
+            return None;
+        };
+        Some(Self::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry,
+                rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                return_pc,
+                final_pc,
+                restore_rtoc,
+                GuestCallReturnPolicy::from(return_gpr3),
+            ),
+        ))
+    }
+
+    fn into_frame(self) -> Option<GuestCallFrame> {
+        let Self::CallGuest {
+            request,
+            continuation,
+        } = self;
+        let target = request.target;
+        match (target.isa, request.arguments, continuation) {
+            (
+                GuestIsa::M68k,
+                GuestCallArguments::None,
+                GuestCallContinuation::ReturnToM68k {
+                    return_pc,
+                    final_sp,
+                    result,
+                },
+            ) => Some(GuestCallFrame {
+                target,
+                origin: GuestCallOrigin::M68k(M68kCallOrigin {
+                    return_pc,
+                    final_sp,
+                    result,
+                }),
+                m68k_execution: None,
+                powerpc_execution: None,
+            }),
+            (
+                GuestIsa::PowerPc,
+                GuestCallArguments::PowerPc(arguments),
+                GuestCallContinuation::ReturnToM68k {
+                    return_pc,
+                    final_sp,
+                    result,
+                },
+            ) => Some(GuestCallFrame {
+                target,
+                origin: GuestCallOrigin::M68k(M68kCallOrigin {
+                    return_pc,
+                    final_sp,
+                    result,
+                }),
+                m68k_execution: None,
+                powerpc_execution: Some(PowerPcExecution {
+                    arguments,
+                    return_pc: None,
+                    parked_cpu: None,
+                    completed: None,
+                }),
+            }),
+            (
+                GuestIsa::PowerPc,
+                GuestCallArguments::None,
+                GuestCallContinuation::ReturnToPowerPc {
+                    return_pc,
+                    final_pc,
+                    restore_rtoc,
+                    return_gpr3,
+                },
+            ) => Some(GuestCallFrame {
+                target,
+                origin: GuestCallOrigin::PowerPc(PowerPcCallOrigin {
+                    return_pc,
+                    final_pc,
+                    restore_rtoc,
+                    return_gpr3,
+                }),
+                m68k_execution: None,
+                powerpc_execution: None,
+            }),
+            (
+                GuestIsa::M68k,
+                GuestCallArguments::M68k(request),
+                GuestCallContinuation::ReturnToPowerPc {
+                    return_pc,
+                    final_pc,
+                    restore_rtoc,
+                    return_gpr3,
+                },
+            ) => Some(GuestCallFrame {
+                target,
+                origin: GuestCallOrigin::PowerPc(PowerPcCallOrigin {
+                    return_pc,
+                    final_pc,
+                    restore_rtoc,
+                    return_gpr3,
+                }),
+                m68k_execution: Some(M68kExecution {
+                    entry: request.entry,
+                    initial_sp: request.initial_sp,
+                    return_pc,
+                    final_sp: request.final_sp,
+                    registers: request.registers,
+                    result: request.result,
+                    started: false,
+                }),
+                powerpc_execution: None,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Stable diagnostic spelling for the PPC ABI adapter's action vocabulary.
+///
+/// Keeping this formatter beside the adapter conversion means loader tracing
+/// does not need to inspect the architecture-specific native-call variant.
+pub(crate) fn format_ppc_import_action(action: &PpcImportAction) -> String {
+    match action {
+        PpcImportAction::Return(value) => format!("return(${:08X})", value),
+        PpcImportAction::ReturnPreserve => "return-preserve".to_string(),
+        PpcImportAction::ReturnPreserveWithExtraCycles(extra_cycles) => {
+            format!("return-preserve+{}cycles", extra_cycles)
+        }
+        PpcImportAction::ReturnWithExtraCycles(value, extra_cycles) => {
+            format!("return(${:08X})+{}cycles", value, extra_cycles)
+        }
+        PpcImportAction::Continue => "continue".to_string(),
+        PpcImportAction::Yield(cycles) => format!("yield({cycles}cycles)"),
+        PpcImportAction::CallNative {
+            entry,
+            rtoc,
+            return_pc,
+            final_pc,
+            restore_rtoc,
+            ..
+        } => format!(
+            "call-native(entry=${:08X},rtoc=${:08X},return_pc=${:08X},final_pc=${:08X},restore_rtoc=${:08X})",
+            entry, rtoc, return_pc, final_pc, restore_rtoc
+        ),
+        PpcImportAction::RaiseException(exception) => format!("exception({:?})", exception),
+        PpcImportAction::Halt => "halt".to_string(),
+    }
 }
 
 impl PartialEq for GuestCallFrame {
@@ -173,13 +584,37 @@ impl PartialEq for GuestCallFrame {
 
 impl Eq for GuestCallFrame {}
 
-/// One process's nested guest-procedure continuation stack.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExecutionTaskCalls {
+    /// Authoritative task/order/phase state. The frame map below is only the
+    /// temporary CPU-adapter projection keyed by this store's CallId.
+    kernel: ContinuationStore,
+    frames: HashMap<CallId, GuestCallFrame>,
+}
+
+impl Default for ExecutionTaskCalls {
+    fn default() -> Self {
+        Self {
+            kernel: ContinuationStore::default(),
+            frames: HashMap::new(),
+        }
+    }
+}
+
+impl ExecutionTaskCalls {
+    fn is_empty(&self) -> bool {
+        self.kernel.is_empty()
+    }
+}
+
+/// Task-indexed guest-procedure continuation stacks for one process.
 ///
-/// Ordinary `Clone` creates an independent process snapshot. The runner's
-/// process context explicitly attaches both CPU adapters to the same live
-/// allocation.
+/// Both CPU adapters share this owner, but every Thread Manager task has an
+/// independent LIFO stack. Switching tasks changes which stack subsequent
+/// Mixed Mode operations address; it cannot expose another task's suspended
+/// call. Ordinary `Clone` still creates an independent process snapshot.
 #[derive(Debug, Default)]
-pub(crate) struct SharedGuestCallStack(Rc<RefCell<Vec<GuestCallFrame>>>);
+pub(crate) struct SharedGuestCallStack(Rc<RefCell<ExecutionTaskCalls>>);
 
 impl PartialEq for SharedGuestCallStack {
     fn eq(&self, other: &Self) -> bool {
@@ -196,6 +631,10 @@ impl Clone for SharedGuestCallStack {
 }
 
 impl SharedGuestCallStack {
+    fn all_tasks_idle(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
@@ -205,39 +644,109 @@ impl SharedGuestCallStack {
             return;
         }
         assert!(
-            self.is_empty() || process_calls.is_empty(),
+            self.all_tasks_idle() || process_calls.all_tasks_idle(),
             "cannot attach two active guest-procedure continuation stacks"
         );
         let pending = std::mem::take(&mut *self.0.borrow_mut());
         self.0 = Rc::clone(&process_calls.0);
-        self.0.borrow_mut().extend(pending);
+        if !pending.is_empty() {
+            *self.0.borrow_mut() = pending;
+        }
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.borrow().is_empty()
+        self.all_tasks_idle()
     }
 
     pub(crate) fn depth(&self) -> usize {
-        self.0.borrow().len()
+        self.0.borrow().kernel.depth()
+    }
+
+    /// Return the task whose continuation stack is currently active.
+    ///
+    /// The execution runner uses this only to associate architecture-specific
+    /// parked contexts with the same cooperative task.  The task owner itself
+    /// remains process-wide; this is a view of its current cursor, not a second
+    /// owner.  Inside Macintosh: Processes (1994), pp. 4-4--4-6.
+    pub(crate) fn current_task(&self) -> ExecutionTaskId {
+        self.0.borrow().kernel.current_task()
+    }
+
+    /// Whether `task` has no suspended guest-procedure continuations.
+    ///
+    /// A missing task has no continuations, which lets Thread Manager retire a
+    /// task that never crossed an ISA boundary without first creating an
+    /// otherwise empty stack entry.
+    pub(crate) fn task_is_empty(&self, task: ExecutionTaskId) -> bool {
+        self.0.borrow().kernel.task_is_empty(task)
+    }
+
+    /// Select the continuation owner for subsequent guest execution.
+    pub(crate) fn switch_to_task(&self, task: ExecutionTaskId) {
+        self.0.borrow().kernel.switch_to_task(task);
+    }
+
+    /// Drop a retired task's empty continuation stack.
+    ///
+    /// A non-empty stack denotes suspended execution and cannot be discarded.
+    pub(crate) fn remove_task(&self, task: ExecutionTaskId) -> bool {
+        let tasks = self.0.borrow_mut();
+        if tasks.kernel.retire_task(task).is_err() {
+            return false;
+        }
+        true
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.depth()
+        self.0.borrow().kernel.len()
     }
 
-    pub(crate) fn begin_m68k(&self, target: GuestCallTarget, return_pc: u32, final_sp: u32) {
+    #[cfg(test)]
+    pub(crate) fn task_depth(&self, task: ExecutionTaskId) -> usize {
+        self.0.borrow().kernel.task_depth(task)
+    }
+
+    fn top_frame(&self) -> Option<(CallId, GuestCallFrame)> {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        let semantic = tasks.kernel.peek(task)?;
+        let frame = tasks.frames.get(&semantic.call_id())?;
+        Some((semantic.call_id(), frame.clone()))
+    }
+
+    fn submit_effect(&self, effect: GuestCallEffect) -> Option<CallId> {
+        let effect = effect.with_task(self.current_task());
+        let GuestCallEffect::CallGuest {
+            request,
+            continuation,
+        } = effect;
+        let Some(frame) = GuestCallEffect::call_guest(request, continuation).into_frame() else {
+            return None;
+        };
+        let task = self.current_task();
+        let mut tasks = self.0.borrow_mut();
+        let call_id = tasks.kernel.submit(task, request, continuation).ok()?;
+        tasks.frames.insert(call_id, frame);
+        Some(call_id)
+    }
+
+    fn push_effect(&self, effect: GuestCallEffect) -> bool {
+        self.submit_effect(effect).is_some()
+    }
+
+    pub(crate) fn begin_m68k(
+        &self,
+        target: GuestCallTarget,
+        return_pc: u32,
+        final_sp: u32,
+    ) -> bool {
         debug_assert_eq!(target.isa, GuestIsa::M68k);
-        self.0.borrow_mut().push(GuestCallFrame {
-            target,
-            origin: GuestCallOrigin::M68k(M68kCallOrigin {
-                return_pc,
-                final_sp,
-                result: None,
-            }),
-            m68k_execution: None,
-            powerpc_execution: None,
-        });
+        self.push_effect(GuestCallEffect::call_guest(
+            GuestCallRequest::new(target),
+            GuestCallContinuation::to_m68k(return_pc, final_sp, None),
+        ))
     }
 
     pub(crate) fn begin_m68k_to_powerpc(
@@ -252,22 +761,10 @@ impl SharedGuestCallStack {
             return false;
         }
         debug_assert_eq!(target.isa, GuestIsa::PowerPc);
-        self.0.borrow_mut().push(GuestCallFrame {
-            target,
-            origin: GuestCallOrigin::M68k(M68kCallOrigin {
-                return_pc,
-                final_sp,
-                result,
-            }),
-            m68k_execution: None,
-            powerpc_execution: Some(PowerPcExecution {
-                arguments,
-                return_pc: None,
-                parked_cpu: None,
-                completed: None,
-            }),
-        });
-        true
+        self.push_effect(GuestCallEffect::call_guest(
+            GuestCallRequest::new(target).with_powerpc_arguments(arguments),
+            GuestCallContinuation::to_m68k(return_pc, final_sp, result),
+        ))
     }
 
     /// Park a native caller and retain the emulated 68k execution interval
@@ -285,34 +782,23 @@ impl SharedGuestCallStack {
         result: Option<M68kResultSource>,
         final_pc: u32,
         restore_rtoc: u32,
-        return_gpr3: PpcNativeReturnGpr3,
+        return_gpr3: impl Into<GuestCallReturnPolicy>,
     ) -> bool {
         debug_assert_eq!(target.isa, GuestIsa::M68k);
-        self.0.borrow_mut().push(GuestCallFrame {
-            target,
-            origin: GuestCallOrigin::PowerPc(PowerPcCallOrigin {
-                return_pc,
-                final_pc,
-                restore_rtoc,
-                return_gpr3,
-            }),
-            m68k_execution: Some(M68kExecution {
+        self.push_effect(GuestCallEffect::call_guest(
+            GuestCallRequest::new(target).with_m68k_request(M68kCallRequest {
                 entry,
                 initial_sp,
-                return_pc,
                 final_sp,
                 registers,
                 result,
-                started: false,
             }),
-            powerpc_execution: None,
-        });
-        true
+            GuestCallContinuation::to_powerpc(return_pc, final_pc, restore_rtoc, return_gpr3),
+        ))
     }
 
     pub(crate) fn pending_powerpc_from_m68k(&self) -> Option<PendingPowerPcExecution> {
-        let frames = self.0.borrow();
-        let frame = frames.last()?;
+        let (_, frame) = self.top_frame()?;
         let GuestCallOrigin::M68k(_) = frame.origin else {
             return None;
         };
@@ -330,25 +816,37 @@ impl SharedGuestCallStack {
         cpu: &mut PpcCpu,
         return_pc: u32,
     ) -> Option<PendingPowerPcExecution> {
-        let mut frames = self.0.borrow_mut();
-        let frame = frames.last_mut()?;
-        let GuestCallOrigin::M68k(_) = frame.origin else {
-            return None;
+        let (task, call_id, target, arguments) = {
+            let tasks = self.0.borrow();
+            let task = tasks.kernel.current_task();
+            let semantic = tasks.kernel.peek(task)?;
+            let frame = tasks.frames.get(&semantic.call_id())?;
+            let GuestCallOrigin::M68k(_) = frame.origin else {
+                return None;
+            };
+            let execution = frame.powerpc_execution.as_ref()?;
+            if execution.return_pc.is_some() || execution.completed.is_some() {
+                return None;
+            }
+            (task, semantic.call_id(), frame.target, execution.arguments)
         };
-        let execution = frame.powerpc_execution.as_mut()?;
-        if execution.return_pc.is_some() || execution.completed.is_some() {
-            return None;
-        }
+        let mut tasks = self.0.borrow_mut();
+        tasks.kernel.activate(task, call_id).ok()?;
+        let frame = tasks
+            .frames
+            .get_mut(&call_id)
+            .expect("semantic continuation must have an adapter frame");
+        let execution = frame
+            .powerpc_execution
+            .as_mut()
+            .expect("validated PowerPC transition must have an execution payload");
         execution.parked_cpu = Some(Box::new(cpu.clone()));
         execution.return_pc = Some(return_pc);
-        Some(PendingPowerPcExecution {
-            target: frame.target,
-            arguments: execution.arguments,
-        })
+        Some(PendingPowerPcExecution { target, arguments })
     }
 
     pub(crate) fn has_powerpc_from_m68k(&self) -> bool {
-        self.0.borrow().last().is_some_and(|frame| {
+        self.top_frame().is_some_and(|(_, frame)| {
             matches!(frame.origin, GuestCallOrigin::M68k(_)) && frame.powerpc_execution.is_some()
         })
     }
@@ -361,9 +859,13 @@ impl SharedGuestCallStack {
     /// context across every mode switch. Inside Macintosh: PowerPC System
     /// Software (1994), pp. 2-9--2-13.
     pub(crate) fn suspended_m68k_context_depth(&self) -> usize {
-        self.0
-            .borrow()
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        tasks
+            .kernel
+            .task_states(task)
             .iter()
+            .filter_map(|semantic| tasks.frames.get(&semantic.call_id()))
             .filter(|frame| {
                 matches!(frame.origin, GuestCallOrigin::M68k(_))
                     && frame
@@ -375,38 +877,72 @@ impl SharedGuestCallStack {
     }
 
     pub(crate) fn complete_powerpc_for_m68k(&self, cpu: &mut PpcCpu) -> bool {
-        let mut frames = self.0.borrow_mut();
-        let Some(frame) = frames.last_mut() else {
-            return false;
-        };
-        let GuestCallOrigin::M68k(_) = frame.origin else {
-            return false;
-        };
-        let Some(execution) = frame.powerpc_execution.as_mut() else {
-            return false;
-        };
-        if execution.completed.is_some() || execution.return_pc != Some(cpu.pc) {
-            return false;
-        }
-        let Some(parked_cpu) = execution.parked_cpu.take() else {
-            return false;
+        let (task, call_id, parked_cpu) = {
+            let tasks = self.0.borrow();
+            let task = tasks.kernel.current_task();
+            let semantic = match tasks.kernel.peek(task) {
+                Some(semantic) => semantic,
+                None => return false,
+            };
+            let frame = match tasks.frames.get(&semantic.call_id()) {
+                Some(frame) => frame,
+                None => return false,
+            };
+            let GuestCallOrigin::M68k(_) = frame.origin else {
+                return false;
+            };
+            let Some(execution) = frame.powerpc_execution.as_ref() else {
+                return false;
+            };
+            if execution.completed.is_some() || execution.return_pc != Some(cpu.pc) {
+                return false;
+            }
+            let Some(parked_cpu) = execution.parked_cpu.as_ref() else {
+                return false;
+            };
+            (task, semantic.call_id(), parked_cpu.clone())
         };
         let result = PowerPcReturnState { gpr3: cpu.gpr[3] };
         let elapsed_time_base = cpu.time_base();
+        let mut tasks = self.0.borrow_mut();
+        if tasks
+            .kernel
+            .complete(task, call_id, Some(result.gpr3))
+            .is_err()
+        {
+            return false;
+        }
+        let frame = tasks
+            .frames
+            .get_mut(&call_id)
+            .expect("semantic continuation must have an adapter frame");
+        let execution = frame
+            .powerpc_execution
+            .as_mut()
+            .expect("validated PowerPC transition must have an execution payload");
+        execution.parked_cpu.take();
+        execution.completed = Some(result);
         *cpu = *parked_cpu;
         cpu.set_time_base(elapsed_time_base);
-        execution.completed = Some(result);
         true
     }
 
-    pub(crate) fn take_m68k_resume(&self) -> Option<M68kResume> {
-        let mut frames = self.0.borrow_mut();
-        let frame = frames.last()?;
+    /// Inspect the completed 68K-origin continuation without retiring it.
+    ///
+    /// Result placement belongs to the runner's 68K adapter and can fail for
+    /// an unmapped/read-only destination. Keeping inspection separate from
+    /// retirement lets that adapter retry the same completion after a failed
+    /// application. Inside Macintosh: PowerPC System Software (1994),
+    /// pp. 2-10--2-12.
+    pub(crate) fn peek_m68k_resume(&self) -> Option<M68kResume> {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        let semantic = tasks.kernel.peek(task)?;
+        let frame = tasks.frames.get(&semantic.call_id())?;
         let GuestCallOrigin::M68k(origin) = frame.origin else {
             return None;
         };
         let powerpc = frame.powerpc_execution.as_ref()?.completed?;
-        frames.pop();
         Some(M68kResume {
             return_pc: origin.return_pc,
             final_sp: origin.final_sp,
@@ -415,25 +951,85 @@ impl SharedGuestCallStack {
         })
     }
 
+    /// Retire the completed 68K-origin continuation after its result has been
+    /// applied by the runner. No architectural state is changed here, so a
+    /// failed result application can leave the frame available for retry.
+    pub(crate) fn retire_m68k_resume(&self) -> bool {
+        let (task, call_id) = {
+            let tasks = self.0.borrow();
+            let task = tasks.kernel.current_task();
+            let Some(semantic) = tasks.kernel.peek(task) else {
+                return false;
+            };
+            let Some(frame) = tasks.frames.get(&semantic.call_id()) else {
+                return false;
+            };
+            if !matches!(frame.origin, GuestCallOrigin::M68k(_))
+                || frame
+                    .powerpc_execution
+                    .as_ref()
+                    .and_then(|execution| execution.completed)
+                    .is_none()
+            {
+                return false;
+            }
+            (task, semantic.call_id())
+        };
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.retire(task, call_id).is_err() {
+            return false;
+        }
+        tasks.frames.remove(&call_id).is_some()
+    }
+
+    /// Take and retire a completed 68K-origin continuation.
+    ///
+    /// New runner code should prefer [`Self::peek_m68k_resume`] followed by
+    /// [`Self::retire_m68k_resume`] so result placement remains retryable.
+    #[cfg(test)]
+    pub(crate) fn take_m68k_resume(&self) -> Option<M68kResume> {
+        let resume = self.peek_m68k_resume()?;
+        self.retire_m68k_resume().then_some(resume)
+    }
+
     /// Return the top cross-ISA 68k interval and mark its CPU context active.
     pub(crate) fn activate_m68k(&self) -> Option<PendingM68kExecution> {
-        let mut frames = self.0.borrow_mut();
-        let execution = frames.last_mut()?.m68k_execution.as_mut()?;
-        let pending = PendingM68kExecution {
-            entry: execution.entry,
-            initial_sp: execution.initial_sp,
-            return_pc: execution.return_pc,
-            final_sp: execution.final_sp,
-            registers: execution.registers,
-            result: execution.result,
+        let (task, call_id, pending, started) = {
+            let tasks = self.0.borrow();
+            let task = tasks.kernel.current_task();
+            let semantic = tasks.kernel.peek(task)?;
+            let frame = tasks.frames.get(&semantic.call_id())?;
+            let execution = frame.m68k_execution.as_ref()?;
+            let pending = PendingM68kExecution {
+                entry: execution.entry,
+                initial_sp: execution.initial_sp,
+                return_pc: execution.return_pc,
+                final_sp: execution.final_sp,
+                registers: execution.registers,
+                result: execution.result,
+            };
+            (task, semantic.call_id(), pending, execution.started)
         };
-        execution.started = true;
+        if started {
+            return Some(pending);
+        }
+        let mut tasks = self.0.borrow_mut();
+        tasks.kernel.activate(task, call_id).ok()?;
+        let frame = tasks
+            .frames
+            .get_mut(&call_id)
+            .expect("semantic continuation must have an adapter frame");
+        frame
+            .m68k_execution
+            .as_mut()
+            .expect("validated 68k transition must have an execution payload")
+            .started = true;
         Some(pending)
     }
 
     pub(crate) fn active_m68k(&self) -> Option<PendingM68kExecution> {
-        let frames = self.0.borrow();
-        let execution = frames.last()?.m68k_execution?;
+        let (_, frame) = self.top_frame()?;
+        let execution = frame.m68k_execution?;
         execution.started.then_some(PendingM68kExecution {
             entry: execution.entry,
             initial_sp: execution.initial_sp,
@@ -445,10 +1041,8 @@ impl SharedGuestCallStack {
     }
 
     pub(crate) fn has_m68k_execution(&self) -> bool {
-        self.0
-            .borrow()
-            .last()
-            .is_some_and(|frame| frame.m68k_execution.is_some())
+        self.top_frame()
+            .is_some_and(|(_, frame)| frame.m68k_execution.is_some())
     }
 
     /// Move the continuation embedded in a CPU action into the process stack
@@ -458,35 +1052,28 @@ impl SharedGuestCallStack {
         cpu: &mut PpcCpu,
         action: PpcImportAction,
     ) -> PpcImportAction {
-        let PpcImportAction::CallNative {
-            entry,
-            rtoc,
-            return_pc,
-            final_pc,
-            restore_rtoc,
-            return_gpr3,
-        } = action
-        else {
+        let Some(effect) = GuestCallEffect::from_ppc_import_action(action) else {
             return action;
         };
-
-        let target = GuestCallTarget {
-            isa: GuestIsa::PowerPc,
-            entry,
-            rtoc,
+        let Some(call_id) = self.submit_effect(effect) else {
+            return action;
         };
-        self.0.borrow_mut().push(GuestCallFrame {
-            target,
-            origin: GuestCallOrigin::PowerPc(PowerPcCallOrigin {
-                return_pc,
-                final_pc,
-                restore_rtoc,
-                return_gpr3,
-            }),
-            m68k_execution: None,
-            powerpc_execution: None,
-        });
+        let task = self.current_task();
+        {
+            let tasks = self.0.borrow_mut();
+            if tasks.kernel.activate(task, call_id).is_err() {
+                let _ = tasks.kernel.cancel_pending(task, call_id);
+                drop(tasks);
+                self.0.borrow_mut().frames.remove(&call_id);
+                return action;
+            }
+        }
+        let target = effect.request().target;
         cpu.pc = target.entry;
+        let GuestCallEffect::CallGuest { continuation, .. } = effect;
+        let GuestCallContinuation::ReturnToPowerPc { return_pc, .. } = continuation else {
+            unreachable!("PPC action conversion always has a PowerPC continuation");
+        };
         cpu.lr = return_pc;
         cpu.gpr[2] = target.rtoc;
         PpcImportAction::Continue
@@ -495,10 +1082,16 @@ impl SharedGuestCallStack {
     /// Complete the top native frame only when the CPU reached its exact
     /// synthetic return import. A frame belonging to 68k remains untouched.
     pub(crate) fn complete_powerpc(&self, cpu: &mut PpcCpu) -> bool {
-        let frame = {
-            let mut frames = self.0.borrow_mut();
-            let Some(frame) = frames.last() else {
-                return false;
+        let (task, call_id, origin) = {
+            let tasks = self.0.borrow();
+            let task = tasks.kernel.current_task();
+            let semantic = match tasks.kernel.peek(task) {
+                Some(semantic) => semantic,
+                None => return false,
+            };
+            let frame = match tasks.frames.get(&semantic.call_id()) {
+                Some(frame) => frame,
+                None => return false,
             };
             let GuestCallOrigin::PowerPc(origin) = frame.origin else {
                 return false;
@@ -506,12 +1099,24 @@ impl SharedGuestCallStack {
             if frame.target.isa != GuestIsa::PowerPc || cpu.pc != origin.return_pc {
                 return false;
             }
-            frames.pop().expect("verified PowerPC frame")
+            (task, semantic.call_id(), origin)
         };
-
-        let GuestCallOrigin::PowerPc(origin) = frame.origin else {
-            unreachable!();
-        };
+        let mut tasks = self.0.borrow_mut();
+        if tasks
+            .kernel
+            .complete(task, call_id, Some(cpu.gpr[3]))
+            .is_err()
+        {
+            return false;
+        }
+        let _ = tasks
+            .kernel
+            .retire(task, call_id)
+            .expect("completed native continuation must retire transactionally");
+        tasks
+            .frames
+            .remove(&call_id)
+            .expect("semantic continuation must have an adapter frame");
         Self::apply_powerpc_return(cpu, origin);
         true
     }
@@ -524,30 +1129,60 @@ impl SharedGuestCallStack {
         result: Option<u32>,
         cpu: &mut PpcCpu,
     ) -> bool {
-        let frame = {
-            let mut frames = self.0.borrow_mut();
-            let Some(frame) = frames.last() else {
-                return false;
+        let (task, call_id, origin) = {
+            let tasks = self.0.borrow();
+            let task = tasks.kernel.current_task();
+            let semantic = match tasks.kernel.peek(task) {
+                Some(semantic) => semantic,
+                None => return false,
             };
-            let GuestCallOrigin::PowerPc(_) = frame.origin else {
+            let frame = match tasks.frames.get(&semantic.call_id()) {
+                Some(frame) => frame,
+                None => return false,
+            };
+            let GuestCallOrigin::PowerPc(origin) = frame.origin else {
                 return false;
             };
             let Some(execution) = frame.m68k_execution else {
                 return false;
             };
+            let result_required = match execution.result {
+                None => Some(false),
+                Some(M68kResultSource::SpecialCase { selector, .. }) => {
+                    let proc_info = crate::mixed_mode::proc_info::SPECIAL_CASE
+                        | (u32::from(selector) << crate::mixed_mode::special_case::SELECTOR_PHASE);
+                    crate::mixed_mode::native_special_case_signature(proc_info).map(|signature| {
+                        signature.result != crate::mixed_mode::NativeSpecialCaseResult::Void
+                    })
+                }
+                Some(_) => Some(true),
+            };
             if !execution.started
                 || post_call_pc != execution.return_pc
                 || final_sp != execution.final_sp
-                || execution.result.is_some() != result.is_some()
+                // Special-case callbacks can have output-layout side effects
+                // while still being native void procedures. Match the decoded
+                // ABI exactly: void has no value, every other result source
+                // must supply one, and an invalid selector cannot complete.
+                || result_required.is_none()
+                || result.is_some() != result_required.unwrap_or(false)
             {
                 return false;
             }
-            frames.pop().expect("verified 68k execution frame")
+            (task, semantic.call_id(), origin)
         };
-
-        let GuestCallOrigin::PowerPc(origin) = frame.origin else {
-            unreachable!();
-        };
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.complete(task, call_id, result).is_err() {
+            return false;
+        }
+        let _ = tasks
+            .kernel
+            .retire(task, call_id)
+            .expect("completed 68k continuation must retire transactionally");
+        tasks
+            .frames
+            .remove(&call_id)
+            .expect("semantic continuation must have an adapter frame");
         if let Some(result) = result {
             cpu.gpr[3] = result;
         }
@@ -557,17 +1192,17 @@ impl SharedGuestCallStack {
 
     fn apply_powerpc_return(cpu: &mut PpcCpu, origin: PowerPcCallOrigin) {
         match origin.return_gpr3 {
-            PpcNativeReturnGpr3::Preserve => {}
-            PpcNativeReturnGpr3::Mask(mask) => cpu.gpr[3] &= mask,
-            PpcNativeReturnGpr3::Set(value) => cpu.gpr[3] = value,
-            PpcNativeReturnGpr3::ZeroOrSet { zero, nonzero } => {
+            GuestCallReturnPolicy::Preserve => {}
+            GuestCallReturnPolicy::Mask(mask) => cpu.gpr[3] &= mask,
+            GuestCallReturnPolicy::Set(value) => cpu.gpr[3] = value,
+            GuestCallReturnPolicy::ZeroOrSet { zero, nonzero } => {
                 cpu.gpr[3] = if cpu.gpr[3] == 0 { zero } else { nonzero };
             }
-            PpcNativeReturnGpr3::CrBit(bit_index) => {
+            GuestCallReturnPolicy::CrBit(bit_index) => {
                 cpu.gpr[3] = u32::from(cpu.cr_bit(bit_index));
             }
-            PpcNativeReturnGpr3::XerCa => cpu.gpr[3] = u32::from(cpu.xer_ca()),
-            PpcNativeReturnGpr3::XerOv => cpu.gpr[3] = u32::from(cpu.xer_ov()),
+            GuestCallReturnPolicy::XerCa => cpu.gpr[3] = u32::from(cpu.xer_ca()),
+            GuestCallReturnPolicy::XerOv => cpu.gpr[3] = u32::from(cpu.xer_ov()),
         }
         cpu.gpr[2] = origin.restore_rtoc;
         cpu.lr = origin.final_pc;
@@ -577,19 +1212,48 @@ impl SharedGuestCallStack {
     /// Complete the top classic frame only after its trampoline restored the
     /// exact caller PC and stack pointer. A native frame remains untouched.
     pub(crate) fn complete_m68k(&self, post_trap_pc: u32, final_sp: u32) -> bool {
-        let should_pop = self.0.borrow().last().is_some_and(|frame| {
-            frame.target.isa == GuestIsa::M68k
-                && matches!(
+        let (task, call_id) = {
+            let tasks = self.0.borrow();
+            let task = tasks.kernel.current_task();
+            let Some(semantic) = tasks.kernel.peek(task) else {
+                return false;
+            };
+            let Some(frame) = tasks.frames.get(&semantic.call_id()) else {
+                return false;
+            };
+            if frame.target.isa != GuestIsa::M68k
+                || !matches!(
                     frame.origin,
                     GuestCallOrigin::M68k(origin)
                         if origin.return_pc.wrapping_add(2) == post_trap_pc
                             && origin.final_sp == final_sp
                 )
-        });
-        if should_pop {
-            self.0.borrow_mut().pop();
+            {
+                return false;
+            }
+            (task, semantic.call_id())
+        };
+        let mut tasks = self.0.borrow_mut();
+        let phase = tasks
+            .kernel
+            .peek(task)
+            .expect("semantic continuation must have an adapter frame")
+            .phase();
+        if phase == ContinuationPhase::Pending && tasks.kernel.activate(task, call_id).is_err() {
+            return false;
         }
-        should_pop
+        if tasks.kernel.complete(task, call_id, None).is_err() {
+            return false;
+        }
+        let _ = tasks
+            .kernel
+            .retire(task, call_id)
+            .expect("completed 68k continuation must retire transactionally");
+        tasks
+            .frames
+            .remove(&call_id)
+            .expect("semantic continuation must have an adapter frame");
+        true
     }
 }
 
@@ -606,14 +1270,16 @@ mod tests {
         final_pc: u32,
         return_gpr3: PpcNativeReturnGpr3,
     ) -> PpcImportAction {
-        PpcImportAction::CallNative {
-            entry,
-            rtoc: entry + 0x100,
-            return_pc: RETURN_PC,
-            final_pc,
-            restore_rtoc: final_pc + 0x100,
-            return_gpr3,
-        }
+        GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry,
+                rtoc: entry + 0x100,
+            }),
+            GuestCallContinuation::to_powerpc(RETURN_PC, final_pc, final_pc + 0x100, return_gpr3),
+        )
+        .into_ppc_import_action()
+        .expect("native PowerPC request should adapt to CallNative")
     }
 
     #[test]
@@ -636,6 +1302,65 @@ mod tests {
         assert!(detached.is_empty());
         assert!(shared.complete_m68k(0x2002, 0x3000));
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn execution_tasks_keep_independent_continuation_stacks() {
+        let calls = SharedGuestCallStack::default();
+        calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+        );
+
+        let worker = ExecutionTaskId::from_thread_id(7);
+        calls.switch_to_task(worker);
+        assert_eq!(calls.depth(), 0);
+        calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x4000,
+                rtoc: 0,
+            },
+            0x5000,
+            0x6000,
+        );
+        assert!(!calls.remove_task(worker));
+        assert!(calls.complete_m68k(0x5002, 0x6000));
+
+        calls.switch_to_task(ExecutionTaskId::APPLICATION);
+        assert_eq!(calls.depth(), 1);
+        assert!(calls.complete_m68k(0x2002, 0x3000));
+        assert!(calls.remove_task(worker));
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn global_stack_queries_include_suspended_tasks() {
+        let calls = SharedGuestCallStack::default();
+        let worker = ExecutionTaskId::from_thread_id(7);
+        calls.switch_to_task(worker);
+        calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x4000,
+                rtoc: 0,
+            },
+            0x5000,
+            0x6000,
+        );
+
+        calls.switch_to_task(ExecutionTaskId::APPLICATION);
+        assert_eq!(calls.depth(), 0, "the active task has no continuation");
+        assert_eq!(calls.len(), 1, "the process still has a suspended frame");
+        assert!(
+            !calls.is_empty(),
+            "suspended tasks keep the owner non-empty"
+        );
     }
 
     #[test]
@@ -938,6 +1663,44 @@ mod tests {
         assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, None, &mut cpu));
         assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x5000, 0x5000, 0x6000));
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn m68k_completion_requires_a_result_exactly_when_the_callback_abi_does() {
+        use crate::mixed_mode::special_case;
+
+        let mut cpu = PpcCpu::new();
+        for (selector, supplied_result) in [
+            (special_case::HIGH_HOOK as u8, None),
+            (special_case::EOL_HOOK as u8, Some(1)),
+        ] {
+            let calls = SharedGuestCallStack::default();
+            assert!(calls.begin_powerpc_to_m68k(
+                GuestCallTarget {
+                    isa: GuestIsa::M68k,
+                    entry: 0x1000,
+                    rtoc: 0,
+                },
+                0x2000,
+                0x3000,
+                0x4000,
+                0x3004,
+                M68kRegisterState::default(),
+                Some(M68kResultSource::SpecialCase {
+                    selector,
+                    arguments: PowerPcArguments::from_slice(&[]).unwrap(),
+                    stack_result: None,
+                }),
+                0x5000,
+                0x6000,
+                PpcNativeReturnGpr3::Preserve,
+            ));
+            assert!(calls.activate_m68k().is_some());
+
+            let wrong_result = supplied_result.map_or(Some(1), |_| None);
+            assert!(!calls.complete_m68k_for_powerpc(0x4000, 0x3004, wrong_result, &mut cpu));
+            assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, supplied_result, &mut cpu,));
+        }
     }
 
     #[test]

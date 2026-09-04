@@ -7,7 +7,9 @@ pub mod bus;
 pub mod globals;
 
 pub use address_space::GuestAddressSpace;
-pub(crate) use address_space::SharedGuestAddressSpace;
+pub(crate) use address_space::{
+    flat_memory_route, GuestMemoryRoute, SharedGuestAddressSpace,
+};
 pub use bus::{
     arm_watchpoint, disarm_watchpoint, get_step, increment_step, set_current_pc,
     set_watch_registers, watchpoint_armed, STEP_COUNTER,

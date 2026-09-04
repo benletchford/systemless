@@ -261,7 +261,7 @@ impl super::TrapDispatcher {
         Some(super::dispatch::QueuedEvent {
             what: Self::OS_EVENT,
             message: Self::MOUSE_MOVED_MESSAGE,
-            when: self.tick_count,
+            when: self.current_tick(),
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers: self.current_event_modifiers(),
@@ -290,7 +290,7 @@ impl super::TrapDispatcher {
         super::dispatch::QueuedEvent {
             what,
             message,
-            when: self.tick_count,
+            when: self.current_tick(),
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers: self.current_event_modifiers(),
@@ -394,10 +394,11 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let tick = self.current_tick();
         self.event_queue.push_front(super::dispatch::QueuedEvent {
             what: Self::K_HIGH_LEVEL_EVENT,
             message: Self::K_CORE_EVENT_CLASS,
-            when: self.tick_count,
+            when: tick,
             where_v: (Self::K_AE_OPEN_APPLICATION >> 16) as i16,
             where_h: (Self::K_AE_OPEN_APPLICATION & 0xFFFF) as i16,
             modifiers: 0,
@@ -437,7 +438,7 @@ impl super::TrapDispatcher {
         self.event_queue.push_back(super::dispatch::QueuedEvent {
             what: Self::AUTO_KEY_EVENT,
             message,
-            when: self.tick_count,
+            when: tick,
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers,
@@ -651,7 +652,7 @@ impl super::TrapDispatcher {
                 return (
                     0,
                     0,
-                    self.tick_count,
+                    self.current_tick(),
                     self.input_state.mouse_pos.0,
                     self.input_state.mouse_pos.1,
                     self.current_event_modifiers(),
@@ -715,7 +716,7 @@ impl super::TrapDispatcher {
         (
             0,
             0,
-            self.tick_count,
+            self.current_tick(),
             self.input_state.mouse_pos.0,
             self.input_state.mouse_pos.1,
             self.current_event_modifiers(),
@@ -853,7 +854,7 @@ impl super::TrapDispatcher {
             (
                 0,
                 0,
-                self.tick_count,
+                self.current_tick(),
                 self.input_state.mouse_pos.0,
                 self.input_state.mouse_pos.1,
                 self.current_event_modifiers(),
@@ -928,6 +929,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // ========== OS Event Traps ==========
 
@@ -1291,7 +1293,7 @@ impl super::TrapDispatcher {
                         event_ptr,
                         0,
                         0,
-                        self.tick_count,
+                        self.current_tick(),
                         self.input_state.mouse_pos.0,
                         self.input_state.mouse_pos.1,
                         self.current_event_modifiers(),
@@ -1301,7 +1303,7 @@ impl super::TrapDispatcher {
                         record: EventRecordSnapshot {
                             what: 0,
                             message: 0,
-                            when: self.tick_count,
+                            when: self.current_tick(),
                             where_v: self.input_state.mouse_pos.0,
                             where_h: self.input_state.mouse_pos.1,
                             modifiers: self.current_event_modifiers(),
@@ -1358,8 +1360,8 @@ mod tests {
 
     #[test]
     fn native_menu_mouse_down_is_latched_and_rate_limited_until_menuselect() {
-        let (mut disp, _cpu, bus) = setup();
-        disp.tick_count = 100;
+        let (mut disp, _cpu, mut bus) = setup();
+        disp.set_tick_count_for_test(&mut bus, 100);
         disp.pending_native_menu_event = Some(QueuedEvent {
             what: 1,
             message: 0,
@@ -1377,7 +1379,8 @@ mod tests {
         let same_tick = disp.dequeue_event(&bus, 1 << 1);
         assert!(!same_tick.6, "latched click must not spin an event loop");
 
-        disp.tick_count += 1;
+        let next_tick = disp.current_tick().wrapping_add(1);
+        disp.set_tick_count_for_test(&mut bus, next_tick);
         let next_tick = disp.dequeue_event(&bus, 1 << 1);
         assert!(next_tick.6, "ignored menu click must be presented again");
         assert!(disp.pending_native_menu_event.is_some());
@@ -1386,7 +1389,7 @@ mod tests {
     #[test]
     fn native_menu_mouse_down_follows_older_low_level_events() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.tick_count = 100;
+        disp.set_tick_count_for_test(&mut bus, 100);
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x1234,
@@ -1410,7 +1413,8 @@ mod tests {
         let event = disp.dequeue_event(&bus, u16::MAX);
         assert_eq!((event.0, event.3, event.4), (1, 10, 42));
 
-        disp.tick_count += 1;
+        let next_tick = disp.current_tick().wrapping_add(1);
+        disp.set_tick_count_for_test(&mut bus, next_tick);
         disp.event_queue.push_back(QueuedEvent {
             what: 4,
             message: 0x5678,
@@ -1489,32 +1493,32 @@ mod tests {
         assert_eq!(what, 3);
         assert_eq!(message, 0x0000_7D1F);
 
-        let first_repeat_tick = disp.tick_count + TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
+        let first_repeat_tick = disp.current_tick() + TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
 
-        disp.tick_count = first_repeat_tick - 1;
+        disp.set_tick_count_for_test(&mut bus, first_repeat_tick - 1);
         let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(
             !has_event,
             "autoKey should wait for the 16-tick default threshold"
         );
 
-        disp.tick_count = first_repeat_tick;
+        disp.set_tick_count_for_test(&mut bus, first_repeat_tick);
         let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(has_event, "held key should generate autoKey at threshold");
         assert_eq!(what, 5);
         assert_eq!(message, 0x0000_7D1F);
 
-        let second_repeat_tick = disp.tick_count + TrapDispatcher::AUTO_KEY_RATE_TICKS;
+        let second_repeat_tick = disp.current_tick() + TrapDispatcher::AUTO_KEY_RATE_TICKS;
 
-        disp.tick_count = second_repeat_tick - 1;
+        disp.set_tick_count_for_test(&mut bus, second_repeat_tick - 1);
         let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(
             !has_event,
             "autoKey should wait for the 4-tick default repeat rate"
         );
 
-        disp.tick_count = second_repeat_tick;
+        disp.set_tick_count_for_test(&mut bus, second_repeat_tick);
         let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(has_event, "held key should repeat after the rate interval");
@@ -1534,7 +1538,7 @@ mod tests {
         assert!(has_event, "keyUp should be delivered");
         assert_eq!(what, 4);
 
-        disp.tick_count = 100;
+        disp.set_tick_count_for_test(&mut bus, 100);
         let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(!has_event, "released key should not keep auto-keying");
     }
@@ -1548,7 +1552,10 @@ mod tests {
         let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event, "initial keyDown should be delivered");
 
-        disp.tick_count += TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
+        let next_tick = disp
+            .current_tick()
+            .wrapping_add(TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS);
+        disp.set_tick_count_for_test(&mut bus, next_tick);
         disp.post_auto_key_if_due(bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK));
 
         disp.push_key_up(0x00, b'a');
@@ -1618,7 +1625,8 @@ mod tests {
 
         disp.push_key_down(0x30, 9); // Tab
         let first_repeat_tick = disp.input_state.key_repeat.expect("Tab should arm autoKey").next_tick;
-        disp.tick_count = disp.tick_count.wrapping_add(5);
+        let next_tick = disp.current_tick().wrapping_add(5);
+        disp.set_tick_count_for_test(&mut bus, next_tick);
         disp.push_key_down(0x30, 9); // host repeat while still held
 
         assert_eq!(disp.event_queue.len(), 1, "only one keyDown may be queued");
@@ -1644,7 +1652,10 @@ mod tests {
         let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event, "initial keyDown should be drained");
 
-        disp.tick_count += TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
+        let next_tick = disp
+            .current_tick()
+            .wrapping_add(TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS);
+        disp.set_tick_count_for_test(&mut bus, next_tick);
         let first = disp
             .peek_toolbox_event(&bus, 0x0020)
             .expect("EventAvail should see due autoKey");
@@ -2565,7 +2576,7 @@ mod tests {
         let retrieved_at = 0x5566_7788;
 
         bus.write_word(crate::memory::globals::addr::SYS_EVT_MASK, u16::MAX);
-        disp.tick_count = posted_at;
+        disp.set_tick_count_for_test(&mut bus, posted_at);
         cpu.write_reg(Register::A0, 4);
         cpu.write_reg(Register::D0, 0xA1B2_C3D4);
         let result = disp.dispatch_event(false, 0x2F, &mut cpu, &mut bus);
@@ -2573,7 +2584,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(disp.event_queue.front().map(|event| event.when), Some(posted_at));
 
-        disp.tick_count = retrieved_at;
+        disp.set_tick_count_for_test(&mut bus, retrieved_at);
         let (what, message, when, where_v, where_h, modifiers, has_event) =
             disp.dequeue_event(&bus, 1 << 4);
         assert!(has_event);
@@ -2608,7 +2619,7 @@ mod tests {
     #[test]
     fn os_event_avail_peeks_latched_native_menu_mouse_down() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.tick_count = 100;
+        disp.set_tick_count_for_test(&mut bus, 100);
         disp.pending_native_menu_event = Some(QueuedEvent {
             what: 1,
             message: 0,

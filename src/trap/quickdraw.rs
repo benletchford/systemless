@@ -494,6 +494,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         if self.process_quickdraw_port_state_attached {
             let port = *self.current_port;
             self.load_port_draw_state(bus, port);
@@ -38783,7 +38784,7 @@ mod tests {
         seeded[42] = [0x4444, 0x5555, 0x6666];
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 90;
-        d.tick_count = 69;
+        d.set_tick_count_for_test(&mut bus, 69);
 
         let result = d.dispatch_quickdraw(true, 0x203, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -42557,7 +42558,7 @@ mod tests {
         seeded[128] = [0x7777, 0x8888, 0x9999];
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 90;
-        d.tick_count = 69;
+        d.set_tick_count_for_test(&mut bus, 69);
 
         let bounds_ptr = 0x300000u32;
         let gworld_ptr_ptr = 0x300100u32;
@@ -45318,7 +45319,7 @@ mod tests {
         *d.color_manager_clut = seeded;
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 99;
-        d.tick_count = 50;
+        d.set_tick_count_for_test(&mut bus, 50);
 
         d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
 
@@ -45353,7 +45354,7 @@ mod tests {
         *d.color_manager_clut = TrapDispatcher::standard_mac_8bpp_clut();
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 99;
-        d.tick_count = 50;
+        d.set_tick_count_for_test(&mut bus, 50);
 
         d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
 
@@ -45386,7 +45387,7 @@ mod tests {
         *d.color_manager_clut = seeded;
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 99;
-        d.tick_count = 50;
+        d.set_tick_count_for_test(&mut bus, 50);
 
         d.apply_set_entries_with_gdevice_mode(&mut bus, table_ptr, 0, 255, true);
 
@@ -45741,7 +45742,7 @@ mod tests {
 
     #[test]
     fn test_title_seed_reuses_active_seeded_picture_window() {
-        let (mut d, _cpu, _bus) = setup();
+        let (mut d, _cpu, mut bus) = setup();
         let mut seeded = [[0u16; 3]; 256];
         seeded[0] = [0xEEEE, 0xEEEE, 0xEEEE];
         seeded[42] = [0x8888, 0x6666, 0x4444];
@@ -45749,17 +45750,17 @@ mod tests {
 
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 90;
-        d.tick_count = 69;
+        d.set_tick_count_for_test(&mut bus, 69);
 
         assert_eq!(d.seeded_picture_palette_until_tick_for_seed(48, true), 90);
     }
 
     #[test]
     fn test_title_seed_starts_new_window_without_active_seeded_picture() {
-        let (mut d, _cpu, _bus) = setup();
+        let (mut d, _cpu, mut bus) = setup();
         d.seeded_picture_palette = TrapDispatcher::standard_mac_8bpp_clut();
         d.seeded_picture_palette_until_tick = 0;
-        d.tick_count = 69;
+        d.set_tick_count_for_test(&mut bus, 69);
 
         assert_eq!(d.seeded_picture_palette_until_tick_for_seed(48, true), 117);
     }
@@ -45769,7 +45770,7 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
         *d.current_port = 0x00284CFC;
-        d.tick_count = 33;
+        d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
         let ctab_ptr = bus.alloc(8 + 256 * 8);
@@ -45805,7 +45806,7 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
         *d.current_port = 0x00284CFC;
-        d.tick_count = 33;
+        d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
         let ctab_ptr = bus.alloc(8 + 256 * 8);
@@ -45834,7 +45835,7 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
         *d.current_port = 0x00284CFC;
-        d.tick_count = 33;
+        d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
         let ctab_ptr = bus.alloc(8 + 256 * 8);
@@ -45889,7 +45890,7 @@ mod tests {
             ct_id: 131,
             ctab_handle: fetched_ctab,
             port,
-            tick: d.tick_count,
+            tick: d.current_tick(),
         };
         d.apply_fetched_ctable_to_offscreen_drawpicture_port(
             &mut bus,
@@ -45921,7 +45922,7 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
         *d.current_port = 0x00284CFC;
-        d.tick_count = 33;
+        d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
         let ctab_ptr = bus.alloc(8 + 256 * 8);
@@ -45955,7 +45956,7 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
         *d.current_port = 0x00284CFC;
-        d.tick_count = 33;
+        d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
         let ctab_ptr = bus.alloc(8 + 256 * 8);
@@ -45966,7 +45967,7 @@ mod tests {
         bus.write_long(ctab_handle, ctab_ptr);
 
         d.remember_recent_resource_ctable_fetch(1001, ctab_handle);
-        d.tick_count = 35;
+        d.set_tick_count_for_test(&mut bus, 35);
 
         let fetch = d.take_recent_drawpicture_resource_ctable_fetch(
             *d.current_port,

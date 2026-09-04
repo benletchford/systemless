@@ -76,6 +76,26 @@ system services, processes, tasks, and Toolbox state. Architecture-specific
 gateways preserve observable 68K trap and PowerPC CFM behavior before
 converging on canonical Macintosh service implementations in Rust.
 
+The runtime is converging on one logical Macintosh process: both CPU adapters
+already use one address-routing authority, explicitly identified task-owned
+Mixed Mode continuations, and shared authorities for migrated services such as
+the process clock, ordinary handle allocation, and Trap Manager. Other Toolbox
+managers still contain explicitly tracked compatibility projections while their
+two ABI paths are moved onto one semantic operation at a time. The
+Trap Manager additionally requires registered system-memory provenance before
+either ABI may mutate a protected permanent patch chain; matching bytes in
+application memory never grant that capability. The
+fat-application Toolbox showcase enforces cross-architecture behavior by
+running the same interaction sequence through both slices and requiring
+identical semantic state and rendered checkpoints. Mixed Mode transitions must
+not copy or reconcile process-visible state, just as original software expects.
+
+The ownership laws, operation ledger, migration order, and completion gates are
+recorded in
+[`docs/architecture/unified-runtime-migration.md`](docs/architecture/unified-runtime-migration.md).
+That contract distinguishes the intended single-process architecture from
+temporary compatibility projections retained during the migration.
+
 ```text
                          APPLICATION
                               │

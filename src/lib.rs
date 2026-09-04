@@ -61,6 +61,7 @@ mod event_queue;
 pub use event_queue::{
     EventManagerSnapshot, EventProbeResult, EventQueueProbeSnapshot, EventRecordSnapshot,
 };
+mod execution_kernel;
 pub mod game;
 mod guest_call;
 mod guest_procedure;
