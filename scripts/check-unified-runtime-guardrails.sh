@@ -9,13 +9,17 @@ set -eu
 
 case "${1:-}" in
     ""|--check)
+        run_fixture_tests=yes
+        ;;
+    --source-only)
+        run_fixture_tests=no
         ;;
     --help|-h)
-        printf '%s\n' "usage: $0 [--check]"
+        printf '%s\n' "usage: $0 [--check|--source-only]"
         exit 0
         ;;
     *)
-        printf '%s\n' "usage: $0 [--check]" >&2
+        printf '%s\n' "usage: $0 [--check|--source-only]" >&2
         exit 2
         ;;
 esac
@@ -99,6 +103,7 @@ check_field_set() {
     if [ -n "${removed}" ]; then
         printf '%s\n' "${label}: entries removed; lower the baseline after reviewing the migration:" >&2
         printf '%s\n' "${removed}" >&2
+        failures=$((failures + 1))
     fi
 
     printf '%s\n' "${label}: ${current_count} fields (baseline ${expected_count}); non-zero legacy debt is expected"
@@ -130,6 +135,7 @@ check_trampoline_set() {
     if [ -n "${removed}" ]; then
         printf '%s\n' "${label}: entries removed; lower the baseline after reviewing the migration:" >&2
         printf '%s\n' "${removed}" >&2
+        failures=$((failures + 1))
     fi
 
     printf '%s\n' "${label}: ${current_count} fields (baseline ${expected_count}); non-zero legacy debt is expected"
@@ -152,7 +158,8 @@ check_field_count() {
         printf '%s\n' "guardrail failed: ${label} grew from ${expected_count} to ${current_count} fields" >&2
         failures=$((failures + 1))
     elif [ "${current_count}" -lt "${expected_count}" ]; then
-        printf '%s\n' "${label}: fields removed; lower ${baseline_key} after reviewing the migration"
+        printf '%s\n' "guardrail failed: ${label} shrank; lower ${baseline_key} in this change" >&2
+        failures=$((failures + 1))
     fi
     printf '%s\n' "${label}: ${current_count} fields (baseline ${expected_count}); non-zero legacy debt is expected"
 }
@@ -187,6 +194,10 @@ check_field_count \
     TrapDispatcher \
     trap_dispatcher_field_count
 
+# Exact names also reject replacing a manager field while keeping the total.
+check_field_set "FixtureRunner fields" "${source_dir}/runner/mod.rs" FixtureRunner fixture_runner_fields
+check_field_set "TrapDispatcher fields" "${source_dir}/trap/dispatch.rs" TrapDispatcher trap_dispatcher_fields
+
 # These are the current manager/callback trampoline fields.  New names must
 # first be justified in the operation ledger and assigned to the execution
 # layer before they can enter the baseline.
@@ -209,12 +220,66 @@ native_call_count=$(
         -exec grep -Eo 'PpcImportAction[[:space:]]*::[[:space:]]*CallNative[[:space:]]*\{' {} + \
         | wc -l | tr -d '[:space:]'
 )
-native_call_baseline=$(baseline_value ppc_import_action_call_native_occurrences)
-if [ "${native_call_count}" -gt "${native_call_baseline}" ]; then
-    printf '%s\n' "guardrail failed: direct CallNative occurrences outside src/guest_call.rs grew from ${native_call_baseline} to ${native_call_count}" >&2
+# A shrinking count must lower the baseline in the same patch. Otherwise a
+# later reintroduction can silently use the abandoned allowance.
+check_exact_count() {
+    label=$1
+    key=$2
+    current=$3
+    expected=$(baseline_value "${key}")
+    case "${expected}" in
+        ""|*[!0-9]*)
+            printf '%s\n' "guardrail failed: missing or invalid ${key}" >&2
+            failures=$((failures + 1))
+            return
+            ;;
+    esac
+    if [ "${current}" -ne "${expected}" ]; then
+        printf '%s\n' "guardrail failed: ${label} is ${current}, baseline ${expected}; removals must lower the baseline" >&2
+        failures=$((failures + 1))
+    fi
+    printf '%s\n' "${label}: ${current} (baseline ${expected})"
+}
+
+check_exact_count "Direct native calls" ppc_import_action_call_native_occurrences "${native_call_count}"
+
+# These lexical inventories intentionally include tests. Moving the syntax
+# into another module does not remove the debt. An implementation migration
+# must remove its old construction/conversion path as well.
+conversion_count=$(
+    find "${source_dir}" -type f -name '*.rs' ! -path "${source_dir}/guest_call.rs" \
+        -exec grep -Eo '\.into_ppc_import_action[[:space:]]*\(' {} + | wc -l | tr -d '[:space:]'
+)
+stamping_count=$(
+    find "${source_dir}" -type f -name '*.rs' \
+        -exec grep -Eo '\.with_task\(self\.current_task\(\)\)' {} + | wc -l | tr -d '[:space:]'
+)
+depth_count=$(
+    find "${source_dir}" -type f -name '*.rs' \
+        -exec grep -Eo '\.suspended_m68k_context_depth[[:space:]]*\(' {} + | wc -l | tr -d '[:space:]'
+)
+check_exact_count "Adapter effect conversions" adapter_effect_conversions "${conversion_count}"
+check_exact_count "Current-task rewrites" current_task_rewrites "${stamping_count}"
+check_exact_count "Depth-based context queries" depth_context_queries "${depth_count}"
+
+# Keep named compatibility boundaries visible, including overloads. The
+# prefix makes a move to a different file visible instead of forgiving it.
+for relative in process_context.rs runner/mod.rs loader/ppc/mod.rs trap/dispatch.rs; do
+    awk -v prefix="${relative}:" '
+        /fn (attach_|activate_copy_to|activate_quickdraw_selection|sync_ppc_|adopt_ppc_|share_ppc_)/ {
+            line = $0
+            sub(/^.*fn /, "", line)
+            sub(/[^A-Za-z0-9_].*$/, "", line)
+            print prefix line
+        }
+    ' "${source_dir}/${relative}"
+done | LC_ALL=C sort > "${tmp_dir}/methods.current"
+baseline_section compatibility_methods | LC_ALL=C sort > "${tmp_dir}/methods.expected"
+if ! diff -u "${tmp_dir}/methods.expected" "${tmp_dir}/methods.current"; then
+    printf '%s\n' "guardrail failed: compatibility methods changed; retire or classify the boundary in the ledger" >&2
     failures=$((failures + 1))
 fi
-printf '%s\n' "CallNative occurrences outside src/guest_call.rs: ${native_call_count} (baseline ${native_call_baseline}); non-zero legacy debt is expected"
+printf '%s\n' "Compatibility methods: $(wc -l < "${tmp_dir}/methods.current" | tr -d '[:space:]')"
 
 # The semantic execution kernel must stay independent of concrete CPU values
 # and the PPC import action protocol. Concrete register/context parking is a
@@ -234,6 +299,10 @@ printf '%s\n' "Execution kernel concrete CPU/import-action references: ${kernel_
 if [ "${failures}" -ne 0 ]; then
     printf '%s\n' "unified-runtime guardrails failed; update the contract ledger with any intentional migration before changing the baseline" >&2
     exit 1
+fi
+
+if [ "${run_fixture_tests}" = yes ]; then
+    python3 "${script_dir}/test-unified-runtime-guardrails.py"
 fi
 
 printf '%s\n' "unified-runtime guardrails passed; the baseline remains intentionally non-zero"
