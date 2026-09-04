@@ -4043,18 +4043,11 @@ impl super::TrapDispatcher {
                 self.fill_theme_rect(bus, rect, palette.frame_dark);
             }
             if active {
-                // Repaint the long pinstripe runs in the logo blue. Short
-                // close/zoom glyph strokes remain dark and retain their
-                // classic legibility.
-                for rect in chrome.ink.iter().copied() {
-                    let width = rect.3.saturating_sub(rect.1);
-                    if rect.2.saturating_sub(rect.0) == 1
-                        && width >= 14
-                        && rect.0 > tb_top
-                        && rect.0 < tb_bottom
-                    {
-                        self.fill_theme_rect(bus, rect, palette.selection);
-                    }
+                // Repaint every pinstripe run in the logo blue, including the
+                // short segment to the left of the close box. Close/zoom glyph
+                // strokes remain dark and retain their classic legibility.
+                for rect in chrome.stripe_ink.iter().copied() {
+                    self.fill_theme_rect(bus, rect, palette.selection);
                 }
             }
             if !self.window_title.is_empty() {
@@ -5544,6 +5537,39 @@ mod redraw_chrome_tests {
         assert!(!screen_pixel_is_black(&disp, &bus, 200, 85));
         assert!(!screen_pixel_is_black(&disp, &bus, 160, 88));
         assert!(!screen_pixel_is_black(&disp, &bus, 628, 88));
+    }
+
+    #[test]
+    fn systemless_window_recolors_short_stripes_left_of_close_box() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let white = TrapDispatcher::logical_white_pixel_index(&bus);
+        bus.fill_bytes(screen_base, 800 * 600, white);
+        disp.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (103, 152, 497, 647);
+        disp.window_proc_id = 0;
+        disp.window_title = "Themed Window".to_owned();
+        disp.go_away_flag = true;
+
+        let palette = disp.ui_theme().palette();
+        let blue = disp.theme_pixel_index(&bus, palette.selection);
+        let dark = disp.theme_pixel_index(&bus, palette.frame_dark);
+        disp.draw_window_chrome(&mut bus, true);
+
+        let short_stripe =
+            TrapDispatcher::fb_get_pixel_index(&bus, screen_base, 800, 8, 800, 600, 153, 86)
+                .expect("short close-side stripe pixel");
+        assert_eq!(short_stripe, blue);
+        assert_ne!(short_stripe, dark);
+        assert_eq!(
+            TrapDispatcher::fb_get_pixel_index(&bus, screen_base, 800, 8, 800, 600, 160, 88,),
+            Some(dark),
+            "the close-box glyph should retain the themed dark ink"
+        );
     }
 
     #[test]

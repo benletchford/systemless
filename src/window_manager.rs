@@ -45,6 +45,7 @@ pub(crate) fn standard_window_structure_bounds(content: WindowRect) -> WindowRec
 pub(crate) struct StandardWindowChrome {
     pub(crate) background: WindowRect,
     pub(crate) ink: Vec<WindowRect>,
+    pub(crate) stripe_ink: Vec<WindowRect>,
     pub(crate) zoom_ink: Vec<WindowRect>,
     pub(crate) title_h: i16,
     pub(crate) title_baseline: i16,
@@ -237,6 +238,7 @@ pub(crate) fn standard_window_chrome(
         ink.extend(zoom_ink.iter().copied());
     }
 
+    let mut stripe_ink = Vec::new();
     if active {
         let stripe_left = tb_left.saturating_add(2);
         let stripe_right = if has_zoom_box {
@@ -261,16 +263,17 @@ pub(crate) fn standard_window_chrome(
                 stripe_text_left
             };
             if stripe_left < first_end {
-                ink.push((y, stripe_left, y.saturating_add(1), first_end));
+                stripe_ink.push((y, stripe_left, y.saturating_add(1), first_end));
             }
             if has_close_box && close_gap_right < stripe_text_left {
-                ink.push((y, close_gap_right, y.saturating_add(1), stripe_text_left));
+                stripe_ink.push((y, close_gap_right, y.saturating_add(1), stripe_text_left));
             }
             if stripe_text_right < stripe_right {
-                ink.push((y, stripe_text_right, y.saturating_add(1), stripe_right));
+                stripe_ink.push((y, stripe_text_right, y.saturating_add(1), stripe_right));
             }
         }
     }
+    ink.extend(stripe_ink.iter().copied());
 
     ink.extend([
         (top, left.saturating_sub(1), bottom, left),
@@ -298,6 +301,7 @@ pub(crate) fn standard_window_chrome(
     StandardWindowChrome {
         background: (tb_top, tb_left, tb_bottom.saturating_add(1), tb_right),
         ink,
+        stripe_ink,
         zoom_ink,
         title_h,
         title_baseline,
@@ -367,7 +371,7 @@ mod tests {
         );
 
         let stripe_rows = chrome
-            .ink
+            .stripe_ink
             .iter()
             .filter(|(top, left, bottom, _)| {
                 *left == 41 && *bottom == top.saturating_add(1) && (32..=44).contains(top)
@@ -375,6 +379,10 @@ mod tests {
             .map(|(top, _, _, _)| *top)
             .collect::<Vec<_>>();
         assert_eq!(stripe_rows, [32, 34, 36, 38, 40, 42, 44]);
+        assert!(
+            chrome.stripe_ink.contains(&(32, 41, 33, 47)),
+            "the short stripe segment left of the close box must remain identifiable"
+        );
         assert!(chrome.ink.contains(&(30, 39, 31, 601)));
         assert!(chrome
             .ink
