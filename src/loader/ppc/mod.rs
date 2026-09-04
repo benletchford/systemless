@@ -52037,6 +52037,17 @@ fn ppc_validate_window_local_rect(
     }
 }
 
+fn ppc_standard_desktop_color(h: i32, v: i32) -> PpcRgbColor {
+    // Host menu-bar suppression changes only presentation and clipping; it
+    // does not replace the guest Window Manager's GrayRgn pattern with black.
+    // Macintosh Toolbox Essentials (1992), pp. 4-113--4-119.
+    if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+        PPC_RGB_BLACK
+    } else {
+        PPC_RGB_WHITE
+    }
+}
+
 fn ppc_repaint_window_geometry_transition(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -52107,13 +52118,7 @@ fn ppc_restore_window_removal_exposure(
     if paint.0 < paint.2 && paint.1 < paint.3 {
         for v in i32::from(paint.0)..i32::from(paint.2) {
             for h in i32::from(paint.1)..i32::from(paint.3) {
-                let color = if host_menu_bar_hidden
-                    || crate::window_manager::standard_desktop_pattern_is_ink(h, v)
-                {
-                    PPC_RGB_BLACK
-                } else {
-                    PPC_RGB_WHITE
-                };
+                let color = ppc_standard_desktop_color(h, v);
                 let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
             }
         }
@@ -52872,13 +52877,7 @@ fn ppc_paint_behind(
             if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
                 for v in i32::from(paint.0)..i32::from(paint.2) {
                     for h in i32::from(paint.1)..i32::from(paint.3) {
-                        let color = if host_menu_bar_hidden
-                            || crate::window_manager::standard_desktop_pattern_is_ink(h, v)
-                        {
-                            PPC_RGB_BLACK
-                        } else {
-                            PPC_RGB_WHITE
-                        };
+                        let color = ppc_standard_desktop_color(h, v);
                         let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
                     }
                 }
@@ -139681,7 +139680,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ppc_paint_behind_hidden_menu_uses_solid_black_desktop() {
+    fn ppc_paint_behind_hidden_menu_uses_classic_desktop_pattern() {
         let pef = synthetic_pef_with_import(b"NewCWindow");
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.toolbox_startup.host_menu_bar_hidden = true;
@@ -139718,10 +139717,54 @@ pub(crate) mod tests {
         );
         let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
             .unwrap();
+        let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut)
+            .unwrap();
         assert_eq!(
-            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
             Some(black),
-            "hidden-menu desktop exposure must not retain the checkerboard",
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 0)),
+            Some(white),
+            "host menu suppression must not turn PaintBehind's desktop solid black",
+        );
+    }
+
+    #[test]
+    fn ppc_window_removal_exposure_uses_pattern_when_host_hides_menu_bar() {
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let front = ppc_live_front_buffer_for_gworld(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+        )
+        .unwrap();
+        let mut event_queue = VecDeque::new();
+
+        ppc_restore_window_removal_exposure(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &[],
+            Some((0, 0, 2, 2)),
+            true,
+            &mut event_queue,
+            0,
+            PpcInputSnapshot::default(),
+        );
+
+        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
+            .unwrap();
+        let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut)
+            .unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+            Some(black),
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 0)),
+            Some(white),
+            "moving or closing a window must restore GrayRgn even when its menu bar is hidden",
         );
     }
 
