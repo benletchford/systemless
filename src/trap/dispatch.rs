@@ -17,7 +17,6 @@ use super::manager::{
 use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
-use crate::execution_kernel::ExecutionTaskContextBank;
 use crate::guest_call::SharedGuestCallStack;
 use crate::list_manager::ProcessListRecord;
 use crate::machine_profile::reference_machine_profile;
@@ -936,33 +935,6 @@ pub(crate) struct OsTrapDispatchFrame {
 /// covers the Toolbox call depth Systemless threads reach.
 pub(crate) const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
 
-/// Saved 68K state for one cooperative Thread Manager thread.
-///
-/// Cooperative switches occur only inside `_ThreadDispatch`, so the HLE can
-/// preserve the complete caller-visible register file without involving a
-/// host thread. New threads inherit the creator's register world (notably A5)
-/// and receive a private guest stack.
-#[derive(Clone, Debug)]
-pub(crate) struct CooperativeThread {
-    pub(crate) d_regs: [u32; 8],
-    pub(crate) a_regs: [u32; 8],
-    pub(crate) pc: u32,
-    pub(crate) ccr: u8,
-    /// `void **threadResult` the entry proc's return value is stored to.
-    pub(crate) result_destination: u32,
-    /// Lowest address of the private guest stack, or 0 for the
-    /// application thread, which keeps the process stack.
-    pub(crate) stack_base: u32,
-    /// Address one past the top of the private guest stack.
-    pub(crate) stack_limit: u32,
-    /// `SetThreadSwitcher` switch-in proc and its `switchProcParam`.
-    pub(crate) switch_in: (u32, u32),
-    /// `SetThreadSwitcher` switch-out proc and its `switchProcParam`.
-    pub(crate) switch_out: (u32, u32),
-    /// `SetThreadTerminator` proc and its `terminationProcParam`.
-    pub(crate) terminator: (u32, u32),
-}
-
 /// In-flight AppleEvent handler call. Built by Pack8 routine 27
 /// (`AEProcessAppleEvent`) when it dispatches a registered handler;
 /// consumed by the trampoline trap when the handler `RTD`s back.
@@ -1515,8 +1487,6 @@ pub struct TrapDispatcher {
     /// on the zero-request local path is allowed before init in the baked
     /// fixture.
     pub(crate) ppc_initialized: bool,
-    /// Cooperative Thread Manager contexts keyed by their opaque ThreadID.
-    pub(crate) cooperative_threads: ExecutionTaskContextBank<CooperativeThread>,
     /// Next guest-visible ThreadID. IDs 1 and 2 are reserved by Threads.h.
     pub(crate) next_cooperative_thread_id: u32,
     /// Guest trampoline entered when a ThreadEntryProc returns.
@@ -3499,7 +3469,6 @@ impl TrapDispatcher {
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
-            cooperative_threads: ExecutionTaskContextBank::default(),
             next_cooperative_thread_id: 3,
             thread_return_trampoline: 0,
             cooperative_thread_scheduler: 0,

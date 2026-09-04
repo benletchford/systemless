@@ -11601,6 +11601,7 @@ fn load_app_generic<M: MemoryBus>(
 mod tests {
     use super::*;
     use crate::audio::AudioBackend;
+    use crate::guest_call::CooperativeThread;
     use crate::loader::ppc::*;
     use crate::loader::{ApplicationSizeResource, Code0Header, LoadedApp};
     use crate::menu_manager::TrackedMenuPaneView;
@@ -11613,8 +11614,8 @@ mod tests {
         SndChannel, SndCommand, OUTPUT_RATE,
     };
     use crate::trap::dispatch::{
-        CooperativeThread, DialogItem, DialogTrackingState, LoadedResources,
-        PendingWaitNextEventReturn, QueuedEvent, ResourceFileMap, TimerTask, VblTask,
+        DialogItem, DialogTrackingState, LoadedResources, PendingWaitNextEventReturn, QueuedEvent,
+        ResourceFileMap, TimerTask, VblTask,
     };
     use ppc::{PpcCpu, PpcNativeReturnGpr3};
     use std::cell::RefCell;
@@ -15867,7 +15868,7 @@ mod tests {
             .dispatcher
             .guest_calls
             .register_task(ExecutionTaskId::from_thread_id(3)));
-        runner.dispatcher.cooperative_threads.insert(
+        runner.dispatcher.guest_calls.save_cooperative_context(
             ExecutionTaskId::from_thread_id(3),
             CooperativeThread {
                 d_regs: [0; 8],

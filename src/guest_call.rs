@@ -16,12 +16,41 @@ pub(crate) use crate::execution_kernel::{
     M68kRegisterState, M68kResultSource, M68kResultTarget, M68kResume, PendingM68kExecution,
     PendingPowerPcExecution, PowerPcArguments, PowerPcReturnState,
 };
-use crate::execution_kernel::{ExecutionContextBank, ExecutionTaskEffect, ExecutionTaskState};
+use crate::execution_kernel::{
+    ExecutionContextBank, ExecutionTaskContextBank, ExecutionTaskEffect, ExecutionTaskState,
+};
 use crate::guest_procedure::GuestIsa;
 use ppc::{PpcCpu, PpcImportAction, PpcNativeReturnGpr3};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+/// Saved 68K state for one cooperative Thread Manager thread.
+///
+/// Cooperative switches occur only inside `_ThreadDispatch`, so the HLE can
+/// preserve the complete caller-visible register file without involving a
+/// host thread. New threads inherit the creator's register world (notably A5)
+/// and receive a private guest stack.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CooperativeThread {
+    pub(crate) d_regs: [u32; 8],
+    pub(crate) a_regs: [u32; 8],
+    pub(crate) pc: u32,
+    pub(crate) ccr: u8,
+    /// `void **threadResult` the entry proc's return value is stored to.
+    pub(crate) result_destination: u32,
+    /// Lowest address of the private guest stack, or 0 for the
+    /// application thread, which keeps the process stack.
+    pub(crate) stack_base: u32,
+    /// Address one past the top of the private guest stack.
+    pub(crate) stack_limit: u32,
+    /// `SetThreadSwitcher` switch-in proc and its `switchProcParam`.
+    pub(crate) switch_in: (u32, u32),
+    /// `SetThreadSwitcher` switch-out proc and its `switchProcParam`.
+    pub(crate) switch_out: (u32, u32),
+    /// `SetThreadTerminator` proc and its `terminationProcParam`.
+    pub(crate) terminator: (u32, u32),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct M68kCallOrigin {
@@ -336,6 +365,7 @@ struct ExecutionTaskCalls {
     kernel: ContinuationStore,
     frames: HashMap<CallId, GuestCallFrame>,
     powerpc_contexts: ExecutionContextBank<Box<PpcCpu>>,
+    cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
 }
 
 impl Clone for ExecutionTaskCalls {
@@ -344,6 +374,7 @@ impl Clone for ExecutionTaskCalls {
             kernel: self.kernel.clone(),
             frames: self.frames.clone(),
             powerpc_contexts: self.powerpc_contexts.clone(),
+            cooperative_contexts: self.cooperative_contexts.clone(),
         }
     }
 }
@@ -353,6 +384,7 @@ impl PartialEq for ExecutionTaskCalls {
         self.kernel == other.kernel
             && self.frames == other.frames
             && self.powerpc_contexts.same_slots(&other.powerpc_contexts)
+            && self.cooperative_contexts == other.cooperative_contexts
     }
 }
 
@@ -364,13 +396,14 @@ impl Default for ExecutionTaskCalls {
             kernel: ContinuationStore::default(),
             frames: HashMap::new(),
             powerpc_contexts: ExecutionContextBank::default(),
+            cooperative_contexts: ExecutionTaskContextBank::default(),
         }
     }
 }
 
 impl ExecutionTaskCalls {
-    fn is_empty(&self) -> bool {
-        self.kernel.is_empty()
+    fn is_pristine(&self) -> bool {
+        self.kernel.is_pristine() && self.cooperative_contexts.is_empty()
     }
 }
 
@@ -398,8 +431,8 @@ impl Clone for SharedGuestCallStack {
 }
 
 impl SharedGuestCallStack {
-    fn all_tasks_idle(&self) -> bool {
-        self.0.borrow().is_empty()
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.0.borrow().is_pristine()
     }
 
     pub(crate) fn shared_handle(&self) -> Self {
@@ -411,19 +444,19 @@ impl SharedGuestCallStack {
             return;
         }
         assert!(
-            self.all_tasks_idle() || process_calls.all_tasks_idle(),
-            "cannot attach two active guest-procedure continuation stacks"
+            self.is_pristine() || process_calls.is_pristine(),
+            "cannot attach two initialized execution owners"
         );
         let pending = std::mem::take(&mut *self.0.borrow_mut());
         self.0 = Rc::clone(&process_calls.0);
-        if !pending.is_empty() {
+        if !pending.is_pristine() {
             *self.0.borrow_mut() = pending;
         }
     }
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.all_tasks_idle()
+        self.0.borrow().kernel.is_empty()
     }
 
     pub(crate) fn depth(&self) -> usize {
@@ -498,7 +531,7 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.end_critical()
     }
 
-    pub(crate) fn apply_task_effect(&self, effect: ExecutionTaskEffect) -> bool {
+    fn apply_task_effect(&self, effect: ExecutionTaskEffect) -> bool {
         self.0.borrow().kernel.apply_task_effect(effect).is_ok()
     }
 
@@ -506,7 +539,35 @@ impl SharedGuestCallStack {
     ///
     /// A non-empty stack denotes suspended execution and cannot be discarded.
     pub(crate) fn remove_task(&self, task: ExecutionTaskId) -> bool {
-        self.apply_task_effect(ExecutionTaskEffect::Retire(task))
+        let mut tasks = self.0.borrow_mut();
+        if tasks
+            .kernel
+            .apply_task_effect(ExecutionTaskEffect::Retire(task))
+            .is_err()
+        {
+            return false;
+        }
+        tasks.cooperative_contexts.remove(task);
+        true
+    }
+
+    pub(crate) fn cooperative_context(&self, task: ExecutionTaskId) -> Option<CooperativeThread> {
+        self.0.borrow().cooperative_contexts.get(task).cloned()
+    }
+
+    /// Only registered tasks can retain adapter snapshots. No borrowed CPU
+    /// context escapes the execution owner across a guest call or task switch.
+    pub(crate) fn save_cooperative_context(
+        &self,
+        task: ExecutionTaskId,
+        context: CooperativeThread,
+    ) -> bool {
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.scheduling_state(task).is_none() {
+            return false;
+        }
+        tasks.cooperative_contexts.insert(task, context);
+        true
     }
 
     #[cfg(test)]
@@ -1219,6 +1280,69 @@ mod tests {
         assert!(detached.is_empty());
         assert!(shared.complete_m68k(0x2002, 0x3000));
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn attachment_preserves_idle_task_snapshots_and_refuses_two_initialized_owners() {
+        let process = SharedGuestCallStack::default();
+        let mut adapter = SharedGuestCallStack::default();
+        let task = ExecutionTaskId::APPLICATION;
+        let mut context = CooperativeThread::default();
+        context.pc = 0x1234;
+        assert!(adapter.save_cooperative_context(task, context.clone()));
+        adapter.attach_to(&process);
+        assert_eq!(process.cooperative_context(task), Some(context.clone()));
+        let mut empty = SharedGuestCallStack::default();
+        empty.attach_to(&process);
+        assert_eq!(empty.cooperative_context(task), Some(context.clone()));
+        let mut other = SharedGuestCallStack::default();
+        let mut conflicting = context.clone();
+        conflicting.pc = 0x5678;
+        assert!(other.save_cooperative_context(task, conflicting.clone()));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || other.attach_to(&process)
+        ))
+        .is_err());
+        assert_eq!(process.cooperative_context(task), Some(context));
+        assert_eq!(other.cooperative_context(task), Some(conflicting));
+    }
+
+    #[test]
+    fn cooperative_snapshots_share_live_ownership_but_clone_and_retire_with_the_task() {
+        let calls = SharedGuestCallStack::default();
+        let worker = ExecutionTaskId::from_thread_id(3);
+        let mut context = CooperativeThread::default();
+        context.d_regs[0] = 42;
+        assert!(!calls.save_cooperative_context(worker, context.clone()));
+        assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.save_cooperative_context(worker, context.clone()));
+        assert!(calls.switch_to_task(worker));
+        assert!(calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0
+            },
+            0x2000,
+            0x3000
+        ));
+        assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
+        assert!(!calls.remove_task(worker));
+        assert_eq!(calls.cooperative_context(worker), Some(context.clone()));
+        let detached = calls.clone();
+        let shared = calls.shared_handle();
+        context.d_regs[0] = 99;
+        assert!(calls.save_cooperative_context(worker, context.clone()));
+        assert_eq!(shared.cooperative_context(worker), Some(context.clone()));
+        assert_eq!(detached.cooperative_context(worker).unwrap().d_regs[0], 42);
+        assert!(calls.switch_to_task(worker));
+        assert!(calls.complete_m68k(0x2002, 0x3000));
+        assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
+        assert!(calls.remove_task(worker));
+        assert!(shared.cooperative_context(worker).is_none());
+        assert!(!calls.save_cooperative_context(worker, context));
+        assert!(detached.cooperative_context(worker).is_some());
     }
 
     #[test]

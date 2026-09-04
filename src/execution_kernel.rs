@@ -479,6 +479,25 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         self.0.borrow().current_task
     }
 
+    /// Construction-time adoption is safe only before this execution owner
+    /// has acquired any task, call identity, or scheduling history.
+    pub(crate) fn is_pristine(&self) -> bool {
+        let state = self.0.borrow();
+        state.current_task == ExecutionTaskId::APPLICATION
+            && state.next_call_id == 1
+            && state.stacks.len() == 1
+            && state
+                .stacks
+                .get(&ExecutionTaskId::APPLICATION)
+                .is_some_and(Vec::is_empty)
+            && state.attached_contexts.is_empty()
+            && state.retired_tasks.is_empty()
+            && state.task_states.get(&ExecutionTaskId::APPLICATION)
+                == Some(&ExecutionTaskState::Running)
+            && state.ready.is_empty()
+            && state.critical_depth == 0
+    }
+
     /// Register a new task exactly once for this process lifetime.
     pub(crate) fn register_task(&self, task: ExecutionTaskId) -> Result<(), ContinuationError> {
         let mut state = self.0.borrow_mut();
@@ -1018,21 +1037,12 @@ impl<T> Default for ExecutionTaskContextBank<T> {
 }
 
 impl<T> ExecutionTaskContextBank<T> {
-    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.by_task.is_empty()
     }
 
-    pub(crate) fn contains(&self, task: ExecutionTaskId) -> bool {
-        self.by_task.contains_key(&task)
-    }
-
     pub(crate) fn get(&self, task: ExecutionTaskId) -> Option<&T> {
         self.by_task.get(&task)
-    }
-
-    pub(crate) fn get_mut(&mut self, task: ExecutionTaskId) -> Option<&mut T> {
-        self.by_task.get_mut(&task)
     }
 
     pub(crate) fn insert(&mut self, task: ExecutionTaskId, context: T) -> Option<T> {
