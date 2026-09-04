@@ -14015,10 +14015,7 @@ mod tests {
         let systemless = UiThemeId::SystemlessDefault.provider();
 
         assert_eq!(runner.ui_theme_id(), UiThemeId::ClassicSystem7);
-        assert_eq!(
-            runner.dispatcher().ui_theme_id(),
-            UiThemeId::ClassicSystem7
-        );
+        assert_eq!(runner.dispatcher().ui_theme_id(), UiThemeId::ClassicSystem7);
         assert_eq!(runner.ui_theme().id(), UiThemeId::ClassicSystem7);
         assert!(runner.uses_classic_guest_metrics());
         assert_eq!(runner.ui_theme().menu_metrics(), systemless.menu_metrics());
@@ -14036,10 +14033,7 @@ mod tests {
         runner.set_ui_theme(UiThemeId::ClassicSystem7);
 
         assert_eq!(runner.ui_theme_id(), UiThemeId::ClassicSystem7);
-        assert_eq!(
-            runner.dispatcher().ui_theme_id(),
-            UiThemeId::ClassicSystem7
-        );
+        assert_eq!(runner.dispatcher().ui_theme_id(), UiThemeId::ClassicSystem7);
         assert!(runner.uses_classic_guest_metrics());
     }
 
@@ -15792,7 +15786,6 @@ mod tests {
                 a_regs: [0, 0, 0, 0, 0, 0, 0, WORKER_SP],
                 pc: WORKER_ENTRY,
                 ccr: 0,
-                state: 0,
                 result_destination: 0,
                 stack_base: WORKER_STACK,
                 stack_limit: WORKER_STACK + 0x40,
@@ -15801,7 +15794,10 @@ mod tests {
                 terminator: (0, 0),
             },
         );
-        runner.dispatcher.cooperative_thread_ready.push_back(3);
+        assert!(runner.dispatcher.guest_calls.set_scheduling_state(
+            ExecutionTaskId::from_thread_id(3),
+            crate::execution_kernel::ExecutionTaskState::Ready
+        ));
 
         let (_, running) = runner.run_steps(128, None);
         assert!(running);

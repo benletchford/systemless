@@ -16,7 +16,7 @@ pub(crate) use crate::execution_kernel::{
     M68kRegisterState, M68kResultSource, M68kResultTarget, M68kResume, PendingM68kExecution,
     PendingPowerPcExecution, PowerPcArguments, PowerPcReturnState,
 };
-use crate::execution_kernel::{ExecutionContextBank, ExecutionTaskEffect};
+use crate::execution_kernel::{ExecutionContextBank, ExecutionTaskEffect, ExecutionTaskState};
 use crate::guest_procedure::GuestIsa;
 use ppc::{PpcCpu, PpcImportAction, PpcNativeReturnGpr3};
 use std::cell::RefCell;
@@ -456,6 +456,46 @@ impl SharedGuestCallStack {
 
     pub(crate) fn switch_to_task(&self, task: ExecutionTaskId) -> bool {
         self.apply_task_effect(ExecutionTaskEffect::SwitchTo(task))
+    }
+
+    pub(crate) fn scheduling_state(&self, task: ExecutionTaskId) -> Option<ExecutionTaskState> {
+        self.0.borrow().kernel.scheduling_state(task)
+    }
+
+    pub(crate) fn set_scheduling_state(
+        &self,
+        task: ExecutionTaskId,
+        state: ExecutionTaskState,
+    ) -> bool {
+        self.0.borrow().kernel.set_scheduling_state(task, state)
+    }
+
+    pub(crate) fn set_state_ending_critical(
+        &self,
+        task: ExecutionTaskId,
+        state: ExecutionTaskState,
+    ) -> bool {
+        self.0
+            .borrow()
+            .kernel
+            .set_state_ending_critical(task, state)
+    }
+
+    pub(crate) fn next_ready_task(
+        &self,
+        suggested: Option<ExecutionTaskId>,
+    ) -> Option<ExecutionTaskId> {
+        self.0.borrow().kernel.next_ready_task(suggested)
+    }
+
+    pub(crate) fn critical_depth(&self) -> u32 {
+        self.0.borrow().kernel.critical_depth()
+    }
+    pub(crate) fn begin_critical(&self) {
+        self.0.borrow().kernel.begin_critical();
+    }
+    pub(crate) fn end_critical(&self) -> bool {
+        self.0.borrow().kernel.end_critical()
     }
 
     pub(crate) fn apply_task_effect(&self, effect: ExecutionTaskEffect) -> bool {
@@ -1196,6 +1236,10 @@ mod tests {
             GuestCallContinuation::to_m68k(0x2000, 0x3000, None),
         );
         assert!(calls.register_task(ExecutionTaskId::from_thread_id(7)));
+        assert!(calls.set_scheduling_state(
+            ExecutionTaskId::from_thread_id(7),
+            ExecutionTaskState::Ready
+        ));
         assert!(calls.switch_to_task(ExecutionTaskId::from_thread_id(7)));
         let before = calls.clone();
         assert!(!calls.push_effect(effect));
@@ -1220,6 +1264,7 @@ mod tests {
 
         let worker = ExecutionTaskId::from_thread_id(7);
         assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
         calls.switch_to_task(worker);
         assert_eq!(calls.depth(), 0);
         calls.begin_m68k(
@@ -1246,6 +1291,7 @@ mod tests {
         let calls = SharedGuestCallStack::default();
         let worker = ExecutionTaskId::from_thread_id(7);
         assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
         calls.switch_to_task(worker);
         calls.begin_m68k(
             GuestCallTarget {

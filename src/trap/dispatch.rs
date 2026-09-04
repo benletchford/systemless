@@ -948,8 +948,6 @@ pub(crate) struct CooperativeThread {
     pub(crate) a_regs: [u32; 8],
     pub(crate) pc: u32,
     pub(crate) ccr: u8,
-    /// `ThreadState` from Threads.h: 0 ready, 1 stopped, 2 running.
-    pub(crate) state: u16,
     /// `void **threadResult` the entry proc's return value is stored to.
     pub(crate) result_destination: u32,
     /// Lowest address of the private guest stack, or 0 for the
@@ -1517,14 +1515,8 @@ pub struct TrapDispatcher {
     /// on the zero-request local path is allowed before init in the baked
     /// fixture.
     pub(crate) ppc_initialized: bool,
-    /// Nesting depth for the guest's critical sections. Systemless runs the
-    /// HLE on one host thread, so Thread Manager critical sections collapse
-    /// to a single dispatcher-wide counter.
-    pub(crate) thread_critical_nesting: u32,
     /// Cooperative Thread Manager contexts keyed by their opaque ThreadID.
     pub(crate) cooperative_threads: ExecutionTaskContextBank<CooperativeThread>,
-    /// Round-robin queue of ready cooperative threads.
-    pub(crate) cooperative_thread_ready: VecDeque<u32>,
     /// Next guest-visible ThreadID. IDs 1 and 2 are reserved by Threads.h.
     pub(crate) next_cooperative_thread_id: u32,
     /// Guest trampoline entered when a ThreadEntryProc returns.
@@ -3507,9 +3499,7 @@ impl TrapDispatcher {
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
-            thread_critical_nesting: 0,
             cooperative_threads: ExecutionTaskContextBank::default(),
-            cooperative_thread_ready: VecDeque::new(),
             next_cooperative_thread_id: 3,
             thread_return_trampoline: 0,
             cooperative_thread_scheduler: 0,
