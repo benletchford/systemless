@@ -5,10 +5,11 @@ Macintosh fat application. The same `showcase.c` is compiled into a 68K
 `CODE` slice and a native PowerPC PEF slice. The PEF remains in the data fork;
 the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
-The public coverage is tracked by issues #1078, #1081, and #1264–#1269.
+
+The public coverage is tracked by issues #1078, #1081, and #1264–#1270.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
-test protocol. Its Pages menu selects thirteen interactive views:
+test protocol. Its Pages menu selects fifteen interactive views:
 
 1. Graphics exercises patterns, clipping, indexed color, lines, shapes, and
    text.
@@ -61,6 +62,11 @@ test protocol. Its Pages menu selects thirteen interactive views:
     sprite through `CopyMask`, transfers a second frame through `CopyDeepMask`
     and a `BitMapToRegion` clip, samples pixels with `SetCPixel`/`GetCPixel`,
     and scrolls the existing raster with `ScrollRect`.
+15. Events & Cursors records raw `EventRecord` mouse/key/modifier fields,
+    samples `GetMouse`, `Button`, `StillDown`, `WaitMouseUp`, and `GetKeys`,
+    peeks and consumes a posted key event with `EventAvail`, `OSEventAvail`,
+    and `GetOSEvent`, and switches standard cursors with `GetCursor`,
+    `SetCursor`, `InitCursor`, `HideCursor`, and `ShowCursor`.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -75,17 +81,17 @@ With QuickDraw* (1994), pp. 3-38, 3-55–3-95, and 4-68. Palette activation,
 usage categories, indexed drawing, and animation follow *Inside Macintosh,
 Volume VI* (1991), pp. 20-8–20-22. Lists follow *Inside Macintosh: More
 Macintosh Toolbox* (1993), pp. 4-26–4-42 and 4-65–4-95.
+Raw input follows *Inside Macintosh: Macintosh Toolbox Essentials* (1992),
+pp. 2-18–2-19, 2-50–2-71, and 2-97–2-110; cursor handling follows *Inside
+Macintosh: Imaging With QuickDraw* (1994), pp. 8-22–8-29.
 Sound follows *Inside Macintosh: Sound* (1994), pp. 2-19–2-29, 2-92–2-101,
-2-121–2-123, and 2-151–2-152.
-The styled TextEdit
-and Font Manager checks track public issue #1266 and follow *Inside Macintosh:
-Text* (1993), pp. 2-78, 2-98–2-102, 3-81–3-82, and 4-52–4-53.
-Standard File follows
-*Inside Macintosh: Files* (1992), pp. 3-42–3-54.
-Resource enumeration, metadata, deferred loading, handle release, and reload
-follow *Inside Macintosh: More Macintosh Toolbox* (1993), pp. 1-75–1-82,
-and the Resource Manager overview and lifecycle contracts are cross-checked
-against *Inside Macintosh Volume I* (1985), pp. I-118–I-125.
+2-121–2-123, and 2-151–2-152. The styled TextEdit and Font Manager checks
+follow *Inside Macintosh: Text* (1993), pp. 2-78, 2-98–2-102, 3-81–3-82,
+and 4-52–4-53. Standard File follows *Inside Macintosh: Files* (1992),
+pp. 3-42–3-54. Resource enumeration, metadata, deferred loading, handle
+release, and reload follow *Inside Macintosh: More Macintosh Toolbox* (1993),
+pp. 1-75–1-82, and the Resource Manager overview and lifecycle contracts are
+cross-checked against *Inside Macintosh Volume I* (1985), pp. I-118–I-125.
 Sprite masking, offscreen worlds, pixel sampling, regions, and scrolling
 follow *Inside Macintosh: Imaging With QuickDraw* (1994), pp. 2-20–2-24,
 2-43–2-50, 3-119–3-122, and 6-22–6-46.
@@ -176,6 +182,17 @@ exact Systemless framebuffer references while performing the same sequence:
     right-hand strip is repainted, and `ScrollRect` reports the exposed update
     region. The integration checkpoints are `26-sprites.png`,
     `27-sprites-animated.png`, and `28-sprites-scrolled.png`.
+25. Reopen Windows, select the main document from the auxiliary window, and
+    choose Events & Cursors (item 15) to record `activateEvt` and `updateEvt`
+    lifecycle transitions.
+26. Hold the page's queue probe button down to record live mouse state,
+    confirm `WaitMouseUp` remains true, then post a key event and verify that
+    `EventAvail` and `OSEventAvail` peek without consuming before
+    `GetOSEvent` removes it.
+27. Hold Shift while typing a printable key and verify `shiftKey` in the
+    `EventRecord` plus a nonzero `GetKeys` map. Select cross and watch cursors,
+    hide and show the cursor, restore the arrow cursor, and capture the five
+    event/cursor frames at checkpoints 29–33.
 
 For a manual launch from the public repository:
 
@@ -188,13 +205,15 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the twenty-four interaction steps above. Use an 800×600
+PowerPC slice, then follow the twenty-seven interaction steps above. Use an 800×600
 8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
 SheepShaver for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
-and final page provide the comparison points between runs. Sound checkpoints
-17 and 18 include classic-Mac captures from BasiliskII and SheepShaver; their
-Systemless references document the expected PCM and callback state.
+and final page provide the comparison points between runs. For the event
+page, compare EventRecord kind/coordinates/modifiers, the peek-versus-take
+queue results, and cursor shape/hotspot/visibility in addition to the
+rendered layout. The event/cursor rows contain deterministic captures from
+both classic emulator runs, including the hidden-cursor state.
 
 The Resource Browser checkpoint shows the same three named `DATA` records (IDs
 201, 202, and 203), their stable byte sizes, clean attributes, and the
@@ -222,7 +241,6 @@ These full-frame 800×600 captures all come from the same committed archive.
 The Systemless images are exact RGB baselines checked by the integration test;
 the classic-Mac images are human-review oracles because system fonts, desktop
 patterns, and window chrome can vary between compatible OS installations.
-Each existing checkpoint is paired with its corresponding classic-Mac oracle.
 The frames are functional comparisons rather than whole-frame pixel-identical
 targets. Palette entry selection, colors before device-depth quantization, and
 animation behavior are strict comparison points rather than presentation
@@ -274,6 +292,11 @@ indexed paths.
 | 26. Sprites, masks & scrolling | <img src="reference/systemless-68k/26-sprites.png" alt="Masked offscreen sprites in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/26-sprites.png" alt="Masked offscreen sprites in BasiliskII" width="360"> |
 | 27. Animated sprite | <img src="reference/systemless-68k/27-sprites-animated.png" alt="Animated masked sprites in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/27-sprites-animated.png" alt="Animated masked sprites in BasiliskII" width="360"> |
 | 28. Scrolled sprite scene | <img src="reference/systemless-68k/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in BasiliskII" width="360"> |
+| 29. Events & Cursors | <img src="reference/systemless-68k/29-events-cursors.png" alt="Events and Cursors page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/29-events-cursors.png" alt="Events and Cursors page in BasiliskII" width="360"> |
+| 30. Held mouse and queue probe | <img src="reference/systemless-68k/30-events-mouse-held.png" alt="Held mouse and event queue probe in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/30-events-mouse-held.png" alt="Held mouse and event queue probe in BasiliskII" width="360"> |
+| 31. Key modifiers | <img src="reference/systemless-68k/31-events-key-modifiers.png" alt="Shift-modified key event on the Events and Cursors page in Systemless" width="360"> | <img src="reference/basiliskii-68k/31-events-key-modifiers.png" alt="Shift-modified key event in BasiliskII" width="360"> |
+| 32. Hidden cursor | <img src="reference/systemless-68k/32-events-cursor-hidden.png" alt="Hidden watch cursor state in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/32-events-cursor-hidden.png" alt="Hidden watch cursor state in BasiliskII" width="360"> |
+| 33. Final visible cursor | <img src="reference/systemless-68k/33-events-cursors-final.png" alt="Final visible arrow cursor state in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/33-events-cursors-final.png" alt="Final visible arrow cursor state in BasiliskII" width="360"> |
 
 ### PowerPC
 
@@ -297,8 +320,8 @@ indexed paths.
 | 16. Interacted inventory list | <img src="reference/systemless-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in SheepShaver" width="360"> |
 | 17. Sound controls | <img src="reference/systemless-ppc/17-sound-controls.png" alt="Sound controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/17-sound-controls.png" alt="Sound controls in SheepShaver" width="360"> |
 | 18. Sound completion | <img src="reference/systemless-ppc/18-sound-complete.png" alt="Sound completion in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/18-sound-complete.png" alt="Sound completion in SheepShaver" width="360"> |
-| 19. Styled Text & Fonts | <img src="reference/systemless-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in SheepShaver running the PowerPC slice" width="360"> |
-| 20. Standard File page | <img src="reference/systemless-ppc/20-standard-file-page.png" alt="Standard File page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/20-standard-file-page.png" alt="Standard File page in SheepShaver running the PowerPC slice" width="360"> |
+| 19. Styled Text & Fonts | <img src="reference/systemless-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in SheepShaver" width="360"> |
+| 20. Standard File page | <img src="reference/systemless-ppc/20-standard-file-page.png" alt="Standard File page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/20-standard-file-page.png" alt="Standard File page in SheepShaver" width="360"> |
 | 21. Standard File Open dialog | <img src="reference/systemless-ppc/21-standard-file-open.png" alt="Filtered Standard File Open dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/21-standard-file-open.png" alt="Filtered Standard File Open dialog in SheepShaver" width="360"> |
 | 22. Standard File complete | <img src="reference/systemless-ppc/22-standard-file-complete.png" alt="Completed Standard File interactions in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/22-standard-file-complete.png" alt="Completed Standard File interactions in SheepShaver" width="360"> |
 | 23. Resource Browser | <img src="reference/systemless-ppc/23-resource-browser.png" alt="Resource Browser enumeration in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/23-resource-browser.png" alt="Resource Browser enumeration in SheepShaver" width="360"> |
@@ -307,9 +330,14 @@ indexed paths.
 | 26. Sprites, masks & scrolling | <img src="reference/systemless-ppc/26-sprites.png" alt="Masked offscreen sprites in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/26-sprites.png" alt="Masked offscreen sprites in SheepShaver" width="360"> |
 | 27. Animated sprite | <img src="reference/systemless-ppc/27-sprites-animated.png" alt="Animated masked sprites in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/27-sprites-animated.png" alt="Animated masked sprites in SheepShaver" width="360"> |
 | 28. Scrolled sprite scene | <img src="reference/systemless-ppc/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/28-sprites-scrolled.png" alt="Scrolled offscreen sprite scene in SheepShaver" width="360"> |
+| 29. Events & Cursors | <img src="reference/systemless-ppc/29-events-cursors.png" alt="Events and Cursors page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/29-events-cursors.png" alt="Events and Cursors page in SheepShaver" width="360"> |
+| 30. Held mouse and queue probe | <img src="reference/systemless-ppc/30-events-mouse-held.png" alt="Held mouse and event queue probe in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/30-events-mouse-held.png" alt="Held mouse and event queue probe in SheepShaver" width="360"> |
+| 31. Key modifiers | <img src="reference/systemless-ppc/31-events-key-modifiers.png" alt="Shift-modified key event on the Events and Cursors page in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/31-events-key-modifiers.png" alt="Shift-modified key event in SheepShaver" width="360"> |
+| 32. Hidden cursor | <img src="reference/systemless-ppc/32-events-cursor-hidden.png" alt="Hidden watch cursor state in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/32-events-cursor-hidden.png" alt="Hidden watch cursor state in SheepShaver" width="360"> |
+| 33. Final visible cursor | <img src="reference/systemless-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/33-events-cursors-final.png" alt="Final visible arrow cursor state in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all twenty-eight rendered
+state rather than relying on fixed delays, and compares all thirty-three rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 

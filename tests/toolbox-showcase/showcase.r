@@ -100,7 +100,8 @@ resource 'MENU' (mPages, preload) {
         "Styled Text & Fonts", noIcon, noKey, noMark, plain;
         "Standard File", noIcon, noKey, noMark, plain;
         "Resource Browser", noIcon, noKey, noMark, plain;
-        "Sprites, Masks & Scrolling", noIcon, noKey, noMark, plain
+        "Sprites, Masks & Scrolling", noIcon, noKey, noMark, plain;
+        "Events & Cursors", noIcon, noKey, noMark, plain
     }
 };
 

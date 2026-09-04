@@ -21749,6 +21749,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 150,
                 where_h: 240,
                 modifiers: 0,
@@ -21757,6 +21758,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 150,
                 where_h: 240,
                 modifiers: 0,
@@ -21852,6 +21854,7 @@ mod tests {
                 .push_back(crate::trap::dispatch::QueuedEvent {
                     what: 3,
                     message: (u32::from(key_code) << 8) | u32::from(char_code),
+                    when: 0,
                     where_v: 0,
                     where_h: 0,
                     modifiers,
@@ -21997,6 +22000,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 6,
                 message: dialog_ptr,
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -26739,6 +26743,7 @@ mod tests {
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
                 what: 6,
                 message: dialog_ptr,
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -27863,7 +27868,7 @@ mod tests {
         seed_retained_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 1);
 
         disp.push_mouse_down(140, 260);
-        let (what, _message, _where_v, _where_h, _modifiers, has_event) =
+        let (what, _message, _, _where_v, _where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
 
         assert!(!has_event);
@@ -27876,7 +27881,7 @@ mod tests {
         );
 
         disp.push_mouse_up(140, 260);
-        let (_what, _message, _where_v, _where_h, _modifiers, has_event) =
+        let (_what, _message, _, _where_v, _where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
 
         assert!(!has_event);
@@ -27907,7 +27912,7 @@ mod tests {
         seed_app_owned_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 1);
 
         disp.push_mouse_down(70, 150);
-        let (what, _message, where_v, where_h, _modifiers, has_event) =
+        let (what, _message, _, where_v, where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
 
         assert!(has_event);
@@ -27950,7 +27955,7 @@ mod tests {
         seed_app_owned_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 1);
 
         disp.push_mouse_down(70, 150);
-        let (what, _message, where_v, where_h, _modifiers, has_event) =
+        let (what, _message, _, where_v, where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
         assert!(has_event);
         assert_eq!(what, 1);
@@ -27958,7 +27963,7 @@ mod tests {
         assert_eq!(disp.front_window, dialog_ptr);
 
         disp.push_mouse_up(70, 150);
-        let (what, _message, where_v, where_h, _modifiers, has_event) =
+        let (what, _message, _, where_v, where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
 
         assert!(
@@ -28016,7 +28021,7 @@ mod tests {
         );
 
         disp.push_mouse_down(70, 150);
-        let (_what, _message, _where_v, _where_h, _modifiers, has_event) =
+        let (_what, _message, _, _where_v, _where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
 
         assert!(!has_event);
@@ -28041,7 +28046,7 @@ mod tests {
         assert_eq!(disp.front_window, dialog_ptr);
 
         disp.push_mouse_up(70, 150);
-        let (_what, _message, _where_v, _where_h, _modifiers, has_event) =
+        let (_what, _message, _, _where_v, _where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
 
         assert!(!has_event);
@@ -28114,6 +28119,7 @@ mod tests {
                 mouse_down: super::super::dispatch::QueuedEvent {
                     what: 1,
                     message: 0,
+                    when: 0,
                     where_v: probe_y,
                     where_h: probe_x,
                     modifiers: 0,
@@ -28167,7 +28173,7 @@ mod tests {
         seed_retained_modal_dialog(&mut disp, &mut bus, dialog_ptr, prev_window, 4);
 
         disp.push_mouse_down(70, 150);
-        let (what, _message, where_v, where_h, _modifiers, has_event) =
+        let (what, _message, _, where_v, where_h, _modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
 
         assert!(has_event);
@@ -30514,6 +30520,7 @@ mod tests {
                 .push_back(crate::trap::dispatch::QueuedEvent {
                     what: 3,
                     message: (u32::from(key_code) << 8) | u32::from(char_code),
+                    when: 0,
                     where_v: 0,
                     where_h: 0,
                     modifiers,
@@ -30552,6 +30559,7 @@ mod tests {
                 .push_back(crate::trap::dispatch::QueuedEvent {
                     what: 3,
                     message: u32::from(char_code),
+                    when: 0,
                     where_v: 0,
                     where_h: 0,
                     modifiers: 0x0100,
@@ -30704,6 +30712,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 115,
                 where_h: 125,
                 modifiers: 0,
@@ -30746,6 +30755,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 148,
                 where_h: 125,
                 modifiers: 0,
@@ -31348,6 +31358,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 6,
                 message: dialog_ptr,
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -31469,6 +31480,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0,
@@ -31477,6 +31489,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0x0080,
@@ -31544,6 +31557,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0,
@@ -31610,6 +31624,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 260,
                 modifiers: 0,
@@ -31678,6 +31693,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0,
@@ -31698,6 +31714,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0x0080,
@@ -31824,6 +31841,7 @@ mod tests {
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0,
@@ -31837,6 +31855,7 @@ mod tests {
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0x0080,
@@ -31922,6 +31941,7 @@ mod tests {
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: probe_y,
                 where_h: probe_x,
                 modifiers: 0,
@@ -31960,10 +31980,10 @@ mod tests {
         ));
         disp.push_mouse_down(150, 260);
         disp.push_mouse_up(150, 260);
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
         assert_eq!(what, 1);
         assert!(has_event);
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
         assert_eq!(what, 2);
         assert!(has_event);
     }
@@ -32041,17 +32061,17 @@ mod tests {
         assert!(disp.pending_modal_dialog_mouse_up);
 
         disp.push_mouse_up(130, 240);
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
         assert_eq!(what, 0);
         assert!(!has_event);
         assert!(!disp.pending_modal_dialog_mouse_up);
 
         disp.push_mouse_down(150, 260);
         disp.push_mouse_up(150, 260);
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
         assert_eq!(what, 1);
         assert!(has_event);
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
         assert_eq!(what, 2);
         assert!(has_event);
     }
@@ -32107,7 +32127,7 @@ mod tests {
             assert_eq!(bus.read_word(TEST_SP), 0);
         }
 
-        let (what, _, where_v, where_h, _, has_event) =
+        let (what, _, _, where_v, where_h, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
         assert_eq!((what, where_v, where_h, has_event), (1, 20, 30, true));
 
@@ -32121,9 +32141,9 @@ mod tests {
         // A later independent click remains deliverable to the parent.
         disp.push_mouse_down(150, 260);
         disp.push_mouse_up(150, 260);
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
         assert_eq!((what, has_event), (1, true));
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
         assert_eq!((what, has_event), (2, true));
     }
 
@@ -32171,6 +32191,7 @@ mod tests {
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
                 what: 3,
                 message: 0x0000_240D,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0,
@@ -32247,6 +32268,7 @@ mod tests {
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0,
@@ -32314,6 +32336,7 @@ mod tests {
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
                 what: 3,
                 message: 0x0000_240D,
+                when: 0,
                 where_v: 130,
                 where_h: 240,
                 modifiers: 0,

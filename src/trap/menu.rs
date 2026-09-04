@@ -725,6 +725,7 @@ impl super::TrapDispatcher {
             self.pending_native_menu_event = Some(super::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
+                when: self.tick_count,
                 where_v: 10,
                 where_h: region.left + (region.right - region.left) / 2,
                 modifiers: self.current_event_modifiers(),

@@ -15,7 +15,9 @@ use super::pef::{
 };
 use super::ApplicationSizeResource;
 use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
-use crate::event_queue::{EventQueue, QueuedEvent};
+use crate::event_queue::{
+    EventProbeResult, EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
+};
 use crate::guest_call::SharedGuestCallStack;
 use crate::guest_procedure::{
     resolve_guest_procedure, GuestIsa, GuestProcedure,
@@ -1519,6 +1521,7 @@ pub enum PpcImportDispatcherTarget {
     PostEvent,
     Button,
     StillDown,
+    WaitMouseUp,
     GetKeys,
     GetDateTime,
     ReadDateTime,
@@ -3050,6 +3053,14 @@ pub struct PpcToolboxStartupState {
     pub last_flush_stop_mask: u16,
     pub dispose_dialog_count: u32,
     pub last_disposed_dialog: u32,
+    /// Most recent EventRecord exposed through the native event imports.
+    pub(crate) last_event_record: Option<EventRecordSnapshot>,
+    pub(crate) event_queue_probe: EventQueueProbeSnapshot,
+    pub(crate) last_button_result: Option<bool>,
+    pub(crate) last_still_down_result: Option<bool>,
+    pub(crate) last_wait_mouse_up_result: Option<bool>,
+    pub(crate) activation_event_seen: bool,
+    pub(crate) update_event_seen: bool,
     pub delay_deadline: Option<u32>,
     pub next_ct_seed: u32,
     pub(crate) last_quickdraw_error: SharedProcessValue<i16>,
@@ -3116,6 +3127,13 @@ impl Default for PpcToolboxStartupState {
             last_flush_stop_mask: 0,
             dispose_dialog_count: 0,
             last_disposed_dialog: 0,
+            last_event_record: None,
+            event_queue_probe: EventQueueProbeSnapshot::default(),
+            last_button_result: None,
+            last_still_down_result: None,
+            last_wait_mouse_up_result: None,
+            activation_event_seen: false,
+            update_event_seen: false,
             delay_deadline: None,
             next_ct_seed: 0,
             last_quickdraw_error: SharedProcessValue::from_value(PPC_NO_ERR),
@@ -7664,6 +7682,7 @@ impl PpcLoadedApp {
                         binding.dispatcher_target,
                         PpcImportDispatcherTarget::Button
                             | PpcImportDispatcherTarget::StillDown
+                            | PpcImportDispatcherTarget::WaitMouseUp
                             | PpcImportDispatcherTarget::GetKeys
                             | PpcImportDispatcherTarget::TickCount
                             | PpcImportDispatcherTarget::Microseconds
@@ -7687,14 +7706,24 @@ impl PpcLoadedApp {
                     }
                     let action = match binding.dispatcher_target {
                         PpcImportDispatcherTarget::Button => {
+                            toolbox_startup.last_button_result = Some(input.mouse_button);
                             dispatch_button_import(cpu, input, Some(&mut idle_poll_counts))
                         }
-                        PpcImportDispatcherTarget::StillDown => dispatch_still_down_import(
-                            cpu,
-                            input,
-                            &event_queue,
-                            Some(&mut idle_poll_counts),
-                        ),
+                        PpcImportDispatcherTarget::StillDown => {
+                            toolbox_startup.last_still_down_result =
+                                Some(ppc_still_down_result(input, &event_queue));
+                            dispatch_still_down_import(
+                                cpu,
+                                input,
+                                &event_queue,
+                                Some(&mut idle_poll_counts),
+                            )
+                        }
+                        PpcImportDispatcherTarget::WaitMouseUp => {
+                            let result = ppc_wait_mouse_up_result(input, &mut event_queue);
+                            toolbox_startup.last_wait_mouse_up_result = Some(result);
+                            PpcImportAction::Return(u32::from(result))
+                        }
                         PpcImportDispatcherTarget::GetKeys => {
                             dispatch_getkeys_import(cpu, memory, input, Some(&mut idle_poll_counts))
                         }
@@ -14875,6 +14904,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "PostEvent") => PpcImportDispatcherTarget::PostEvent,
         ("InterfaceLib", "Button") => PpcImportDispatcherTarget::Button,
         ("InterfaceLib", "StillDown") => PpcImportDispatcherTarget::StillDown,
+        ("InterfaceLib", "WaitMouseUp") => PpcImportDispatcherTarget::WaitMouseUp,
         ("InterfaceLib", "GetKeys") => PpcImportDispatcherTarget::GetKeys,
         ("InterfaceLib", "GetDateTime") => PpcImportDispatcherTarget::GetDateTime,
         ("InterfaceLib", "ReadDateTime") => PpcImportDispatcherTarget::ReadDateTime,
@@ -15133,8 +15163,7 @@ fn dispatcher_target_for_import(
             | "StyledLineBreak"
             | "SystemEdit"
             | "TruncText"
-            | "UpperString"
-            | "WaitMouseUp",
+            | "UpperString",
         ) => PpcImportDispatcherTarget::SystemCompatibility,
         (
             "InterfaceLib",
@@ -18845,7 +18874,15 @@ fn dispatch_supported_import(
                     quickdraw_fore_color,
                     quickdraw_back_color,
                 );
-                if ppc_front_visible_process_window(memory, window_list) != previous_front {
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_enqueue_window_activation_transition(
+                    memory,
+                    event_queue,
+                    previous_front,
+                    next_front,
+                    *tick_count,
+                );
+                if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -18898,7 +18935,15 @@ fn dispatch_supported_import(
                     quickdraw_fore_color,
                     quickdraw_back_color,
                 );
-                if ppc_front_visible_process_window(memory, window_list) != previous_front {
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_enqueue_window_activation_transition(
+                    memory,
+                    event_queue,
+                    previous_front,
+                    next_front,
+                    *tick_count,
+                );
+                if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -18989,7 +19034,7 @@ fn dispatch_supported_import(
                         toolbox_startup.host_menu_bar_hidden,
                     );
                 }
-                ppc_enqueue_window_update_event(event_queue, window, input);
+                ppc_enqueue_window_update_event(event_queue, window, *tick_count, input);
             }
             if ppc_front_visible_process_window(memory, window_list) != previous_front {
                 let _ = ppc_activate_front_window_palette(
@@ -19156,7 +19201,7 @@ fn dispatch_supported_import(
                     *current_gdevice =
                         ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
                     if *current_gworld != PPC_MAIN_GWORLD {
-                        ppc_enqueue_window_update_event(event_queue, *current_gworld, input);
+                        ppc_enqueue_window_update_event(event_queue, *current_gworld, *tick_count, input);
                     }
                 }
                 if let Some(pixmap_handle) = closed_pixmap_handle {
@@ -19257,7 +19302,7 @@ fn dispatch_supported_import(
                             }
                         }
                     }
-                    ppc_enqueue_window_update_event(event_queue, window, input);
+                    ppc_enqueue_window_update_event(event_queue, window, *tick_count, input);
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -19422,7 +19467,7 @@ fn dispatch_supported_import(
                 // Inside Macintosh Volume VI 1991, p. 20-20: changing the
                 // active color environment generates update events for
                 // windows that need to redraw under the new palette.
-                ppc_enqueue_window_update_event(event_queue, window_ptr, input);
+                ppc_enqueue_window_update_event(event_queue, window_ptr, *tick_count, input);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -19525,7 +19570,7 @@ fn dispatch_supported_import(
                 // Inside Macintosh Volume VI (1991), pp. 20-20--20-21:
                 // activating a changed color environment invalidates windows
                 // whose SetPalette/NSetPalette update policy requests it.
-                ppc_enqueue_window_update_event(event_queue, window_ptr, input);
+                ppc_enqueue_window_update_event(event_queue, window_ptr, *tick_count, input);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -21198,7 +21243,7 @@ fn dispatch_supported_import(
                 *current_gworld = dialog;
                 *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
                 if ppc_window_is_visible(memory, dialog) {
-                    ppc_enqueue_window_update_event(event_queue, dialog, input);
+                    ppc_enqueue_window_update_event(event_queue, dialog, *tick_count, input);
                 }
             }
             Some(PpcImportAction::Return(dialog))
@@ -21239,7 +21284,7 @@ fn dispatch_supported_import(
                 *current_gworld = dialog;
                 *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
                 if ppc_window_is_visible(memory, dialog) {
-                    ppc_enqueue_window_update_event(event_queue, dialog, input);
+                    ppc_enqueue_window_update_event(event_queue, dialog, *tick_count, input);
                 }
             }
             Some(PpcImportAction::Return(dialog))
@@ -21285,7 +21330,7 @@ fn dispatch_supported_import(
                 *current_gworld = dialog;
                 *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
                 if ppc_window_is_visible(memory, dialog) {
-                    ppc_enqueue_window_update_event(event_queue, dialog, input);
+                    ppc_enqueue_window_update_event(event_queue, dialog, *tick_count, input);
                 }
             }
             Some(PpcImportAction::Return(dialog))
@@ -23022,10 +23067,16 @@ fn dispatch_supported_import(
                     screen_clut,
                     toolbox_startup,
                 );
-                ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask);
+                ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask, *tick_count);
             }
-            let (what, message, where_v, where_h, modifiers, has_event) =
-                ppc_dequeue_event(event_queue, event_mask, input, os_only);
+            let (what, message, when, where_v, where_h, modifiers, has_event) =
+                ppc_dequeue_event(event_queue, event_mask, input, os_only, *tick_count);
+            if has_event && what == 8 {
+                let pending = if (modifiers & 1) != 0 { 0x0A64 } else { 0x0A68 };
+                if memory.read_u32_be(pending) == Some(message) {
+                    let _ = memory.write_u32_be(pending, 0);
+                }
+            }
             if crate::trap::dispatch::trace_input_enabled() {
                 eprintln!(
                     "[INPUT] PPC {} mask=${event_mask:04X} event_ptr=${event_ptr:08X} sleep={} -> has_event={} what={} message=${message:08X} where=({}, {}) modifiers=${modifiers:04X}",
@@ -23038,16 +23089,37 @@ fn dispatch_supported_import(
                 );
             }
             if event_ptr != 0 {
-                let _ = ppc_write_event_record(
+                if ppc_write_event_record(
                     memory,
                     event_ptr,
                     what,
                     message,
-                    *tick_count,
+                    when,
                     where_v,
                     where_h,
                     modifiers,
-                );
+                ) {
+                    ppc_record_event_snapshot(
+                        toolbox_startup,
+                        what,
+                        message,
+                        when,
+                        where_v,
+                        where_h,
+                        modifiers,
+                    );
+                }
+            }
+            if os_only {
+                toolbox_startup.event_queue_probe.get_os_event = Some(ppc_event_probe_result(
+                    has_event,
+                    what,
+                    message,
+                    when,
+                    where_v,
+                    where_h,
+                    modifiers,
+                ));
             }
             let action = PpcImportAction::Return(u32::from(has_event));
             if binding.symbol_name == "WaitNextEvent" && !has_event && sleep_ticks > 0 {
@@ -23077,21 +23149,52 @@ fn dispatch_supported_import(
                     screen_clut,
                     toolbox_startup,
                 );
-                ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask);
+                ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask, *tick_count);
             }
-            let (what, message, where_v, where_h, modifiers, has_event) =
-                ppc_peek_event(event_queue, event_mask, input, os_only);
+            let (what, message, when, where_v, where_h, modifiers, has_event) =
+                ppc_peek_event(event_queue, event_mask, input, os_only, *tick_count);
             if event_ptr != 0 {
-                let _ = ppc_write_event_record(
+                if ppc_write_event_record(
                     memory,
                     event_ptr,
                     what,
                     message,
-                    *tick_count,
+                    when,
                     where_v,
                     where_h,
                     modifiers,
-                );
+                ) {
+                    ppc_record_event_snapshot(
+                        toolbox_startup,
+                        what,
+                        message,
+                        when,
+                        where_v,
+                        where_h,
+                        modifiers,
+                    );
+                }
+            }
+            if os_only {
+                toolbox_startup.event_queue_probe.os_event_avail = Some(ppc_event_probe_result(
+                    has_event,
+                    what,
+                    message,
+                    when,
+                    where_v,
+                    where_h,
+                    modifiers,
+                ));
+            } else {
+                toolbox_startup.event_queue_probe.event_avail = Some(ppc_event_probe_result(
+                    has_event,
+                    what,
+                    message,
+                    when,
+                    where_v,
+                    where_h,
+                    modifiers,
+                ));
             }
             Some(PpcImportAction::Return(u32::from(has_event)))
         }
@@ -23105,21 +23208,30 @@ fn dispatch_supported_import(
                     event_queue.push_back(PpcQueuedEvent {
                         what,
                         message: cpu.gpr[4],
+                        when: *tick_count,
                         where_v: input.mouse_v,
                         where_h: input.mouse_h,
-                        modifiers: 0,
+                        modifiers: ppc_current_event_modifiers(input),
                     });
                     PPC_NO_ERR
                 } else {
                     PPC_EVT_NOT_ENB
                 };
+            toolbox_startup.event_queue_probe.post_result = Some(result);
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::Button => {
+            toolbox_startup.last_button_result = Some(input.mouse_button);
             Some(PpcImportAction::Return(u32::from(input.mouse_button)))
         }
         PpcImportDispatcherTarget::StillDown => {
+            toolbox_startup.last_still_down_result = Some(ppc_still_down_result(input, event_queue));
             Some(dispatch_still_down_import(cpu, input, event_queue, None))
+        }
+        PpcImportDispatcherTarget::WaitMouseUp => {
+            let result = ppc_wait_mouse_up_result(input, event_queue);
+            toolbox_startup.last_wait_mouse_up_result = Some(result);
+            Some(PpcImportAction::Return(u32::from(result)))
         }
         PpcImportDispatcherTarget::GetKeys => {
             Some(dispatch_getkeys_import(cpu, memory, input, None))
@@ -24156,7 +24268,7 @@ fn dispatch_supported_import(
                     dialog,
                 );
                 if *current_gworld != PPC_MAIN_GWORLD {
-                    ppc_enqueue_window_update_event(event_queue, *current_gworld, input);
+                    ppc_enqueue_window_update_event(event_queue, *current_gworld, *tick_count, input);
                 }
                 Some(PpcImportAction::Return(u32::from(hit)))
             } else {
@@ -26649,6 +26761,7 @@ fn dispatch_supported_import(
             *device_gamma_explicit,
             toolbox_startup,
             input,
+            *tick_count,
             event_queue,
             vfs_resources,
             *current_resource_refnum,
@@ -62594,12 +62707,98 @@ fn ppc_write_event_record(
         && memory.write_u16_be(event_ptr + 14, modifiers).is_some()
 }
 
+fn ppc_record_event_snapshot(
+    startup: &mut PpcToolboxStartupState,
+    what: u16,
+    message: u32,
+    when: u32,
+    where_v: i16,
+    where_h: i16,
+    modifiers: u16,
+) {
+    startup.last_event_record = Some(EventRecordSnapshot {
+        what,
+        message,
+        when,
+        where_v,
+        where_h,
+        modifiers,
+    });
+    if what == 8 {
+        startup.activation_event_seen = true;
+    }
+    if what == 6 {
+        startup.update_event_seen = true;
+    }
+}
+
+fn ppc_event_probe_result(
+    available: bool,
+    what: u16,
+    message: u32,
+    when: u32,
+    where_v: i16,
+    where_h: i16,
+    modifiers: u16,
+) -> EventProbeResult {
+    EventProbeResult {
+        available,
+        record: EventRecordSnapshot {
+            what,
+            message,
+            when,
+            where_v,
+            where_h,
+            modifiers,
+        },
+    }
+}
+
 fn ppc_event_matches_mask(event_mask: u16, what: u16) -> bool {
     match what {
         23 => (event_mask & 0x0400) != 0,
         0..=15 => (event_mask & (1u16 << what)) != 0,
         _ => false,
     }
+}
+
+fn ppc_current_event_modifiers(input: PpcInputSnapshot) -> u16 {
+    // EventRecord modifiers use the same classic bit assignments on both
+    // adapters. Read the shared logical key map rather than the host key
+    // callback so PostEvent observes the state visible to Button/GetKeys.
+    const BTN_STATE: u16 = 0x0080;
+    const CMD_KEY: u16 = 0x0100;
+    const SHIFT_KEY: u16 = 0x0200;
+    const ALPHA_LOCK: u16 = 0x0400;
+    const OPTION_KEY: u16 = 0x0800;
+    const CONTROL_KEY: u16 = 0x1000;
+
+    let mut modifiers = 0;
+    if !input.mouse_button {
+        modifiers |= BTN_STATE;
+    }
+    if crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x37) {
+        modifiers |= CMD_KEY;
+    }
+    if crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x38)
+        || crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x3C)
+    {
+        modifiers |= SHIFT_KEY;
+    }
+    if crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x39) {
+        modifiers |= ALPHA_LOCK;
+    }
+    if crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x3A)
+        || crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x3D)
+    {
+        modifiers |= OPTION_KEY;
+    }
+    if crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x3B)
+        || crate::trap::dispatch::key_map_key_is_down(&input.key_map, 0x3E)
+    {
+        modifiers |= CONTROL_KEY;
+    }
+    modifiers
 }
 
 fn ppc_is_low_level_event(what: u16) -> bool {
@@ -62644,20 +62843,22 @@ fn ppc_peek_event(
     event_mask: u16,
     input: PpcInputSnapshot,
     os_only: bool,
-) -> (u16, u32, i16, i16, u16, bool) {
+    tick_count: u32,
+) -> (u16, u32, u32, i16, i16, u16, bool) {
     if let Some(event) = ppc_matching_event_index(event_queue, event_mask, os_only)
         .and_then(|index| event_queue.get(index))
     {
         return (
             event.what,
             event.message,
+            event.when,
             event.where_v,
             event.where_h,
             event.modifiers,
             true,
         );
     }
-    (0, 0, input.mouse_v, input.mouse_h, 0, false)
+    (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
 }
 
 fn ppc_dequeue_event(
@@ -62665,24 +62866,27 @@ fn ppc_dequeue_event(
     event_mask: u16,
     input: PpcInputSnapshot,
     os_only: bool,
-) -> (u16, u32, i16, i16, u16, bool) {
+    tick_count: u32,
+) -> (u16, u32, u32, i16, i16, u16, bool) {
     if let Some(index) = ppc_matching_event_index(event_queue, event_mask, os_only) {
         let event = event_queue.remove(index).unwrap();
         return (
             event.what,
             event.message,
+            event.when,
             event.where_v,
             event.where_h,
             event.modifiers,
             true,
         );
     }
-    (0, 0, input.mouse_v, input.mouse_h, 0, false)
+    (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
 }
 
 fn ppc_enqueue_window_update_event(
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     window: u32,
+    when: u32,
     input: PpcInputSnapshot,
 ) {
     if window == 0
@@ -62698,16 +62902,59 @@ fn ppc_enqueue_window_update_event(
     event_queue.push_back(PpcQueuedEvent {
         what: 6,
         message: window,
+        when,
         where_v: input.mouse_v,
         where_h: input.mouse_h,
         modifiers: 0,
     });
 }
 
+fn ppc_enqueue_window_activation_event(
+    memory: &mut PpcSectionMem,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    window: u32,
+    activating: bool,
+    when: u32,
+) {
+    if window == 0 {
+        return;
+    }
+    let active_flag = u16::from(activating);
+    event_queue.retain(|event| event.what != 8 || (event.modifiers & 1) != active_flag);
+    let _ = memory.write_u32_be(if activating { 0x0A64 } else { 0x0A68 }, window);
+    event_queue.push_back(PpcQueuedEvent {
+        what: 8,
+        message: window,
+        when,
+        where_v: 0,
+        where_h: 0,
+        modifiers: active_flag,
+    });
+}
+
+fn ppc_enqueue_window_activation_transition(
+    memory: &mut PpcSectionMem,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    previous_front: Option<u32>,
+    next_front: Option<u32>,
+    when: u32,
+) {
+    if previous_front == next_front {
+        return;
+    }
+    if let Some(previous) = previous_front {
+        ppc_enqueue_window_activation_event(memory, event_queue, previous, false, when);
+    }
+    if let Some(next) = next_front {
+        ppc_enqueue_window_activation_event(memory, event_queue, next, true, when);
+    }
+}
+
 fn ppc_enqueue_open_application_event_if_needed(
     apple_events: &mut PpcAppleEventState,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     event_mask: u16,
+    when: u32,
 ) {
     // Macintosh Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90:
     // Finder posts kAEOpenApplication once at launch for applications whose
@@ -62723,6 +62970,7 @@ fn ppc_enqueue_open_application_event_if_needed(
     event_queue.push_front(PpcQueuedEvent {
         what: PPC_HIGH_LEVEL_EVENT,
         message: PPC_CORE_EVENT_CLASS,
+        when,
         where_v: (PPC_OPEN_APPLICATION_EVENT >> 16) as u16 as i16,
         where_h: PPC_OPEN_APPLICATION_EVENT as u16 as i16,
         modifiers: 0,
@@ -68605,6 +68853,7 @@ fn ppc_dispatch_legacy_window(
     device_gamma_explicit: bool,
     toolbox_startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
+    when: u32,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -68640,7 +68889,15 @@ fn ppc_dispatch_legacy_window(
                     handles,
                 );
                 *current_gworld = window;
-                if ppc_front_visible_process_window(memory, window_list) != previous_front {
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_enqueue_window_activation_transition(
+                    memory,
+                    event_queue,
+                    previous_front,
+                    next_front,
+                    when,
+                );
+                if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -68720,7 +68977,15 @@ fn ppc_dispatch_legacy_window(
                     handles,
                 );
                 *current_gworld = window;
-                if ppc_front_visible_process_window(memory, window_list) != previous_front {
+                let next_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_enqueue_window_activation_transition(
+                    memory,
+                    event_queue,
+                    previous_front,
+                    next_front,
+                    when,
+                );
+                if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -68867,7 +69132,7 @@ fn ppc_dispatch_legacy_window(
                 );
             }
             if *current_gworld != PPC_MAIN_GWORLD {
-                ppc_enqueue_window_update_event(event_queue, *current_gworld, input);
+                ppc_enqueue_window_update_event(event_queue, *current_gworld, when, input);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -88213,14 +88478,28 @@ fn dispatch_button_import(
     }
 }
 
+fn ppc_still_down_result(input: PpcInputSnapshot, event_queue: &VecDeque<PpcQueuedEvent>) -> bool {
+    let has_pending_mouse_event = event_queue.iter().any(|event| matches!(event.what, 1 | 2));
+    input.mouse_button && !has_pending_mouse_event
+}
+
+fn ppc_wait_mouse_up_result(input: PpcInputSnapshot, event_queue: &mut EventQueue) -> bool {
+    let still_down = ppc_still_down_result(input, event_queue);
+    if !still_down {
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+    }
+    still_down
+}
+
 fn dispatch_still_down_import(
     cpu: &PpcCpu,
     input: PpcInputSnapshot,
     event_queue: &VecDeque<PpcQueuedEvent>,
     idle_poll_counts: Option<&mut HashMap<u32, u32>>,
 ) -> PpcImportAction {
-    let has_pending_mouse_event = event_queue.iter().any(|event| matches!(event.what, 1 | 2));
-    let result = u32::from(input.mouse_button && !has_pending_mouse_event);
+    let result = u32::from(ppc_still_down_result(input, event_queue));
     let Some(idle_poll_counts) = idle_poll_counts else {
         return PpcImportAction::Return(result);
     };
@@ -89440,14 +89719,15 @@ pub(crate) mod tests {
         let queue = VecDeque::from([PpcQueuedEvent {
             what: 3,
             message: 0x0000_4120,
+            when: 0,
             where_v: 120,
             where_h: 240,
             modifiers: 0x0080,
         }]);
 
-        let event = ppc_peek_event(&queue, 1 << 3, PpcInputSnapshot::default(), false);
+        let event = ppc_peek_event(&queue, 1 << 3, PpcInputSnapshot::default(), false, 7);
 
-        assert_eq!(event, (3, 0x0000_4120, 120, 240, 0x0080, true));
+        assert_eq!(event, (3, 0x0000_4120, 0, 120, 240, 0x0080, true));
         assert_eq!(queue.len(), 1);
     }
 
@@ -89457,6 +89737,7 @@ pub(crate) mod tests {
             PpcQueuedEvent {
                 what: 6,
                 message: 0x1000,
+                when: 0,
                 where_v: 10,
                 where_h: 20,
                 modifiers: 0,
@@ -89464,6 +89745,7 @@ pub(crate) mod tests {
             PpcQueuedEvent {
                 what: 23,
                 message: PPC_CORE_EVENT_CLASS,
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -89471,6 +89753,7 @@ pub(crate) mod tests {
             PpcQueuedEvent {
                 what: 3,
                 message: 0x0000_4120,
+                when: 0,
                 where_v: 120,
                 where_h: 240,
                 modifiers: 0x0080,
@@ -89480,15 +89763,16 @@ pub(crate) mod tests {
         // Macintosh Toolbox Essentials (1992), pp. 2-97--2-99:
         // GetOSEvent and OSEventAvail return only low-level events from the
         // Operating System event queue, never update or high-level events.
-        let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), true);
+        let event =
+            ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), true, 7);
 
-        assert_eq!(event, (3, 0x0000_4120, 120, 240, 0x0080, true));
+        assert_eq!(event, (3, 0x0000_4120, 0, 120, 240, 0x0080, true));
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].what, 6);
         assert_eq!(queue[1].what, 23);
         assert_eq!(
-            ppc_peek_event(&queue, u16::MAX, PpcInputSnapshot::default(), true),
-            (0, 0, 0, 0, 0, false)
+            ppc_peek_event(&queue, u16::MAX, PpcInputSnapshot::default(), true, 7),
+            (0, 0, 7, 0, 0, 0, false)
         );
     }
 
@@ -89498,6 +89782,7 @@ pub(crate) mod tests {
             PpcQueuedEvent {
                 what: 6,
                 message: 0x1000,
+                when: 0,
                 where_v: 10,
                 where_h: 20,
                 modifiers: 0,
@@ -89505,6 +89790,7 @@ pub(crate) mod tests {
             PpcQueuedEvent {
                 what: 23,
                 message: PPC_CORE_EVENT_CLASS,
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -89512,6 +89798,7 @@ pub(crate) mod tests {
             PpcQueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 120,
                 where_h: 240,
                 modifiers: 0,
@@ -89519,19 +89806,57 @@ pub(crate) mod tests {
             PpcQueuedEvent {
                 what: 8,
                 message: 0x2000,
+                when: 0,
                 where_v: 10,
                 where_h: 20,
                 modifiers: 1,
             },
         ]);
 
-        let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false);
+        let event =
+            ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
         assert_eq!(event.0, 8, "activate events have highest priority");
-        let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false);
+        let event =
+            ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
         assert_eq!(event.0, 1, "user input precedes update events");
-        let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false);
+        let event =
+            ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
         assert_eq!(event.0, 6, "update events precede high-level events");
         assert_eq!(queue.front().map(|event| event.what), Some(23));
+    }
+
+    #[test]
+    fn front_window_transition_coalesces_pending_activation_pair() {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0, vec![0; 0x1000]);
+        let mut queue = VecDeque::new();
+
+        ppc_enqueue_window_activation_transition(
+            &mut memory,
+            &mut queue,
+            Some(0x1000),
+            Some(0x2000),
+            41,
+        );
+        ppc_enqueue_window_activation_transition(
+            &mut memory,
+            &mut queue,
+            Some(0x2000),
+            Some(0x3000),
+            42,
+        );
+
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].what, 8);
+        assert_eq!(queue[0].message, 0x2000);
+        assert_eq!(queue[0].when, 42);
+        assert_eq!(queue[0].modifiers & 1, 0);
+        assert_eq!(queue[1].what, 8);
+        assert_eq!(queue[1].message, 0x3000);
+        assert_eq!(queue[1].when, 42);
+        assert_eq!(queue[1].modifiers & 1, 1);
+        assert_eq!(memory.read_u32_be(0x0A68), Some(0x2000));
+        assert_eq!(memory.read_u32_be(0x0A64), Some(0x3000));
     }
 
     #[test]
@@ -93975,6 +94300,7 @@ pub(crate) mod tests {
         classic.event_queue.push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -93982,6 +94308,7 @@ pub(crate) mod tests {
         native.event_queue.push_back(QueuedEvent {
             what: 2,
             message: 0x2222,
+            when: 0,
             where_v: 30,
             where_h: 40,
             modifiers: 0,
@@ -94587,6 +94914,7 @@ pub(crate) mod tests {
         context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -94597,6 +94925,7 @@ pub(crate) mod tests {
             native.event_queue.push_back(QueuedEvent {
                 what: 2,
                 message: 0x2222,
+                when: 0,
                 where_v: 30,
                 where_h: 40,
                 modifiers: 0,
@@ -138450,6 +138779,7 @@ pub(crate) mod tests {
             loaded.event_queue.push_back(PpcQueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 90,
                 where_h: 108,
                 modifiers: 0,
@@ -138637,6 +138967,7 @@ pub(crate) mod tests {
             loaded.event_queue.push_back(PpcQueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 130,
                 where_h: 190,
                 modifiers: 0,
@@ -138806,6 +139137,7 @@ pub(crate) mod tests {
             loaded.event_queue.push_back(PpcQueuedEvent {
                 what: 2,
                 message: 0,
+                when: 0,
                 where_v: 250,
                 where_h: 380,
                 modifiers: 0,
@@ -149666,6 +149998,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -149706,6 +150039,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -149769,6 +150103,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: bounds.0
                 + (PPC_STANDARD_FILE_GET_OPEN_RECT.0 + PPC_STANDARD_FILE_GET_OPEN_RECT.2) / 2,
             where_h: bounds.1
@@ -149789,6 +150124,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -149844,6 +150180,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -149902,6 +150239,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: bounds.0
                 + (PPC_STANDARD_FILE_GET_OPEN_RECT.0 + PPC_STANDARD_FILE_GET_OPEN_RECT.2) / 2,
             where_h: bounds.1
@@ -149913,6 +150251,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -149960,6 +150299,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: 0x0000_0061,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0x0100,
@@ -149969,6 +150309,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: u32::from(b'S'),
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -149978,6 +150319,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -150012,6 +150354,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -158288,6 +158631,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (2 << 8) | u32::from(b'D'),
+            when: 0,
             where_v: 20,
             where_h: 30,
             modifiers: 0,
@@ -158305,6 +158649,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            when: 0,
             where_v: 20,
             where_h: 30,
             modifiers: 0,
@@ -162345,6 +162690,8 @@ pub(crate) mod tests {
     fn hle_import_runner_posts_events_with_the_current_mouse_position() {
         let pef = synthetic_pef_with_import(b"PostEvent");
         let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.set_tick_count(42);
+        loaded.set_clock_cycle_timing(1_000, 0);
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_v: 123,
             mouse_h: 456,
@@ -162363,11 +162710,68 @@ pub(crate) mod tests {
             &VecDeque::from([PpcQueuedEvent {
                 what: 3,
                 message: 0x3120,
+                when: 42,
                 where_v: 123,
                 where_h: 456,
-                modifiers: 0,
+                modifiers: 0x0080,
             }])
         );
+    }
+
+    #[test]
+    fn hle_post_event_uses_current_button_and_modifier_state() {
+        let pef = synthetic_pef_with_import(b"PostEvent");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut key_map = [0; PPC_KEY_MAP_SIZE as usize];
+        for key_code in [0x37_u8, 0x38, 0x3A, 0x3B] {
+            key_map[usize::from(key_code >> 3)] |= 1 << (key_code & 0x07);
+        }
+        let posted_at = 0x1020_3040;
+        loaded.set_tick_count(posted_at);
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            key_map,
+            mouse_button: true,
+            mouse_v: 123,
+            mouse_h: 456,
+        });
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 0xA1B2_C3D4;
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PostEvent);
+        let expected_when = posted_at.wrapping_add(4);
+
+        assert_eq!(
+            loaded.event_queue().front(),
+            Some(&PpcQueuedEvent {
+                what: 3,
+                message: 0xA1B2_C3D4,
+                when: expected_when,
+                where_v: 123,
+                where_h: 456,
+                modifiers: 0x1B00,
+            })
+        );
+        assert_eq!(
+            loaded.toolbox_startup.event_queue_probe.post_result,
+            Some(PPC_NO_ERR)
+        );
+
+        loaded.set_event_queue([]);
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            key_map,
+            mouse_button: false,
+            mouse_v: 123,
+            mouse_h: 456,
+        });
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 0x0102_0304;
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PostEvent);
+
+        let event = loaded.event_queue().front().expect("PostEvent must enqueue");
+        assert_eq!(event.message, 0x0102_0304);
+        assert_eq!(event.modifiers, 0x1B80);
+        assert_eq!(event.when, expected_when);
     }
 
     #[test]
@@ -162442,6 +162846,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (0x31 << 8) | 0x20,
+            when: 42,
             where_v: 240,
             where_h: 320,
             modifiers: 0x0080,
@@ -162474,6 +162879,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (0x31 << 8) | 0x20,
+            when: 0,
             where_v: 240,
             where_h: 320,
             modifiers: 0x0080,
@@ -162543,6 +162949,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: 170,
             where_h: 352,
             modifiers: 0x0080,
@@ -163362,6 +163769,7 @@ pub(crate) mod tests {
         let event_queue = VecDeque::from([PpcQueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: 172,
             where_h: 352,
             modifiers: 0x0080,
@@ -171378,6 +171786,7 @@ pub(crate) mod tests {
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,

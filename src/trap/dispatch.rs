@@ -37,7 +37,9 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-pub use crate::event_queue::QueuedEvent;
+pub use crate::event_queue::{
+    EventProbeResult, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
+};
 
 pub(crate) const BOOT_VOLUME_NAME: &str = "MacintoshHD";
 pub(crate) const BOOT_VOLUME_REF_NUM: i16 = -1;
@@ -2259,6 +2261,20 @@ pub struct TrapDispatcher {
     pub debug_key_event_delivery_count: u64,
     /// Last keyDown/keyUp EventRecord.message delivered through Event Manager.
     pub debug_last_key_event_message: u32,
+    /// Most recent EventRecord exposed to 68K guest code, retaining all
+    /// fields including the posting timestamp for architecture-neutral tests.
+    pub debug_last_event_record: Option<EventRecordSnapshot>,
+    /// Most recent results from the direct mouse-state traps used by the
+    /// showcase's Event Manager page.
+    pub debug_last_button_result: Option<bool>,
+    pub debug_last_still_down_result: Option<bool>,
+    pub debug_last_wait_mouse_up_result: Option<bool>,
+    /// Most recent Event Manager post/peek/take results, retained after the
+    /// queue entry has been consumed by a later call.
+    pub debug_event_queue_probe: EventQueueProbeSnapshot,
+    /// Whether an activateEvt/updateEvt has been delivered to the guest.
+    pub debug_activation_event_seen: bool,
+    pub debug_update_event_seen: bool,
     /// Debug counter for WaitNextEvent calls observed by scripted probes.
     pub debug_wait_next_event_count: u64,
     /// Debug counter for GetNextEvent calls observed by scripted probes.
@@ -3961,6 +3977,13 @@ impl TrapDispatcher {
             debug_last_getkeys_nonzero_key_map: [0; 16],
             debug_key_event_delivery_count: 0,
             debug_last_key_event_message: 0,
+            debug_last_event_record: None,
+            debug_last_button_result: None,
+            debug_last_still_down_result: None,
+            debug_last_wait_mouse_up_result: None,
+            debug_event_queue_probe: EventQueueProbeSnapshot::default(),
+            debug_activation_event_seen: false,
+            debug_update_event_seen: false,
             debug_wait_next_event_count: 0,
             debug_get_next_event_count: 0,
             debug_mouse_moved_event_count: 0,
@@ -5684,6 +5707,7 @@ impl TrapDispatcher {
         self.event_queue.push_back(QueuedEvent {
             what: 1, // mouseDown
             message: 0,
+            when: self.tick_count,
             where_v: v,
             where_h: h,
             modifiers,
@@ -5712,6 +5736,7 @@ impl TrapDispatcher {
         self.event_queue.push_back(QueuedEvent {
             what: 2, // mouseUp
             message: 0,
+            when: self.tick_count,
             where_v: v,
             where_h: h,
             modifiers,
@@ -5756,6 +5781,7 @@ impl TrapDispatcher {
         self.event_queue.push_back(QueuedEvent {
             what: 3, // keyDown
             message,
+            when: self.tick_count,
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers,
@@ -5823,6 +5849,7 @@ impl TrapDispatcher {
             self.event_queue.push_back(QueuedEvent {
                 what: 4, // keyUp
                 message,
+                when: self.tick_count,
                 where_v: self.input_state.mouse_pos.0,
                 where_h: self.input_state.mouse_pos.1,
                 modifiers,
@@ -11155,6 +11182,7 @@ mod tests {
         context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -11164,6 +11192,7 @@ mod tests {
             dispatcher.event_queue.push_back(QueuedEvent {
                 what: 2,
                 message: 0x2222,
+                when: 0,
                 where_v: 30,
                 where_h: 40,
                 modifiers: 0,
@@ -11343,6 +11372,7 @@ mod tests {
                 disp.event_queue.push_back(QueuedEvent {
                     what: 1,
                     message: 0x3333,
+                    when: 0,
                     where_v: 1,
                     where_h: 2,
                     modifiers: 0,

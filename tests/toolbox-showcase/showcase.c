@@ -96,6 +96,7 @@
 #define iStandardFile 12
 #define iResources 13
 #define iSprites 14
+#define iEventsCursors 15
 
 /* State menu items */
 #define iButtonState 1
@@ -149,6 +150,7 @@
 #define pageStandardFile 12
 #define pageResources 13
 #define pageSprites 14
+#define pageEventsCursors 15
 
 #define kResourceBrowserRows 3
 #define resourceStatusEnumerated 1
@@ -223,6 +225,40 @@ static short gListSelectedRow = -1;
 static short gListSelectedLength;
 static Boolean gListActive = true;
 static Boolean gListResized = false;
+
+/* Page 15: Event Manager and cursor probes */
+static Rect gEventProbeRect;
+static Rect gEventCrossRect;
+static Rect gEventWatchRect;
+static Rect gEventArrowRect;
+static Rect gEventHideRect;
+static Rect gEventShowRect;
+static short gEventLastWhat = nullEvent;
+static long gEventLastMessage;
+static unsigned long gEventLastWhen;
+static Point gEventLastWhere;
+static short gEventLastModifiers;
+static short gEventMouseV;
+static short gEventMouseH;
+static Boolean gEventButtonDown;
+static Boolean gEventStillDown;
+static Boolean gEventWaitMouseUp;
+static Boolean gEventKeysDown;
+static Boolean gEventUpdateSeen;
+static Boolean gEventActivateSeen;
+static Boolean gEventActive;
+static short gEventMouseDownCount;
+static short gEventMouseUpCount;
+static short gEventKeyDownCount;
+static short gEventCursorMode;
+static Boolean gEventCursorHidden;
+static OSErr gEventPostResult;
+static Boolean gEventPeeked;
+static Boolean gEventOSEventPeeked;
+static Boolean gEventTaken;
+static short gEventPeekWhat;
+static short gEventOSEventPeekWhat;
+static short gEventTakenWhat;
 
 /* Page 10: Sound Manager */
 static SndChannelPtr gShowcaseSoundChannel;
@@ -3027,6 +3063,352 @@ static void ScrollSpriteScene(void)
     SetGWorld(savedWorld, savedDevice);
 }
 
+/*
+ * Page 15: Events & Cursors.
+ *
+ * The page deliberately keeps the probes in the content region instead of
+ * wrapping them in controls. That leaves the raw EventRecord available to
+ * the application while it samples GetMouse, Button, StillDown, WaitMouseUp,
+ * and GetKeys. Macintosh Toolbox Essentials (1992), pp. 2-50--2-71 and
+ * Inside Macintosh Volume I (1985), pp. I-258--I-260.
+ */
+static void DrawEventKind(short what)
+{
+    switch (what) {
+        case nullEvent:
+            DrawString("\pnullEvent");
+            break;
+        case mouseDown:
+            DrawString("\pmouseDown");
+            break;
+        case mouseUp:
+            DrawString("\pmouseUp");
+            break;
+        case keyDown:
+            DrawString("\pkeyDown");
+            break;
+        case keyUp:
+            DrawString("\pkeyUp");
+            break;
+        case autoKey:
+            DrawString("\pautoKey");
+            break;
+        case updateEvt:
+            DrawString("\pupdateEvt");
+            break;
+        case activateEvt:
+            DrawString("\pactivateEvt");
+            break;
+        default:
+            DrawString("\pother event");
+            break;
+    }
+}
+
+static void DrawEventBoolean(Boolean value)
+{
+    DrawString(value ? "\pyes" : "\pno");
+}
+
+static void DrawEventModifiers(short modifiers)
+{
+    Boolean wrote;
+
+    wrote = false;
+    if ((modifiers & activeFlag) != 0) {
+        DrawString("\pactive");
+        wrote = true;
+    }
+    if ((modifiers & cmdKey) != 0) {
+        if (wrote) DrawString("\p + ");
+        DrawString("\pcommand");
+        wrote = true;
+    }
+    if ((modifiers & shiftKey) != 0) {
+        if (wrote) DrawString("\p + ");
+        DrawString("\pshift");
+        wrote = true;
+    }
+    if ((modifiers & optionKey) != 0) {
+        if (wrote) DrawString("\p + ");
+        DrawString("\poption");
+        wrote = true;
+    }
+    if ((modifiers & controlKey) != 0) {
+        if (wrote) DrawString("\p + ");
+        DrawString("\pcontrol");
+        wrote = true;
+    }
+    if ((modifiers & alphaLock) != 0) {
+        if (wrote) DrawString("\p + ");
+        DrawString("\pcaps");
+        wrote = true;
+    }
+    if (!wrote) DrawString("\pnone");
+}
+
+static void DrawEventHexLong(long value)
+{
+    static const char digits[] = "0123456789ABCDEF";
+    Str255 text;
+    unsigned long bits;
+    short i;
+
+    bits = (unsigned long)value;
+    text[0] = 8;
+    for (i = 0; i < 8; i++) {
+        text[i + 1] = digits[(bits >> (28 - (i * 4))) & 0x0f];
+    }
+    DrawString(text);
+}
+
+static void RefreshEventInput(void)
+{
+    Point mouse;
+    KeyMap keys;
+    unsigned char *keyBytes;
+    short i;
+
+    GetMouse(&mouse);
+    gEventMouseV = mouse.v;
+    gEventMouseH = mouse.h;
+    gEventButtonDown = Button();
+    gEventStillDown = StillDown();
+
+    GetKeys(keys);
+    keyBytes = (unsigned char *)keys;
+    gEventKeysDown = false;
+    for (i = 0; i < 16; i++) {
+        if (keyBytes[i] != 0) {
+            gEventKeysDown = true;
+            break;
+        }
+    }
+}
+
+static void RecordShowcaseEvent(EventRecord *event, Boolean sampleMouse)
+{
+    gEventLastWhat = event->what;
+    gEventLastMessage = event->message;
+    gEventLastWhen = event->when;
+    gEventLastWhere = event->where;
+    gEventLastModifiers = event->modifiers;
+
+    if (event->what == mouseDown) gEventMouseDownCount++;
+    if (event->what == mouseUp) gEventMouseUpCount++;
+    if (event->what == keyDown || event->what == autoKey) gEventKeyDownCount++;
+    if (event->what == updateEvt) gEventUpdateSeen = true;
+    if (event->what == activateEvt) {
+        gEventActivateSeen = true;
+        gEventActive = (event->modifiers & activeFlag) != 0;
+    }
+
+    if (sampleMouse) {
+        RefreshEventInput();
+        gEventWaitMouseUp = WaitMouseUp();
+    } else if (event->what == keyDown || event->what == autoKey) {
+        RefreshEventInput();
+    }
+}
+
+static void DrawEventButton(const Rect *rect, ConstStr255Param label)
+{
+    FrameRoundRect(rect, 8, 8);
+    MoveTo(rect->left + 7, rect->top + 16);
+    DrawString(label);
+}
+
+static void ProbeEventQueue(void)
+{
+    EventRecord probe;
+
+    /* EventAvail/OSEventAvail peek, while GetOSEvent consumes the same
+     * low-level event. Macintosh Toolbox Essentials (1992), pp. 2-97--2-99. */
+    gEventPostResult = PostEvent(keyDown, 0xA1B2C3D4);
+    gEventPeeked = EventAvail(keyDownMask, &probe);
+    gEventPeekWhat = gEventPeeked ? probe.what : nullEvent;
+    gEventOSEventPeeked = OSEventAvail(keyDownMask, &probe);
+    gEventOSEventPeekWhat = gEventOSEventPeeked ? probe.what : nullEvent;
+    gEventTaken = GetOSEvent(keyDownMask, &probe);
+    gEventTakenWhat = gEventTaken ? probe.what : nullEvent;
+}
+
+static void SetShowcaseCursor(short cursorID)
+{
+    CursHandle cursor;
+
+    cursor = GetCursor(cursorID);
+    if (cursor != nil) {
+        SetCursor(*cursor);
+        gEventCursorMode = cursorID;
+    }
+}
+
+static void DrawEventsPage(void)
+{
+    Rect panel;
+    Str255 number;
+
+    RefreshEventInput();
+    DrawHeading("\pEvents & Cursors: raw input and queue semantics");
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(24, 52);
+    DrawString("\pEventRecord fields stay beside live mouse/key state and cursor traps.");
+
+    SetRect(&panel, 20, 62, 300, 184);
+    DrawBeveledBox(&panel, false);
+    TextFace(bold);
+    MoveTo(28, 77);
+    DrawString("\pLast EventRecord");
+    TextFace(0);
+    MoveTo(28, 94);
+    DrawString("\pkind: ");
+    DrawEventKind(gEventLastWhat);
+    MoveTo(28, 110);
+    DrawString("\pwhat: ");
+    NumToString(gEventLastWhat, number);
+    DrawString(number);
+    DrawString("\p   message: $");
+    DrawEventHexLong(gEventLastMessage);
+    MoveTo(28, 126);
+    DrawString("\pwhen: $");
+    DrawEventHexLong(gEventLastWhen);
+    DrawString("\p   where: (");
+    NumToString(gEventLastWhere.v, number);
+    DrawString(number);
+    DrawString("\p, ");
+    NumToString(gEventLastWhere.h, number);
+    DrawString(number);
+    DrawString("\p)");
+    MoveTo(28, 142);
+    DrawString("\pmodifiers: ");
+    DrawEventModifiers(gEventLastModifiers);
+    DrawString("\p [");
+    NumToString(gEventLastModifiers, number);
+    DrawString(number);
+    DrawString("\p]");
+    MoveTo(28, 158);
+    DrawString("\pclick sequence down/up: ");
+    NumToString(gEventMouseDownCount, number);
+    DrawString(number);
+    DrawString("\p/");
+    NumToString(gEventMouseUpCount, number);
+    DrawString(number);
+    DrawString("\p   keys: ");
+    NumToString(gEventKeyDownCount, number);
+    DrawString(number);
+    DrawString("\p keyDown");
+    MoveTo(28, 174);
+    DrawString("\pupdateEvt: ");
+    DrawEventBoolean(gEventUpdateSeen);
+    DrawString("\p   activateEvt: ");
+    DrawEventBoolean(gEventActivateSeen);
+    DrawString(gEventActive ? "\p (active)" : "\p (inactive)");
+
+    SetRect(&panel, 310, 62, 535, 184);
+    DrawBeveledBox(&panel, false);
+    TextFace(bold);
+    MoveTo(318, 77);
+    DrawString("\pLive input state");
+    TextFace(0);
+    MoveTo(318, 96);
+    DrawString("\pGetMouse local: (");
+    NumToString(gEventMouseV, number);
+    DrawString(number);
+    DrawString("\p, ");
+    NumToString(gEventMouseH, number);
+    DrawString(number);
+    DrawString("\p)");
+    MoveTo(318, 112);
+    DrawString("\pButton: ");
+    DrawEventBoolean(gEventButtonDown);
+    DrawString("\p   StillDown: ");
+    DrawEventBoolean(gEventStillDown);
+    MoveTo(318, 128);
+    DrawString("\pWaitMouseUp sample: ");
+    DrawEventBoolean(gEventWaitMouseUp);
+    MoveTo(318, 144);
+    DrawString("\pGetKeys: ");
+    DrawEventBoolean(gEventKeysDown);
+    DrawString("\p (nonzero map)");
+    MoveTo(318, 160);
+    DrawString("\pButton is physical; StillDown tracks the click.");
+    MoveTo(318, 176);
+    DrawString("\pWaitMouseUp consumes the ending mouseUp.");
+
+    SetRect(&panel, 20, 194, 300, 316);
+    DrawBeveledBox(&panel, false);
+    TextFace(bold);
+    MoveTo(28, 209);
+    DrawString("\pEvent mask and queue inspection");
+    TextFace(0);
+    MoveTo(28, 226);
+    DrawString("\pkeyDownMask: ");
+    NumToString(keyDownMask, number);
+    DrawString(number);
+    DrawString("\p   PostEvent: ");
+    NumToString(gEventPostResult, number);
+    DrawString(number);
+    MoveTo(28, 242);
+    DrawString("\pEventAvail peek: ");
+    DrawEventBoolean(gEventPeeked);
+    DrawString("\p ( ");
+    DrawEventKind(gEventPeekWhat);
+    DrawString("\p)");
+    MoveTo(28, 258);
+    DrawString("\pOSEventAvail peek: ");
+    DrawEventBoolean(gEventOSEventPeeked);
+    DrawString("\p ( ");
+    DrawEventKind(gEventOSEventPeekWhat);
+    DrawString("\p)");
+    MoveTo(28, 274);
+    DrawString("\pGetOSEvent took: ");
+    DrawEventBoolean(gEventTaken);
+    DrawString("\p ( ");
+    DrawEventKind(gEventTakenWhat);
+    DrawString("\p)");
+    SetRect(&gEventProbeRect, 28, 284, 190, 308);
+    DrawEventButton(&gEventProbeRect, "\pPost / Peek / Take");
+
+    SetRect(&panel, 310, 194, 535, 316);
+    DrawBeveledBox(&panel, false);
+    TextFace(bold);
+    MoveTo(318, 209);
+    DrawString("\pCursor Manager");
+    TextFace(0);
+    MoveTo(318, 226);
+    DrawString("\pGetCursor / SetCursor: ");
+    if (gEventCursorMode == crossCursor) {
+        DrawString("\pcross");
+    } else if (gEventCursorMode == watchCursor) {
+        DrawString("\pwatch");
+    } else {
+        DrawString("\parrow");
+    }
+    MoveTo(318, 242);
+    DrawString("\pHideCursor / ShowCursor: ");
+    DrawEventBoolean(!gEventCursorHidden);
+    DrawString("\p visible");
+    SetRect(&gEventCrossRect, 318, 250, 382, 274);
+    SetRect(&gEventWatchRect, 388, 250, 452, 274);
+    SetRect(&gEventArrowRect, 458, 250, 527, 274);
+    DrawEventButton(&gEventCrossRect, "\pCross");
+    DrawEventButton(&gEventWatchRect, "\pWatch");
+    DrawEventButton(&gEventArrowRect, "\pArrow");
+    SetRect(&gEventHideRect, 318, 282, 382, 306);
+    SetRect(&gEventShowRect, 388, 282, 452, 306);
+    DrawEventButton(&gEventHideRect, "\pHide");
+    DrawEventButton(&gEventShowRect, "\pShow");
+
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(20, 337);
+    DrawString("\pClick Post / Peek / Take, hold a mouse click, or hold Shift while typing.");
+    MoveTo(20, 351);
+    DrawString("\pCursor IDs: crossCursor = 2, watchCursor = 4; arrow comes from InitCursor.");
+}
+
 static void DrawSpritesPage(void)
 {
     GWorldPtr savedWorld;
@@ -3179,6 +3561,9 @@ static void DrawMainWindow(void)
             break;
         case pageSprites:
             DrawSpritesPage();
+            break;
+        case pageEventsCursors:
+            DrawEventsPage();
             break;
     }
 }
@@ -3375,7 +3760,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 14; i++) {
+        for (i = 1; i <= 15; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -3467,6 +3852,9 @@ static void DoAboutAlert(void)
 static void SetPage(short page)
 {
     Rect bounds;
+    Boolean wasEvents;
+
+    wasEvents = (gPage == pageEventsCursors);
 
     if (gPage == pageSound && page != pageSound) {
         DisposeShowcaseSoundChannel();
@@ -3481,6 +3869,14 @@ static void SetPage(short page)
     if (gPage == pageLists && page != pageLists && gInventoryList != nil) {
         LActivate(false, gInventoryList);
         LSetDrawingMode(false, gInventoryList);
+    }
+    if (gPage == pageEventsCursors && page != pageEventsCursors) {
+        /* InitCursor also resets the hide count, so a hidden showcase cursor
+         * cannot leak into another page or the next visit. */
+        InitCursor();
+        ShowCursor();
+        gEventCursorMode = 0;
+        gEventCursorHidden = false;
     }
     gPage = page;
     if (page == pagePalettes) {
@@ -3503,6 +3899,12 @@ static void SetPage(short page)
     }
     if (page == pageSprites) {
         PrepareSpriteScene();
+    }
+    if (page == pageEventsCursors && !wasEvents) {
+        InitCursor();
+        ShowCursor();
+        gEventCursorMode = 0;
+        gEventCursorHidden = false;
     }
     ShowAllControls(page);
     SyncMenuState();
@@ -3789,7 +4191,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iSprites) {
+    if (menuID == mPages && item >= iGraphics && item <= iEventsCursors) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -3876,6 +4278,32 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
             DrawMainWindow();
             return;
         }
+    }
+
+    if (gPage == pageEventsCursors) {
+        if (PtInRect(where, &gEventProbeRect)) {
+            ProbeEventQueue();
+        } else if (PtInRect(where, &gEventCrossRect)) {
+            SetShowcaseCursor(crossCursor);
+        } else if (PtInRect(where, &gEventWatchRect)) {
+            SetShowcaseCursor(watchCursor);
+        } else if (PtInRect(where, &gEventArrowRect)) {
+            InitCursor();
+            gEventCursorMode = 0;
+            gEventCursorHidden = false;
+        } else if (PtInRect(where, &gEventHideRect)) {
+            if (!gEventCursorHidden) {
+                HideCursor();
+                gEventCursorHidden = true;
+            }
+        } else if (PtInRect(where, &gEventShowRect)) {
+            if (gEventCursorHidden) {
+                ShowCursor();
+                gEventCursorHidden = false;
+            }
+        }
+        DrawMainWindow();
+        return;
     }
 
     part = FindControl(where, window, &control);
@@ -4047,6 +4475,9 @@ static void DoEvent(EventRecord *event)
     short part;
     char key;
 
+    RecordShowcaseEvent(event,
+                        gPage == pageEventsCursors && event->what == mouseDown);
+
     switch (event->what) {
         case mouseDown:
             part = FindWindow(event->where, &window);
@@ -4101,6 +4532,8 @@ static void DoEvent(EventRecord *event)
                 DoMenuChoice(MenuKey(key));
             } else if (gPage == pageTextEdit && gTE != nil) {
                 TEKey(key, gTE);
+                DrawMainWindow();
+            } else if (gPage == pageEventsCursors) {
                 DrawMainWindow();
             }
             break;
