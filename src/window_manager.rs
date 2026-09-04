@@ -199,39 +199,45 @@ pub(crate) fn standard_window_chrome(
     let has_zoom_box = active && document_proc && zoom_box;
     let mut zoom_ink = Vec::new();
     if has_zoom_box {
-        // The visible zoom glyph is an 11-by-11 outer frame containing a
-        // 7-by-7 frame at its upper-left. It is centered in the standard
-        // 18-by-18 TrackBox hit cell and shares the close box's vertical
-        // origin. Macintosh Toolbox Essentials (1992), pp. 4-8 and 4-47.
+        // The visible zoom glyph is two 8-by-8 frames offset by three pixels,
+        // giving the classic overlapping-window silhouette in an 11-by-11
+        // footprint. It is centered in the standard 18-by-18 TrackBox hit
+        // cell. Macintosh Toolbox Essentials (1992), pp. 4-8 and 4-47.
         let box_top = top.saturating_sub(15);
         let box_left = right.saturating_sub(20);
-        let box_bottom = box_top.saturating_add(11);
-        let box_right = box_left.saturating_add(11);
-        let inner_bottom = box_top.saturating_add(7);
-        let inner_right = box_left.saturating_add(7);
-        zoom_ink.extend([
-            (box_top, box_left, box_top.saturating_add(1), box_right),
-            (box_top, box_left, box_bottom, box_left.saturating_add(1)),
-            (
-                box_bottom.saturating_sub(1),
-                box_left,
-                box_bottom,
-                box_right,
-            ),
-            (box_top, box_right.saturating_sub(1), box_bottom, box_right),
-            (
-                box_top,
-                inner_right.saturating_sub(1),
-                inner_bottom,
-                inner_right,
-            ),
-            (
-                inner_bottom.saturating_sub(1),
-                box_left,
-                inner_bottom,
-                inner_right,
-            ),
-        ]);
+        for (frame_top, frame_left) in [
+            (box_top, box_left.saturating_add(3)),
+            (box_top.saturating_add(3), box_left),
+        ] {
+            let frame_bottom = frame_top.saturating_add(8);
+            let frame_right = frame_left.saturating_add(8);
+            zoom_ink.extend([
+                (
+                    frame_top,
+                    frame_left,
+                    frame_top.saturating_add(1),
+                    frame_right,
+                ),
+                (
+                    frame_top,
+                    frame_left,
+                    frame_bottom,
+                    frame_left.saturating_add(1),
+                ),
+                (
+                    frame_bottom.saturating_sub(1),
+                    frame_left,
+                    frame_bottom,
+                    frame_right,
+                ),
+                (
+                    frame_top,
+                    frame_right.saturating_sub(1),
+                    frame_bottom,
+                    frame_right,
+                ),
+            ]);
+        }
         ink.extend(zoom_ink.iter().copied());
     }
 
@@ -249,8 +255,8 @@ pub(crate) fn standard_window_chrome(
         } else {
             (stripe_right, stripe_right)
         };
-        for y in tb_top.saturating_add(1)..=tb_bottom.saturating_sub(4) {
-            if (y - tb_top) % 2 == 0 {
+        for y in tb_top.saturating_add(2)..=tb_bottom.saturating_sub(3) {
+            if (y - tb_top) % 2 != 0 {
                 continue;
             }
             let first_end = if has_close_box {
@@ -369,11 +375,11 @@ mod tests {
             .ink
             .iter()
             .filter(|(top, left, bottom, _)| {
-                *left == 41 && *bottom == top.saturating_add(1) && (31..=43).contains(top)
+                *left == 41 && *bottom == top.saturating_add(1) && (32..=44).contains(top)
             })
             .map(|(top, _, _, _)| *top)
             .collect::<Vec<_>>();
-        assert_eq!(stripe_rows, [31, 33, 35, 37, 39, 41, 43]);
+        assert_eq!(stripe_rows, [32, 34, 36, 38, 40, 42, 44]);
         assert!(chrome.ink.contains(&(30, 601, 422, 602)));
         assert!(chrome.ink.contains(&(421, 40, 422, 602)));
         assert_eq!(
@@ -384,14 +390,16 @@ mod tests {
         assert_eq!(
             chrome.zoom_ink,
             [
-                (34, 580, 35, 591),
-                (34, 580, 45, 581),
-                (44, 580, 45, 591),
-                (34, 590, 45, 591),
-                (34, 586, 41, 587),
-                (40, 580, 41, 587),
+                (34, 583, 35, 591),
+                (34, 583, 42, 584),
+                (41, 583, 42, 591),
+                (34, 590, 42, 591),
+                (37, 580, 38, 588),
+                (37, 580, 45, 581),
+                (44, 580, 45, 588),
+                (37, 587, 45, 588),
             ],
-            "the zoom glyph should be an aligned 11-pixel frame with a nested 7-pixel frame"
+            "the zoom glyph should be two aligned 8-pixel frames in an 11-pixel footprint"
         );
     }
 
