@@ -4,6 +4,7 @@ use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
+use crate::execution_kernel::ExecutionRoute;
 use crate::execution_m68k::M68kExecution;
 use crate::execution_native::{NativeEngineRole, NativeExecution};
 use crate::guest_call::ExecutionTaskId;
@@ -3764,6 +3765,10 @@ impl FixtureRunner {
             return;
         }
 
+        assert!(self.dispatcher.guest_calls.bind_task_entry_isa(
+            ExecutionTaskId::APPLICATION,
+            crate::guest_procedure::GuestIsa::M68k
+        ));
         self.bus.detach_guest_address_space();
 
         use crate::memory::globals::addr;
@@ -4278,6 +4283,10 @@ impl FixtureRunner {
         self.m68k.cpu.write_reg(Register::PC, 0);
         self.bus
             .attach_guest_address_space(ppc_app.memory.shared_view());
+        assert!(self.dispatcher.guest_calls.bind_task_entry_isa(
+            ExecutionTaskId::APPLICATION,
+            crate::guest_procedure::GuestIsa::PowerPc
+        ));
         self.native
             .install(NativeEngineRole::Application, ppc_app)
             .unwrap_or_else(|_| panic!("native engine slot is occupied"));
@@ -5468,17 +5477,15 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: bool,
     ) -> (usize, bool) {
-        // The native application owns the foreground task. A cooperative
-        // Thread Manager switch can leave that native continuation suspended
-        // while a 68K worker runs; route the worker through the classic CPU
-        // until the application task is selected again. Otherwise the runner
-        // would execute the PPC caller after the switch and consume the wrong
-        // task's continuation.
-        let current_task =
-            ExecutionTaskId::from_thread_id(self.dispatcher.guest_calls.current_task().thread_id());
-        let native_foreground_task =
-            self.native.application().is_some() && current_task == ExecutionTaskId::APPLICATION;
-        if native_foreground_task {
+        let route = self
+            .dispatcher
+            .guest_calls
+            .execution_route(self.native.availability());
+        if route == ExecutionRoute::Blocked {
+            return (0, !self.halted);
+        }
+        let session_task = self.dispatcher.guest_calls.current_task();
+        if route == ExecutionRoute::NativeApplication {
             if yield_for_ui {
                 return self.run_ppc_steps(
                     max_steps,
@@ -5500,22 +5507,25 @@ impl FixtureRunner {
                 if steps == 0 {
                     break;
                 }
-                // A 68K callback may yield to a cooperative worker while
-                // this native slice is suspended. The native adapter still
-                // contains the application continuation, but the installed
-                // CPU now belongs to the selected worker; stop the native
-                // loop before it can execute that continuation on the wrong
-                // task.
-                if ExecutionTaskId::from_thread_id(
-                    self.dispatcher.guest_calls.current_task().thread_id(),
-                ) != ExecutionTaskId::APPLICATION
+                // A callback may select another task, or a worker's native
+                // call may finish and expose classic work. Re-arbitrate before
+                // another native batch can consume the retained application CPU.
+                if self.dispatcher.guest_calls.current_task() != session_task
+                    || self
+                        .dispatcher
+                        .guest_calls
+                        .execution_route(self.native.availability())
+                        != route
                 {
                     break;
                 }
             }
-            if ExecutionTaskId::from_thread_id(
-                self.dispatcher.guest_calls.current_task().thread_id(),
-            ) != ExecutionTaskId::APPLICATION
+            if self.dispatcher.guest_calls.current_task() != session_task
+                || self
+                    .dispatcher
+                    .guest_calls
+                    .execution_route(self.native.availability())
+                    != route
             {
                 if finish_frame {
                     self.sync_ppc_deferred_host_state();
@@ -5534,21 +5544,17 @@ impl FixtureRunner {
             return (count, running);
         }
 
-        if self.native.companion().is_none()
-            && self.native.has_staged_companion()
-            && self.dispatcher.guest_calls.has_powerpc_from_m68k()
-        {
+        if route == ExecutionRoute::PrepareCompanion {
             let companion = self
                 .native
                 .take_staged_companion()
-                .expect("checked staged native companion");
+                .expect("selected staged native companion");
             self.init_ppc_companion(companion);
         }
-        if self.native.companion().is_some_and(|companion| {
-            companion.guest_calls.pending_powerpc_from_m68k().is_some()
-                || companion.guest_calls.has_powerpc_from_m68k()
-                || companion.guest_calls.has_m68k_execution()
-        }) {
+        if matches!(
+            route,
+            ExecutionRoute::NativeCompanion | ExecutionRoute::PrepareCompanion
+        ) {
             return self.run_ppc_steps(
                 max_steps,
                 tick_cap,
@@ -6335,17 +6341,12 @@ impl FixtureRunner {
             }
 
             self.dispatcher.instruction_count = self.total_instructions;
-            let ppc_callback_ready = self
-                .native
-                .application()
-                .is_some_and(|app| app.guest_calls.has_m68k_execution())
-                || self.native.companion().is_some_and(|companion| {
-                    companion.guest_calls.has_powerpc_from_m68k()
-                        || companion.guest_calls.has_m68k_execution()
-                })
-                || (self.native.has_staged_companion()
-                    && self.dispatcher.guest_calls.has_powerpc_from_m68k());
-            if ppc_callback_ready {
+            if self
+                .dispatcher
+                .guest_calls
+                .execution_route(self.native.availability())
+                != ExecutionRoute::Classic
+            {
                 break;
             }
         }
@@ -15376,6 +15377,70 @@ mod tests {
         let ppc_app = runner.native.application().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.gpr[3], u32::from(TRAP));
+    }
+
+    #[test]
+    fn classic_worker_uses_native_application_engine_and_stops_at_its_return() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::{GuestCallTarget, M68kResultTarget, PowerPcArguments};
+        use crate::guest_procedure::GuestIsa;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x1000;
+        const CLASSIC_RETURN: u32 = 0x0304_0000;
+        const CLASSIC_SP: u32 = 0x0304_1080;
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let native = app.ppc.as_mut().unwrap();
+        native
+            .memory
+            .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+        native.memory.add_region(
+            ENTRY,
+            [0x3860_002au32, 0x4e80_0020]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        native.memory.add_region(CLASSIC_RETURN, vec![0x60, 0xfe]);
+        native.memory.add_region(CLASSIC_SP - 0x80, vec![0; 0x100]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let native_pc = runner.native.application().unwrap().cpu.pc;
+        let calls = runner.dispatcher.guest_calls.shared_handle();
+        let worker = ExecutionTaskId::from_thread_id(3);
+        assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(worker));
+        runner.m68k.cpu.write_reg(Register::PC, CLASSIC_RETURN);
+        runner.m68k.cpu.write_reg(Register::A7, CLASSIC_SP);
+        assert!(calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: ENTRY,
+                rtoc: 0
+            },
+            PowerPcArguments::from_slice(&[]).unwrap(),
+            CLASSIC_RETURN,
+            CLASSIC_SP,
+            Some(M68kResultTarget::Data { index: 0, size: 4 })
+        ));
+        let (steps, running) = runner.run_steps(64, None);
+        assert!(steps > 0);
+        assert!(
+            running,
+            "coalescing must not continue into the suspended application's halt"
+        );
+        assert!(
+            calls.is_empty(),
+            "the worker's native call must execute without a companion"
+        );
+        assert_eq!(calls.current_task(), worker);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 42);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), CLASSIC_RETURN);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), CLASSIC_SP);
+        assert_eq!(runner.native.application().unwrap().cpu.pc, native_pc);
+        assert_eq!(
+            calls.execution_route(runner.native.availability()),
+            ExecutionRoute::Classic
+        );
     }
 
     #[test]
