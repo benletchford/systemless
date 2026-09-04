@@ -1,10 +1,10 @@
 //! UI theme contract for dialog, menu, control, and text rendering.
 //!
-//! The first boundary is intentionally semantic and non-invasive: the default
-//! `classic-system7` provider represents the current renderer, while
-//! `systemless-default` is an explicit non-classic provider for future
-//! Systemless-owned snapshots. Guest-visible Toolbox behavior remains outside
-//! this boundary.
+//! The first boundary is intentionally semantic and non-invasive:
+//! `systemless-default` is the standard presentation provider, while
+//! `classic-system7` preserves the original renderer for compatibility and
+//! reference snapshots. Guest-visible Toolbox behavior remains outside this
+//! boundary.
 
 pub const CLASSIC_SYSTEM7_THEME: &str = "classic-system7";
 pub const SYSTEMLESS_DEFAULT_THEME: &str = "systemless-default";
@@ -100,6 +100,9 @@ pub struct UiThemePalette {
     pub frame_dark: Rgb8,
     pub frame_light: Rgb8,
     pub selection: Rgb8,
+    pub accent: Rgb8,
+    pub desktop_light: Rgb8,
+    pub desktop_dark: Rgb8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +202,9 @@ impl UiTheme for ClassicSystem7Theme {
                 b: 255,
             },
             selection: Rgb8 { r: 0, g: 0, b: 0 },
+            accent: Rgb8 { r: 0, g: 0, b: 0 },
+            desktop_light: Rgb8 { r: 255, g: 255, b: 255 },
+            desktop_dark: Rgb8 { r: 0, g: 0, b: 0 },
         }
     }
 
@@ -275,21 +281,16 @@ impl UiTheme for SystemlessTheme {
                 g: 248,
                 b: 245,
             },
-            frame_dark: Rgb8 {
-                r: 33,
-                g: 38,
-                b: 44,
-            },
+            frame_dark: Rgb8 { r: 21, g: 19, b: 15 },
             frame_light: Rgb8 {
-                r: 255,
-                g: 255,
+                r: 223,
+                g: 246,
                 b: 255,
             },
-            selection: Rgb8 {
-                r: 51,
-                g: 102,
-                b: 204,
-            },
+            selection: Rgb8 { r: 39, g: 148, b: 196 },
+            accent: Rgb8 { r: 201, g: 177, b: 131 },
+            desktop_light: Rgb8 { r: 223, g: 246, b: 255 },
+            desktop_dark: Rgb8 { r: 39, g: 148, b: 196 },
         }
     }
 
@@ -1621,34 +1622,26 @@ fn draw_systemless_dialog_frame_chrome(
     state: DialogFrameState,
 ) {
     fill_dialog_frame_background(ctx, state, palette.window_background);
-    ctx.frame_rect(state.frame_rect, palette.frame_dark);
-    ctx.frame_rect(state.content_rect, palette.frame_dark);
-
-    let inner_frame = inset_rect(state.frame_rect, 2);
-    if inner_frame.top < inner_frame.bottom && inner_frame.left < inner_frame.right {
-        ctx.frame_rect(inner_frame, palette.selection);
-    }
 
     match state.kind {
-        DialogFrameKind::DialogBox => {
-            draw_dialog_frame_accent(ctx, palette, state.content_rect);
-            ctx.frame_rect(outset_rect(state.content_rect, 4), palette.frame_dark);
-        }
-        DialogFrameKind::PlainDialog => {
-            draw_dialog_frame_accent(ctx, palette, state.content_rect);
+        DialogFrameKind::DialogBox | DialogFrameKind::PlainDialog => {
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
         }
         DialogFrameKind::MovableDialog => {
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
+            ctx.frame_rect(state.content_rect, palette.frame_dark);
             draw_systemless_title_band(ctx, palette, state);
-            draw_two_pixel_frame(ctx, outset_rect(state.content_rect, 5), palette.frame_dark);
         }
         DialogFrameKind::Document | DialogFrameKind::NoGrowDocument => {
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
+            ctx.frame_rect(state.content_rect, palette.frame_dark);
             draw_systemless_title_band(ctx, palette, state);
             if state.active {
                 draw_dialog_shadow(ctx, palette, state.content_rect);
             }
         }
         DialogFrameKind::AlertDialog | DialogFrameKind::Unknown => {
-            draw_dialog_frame_accent(ctx, palette, state.content_rect);
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
             draw_dialog_shadow(ctx, palette, state.content_rect);
         }
     }
@@ -1706,22 +1699,6 @@ fn fill_rect_excluding_inner(
             right: outer.right,
         },
         color,
-    );
-}
-
-fn draw_dialog_frame_accent(
-    ctx: &mut ThemeDrawCtx<'_>,
-    palette: UiThemePalette,
-    content: ThemeRect,
-) {
-    ctx.fill_rect(
-        ThemeRect {
-            top: content.top - 2,
-            left: content.left + 3,
-            bottom: content.top - 1,
-            right: content.right - 3,
-        },
-        palette.selection,
     );
 }
 
@@ -1845,17 +1822,7 @@ fn draw_systemless_menu_title_chrome(
 ) {
     if state.highlighted {
         ctx.fill_rect(state.rect, palette.selection);
-    } else if state.enabled {
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.bottom - 2,
-                left: state.rect.left + 3,
-                bottom: state.rect.bottom - 1,
-                right: state.rect.right - 3,
-            },
-            palette.selection,
-        );
-    } else {
+    } else if !state.enabled {
         ctx.frame_rect(inset_rect(state.rect, 2), palette.frame_dark);
     }
 }
@@ -1999,31 +1966,20 @@ fn draw_systemless_menu_item_chrome(
     }
 
     if state.highlighted {
-        ctx.frame_rect(inset_rect(state.rect, 1), palette.selection);
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.top + 2,
-                left: state.rect.left + 2,
-                bottom: state.rect.bottom - 2,
-                right: state.rect.left + 5,
-            },
-            palette.selection,
-        );
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.bottom - 3,
-                left: state.rect.left + 6,
-                bottom: state.rect.bottom - 2,
-                right: state.rect.right - 6,
-            },
-            palette.selection,
-        );
+        // Human Interface Guidelines 1992, pp. 55 and 265: tracking a menu
+        // selection highlights the complete item rather than decorating it.
+        ctx.fill_rect(state.rect, palette.selection);
     }
 
     // Row chrome must not replace the application's mark or Command-key
     // equivalent. The Menu Manager draws those semantic characteristics
     // afterward. Macintosh Toolbox Essentials (1992), pp. 3-12 and 3-16.
     if state.has_icon {
+        let icon_color = if state.highlighted {
+            palette.window_background
+        } else {
+            palette.selection
+        };
         ctx.fill_rect(
             ThemeRect {
                 top: state.rect.top + 5,
@@ -2031,7 +1987,7 @@ fn draw_systemless_menu_item_chrome(
                 bottom: state.rect.bottom - 5,
                 right: state.rect.left + 17,
             },
-            palette.selection,
+            icon_color,
         );
         ctx.fill_rect(
             ThemeRect {
@@ -2040,7 +1996,7 @@ fn draw_systemless_menu_item_chrome(
                 bottom: state.rect.bottom - 7,
                 right: state.rect.left + 19,
             },
-            palette.selection,
+            icon_color,
         );
     }
 
@@ -2211,15 +2167,17 @@ fn draw_button_chrome(ctx: &mut ThemeDrawCtx<'_>, palette: UiThemePalette, state
         );
     }
     if state.is_default {
-        ctx.frame_rect(
-            ThemeRect {
-                top: state.rect.top - 4,
-                left: state.rect.left - 4,
-                bottom: state.rect.bottom + 4,
-                right: state.rect.right + 4,
-            },
-            palette.selection,
-        );
+        // Human Interface Guidelines 1992, p. 205: default buttons use a
+        // three-pixel emphasis border separated from the button by one pixel.
+        let outline = ThemeRect {
+            top: state.rect.top - 4,
+            left: state.rect.left - 4,
+            bottom: state.rect.bottom + 4,
+            right: state.rect.right + 4,
+        };
+        for inset in 0..3 {
+            ctx.frame_rect(inset_rect(outline, inset), palette.selection);
+        }
     }
 }
 
@@ -2392,8 +2350,10 @@ fn draw_systemless_scrollbar_chrome(
         if state.highlighted_part == ScrollbarPart::PageAfter {
             ctx.fill_rect(inset_rect(page_after, 1), palette.selection);
         }
+        // Human Interface Guidelines 1992, pp. 148 and 158: the scroll box
+        // is a colored, prominent control within the lighter scroll track.
         let thumb_fill = if state.highlighted_part == ScrollbarPart::Thumb {
-            palette.frame_dark
+            palette.accent
         } else {
             palette.selection
         };
@@ -2623,44 +2583,72 @@ fn draw_scrollbar_arrow(
 ) {
     let center_y = (rect.top + rect.bottom) / 2;
     let center_x = (rect.left + rect.right) / 2;
-    for row in 0..5 {
-        let half = row.min(4 - row) as i16;
-        let (top, left, bottom, right) = match (orientation, decrement) {
-            (ScrollbarOrientation::Vertical, true) => (
-                center_y - 3 + row as i16,
-                center_x - half,
-                center_y - 2 + row as i16,
-                center_x + half + 1,
-            ),
-            (ScrollbarOrientation::Vertical, false) => (
-                center_y + 1 - row as i16,
-                center_x - half,
-                center_y + 2 - row as i16,
-                center_x + half + 1,
-            ),
-            (ScrollbarOrientation::Horizontal, true) => (
-                center_y - half,
-                center_x - 3 + row as i16,
-                center_y + half + 1,
-                center_x - 2 + row as i16,
-            ),
-            (ScrollbarOrientation::Horizontal, false) => (
-                center_y - half,
-                center_x + 1 - row as i16,
-                center_y + half + 1,
-                center_x + 2 - row as i16,
-            ),
-        };
-        ctx.fill_rect(
-            ThemeRect {
-                top,
-                left,
-                bottom,
-                right,
+    // HIG 1992 p. 158: each end control contains an arrow pointing toward
+    // the hidden content. Use a three-step head and short shaft; mirroring a
+    // diamond around the center loses that directional meaning.
+    for step in 0..3 {
+        let step = step as i16;
+        let half = if decrement { step } else { 2 - step };
+        let rect = match orientation {
+            ScrollbarOrientation::Vertical => ThemeRect {
+                top: if decrement {
+                    center_y - 3 + step
+                } else {
+                    center_y + step
+                },
+                left: center_x - half,
+                bottom: if decrement {
+                    center_y - 2 + step
+                } else {
+                    center_y + step + 1
+                },
+                right: center_x + half + 1,
             },
-            palette.frame_dark,
-        );
+            ScrollbarOrientation::Horizontal => ThemeRect {
+                top: center_y - half,
+                left: if decrement {
+                    center_x - 3 + step
+                } else {
+                    center_x + step
+                },
+                bottom: center_y + half + 1,
+                right: if decrement {
+                    center_x - 2 + step
+                } else {
+                    center_x + step + 1
+                },
+            },
+        };
+        ctx.fill_rect(rect, palette.frame_dark);
     }
+
+    let shaft = match (orientation, decrement) {
+        (ScrollbarOrientation::Vertical, true) => ThemeRect {
+            top: center_y,
+            left: center_x,
+            bottom: center_y + 3,
+            right: center_x + 1,
+        },
+        (ScrollbarOrientation::Vertical, false) => ThemeRect {
+            top: center_y - 3,
+            left: center_x,
+            bottom: center_y,
+            right: center_x + 1,
+        },
+        (ScrollbarOrientation::Horizontal, true) => ThemeRect {
+            top: center_y,
+            left: center_x,
+            bottom: center_y + 1,
+            right: center_x + 3,
+        },
+        (ScrollbarOrientation::Horizontal, false) => ThemeRect {
+            top: center_y,
+            left: center_x - 3,
+            bottom: center_y + 1,
+            right: center_x,
+        },
+    };
+    ctx.fill_rect(shaft, palette.frame_dark);
 }
 
 fn draw_scrollbar_grip(
@@ -2783,6 +2771,14 @@ mod tests {
         assert_eq!(classic.control_metrics(), themed.control_metrics());
         assert_eq!(classic.text_theme(), themed.text_theme());
         assert_ne!(classic.palette(), themed.palette());
+
+        let palette = themed.palette();
+        assert_eq!(palette.frame_dark, Rgb8 { r: 21, g: 19, b: 15 });
+        assert_eq!(palette.accent, Rgb8 { r: 201, g: 177, b: 131 });
+        assert_eq!(palette.selection, Rgb8 { r: 39, g: 148, b: 196 });
+        assert_eq!(palette.frame_light, Rgb8 { r: 223, g: 246, b: 255 });
+        assert_eq!(palette.desktop_dark, palette.selection);
+        assert_eq!(palette.desktop_light, palette.frame_light);
     }
 
     #[test]
@@ -2794,6 +2790,27 @@ mod tests {
         assert_eq!(classic.height(), 48);
         assert_eq!(classic.rgba().len(), 96 * 48 * 4);
         assert_ne!(classic.rgba(), themed.rgba());
+    }
+
+    #[test]
+    fn systemless_default_button_uses_three_pixel_outline_with_one_pixel_gap() {
+        let themed = render_basic_button_preview(UiThemeId::SystemlessDefault);
+        let palette = UiThemeId::SystemlessDefault.provider().palette();
+        let selection = [
+            palette.selection.r,
+            palette.selection.g,
+            palette.selection.b,
+        ];
+        let background = [
+            palette.window_background.r,
+            palette.window_background.g,
+            palette.window_background.b,
+        ];
+
+        assert_eq!(rgb_at(&themed, 14, 10), selection);
+        assert_eq!(rgb_at(&themed, 15, 11), selection);
+        assert_eq!(rgb_at(&themed, 16, 12), selection);
+        assert_eq!(rgb_at(&themed, 17, 13), background);
     }
 
     #[test]
@@ -2825,9 +2842,22 @@ mod tests {
         ];
 
         assert_eq!(
+            rgb_at(&themed, 10, 10),
+            [
+                palette.frame_dark.r,
+                palette.frame_dark.g,
+                palette.frame_dark.b,
+            ],
+            "dialog box should use one restrained provider frame"
+        );
+        assert_eq!(
             rgb_at(&themed, 24, 16),
-            selection,
-            "dialog-box accent should use provider selection chrome"
+            [
+                palette.window_background.r,
+                palette.window_background.g,
+                palette.window_background.b,
+            ],
+            "dialog box should not add decorative lines inside its outer frame"
         );
         assert_eq!(
             rgb_at(&themed, 36, 40),
@@ -2880,6 +2910,58 @@ mod tests {
     }
 
     #[test]
+    fn systemless_scrollbar_uses_directional_arrows_and_blue_thumb() {
+        let theme = UiThemeId::SystemlessDefault.provider();
+        let palette = theme.palette();
+        let state = ScrollbarState {
+            rect: ThemeRect {
+                top: 0,
+                left: 0,
+                bottom: 16,
+                right: 96,
+            },
+            orientation: ScrollbarOrientation::Horizontal,
+            enabled: true,
+            value: 50,
+            min: 0,
+            max: 100,
+            highlighted_part: ScrollbarPart::None,
+        };
+        let mut bitmap = ThemeBitmap::new(96, 16, palette.window_background);
+        theme.draw_scrollbar(&mut ThemeDrawCtx::new(&mut bitmap), state);
+        let dark = [
+            palette.frame_dark.r,
+            palette.frame_dark.g,
+            palette.frame_dark.b,
+        ];
+        let background = [
+            palette.window_background.r,
+            palette.window_background.g,
+            palette.window_background.b,
+        ];
+        let selection = [
+            palette.selection.r,
+            palette.selection.g,
+            palette.selection.b,
+        ];
+        let thumb = scrollbar_thumb_rect(state).expect("enabled scrollbar thumb");
+
+        assert_eq!(rgb_at(&bitmap, 5, 8), dark, "left arrow tip");
+        assert_eq!(rgb_at(&bitmap, 10, 8), dark, "left arrow shaft");
+        assert_eq!(
+            rgb_at(&bitmap, 8, 7),
+            background,
+            "left arrow should not close back into a diamond"
+        );
+        assert_eq!(rgb_at(&bitmap, 90, 8), dark, "right arrow tip");
+        assert_eq!(
+            rgb_at(&bitmap, (thumb.left + 2) as u32, (thumb.top + 2) as u32,),
+            selection,
+            "resting thumb should use the Systemless blue"
+        );
+    }
+
+    #[test]
     fn menu_chrome_preview_routes_through_theme_provider() {
         let classic = render_menu_chrome_preview(UiThemeId::ClassicSystem7);
         let themed = render_menu_chrome_preview(UiThemeId::SystemlessDefault);
@@ -2891,6 +2973,30 @@ mod tests {
     }
 
     #[test]
+    fn systemless_enabled_menu_title_has_no_resting_decoration() {
+        let theme = UiThemeId::SystemlessDefault.provider();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(72, 18, palette.window_background);
+        let before = bitmap.rgba().to_vec();
+
+        theme.draw_menu_title(
+            &mut ThemeDrawCtx::new(&mut bitmap),
+            MenuTitleState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: 18,
+                    right: 72,
+                },
+                enabled: true,
+                highlighted: false,
+            },
+        );
+
+        assert_eq!(bitmap.rgba(), before.as_slice());
+    }
+
+    #[test]
     fn menu_items_preview_routes_row_states_through_theme_provider() {
         let classic = render_menu_items_preview(UiThemeId::ClassicSystem7);
         let themed = render_menu_items_preview(UiThemeId::SystemlessDefault);
@@ -2899,6 +3005,39 @@ mod tests {
         assert_eq!(classic.height(), 104);
         assert_eq!(classic.rgba().len(), 176 * 104 * 4);
         assert_ne!(classic.rgba(), themed.rgba());
+    }
+
+    #[test]
+    fn systemless_highlighted_menu_item_fills_the_complete_row() {
+        let theme = UiThemeId::SystemlessDefault.provider();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(100, 16, palette.frame_light);
+        theme.draw_menu_item(
+            &mut ThemeDrawCtx::new(&mut bitmap),
+            MenuItemState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: 16,
+                    right: 100,
+                },
+                enabled: true,
+                highlighted: true,
+                separator: false,
+                has_icon: false,
+                checked: false,
+                has_command_key: false,
+            },
+        );
+        let selection = [
+            palette.selection.r,
+            palette.selection.g,
+            palette.selection.b,
+        ];
+
+        assert_eq!(rgb_at(&bitmap, 0, 0), selection);
+        assert_eq!(rgb_at(&bitmap, 50, 8), selection);
+        assert_eq!(rgb_at(&bitmap, 99, 15), selection);
     }
 
     #[test]

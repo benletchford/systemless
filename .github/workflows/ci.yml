@@ -70,6 +70,11 @@ jobs:
           SYSTEMLESS_PREFER_POWERPC: 1
         run: cargo test --test toolbox_showcase
 
+      - name: Run toolbox showcase integration test (Systemless theme)
+        env:
+          SYSTEMLESS_TOOLBOX_THEME: systemless-default
+        run: cargo test --locked --test toolbox_showcase
+
   checks:
     name: headless & package
     runs-on: ubuntu-latest

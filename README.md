@@ -212,11 +212,19 @@ Common runner options:
 systemless --headless --max-instructions 5000000 path/to/app.sit
 systemless --arrows-as-numpad path/to/game.sit
 systemless --display-scale 2 path/to/game.sit
+systemless --ui-theme classic-system7 path/to/game.sit
 ```
 
 Desktop windows default to a physical 1:1 guest-to-host pixel ratio. Use
 `--display-scale` with an integer from 1 through 8 for explicit pixel-perfect
 enlargement.
+
+The default `systemless-default` guest chrome retains classic Macintosh control
+geometry and metrics while using the ink, tan, blue, and pale-blue colors from
+the Systemless logo. Pass `--ui-theme classic-system7` to restore the original
+monochrome presentation. The Systemless theme currently targets the 68K HLE
+chrome; native PowerPC guest chrome remains classic while the shared theme
+boundary is extended to that adapter.
 
 The desktop runner uses the canonical machine profile automatically. On macOS,
 guest menus are mirrored into the native menu bar and the guest's application

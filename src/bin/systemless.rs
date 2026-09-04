@@ -47,6 +47,7 @@ use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
+use systemless::ui_theme::UiThemeId;
 #[cfg(target_os = "macos")]
 use systemless::runner::MenuBarPolicy;
 use systemless::trap::dispatch::ScreenCopyBitsRect;
@@ -151,6 +152,15 @@ struct Cli {
     /// Integer host-pixel scale (1 is one host pixel per guest pixel)
     #[arg(long, value_name = "N", default_value_t = 1, value_parser = parse_display_scale)]
     display_scale: u32,
+
+    /// Guest chrome theme
+    #[arg(
+        long,
+        value_name = "THEME",
+        default_value = "systemless-default",
+        value_parser = UiThemeId::parse
+    )]
+    ui_theme: UiThemeId,
 
     /// Replay input events from a script during a headless run. Events are
     /// scheduled by retired instruction count, so a run replays identically
@@ -634,6 +644,8 @@ struct App {
     /// Explicit integer host-pixel scale. Physical sizing keeps compositor
     /// DPI from silently changing the requested guest-to-host ratio.
     display_scale: u32,
+    /// Selected guest chrome presentation provider.
+    ui_theme: UiThemeId,
     #[cfg(target_os = "macos")]
     native_integrations: bool,
     #[cfg(target_os = "macos")]
@@ -662,6 +674,7 @@ impl App {
             addressing_24_bit,
             Some(screen_depth),
             1,
+            UiThemeId::ClassicSystem7,
         )
     }
 
@@ -672,6 +685,7 @@ impl App {
         addressing_24_bit: bool,
         screen_depth: Option<u16>,
         display_scale: u32,
+        ui_theme: UiThemeId,
     ) -> Self {
         #[cfg(not(target_os = "macos"))]
         let _ = native_integrations;
@@ -758,6 +772,7 @@ impl App {
             addressing_24_bit,
             screen_depth,
             display_scale,
+            ui_theme,
             #[cfg(target_os = "macos")]
             native_integrations,
             #[cfg(target_os = "macos")]
@@ -820,6 +835,7 @@ impl App {
             }
             None => game::new_runner_with_addressing(!self.addressing_24_bit),
         };
+        runner.set_ui_theme(self.ui_theme);
         #[cfg(target_os = "macos")]
         if self.native_integrations {
             runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
@@ -2445,6 +2461,7 @@ fn run_gui(
     addressing_24_bit: bool,
     screen_depth: Option<u16>,
     display_scale: u32,
+    ui_theme: UiThemeId,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -2463,6 +2480,7 @@ fn run_gui(
         addressing_24_bit,
         screen_depth,
         display_scale,
+        ui_theme,
     );
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
@@ -2566,6 +2584,7 @@ fn run_headless(
     addressing_24_bit: bool,
     screen_depth: Option<u16>,
     script: &[ScriptedInput],
+    ui_theme: UiThemeId,
 ) {
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
@@ -2574,6 +2593,7 @@ fn run_headless(
         Some(screen_depth) => game::new_runner_with_configuration(!addressing_24_bit, screen_depth),
         None => game::new_runner_with_addressing(!addressing_24_bit),
     };
+    runner.set_ui_theme(ui_theme);
     let app = game::load_game_from_path(&mut runner, game_path).expect("Failed to load game");
     let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, &mut runner);
     eprintln!(
@@ -2702,6 +2722,7 @@ fn main() {
             cli.addressing_24_bit,
             cli.screen_depth,
             &script,
+            cli.ui_theme,
         );
     } else {
         if cli.input_script.is_some() {
@@ -2715,6 +2736,7 @@ fn main() {
             cli.addressing_24_bit,
             cli.screen_depth,
             cli.display_scale,
+            cli.ui_theme,
         );
     }
 }
@@ -3124,6 +3146,8 @@ mod tests {
             "4",
             "--display-scale",
             "2",
+            "--ui-theme",
+            "systemless-default",
             "--max-instructions",
             "1234",
             "game.sit",
@@ -3139,15 +3163,17 @@ mod tests {
         assert!(cli.addressing_24_bit);
         assert_eq!(cli.screen_depth, Some(4));
         assert_eq!(cli.display_scale, 2);
+        assert_eq!(cli.ui_theme, UiThemeId::SystemlessDefault);
         assert_eq!(cli.max_instructions, Some(1234));
     }
 
     #[test]
-    fn cli_defaults_to_one_physical_host_pixel_per_guest_pixel() {
+    fn cli_defaults_to_one_physical_host_pixel_and_systemless_theme() {
         let cli = Cli::try_parse_from(["systemless", "game.sit"])
             .expect("default display scale should parse");
         assert_eq!(cli.display_scale, 1);
         assert_eq!(cli.screen_depth, None);
+        assert_eq!(cli.ui_theme, UiThemeId::SystemlessDefault);
         assert_eq!(
             guest_scaled_physical_size(800, 600, cli.display_scale),
             winit::dpi::PhysicalSize::new(800, 600)
