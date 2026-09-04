@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.32.0](https://github.com/benletchford/systemless/compare/v0.31.0...v0.32.0) (2026-09-04)
+
+
+### Features
+
+* **showcase:** add events and cursors page ([#1340](https://github.com/benletchford/systemless/issues/1340)) ([1982f1f](https://github.com/benletchford/systemless/commit/1982f1f7d467935143706647ad336218a3737603))
+* **showcase:** add popup dropdown lists page ([#1343](https://github.com/benletchford/systemless/issues/1343)) ([00971bb](https://github.com/benletchford/systemless/commit/00971bbfd4aef5aa9d28666dbac5a63facae6c10))
+* **showcase:** expand window stacking and repaint coverage ([#1342](https://github.com/benletchford/systemless/issues/1342)) ([b17c949](https://github.com/benletchford/systemless/commit/b17c94973ff37358333fd8fbc69f217f530ad7bf))
+
 ## [0.31.0](https://github.com/benletchford/systemless/compare/v0.30.0...v0.31.0) (2026-09-04)
 
 
