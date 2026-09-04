@@ -533,6 +533,21 @@ pub(crate) fn render_scrollbar_bitmap(
     let palette = theme.palette();
     let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
     let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+    // The classic List Manager uses reserved CDEF state 254 for a blank
+    // inactive track (Mac OS 8.1, both CPU slices). It differs from 255,
+    // which draws the disabled arrows of an ordinary scroll control.
+    if hilite == 254 {
+        ctx.frame_rect(
+            ThemeRect {
+                top: 0,
+                left: 0,
+                bottom: height,
+                right: width,
+            },
+            palette.frame_dark,
+        );
+        return bitmap;
+    }
     theme.draw_scrollbar(
         &mut ctx,
         ScrollbarState {
@@ -2896,6 +2911,27 @@ mod tests {
         assert_eq!(classic.height(), 48);
         assert_eq!(classic.rgba().len(), 128 * 48 * 4);
         assert_ne!(classic.rgba(), themed.rgba());
+    }
+
+    #[test]
+    fn inactive_list_scrollbar_has_a_blank_track() {
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            let bitmap = render_scrollbar_bitmap(theme, 16, 114, 4, 0, 6, 254);
+            let background = theme.provider().palette().window_background;
+            for y in 1..113 {
+                for x in 1..15 {
+                    assert_eq!(
+                        rgb_at(&bitmap, x, y),
+                        [background.r, background.g, background.b]
+                    );
+                }
+            }
+            assert_ne!(rgb_at(&bitmap, 0, 0), rgb_at(&bitmap, 1, 1));
+            assert_ne!(
+                bitmap.rgba(),
+                render_scrollbar_bitmap(theme, 16, 114, 4, 0, 6, 255).rgba()
+            );
+        }
     }
 
     #[test]

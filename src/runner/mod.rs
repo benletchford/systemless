@@ -32,6 +32,22 @@ use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+/// Deterministic List Manager state for fixture and diagnostic assertions.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListManagerSnapshot {
+    pub view_rect: (i16, i16, i16, i16),
+    pub data_bounds: (i16, i16, i16, i16),
+    pub cell_size: (i16, i16),
+    pub visible: (i16, i16, i16, i16),
+    pub draw_enabled: bool,
+    pub active: bool,
+    pub cells: BTreeMap<(i16, i16), Vec<u8>>,
+    pub selected: BTreeSet<(i16, i16)>,
+    pub vertical_scrollbar: Option<(bool, u8)>,
+    pub horizontal_scrollbar: Option<(bool, u8)>,
+}
+
 /// One resource-map entry exposed by the fixture introspection snapshot.
 ///
 /// This deliberately reports Resource Manager semantics rather than guest
@@ -2743,6 +2759,78 @@ impl FixtureRunner {
         } else {
             self.dispatcher.guest_menu_snapshot(&self.bus)
         }
+    }
+
+    /// Inspect logical list contents and the visibility/highlight bytes of
+    /// their guest scrollbar controls on either CPU architecture.
+    #[doc(hidden)]
+    pub fn list_manager_snapshot(&mut self) -> Vec<ListManagerSnapshot> {
+        use crate::list_manager::ProcessListRecord;
+        let snapshot =
+            |record: &ProcessListRecord, bars: [Option<(bool, u8)>; 2]| ListManagerSnapshot {
+                view_rect: record.view_rect,
+                data_bounds: record.data_bounds,
+                cell_size: record.cell_size,
+                visible: record.visible,
+                draw_enabled: record.draw_enabled,
+                active: record.active,
+                cells: record
+                    .cells
+                    .iter()
+                    .map(|(cell, bytes)| (*cell, bytes.clone()))
+                    .collect(),
+                selected: record.selected.clone(),
+                vertical_scrollbar: bars[0],
+                horizontal_scrollbar: bars[1],
+            };
+        // ListRec.vScroll/hScroll: More Macintosh Toolbox, pp. 4-3--4-7.
+        // ControlRecord.contrlVis/contrlHilite: Toolbox Essentials, pp. 5-61--5-63.
+        let mut lists = if let Some(app) = self.ppc_app.as_mut() {
+            let records = app.list_manager.values().cloned().collect::<Vec<_>>();
+            records
+                .iter()
+                .map(|record| {
+                    let bars = [28, 32].map(|offset| {
+                        let ptr = app.memory.read_u32_be(record.handle).filter(|p| *p != 0)?;
+                        let handle = app.memory.read_u32_be(ptr + offset).filter(|p| *p != 0)?;
+                        let control = app.memory.read_u32_be(handle).filter(|p| *p != 0)?;
+                        Some((
+                            app.memory.read_u8(control + 16)? != 0,
+                            app.memory.read_u8(control + 17)?,
+                        ))
+                    });
+                    (record.handle, snapshot(record, bars))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            self.dispatcher
+                .list_states
+                .values()
+                .map(|record| {
+                    let bars = [28, 32].map(|offset| {
+                        let ptr = self.bus.read_long(record.handle);
+                        if ptr == 0 {
+                            return None;
+                        }
+                        let handle = self.bus.read_long(ptr + offset);
+                        if handle == 0 {
+                            return None;
+                        }
+                        let control = self.bus.read_long(handle);
+                        if control == 0 {
+                            return None;
+                        }
+                        Some((
+                            self.bus.read_byte(control + 16) != 0,
+                            self.bus.read_byte(control + 17),
+                        ))
+                    });
+                    (record.handle, snapshot(record, bars))
+                })
+                .collect::<Vec<_>>()
+        };
+        lists.sort_by_key(|(handle, _)| *handle);
+        lists.into_iter().map(|(_, snapshot)| snapshot).collect()
     }
 
     /// Return a deterministic semantic snapshot of the current Resource

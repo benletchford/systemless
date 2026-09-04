@@ -1,0 +1,108 @@
+{
+  "fixture_sha256": "b88553c2fd06011752b732d2103a6ae194e65bf9f52d3b5bcce52acf27ee7d7e",
+  "scenario": "oracle/lists.json",
+  "scenario_sha256": "cc8bad1ba5fee115e3bf613ec528001cb6b70f9c296c3f68a6febe21dc991dec",
+  "capture_date": "2026-09-05",
+  "verification": {
+    "selected_row": 8,
+    "mutated_cell_bytes": 40,
+    "first_row_after_scroll": "Navigation Chip (row 5)",
+    "resized_view": [
+      78,
+      24,
+      192,
+      474
+    ],
+    "inactive_scrollbar": "blank track; selection retained",
+    "reactivation": "selection and scrollbar restored",
+    "page_exit": "inventory scrollbar absent on Popup & Dropdown Lists"
+  },
+  "runs": [
+    {
+      "emulator": "basilisk",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "checkpoints": [
+        {
+          "file": "reference/basiliskii-68k/15-lists.png",
+          "sha256": "4eff581ffd4b359b3b00facc12b2c8920de129ba1d29cd6d83d53d03ff4d8c86"
+        },
+        {
+          "file": "reference/basiliskii-68k/15-lists-selected.png",
+          "sha256": "d427c602349470f07ccf6f7a7b4dc3e8753568e9514f90d72a21684f9d0bbc95"
+        },
+        {
+          "file": "reference/basiliskii-68k/15-lists-mutated.png",
+          "sha256": "47006a0613504364835acf62cf46416c743e46bfa2172d0be1224809a6faccae"
+        },
+        {
+          "file": "reference/basiliskii-68k/15-lists-scrolled.png",
+          "sha256": "b61382d89aa3bce96e3d7e4a86c0cc23a0fa87527b1b7aa5d9a1e91a09a1770d"
+        },
+        {
+          "file": "reference/basiliskii-68k/15-lists-resized.png",
+          "sha256": "c2cc5efdf6e41ebbdf94ab5dac31d0bbbd7bf435aa45a5954d3e35340dec38e9"
+        },
+        {
+          "file": "reference/basiliskii-68k/15-lists-inactive.png",
+          "sha256": "9ca05cdd1e4fec31d78c3f15fd84e72ef3f8b3da9d04ab45611fa66899d8bdbe"
+        },
+        {
+          "file": "reference/basiliskii-68k/16-lists-interacted.png",
+          "sha256": "c9c0122926a6645db59090aea584b3e5a7d290a36ce7bc1ee696e6d436bef210"
+        },
+        {
+          "file": "reference/basiliskii-68k/34-popup-lists.png",
+          "sha256": "83f46dd58211c3cb79328d89da53daa3ed1d03627fe6dbeb04a07f63b6cb124c"
+        }
+      ]
+    },
+    {
+      "emulator": "sheepshaver",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 32,
+      "checkpoints": [
+        {
+          "file": "reference/sheepshaver-ppc/15-lists.png",
+          "sha256": "a5d217bd79545cd1edc901878fdee22253b568395910df7f52037cb88cece2ef"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/15-lists-selected.png",
+          "sha256": "7a501f34d19a5bd63ee5852fe7a0fe1a52d5ce925fe6a3d9c2a1cb461fe8a30d"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/15-lists-mutated.png",
+          "sha256": "8c91b0282836b82207ceb68def496ffd9b2a93183a9d2d6a727c80fee6a091f8"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/15-lists-scrolled.png",
+          "sha256": "23bc782777069645c5f06c6bbf5930880dc29e65943093ec8680f4213b641b1d"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/15-lists-resized.png",
+          "sha256": "4b2cdd84b8b50ebab860d0d0af90bfb380d39f3f59dd40ea741b41f4916433e0"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/15-lists-inactive.png",
+          "sha256": "3f23038abc26057f9d3b4f226899834380ec85e61a0906414649641d588ef3c2"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/16-lists-interacted.png",
+          "sha256": "674b3421e7b4b01c12b0f1e9d89c8746d0a54779dbe755cf9f2f5dc3f9a026a2"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/34-popup-lists.png",
+          "sha256": "105329890e67af93fc66769cc1ced3de2130f30a6843acac5675b9fd7e1eadab"
+        }
+      ]
+    }
+  ]
+}

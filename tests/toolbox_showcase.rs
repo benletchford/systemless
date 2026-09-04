@@ -1873,6 +1873,19 @@ fn test_toolbox_showcase() {
 
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "15-lists.png");
+    let lists = runner.list_manager_snapshot();
+    assert_eq!(lists.len(), 1);
+    let initial_list = lists[0].clone();
+    assert_eq!(initial_list.data_bounds, (0, 0, 12, 1));
+    assert_eq!(initial_list.view_rect, (78, 24, 228, 528));
+    assert_eq!(initial_list.cell_size, (18, 504));
+    assert_eq!(initial_list.visible, (0, 0, 9, 1));
+    assert!(initial_list.draw_enabled && initial_list.active);
+    assert_eq!(initial_list.vertical_scrollbar, Some((true, 0)));
+    assert!(initial_list.selected.is_empty());
+    assert_eq!(initial_list.cells.len(), 12);
+    assert_eq!(initial_list.cells[&(7, 0)], b"Signal Beacon       01  ready");
+
 
     // Select row 8 (zero-based row 7) in the initial 18-pixel cell layout.
     // The sample is in the row's empty right-hand background, so it observes
@@ -1891,6 +1904,11 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "inspect selected inventory row", 1);
     runner.set_mouse_position(550, 760);
     let selected_frame = rendered_rgb(&mut runner).2;
+    let selected_list = runner.list_manager_snapshot().remove(0);
+    assert_eq!(selected_list.selected.iter().copied().collect::<Vec<_>>(), vec![(7, 0)]);
+    assert_eq!(selected_list.cells, initial_list.cells);
+    assert_reference_frame(&mut runner, "15-lists-selected.png");
+
 
     // Update Selected Row appends data obtained through LGetCell and writes
     // it back with LSetCell.
@@ -1898,6 +1916,13 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "mutate selected inventory row", 1);
     runner.set_mouse_position(550, 760);
     let mutated_frame = rendered_rgb(&mut runner).2;
+    let mutated_list = runner.list_manager_snapshot().remove(0);
+    let mut expected_cells = initial_list.cells.clone();
+    expected_cells.get_mut(&(7, 0)).unwrap().extend_from_slice(b"  * updated");
+    assert_eq!(mutated_list.cells, expected_cells);
+    assert_eq!(mutated_list.selected, selected_list.selected);
+    assert_reference_frame(&mut runner, "15-lists-mutated.png");
+
     assert_ne!(
         selected_frame, mutated_frame,
         "LSetCell mutation must change the rendered list/status state"
@@ -1909,6 +1934,12 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "scroll inventory list", 1);
     runner.set_mouse_position(550, 760);
     let scrolled_frame = rendered_rgb(&mut runner).2;
+    let scrolled_list = runner.list_manager_snapshot().remove(0);
+    assert_eq!(scrolled_list.visible, (4, 0, 12, 1));
+    assert_eq!(scrolled_list.cells, expected_cells);
+    assert_eq!(scrolled_list.selected, selected_list.selected);
+    assert_reference_frame(&mut runner, "15-lists-scrolled.png");
+
     assert_ne!(
         mutated_frame, scrolled_frame,
         "LScroll must change the rendered list/status state"
@@ -1918,6 +1949,12 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "resize inventory list", 1);
     runner.set_mouse_position(550, 760);
     let resized_frame = rendered_rgb(&mut runner).2;
+    let resized_list = runner.list_manager_snapshot().remove(0);
+    assert_eq!(resized_list.view_rect, (78, 24, 192, 474));
+    assert_eq!(resized_list.visible, (4, 0, 11, 1));
+    assert_eq!(resized_list.cells, expected_cells);
+    assert_reference_frame(&mut runner, "15-lists-resized.png");
+
     assert_ne!(
         scrolled_frame, resized_frame,
         "LSize must change the rendered list/status state"
@@ -1928,6 +1965,13 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "deactivate inventory list", 1);
     runner.set_mouse_position(550, 760);
     let inactive_frame = rendered_rgb(&mut runner).2;
+    let inactive_list = runner.list_manager_snapshot().remove(0);
+    assert!(!inactive_list.active);
+    assert_eq!(inactive_list.vertical_scrollbar, Some((true, 254)));
+    assert_eq!(inactive_list.cells, expected_cells);
+    assert_eq!(inactive_list.selected, selected_list.selected);
+    assert_reference_frame(&mut runner, "15-lists-inactive.png");
+
     assert_ne!(
         resized_frame, inactive_frame,
         "LActivate(FALSE) must change the rendered list/status state"
@@ -1942,6 +1986,12 @@ fn test_toolbox_showcase() {
         "LActivate(TRUE) must change the rendered list/status state"
     );
     assert_reference_frame(&mut runner, "16-lists-interacted.png");
+    let active_list = runner.list_manager_snapshot().remove(0);
+    assert!(active_list.active);
+    assert_eq!(active_list.vertical_scrollbar, Some((true, 0)));
+    assert_eq!(active_list.cells, expected_cells);
+    assert_eq!(active_list.selected, selected_list.selected);
+
 
     // 17. Activate Sound & Channels and exercise the high- and low-level
     // Sound Manager paths, including deterministic PCM output.
@@ -2645,6 +2695,10 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     let popup_initial_frame = rendered_rgb(&mut runner).2;
     assert_reference_frame(&mut runner, "34-popup-lists.png");
+    let hidden_list = runner.list_manager_snapshot().remove(0);
+    assert!(!hidden_list.active && !hidden_list.draw_enabled);
+    assert_eq!(hidden_list.vertical_scrollbar.map(|bar| bar.0), Some(false));
+
 
     // Open the resource-backed popup and move over its separator and then its
     // disabled row. Both rows must remain unhighlighted and release must

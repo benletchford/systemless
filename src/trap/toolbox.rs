@@ -3669,39 +3669,11 @@ impl super::TrapDispatcher {
         state: &super::dispatch::ListState,
         vertical: bool,
     ) -> (i16, i16, i16) {
-        let (data_start, data_end, visible_start, visible_end) = if vertical {
-            (
-                state.data_bounds.0,
-                state.data_bounds.2,
-                state.visible.0,
-                state.visible.2,
-            )
-        } else {
-            (
-                state.data_bounds.1,
-                state.data_bounds.3,
-                state.visible.1,
-                state.visible.3,
-            )
-        };
-        let page = (visible_end - visible_start).max(1);
-        let max = (data_end - page).max(data_start);
-        (visible_start.clamp(data_start, max), data_start, max)
+        state.scrollbar_limits(vertical)
     }
 
     fn set_list_visible_origin(state: &mut super::dispatch::ListState, row: i16, column: i16) {
-        let row_page = (state.visible.2 - state.visible.0).max(1);
-        let col_page = (state.visible.3 - state.visible.1).max(1);
-        let max_row = (state.data_bounds.2 - row_page).max(state.data_bounds.0);
-        let max_col = (state.data_bounds.3 - col_page).max(state.data_bounds.1);
-        let top = row.clamp(state.data_bounds.0, max_row);
-        let left = column.clamp(state.data_bounds.1, max_col);
-        state.visible = (
-            top,
-            left,
-            (top + row_page).min(state.data_bounds.2),
-            (left + col_page).min(state.data_bounds.3),
-        );
+        state.set_visible_origin(row, column);
     }
 
     fn list_scrollbar_bounds(
@@ -3791,6 +3763,10 @@ impl super::TrapDispatcher {
                 0
             };
             if control != 0 {
+                if bus.read_byte(list_ptr + Self::LIST_ACTIVE_OFFSET) == 0 {
+                    // LUpdate's inactive-list scrollbar state on Mac OS 8.1.
+                    bus.write_byte(control + 17, 254);
+                }
                 self.draw_control(cpu, bus, control);
             }
         }
@@ -11171,11 +11147,12 @@ impl super::TrapDispatcher {
                                 } else {
                                     0
                                 };
-                                if control != 0 {
-                                    bus.write_byte(control + 16, if draw_it { 255 } else { 0 });
-                                    if draw_it {
-                                        self.draw_control(cpu, bus, control);
-                                    }
+                                if control != 0 && draw_it {
+                                    // LDoDraw(FALSE) disables cell drawing, not
+                                    // control visibility (IM IV-275). Mac OS 8.1
+                                    // leaves contrlVis set until HideControl.
+                                    bus.write_byte(control + 16, 255);
+                                    self.draw_control(cpu, bus, control);
                                 }
                             }
                         }
@@ -11776,9 +11753,9 @@ impl super::TrapDispatcher {
                                         0
                                     };
                                     if control != 0 {
-                                        // Inside Macintosh: More Macintosh Toolbox (1993),
-                                        // pp. 4-75--4-76: an inactive list disables its
-                                        // standard scroll bars through contrlHilite.
+                                        // LActivate: IM IV-276 describes hiding the bars.
+                                        // Mac OS 8.1 instead keeps contrlVis and sets
+                                        // contrlHilite=255 (BasiliskII/SheepShaver probe).
                                         bus.write_byte(control + 17, if act { 0 } else { 255 });
                                     }
                                 }
@@ -12039,11 +12016,12 @@ impl super::TrapDispatcher {
                                 } else {
                                     0
                                 };
-                                if control != 0 {
-                                    bus.write_byte(control + 16, if draw_it { 255 } else { 0 });
-                                    if draw_it {
-                                        self.draw_control(cpu, bus, control);
-                                    }
+                                if control != 0 && draw_it {
+                                    // LDoDraw(FALSE) disables cell drawing, not
+                                    // control visibility (IM IV-275). Mac OS 8.1
+                                    // leaves contrlVis set until HideControl.
+                                    bus.write_byte(control + 16, 255);
+                                    self.draw_control(cpu, bus, control);
                                 }
                             }
                         }
@@ -24287,6 +24265,18 @@ mod tests {
             0,
             "initial contrlHilite must be 0"
         );
+
+        // Drawing off retains scrollbar visibility on Mac OS 8.1.
+        assert_eq!(bus.read_byte(v_scroll_ptr + 16), 0);
+        for draw in [true, false] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0x002C);
+            bus.write_long(sp + 2, list_handle);
+            bus.write_word(sp + 6, if draw { 0x0100 } else { 0 });
+            assert!(disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(bus.read_byte(v_scroll_ptr + 16), 255);
+            assert_eq!(disp.list_states[&list_handle].draw_enabled, draw);
+        }
 
         // Call LActivate(FALSE, list)
         cpu.write_reg(Register::A7, sp);

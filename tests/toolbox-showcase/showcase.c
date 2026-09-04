@@ -1992,6 +1992,23 @@ short InventoryTextLength(const char *text)
     return length;
 }
 
+/* The List Manager retains scrollbar controls while drawing is disabled.
+ * Hide page-owned controls explicitly (Macintosh Toolbox Essentials,
+ * pp. 5-86 and 5-97), including on Mac OS versions that dim inactive lists. */
+void SetInventoryScrollbarsVisible(Boolean visible)
+{
+    ControlHandle scroll;
+    if (gInventoryList == nil) return;
+    scroll = (**gInventoryList).vScroll;
+    if (scroll != nil) {
+        if (visible) ShowControl(scroll); else HideControl(scroll);
+    }
+    scroll = (**gInventoryList).hScroll;
+    if (scroll != nil) {
+        if (visible) ShowControl(scroll); else HideControl(scroll);
+    }
+}
+
 void UpdateInventoryList(void)
 {
     RgnHandle updateRegion;
@@ -4086,6 +4103,7 @@ static void SetPage(short page)
     if (gPage == pageLists && page != pageLists && gInventoryList != nil) {
         LActivate(false, gInventoryList);
         LSetDrawingMode(false, gInventoryList);
+        SetInventoryScrollbarsVisible(false);
     }
     if (gPage == pageEventsCursors && page != pageEventsCursors) {
         /* InitCursor also resets the hide count, so a hidden showcase cursor
@@ -4107,6 +4125,7 @@ static void SetPage(short page)
         gListActive = true;
         LSetDrawingMode(true, gInventoryList);
         LActivate(true, gInventoryList);
+        SetInventoryScrollbarsVisible(true);
     }
     if (page == pageSound) {
         EnsureShowcaseSoundChannel();
@@ -4314,7 +4333,11 @@ static void Initialize(void)
     gInventoryList = LNew(&gInventoryView, &dataBounds, cellSize, 0,
                           gMainWindow, false, true, false, true);
     PopulateInventoryList();
-    if (gInventoryList != nil) LSetDrawingMode(false, gInventoryList);
+    if (gInventoryList != nil) {
+        LActivate(false, gInventoryList);
+        LSetDrawingMode(false, gInventoryList);
+        SetInventoryScrollbarsVisible(false);
+    }
 
     SetRect(&r, 24, 242, 135, 266);
     gListInspect = NewControl(gMainWindow, &r, "\pInspect Selection", false, 0, 0, 1,
@@ -4846,7 +4869,8 @@ static void DoEvent(EventRecord *event)
         case activateEvt:
             window = (WindowPtr)event->message;
             if (window == gMainWindow && gInventoryList != nil) {
-                gListActive = (event->modifiers & activeFlag) != 0;
+                gListActive = gPage == pageLists &&
+                              (event->modifiers & activeFlag) != 0;
                 LActivate(gListActive, gInventoryList);
                 if (gPage == pageLists) DrawMainWindow();
             }

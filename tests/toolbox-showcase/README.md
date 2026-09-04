@@ -283,6 +283,15 @@ tracking. The longer menu exceeds the viewport even with the classic system's
 smaller window font; the earlier 39-item menu could fit without scrolling.
 Classic fonts and popup CDEF chrome remain presentation variance.
 
+The inventory replay is [`oracle/lists.json`](oracle/lists.json), with fresh
+capture identities in [`oracle/lists-capture.json`](oracle/lists-capture.json).
+Intermediate checkpoints prove row 8 selection, its 40-byte mutated contents,
+a full four-row scroll, compact geometry, a blank inactive scrollbar track,
+and restored selection after activation. Systemless tests inspect the list's
+logical cells, selected cells, visible range, geometry, and control fields.
+The fixture explicitly hides list-owned scrollbars on page exit: automatic
+drawing mode and activation are not substitutes for page visibility.
+
 The portable event sequence is [`oracle/popup.json`](oracle/popup.json).
 [`oracle/popup-capture.json`](oracle/popup-capture.json) records the fixture
 hash, emulator source revision, display configuration, checked outcomes, and
@@ -323,7 +332,7 @@ indexed paths.
 
 ### Systemless theme experiment
 
-The complete 44-frame 68K theme audit lives in
+The complete 49-frame 68K theme audit lives in
 [`reference/systemless-theme-68k`](reference/systemless-theme-68k). It follows
 the same deterministic interaction sequence as the classic Systemless baseline,
 including every window activation, move, resize, z-order, dialog, scrollbar,
@@ -354,6 +363,11 @@ palette, scrolling, and popup-menu checkpoint.
 | 13. Menu-bar hover | <img src="reference/systemless-68k/13-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/13-menu-hover.png" alt="Pages menu selected while dragging from File in BasiliskII" width="360"> |
 | 14. Palette restoration | <img src="reference/systemless-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the 68K interaction sequence" width="360"> | <img src="reference/basiliskii-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in BasiliskII" width="360"> |
 | 15. Lists & Inventory | <img src="reference/systemless-68k/15-lists.png" alt="Initial Lists and Inventory page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/15-lists.png" alt="Initial Lists and Inventory page in BasiliskII" width="360"> |
+| 15. Selected cell | <img src="reference/systemless-68k/15-lists-selected.png" alt="Selected cell in Systemless" width="360"> | <img src="reference/basiliskii-68k/15-lists-selected.png" alt="Selected cell in the classic emulator" width="360"> |
+| 15. Mutated cell | <img src="reference/systemless-68k/15-lists-mutated.png" alt="Mutated cell in Systemless" width="360"> | <img src="reference/basiliskii-68k/15-lists-mutated.png" alt="Mutated cell in the classic emulator" width="360"> |
+| 15. Four-row scroll | <img src="reference/systemless-68k/15-lists-scrolled.png" alt="Four-row scroll in Systemless" width="360"> | <img src="reference/basiliskii-68k/15-lists-scrolled.png" alt="Four-row scroll in the classic emulator" width="360"> |
+| 15. Resized list | <img src="reference/systemless-68k/15-lists-resized.png" alt="Resized list in Systemless" width="360"> | <img src="reference/basiliskii-68k/15-lists-resized.png" alt="Resized list in the classic emulator" width="360"> |
+| 15. Inactive list | <img src="reference/systemless-68k/15-lists-inactive.png" alt="Inactive list in Systemless" width="360"> | <img src="reference/basiliskii-68k/15-lists-inactive.png" alt="Inactive list in the classic emulator" width="360"> |
 | 16. Interacted inventory list | <img src="reference/systemless-68k/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in BasiliskII" width="360"> |
 | 17. Sound controls | <img src="reference/systemless-68k/17-sound-controls.png" alt="Sound controls in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/17-sound-controls.png" alt="Sound controls in BasiliskII" width="360"> |
 | 18. Sound completion | <img src="reference/systemless-68k/18-sound-complete.png" alt="Sound completion in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/18-sound-complete.png" alt="Sound completion in BasiliskII" width="360"> |
@@ -403,6 +417,11 @@ palette, scrolling, and popup-menu checkpoint.
 | 13. Menu-bar hover | <img src="reference/systemless-ppc/13-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/13-menu-hover.png" alt="Pages menu selected while dragging from File in SheepShaver" width="360"> |
 | 14. Palette restoration | <img src="reference/systemless-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the PowerPC interaction sequence" width="360"> | <img src="reference/sheepshaver-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in SheepShaver" width="360"> |
 | 15. Lists & Inventory | <img src="reference/systemless-ppc/15-lists.png" alt="Initial Lists and Inventory page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/15-lists.png" alt="Initial Lists and Inventory page in SheepShaver" width="360"> |
+| 15. Selected cell | <img src="reference/systemless-ppc/15-lists-selected.png" alt="Selected cell in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/15-lists-selected.png" alt="Selected cell in the classic emulator" width="360"> |
+| 15. Mutated cell | <img src="reference/systemless-ppc/15-lists-mutated.png" alt="Mutated cell in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/15-lists-mutated.png" alt="Mutated cell in the classic emulator" width="360"> |
+| 15. Four-row scroll | <img src="reference/systemless-ppc/15-lists-scrolled.png" alt="Four-row scroll in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/15-lists-scrolled.png" alt="Four-row scroll in the classic emulator" width="360"> |
+| 15. Resized list | <img src="reference/systemless-ppc/15-lists-resized.png" alt="Resized list in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/15-lists-resized.png" alt="Resized list in the classic emulator" width="360"> |
+| 15. Inactive list | <img src="reference/systemless-ppc/15-lists-inactive.png" alt="Inactive list in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/15-lists-inactive.png" alt="Inactive list in the classic emulator" width="360"> |
 | 16. Interacted inventory list | <img src="reference/systemless-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in SheepShaver" width="360"> |
 | 17. Sound controls | <img src="reference/systemless-ppc/17-sound-controls.png" alt="Sound controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/17-sound-controls.png" alt="Sound controls in SheepShaver" width="360"> |
 | 18. Sound completion | <img src="reference/systemless-ppc/18-sound-complete.png" alt="Sound completion in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/18-sound-complete.png" alt="Sound completion in SheepShaver" width="360"> |

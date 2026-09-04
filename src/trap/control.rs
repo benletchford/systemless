@@ -3203,7 +3203,7 @@ impl super::TrapDispatcher {
                 if ctrl_ptr != 0 {
                     let vis = bus.read_byte(ctrl_ptr + 16);
                     let hilite = bus.read_byte(ctrl_ptr + 17);
-                    if Self::control_vis_is_visible(vis) && hilite != 255 {
+                    if Self::control_vis_is_visible(vis) && hilite < 254 {
                         let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                         let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                         let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
@@ -3493,7 +3493,7 @@ impl super::TrapDispatcher {
                         let vis = bus.read_byte(ctrl_ptr + 16);
                         let hilite = bus.read_byte(ctrl_ptr + 17);
                         outcome = "inactive_or_invisible";
-                        if Self::control_vis_is_visible(vis) && hilite != 255 {
+                        if Self::control_vis_is_visible(vis) && hilite < 254 {
                             let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                             let r_left = bus.read_word(ctrl_ptr + 10) as i16;
                             let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
@@ -3927,7 +3927,7 @@ impl super::TrapDispatcher {
                         // Check hilite (offset 17, 255 = inactive/disabled)
                         let hilite = bus.read_byte(ctrl_ptr + 17);
 
-                        if Self::control_vis_is_visible(vis) && hilite != 255 {
+                        if Self::control_vis_is_visible(vis) && hilite < 254 {
                             // Check contrlRect (offset 8): top, left, bottom, right
                             let r_top = bus.read_word(ctrl_ptr + 8) as i16;
                             let r_left = bus.read_word(ctrl_ptr + 10) as i16;
