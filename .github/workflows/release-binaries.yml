@@ -13,13 +13,6 @@ on:
         description: Existing release tag to build and attach binaries to
         required: true
         type: string
-  pull_request:
-    paths:
-      - .github/workflows/release-binaries.yml
-      - .github/workflows/release-please.yml
-      - scripts/package-release.py
-      - Cargo.toml
-      - Cargo.lock
 
 permissions:
   contents: read
