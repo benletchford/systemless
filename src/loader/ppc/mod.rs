@@ -1626,6 +1626,10 @@ pub enum PpcImportDispatcherTarget {
     P2CStr,
     C2PStr,
     UpperText,
+    GetCurrentThread,
+    GetThreadState,
+    ThreadBeginCritical,
+    ThreadEndCritical,
     GetCurrentProcess,
     WakeUpProcess,
     SameProcess,
@@ -14944,6 +14948,12 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::C2PStr
         }
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
+        ("InterfaceLib", "GetCurrentThread" | "MacGetCurrentThread") => {
+            PpcImportDispatcherTarget::GetCurrentThread
+        }
+        ("InterfaceLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
+        ("InterfaceLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
+        ("InterfaceLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
@@ -23972,6 +23982,46 @@ fn dispatch_supported_import(
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetCurrentThread => {
+            // OSErr GetCurrentThread(ThreadID *currentThreadID);
+            // Inside Macintosh: Thread Manager (1999), p. 62.
+            let id = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                .current_thread();
+            let result = if cpu.gpr[3] != 0 && memory.write_u32_be(cpu.gpr[3], id).is_some() {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::GetThreadState => {
+            // OSErr GetThreadState(ThreadID thread, ThreadState *state);
+            // Inside Macintosh: Thread Manager (1999), pp. 45, 63.
+            let result = if cpu.gpr[4] == 0 {
+                PPC_PARAM_ERR
+            } else {
+                match crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                    .state(cpu.gpr[3])
+                {
+                    Ok(state) if memory.write_u16_be(cpu.gpr[4], state).is_some() => PPC_NO_ERR,
+                    Ok(_) => PPC_PARAM_ERR,
+                    Err(error) => error,
+                }
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ThreadBeginCritical => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                    .begin_critical(),
+            )))
+        }
+        PpcImportDispatcherTarget::ThreadEndCritical => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                    .end_critical(),
+            )))
         }
         PpcImportDispatcherTarget::GetCurrentProcess => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_get_current_process(cpu, memory)),
@@ -166573,6 +166623,130 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
             Some(vec![b'A', b'Z', 0x83, b'!', b'q'])
         );
+    }
+
+    #[test]
+    fn hle_import_runner_thread_queries_observe_classic_task_state() {
+        use crate::cpu::{CpuOps, Register};
+        use crate::guest_call::ExecutionTaskId;
+        use crate::trap::test_helpers::{setup, TEST_SP};
+        let (mut classic, mut cpu, mut bus) = setup();
+        let worker = ExecutionTaskId::from_thread_id(3);
+        assert!(classic.guest_calls.register_task(worker));
+        // SetThreadState(worker, ready, kNoThreadID) at the classic ABI edge.
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, worker.thread_id());
+        cpu.write_reg(Register::D0, 0x0508);
+        classic
+            .dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"GetThreadState")).unwrap();
+        loaded.guest_calls = classic.guest_calls.shared_handle();
+        let out = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(out, vec![0xaa; 4]);
+        for (thread, expected_result, expected_state) in [(3, 0, 0), (1, 0, 2), (99, -618, 0xaaaa)]
+        {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = thread;
+            loaded.cpu.gpr[4] = out;
+            loaded.memory.write_u32_be(out, 0xaaaa_aaaa).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected_result));
+            assert_eq!(loaded.memory.read_u16_be(out), Some(expected_state));
+            assert_eq!(loaded.memory.read_u16_be(out + 2), Some(0xaaaa));
+        }
+        // The classic unknown-thread route returns the same error and leaves output intact.
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0407);
+        bus.write_long(TEST_SP, TEST_SP + 0x100);
+        bus.write_long(TEST_SP + 4, 99);
+        bus.write_word(TEST_SP + 0x100, 0xaaaa);
+        classic
+            .dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -618);
+        assert_eq!(bus.read_word(TEST_SP + 0x100), 0xaaaa);
+    }
+
+    #[test]
+    fn hle_import_runner_thread_outputs_reject_partial_mappings() {
+        for symbol in [
+            b"GetCurrentThread".as_slice(),
+            b"MacGetCurrentThread".as_slice(),
+            b"GetThreadState".as_slice(),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(symbol)).unwrap();
+            let out = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(out, vec![0xaa]);
+            let state_query = symbol == b"GetThreadState";
+            loaded.cpu.gpr[3] = if state_query { 1 } else { out };
+            loaded.cpu.gpr[4] = out;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+            assert_eq!(loaded.memory.read_u8(out), Some(0xaa));
+
+            loaded.memory.add_region(out, vec![0xaa; 4]);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = if state_query { 1 } else { out };
+            loaded.cpu.gpr[4] = out;
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            if state_query {
+                assert_eq!(loaded.memory.read_u32_be(out), Some(0x0002_aaaa));
+            } else {
+                assert_eq!(loaded.memory.read_u32_be(out), Some(2));
+            }
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_thread_critical_sections_cross_both_abi_edges() {
+        use crate::cpu::{CpuOps, Register};
+        use crate::trap::test_helpers::{setup, TEST_SP};
+        let (mut classic, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 0x000b);
+        classic
+            .dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(classic.guest_calls.critical_depth(), 1);
+        let mut end =
+            load_pef_application(&synthetic_pef_with_import(b"ThreadEndCritical")).unwrap();
+        end.guest_calls = classic.guest_calls.shared_handle();
+        assert_eq!(end.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(end.cpu.gpr[3], 0);
+        assert_eq!(classic.guest_calls.critical_depth(), 0);
+        end.cpu.pc = end.entry_pc;
+        end.cpu.lr = PPC_HALT_PC;
+        assert_eq!(end.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(end.cpu.gpr[3], ppc_i16_result(-619));
+        assert_eq!(classic.guest_calls.critical_depth(), 0);
+
+        let mut begin =
+            load_pef_application(&synthetic_pef_with_import(b"ThreadBeginCritical")).unwrap();
+        begin.guest_calls = classic.guest_calls.shared_handle();
+        assert_eq!(begin.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(begin.cpu.gpr[3], 0);
+        assert_eq!(classic.guest_calls.critical_depth(), 1);
+        cpu.write_reg(Register::D0, 0x000c);
+        cpu.write_reg(Register::A7, TEST_SP);
+        classic
+            .dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(classic.guest_calls.critical_depth(), 0);
     }
 
     #[test]

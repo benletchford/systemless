@@ -613,6 +613,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
             .or_else(|| state.ready.iter().copied().find(|task| eligible(*task)))
     }
 
+    #[cfg(test)]
     pub(crate) fn critical_depth(&self) -> u32 {
         self.0.borrow().critical_depth
     }

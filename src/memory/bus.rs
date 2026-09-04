@@ -1407,6 +1407,11 @@ impl MacMemoryBus {
         self.try_write_bytes_atomic(address, &value.to_be_bytes())
     }
 
+    /// Commit a 16-bit ABI result only when all routed bytes accept writes.
+    pub(crate) fn try_write_word(&mut self, address: u32, value: u16) -> bool {
+        self.try_write_bytes_atomic(address, &value.to_be_bytes())
+    }
+
     /// Read one guest longword only when all four routed bytes are mapped.
     /// `MemoryBus::read_long` preserves the classic unmapped-zero behavior,
     /// which is useful to emulated code but cannot distinguish a missing Trap

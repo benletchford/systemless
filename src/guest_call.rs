@@ -512,6 +512,7 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.next_ready_task(suggested)
     }
 
+    #[cfg(test)]
     pub(crate) fn critical_depth(&self) -> u32 {
         self.0.borrow().kernel.critical_depth()
     }
