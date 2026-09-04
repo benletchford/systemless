@@ -1,0 +1,285 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 267,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 267,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "34-popup-lists.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 160,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 160,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_move",
+      "v": 189,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "screenshot",
+      "path": "popup-separator.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 215,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "screenshot",
+      "path": "35-popup-lists-open.png"
+    },
+    {
+      "type": "mouse_up",
+      "v": 215,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "popup-disabled-cancel.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 160,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 160,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_move",
+      "v": 199,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_up",
+      "v": 199,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "popup-long-selected.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 196,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 196,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "screenshot",
+      "path": "program-open.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 211,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_up",
+      "v": 211,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "program-disabled-cancel.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 196,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 196,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_move",
+      "v": 586,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "screenshot",
+      "path": "36-popup-lists-scrolled.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 348,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_up",
+      "v": 348,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "36-popup-lists-deep-selected.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 196,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 196,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_move",
+      "v": 6,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "screenshot",
+      "path": "program-scrolled-up.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 42,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 12
+    },
+    {
+      "type": "mouse_up",
+      "v": 42,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "37-popup-lists-selected.png"
+    }
+  ]
+}

@@ -2220,60 +2220,22 @@ void RefreshPopupValues(void)
     SyncPopupMenuMarks();
 }
 
-void DrawPopupSelection(short value, ConstStr255Param label,
-                               Boolean loadout)
+void DrawPopupSelection(short value, ConstStr255Param label, Boolean loadout)
 {
+    MenuHandle menu;
+    Str255 number;
+    Str255 title;
+
+    menu = loadout ? gPopupLoadoutMenu : gPopupThemeMenu;
     DrawString(label);
-    if (loadout) {
-        switch (value) {
-            case iPopupLoadoutScout:
-                DrawString("\p1");
-                DrawString("\p: Scout Kit");
-                break;
-            case iPopupLoadoutVeteran:
-                DrawString("\p2");
-                DrawString("\p: Veteran Kit");
-                break;
-            case iPopupLoadoutLong:
-                DrawString("\p4");
-                DrawString("\p: Long-range Expedition Loadout");
-                break;
-            case iPopupLoadoutMinimal:
-                DrawString("\p5");
-                DrawString("\p: Locked Prototype");
-                break;
-            case iPopupLoadoutHeavy:
-                DrawString("\p6");
-                DrawString("\p: Heavy Support");
-                break;
-            default:
-                DrawString("\p0");
-                DrawString("\p: (no selectable item)");
-                break;
-        }
+    if (menu != nil && value > 0 && value <= CountMItems(menu)) {
+        NumToString(value, number);
+        GetMenuItemText(menu, value, title);
+        DrawString(number);
+        DrawString("\p: ");
+        DrawString(title);
     } else {
-        switch (value) {
-            case iPopupThemeClassic:
-                DrawString("\p1");
-                DrawString("\p: Classic");
-                break;
-            case iPopupThemeContrast:
-                DrawString("\p2");
-                DrawString("\p: High Contrast");
-                break;
-            case iPopupThemeNight:
-                DrawString("\p4");
-                DrawString("\p: Night Operations");
-                break;
-            case iPopupThemeDeepField:
-                DrawString("\p36");
-                DrawString("\p: Deep Field Archive");
-                break;
-            default:
-                DrawString("\p0");
-                DrawString("\p: (no selectable item)");
-                break;
-        }
+        DrawString("\p0: (no selectable item)");
     }
 }
 
@@ -4466,6 +4428,10 @@ static void Initialize(void)
         AppendMenu(gPopupThemeMenu,
                    "\pArchive 19;Archive 20;Archive 21;Archive 22;Archive 23;Archive 24;Archive 25;Archive 26;Archive 27;Archive 28;Archive 29;Archive 30;Archive 31;Archive 32;Archive 33;Archive 34;Archive 35;Deep Field Archive;Archive 37;Archive 38;Archive 39");
         InsertMenu(gPopupThemeMenu, -1);
+        /* Exceed the screen even with popupUseWFont at Geneva 9, so the
+         * oracle must scroll rather than fit all items on screen. */
+        AppendMenu(gPopupThemeMenu,
+                   "\pArchive 40;Archive 41;Archive 42;Archive 43;Archive 44;Archive 45;Archive 46;Archive 47;Archive 48;Archive 49;Archive 50;Archive 51;Archive 52;Archive 53;Archive 54;Archive 55");
         DisableItem(gPopupThemeMenu, iPopupThemeContrast);
     }
     SyncPopupMenuMarks();
@@ -4619,8 +4585,12 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
            session. Mark the state before entering it; the final read below
            is the Control Manager's value, not a parallel application model. */
         gPopupOpened = true;
+        /* Macintosh Toolbox Essentials (1992), pp. 5-78--5-80:
+         * Pointer(-1) asks the popup CDEF to perform its tracking action. */
+        trackedPart = TrackControl(control, where, (ControlActionUPP)-1);
+    } else {
+        trackedPart = TrackControl(control, where, nil);
     }
-    trackedPart = TrackControl(control, where, nil);
     if (trackedPart == 0) {
         if (control == gPopupResource || control == gPopupProgrammatic) {
             RefreshPopupValues();

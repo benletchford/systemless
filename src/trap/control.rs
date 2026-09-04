@@ -1145,7 +1145,12 @@ impl super::TrapDispatcher {
             0
         };
         bus.write_long(ctrl_ptr + 28, contrl_data);
-        bus.write_long(ctrl_ptr + 32, 0); // contrlAction
+        // Standard popup tracking is implemented by its CDEF.
+        // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80.
+        bus.write_long(
+            ctrl_ptr + 32,
+            if Self::is_popup_menu_proc_id(proc_id) { u32::MAX } else { 0 },
+        );
         bus.write_long(ctrl_ptr + 36, ref_con);
         Self::set_control_title_bytes(bus, ctrl_ptr, title);
         self.control_manager.set_proc_id(ctrl_ptr, proc_id);
@@ -3465,8 +3470,18 @@ impl super::TrapDispatcher {
                 }
 
                 let sp = cpu.read_reg(Register::A7);
-                let action_proc = bus.read_long(sp);
+                let requested_action = bus.read_long(sp);
                 let ctrl_handle = bus.read_long(sp + 8);
+                let action_proc = if requested_action == u32::MAX {
+                    let control = Self::control_record_ptr(bus, ctrl_handle);
+                    if control == 0 {
+                        0
+                    } else {
+                        bus.read_long(control + 32)
+                    }
+                } else {
+                    requested_action
+                };
                 let pt_v = bus.read_word(sp + 4) as i16;
                 let pt_h = bus.read_word(sp + 6) as i16;
 
@@ -3621,7 +3636,7 @@ impl super::TrapDispatcher {
                                     cpu.write_reg(Register::A7, sp + 12);
                                     return Some(Ok(()));
                                 }
-                                if Self::is_popup_menu_proc_id(proc_id) {
+                                if Self::is_popup_menu_proc_id(proc_id) && action_proc == u32::MAX {
                                     let menu_id = self.popup_control_menu_id(
                                         bus,
                                         ctrl_ptr,
@@ -3693,7 +3708,7 @@ impl super::TrapDispatcher {
                                 // model a real mouse-down take the refire path.
                                 if self.input_state.mouse_button
                                     && action_proc == 0
-                                    && matches!(proc_id, 0 | 1 | 2)
+                                    && (matches!(proc_id, 0 | 1 | 2) || Self::is_popup_menu_proc_id(proc_id))
                                 {
                                     let part = self.standard_testcontrol_part_code(ctrl_ptr);
                                     let window_ptr = bus.read_long(ctrl_ptr + 4);
@@ -5311,6 +5326,7 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, ctrl_ptr);
         disp.control_manager.set_proc_id(ctrl_ptr, 1009);
+        bus.write_long(ctrl_ptr + 32, u32::MAX);
         bus.write_word(sp, 3);
         bus.write_long(sp + 2, handle);
 
@@ -6105,6 +6121,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 20, 902);
         bus.write_word(ctrl_ptr + 22, 0);
         disp.control_manager.set_proc_id(ctrl_ptr, 1009);
+        bus.write_long(ctrl_ptr + 32, u32::MAX);
         disp.menus.push(Menu {
             id: 902,
             title: "Mode".to_string(),
@@ -6200,6 +6217,68 @@ mod tests {
     }
 
     #[test]
+    fn track_control_popup_nil_action_does_not_open_menu() {
+        for (requested, stored) in [(0, u32::MAX), (u32::MAX, 0)] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            let sp = 0x300000;
+            let owner = *disp.current_port;
+            let (handle, control) = disp.create_control_record(
+                &mut bus,
+                owner,
+                (10, 20, 30, 130),
+                b"Popup",
+                true,
+                1,
+                902,
+                0,
+                1008,
+                0,
+            );
+            assert_eq!(bus.read_long(control + 32), u32::MAX);
+            disp.menus.push(Menu {
+                id: 902,
+                title: "Popup".to_string(),
+                items: vec![MenuItem {
+                    text: "One".to_string(),
+                    icon: 0,
+                    key_equiv: 0,
+                    mark: 0,
+                    style: 0,
+                    enabled: true,
+                }],
+                enabled: true,
+                handle: 0,
+                in_menu_bar: false,
+                visible_in_menu_bar: false,
+                hierarchical: false,
+            });
+            bus.write_long(control + 32, stored);
+            disp.input_state.mouse_button = true;
+            disp.input_state.mouse_pos = (15, 25);
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, requested);
+            bus.write_word(sp + 4, 15);
+            bus.write_word(sp + 6, 25);
+            bus.write_long(sp + 8, handle);
+            disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp
+                .control_tracking
+                .as_ref()
+                .is_some_and(|state| !state.popup_tracking));
+            assert_eq!(bus.read_word(control + 18), 1);
+            disp.input_state.mouse_button = false;
+            disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.control_tracking.is_none());
+            assert_eq!(bus.read_word(control + 18), 1);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        }
+    }
+
+    #[test]
     fn track_control_popup_menu_samples_final_release_point() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.enable_input_trace_capture();
@@ -6211,6 +6290,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 20, 900); // popupMenuProc stores MENU id in min
         bus.write_word(ctrl_ptr + 22, 0);
         disp.control_manager.set_proc_id(ctrl_ptr, 1009);
+        bus.write_long(ctrl_ptr + 32, u32::MAX);
         disp.menus.push(Menu {
             id: 900,
             title: "Squadies".to_string(),
@@ -6242,7 +6322,7 @@ mod tests {
         disp.input_state.mouse_button = true;
         disp.input_state.mouse_pos = (15, 25);
         cpu.write_reg(Register::A7, sp);
-        bus.write_long(sp, 0);
+        bus.write_long(sp, u32::MAX);
         bus.write_word(sp + 4, 15);
         bus.write_word(sp + 6, 25);
         bus.write_long(sp + 8, ctrl_handle);
@@ -6306,6 +6386,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 20, 901);
         bus.write_word(ctrl_ptr + 22, 0);
         disp.control_manager.set_proc_id(ctrl_ptr, 1009);
+        bus.write_long(ctrl_ptr + 32, u32::MAX);
         disp.menus.push(Menu {
             id: 901,
             title: "Formation".to_string(),
@@ -6337,7 +6418,7 @@ mod tests {
         disp.input_state.mouse_button = true;
         disp.input_state.mouse_pos = (15, 25);
         cpu.write_reg(Register::A7, sp);
-        bus.write_long(sp, 0);
+        bus.write_long(sp, u32::MAX);
         bus.write_word(sp + 4, 15);
         bus.write_word(sp + 6, 25);
         bus.write_long(sp + 8, ctrl_handle);
