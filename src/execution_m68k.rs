@@ -1,0 +1,419 @@
+//! Concrete 68K execution ownership and Mixed Mode transitions.
+//!
+//! This owner is deliberately not Clone: live CPU caches and memory bindings
+//! must move with their context. The task store remains the process authority.
+
+use crate::cpu::{M68kCpu, Register};
+use crate::execution_kernel::ExecutionContextBank;
+use crate::guest_call::{PendingM68kExecution, SharedGuestCallStack};
+use crate::memory::GuestAddressSpace as PpcSectionMem;
+use ppc::PpcMemory;
+
+pub(crate) struct M68kExecution {
+    pub(crate) cpu: M68kCpu,
+    pub(crate) parked: ExecutionContextBank<M68kCpu>,
+    calls: SharedGuestCallStack,
+}
+
+impl M68kExecution {
+    pub(crate) fn new(calls: &SharedGuestCallStack) -> Self {
+        Self {
+            cpu: M68kCpu::new(),
+            parked: ExecutionContextBank::default(),
+            calls: calls.shared_handle(),
+        }
+    }
+
+    /// A launch cannot discard contexts still associated with live calls.
+    pub(crate) fn can_relaunch(&self) -> bool {
+        self.parked.is_empty() && self.calls.is_empty()
+    }
+
+    /// Validate and park the outgoing context before installing the callback.
+    pub(crate) fn activate_pending(&mut self) -> Option<PendingM68kExecution> {
+        if let Some(active) = self.calls.active_m68k() {
+            return Some(active);
+        }
+        let pending = self
+            .calls
+            .activate_m68k_parking(&mut self.parked, &mut self.cpu)?;
+        for (index, value) in pending.registers.data.into_iter().enumerate() {
+            self.cpu.core.set_d(index, value);
+        }
+        for (index, value) in pending.registers.address.into_iter().enumerate() {
+            self.cpu.core.set_a(index, value);
+        }
+        self.cpu.write_reg(Register::A7, pending.initial_sp);
+        self.cpu.write_reg(Register::PC, pending.entry);
+        Some(pending)
+    }
+
+    /// Apply a completed native result to its actual caller, then restore it.
+    pub(crate) fn resume_after_powerpc(&mut self, memory: &mut PpcSectionMem) -> bool {
+        let Some(parked) = self
+            .calls
+            .commit_m68k_resume(&mut self.parked, |resume, parked| {
+                let cpu = parked.unwrap_or(&mut self.cpu);
+                if !Self::apply_m68k_resume_result(cpu, memory, resume) {
+                    return false;
+                }
+                cpu.write_reg(Register::PC, resume.return_pc);
+                cpu.write_reg(Register::A7, resume.final_sp);
+                true
+            })
+        else {
+            return false;
+        };
+        if let Some(parked) = parked {
+            self.cpu = parked;
+        }
+        true
+    }
+
+    pub(crate) fn apply_m68k_resume_result(
+        cpu: &mut M68kCpu,
+        memory: &mut PpcSectionMem,
+        resume: crate::guest_call::M68kResume,
+    ) -> bool {
+        use crate::guest_call::M68kResultTarget;
+
+        let mask_value = |value: u32, size: u8| match size {
+            1 => Some(value & 0xff),
+            2 => Some(value & 0xffff),
+            4 => Some(value),
+            _ => None,
+        };
+        match resume.result {
+            None => true,
+            Some(M68kResultTarget::Data { index, size }) if index < 8 => {
+                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| {
+                    cpu.core.set_d(usize::from(index), value);
+                    true
+                })
+            }
+            Some(M68kResultTarget::Address { index, size }) if index < 8 => {
+                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| {
+                    cpu.core.set_a(usize::from(index), value);
+                    true
+                })
+            }
+            Some(M68kResultTarget::Ccr { mask }) => {
+                // Native return values always arrive in R3; Mixed Mode then
+                // copies that value to the ProcInfo-selected 68k destination,
+                // including a CCR bit. Inside Macintosh: PowerPC System
+                // Software (1994), pp. 2-10--2-12.
+                let set = resume.powerpc.gpr3 != 0;
+                let ccr = (cpu.core.get_ccr() & !mask) | if set { mask } else { 0 };
+                cpu.core.set_ccr(ccr);
+                true
+            }
+            Some(M68kResultTarget::Memory { address, size }) => {
+                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| match size {
+                    1 => memory.write_u8(address, value as u8).is_some(),
+                    2 => memory.write_u16_be(address, value as u16).is_some(),
+                    4 => memory.write_u32_be(address, value).is_some(),
+                    _ => false,
+                })
+            }
+            Some(M68kResultTarget::SpecialCase { selector, scratch }) => {
+                Self::apply_m68k_special_case_result(
+                    cpu,
+                    memory,
+                    selector,
+                    scratch,
+                    resume.powerpc.gpr3,
+                )
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn apply_m68k_special_case_result(
+        cpu: &mut M68kCpu,
+        memory: &mut PpcSectionMem,
+        selector: u8,
+        scratch: u32,
+        native_result: u32,
+    ) -> bool {
+        use crate::mixed_mode::special_case;
+
+        let set_data_word = |cpu: &mut crate::cpu::M68kCpu, index: usize, value: u32| {
+            let preserved = cpu.core.d(index) & 0xffff_0000;
+            cpu.core.set_d(index, preserved | (value & 0xffff));
+        };
+        let set_z = |cpu: &mut crate::cpu::M68kCpu, value: bool| {
+            let ccr = (cpu.core.get_ccr() & !0x04) | if value { 0x04 } else { 0 };
+            cpu.core.set_ccr(ccr);
+        };
+
+        match u32::from(selector) {
+            special_case::EOL_HOOK
+            | special_case::PROTOCOL_HANDLER
+            | special_case::SOCKET_LISTENER => {
+                set_z(cpu, native_result & 0xff != 0);
+                true
+            }
+            special_case::WIDTH_HOOK | special_case::NWIDTH_HOOK => {
+                set_data_word(cpu, 1, native_result);
+                true
+            }
+            special_case::HIT_TEST_HOOK => {
+                let Some(pixel_width) = memory.read_u16_be(scratch) else {
+                    return false;
+                };
+                let Some(char_offset) = scratch
+                    .checked_add(2)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
+                    return false;
+                };
+                let Some(pixel_in_char) = scratch
+                    .checked_add(4)
+                    .and_then(|address| memory.read_u8(address))
+                else {
+                    return false;
+                };
+                cpu.core
+                    .set_d(0, ((native_result & 0xff) << 16) | u32::from(pixel_width));
+                set_data_word(cpu, 1, u32::from(char_offset));
+                set_data_word(cpu, 2, u32::from(pixel_in_char));
+                true
+            }
+            special_case::TE_FIND_WORD => {
+                let Some(word_start) = memory.read_u16_be(scratch) else {
+                    return false;
+                };
+                let Some(word_end) = scratch
+                    .checked_add(2)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
+                    return false;
+                };
+                set_data_word(cpu, 0, u32::from(word_start));
+                set_data_word(cpu, 1, u32::from(word_end));
+                true
+            }
+            special_case::TE_RECALC => {
+                let Some(line_start) = memory.read_u16_be(scratch) else {
+                    return false;
+                };
+                let Some(first_char) = scratch
+                    .checked_add(2)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
+                    return false;
+                };
+                let Some(last_char) = scratch
+                    .checked_add(4)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
+                    return false;
+                };
+                set_data_word(cpu, 2, u32::from(line_start));
+                set_data_word(cpu, 3, u32::from(first_char));
+                set_data_word(cpu, 4, u32::from(last_char));
+                true
+            }
+            special_case::TE_DO_TEXT => {
+                let Some(current_graf_port) = memory.read_u32_be(scratch) else {
+                    return false;
+                };
+                let Some(char_position) = scratch
+                    .checked_add(4)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
+                    return false;
+                };
+                cpu.core.set_a(0, current_graf_port);
+                set_data_word(cpu, 0, u32::from(char_position));
+                true
+            }
+            special_case::MBAR_HOOK => {
+                set_data_word(cpu, 0, native_result);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn complete_pending(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        native: &mut ppc::PpcCpu,
+        pending: crate::guest_call::PendingM68kExecution,
+    ) -> bool {
+        use crate::guest_call::M68kResultSource;
+
+        let result = match pending.result {
+            None => None,
+            Some(M68kResultSource::Data(index)) => Some(self.cpu.core.d(usize::from(index))),
+            Some(M68kResultSource::Address(index)) => Some(self.cpu.core.a(usize::from(index))),
+            Some(M68kResultSource::Memory { address, size }) => {
+                let value = match size {
+                    1 => memory.read_u8(address).map(u32::from),
+                    2 => memory.read_u16_be(address).map(u32::from),
+                    4 => memory.read_u32_be(address),
+                    _ => None,
+                };
+                let Some(value) = value else {
+                    return false;
+                };
+                Some(value)
+            }
+            Some(M68kResultSource::SpecialCase {
+                selector,
+                arguments,
+                stack_result,
+            }) => {
+                let Ok(value) = self.complete_m68k_special_case_result(
+                    memory,
+                    selector,
+                    arguments,
+                    stack_result,
+                ) else {
+                    return false;
+                };
+                value
+            }
+        };
+        self.calls.complete_m68k_for_powerpc(
+            pending.return_pc,
+            self.cpu.read_reg(Register::A7),
+            result,
+            native,
+        )
+    }
+
+    pub(crate) fn complete_m68k_special_case_result(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        selector: u8,
+        arguments: crate::guest_call::PowerPcArguments,
+        stack_result: Option<u32>,
+    ) -> std::result::Result<Option<u32>, ()> {
+        use crate::mixed_mode::special_case;
+
+        let arguments = arguments.as_slice();
+        let proc_info = crate::mixed_mode::proc_info::SPECIAL_CASE
+            | (u32::from(selector) << special_case::SELECTOR_PHASE);
+        let signature = crate::mixed_mode::native_special_case_signature(proc_info).ok_or(())?;
+        if arguments.len() != signature.argument_count {
+            return Err(());
+        }
+        let z = u32::from(self.cpu.core.get_ccr() & 0x04 != 0);
+        match u32::from(selector) {
+            // A void callback has no native return value. Preserve the
+            // caller's PPC R3 rather than manufacturing zero and treating it
+            // as a result to copy back through the cross-ISA frame.
+            special_case::HIGH_HOOK | special_case::DRAW_HOOK => Ok(None),
+            special_case::EOL_HOOK
+            | special_case::PROTOCOL_HANDLER
+            | special_case::SOCKET_LISTENER => Ok(Some(z)),
+            special_case::WIDTH_HOOK | special_case::NWIDTH_HOOK => {
+                Ok(Some(self.cpu.core.d(1) & 0xffff))
+            }
+            special_case::HIT_TEST_HOOK => {
+                if ![(arguments[6], 2), (arguments[7], 2), (arguments[8], 1)]
+                    .into_iter()
+                    .all(|(address, size)| memory.preflight_writable_range(address, size))
+                {
+                    return Err(());
+                }
+                memory
+                    .write_u16_be(arguments[6], self.cpu.core.d(0) as u16)
+                    .ok_or(())?;
+                memory
+                    .write_u16_be(arguments[7], self.cpu.core.d(1) as u16)
+                    .ok_or(())?;
+                memory
+                    .write_u8(arguments[8], self.cpu.core.d(2) as u8)
+                    .ok_or(())?;
+                Ok(Some((self.cpu.core.d(0) >> 16) & 0xff))
+            }
+            special_case::TE_FIND_WORD => {
+                if ![(arguments[4], 2), (arguments[5], 2)]
+                    .into_iter()
+                    .all(|(address, size)| memory.preflight_writable_range(address, size))
+                {
+                    return Err(());
+                }
+                memory
+                    .write_u16_be(arguments[4], self.cpu.core.d(0) as u16)
+                    .ok_or(())?;
+                memory
+                    .write_u16_be(arguments[5], self.cpu.core.d(1) as u16)
+                    .ok_or(())?;
+                Ok(None)
+            }
+            special_case::TE_RECALC => {
+                if !arguments[2..5]
+                    .iter()
+                    .copied()
+                    .all(|address| memory.preflight_writable_range(address, 2))
+                {
+                    return Err(());
+                }
+                for (argument, register) in arguments[2..5].iter().copied().zip(2..=4) {
+                    memory
+                        .write_u16_be(argument, self.cpu.core.d(register) as u16)
+                        .ok_or(())?;
+                }
+                Ok(None)
+            }
+            special_case::TE_DO_TEXT => {
+                if ![(arguments[4], 4), (arguments[5], 2)]
+                    .into_iter()
+                    .all(|(address, size)| memory.preflight_writable_range(address, size))
+                {
+                    return Err(());
+                }
+                memory
+                    .write_u32_be(arguments[4], self.cpu.core.a(0))
+                    .ok_or(())?;
+                memory
+                    .write_u16_be(arguments[5], self.cpu.core.d(0) as u16)
+                    .ok_or(())?;
+                Ok(None)
+            }
+            special_case::GNE_FILTER_PROC => {
+                let result = memory.read_u16_be(stack_result.ok_or(())?).ok_or(())?;
+                if !memory.preflight_writable_range(arguments[1], 1) {
+                    return Err(());
+                }
+                memory.write_u8(arguments[1], result as u8).ok_or(())?;
+                Ok(None)
+            }
+            special_case::MBAR_HOOK => Ok(Some(self.cpu.core.d(0) & 0xffff)),
+            _ => Err(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::guest_call::GuestCallTarget;
+    use crate::guest_procedure::GuestIsa;
+
+    #[test]
+    fn relaunch_waits_for_the_bound_process_calls_to_finish() {
+        let calls = SharedGuestCallStack::default();
+        let mut engine = M68kExecution::new(&calls);
+        engine.cpu.core.set_d(0, 42);
+        assert!(engine.can_relaunch());
+        assert!(calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000
+        ));
+        assert!(!engine.can_relaunch());
+        assert_eq!(engine.cpu.core.d(0), 42);
+        assert!(calls.complete_m68k(0x2002, 0x3000));
+        assert!(engine.can_relaunch());
+        assert_eq!(engine.cpu.core.d(0), 42);
+    }
+}

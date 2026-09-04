@@ -454,7 +454,6 @@ impl SharedGuestCallStack {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.0.borrow().kernel.is_empty()
     }

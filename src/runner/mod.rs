@@ -4,7 +4,7 @@ use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
-use crate::execution_kernel::ExecutionContextBank;
+use crate::execution_m68k::M68kExecution;
 use crate::guest_call::ExecutionTaskId;
 use crate::loader::ppc::{
     PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
@@ -1640,10 +1640,7 @@ impl FixtureRunnerConfig {
 ///
 /// See `examples/run_headless.rs` for a runnable end-to-end example.
 pub struct FixtureRunner {
-    cpu: M68kCpu,
-    /// Complete 68K CPU contexts parked by nested Mixed Mode switch frames,
-    /// owned by the execution task that suspended each context.
-    parked_m68k_cpus: ExecutionContextBank<M68kCpu>,
+    m68k: M68kExecution,
     ppc_app: Option<PpcLoadedApp>,
     /// Native execution adapter retained by a classic foreground process.
     /// It runs only while the process guest-call stack contains a pending
@@ -1910,8 +1907,7 @@ impl FixtureRunner {
             .install_standard_service_routine(standard_adb_service);
         let dialog_callback_scratch_base = bus.alloc_synthetic(DIALOG_CALLBACK_SCRATCH_SIZE);
         Self {
-            cpu: M68kCpu::new(),
-            parked_m68k_cpus: ExecutionContextBank::default(),
+            m68k: M68kExecution::new(&dispatcher.guest_calls),
             ppc_app: None,
             ppc_companion: None,
             staged_ppc_companion: None,
@@ -2159,11 +2155,11 @@ impl FixtureRunner {
     }
 
     pub fn cpu(&self) -> &M68kCpu {
-        &self.cpu
+        &self.m68k.cpu
     }
 
     pub fn cpu_mut(&mut self) -> &mut M68kCpu {
-        &mut self.cpu
+        &mut self.m68k.cpu
     }
 
     pub fn bus(&self) -> &MacMemoryBus {
@@ -2669,7 +2665,7 @@ impl FixtureRunner {
         self.ppc_app
             .as_ref()
             .map(|app| app.cpu.pc)
-            .unwrap_or_else(|| self.cpu.read_reg(Register::PC))
+            .unwrap_or_else(|| self.m68k.cpu.read_reg(Register::PC))
     }
 
     /// Synchronize deferred PPC visual/VFS state and composite chrome/dialog overlays.
@@ -3367,9 +3363,9 @@ impl FixtureRunner {
     /// amortizes tick advancement, halt detection, and trace collection across
     /// the instruction budget.
     pub fn step(&mut self) -> StepResult {
-        let result = self.cpu.step(&mut self.bus);
+        let result = self.m68k.cpu.step(&mut self.bus);
         self.dispatcher
-            .retire_returned_native_trap_call(&mut self.cpu);
+            .retire_returned_native_trap_call(&mut self.m68k.cpu);
         result
     }
 
@@ -3599,8 +3595,8 @@ impl FixtureRunner {
         if let Err(err) = self.switch_to_launched_application(&path) {
             eprintln!("[LAUNCH] Failed to switch to queued application {path:?}: {err}");
             self.halted = true;
-            self.halted_pc = Some(self.cpu.read_reg(Register::PC));
-            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
+            self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
+            self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
             self.halted_d0 = Some((-43i32) as u32);
         }
         true
@@ -3745,7 +3741,10 @@ impl FixtureRunner {
     /// Think C runtimes, e.g. Koji / Munchies) sees `CurStackBase` =
     /// 0 and spins forever in the globals-decompression loop.
     pub fn init_app(&mut self, app: &LoadedApp) {
-        self.parked_m68k_cpus = ExecutionContextBank::default();
+        assert!(
+            self.m68k.can_relaunch(),
+            "cannot relaunch with parked execution contexts"
+        );
         self.ppc_companion = None;
         if let Some(ppc_app) = app.ppc.clone() {
             self.staged_ppc_companion = None;
@@ -3771,8 +3770,8 @@ impl FixtureRunner {
         // starts from CPU reset with all interrupts masked; make the launch
         // state explicit so interrupt-time HLE can honor guest SR masking.
         // Inside Macintosh: Processes (1994), pp. 1-11 and 6-3.
-        let launch_sr = (self.cpu.core.get_sr() & !0x0700) | 0x2000;
-        self.cpu.core.set_sr_noint_nosp(launch_sr);
+        let launch_sr = (self.m68k.cpu.core.get_sr() & !0x0700) | 0x2000;
+        self.m68k.cpu.core.set_sr_noint_nosp(launch_sr);
 
         // Initialize low-memory globals
         self.bus.write_long(addr::MEM_TOP, ram_size);
@@ -4131,17 +4130,18 @@ impl FixtureRunner {
         self.bus.write_long(addr::J_SWAP_FONT, swap_font_trampoline);
 
         // Set CPU state
-        self.cpu.write_reg(Register::A5, app.a5_base);
+        self.m68k.cpu.write_reg(Register::A5, app.a5_base);
         // Push the exit trampoline as the return address on the stack
         let sp = app.initial_sp.wrapping_sub(4);
         self.bus.write_long(sp, exit_trampoline);
-        self.cpu.write_reg(Register::A7, sp);
+        self.m68k.cpu.write_reg(Register::A7, sp);
         // Initialize A6 (frame pointer) to the stack pointer.
         // On a real Mac, the Process Manager sets up A6 before launching
         // the application. The CRT startup code (e.g. Think C's __start)
         // expects A6 to be a valid stack address for its initial LINK frame.
-        self.cpu.write_reg(Register::A6, sp);
-        self.cpu
+        self.m68k.cpu.write_reg(Register::A6, sp);
+        self.m68k
+            .cpu
             .write_reg(Register::PC, app.entry_point(app.a5_base));
     }
 
@@ -4260,7 +4260,7 @@ impl FixtureRunner {
         self.halted_pc = None;
         self.halted_sp = None;
         self.halted_d0 = None;
-        self.cpu.write_reg(Register::PC, 0);
+        self.m68k.cpu.write_reg(Register::PC, 0);
         self.bus
             .attach_guest_address_space(ppc_app.memory.shared_view());
         self.ppc_app = Some(ppc_app);
@@ -4591,9 +4591,9 @@ impl FixtureRunner {
             return false;
         }
 
-        let sp = self.cpu.core.a(7);
+        let sp = self.m68k.cpu.core.a(7);
         let captured_tick = self.bus.read_long(sp);
-        if captured_tick != self.cpu.core.d(dm) {
+        if captured_tick != self.m68k.cpu.core.d(dm) {
             return false;
         }
         let target_tick = captured_tick.wrapping_add(1);
@@ -4675,11 +4675,11 @@ impl FixtureRunner {
             return false;
         }
 
-        let base_addr = (self.cpu.core.a(base_an) as i32).wrapping_add(base_disp) as u32;
+        let base_addr = (self.m68k.cpu.core.a(base_an) as i32).wrapping_add(base_disp) as u32;
         let base_tick = self.bus.read_long(base_addr);
-        let delay_addr = (self.cpu.core.a(local_an) as i32).wrapping_add(delay_disp) as u32;
+        let delay_addr = (self.m68k.cpu.core.a(local_an) as i32).wrapping_add(delay_disp) as u32;
         let delay = self.bus.read_word(delay_addr) as i16 as i32;
-        let sp = self.cpu.core.a(7);
+        let sp = self.m68k.cpu.core.a(7);
         let captured_tick = self.bus.read_long(sp);
         let elapsed = captured_tick.wrapping_sub(base_tick) as i32;
         if delay <= elapsed {
@@ -4770,7 +4770,7 @@ impl FixtureRunner {
             trap_pc,
             wake_tick,
             tick,
-            cpu: CpuArchitecturalSnapshot::capture(&self.cpu.core),
+            cpu: CpuArchitecturalSnapshot::capture(&self.m68k.cpu.core),
             host: IdleCycleHostSnapshot::capture(&self.dispatcher),
         });
         // No guest code runs while parked. This second journal therefore
@@ -4790,7 +4790,7 @@ impl FixtureRunner {
         };
 
         let memory_unchanged = self.bus.finish_write_probe_unchanged();
-        let cpu_unchanged = sleep.cpu == CpuArchitecturalSnapshot::capture(&self.cpu.core);
+        let cpu_unchanged = sleep.cpu == CpuArchitecturalSnapshot::capture(&self.m68k.cpu.core);
         let tick_unchanged = self.guest_tick() == sleep.tick
                 // The canonical process clock owns the value, while this
                 // second check verifies its low-memory guest projection did
@@ -4859,7 +4859,7 @@ impl FixtureRunner {
         let null_event = matches!(
             canonical_trap_number(opcode),
             (true, 0x0170) | (true, 0x0171)
-        ) && self.bus.read_word(self.cpu.core.a(7)) == 0;
+        ) && self.bus.read_word(self.m68k.cpu.core.a(7)) == 0;
         if self.idle_cycle_probe.is_none() {
             return null_event;
         }
@@ -4897,7 +4897,7 @@ impl FixtureRunner {
             // this tick: it is working between polls, not waiting.
             return false;
         }
-        let cpu = CpuArchitecturalSnapshot::capture(&self.cpu.core);
+        let cpu = CpuArchitecturalSnapshot::capture(&self.m68k.cpu.core);
 
         if let Some(probe) = self.idle_cycle_probe.take() {
             if self.bus.take_write_probe_overflow() {
@@ -5124,15 +5124,15 @@ impl FixtureRunner {
 
         let move_an = (w_move & 7) as usize;
         let move_disp = self.bus.read_word(pc_after_trap.wrapping_add(2)) as i16 as i32;
-        let delay_addr = (self.cpu.core.a(move_an) as i32).wrapping_add(move_disp) as u32;
+        let delay_addr = (self.m68k.cpu.core.a(move_an) as i32).wrapping_add(move_disp) as u32;
         let delay = self.bus.read_word(delay_addr) as i16 as i32;
 
         let add_an = (w_add & 7) as usize;
         let add_disp = self.bus.read_word(pc_after_trap.wrapping_add(8)) as i16 as i32;
-        let base_addr = (self.cpu.core.a(add_an) as i32).wrapping_add(add_disp) as u32;
+        let base_addr = (self.m68k.cpu.core.a(add_an) as i32).wrapping_add(add_disp) as u32;
         let deadline = self.bus.read_long(base_addr).wrapping_add(delay as u32);
 
-        let sp = self.cpu.core.a(7);
+        let sp = self.m68k.cpu.core.a(7);
         let captured_tick = self.bus.read_long(sp);
         let deadline_signed = deadline as i32;
         let captured_tick_signed = captured_tick as i32;
@@ -5203,8 +5203,8 @@ impl FixtureRunner {
             return false;
         }
 
-        let dn_value = self.cpu.core.d(dn);
-        let captured_tick = self.bus.read_long(self.cpu.core.a(7));
+        let dn_value = self.m68k.cpu.core.d(dn);
+        let captured_tick = self.bus.read_long(self.m68k.cpu.core.a(7));
         if branch_condition == 0x6700 && captured_tick != dn_value {
             // BEQ would already fall through, so there is no wait to skip.
             return false;
@@ -5215,12 +5215,12 @@ impl FixtureRunner {
                 // The trap's result was captured before the synthetic VBLs.
                 // Refresh it so the resumed comparison observes the same tick
                 // that a real busy loop would obtain on its next iteration.
-                let sp = self.cpu.core.a(7);
+                let sp = self.m68k.cpu.core.a(7);
                 self.bus.write_long(sp, self.guest_tick());
                 true
             }
             AdvanceResult::Advanced => {
-                let sp = self.cpu.core.a(7);
+                let sp = self.m68k.cpu.core.a(7);
                 self.bus.write_long(sp, self.guest_tick());
                 false
             }
@@ -5267,7 +5267,7 @@ impl FixtureRunner {
             return false;
         }
 
-        let dm_val = self.cpu.core.d(dm);
+        let dm_val = self.m68k.cpu.core.d(dm);
         let target_tick = dm_val.wrapping_add(imm);
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => return true,
@@ -5278,10 +5278,10 @@ impl FixtureRunner {
         // Synthesise exit: Dn = final_tick - imm = Dm (by definition of
         // the fall-through condition), A7 += 4, PC past BHI.S.
         let final_tick = self.guest_tick();
-        let sp = self.cpu.core.a(7);
-        self.cpu.core.set_a(7, sp.wrapping_add(4));
-        self.cpu.core.set_d(dn, final_tick.wrapping_sub(imm));
-        self.cpu.core.pc = pc_after_trap.wrapping_add(8);
+        let sp = self.m68k.cpu.core.a(7);
+        self.m68k.cpu.core.set_a(7, sp.wrapping_add(4));
+        self.m68k.cpu.core.set_d(dn, final_tick.wrapping_sub(imm));
+        self.m68k.cpu.core.pc = pc_after_trap.wrapping_add(8);
 
         *count += 4;
         self.total_instructions = self.total_instructions.wrapping_add(4);
@@ -5331,11 +5331,11 @@ impl FixtureRunner {
             return false;
         }
 
-        let an_val = self.cpu.core.a(an);
+        let an_val = self.m68k.cpu.core.a(an);
         let mem_addr = (an_val as i32).wrapping_add(d16) as u32;
         let mem_target = self.bus.read_long(mem_addr);
         if branch_condition == 0x6D00 || branch_condition == 0x6F00 {
-            let captured_tick = self.bus.read_long(self.cpu.core.a(7));
+            let captured_tick = self.bus.read_long(self.m68k.cpu.core.a(7));
             let still_waiting = if branch_condition == 0x6D00 {
                 (captured_tick as i32) < (mem_target as i32)
             } else {
@@ -5362,10 +5362,10 @@ impl FixtureRunner {
         // Synthesise exit: Dn = final_tick, A7 += 4, PC past the branch.
         // body_size: MOVE.L (2) + CMP.L w/d16 (4) + Bcc.S (2) = 8 bytes.
         let final_tick = self.guest_tick();
-        let sp = self.cpu.core.a(7);
-        self.cpu.core.set_a(7, sp.wrapping_add(4));
-        self.cpu.core.set_d(dn, final_tick);
-        self.cpu.core.pc = pc_after_trap.wrapping_add(8);
+        let sp = self.m68k.cpu.core.a(7);
+        self.m68k.cpu.core.set_a(7, sp.wrapping_add(4));
+        self.m68k.cpu.core.set_d(dn, final_tick);
+        self.m68k.cpu.core.pc = pc_after_trap.wrapping_add(8);
 
         *count += 3;
         self.total_instructions = self.total_instructions.wrapping_add(3);
@@ -5410,10 +5410,10 @@ impl FixtureRunner {
         }
 
         let final_tick = self.guest_tick();
-        let sp = self.cpu.core.a(7);
-        self.cpu.core.set_a(7, sp.wrapping_add(4));
-        self.cpu.core.set_d(dn, final_tick);
-        self.cpu.core.pc = pc_after_trap.wrapping_add(10);
+        let sp = self.m68k.cpu.core.a(7);
+        self.m68k.cpu.core.set_a(7, sp.wrapping_add(4));
+        self.m68k.cpu.core.set_d(dn, final_tick);
+        self.m68k.cpu.core.pc = pc_after_trap.wrapping_add(10);
 
         *count += 3;
         self.total_instructions = self.total_instructions.wrapping_add(3);
@@ -5622,16 +5622,16 @@ impl FixtureRunner {
                 }
             }
 
-            if self.cpu.is_stopped() {
+            if self.m68k.cpu.is_stopped() {
                 self.halted = true;
-                self.halted_pc = Some(self.cpu.read_reg(Register::PC));
-                self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-                self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
+                self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+                self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
                 self.dump_trace();
                 return (count, false);
             }
 
-            let pc = self.cpu.read_reg(Register::PC);
+            let pc = self.m68k.cpu.read_reg(Register::PC);
             // Defer reading SP until needed. sp is only used by the
             // interrupt-callback match (rare), the env-gated
             // trace_buffer path, and the PC-bounds error branch.
@@ -5643,10 +5643,10 @@ impl FixtureRunner {
             // halt. Default off; enable for crash diagnostics.
             if trace_buffer_enabled() {
                 let opcode = self.bus.read_word(pc);
-                let a0 = self.cpu.read_reg(Register::A0);
-                let a6 = self.cpu.read_reg(Register::A6);
-                let a5 = self.cpu.read_reg(Register::A5);
-                let sp = self.cpu.read_reg(Register::A7);
+                let a0 = self.m68k.cpu.read_reg(Register::A0);
+                let a6 = self.m68k.cpu.read_reg(Register::A6);
+                let a5 = self.m68k.cpu.read_reg(Register::A5);
+                let sp = self.m68k.cpu.read_reg(Register::A7);
                 if self.trace_buffer.len() >= 200 {
                     self.trace_buffer.pop_front();
                 }
@@ -5654,7 +5654,7 @@ impl FixtureRunner {
             }
 
             if let Some(active_interrupt_callback) = self.active_interrupt_callback {
-                let sp = self.cpu.read_reg(Register::A7);
+                let sp = self.m68k.cpu.read_reg(Register::A7);
                 if pc == active_interrupt_callback.resume_pc
                     && sp == active_interrupt_callback.resume_sp
                 {
@@ -5675,7 +5675,7 @@ impl FixtureRunner {
                     for (index, value) in
                         active_interrupt_callback.d_regs.iter().copied().enumerate()
                     {
-                        self.cpu.write_reg(
+                        self.m68k.cpu.write_reg(
                             match index {
                                 0 => Register::D0,
                                 1 => Register::D1,
@@ -5692,7 +5692,7 @@ impl FixtureRunner {
                     for (index, value) in
                         active_interrupt_callback.a_regs.iter().copied().enumerate()
                     {
-                        self.cpu.write_reg(
+                        self.m68k.cpu.write_reg(
                             match index {
                                 0 => Register::A0,
                                 1 => Register::A1,
@@ -5706,7 +5706,8 @@ impl FixtureRunner {
                             value,
                         );
                     }
-                    self.cpu
+                    self.m68k
+                        .cpu
                         .core
                         .set_sr_noint_nosp(active_interrupt_callback.sr);
                     if matches!(
@@ -5716,7 +5717,7 @@ impl FixtureRunner {
                         if let Some(snapshot) = self.dialog_draw_port_snapshot.take() {
                             self.dispatcher.restore_current_port_state(
                                 &mut self.bus,
-                                &mut self.cpu,
+                                &mut self.m68k.cpu,
                                 &snapshot,
                             );
                         }
@@ -5724,7 +5725,7 @@ impl FixtureRunner {
                     if let Some((port, gdevice)) = active_interrupt_callback.restore_port {
                         self.dispatcher.set_current_port_state(
                             &mut self.bus,
-                            &mut self.cpu,
+                            &mut self.m68k.cpu,
                             port,
                             Some(gdevice),
                         );
@@ -5771,7 +5772,7 @@ impl FixtureRunner {
                         continue;
                     }
                     if let Some(refire_pc) = self.deferred_tracking_refire_pc.take() {
-                        self.cpu.write_reg(Register::PC, refire_pc);
+                        self.m68k.cpu.write_reg(Register::PC, refire_pc);
                         continue;
                     }
                     if sound_work_only {
@@ -5810,8 +5811,8 @@ impl FixtureRunner {
                 self.dump_trace();
                 self.halted = true;
                 self.halted_pc = Some(0);
-                self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-                self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+                self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
                 return (count, false);
             }
 
@@ -5819,7 +5820,7 @@ impl FixtureRunner {
             if translated_pc < 0x60 || !self.bus.is_guest_address_mapped(pc, 2) {
                 // Read opcode + sp on-demand in the error branch.
                 let opcode = self.bus.read_word(pc);
-                let sp = self.cpu.read_reg(Register::A7);
+                let sp = self.m68k.cpu.read_reg(Register::A7);
                 eprintln!(
                     "[RUN_STEPS] Invalid PC ${:08X} at count={} sp=${:08X} op=${:04X}",
                     pc, count, sp, opcode
@@ -5828,7 +5829,7 @@ impl FixtureRunner {
                 self.halted = true;
                 self.halted_pc = Some(pc);
                 self.halted_sp = Some(sp);
-                self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
                 self.dump_trace();
                 return (count, false);
             }
@@ -5839,10 +5840,10 @@ impl FixtureRunner {
                 crate::memory::bus::increment_step();
                 crate::memory::bus::set_current_pc(pc);
                 crate::memory::bus::set_watch_registers(
-                    self.cpu.read_reg(Register::A0),
-                    self.cpu.read_reg(Register::A1),
-                    self.cpu.read_reg(Register::A6),
-                    self.cpu.read_reg(Register::A7),
+                    self.m68k.cpu.read_reg(Register::A0),
+                    self.m68k.cpu.read_reg(Register::A1),
+                    self.m68k.cpu.read_reg(Register::A6),
+                    self.m68k.cpu.read_reg(Register::A7),
                 );
             }
 
@@ -5857,8 +5858,8 @@ impl FixtureRunner {
 
             let trace_pc_range_hit = trace_pc_range_contains(pc, self.guest_tick());
             if trace_pc_range_hit {
-                let sp = self.cpu.read_reg(Register::A7);
-                let a6 = self.cpu.read_reg(Register::A6);
+                let sp = self.m68k.cpu.read_reg(Register::A7);
+                let a6 = self.m68k.cpu.read_reg(Register::A6);
                 let stack0 = self.bus.read_long(sp);
                 let stack4 = self.bus.read_long(sp.wrapping_add(4));
                 let stack8 = self.bus.read_word(sp.wrapping_add(8));
@@ -5869,21 +5870,21 @@ impl FixtureRunner {
                     pc,
                     self.bus.read_word(pc),
                     self.bus.read_long(pc.wrapping_add(2)),
-                    self.cpu.core.get_ccr(),
-                    self.cpu.read_reg(Register::D0),
-                    self.cpu.read_reg(Register::D1),
-                    self.cpu.read_reg(Register::D2),
-                    self.cpu.read_reg(Register::D3),
-                    self.cpu.read_reg(Register::D4),
-                    self.cpu.read_reg(Register::D5),
-                    self.cpu.read_reg(Register::D6),
-                    self.cpu.read_reg(Register::D7),
-                    self.cpu.read_reg(Register::A0),
-                    self.cpu.read_reg(Register::A1),
-                    self.cpu.read_reg(Register::A2),
-                    self.cpu.read_reg(Register::A3),
-                    self.cpu.read_reg(Register::A4),
-                    self.cpu.read_reg(Register::A5),
+                    self.m68k.cpu.core.get_ccr(),
+                    self.m68k.cpu.read_reg(Register::D0),
+                    self.m68k.cpu.read_reg(Register::D1),
+                    self.m68k.cpu.read_reg(Register::D2),
+                    self.m68k.cpu.read_reg(Register::D3),
+                    self.m68k.cpu.read_reg(Register::D4),
+                    self.m68k.cpu.read_reg(Register::D5),
+                    self.m68k.cpu.read_reg(Register::D6),
+                    self.m68k.cpu.read_reg(Register::D7),
+                    self.m68k.cpu.read_reg(Register::A0),
+                    self.m68k.cpu.read_reg(Register::A1),
+                    self.m68k.cpu.read_reg(Register::A2),
+                    self.m68k.cpu.read_reg(Register::A3),
+                    self.m68k.cpu.read_reg(Register::A4),
+                    self.m68k.cpu.read_reg(Register::A5),
                     a6,
                     sp,
                     stack0,
@@ -5945,9 +5946,9 @@ impl FixtureRunner {
             } else {
                 &watch_buf[..1]
             };
-            let batch = self.cpu.run_batch(&mut self.bus, batch_max, watch);
+            let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, watch);
             self.dispatcher
-                .retire_returned_native_trap_call(&mut self.cpu);
+                .retire_returned_native_trap_call(&mut self.m68k.cpu);
             // Trap exits consumed their opcode word too; count it like the
             // old per-step path did.
             let executed = batch.instructions as usize
@@ -5970,7 +5971,7 @@ impl FixtureRunner {
                 // through the trap histogram instead, as before.
                 if batch.instructions > 0 {
                     if trace_opcode_counts_enabled() {
-                        let opcode = self.cpu.core.ir as u16 as usize;
+                        let opcode = self.m68k.cpu.core.ir as u16 as usize;
                         self.opcode_histogram[opcode] =
                             self.opcode_histogram[opcode].saturating_add(1);
                     }
@@ -5995,7 +5996,7 @@ impl FixtureRunner {
                     // Inside Macintosh Volume III (1985), p. III-17 names
                     // `$2C` as the Line 1111 emulator vector.
                     if !self.dispatcher.fline_vector_is_default(&self.bus) {
-                        self.cpu.core.take_fline_exception(&mut self.bus);
+                        self.m68k.cpu.core.take_fline_exception(&mut self.bus);
                     }
                 }
                 BatchExit::Stopped => {
@@ -6003,9 +6004,9 @@ impl FixtureRunner {
                     // old flow where the next loop iteration's is_stopped
                     // check caught it.
                     self.halted = true;
-                    self.halted_pc = Some(self.cpu.read_reg(Register::PC));
-                    self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-                    self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                    self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
+                    self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+                    self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
                     self.dump_trace();
                     return (count, false);
                 }
@@ -6022,7 +6023,7 @@ impl FixtureRunner {
                 BatchExit::IllegalInstruction { opcode } => {
                     eprintln!(
                         "[CPU] IllegalInstruction: ${:04X} at PC=${:08X}",
-                        opcode, self.cpu.core.pc
+                        opcode, self.m68k.cpu.core.pc
                     );
                     self.halt_with_stop_diagnostics(count);
                     return (count, false);
@@ -6033,7 +6034,7 @@ impl FixtureRunner {
                     // the trap, so the loop-top `pc` is stale; the trap
                     // word's own address is in `ppc` (PC already advanced
                     // past it).
-                    let pc = self.cpu.core.ppc;
+                    let pc = self.m68k.cpu.core.ppc;
 
                     // The processor enters the Trap Dispatcher through
                     // exception vector 10 at `$28`. If guest code replaced
@@ -6043,7 +6044,7 @@ impl FixtureRunner {
                     // (1985), p. I-89; Interapplication Communication
                     // (1993), p. 1-87.
                     if !self.dispatcher.aline_vector_is_default(&self.bus) {
-                        self.cpu.core.take_aline_exception(&mut self.bus);
+                        self.m68k.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
 
@@ -6064,7 +6065,7 @@ impl FixtureRunner {
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
                     let dispatch_result = self.dispatcher.with_process_state(|dispatcher| {
-                        dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus)
+                        dispatcher.dispatch(opcode, &mut self.m68k.cpu, &mut self.bus)
                     });
                     match dispatch_result {
                         Ok(()) => {
@@ -6156,7 +6157,7 @@ impl FixtureRunner {
                                 {
                                     self.unfreeze_ticks_to(real_tick_cap);
                                 }
-                                self.cpu.write_reg(Register::PC, pc);
+                                self.m68k.cpu.write_reg(Register::PC, pc);
 
                                 // Fire MenuSelect's documented MenuHook while
                                 // the dropdown is still live on screen. The
@@ -6274,8 +6275,8 @@ impl FixtureRunner {
                             self.halted = true;
                             self.halted_pc = Some(pc);
                             self.halted_trap = Some(opcode);
-                            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-                            self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                            self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+                            self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
                             self.dump_trace();
                             return (count, false);
                         }
@@ -6295,8 +6296,8 @@ impl FixtureRunner {
                             self.halted = true;
                             self.halted_pc = Some(pc);
                             self.halted_trap = Some(t);
-                            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-                            self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                            self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+                            self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
                             self.dump_trace();
                             return (count, false);
                         }
@@ -6307,8 +6308,8 @@ impl FixtureRunner {
                             );
                             self.halted = true;
                             self.halted_pc = Some(pc);
-                            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-                            self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                            self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+                            self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
                             self.dump_trace();
                             return (count, false);
                         }
@@ -6393,9 +6394,9 @@ impl FixtureRunner {
             && ppc_app.activate_powerpc_from_m68k().is_none()
         {
             self.halted = true;
-            self.halted_pc = Some(self.cpu.read_reg(Register::PC));
-            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-            self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+            self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
+            self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+            self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
             if foreground {
                 self.ppc_app = Some(ppc_app);
             } else {
@@ -6452,9 +6453,9 @@ impl FixtureRunner {
             self.dispatcher.instruction_count = self.total_instructions;
             if !running {
                 self.halted = true;
-                self.halted_pc = Some(self.cpu.read_reg(Register::PC));
-                self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-                self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
+                self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+                self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
             }
             if foreground {
                 self.ppc_app = Some(ppc_app);
@@ -6768,25 +6769,10 @@ impl FixtureRunner {
         max_steps: usize,
     ) -> Option<(usize, bool)> {
         let task = ppc_app.guest_calls.current_task();
-        let active = ppc_app.guest_calls.active_m68k();
-        let pending = active.or_else(|| {
-            ppc_app
-                .guest_calls
-                .activate_m68k_parking(&mut self.parked_m68k_cpus, &mut self.cpu)
-        })?;
-        if active.is_none() {
-            for (index, value) in pending.registers.data.into_iter().enumerate() {
-                self.cpu.core.set_d(index, value);
-            }
-            for (index, value) in pending.registers.address.into_iter().enumerate() {
-                self.cpu.core.set_a(index, value);
-            }
-            self.cpu.write_reg(Register::A7, pending.initial_sp);
-            self.cpu.write_reg(Register::PC, pending.entry);
-        }
+        let pending = self.m68k.activate_pending()?;
 
         // Thread Manager calls are allowed to yield while guest callback code
-        // is running. Once that happens, `self.cpu` belongs to the successor
+        // is running. Once that happens, `self.m68k.cpu` belongs to the successor
         // task and the continuation captured above must remain suspended until
         // its owner is scheduled again. Continuing here would execute the old
         // callback against the new task's registers and stack.
@@ -6794,10 +6780,12 @@ impl FixtureRunner {
             return Some((0, true));
         }
 
-        if self.cpu.read_reg(Register::PC) == pending.return_pc
-            && self.cpu.read_reg(Register::A7) == pending.final_sp
+        if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc
+            && self.m68k.cpu.read_reg(Register::A7) == pending.final_sp
         {
-            let completed = self.complete_pending_m68k_guest_call(ppc_app, pending);
+            let completed =
+                self.m68k
+                    .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending);
             return Some((0, completed));
         }
         if max_steps == 0 {
@@ -6807,8 +6795,10 @@ impl FixtureRunner {
         let mut executed = 0usize;
         let mut running = true;
         while executed < max_steps {
-            if self.cpu.read_reg(Register::PC) == pending.return_pc {
-                running = self.complete_pending_m68k_guest_call(ppc_app, pending);
+            if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc {
+                running =
+                    self.m68k
+                        .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending);
                 break;
             }
             let batch_max = if self.dispatcher.has_pending_native_trap_call() {
@@ -6817,10 +6807,11 @@ impl FixtureRunner {
                 u32::try_from(max_steps - executed).unwrap_or(u32::MAX)
             };
             let batch = self
+                .m68k
                 .cpu
                 .run_batch(&mut self.bus, batch_max, &[pending.return_pc]);
             self.dispatcher
-                .retire_returned_native_trap_call(&mut self.cpu);
+                .retire_returned_native_trap_call(&mut self.m68k.cpu);
             let retired = batch.instructions as usize
                 + usize::from(matches!(
                     batch.exit,
@@ -6830,17 +6821,19 @@ impl FixtureRunner {
             match batch.exit {
                 BatchExit::BudgetExhausted => break,
                 BatchExit::WatchedPc { pc } if pc == pending.return_pc => {
-                    running = self.complete_pending_m68k_guest_call(ppc_app, pending);
+                    running =
+                        self.m68k
+                            .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending);
                     break;
                 }
                 BatchExit::AlineTrap { opcode } => {
                     if !self.dispatcher.aline_vector_is_default(&self.bus) {
-                        self.cpu.core.take_aline_exception(&mut self.bus);
+                        self.m68k.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
                     let dispatch_err = self.dispatcher.with_process_state(|dispatcher| {
                         dispatcher
-                            .dispatch(opcode, &mut self.cpu, &mut self.bus)
+                            .dispatch(opcode, &mut self.m68k.cpu, &mut self.bus)
                             .is_err()
                     });
                     if dispatch_err {
@@ -6860,7 +6853,7 @@ impl FixtureRunner {
                 BatchExit::WatchedPc { .. } => continue,
                 BatchExit::FlineTrap { .. } => {
                     if !self.dispatcher.fline_vector_is_default(&self.bus) {
-                        self.cpu.core.take_fline_exception(&mut self.bus);
+                        self.m68k.cpu.core.take_fline_exception(&mut self.bus);
                     }
                 }
                 BatchExit::Stopped
@@ -6876,360 +6869,15 @@ impl FixtureRunner {
     }
 
     fn resume_m68k_after_powerpc(&mut self, ppc_app: &mut PpcLoadedApp) -> bool {
-        let calls = ppc_app.guest_calls.shared_handle();
-        let Some(parked) =
-            calls.commit_m68k_resume(&mut self.parked_m68k_cpus, |resume, parked| {
-                let cpu = parked.unwrap_or(&mut self.cpu);
-                if !Self::apply_m68k_resume_result(cpu, &mut ppc_app.memory, resume) {
-                    return false;
-                }
-                cpu.write_reg(Register::PC, resume.return_pc);
-                cpu.write_reg(Register::A7, resume.final_sp);
-                true
-            })
-        else {
+        if !self.m68k.resume_after_powerpc(&mut ppc_app.memory) {
             return false;
-        };
-        if let Some(parked) = parked {
-            self.cpu = parked;
         }
         // A native RoutineDescriptor can be the head of a raw A-line patch.
         // Mixed Mode resumes at the synthesized JSR continuation directly,
         // so retire that Trap Manager frame before the next 68k instruction.
         self.dispatcher
-            .retire_returned_native_trap_call(&mut self.cpu);
+            .retire_returned_native_trap_call(&mut self.m68k.cpu);
         true
-    }
-
-    fn apply_m68k_resume_result(
-        cpu: &mut M68kCpu,
-        memory: &mut PpcSectionMem,
-        resume: crate::guest_call::M68kResume,
-    ) -> bool {
-        use crate::guest_call::M68kResultTarget;
-
-        let mask_value = |value: u32, size: u8| match size {
-            1 => Some(value & 0xff),
-            2 => Some(value & 0xffff),
-            4 => Some(value),
-            _ => None,
-        };
-        match resume.result {
-            None => true,
-            Some(M68kResultTarget::Data { index, size }) if index < 8 => {
-                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| {
-                    cpu.core.set_d(usize::from(index), value);
-                    true
-                })
-            }
-            Some(M68kResultTarget::Address { index, size }) if index < 8 => {
-                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| {
-                    cpu.core.set_a(usize::from(index), value);
-                    true
-                })
-            }
-            Some(M68kResultTarget::Ccr { mask }) => {
-                // Native return values always arrive in R3; Mixed Mode then
-                // copies that value to the ProcInfo-selected 68k destination,
-                // including a CCR bit. Inside Macintosh: PowerPC System
-                // Software (1994), pp. 2-10--2-12.
-                let set = resume.powerpc.gpr3 != 0;
-                let ccr = (cpu.core.get_ccr() & !mask) | if set { mask } else { 0 };
-                cpu.core.set_ccr(ccr);
-                true
-            }
-            Some(M68kResultTarget::Memory { address, size }) => {
-                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| match size {
-                    1 => memory.write_u8(address, value as u8).is_some(),
-                    2 => memory.write_u16_be(address, value as u16).is_some(),
-                    4 => memory.write_u32_be(address, value).is_some(),
-                    _ => false,
-                })
-            }
-            Some(M68kResultTarget::SpecialCase { selector, scratch }) => {
-                Self::apply_m68k_special_case_result(
-                    cpu,
-                    memory,
-                    selector,
-                    scratch,
-                    resume.powerpc.gpr3,
-                )
-            }
-            _ => false,
-        }
-    }
-
-    fn apply_m68k_special_case_result(
-        cpu: &mut M68kCpu,
-        memory: &mut PpcSectionMem,
-        selector: u8,
-        scratch: u32,
-        native_result: u32,
-    ) -> bool {
-        use crate::mixed_mode::special_case;
-
-        let set_data_word = |cpu: &mut crate::cpu::M68kCpu, index: usize, value: u32| {
-            let preserved = cpu.core.d(index) & 0xffff_0000;
-            cpu.core.set_d(index, preserved | (value & 0xffff));
-        };
-        let set_z = |cpu: &mut crate::cpu::M68kCpu, value: bool| {
-            let ccr = (cpu.core.get_ccr() & !0x04) | if value { 0x04 } else { 0 };
-            cpu.core.set_ccr(ccr);
-        };
-
-        match u32::from(selector) {
-            special_case::EOL_HOOK
-            | special_case::PROTOCOL_HANDLER
-            | special_case::SOCKET_LISTENER => {
-                set_z(cpu, native_result & 0xff != 0);
-                true
-            }
-            special_case::WIDTH_HOOK | special_case::NWIDTH_HOOK => {
-                set_data_word(cpu, 1, native_result);
-                true
-            }
-            special_case::HIT_TEST_HOOK => {
-                let Some(pixel_width) = memory.read_u16_be(scratch) else {
-                    return false;
-                };
-                let Some(char_offset) = scratch
-                    .checked_add(2)
-                    .and_then(|address| memory.read_u16_be(address))
-                else {
-                    return false;
-                };
-                let Some(pixel_in_char) = scratch
-                    .checked_add(4)
-                    .and_then(|address| memory.read_u8(address))
-                else {
-                    return false;
-                };
-                cpu.core
-                    .set_d(0, ((native_result & 0xff) << 16) | u32::from(pixel_width));
-                set_data_word(cpu, 1, u32::from(char_offset));
-                set_data_word(cpu, 2, u32::from(pixel_in_char));
-                true
-            }
-            special_case::TE_FIND_WORD => {
-                let Some(word_start) = memory.read_u16_be(scratch) else {
-                    return false;
-                };
-                let Some(word_end) = scratch
-                    .checked_add(2)
-                    .and_then(|address| memory.read_u16_be(address))
-                else {
-                    return false;
-                };
-                set_data_word(cpu, 0, u32::from(word_start));
-                set_data_word(cpu, 1, u32::from(word_end));
-                true
-            }
-            special_case::TE_RECALC => {
-                let Some(line_start) = memory.read_u16_be(scratch) else {
-                    return false;
-                };
-                let Some(first_char) = scratch
-                    .checked_add(2)
-                    .and_then(|address| memory.read_u16_be(address))
-                else {
-                    return false;
-                };
-                let Some(last_char) = scratch
-                    .checked_add(4)
-                    .and_then(|address| memory.read_u16_be(address))
-                else {
-                    return false;
-                };
-                set_data_word(cpu, 2, u32::from(line_start));
-                set_data_word(cpu, 3, u32::from(first_char));
-                set_data_word(cpu, 4, u32::from(last_char));
-                true
-            }
-            special_case::TE_DO_TEXT => {
-                let Some(current_graf_port) = memory.read_u32_be(scratch) else {
-                    return false;
-                };
-                let Some(char_position) = scratch
-                    .checked_add(4)
-                    .and_then(|address| memory.read_u16_be(address))
-                else {
-                    return false;
-                };
-                cpu.core.set_a(0, current_graf_port);
-                set_data_word(cpu, 0, u32::from(char_position));
-                true
-            }
-            special_case::MBAR_HOOK => {
-                set_data_word(cpu, 0, native_result);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn complete_pending_m68k_guest_call(
-        &mut self,
-        ppc_app: &mut PpcLoadedApp,
-        pending: crate::guest_call::PendingM68kExecution,
-    ) -> bool {
-        use crate::guest_call::M68kResultSource;
-
-        let result = match pending.result {
-            None => None,
-            Some(M68kResultSource::Data(index)) => Some(self.cpu.core.d(usize::from(index))),
-            Some(M68kResultSource::Address(index)) => Some(self.cpu.core.a(usize::from(index))),
-            Some(M68kResultSource::Memory { address, size }) => {
-                let value = match size {
-                    1 => ppc_app.memory.read_u8(address).map(u32::from),
-                    2 => ppc_app.memory.read_u16_be(address).map(u32::from),
-                    4 => ppc_app.memory.read_u32_be(address),
-                    _ => None,
-                };
-                let Some(value) = value else {
-                    return false;
-                };
-                Some(value)
-            }
-            Some(M68kResultSource::SpecialCase {
-                selector,
-                arguments,
-                stack_result,
-            }) => {
-                let Ok(value) = self.complete_m68k_special_case_result(
-                    ppc_app,
-                    selector,
-                    arguments,
-                    stack_result,
-                ) else {
-                    return false;
-                };
-                value
-            }
-        };
-        ppc_app.guest_calls.complete_m68k_for_powerpc(
-            pending.return_pc,
-            self.cpu.read_reg(Register::A7),
-            result,
-            &mut ppc_app.cpu,
-        )
-    }
-
-    fn complete_m68k_special_case_result(
-        &mut self,
-        ppc_app: &mut PpcLoadedApp,
-        selector: u8,
-        arguments: crate::guest_call::PowerPcArguments,
-        stack_result: Option<u32>,
-    ) -> std::result::Result<Option<u32>, ()> {
-        use crate::mixed_mode::special_case;
-
-        let arguments = arguments.as_slice();
-        let proc_info = crate::mixed_mode::proc_info::SPECIAL_CASE
-            | (u32::from(selector) << special_case::SELECTOR_PHASE);
-        let signature = crate::mixed_mode::native_special_case_signature(proc_info).ok_or(())?;
-        if arguments.len() != signature.argument_count {
-            return Err(());
-        }
-        let z = u32::from(self.cpu.core.get_ccr() & 0x04 != 0);
-        match u32::from(selector) {
-            // A void callback has no native return value. Preserve the
-            // caller's PPC R3 rather than manufacturing zero and treating it
-            // as a result to copy back through the cross-ISA frame.
-            special_case::HIGH_HOOK | special_case::DRAW_HOOK => Ok(None),
-            special_case::EOL_HOOK
-            | special_case::PROTOCOL_HANDLER
-            | special_case::SOCKET_LISTENER => Ok(Some(z)),
-            special_case::WIDTH_HOOK | special_case::NWIDTH_HOOK => {
-                Ok(Some(self.cpu.core.d(1) & 0xffff))
-            }
-            special_case::HIT_TEST_HOOK => {
-                if ![(arguments[6], 2), (arguments[7], 2), (arguments[8], 1)]
-                    .into_iter()
-                    .all(|(address, size)| ppc_app.memory.preflight_writable_range(address, size))
-                {
-                    return Err(());
-                }
-                ppc_app
-                    .memory
-                    .write_u16_be(arguments[6], self.cpu.core.d(0) as u16)
-                    .ok_or(())?;
-                ppc_app
-                    .memory
-                    .write_u16_be(arguments[7], self.cpu.core.d(1) as u16)
-                    .ok_or(())?;
-                ppc_app
-                    .memory
-                    .write_u8(arguments[8], self.cpu.core.d(2) as u8)
-                    .ok_or(())?;
-                Ok(Some((self.cpu.core.d(0) >> 16) & 0xff))
-            }
-            special_case::TE_FIND_WORD => {
-                if ![(arguments[4], 2), (arguments[5], 2)]
-                    .into_iter()
-                    .all(|(address, size)| ppc_app.memory.preflight_writable_range(address, size))
-                {
-                    return Err(());
-                }
-                ppc_app
-                    .memory
-                    .write_u16_be(arguments[4], self.cpu.core.d(0) as u16)
-                    .ok_or(())?;
-                ppc_app
-                    .memory
-                    .write_u16_be(arguments[5], self.cpu.core.d(1) as u16)
-                    .ok_or(())?;
-                Ok(None)
-            }
-            special_case::TE_RECALC => {
-                if !arguments[2..5]
-                    .iter()
-                    .copied()
-                    .all(|address| ppc_app.memory.preflight_writable_range(address, 2))
-                {
-                    return Err(());
-                }
-                for (argument, register) in arguments[2..5].iter().copied().zip(2..=4) {
-                    ppc_app
-                        .memory
-                        .write_u16_be(argument, self.cpu.core.d(register) as u16)
-                        .ok_or(())?;
-                }
-                Ok(None)
-            }
-            special_case::TE_DO_TEXT => {
-                if ![(arguments[4], 4), (arguments[5], 2)]
-                    .into_iter()
-                    .all(|(address, size)| ppc_app.memory.preflight_writable_range(address, size))
-                {
-                    return Err(());
-                }
-                ppc_app
-                    .memory
-                    .write_u32_be(arguments[4], self.cpu.core.a(0))
-                    .ok_or(())?;
-                ppc_app
-                    .memory
-                    .write_u16_be(arguments[5], self.cpu.core.d(0) as u16)
-                    .ok_or(())?;
-                Ok(None)
-            }
-            special_case::GNE_FILTER_PROC => {
-                let result = ppc_app
-                    .memory
-                    .read_u16_be(stack_result.ok_or(())?)
-                    .ok_or(())?;
-                if !ppc_app.memory.preflight_writable_range(arguments[1], 1) {
-                    return Err(());
-                }
-                ppc_app
-                    .memory
-                    .write_u8(arguments[1], result as u8)
-                    .ok_or(())?;
-                Ok(None)
-            }
-            special_case::MBAR_HOOK => Ok(Some(self.cpu.core.d(0) & 0xffff)),
-            _ => Err(()),
-        }
     }
 
     fn prepare_ppc_execution_clock(&mut self, _ppc_app: &mut PpcLoadedApp) {
@@ -8937,7 +8585,7 @@ impl FixtureRunner {
     /// the batch-exit arms (TRAP #n / BKPT / illegal instruction) that
     /// previously funneled through `StepResult::Stopped`.
     fn halt_with_stop_diagnostics(&mut self, count: usize) {
-        let halted_pc = self.cpu.read_reg(Register::PC);
+        let halted_pc = self.m68k.cpu.read_reg(Register::PC);
         eprintln!(
             "[RUN_STEPS] CPU stopped at count={} pc=${:08X} op=${:04X}",
             count,
@@ -8946,8 +8594,8 @@ impl FixtureRunner {
         );
         self.halted = true;
         self.halted_pc = Some(halted_pc);
-        self.halted_sp = Some(self.cpu.read_reg(Register::A7));
-        self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+        self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
+        self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
         self.dump_trace();
     }
 
@@ -9068,8 +8716,8 @@ impl FixtureRunner {
         };
 
         if let (Some(resume_pc), Some(resume_sp)) = (pending.resume_pc, pending.resume_sp) {
-            let current_pc = self.cpu.read_reg(Register::PC);
-            let current_sp = self.cpu.read_reg(Register::A7);
+            let current_pc = self.m68k.cpu.read_reg(Register::PC);
+            let current_sp = self.m68k.cpu.read_reg(Register::A7);
             if current_pc != resume_pc || current_sp != resume_sp {
                 self.dispatcher.pending_wait_sleep_ticks = 0;
                 if crate::trap::dispatch::trace_input_enabled() {
@@ -9091,7 +8739,7 @@ impl FixtureRunner {
             mut modifiers,
             mut has_event,
         ) = self.dispatcher.with_process_state(|dispatcher| {
-            dispatcher.dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask)
+            dispatcher.dequeue_toolbox_event(&mut self.m68k.cpu, &mut self.bus, pending.event_mask)
         });
         if !has_event {
             if let Some(event) = self.dispatcher.mouse_moved_event_for_region(
@@ -9304,7 +8952,7 @@ impl FixtureRunner {
 
         if self.dispatcher.pending_delay_ticks == 0 {
             let final_ticks = self.guest_tick();
-            self.cpu.write_reg(Register::D0, final_ticks);
+            self.m68k.cpu.write_reg(Register::D0, final_ticks);
         }
 
         false
@@ -9343,12 +8991,12 @@ impl FixtureRunner {
         if self.active_interrupt_callback.is_some() {
             return;
         }
-        if (self.cpu.core.get_sr() & 0x0700) >= 0x0100 {
+        if (self.m68k.cpu.core.get_sr() & 0x0700) >= 0x0100 {
             if trace_vbl_enabled() {
                 eprintln!(
                     "[VBL] defer JCrsrTask masked sr=${:04X} pc=${:08X}",
-                    self.cpu.core.get_sr(),
-                    self.cpu.read_reg(Register::PC)
+                    self.m68k.cpu.core.get_sr(),
+                    self.m68k.cpu.read_reg(Register::PC)
                 );
             }
             return;
@@ -9383,8 +9031,8 @@ impl FixtureRunner {
             eprintln!(
                 "[VBL] fire JCrsrTask addr=${:08X} interrupted_pc=${:08X} interrupted_sp=${:08X}",
                 callback_addr,
-                self.cpu.read_reg(Register::PC),
-                self.cpu.read_reg(Register::A7)
+                self.m68k.cpu.read_reg(Register::PC),
+                self.m68k.cpu.read_reg(Register::A7)
             );
         }
         self.inject_interrupt_callback(ActiveInterruptCallbackSource::CursorTask, tramp);
@@ -9398,12 +9046,12 @@ impl FixtureRunner {
         if self.active_interrupt_callback.is_some() {
             return;
         }
-        if (self.cpu.core.get_sr() & 0x0700) >= 0x0100 {
+        if (self.m68k.cpu.core.get_sr() & 0x0700) >= 0x0100 {
             if trace_vbl_enabled() {
                 eprintln!(
                     "[VBL] defer masked sr=${:04X} pc=${:08X}",
-                    self.cpu.core.get_sr(),
-                    self.cpu.read_reg(Register::PC)
+                    self.m68k.cpu.core.get_sr(),
+                    self.m68k.cpu.read_reg(Register::PC)
                 );
             }
             return;
@@ -9481,33 +9129,33 @@ impl FixtureRunner {
         self.bus.write_long(tramp + 6, task_ptr);
         self.bus.write_long(tramp + 12, callback_addr);
 
-        let current_pc = self.cpu.read_reg(Register::PC);
-        let sp = self.cpu.read_reg(Register::A7);
+        let current_pc = self.m68k.cpu.read_reg(Register::PC);
+        let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
-            self.cpu.read_reg(Register::D0),
-            self.cpu.read_reg(Register::D1),
-            self.cpu.read_reg(Register::D2),
-            self.cpu.read_reg(Register::D3),
-            self.cpu.read_reg(Register::D4),
-            self.cpu.read_reg(Register::D5),
-            self.cpu.read_reg(Register::D6),
-            self.cpu.read_reg(Register::D7),
+            self.m68k.cpu.read_reg(Register::D0),
+            self.m68k.cpu.read_reg(Register::D1),
+            self.m68k.cpu.read_reg(Register::D2),
+            self.m68k.cpu.read_reg(Register::D3),
+            self.m68k.cpu.read_reg(Register::D4),
+            self.m68k.cpu.read_reg(Register::D5),
+            self.m68k.cpu.read_reg(Register::D6),
+            self.m68k.cpu.read_reg(Register::D7),
         ];
         let a_regs = [
-            self.cpu.read_reg(Register::A0),
-            self.cpu.read_reg(Register::A1),
-            self.cpu.read_reg(Register::A2),
-            self.cpu.read_reg(Register::A3),
-            self.cpu.read_reg(Register::A4),
-            self.cpu.read_reg(Register::A5),
-            self.cpu.read_reg(Register::A6),
+            self.m68k.cpu.read_reg(Register::A0),
+            self.m68k.cpu.read_reg(Register::A1),
+            self.m68k.cpu.read_reg(Register::A2),
+            self.m68k.cpu.read_reg(Register::A3),
+            self.m68k.cpu.read_reg(Register::A4),
+            self.m68k.cpu.read_reg(Register::A5),
+            self.m68k.cpu.read_reg(Register::A6),
             sp,
         ];
-        let ccr = self.cpu.core.get_ccr();
-        let sr = self.cpu.core.get_sr();
+        let ccr = self.m68k.cpu.core.get_ccr();
+        let sr = self.m68k.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         self.bus.write_long(new_sp, current_pc);
-        self.cpu.write_reg(Register::A7, new_sp);
+        self.m68k.cpu.write_reg(Register::A7, new_sp);
         let source = ActiveInterruptCallbackSource::Vbl;
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
             source,
@@ -9519,10 +9167,11 @@ impl FixtureRunner {
             ccr,
             restore_port: None,
         });
-        self.cpu
+        self.m68k
+            .cpu
             .core
             .set_sr_noint_nosp(interrupt_callback_sr(source, sr));
-        self.cpu.write_reg(Register::PC, tramp);
+        self.m68k.cpu.write_reg(Register::PC, tramp);
 
         if trace_vbl_enabled() {
             eprintln!(
@@ -9632,35 +9281,35 @@ impl FixtureRunner {
             // Snapshot the interrupted CPU state before mutating A7 for the
             // synthetic return address. The Time Manager callback should resume
             // with the guest stack exactly as it was when interrupted.
-            let current_pc = self.cpu.read_reg(Register::PC);
-            let sp = self.cpu.read_reg(Register::A7);
+            let current_pc = self.m68k.cpu.read_reg(Register::PC);
+            let sp = self.m68k.cpu.read_reg(Register::A7);
             let d_regs = [
-                self.cpu.read_reg(Register::D0),
-                self.cpu.read_reg(Register::D1),
-                self.cpu.read_reg(Register::D2),
-                self.cpu.read_reg(Register::D3),
-                self.cpu.read_reg(Register::D4),
-                self.cpu.read_reg(Register::D5),
-                self.cpu.read_reg(Register::D6),
-                self.cpu.read_reg(Register::D7),
+                self.m68k.cpu.read_reg(Register::D0),
+                self.m68k.cpu.read_reg(Register::D1),
+                self.m68k.cpu.read_reg(Register::D2),
+                self.m68k.cpu.read_reg(Register::D3),
+                self.m68k.cpu.read_reg(Register::D4),
+                self.m68k.cpu.read_reg(Register::D5),
+                self.m68k.cpu.read_reg(Register::D6),
+                self.m68k.cpu.read_reg(Register::D7),
             ];
             let a_regs = [
-                self.cpu.read_reg(Register::A0),
-                self.cpu.read_reg(Register::A1),
-                self.cpu.read_reg(Register::A2),
-                self.cpu.read_reg(Register::A3),
-                self.cpu.read_reg(Register::A4),
-                self.cpu.read_reg(Register::A5),
-                self.cpu.read_reg(Register::A6),
+                self.m68k.cpu.read_reg(Register::A0),
+                self.m68k.cpu.read_reg(Register::A1),
+                self.m68k.cpu.read_reg(Register::A2),
+                self.m68k.cpu.read_reg(Register::A3),
+                self.m68k.cpu.read_reg(Register::A4),
+                self.m68k.cpu.read_reg(Register::A5),
+                self.m68k.cpu.read_reg(Register::A6),
                 sp,
             ];
-            let ccr = self.cpu.core.get_ccr();
-            let sr = self.cpu.core.get_sr();
+            let ccr = self.m68k.cpu.core.get_ccr();
+            let sr = self.m68k.cpu.core.get_sr();
 
             // Inject: push current PC, jump to trampoline
             let new_sp = sp.wrapping_sub(4);
             self.bus.write_long(new_sp, current_pc);
-            self.cpu.write_reg(Register::A7, new_sp);
+            self.m68k.cpu.write_reg(Register::A7, new_sp);
             self.active_interrupt_callback = Some(ActiveInterruptCallback {
                 source: ActiveInterruptCallbackSource::Timer,
                 resume_pc: current_pc,
@@ -9677,7 +9326,7 @@ impl FixtureRunner {
                     task_ptr, tm_addr, current_pc, sp, ccr
                 );
             }
-            self.cpu.write_reg(Register::PC, tramp);
+            self.m68k.cpu.write_reg(Register::PC, tramp);
         } else {
             self.dispatcher.callback_scheduling.current_subtick = current_subtick;
         }
@@ -9794,24 +9443,24 @@ impl FixtureRunner {
 
     fn dump_invalid_pc_state(&self) {
         let d_regs = [
-            self.cpu.read_reg(Register::D0),
-            self.cpu.read_reg(Register::D1),
-            self.cpu.read_reg(Register::D2),
-            self.cpu.read_reg(Register::D3),
-            self.cpu.read_reg(Register::D4),
-            self.cpu.read_reg(Register::D5),
-            self.cpu.read_reg(Register::D6),
-            self.cpu.read_reg(Register::D7),
+            self.m68k.cpu.read_reg(Register::D0),
+            self.m68k.cpu.read_reg(Register::D1),
+            self.m68k.cpu.read_reg(Register::D2),
+            self.m68k.cpu.read_reg(Register::D3),
+            self.m68k.cpu.read_reg(Register::D4),
+            self.m68k.cpu.read_reg(Register::D5),
+            self.m68k.cpu.read_reg(Register::D6),
+            self.m68k.cpu.read_reg(Register::D7),
         ];
         let a_regs = [
-            self.cpu.read_reg(Register::A0),
-            self.cpu.read_reg(Register::A1),
-            self.cpu.read_reg(Register::A2),
-            self.cpu.read_reg(Register::A3),
-            self.cpu.read_reg(Register::A4),
-            self.cpu.read_reg(Register::A5),
-            self.cpu.read_reg(Register::A6),
-            self.cpu.read_reg(Register::A7),
+            self.m68k.cpu.read_reg(Register::A0),
+            self.m68k.cpu.read_reg(Register::A1),
+            self.m68k.cpu.read_reg(Register::A2),
+            self.m68k.cpu.read_reg(Register::A3),
+            self.m68k.cpu.read_reg(Register::A4),
+            self.m68k.cpu.read_reg(Register::A5),
+            self.m68k.cpu.read_reg(Register::A6),
+            self.m68k.cpu.read_reg(Register::A7),
         ];
         eprintln!(
             "[RUN_STEPS]   D0-D7: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
@@ -9821,7 +9470,7 @@ impl FixtureRunner {
             "[RUN_STEPS]   A0-A7: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
             a_regs[0], a_regs[1], a_regs[2], a_regs[3], a_regs[4], a_regs[5], a_regs[6], a_regs[7]
         );
-        eprintln!("[RUN_STEPS]   CCR=${:02X}", self.cpu.core.get_ccr());
+        eprintln!("[RUN_STEPS]   CCR=${:02X}", self.m68k.cpu.core.get_ccr());
         if let Some(active) = self.active_interrupt_callback {
             eprintln!(
                 "[RUN_STEPS]   active_callback={:?} resume_pc=${:08X} resume_sp=${:08X}",
@@ -9836,33 +9485,33 @@ impl FixtureRunner {
         source: ActiveInterruptCallbackSource,
         trampoline: u32,
     ) {
-        let current_pc = self.cpu.read_reg(Register::PC);
-        let sp = self.cpu.read_reg(Register::A7);
+        let current_pc = self.m68k.cpu.read_reg(Register::PC);
+        let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
-            self.cpu.read_reg(Register::D0),
-            self.cpu.read_reg(Register::D1),
-            self.cpu.read_reg(Register::D2),
-            self.cpu.read_reg(Register::D3),
-            self.cpu.read_reg(Register::D4),
-            self.cpu.read_reg(Register::D5),
-            self.cpu.read_reg(Register::D6),
-            self.cpu.read_reg(Register::D7),
+            self.m68k.cpu.read_reg(Register::D0),
+            self.m68k.cpu.read_reg(Register::D1),
+            self.m68k.cpu.read_reg(Register::D2),
+            self.m68k.cpu.read_reg(Register::D3),
+            self.m68k.cpu.read_reg(Register::D4),
+            self.m68k.cpu.read_reg(Register::D5),
+            self.m68k.cpu.read_reg(Register::D6),
+            self.m68k.cpu.read_reg(Register::D7),
         ];
         let a_regs = [
-            self.cpu.read_reg(Register::A0),
-            self.cpu.read_reg(Register::A1),
-            self.cpu.read_reg(Register::A2),
-            self.cpu.read_reg(Register::A3),
-            self.cpu.read_reg(Register::A4),
-            self.cpu.read_reg(Register::A5),
-            self.cpu.read_reg(Register::A6),
+            self.m68k.cpu.read_reg(Register::A0),
+            self.m68k.cpu.read_reg(Register::A1),
+            self.m68k.cpu.read_reg(Register::A2),
+            self.m68k.cpu.read_reg(Register::A3),
+            self.m68k.cpu.read_reg(Register::A4),
+            self.m68k.cpu.read_reg(Register::A5),
+            self.m68k.cpu.read_reg(Register::A6),
             sp,
         ];
-        let ccr = self.cpu.core.get_ccr();
-        let sr = self.cpu.core.get_sr();
+        let ccr = self.m68k.cpu.core.get_ccr();
+        let sr = self.m68k.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         self.bus.write_long(new_sp, current_pc);
-        self.cpu.write_reg(Register::A7, new_sp);
+        self.m68k.cpu.write_reg(Register::A7, new_sp);
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
             source,
             resume_pc: current_pc,
@@ -9873,10 +9522,11 @@ impl FixtureRunner {
             ccr,
             restore_port: None,
         });
-        self.cpu
+        self.m68k
+            .cpu
             .core
             .set_sr_noint_nosp(interrupt_callback_sr(source, sr));
-        self.cpu.write_reg(Register::PC, trampoline);
+        self.m68k.cpu.write_reg(Register::PC, trampoline);
     }
 
     /// Publish and optionally deliver one completed asynchronous File Manager
@@ -9910,8 +9560,11 @@ impl FixtureRunner {
         let tramp = self.file_completion_trampoline;
         self.bus.write_long(tramp + 2, completion.completion_addr);
         self.inject_interrupt_callback(ActiveInterruptCallbackSource::FileCompletion, tramp);
-        self.cpu.write_reg(Register::A0, completion.parameter_block);
-        self.cpu
+        self.m68k
+            .cpu
+            .write_reg(Register::A0, completion.parameter_block);
+        self.m68k
+            .cpu
             .write_reg(Register::D0, completion.result as i32 as u32);
         true
     }
@@ -9950,10 +9603,16 @@ impl FixtureRunner {
                 .write_byte(self.adb_packet_buffer + offset as u32, byte);
         }
         self.inject_interrupt_callback(ActiveInterruptCallbackSource::Adb, tramp);
-        self.cpu.write_reg(Register::A0, self.adb_packet_buffer);
-        self.cpu.write_reg(Register::A1, packet.service_routine);
-        self.cpu.write_reg(Register::A2, packet.data_area);
-        self.cpu.write_reg(Register::D0, u32::from(packet.command));
+        self.m68k
+            .cpu
+            .write_reg(Register::A0, self.adb_packet_buffer);
+        self.m68k
+            .cpu
+            .write_reg(Register::A1, packet.service_routine);
+        self.m68k.cpu.write_reg(Register::A2, packet.data_area);
+        self.m68k
+            .cpu
+            .write_reg(Register::D0, u32::from(packet.command));
         true
     }
 
@@ -10025,7 +9684,7 @@ impl FixtureRunner {
 
                 let tramp = self.sound_callback_trampoline;
                 let cmd_ptr = tramp + 34;
-                let interrupted_sp = self.cpu.read_reg(Register::A7);
+                let interrupted_sp = self.m68k.cpu.read_reg(Register::A7);
                 let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
                 self.bus.write_long(tramp + 6, chan_ptr);
                 self.bus.write_long(tramp + 12, cmd_ptr);
@@ -10061,7 +9720,7 @@ impl FixtureRunner {
                 }
 
                 let tramp = self.sound_file_completion_trampoline;
-                let interrupted_sp = self.cpu.read_reg(Register::A7);
+                let interrupted_sp = self.m68k.cpu.read_reg(Register::A7);
                 let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
                 self.bus.write_long(tramp + 6, chan_ptr);
                 self.bus.write_long(tramp + 12, callback_addr);
@@ -10123,7 +9782,7 @@ impl FixtureRunner {
                     self.bus.read_long(exhausted_buf_ptr),
                     flags,
                     cb.callback_addr,
-                    self.cpu.core.get_sr(),
+                    self.m68k.cpu.core.get_sr(),
                     preview
                 );
             }
@@ -10166,7 +9825,7 @@ impl FixtureRunner {
         }
 
         let tramp = self.sound_doubleback_trampoline;
-        let interrupted_sp = self.cpu.read_reg(Register::A7);
+        let interrupted_sp = self.m68k.cpu.read_reg(Register::A7);
         let saved_regs_sp = interrupted_sp.wrapping_sub(4 + 32);
         // Classic Pascal pushes parameters left-to-right. At callback entry,
         // after JSR has stacked the return address, the exhausted buffer is at
@@ -10199,7 +9858,7 @@ impl FixtureRunner {
         if self.looks_like_dialog_proc_entry(proc_addr) {
             return Some(proc_addr);
         }
-        let a5_relative = self.cpu.read_reg(Register::A5).wrapping_add(proc_addr);
+        let a5_relative = self.m68k.cpu.read_reg(Register::A5).wrapping_add(proc_addr);
         if self.looks_like_dialog_proc_entry(a5_relative) {
             Some(a5_relative)
         } else {
@@ -10226,7 +9885,7 @@ impl FixtureRunner {
         // Only fire callbacks that look like real 68K entry points.
         let Some(call_addr) = self.resolve_dialog_draw_proc_addr(proc_addr) else {
             if trace_dialog_procs_enabled() {
-                let a5_relative = self.cpu.read_reg(Register::A5).wrapping_add(proc_addr);
+                let a5_relative = self.m68k.cpu.read_reg(Register::A5).wrapping_add(proc_addr);
                 eprintln!(
                     "[DIALOG-PROC] skip dialog=${:08X} item={} proc=${:08X} a5rel=${:08X} entry=${:04X} a5entry=${:04X}",
                     dialog_ptr,
@@ -10276,40 +9935,40 @@ impl FixtureRunner {
         // application drawing so one item cannot contaminate later redraws.
         self.dialog_draw_port_snapshot = Some(self.dispatcher.prepare_dialog_user_item_port_state(
             &mut self.bus,
-            &mut self.cpu,
+            &mut self.m68k.cpu,
             dialog_ptr,
         ));
 
         // Inject: push current PC, jump to trampoline
-        let current_pc = self.cpu.read_reg(Register::PC);
-        let sp = self.cpu.read_reg(Register::A7);
+        let current_pc = self.m68k.cpu.read_reg(Register::PC);
+        let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
-            self.cpu.read_reg(Register::D0),
-            self.cpu.read_reg(Register::D1),
-            self.cpu.read_reg(Register::D2),
-            self.cpu.read_reg(Register::D3),
-            self.cpu.read_reg(Register::D4),
-            self.cpu.read_reg(Register::D5),
-            self.cpu.read_reg(Register::D6),
-            self.cpu.read_reg(Register::D7),
+            self.m68k.cpu.read_reg(Register::D0),
+            self.m68k.cpu.read_reg(Register::D1),
+            self.m68k.cpu.read_reg(Register::D2),
+            self.m68k.cpu.read_reg(Register::D3),
+            self.m68k.cpu.read_reg(Register::D4),
+            self.m68k.cpu.read_reg(Register::D5),
+            self.m68k.cpu.read_reg(Register::D6),
+            self.m68k.cpu.read_reg(Register::D7),
         ];
         let a_regs = [
-            self.cpu.read_reg(Register::A0),
-            self.cpu.read_reg(Register::A1),
-            self.cpu.read_reg(Register::A2),
-            self.cpu.read_reg(Register::A3),
-            self.cpu.read_reg(Register::A4),
-            self.cpu.read_reg(Register::A5),
-            self.cpu.read_reg(Register::A6),
+            self.m68k.cpu.read_reg(Register::A0),
+            self.m68k.cpu.read_reg(Register::A1),
+            self.m68k.cpu.read_reg(Register::A2),
+            self.m68k.cpu.read_reg(Register::A3),
+            self.m68k.cpu.read_reg(Register::A4),
+            self.m68k.cpu.read_reg(Register::A5),
+            self.m68k.cpu.read_reg(Register::A6),
             sp,
         ];
-        let ccr = self.cpu.core.get_ccr();
-        let sr = self.cpu.core.get_sr();
+        let ccr = self.m68k.cpu.core.get_ccr();
+        let sr = self.m68k.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         let saved_regs_sp = new_sp.wrapping_sub(32);
         self.bus.write_long(tramp + 22, saved_regs_sp);
         self.bus.write_long(new_sp, current_pc);
-        self.cpu.write_reg(Register::A7, new_sp);
+        self.m68k.cpu.write_reg(Register::A7, new_sp);
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
             source: ActiveInterruptCallbackSource::DialogDrawProc,
             resume_pc: current_pc,
@@ -10334,7 +9993,7 @@ impl FixtureRunner {
                 current_pc,
             );
         }
-        self.cpu.write_reg(Register::PC, tramp);
+        self.m68k.cpu.write_reg(Register::PC, tramp);
         true
     }
 
@@ -10352,7 +10011,7 @@ impl FixtureRunner {
         }
         while let Some(dialog_ptr) = self.dispatcher.modeless_dialog_cdef_draw_queue.pop_front() {
             if self.dispatcher.arm_dialog_control_def_draws(
-                &mut self.cpu,
+                &mut self.m68k.cpu,
                 &mut self.bus,
                 dialog_ptr,
             ) {
@@ -10442,35 +10101,35 @@ impl FixtureRunner {
         let tramp = self.menu_hook_trampoline;
         self.bus.write_long(tramp + 6, call_addr);
 
-        let current_pc = self.cpu.read_reg(Register::PC);
-        let sp = self.cpu.read_reg(Register::A7);
+        let current_pc = self.m68k.cpu.read_reg(Register::PC);
+        let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
-            self.cpu.read_reg(Register::D0),
-            self.cpu.read_reg(Register::D1),
-            self.cpu.read_reg(Register::D2),
-            self.cpu.read_reg(Register::D3),
-            self.cpu.read_reg(Register::D4),
-            self.cpu.read_reg(Register::D5),
-            self.cpu.read_reg(Register::D6),
-            self.cpu.read_reg(Register::D7),
+            self.m68k.cpu.read_reg(Register::D0),
+            self.m68k.cpu.read_reg(Register::D1),
+            self.m68k.cpu.read_reg(Register::D2),
+            self.m68k.cpu.read_reg(Register::D3),
+            self.m68k.cpu.read_reg(Register::D4),
+            self.m68k.cpu.read_reg(Register::D5),
+            self.m68k.cpu.read_reg(Register::D6),
+            self.m68k.cpu.read_reg(Register::D7),
         ];
         let a_regs = [
-            self.cpu.read_reg(Register::A0),
-            self.cpu.read_reg(Register::A1),
-            self.cpu.read_reg(Register::A2),
-            self.cpu.read_reg(Register::A3),
-            self.cpu.read_reg(Register::A4),
-            self.cpu.read_reg(Register::A5),
-            self.cpu.read_reg(Register::A6),
+            self.m68k.cpu.read_reg(Register::A0),
+            self.m68k.cpu.read_reg(Register::A1),
+            self.m68k.cpu.read_reg(Register::A2),
+            self.m68k.cpu.read_reg(Register::A3),
+            self.m68k.cpu.read_reg(Register::A4),
+            self.m68k.cpu.read_reg(Register::A5),
+            self.m68k.cpu.read_reg(Register::A6),
             sp,
         ];
-        let ccr = self.cpu.core.get_ccr();
-        let sr = self.cpu.core.get_sr();
+        let ccr = self.m68k.cpu.core.get_ccr();
+        let sr = self.m68k.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         let saved_regs_sp = new_sp.wrapping_sub(32);
         self.bus.write_long(tramp + 12, saved_regs_sp);
         self.bus.write_long(new_sp, current_pc);
-        self.cpu.write_reg(Register::A7, new_sp);
+        self.m68k.cpu.write_reg(Register::A7, new_sp);
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
             source: ActiveInterruptCallbackSource::MenuHook,
             resume_pc: current_pc,
@@ -10481,7 +10140,7 @@ impl FixtureRunner {
             ccr,
             restore_port: None,
         });
-        self.cpu.write_reg(Register::PC, tramp);
+        self.m68k.cpu.write_reg(Register::PC, tramp);
         true
     }
 
@@ -10773,33 +10432,33 @@ impl FixtureRunner {
         // filter returns so application follow-up drawing/invalidations target
         // the active dialog.
         self.dispatcher
-            .set_current_port_state(&mut self.bus, &mut self.cpu, dialog_ptr, None);
+            .set_current_port_state(&mut self.bus, &mut self.m68k.cpu, dialog_ptr, None);
 
         // Inject callback execution.
-        let current_pc = self.cpu.read_reg(Register::PC);
-        let sp = self.cpu.read_reg(Register::A7);
+        let current_pc = self.m68k.cpu.read_reg(Register::PC);
+        let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
-            self.cpu.read_reg(Register::D0),
-            self.cpu.read_reg(Register::D1),
-            self.cpu.read_reg(Register::D2),
-            self.cpu.read_reg(Register::D3),
-            self.cpu.read_reg(Register::D4),
-            self.cpu.read_reg(Register::D5),
-            self.cpu.read_reg(Register::D6),
-            self.cpu.read_reg(Register::D7),
+            self.m68k.cpu.read_reg(Register::D0),
+            self.m68k.cpu.read_reg(Register::D1),
+            self.m68k.cpu.read_reg(Register::D2),
+            self.m68k.cpu.read_reg(Register::D3),
+            self.m68k.cpu.read_reg(Register::D4),
+            self.m68k.cpu.read_reg(Register::D5),
+            self.m68k.cpu.read_reg(Register::D6),
+            self.m68k.cpu.read_reg(Register::D7),
         ];
         let a_regs = [
-            self.cpu.read_reg(Register::A0),
-            self.cpu.read_reg(Register::A1),
-            self.cpu.read_reg(Register::A2),
-            self.cpu.read_reg(Register::A3),
-            self.cpu.read_reg(Register::A4),
-            self.cpu.read_reg(Register::A5),
-            self.cpu.read_reg(Register::A6),
+            self.m68k.cpu.read_reg(Register::A0),
+            self.m68k.cpu.read_reg(Register::A1),
+            self.m68k.cpu.read_reg(Register::A2),
+            self.m68k.cpu.read_reg(Register::A3),
+            self.m68k.cpu.read_reg(Register::A4),
+            self.m68k.cpu.read_reg(Register::A5),
+            self.m68k.cpu.read_reg(Register::A6),
             sp,
         ];
-        let ccr = self.cpu.core.get_ccr();
-        let sr = self.cpu.core.get_sr();
+        let ccr = self.m68k.cpu.core.get_ccr();
+        let sr = self.m68k.cpu.core.get_sr();
         let new_sp = sp.wrapping_sub(4);
         let saved_sp = new_sp.wrapping_sub(32); // SP after MOVEM save at trampoline entry
 
@@ -10823,7 +10482,7 @@ impl FixtureRunner {
 
         self.bus.write_long(tramp + 38, saved_sp);
         self.bus.write_long(new_sp, current_pc);
-        self.cpu.write_reg(Register::A7, new_sp);
+        self.m68k.cpu.write_reg(Register::A7, new_sp);
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
             source: ActiveInterruptCallbackSource::DialogFilterProc,
             resume_pc: current_pc,
@@ -10834,7 +10493,7 @@ impl FixtureRunner {
             ccr,
             restore_port: None,
         });
-        self.cpu.write_reg(Register::PC, tramp);
+        self.m68k.cpu.write_reg(Register::PC, tramp);
 
         // Mark rendered_pixels stale while the filter proc is executing so
         // redraw_chrome skips restoration (which would erase the filter's
@@ -10869,25 +10528,25 @@ impl FixtureRunner {
 
             eprintln!(
                 "[RUN] Starting at PC=${:08X}, A5=${:08X}, A7=${:08X}",
-                self.cpu.read_reg(Register::PC),
-                self.cpu.read_reg(Register::A5),
-                self.cpu.read_reg(Register::A7)
+                self.m68k.cpu.read_reg(Register::PC),
+                self.m68k.cpu.read_reg(Register::A5),
+                self.m68k.cpu.read_reg(Register::A7)
             );
         }
 
         while count < self.config.max_instructions {
-            if self.cpu.is_stopped() {
+            if self.m68k.cpu.is_stopped() {
                 if trace_load_enabled() {
                     eprintln!(
                         "[RUN] Stopped after {} instructions, PC=${:08X}",
                         count,
-                        self.cpu.read_reg(Register::PC)
+                        self.m68k.cpu.read_reg(Register::PC)
                     );
                 }
                 return Ok(());
             }
 
-            let pc = self.cpu.read_reg(Register::PC);
+            let pc = self.m68k.cpu.read_reg(Register::PC);
 
             // Safety Trigger: If PC jumps outside RAM or to Low Mem, stop immediately
             // Allow $60+ since CRT relocation installs trampolines in low memory
@@ -10904,24 +10563,24 @@ impl FixtureRunner {
             // Trace: Push current PC/Opcode/Regs (gated on env var).
             if trace_buffer_enabled() {
                 let opcode = self.bus.read_word(pc);
-                let a0 = self.cpu.read_reg(Register::A0);
-                let sp = self.cpu.read_reg(Register::A7);
-                let a6 = self.cpu.read_reg(Register::A6);
-                let a5 = self.cpu.read_reg(Register::A5);
+                let a0 = self.m68k.cpu.read_reg(Register::A0);
+                let sp = self.m68k.cpu.read_reg(Register::A7);
+                let a6 = self.m68k.cpu.read_reg(Register::A6);
+                let a5 = self.m68k.cpu.read_reg(Register::A5);
                 if self.trace_buffer.len() >= 200 {
                     self.trace_buffer.pop_front();
                 }
                 self.trace_buffer.push_back((pc, opcode, a0, sp, a6, a5));
             }
 
-            let step_result = self.cpu.step(&mut self.bus);
+            let step_result = self.m68k.cpu.step(&mut self.bus);
             self.dispatcher
-                .retire_returned_native_trap_call(&mut self.cpu);
+                .retire_returned_native_trap_call(&mut self.m68k.cpu);
             match step_result {
                 StepResult::Ok => {}
                 StepResult::Stopped => {
                     if trace_load_enabled() {
-                        let stopped_pc = self.cpu.read_reg(Register::PC);
+                        let stopped_pc = self.m68k.cpu.read_reg(Register::PC);
                         let opcode = self.bus.read_word(stopped_pc);
                         eprintln!(
                             "[RUN] Step returned Stopped after {} instructions, PC=${:08X}, Opcode=${:04X}",
@@ -10933,21 +10592,21 @@ impl FixtureRunner {
                 }
                 StepResult::Aline(opcode) => {
                     if !self.dispatcher.aline_vector_is_default(&self.bus) {
-                        self.cpu.core.take_aline_exception(&mut self.bus);
+                        self.m68k.cpu.core.take_aline_exception(&mut self.bus);
                         count += 1;
                         continue;
                     }
                     let dispatch_result = self.dispatcher.with_process_state(|dispatcher| {
-                        dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus)
+                        dispatcher.dispatch(opcode, &mut self.m68k.cpu, &mut self.bus)
                     });
                     match dispatch_result {
                         Ok(()) => {
                             // Smart PC Advance:
                             // Only advance PC if the trap didn't change it
                             // (auto-pop traps set PC to return address)
-                            let pc_after = self.cpu.read_reg(Register::PC);
+                            let pc_after = self.m68k.cpu.read_reg(Register::PC);
                             if pc_after == pc {
-                                self.cpu.write_reg(Register::PC, pc + 2);
+                                self.m68k.cpu.write_reg(Register::PC, pc + 2);
                             }
 
                             // Log traps to stderr, but don't dump trace unless it's suspicious
@@ -10968,7 +10627,7 @@ impl FixtureRunner {
                 }
                 StepResult::Fline(_opcode) => {
                     if !self.dispatcher.fline_vector_is_default(&self.bus) {
-                        self.cpu.core.take_fline_exception(&mut self.bus);
+                        self.m68k.cpu.core.take_fline_exception(&mut self.bus);
                     }
                 }
             }
@@ -11628,30 +11287,30 @@ mod tests {
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.dispatcher.current_trap_word = 0xA346;
-        runner.cpu.write_reg(Register::D0, 0x39);
+        runner.m68k.cpu.write_reg(Register::D0, 0x39);
         runner
             .dispatcher
-            .dispatch_memory(false, 0x46, &mut runner.cpu, &mut runner.bus)
+            .dispatch_memory(false, 0x46, &mut runner.m68k.cpu, &mut runner.bus)
             .expect("GetOSTrapAddress should be handled")
             .expect("GetOSTrapAddress should succeed");
-        let gateway = runner.cpu.read_reg(Register::A0);
+        let gateway = runner.m68k.cpu.read_reg(Register::A0);
         let output = 0x0020_0000u32;
         let return_pc = 0x0020_0100u32;
         let sp = 0x007F_FF00u32;
         runner.bus.write_long(addr::TIME, 0x1234_5678);
         runner.bus.write_word(return_pc, 0x4E71);
         runner.bus.write_long(sp, return_pc);
-        runner.cpu.write_reg(Register::A0, output);
-        runner.cpu.write_reg(Register::A7, sp);
-        runner.cpu.write_reg(Register::PC, gateway);
+        runner.m68k.cpu.write_reg(Register::A0, output);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, gateway);
 
         let (steps, running) = runner.run_steps(2, None);
 
         assert_eq!(steps, 2);
         assert!(running);
-        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0);
         assert_eq!(runner.bus.read_long(output), 0x1234_5678);
     }
 
@@ -11668,15 +11327,15 @@ mod tests {
         runner.bus.write_word(glue, 0xAD75); // auto-pop TickCount
         runner.bus.write_word(handler, 0x4E75); // RTS
         runner.dispatcher.native_trap_table.insert(0xA975, handler);
-        runner.cpu.write_reg(Register::PC, caller);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, caller);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let (steps, running) = runner.run_steps(3, None);
 
         assert_eq!(steps, 3);
         assert!(running);
-        assert_eq!(runner.cpu.read_reg(Register::PC), caller + 6);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), caller + 6);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
         assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
     }
 
@@ -11692,15 +11351,15 @@ mod tests {
         runner.bus.write_word(handler, 0x4E75);
         runner.bus.write_long(sp, result_sentinel);
         runner.dispatcher.native_trap_table.insert(0xA975, handler);
-        runner.cpu.write_reg(Register::PC, trap);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, trap);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let (steps, running) = runner.run_steps(2, None);
 
         assert_eq!(steps, 2);
         assert!(running);
-        assert_eq!(runner.cpu.read_reg(Register::PC), trap + 2);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), trap + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
         assert_eq!(runner.bus.read_long(sp), result_sentinel);
         assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
     }
@@ -11740,29 +11399,29 @@ mod tests {
         runner.bus.write_long(HANDLER + 38, 0x2222_AAAA);
         runner.bus.write_word(HANDLER + 42, 0x4E75); // RTS
         runner.dispatcher.native_trap_table.insert(0xA039, HANDLER);
-        runner.cpu.write_reg(Register::PC, TRAP_PC);
-        runner.cpu.write_reg(Register::A7, SP);
-        runner.cpu.write_reg(Register::D1, original_d1);
-        runner.cpu.write_reg(Register::D2, original_d2);
-        runner.cpu.write_reg(Register::A0, 0xA0A0_BEEF);
-        runner.cpu.write_reg(Register::A1, original_a1);
-        runner.cpu.write_reg(Register::A2, original_a2);
-        runner.cpu.core.set_ccr(0x1F);
+        runner.m68k.cpu.write_reg(Register::PC, TRAP_PC);
+        runner.m68k.cpu.write_reg(Register::A7, SP);
+        runner.m68k.cpu.write_reg(Register::D1, original_d1);
+        runner.m68k.cpu.write_reg(Register::D2, original_d2);
+        runner.m68k.cpu.write_reg(Register::A0, 0xA0A0_BEEF);
+        runner.m68k.cpu.write_reg(Register::A1, original_a1);
+        runner.m68k.cpu.write_reg(Register::A2, original_a2);
+        runner.m68k.cpu.core.set_ccr(0x1F);
 
         let (steps, running) = runner.run_steps(9, None);
 
         assert_eq!(steps, 9);
         assert!(running);
-        assert_eq!(runner.cpu.read_reg(Register::PC), TRAP_PC + 2);
-        assert_eq!(runner.cpu.read_reg(Register::A7), SP);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), TRAP_PC + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), SP);
         assert_eq!(runner.bus.read_long(OBSERVED_D1), 0xD1D1_A739);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0xCAFE_8000);
-        assert_eq!(runner.cpu.read_reg(Register::D1), original_d1);
-        assert_eq!(runner.cpu.read_reg(Register::D2), original_d2);
-        assert_eq!(runner.cpu.read_reg(Register::A0), 0xAAAA_AAAA);
-        assert_eq!(runner.cpu.read_reg(Register::A1), original_a1);
-        assert_eq!(runner.cpu.read_reg(Register::A2), original_a2);
-        assert_eq!(runner.cpu.core.get_ccr(), 0x18);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0xCAFE_8000);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D1), original_d1);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D2), original_d2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), 0xAAAA_AAAA);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A1), original_a1);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A2), original_a2);
+        assert_eq!(runner.m68k.cpu.core.get_ccr(), 0x18);
         assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
     }
 
@@ -11783,57 +11442,69 @@ mod tests {
         runner
             .dispatcher
             .materialize_trap_tables(&mut runner.bus, TrapTableProfile::M68k68040);
-        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::D0, u32::from(TRAP_WORD));
         runner
             .dispatcher
-            .dispatch(0xA346, &mut runner.cpu, &mut runner.bus)
+            .dispatch(0xA346, &mut runner.m68k.cpu, &mut runner.bus)
             .unwrap();
-        let original = runner.cpu.read_reg(Register::A0);
+        let original = runner.m68k.cpu.read_reg(Register::A0);
 
         runner.bus.write_word(FIRST_PATCH, 0x52B9); // ADDQ.L #1,abs.l
         runner.bus.write_long(FIRST_PATCH + 2, PATCH_COUNTER);
         runner.bus.write_word(FIRST_PATCH + 6, 0x4EF9); // JMP absolute long
         runner.bus.write_long(FIRST_PATCH + 8, original);
-        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
-        runner.cpu.write_reg(Register::A0, FIRST_PATCH);
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner.m68k.cpu.write_reg(Register::A0, FIRST_PATCH);
         runner
             .dispatcher
-            .dispatch(0xA247, &mut runner.cpu, &mut runner.bus)
+            .dispatch(0xA247, &mut runner.m68k.cpu, &mut runner.bus)
             .unwrap();
 
-        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::D0, u32::from(TRAP_WORD));
         runner
             .dispatcher
-            .dispatch(0xA346, &mut runner.cpu, &mut runner.bus)
+            .dispatch(0xA346, &mut runner.m68k.cpu, &mut runner.bus)
             .unwrap();
-        let saved_first = runner.cpu.read_reg(Register::A0);
+        let saved_first = runner.m68k.cpu.read_reg(Register::A0);
         assert_eq!(saved_first, FIRST_PATCH);
         runner.bus.write_word(SECOND_PATCH, 0x54B9); // ADDQ.L #2,abs.l
         runner.bus.write_long(SECOND_PATCH + 2, PATCH_COUNTER);
         runner.bus.write_word(SECOND_PATCH + 6, 0x4EF9); // JMP absolute long
         runner.bus.write_long(SECOND_PATCH + 8, saved_first);
-        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
-        runner.cpu.write_reg(Register::A0, SECOND_PATCH);
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner.m68k.cpu.write_reg(Register::A0, SECOND_PATCH);
         runner
             .dispatcher
-            .dispatch(0xA247, &mut runner.cpu, &mut runner.bus)
+            .dispatch(0xA247, &mut runner.m68k.cpu, &mut runner.bus)
             .unwrap();
 
         runner.bus.write_word(TRAP_PC, TRAP_WORD);
         runner.bus.write_long(addr::TIME, 0x1234_5678);
-        runner.cpu.write_reg(Register::PC, TRAP_PC);
-        runner.cpu.write_reg(Register::A7, SP);
-        runner.cpu.write_reg(Register::A0, OUTPUT);
-        runner.cpu.write_reg(Register::D2, PRESERVED_D2);
+        runner.m68k.cpu.write_reg(Register::PC, TRAP_PC);
+        runner.m68k.cpu.write_reg(Register::A7, SP);
+        runner.m68k.cpu.write_reg(Register::A0, OUTPUT);
+        runner.m68k.cpu.write_reg(Register::D2, PRESERVED_D2);
 
         let (steps, running) = runner.run_steps(7, None);
 
         assert_eq!(steps, 7);
         assert!(running);
-        assert_eq!(runner.cpu.read_reg(Register::PC), TRAP_PC + 2);
-        assert_eq!(runner.cpu.read_reg(Register::A7), SP);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), TRAP_PC + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), SP);
         assert_eq!(runner.bus.read_long(PATCH_COUNTER), 3);
-        assert_eq!(runner.cpu.read_reg(Register::D2), PRESERVED_D2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D2), PRESERVED_D2);
         assert_eq!(runner.bus.read_long(OUTPUT), 0x1234_5678);
         assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
 
@@ -12893,13 +12564,13 @@ mod tests {
         runner.init_app(&app);
 
         let sp = crate::trap::test_helpers::TEST_SP;
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         let first = 0x1020_3040;
         runner.bus.write_long(addr::TICKS, first);
         let first_result =
             runner
                 .dispatcher
-                .dispatch_toolbox(true, 0x175, &mut runner.cpu, &mut runner.bus);
+                .dispatch_toolbox(true, 0x175, &mut runner.m68k.cpu, &mut runner.bus);
         assert!(first_result.is_some_and(|result| result.is_ok()));
         assert_eq!(runner.bus.read_long(sp), first);
 
@@ -12914,11 +12585,11 @@ mod tests {
             .memory
             .write_u32_be(addr::TICKS, second)
             .expect("shared Ticks write");
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         let second_result =
             runner
                 .dispatcher
-                .dispatch_toolbox(true, 0x175, &mut runner.cpu, &mut runner.bus);
+                .dispatch_toolbox(true, 0x175, &mut runner.m68k.cpu, &mut runner.bus);
         assert!(second_result.is_some_and(|result| result.is_ok()));
         assert_eq!(runner.bus.read_long(sp), second);
 
@@ -14141,8 +13812,8 @@ mod tests {
         for offset in (0..16).step_by(2) {
             runner.bus.write_word(program_start + offset, 0x4E71); // NOP
         }
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
 
         let mut chan = SndChannel::new(0x0039_38C8, false);
         chan.play_buffer(
@@ -14174,8 +13845,8 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let program_start = 0x0001_0000;
         runner.bus.write_word(program_start, 0x60FE); // BRA.S *
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.set_instructions_per_tick(1);
 
         let chan_ptr = 0x0039_38C8;
@@ -15375,8 +15046,8 @@ mod tests {
                 .dispatcher
                 .guest_calls
                 .pending_powerpc_from_m68k(),
-            runner.cpu.read_reg(Register::PC),
-            runner.cpu.read_reg(Register::A7),
+            runner.m68k.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::A7),
         );
 
         let (powerpc_steps, running) = runner.run_steps(64, None);
@@ -15479,13 +15150,13 @@ mod tests {
         runner.bus.write_long(M68K_STACK + 4, ARGUMENT);
         runner.bus.write_word(M68K_RETURN, 0x201f); // MOVE.L (SP)+,D0
         runner.bus.write_word(M68K_RETURN + 2, 0x4e71); // NOP
-        runner.cpu.write_reg(Register::PC, DESCRIPTOR);
-        runner.cpu.write_reg(Register::A7, M68K_STACK);
+        runner.m68k.cpu.write_reg(Register::PC, DESCRIPTOR);
+        runner.m68k.cpu.write_reg(Register::A7, M68K_STACK);
 
         let (classic_steps, classic_running) = runner.run_steps(2, None);
         assert!(classic_steps > 0);
         assert!(classic_running);
-        assert_eq!(runner.cpu.read_reg(Register::PC), DESCRIPTOR + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), DESCRIPTOR + 2);
         assert!(runner.dispatcher.guest_calls.has_powerpc_from_m68k());
 
         let (native_steps, native_running) = runner.run_steps(64, None);
@@ -15493,16 +15164,16 @@ mod tests {
         assert!(native_running);
         assert!(!runner.is_halted());
         assert!(runner.dispatcher.guest_calls.is_empty());
-        assert_eq!(runner.cpu.read_reg(Register::PC), M68K_RETURN);
-        assert_eq!(runner.cpu.read_reg(Register::A7), M68K_STACK + 8);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), M68K_RETURN);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), M68K_STACK + 8);
         assert_eq!(runner.bus.read_long(M68K_STACK + 8), ARGUMENT + 7);
 
         let (resumed_steps, resumed_running) = runner.run_steps(1, None);
         assert_eq!(resumed_steps, 1);
         assert!(resumed_running);
-        assert_eq!(runner.cpu.read_reg(Register::D0), ARGUMENT + 7);
-        assert_eq!(runner.cpu.read_reg(Register::A7), M68K_STACK + 12);
-        assert_eq!(runner.cpu.read_reg(Register::PC), M68K_RETURN + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), ARGUMENT + 7);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), M68K_STACK + 12);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), M68K_RETURN + 2);
         assert!(runner.dispatcher.guest_calls.is_empty());
     }
 
@@ -15892,15 +15563,14 @@ mod tests {
         assert!(running);
         assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 3);
         assert_eq!(
-            runner
-                .parked_m68k_cpus
-                .task_len(ExecutionTaskId::APPLICATION),
+            runner.m68k.parked.task_len(ExecutionTaskId::APPLICATION),
             1,
             "the application-owned nested 68K context must stay parked while its callback yields"
         );
         assert_eq!(
             runner
-                .parked_m68k_cpus
+                .m68k
+                .parked
                 .task_len(ExecutionTaskId::from_thread_id(3)),
             0,
             "the worker must not consume the application's parked context"
@@ -15910,9 +15580,7 @@ mod tests {
         assert!(running);
         assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
         assert_eq!(
-            runner
-                .parked_m68k_cpus
-                .task_len(ExecutionTaskId::APPLICATION),
+            runner.m68k.parked.task_len(ExecutionTaskId::APPLICATION),
             1,
             "returning from the worker must leave the nested application context parked"
         );
@@ -15921,7 +15589,7 @@ mod tests {
         assert!(running);
         assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
         assert!(runner.dispatcher.guest_calls.is_empty());
-        assert!(runner.parked_m68k_cpus.is_empty());
+        assert!(runner.m68k.parked.is_empty());
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         // The outer routine has a void ProcInfo, so its internal callback's
@@ -16117,26 +15785,26 @@ mod tests {
             assert!(
                 running,
                 "cross-ISA execution stopped at iteration {iteration} after {steps} steps: pc=${:08x} sp=${:08x} frames={} parked={} ppc_pc=${:08x}",
-                runner.cpu.read_reg(Register::PC),
-                runner.cpu.read_reg(Register::A7),
+                runner.m68k.cpu.read_reg(Register::PC),
+                runner.m68k.cpu.read_reg(Register::A7),
                 runner.dispatcher.guest_calls.len(),
-                runner.parked_m68k_cpus.len(),
+                runner.m68k.parked.len(),
                 runner
                     .ppc_app
                     .as_ref()
                     .map_or(0, |ppc_app| ppc_app.cpu.pc),
             );
-            maximum_parked = maximum_parked.max(runner.parked_m68k_cpus.len());
-            if !runner.parked_m68k_cpus.is_empty()
-                && runner.cpu.read_reg(Register::PC) == M68K_INNER + 6
+            maximum_parked = maximum_parked.max(runner.m68k.parked.len());
+            if !runner.m68k.parked.is_empty()
+                && runner.m68k.cpu.read_reg(Register::PC) == M68K_INNER + 6
             {
                 inner_entries += 1;
             }
-            if !checked_wrong_boundary && !runner.parked_m68k_cpus.is_empty() {
+            if !checked_wrong_boundary && !runner.m68k.parked.is_empty() {
                 let frame_count = runner.dispatcher.guest_calls.len();
                 let mut ppc_app = runner.ppc_app.take().expect("PPC app");
                 assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
-                assert_eq!(runner.parked_m68k_cpus.len(), 1);
+                assert_eq!(runner.m68k.parked.len(), 1);
                 assert_eq!(ppc_app.guest_calls.len(), frame_count);
                 runner.ppc_app = Some(ppc_app);
                 checked_wrong_boundary = true;
@@ -16149,9 +15817,9 @@ mod tests {
         assert!(checked_wrong_boundary);
         assert_eq!(inner_entries, 2);
         assert_eq!(maximum_parked, 1);
-        assert!(runner.parked_m68k_cpus.is_empty());
+        assert!(runner.m68k.parked.is_empty());
         assert!(runner.dispatcher.guest_calls.is_empty());
-        assert_eq!(runner.cpu.core.d(6), OUTER_D6);
+        assert_eq!(runner.m68k.cpu.core.d(6), OUTER_D6);
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.gpr[3], ARGUMENT + 14);
@@ -16166,7 +15834,7 @@ mod tests {
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
-        runner.cpu.core.set_ccr(0x10);
+        runner.m68k.cpu.core.set_ccr(0x10);
         assert!(runner.dispatcher.guest_calls.begin_m68k_to_powerpc(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::PowerPc,
@@ -16192,9 +15860,9 @@ mod tests {
 
         assert!(runner.resume_m68k_after_powerpc(&mut ppc_app));
 
-        assert_eq!(runner.cpu.core.get_ccr(), 0x14);
-        assert_eq!(runner.cpu.read_reg(Register::PC), 0x0010_0000);
-        assert_eq!(runner.cpu.read_reg(Register::A7), 0x0010_1000);
+        assert_eq!(runner.m68k.cpu.core.get_ccr(), 0x14);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x0010_0000);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_1000);
         assert!(ppc_app.guest_calls.is_empty());
         runner.ppc_app = Some(ppc_app);
     }
@@ -16210,71 +15878,71 @@ mod tests {
         let mut ppc_app = runner.ppc_app.take().expect("PPC app");
         ppc_app.memory.add_region(SCRATCH, vec![0; 8]);
 
-        runner.cpu.core.set_ccr(0x13);
+        runner.m68k.cpu.core.set_ccr(0x13);
         for selector in [
             special_case::EOL_HOOK,
             special_case::PROTOCOL_HANDLER,
             special_case::SOCKET_LISTENER,
         ] {
-            assert!(FixtureRunner::apply_m68k_special_case_result(
-                &mut runner.cpu,
+            assert!(M68kExecution::apply_m68k_special_case_result(
+                &mut runner.m68k.cpu,
                 &mut ppc_app.memory,
                 u8::try_from(selector).unwrap(),
                 SCRATCH,
                 1,
             ));
-            assert_eq!(runner.cpu.core.get_ccr(), 0x17);
-            assert!(FixtureRunner::apply_m68k_special_case_result(
-                &mut runner.cpu,
+            assert_eq!(runner.m68k.cpu.core.get_ccr(), 0x17);
+            assert!(M68kExecution::apply_m68k_special_case_result(
+                &mut runner.m68k.cpu,
                 &mut ppc_app.memory,
                 u8::try_from(selector).unwrap(),
                 SCRATCH,
                 0,
             ));
-            assert_eq!(runner.cpu.core.get_ccr(), 0x13);
+            assert_eq!(runner.m68k.cpu.core.get_ccr(), 0x13);
         }
 
-        runner.cpu.core.set_d(1, 0xaaaa_0000);
+        runner.m68k.cpu.core.set_d(1, 0xaaaa_0000);
         for selector in [special_case::WIDTH_HOOK, special_case::NWIDTH_HOOK] {
-            assert!(FixtureRunner::apply_m68k_special_case_result(
-                &mut runner.cpu,
+            assert!(M68kExecution::apply_m68k_special_case_result(
+                &mut runner.m68k.cpu,
                 &mut ppc_app.memory,
                 u8::try_from(selector).unwrap(),
                 SCRATCH,
                 0x1234_5678,
             ));
-            assert_eq!(runner.cpu.core.d(1), 0xaaaa_5678);
+            assert_eq!(runner.m68k.cpu.core.d(1), 0xaaaa_5678);
         }
 
-        runner.cpu.core.set_d(1, 0xbbbb_0000);
-        runner.cpu.core.set_d(2, 0xcccc_0000);
+        runner.m68k.cpu.core.set_d(1, 0xbbbb_0000);
+        runner.m68k.cpu.core.set_d(2, 0xcccc_0000);
         ppc_app.memory.write_u16_be(SCRATCH, 0x1111).unwrap();
         ppc_app.memory.write_u16_be(SCRATCH + 2, 0x2222).unwrap();
         ppc_app.memory.write_u8(SCRATCH + 4, 1).unwrap();
-        assert!(FixtureRunner::apply_m68k_special_case_result(
-            &mut runner.cpu,
+        assert!(M68kExecution::apply_m68k_special_case_result(
+            &mut runner.m68k.cpu,
             &mut ppc_app.memory,
             u8::try_from(special_case::HIT_TEST_HOOK).unwrap(),
             SCRATCH,
             1,
         ));
-        assert_eq!(runner.cpu.core.d(0), 0x0001_1111);
-        assert_eq!(runner.cpu.core.d(1), 0xbbbb_2222);
-        assert_eq!(runner.cpu.core.d(2), 0xcccc_0001);
+        assert_eq!(runner.m68k.cpu.core.d(0), 0x0001_1111);
+        assert_eq!(runner.m68k.cpu.core.d(1), 0xbbbb_2222);
+        assert_eq!(runner.m68k.cpu.core.d(2), 0xcccc_0001);
 
-        runner.cpu.core.set_d(0, 0xaaaa_0000);
-        runner.cpu.core.set_d(1, 0xbbbb_0000);
+        runner.m68k.cpu.core.set_d(0, 0xaaaa_0000);
+        runner.m68k.cpu.core.set_d(1, 0xbbbb_0000);
         ppc_app.memory.write_u16_be(SCRATCH, 0x3333).unwrap();
         ppc_app.memory.write_u16_be(SCRATCH + 2, 0x4444).unwrap();
-        assert!(FixtureRunner::apply_m68k_special_case_result(
-            &mut runner.cpu,
+        assert!(M68kExecution::apply_m68k_special_case_result(
+            &mut runner.m68k.cpu,
             &mut ppc_app.memory,
             u8::try_from(special_case::TE_FIND_WORD).unwrap(),
             SCRATCH,
             0,
         ));
-        assert_eq!(runner.cpu.core.d(0), 0xaaaa_3333);
-        assert_eq!(runner.cpu.core.d(1), 0xbbbb_4444);
+        assert_eq!(runner.m68k.cpu.core.d(0), 0xaaaa_3333);
+        assert_eq!(runner.m68k.cpu.core.d(1), 0xbbbb_4444);
 
         for (offset, value) in [(0, 0x5555), (2, 0x6666), (4, 0x7777)] {
             ppc_app
@@ -16282,44 +15950,44 @@ mod tests {
                 .write_u16_be(SCRATCH + offset, value)
                 .unwrap();
         }
-        runner.cpu.core.set_d(2, 0xaaaa_0000);
-        runner.cpu.core.set_d(3, 0xbbbb_0000);
-        runner.cpu.core.set_d(4, 0xcccc_0000);
-        assert!(FixtureRunner::apply_m68k_special_case_result(
-            &mut runner.cpu,
+        runner.m68k.cpu.core.set_d(2, 0xaaaa_0000);
+        runner.m68k.cpu.core.set_d(3, 0xbbbb_0000);
+        runner.m68k.cpu.core.set_d(4, 0xcccc_0000);
+        assert!(M68kExecution::apply_m68k_special_case_result(
+            &mut runner.m68k.cpu,
             &mut ppc_app.memory,
             u8::try_from(special_case::TE_RECALC).unwrap(),
             SCRATCH,
             0,
         ));
-        assert_eq!(runner.cpu.core.d(2), 0xaaaa_5555);
-        assert_eq!(runner.cpu.core.d(3), 0xbbbb_6666);
-        assert_eq!(runner.cpu.core.d(4), 0xcccc_7777);
+        assert_eq!(runner.m68k.cpu.core.d(2), 0xaaaa_5555);
+        assert_eq!(runner.m68k.cpu.core.d(3), 0xbbbb_6666);
+        assert_eq!(runner.m68k.cpu.core.d(4), 0xcccc_7777);
 
         ppc_app.memory.write_u32_be(SCRATCH, 0xcafe_babe).unwrap();
         ppc_app.memory.write_u16_be(SCRATCH + 4, 0x8888).unwrap();
-        runner.cpu.core.set_d(0, 0xdddd_0000);
-        assert!(FixtureRunner::apply_m68k_special_case_result(
-            &mut runner.cpu,
+        runner.m68k.cpu.core.set_d(0, 0xdddd_0000);
+        assert!(M68kExecution::apply_m68k_special_case_result(
+            &mut runner.m68k.cpu,
             &mut ppc_app.memory,
             u8::try_from(special_case::TE_DO_TEXT).unwrap(),
             SCRATCH,
             0,
         ));
-        assert_eq!(runner.cpu.core.a(0), 0xcafe_babe);
-        assert_eq!(runner.cpu.core.d(0), 0xdddd_8888);
+        assert_eq!(runner.m68k.cpu.core.a(0), 0xcafe_babe);
+        assert_eq!(runner.m68k.cpu.core.d(0), 0xdddd_8888);
 
-        runner.cpu.core.set_d(0, 0xeeee_0000);
-        assert!(FixtureRunner::apply_m68k_special_case_result(
-            &mut runner.cpu,
+        runner.m68k.cpu.core.set_d(0, 0xeeee_0000);
+        assert!(M68kExecution::apply_m68k_special_case_result(
+            &mut runner.m68k.cpu,
             &mut ppc_app.memory,
             u8::try_from(special_case::MBAR_HOOK).unwrap(),
             SCRATCH,
             0x1234_9999,
         ));
-        assert_eq!(runner.cpu.core.d(0), 0xeeee_9999);
-        assert!(!FixtureRunner::apply_m68k_special_case_result(
-            &mut runner.cpu,
+        assert_eq!(runner.m68k.cpu.core.d(0), 0xeeee_9999);
+        assert!(!M68kExecution::apply_m68k_special_case_result(
+            &mut runner.m68k.cpu,
             &mut ppc_app.memory,
             13,
             SCRATCH,
@@ -16351,8 +16019,8 @@ mod tests {
                 }
             ];
             assert_eq!(
-                runner.complete_m68k_special_case_result(
-                    &mut ppc_app,
+                runner.m68k.complete_m68k_special_case_result(
+                    &mut ppc_app.memory,
                     u8::try_from(selector).unwrap(),
                     arguments(&values),
                     None,
@@ -16375,20 +16043,20 @@ mod tests {
                     _ => unreachable!(),
                 }
             ];
-            runner.cpu.core.set_ccr(0x04);
+            runner.m68k.cpu.core.set_ccr(0x04);
             assert_eq!(
-                runner.complete_m68k_special_case_result(
-                    &mut ppc_app,
+                runner.m68k.complete_m68k_special_case_result(
+                    &mut ppc_app.memory,
                     u8::try_from(selector).unwrap(),
                     arguments(&values),
                     None,
                 ),
                 Ok(Some(1)),
             );
-            runner.cpu.core.set_ccr(0);
+            runner.m68k.cpu.core.set_ccr(0);
             assert_eq!(
-                runner.complete_m68k_special_case_result(
-                    &mut ppc_app,
+                runner.m68k.complete_m68k_special_case_result(
+                    &mut ppc_app.memory,
                     u8::try_from(selector).unwrap(),
                     arguments(&values),
                     None,
@@ -16397,7 +16065,7 @@ mod tests {
             );
         }
 
-        runner.cpu.core.set_d(1, 0xaaaa_5678);
+        runner.m68k.cpu.core.set_d(1, 0xaaaa_5678);
         for selector in [special_case::WIDTH_HOOK, special_case::NWIDTH_HOOK] {
             let values = vec![
                 0;
@@ -16408,8 +16076,8 @@ mod tests {
                 }
             ];
             assert_eq!(
-                runner.complete_m68k_special_case_result(
-                    &mut ppc_app,
+                runner.m68k.complete_m68k_special_case_result(
+                    &mut ppc_app.memory,
                     u8::try_from(selector).unwrap(),
                     arguments(&values),
                     None,
@@ -16418,12 +16086,12 @@ mod tests {
             );
         }
 
-        runner.cpu.core.set_d(0, 0x0001_1111);
-        runner.cpu.core.set_d(1, 0xaaaa_2222);
-        runner.cpu.core.set_d(2, 0xbbbb_0033);
+        runner.m68k.cpu.core.set_d(0, 0x0001_1111);
+        runner.m68k.cpu.core.set_d(1, 0xaaaa_2222);
+        runner.m68k.cpu.core.set_d(2, 0xbbbb_0033);
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::HIT_TEST_HOOK).unwrap(),
                 arguments(&[0, 0, 0, 0, 0, 0, SCRATCH, SCRATCH + 2, SCRATCH + 4]),
                 None,
@@ -16434,11 +16102,11 @@ mod tests {
         assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 2), Some(0x2222));
         assert_eq!(ppc_app.memory.read_u8(SCRATCH + 4), Some(0x33));
 
-        runner.cpu.core.set_d(0, 0xaaaa_4444);
-        runner.cpu.core.set_d(1, 0xbbbb_5555);
+        runner.m68k.cpu.core.set_d(0, 0xaaaa_4444);
+        runner.m68k.cpu.core.set_d(1, 0xbbbb_5555);
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::TE_FIND_WORD).unwrap(),
                 arguments(&[0, 0, 0, 0, SCRATCH + 8, SCRATCH + 10]),
                 None,
@@ -16448,12 +16116,12 @@ mod tests {
         assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 8), Some(0x4444));
         assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 10), Some(0x5555));
 
-        runner.cpu.core.set_d(2, 0xaaaa_6666);
-        runner.cpu.core.set_d(3, 0xbbbb_7777);
-        runner.cpu.core.set_d(4, 0xcccc_8888);
+        runner.m68k.cpu.core.set_d(2, 0xaaaa_6666);
+        runner.m68k.cpu.core.set_d(3, 0xbbbb_7777);
+        runner.m68k.cpu.core.set_d(4, 0xcccc_8888);
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::TE_RECALC).unwrap(),
                 arguments(&[0, 0, SCRATCH + 12, SCRATCH + 14, SCRATCH + 16]),
                 None,
@@ -16464,11 +16132,11 @@ mod tests {
         assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 14), Some(0x7777));
         assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 16), Some(0x8888));
 
-        runner.cpu.core.set_a(0, 0xcafe_babe);
-        runner.cpu.core.set_d(0, 0xaaaa_9999);
+        runner.m68k.cpu.core.set_a(0, 0xcafe_babe);
+        runner.m68k.cpu.core.set_d(0, 0xaaaa_9999);
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::TE_DO_TEXT).unwrap(),
                 arguments(&[0, 0, 0, 0, SCRATCH + 20, SCRATCH + 24]),
                 None,
@@ -16480,8 +16148,8 @@ mod tests {
 
         ppc_app.memory.write_u16_be(SCRATCH + 28, 1).unwrap();
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::GNE_FILTER_PROC).unwrap(),
                 arguments(&[0, SCRATCH + 26]),
                 Some(SCRATCH + 28),
@@ -16493,11 +16161,11 @@ mod tests {
         // The callback writes multiple output locations as one ABI result.
         // A bad later destination must not leave an earlier output changed.
         ppc_app.memory.write_u16_be(SCRATCH + 30, 0xaaaa).unwrap();
-        runner.cpu.core.set_d(0, 0x1111);
-        runner.cpu.core.set_d(1, 0x2222);
+        runner.m68k.cpu.core.set_d(0, 0x1111);
+        runner.m68k.cpu.core.set_d(1, 0x2222);
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::TE_FIND_WORD).unwrap(),
                 arguments(&[0, 0, 0, 0, SCRATCH + 30, 0x0500_0000]),
                 None,
@@ -16506,10 +16174,10 @@ mod tests {
         );
         assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 30), Some(0xaaaa));
 
-        runner.cpu.core.set_d(0, 0xaaaa_abcd);
+        runner.m68k.cpu.core.set_d(0, 0xaaaa_abcd);
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::MBAR_HOOK).unwrap(),
                 arguments(&[0]),
                 None,
@@ -16517,8 +16185,8 @@ mod tests {
             Ok(Some(0xabcd)),
         );
         assert_eq!(
-            runner.complete_m68k_special_case_result(
-                &mut ppc_app,
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
                 u8::try_from(special_case::HIGH_HOOK).unwrap(),
                 arguments(&[]),
                 None,
@@ -16526,7 +16194,12 @@ mod tests {
             Err(()),
         );
         assert_eq!(
-            runner.complete_m68k_special_case_result(&mut ppc_app, 13, arguments(&[]), None,),
+            runner.m68k.complete_m68k_special_case_result(
+                &mut ppc_app.memory,
+                13,
+                arguments(&[]),
+                None,
+            ),
             Err(()),
         );
         runner.ppc_app = Some(ppc_app);
@@ -16570,12 +16243,40 @@ mod tests {
             PpcNativeReturnGpr3::Preserve,
         ));
         let pending = ppc_app.guest_calls.activate_m68k().unwrap();
-        runner.cpu.write_reg(Register::PC, pending.return_pc);
-        runner.cpu.write_reg(Register::A7, pending.final_sp);
+        runner.m68k.cpu.write_reg(Register::PC, pending.return_pc);
+        runner.m68k.cpu.write_reg(Register::A7, pending.final_sp);
 
-        assert!(runner.complete_pending_m68k_guest_call(&mut ppc_app, pending));
+        assert!(runner
+            .m68k
+            .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending));
         assert_eq!(ppc_app.cpu.gpr[3], NATIVE_R3);
         assert!(ppc_app.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn relaunch_with_pending_execution_preserves_the_existing_engine() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let calls = runner.dispatcher.guest_calls.shared_handle();
+        runner.m68k.cpu.write_reg(Register::PC, 0x1234);
+        assert!(calls.begin_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000
+        ));
+        let rejected =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.init_app(&app)));
+        assert!(rejected.is_err());
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x1234);
+        assert!(!calls.is_empty());
+        assert!(calls.complete_m68k(0x2002, 0x3000));
+        runner.init_app(&app);
+        assert!(runner.m68k.can_relaunch());
     }
 
     #[test]
@@ -16595,7 +16296,7 @@ mod tests {
                 scratch: u32::MAX,
             },
         ] {
-            assert!(!FixtureRunner::apply_m68k_resume_result(
+            assert!(!M68kExecution::apply_m68k_resume_result(
                 &mut cpu,
                 &mut memory,
                 M68kResume {
@@ -16652,33 +16353,35 @@ mod tests {
                 .guest_calls
                 .complete_powerpc_for_m68k(&mut ppc_app.cpu));
             let (task, call_id) = ppc_app.guest_calls.pending_m68k_resume_owner().unwrap();
-            runner.cpu.core.set_d(1, 0xabcd_0000);
-            runner.cpu.core.set_d(7, 0xcafe_babe);
-            runner.cpu.core.set_ccr(0x11);
+            runner.m68k.cpu.core.set_d(1, 0xabcd_0000);
+            runner.m68k.cpu.core.set_d(7, 0xcafe_babe);
+            runner.m68k.cpu.core.set_ccr(0x11);
             assert!(ppc_app
                 .guest_calls
                 .park_context(
-                    &mut runner.parked_m68k_cpus,
+                    &mut runner.m68k.parked,
                     task,
                     call_id,
-                    std::mem::take(&mut runner.cpu),
+                    std::mem::take(&mut runner.m68k.cpu),
                 )
                 .is_ok());
             assert!(runner.resume_m68k_after_powerpc(&mut ppc_app), "{target:?}");
             match target {
-                M68kResultTarget::Data { .. } => assert_eq!(runner.cpu.core.d(2), 0x1234_5678),
-                M68kResultTarget::Address { .. } => assert_eq!(runner.cpu.core.a(3), 0x1234_5678),
-                M68kResultTarget::Ccr { .. } => assert_eq!(runner.cpu.core.get_ccr(), 0x15),
+                M68kResultTarget::Data { .. } => assert_eq!(runner.m68k.cpu.core.d(2), 0x1234_5678),
+                M68kResultTarget::Address { .. } => {
+                    assert_eq!(runner.m68k.cpu.core.a(3), 0x1234_5678)
+                }
+                M68kResultTarget::Ccr { .. } => assert_eq!(runner.m68k.cpu.core.get_ccr(), 0x15),
                 M68kResultTarget::SpecialCase { .. } => {
-                    assert_eq!(runner.cpu.core.d(1), 0xabcd_5678)
+                    assert_eq!(runner.m68k.cpu.core.d(1), 0xabcd_5678)
                 }
                 _ => unreachable!(),
             }
-            assert_eq!(runner.cpu.core.d(7), 0xcafe_babe);
-            assert_eq!(runner.cpu.read_reg(Register::PC), RETURN_PC);
-            assert_eq!(runner.cpu.read_reg(Register::A7), FINAL_SP);
+            assert_eq!(runner.m68k.cpu.core.d(7), 0xcafe_babe);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), RETURN_PC);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), FINAL_SP);
             assert!(ppc_app.guest_calls.is_empty());
-            assert!(runner.parked_m68k_cpus.is_empty());
+            assert!(runner.m68k.parked.is_empty());
         }
     }
 
@@ -16726,35 +16429,35 @@ mod tests {
             .guest_calls
             .pending_m68k_resume_owner()
             .expect("completed continuation owner");
-        runner.cpu.core.set_d(0, PARKED_D0);
+        runner.m68k.cpu.core.set_d(0, PARKED_D0);
         assert!(ppc_app
             .guest_calls
             .park_context(
-                &mut runner.parked_m68k_cpus,
+                &mut runner.m68k.parked,
                 task,
                 call_id,
-                std::mem::take(&mut runner.cpu),
+                std::mem::take(&mut runner.m68k.cpu),
             )
             .is_ok());
-        assert_eq!(runner.parked_m68k_cpus.task_len(task), 1);
+        assert_eq!(runner.m68k.parked.task_len(task), 1);
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
-        assert_eq!(runner.parked_m68k_cpus.task_len(task), 1);
+        assert_eq!(runner.m68k.parked.task_len(task), 1);
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         ppc_app.memory.add_readonly_region(RESULT, vec![0xaa; 4]);
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(0xaaaa_aaaa));
-        assert_eq!(runner.parked_m68k_cpus.task_len(task), 1);
+        assert_eq!(runner.m68k.parked.task_len(task), 1);
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         ppc_app.memory.add_region(RESULT, vec![0; 4]);
         assert!(runner.resume_m68k_after_powerpc(&mut ppc_app));
-        assert_eq!(runner.parked_m68k_cpus.task_len(task), 0);
+        assert_eq!(runner.m68k.parked.task_len(task), 0);
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_none());
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(RESULT_VALUE));
-        assert_eq!(runner.cpu.core.d(0), PARKED_D0);
+        assert_eq!(runner.m68k.cpu.core.d(0), PARKED_D0);
     }
 
     #[test]
@@ -20088,18 +19791,18 @@ mod tests {
         runner.bus.write_word(call_site + 2, 0x0574);
         runner.bus.write_word(call_site + 4, 0x4E90); // JSR (A0)
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, call_site);
-        runner.cpu.write_reg(Register::A7, initial_sp);
-        runner.cpu.write_reg(Register::D0, 0);
+        runner.m68k.cpu.write_reg(Register::PC, call_site);
+        runner.m68k.cpu.write_reg(Register::A7, initial_sp);
+        runner.m68k.cpu.write_reg(Register::D0, 0);
 
         let (steps, running) = runner.run_steps(4, None);
 
         assert!(running);
         assert_eq!(steps, 4);
-        assert_eq!(runner.cpu.read_reg(Register::PC), call_site + 6);
-        assert_eq!(runner.cpu.read_reg(Register::A7), initial_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), call_site + 6);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), initial_sp);
         assert_eq!(
-            runner.cpu.read_reg(Register::D0),
+            runner.m68k.cpu.read_reg(Register::D0),
             1,
             "SwapMMUMode should return the previous 32-bit mode in D0"
         );
@@ -20143,13 +19846,13 @@ mod tests {
             .read_long(crate::trap::dispatch::OS_TRAP_TABLE_BASE + 0x78 * 4);
         let successor = runner.bus.read_long(head + 4);
         assert_eq!(runner.bus.read_long(head), 0x6006_4EF9);
-        runner.cpu.write_reg(Register::PC, head);
+        runner.m68k.cpu.write_reg(Register::PC, head);
 
         let (steps, running) = runner.run_steps(3, None);
 
         assert!(running);
         assert_eq!(steps, 3);
-        assert_eq!(runner.cpu.read_reg(Register::PC), successor);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), successor);
     }
 
     #[test]
@@ -20180,9 +19883,9 @@ mod tests {
         let call_site = 0x0002_0000;
         let initial_sp = 0x007F_FE00;
         runner.bus.write_word(call_site, 0x4E90); // JSR (A0)
-        runner.cpu.write_reg(Register::A0, gateway);
-        runner.cpu.write_reg(Register::A7, initial_sp);
-        runner.cpu.write_reg(Register::PC, call_site);
+        runner.m68k.cpu.write_reg(Register::A0, gateway);
+        runner.m68k.cpu.write_reg(Register::A7, initial_sp);
+        runner.m68k.cpu.write_reg(Register::PC, call_site);
 
         let (steps, running) = runner.run_steps(2, None);
 
@@ -20268,16 +19971,16 @@ mod tests {
         runner.bus.write_word(call_site + 2, 0x0804);
         runner.bus.write_word(call_site + 4, 0x4E90); // JSR (A0)
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, call_site);
-        runner.cpu.write_reg(Register::A7, initial_sp);
+        runner.m68k.cpu.write_reg(Register::PC, call_site);
+        runner.m68k.cpu.write_reg(Register::A7, initial_sp);
         runner.dispatcher.cursor_state.level = -1;
 
         let (steps, running) = runner.run_steps(4, None);
 
         assert!(running);
         assert_eq!(steps, 4);
-        assert_eq!(runner.cpu.read_reg(Register::PC), call_site + 6);
-        assert_eq!(runner.cpu.read_reg(Register::A7), initial_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), call_site + 6);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), initial_sp);
         assert_eq!(runner.dispatcher.cursor_level(), 0);
         assert!(runner.dispatcher.cursor_visible());
     }
@@ -20318,16 +20021,16 @@ mod tests {
         runner.bus.write_word(call_site + 2, 0x0814);
         runner.bus.write_word(call_site + 4, 0x4E90); // JSR (A0)
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, call_site);
-        runner.cpu.write_reg(Register::A7, initial_sp);
+        runner.m68k.cpu.write_reg(Register::PC, call_site);
+        runner.m68k.cpu.write_reg(Register::A7, initial_sp);
         runner.dispatcher.cursor_state.level = -1;
 
         let (steps, running) = runner.run_steps(4, None);
 
         assert!(running);
         assert_eq!(steps, 4);
-        assert_eq!(runner.cpu.read_reg(Register::PC), call_site + 6);
-        assert_eq!(runner.cpu.read_reg(Register::A7), initial_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), call_site + 6);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), initial_sp);
         assert_eq!(runner.dispatcher.cursor_level(), 0);
         assert!(runner.dispatcher.cursor_visible());
     }
@@ -20381,15 +20084,18 @@ mod tests {
         runner.bus.write_long(fm_input_sp + 4, 0); // result slot
         runner.bus.write_long(fm_input_sp - 4, return_pc);
         runner.bus.write_word(return_pc, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, swap_font_trampoline);
-        runner.cpu.write_reg(Register::A7, fm_input_sp - 4);
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::PC, swap_font_trampoline);
+        runner.m68k.cpu.write_reg(Register::A7, fm_input_sp - 4);
 
         let (steps, running) = runner.run_steps(3, None);
 
         assert!(running);
         assert_eq!(steps, 3);
-        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), fm_input_sp + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), fm_input_sp + 4);
         assert_ne!(
             runner.bus.read_long(fm_input_sp + 4),
             0,
@@ -20438,16 +20144,19 @@ mod tests {
         runner.bus.write_word(args_sp + 6, 420); // bottom
         runner.bus.write_long(args_sp - 4, return_pc);
         runner.bus.write_word(return_pc, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, shield_cursor_trampoline);
-        runner.cpu.write_reg(Register::A7, args_sp - 4);
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::PC, shield_cursor_trampoline);
+        runner.m68k.cpu.write_reg(Register::A7, args_sp - 4);
 
         let (steps, running) = runner.run_steps(3, None);
 
         assert!(running);
         assert_eq!(steps, 3);
-        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
         assert_eq!(
-            runner.cpu.read_reg(Register::A7),
+            runner.m68k.cpu.read_reg(Register::A7),
             args_sp + 8,
             "JShieldCursor should consume its four Pascal INTEGER arguments"
         );
@@ -20491,15 +20200,18 @@ mod tests {
         let return_pc = 0x0002_0000u32;
         runner.bus.write_long(call_sp - 4, return_pc);
         runner.bus.write_word(return_pc, 0x4E71);
-        runner.cpu.write_reg(Register::PC, hide_cursor_trampoline);
-        runner.cpu.write_reg(Register::A7, call_sp - 4);
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::PC, hide_cursor_trampoline);
+        runner.m68k.cpu.write_reg(Register::A7, call_sp - 4);
 
         let (steps, running) = runner.run_steps(3, None);
 
         assert!(running);
         assert_eq!(steps, 3);
-        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), call_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), call_sp);
         assert_eq!(runner.dispatcher().cursor_level(), -1);
     }
 
@@ -20513,15 +20225,15 @@ mod tests {
             crate::memory::globals::addr::J_CRSR_TASK,
             CURSOR_TASK_NOOP_ADDR,
         );
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.advance_guest_tick();
 
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.cursor_task_trampoline, 0);
-        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
         assert_eq!(runner.bus.read_long(crate::memory::globals::addr::TICKS), 1);
     }
 
@@ -20535,14 +20247,14 @@ mod tests {
         runner
             .bus
             .write_long(crate::memory::globals::addr::J_CRSR_TASK, callback_addr);
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.write_reg(Register::D0, 0x1111_1111);
-        runner.cpu.write_reg(Register::D7, 0x7777_7777);
-        runner.cpu.write_reg(Register::A0, 0xAAAA_0000);
-        runner.cpu.write_reg(Register::A6, 0xCCCC_0000);
-        runner.cpu.core.set_ccr(0x04);
-        runner.cpu.core.set_sr_noint_nosp(0x2004);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::D0, 0x1111_1111);
+        runner.m68k.cpu.write_reg(Register::D7, 0x7777_7777);
+        runner.m68k.cpu.write_reg(Register::A0, 0xAAAA_0000);
+        runner.m68k.cpu.write_reg(Register::A6, 0xCCCC_0000);
+        runner.m68k.cpu.core.set_ccr(0x04);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2004);
 
         runner.advance_guest_tick();
 
@@ -20561,14 +20273,14 @@ mod tests {
         assert_eq!(active.d_regs[7], 0x7777_7777);
         assert_eq!(active.sr, 0x2004);
         assert_eq!(active.ccr, 0x04);
-        assert_eq!(runner.cpu.core.get_sr(), 0x2104);
+        assert_eq!(runner.m68k.cpu.core.get_sr(), 0x2104);
 
         assert_ne!(runner.cursor_task_trampoline, 0);
         assert_eq!(
-            runner.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::PC),
             runner.cursor_task_trampoline
         );
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp - 4);
         assert_eq!(runner.bus.read_long(interrupted_sp - 4), interrupted_pc);
         assert_eq!(runner.bus.read_word(runner.cursor_task_trampoline), 0x48E7);
         assert_eq!(
@@ -20598,16 +20310,16 @@ mod tests {
         runner
             .bus
             .write_long(crate::memory::globals::addr::J_CRSR_TASK, 0x0004_1234);
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_sr_noint_nosp(0x2100);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2100);
 
         runner.advance_guest_tick();
 
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.cursor_task_trampoline, 0);
-        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]
@@ -20616,13 +20328,13 @@ mod tests {
         let interrupted_pc = 0x0002_8BAC;
         let interrupted_sp = 0x007F_FFC0;
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::D0, 0x1111_1111);
-        runner.cpu.write_reg(Register::D7, 0x7777_7777);
-        runner.cpu.write_reg(Register::A0, 0xAAAA_0000);
-        runner.cpu.write_reg(Register::A6, 0xCCCC_0000);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_ccr(0x1F);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::D0, 0x1111_1111);
+        runner.m68k.cpu.write_reg(Register::D7, 0x7777_7777);
+        runner.m68k.cpu.write_reg(Register::A0, 0xAAAA_0000);
+        runner.m68k.cpu.write_reg(Register::A6, 0xCCCC_0000);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_ccr(0x1F);
         runner.bus.write_word(0x0039_38C8 + 4, 0x8001);
 
         runner.dispatcher.timer_tasks.push(TimerTask {
@@ -20661,8 +20373,11 @@ mod tests {
         );
 
         assert_ne!(runner.timer_trampoline, 0);
-        assert_eq!(runner.cpu.read_reg(Register::PC), runner.timer_trampoline);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp - 4);
+        assert_eq!(
+            runner.m68k.cpu.read_reg(Register::PC),
+            runner.timer_trampoline
+        );
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp - 4);
         assert_eq!(runner.bus.read_long(interrupted_sp - 4), interrupted_pc);
     }
 
@@ -20673,8 +20388,8 @@ mod tests {
         let interrupted_sp = 0x007F_FFC0;
         let callback_addr = 0x0002_0000;
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         runner.tick_budget = 0;
@@ -20701,7 +20416,7 @@ mod tests {
         assert!(runner.active_interrupt_callback.is_some());
         assert_ne!(runner.timer_trampoline, 0);
         assert_eq!(
-            runner.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::PC),
             runner.timer_trampoline + 4
         );
     }
@@ -20715,8 +20430,8 @@ mod tests {
 
         runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S to self
         runner.bus.write_word(callback_addr, 0x4E75); // RTS
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         runner.tick_budget = runner.instructions_per_tick as i32;
@@ -20751,8 +20466,8 @@ mod tests {
         let callback_addr = 0x0002_0000;
 
         runner.bus.write_word(interrupted_pc, 0x4E71); // foreground NOP
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.bus.write_long(0x016A, 101);
         runner.set_guest_tick_for_test(101);
         runner.set_instructions_per_tick(1);
@@ -20783,7 +20498,7 @@ mod tests {
         assert!(running);
         assert_eq!(steps, 1);
         assert_eq!(
-            runner.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::PC),
             interrupted_pc + 2,
             "resumed foreground instruction should run before the next timer interrupt"
         );
@@ -20805,8 +20520,8 @@ mod tests {
         let interrupted_pc = 0x0001_0000;
         let interrupted_sp = 0x007F_FFC0;
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.dispatcher.timer_tasks.extend([
             TimerTask {
                 task_ptr: 0x0039_38C8,
@@ -20844,8 +20559,8 @@ mod tests {
         runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
         runner.dispatcher.timer_tasks[0].fire_at_subtick = 11_000_000;
         runner.active_interrupt_callback = None;
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.fire_timer_tasks(11);
 
@@ -20867,8 +20582,8 @@ mod tests {
         let interrupted_sp = 0x007F_FFC0;
         let task_ptr = 0x0039_38C8;
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr,
             architecture: CallbackTaskArchitecture::M68k,
@@ -20886,8 +20601,8 @@ mod tests {
         // Model the callback returning and re-priming itself for another
         // revised Time Manager deadline inside the same VBL.
         runner.active_interrupt_callback = None;
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.dispatcher.timer_tasks[0].active = true;
         runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
         runner.dispatcher.timer_tasks[0].fire_at_subtick = 10_300_000;
@@ -20916,10 +20631,10 @@ mod tests {
         runner.bus.write_word(interrupted_pc + 6, 0x7002);
         runner.bus.write_word(interrupted_pc + 8, 0x4E71);
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.write_reg(Register::D0, 0);
-        runner.cpu.core.set_ccr(0x04);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::D0, 0);
+        runner.m68k.cpu.core.set_ccr(0x04);
 
         runner.bus.write_long(header_ptr + 12, exhausted_buf_ptr);
         runner.bus.write_long(exhausted_buf_ptr + 4, 0x0000_0001);
@@ -20947,15 +20662,15 @@ mod tests {
         assert_eq!(active.resume_sp, interrupted_sp);
 
         // Simulate the trampoline returning to interrupted code with CCR clobbered.
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_ccr(0);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_ccr(0);
 
         let (steps, running) = runner.run_steps(3, None);
 
         assert!(running);
         assert_eq!(steps, 3);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 2);
         assert!(runner.active_interrupt_callback.is_none());
     }
 
@@ -20971,8 +20686,8 @@ mod tests {
 
         runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping args.
         runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.bus.write_long(header_ptr + 12, exhausted_buf_ptr);
         runner.bus.write_long(exhausted_buf_ptr + 4, 0x0000_0001);
@@ -21092,8 +20807,8 @@ mod tests {
         let interrupted_sp = 0x007F_FFC0;
 
         runner.bus.write_word(interrupted_pc, 0x4E71);
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.bus.write_word(header_ptr, 1);
         runner.bus.write_word(header_ptr + 2, 8);
@@ -21366,8 +21081,8 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000;
         let interrupted_sp = 0x007F_FFC0;
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner
             .dispatcher
@@ -21421,8 +21136,8 @@ mod tests {
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let callback_addr = runner.bus.alloc(2);
-        runner.cpu.write_reg(Register::PC, 0x0001_0000);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner
             .dispatcher
             .sound_manager
@@ -21459,10 +21174,10 @@ mod tests {
         for offset in (0..20).step_by(2) {
             runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
         }
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.write_reg(Register::A0, 0x1111_1111);
-        runner.cpu.write_reg(Register::D0, 0x2222_2222);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::A0, 0x1111_1111);
+        runner.m68k.cpu.write_reg(Register::D0, 0x2222_2222);
         runner
             .dispatcher
             .pending_file_completions
@@ -21474,8 +21189,8 @@ mod tests {
 
         assert!(runner.fire_file_completion_callback());
         assert_eq!(runner.bus.read_word(parameter_block + 16) as i16, -39);
-        assert_eq!(runner.cpu.read_reg(Register::A0), parameter_block);
-        assert_eq!(runner.cpu.read_reg(Register::D0) as i32, -39);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), parameter_block);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0) as i32, -39);
         assert!(matches!(
             runner.active_interrupt_callback.map(|active| active.source),
             Some(ActiveInterruptCallbackSource::FileCompletion)
@@ -21492,9 +21207,9 @@ mod tests {
 
         assert!(running);
         assert!(runner.active_interrupt_callback.is_none());
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
-        assert_eq!(runner.cpu.read_reg(Register::A0), 0x1111_1111);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0x2222_2222);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), 0x1111_1111);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x2222_2222);
         assert!(!runner.is_halted());
     }
 
@@ -21510,12 +21225,12 @@ mod tests {
         for offset in (0..20).step_by(2) {
             runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
         }
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.write_reg(Register::A0, 0x1111_1111);
-        runner.cpu.write_reg(Register::A1, 0x2222_2222);
-        runner.cpu.write_reg(Register::A2, 0x3333_3333);
-        runner.cpu.write_reg(Register::D0, 0x4444_4444);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::A0, 0x1111_1111);
+        runner.m68k.cpu.write_reg(Register::A1, 0x2222_2222);
+        runner.m68k.cpu.write_reg(Register::A2, 0x3333_3333);
+        runner.m68k.cpu.write_reg(Register::D0, 0x4444_4444);
         assert!(runner
             .dispatcher
             .adb
@@ -21523,11 +21238,11 @@ mod tests {
         runner.dispatcher.adb.note_mouse_state((5, -10), true);
 
         assert!(runner.fire_adb_callback());
-        let packet_ptr = runner.cpu.read_reg(Register::A0);
+        let packet_ptr = runner.m68k.cpu.read_reg(Register::A0);
         assert_eq!(runner.bus.read_bytes(packet_ptr, 3), &[2, 5, 0xF6]);
-        assert_eq!(runner.cpu.read_reg(Register::A1), callback_addr);
-        assert_eq!(runner.cpu.read_reg(Register::A2), data_area);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0x3C);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A1), callback_addr);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A2), data_area);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x3C);
         assert!(matches!(
             runner.active_interrupt_callback.map(|active| active.source),
             Some(ActiveInterruptCallbackSource::Adb)
@@ -21544,11 +21259,11 @@ mod tests {
 
         assert!(running);
         assert!(runner.active_interrupt_callback.is_none());
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
-        assert_eq!(runner.cpu.read_reg(Register::A0), 0x1111_1111);
-        assert_eq!(runner.cpu.read_reg(Register::A1), 0x2222_2222);
-        assert_eq!(runner.cpu.read_reg(Register::A2), 0x3333_3333);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0x4444_4444);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), 0x1111_1111);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A1), 0x2222_2222);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A2), 0x3333_3333);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x4444_4444);
         assert!(!runner.is_halted());
     }
 
@@ -21564,8 +21279,8 @@ mod tests {
         runner.bus.write_word(callback_addr, 0x2E9F); // MOVE.L (SP)+,(SP)
         runner.bus.write_word(callback_addr + 2, 0x4E75); // RTS
         runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner
             .dispatcher
@@ -21588,8 +21303,8 @@ mod tests {
         assert!(running, "callback trampoline should resume foreground code");
         assert_eq!(steps, 10);
         assert!(runner.active_interrupt_callback.is_none());
-        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc + 2);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), interrupted_pc + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
         assert_eq!(
             runner
@@ -21609,8 +21324,8 @@ mod tests {
 
         runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping chan.
         runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner
             .dispatcher
@@ -21631,7 +21346,7 @@ mod tests {
         );
         assert_eq!(steps, 10);
         assert!(runner.active_interrupt_callback.is_none());
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
         assert_eq!(
             runner
@@ -21653,8 +21368,8 @@ mod tests {
 
         runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping args.
         runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.bus.write_long(header_ptr + 12, exhausted_buf_ptr);
         runner.bus.write_long(exhausted_buf_ptr + 4, 0x0000_0001);
@@ -21678,7 +21393,7 @@ mod tests {
         );
         assert_eq!(steps, 12);
         assert!(runner.active_interrupt_callback.is_none());
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(!runner.is_halted());
     }
 
@@ -21691,8 +21406,8 @@ mod tests {
 
         runner.bus.write_word(callback_addr, 0x4E75); // RTS without popping args.
         runner.bus.write_word(interrupted_pc, 0x4E71); // foreground NOP
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.bus.write_long(0x016A, 41);
         runner.set_guest_tick_for_test(41);
         runner.set_instructions_per_tick(1);
@@ -21723,11 +21438,11 @@ mod tests {
             "callback-only slices must not advance application-visible ticks"
         );
         assert_eq!(
-            runner.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::PC),
             interrupted_pc,
             "sound callback service must stop before resumed foreground code runs"
         );
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
         assert!(runner.active_interrupt_callback.is_none());
         assert!(!runner.has_pending_sound_work());
     }
@@ -21778,8 +21493,8 @@ mod tests {
         for offset in (0..512).step_by(2) {
             runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
         }
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.bus.write_long(header_ptr + 12, buf0_ptr);
         runner.bus.write_long(header_ptr + 16, buf1_ptr);
@@ -21837,11 +21552,11 @@ mod tests {
         let interrupted_sp = 0x007F_FFC0;
         let task_ptr = 0x0020_2000;
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.write_reg(Register::A0, 0xAAAA_0000);
-        runner.cpu.core.set_ccr(0x04);
-        runner.cpu.core.set_sr_noint_nosp(0x2004);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::A0, 0xAAAA_0000);
+        runner.m68k.cpu.core.set_ccr(0x04);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2004);
 
         runner.bus.write_word(task_ptr + 4, 1); // qType = vType
         runner.bus.write_long(task_ptr + 6, 0x0004_1234); // vblAddr
@@ -21867,9 +21582,12 @@ mod tests {
         assert_eq!(runner.bus.read_word(task_ptr + 10), 0);
 
         assert_ne!(runner.vbl_trampoline, 0);
-        assert_eq!(runner.cpu.core.get_sr(), 0x2104);
-        assert_eq!(runner.cpu.read_reg(Register::PC), runner.vbl_trampoline);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp - 4);
+        assert_eq!(runner.m68k.cpu.core.get_sr(), 0x2104);
+        assert_eq!(
+            runner.m68k.cpu.read_reg(Register::PC),
+            runner.vbl_trampoline
+        );
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp - 4);
         assert_eq!(runner.bus.read_long(interrupted_sp - 4), interrupted_pc);
         assert_eq!(runner.bus.read_word(runner.vbl_trampoline + 4), 0x207C);
         assert_eq!(runner.bus.read_long(runner.vbl_trampoline + 6), task_ptr);
@@ -21887,9 +21605,9 @@ mod tests {
         let first_ptr = 0x0020_2000;
         let second_ptr = 0x0020_2020;
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_sr_noint_nosp(0x2000);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
         for (task_ptr, callback) in [(first_ptr, 0x0004_1234), (second_ptr, 0x0004_5678)] {
             runner.bus.write_word(task_ptr + 4, 1);
             runner.bus.write_long(task_ptr + 6, callback);
@@ -21911,9 +21629,9 @@ mod tests {
         // again.
         runner.bus.write_word(first_ptr + 10, 1);
         runner.active_interrupt_callback = None;
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_sr_noint_nosp(0x2000);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
         runner.fire_vbl_tasks();
 
         assert_eq!(runner.bus.read_long(runner.vbl_trampoline + 6), second_ptr);
@@ -21928,9 +21646,9 @@ mod tests {
         let interrupted_sp = 0x007F_FFC0;
         let task_ptr = 0x0020_2000;
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_sr_noint_nosp(0x2100);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2100);
 
         runner.bus.write_word(task_ptr + 4, 1);
         runner.bus.write_long(task_ptr + 6, 0x0004_1234);
@@ -21947,8 +21665,8 @@ mod tests {
 
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.bus.read_word(task_ptr + 10), 1);
-        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]
@@ -21993,9 +21711,9 @@ mod tests {
 
         runner.bus.write_word(interrupted_pc, 0x4E71); // foreground NOP
         runner.bus.write_word(callback_addr, 0x4E75); // VBL callback RTS
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_sr_noint_nosp(0x2004);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2004);
 
         runner.bus.write_word(task_ptr + 4, 1);
         runner.bus.write_long(task_ptr + 6, callback_addr);
@@ -22009,14 +21727,14 @@ mod tests {
         });
 
         runner.fire_vbl_tasks();
-        assert_eq!(runner.cpu.core.get_sr(), 0x2104);
+        assert_eq!(runner.m68k.cpu.core.get_sr(), 0x2104);
 
         let (_steps, running) = runner.run_steps(8, None);
 
         assert!(running);
         assert!(runner.active_interrupt_callback.is_none());
-        assert_eq!(runner.cpu.core.get_sr(), 0x2004);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.core.get_sr(), 0x2004);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]
@@ -22029,8 +21747,8 @@ mod tests {
             runner.bus.write_word(program_start + offset, 0x4E71);
         }
 
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.set_instructions_per_tick(3);
 
@@ -22049,8 +21767,8 @@ mod tests {
         let rect = 0x0020_0000u32;
 
         runner.bus.write_word(base, 0xA8A8); // _OffsetRect
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.bus.write_word(sp, 1); // dv
         runner.bus.write_word(sp + 2, 2); // dh
         runner.bus.write_long(sp + 4, rect);
@@ -22081,8 +21799,8 @@ mod tests {
         let base = 0x0001_0000u32;
 
         runner.bus.write_word(base, 0xA975); // _TickCount
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 42);
         runner.set_guest_tick_for_test(42);
         runner.set_instructions_per_tick(5);
@@ -22108,8 +21826,8 @@ mod tests {
 
         runner.bus.write_word(base, 0xA8A8); // _OffsetRect
         runner.bus.write_word(base + 2, 0x4E71); // NOP that must wait for the next GUI slice
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.bus.write_word(sp, 1);
         runner.bus.write_word(sp + 2, 2);
         runner.bus.write_long(sp + 4, rect);
@@ -22127,7 +21845,7 @@ mod tests {
         assert_eq!(steps, 1);
         assert_eq!(runner.guest_tick(), 1);
         assert_eq!(
-            runner.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::PC),
             base + 2,
             "the next guest instruction should be deferred once HLE cost reaches the GUI tick cap"
         );
@@ -22150,8 +21868,8 @@ mod tests {
             runner.bus.write_word(program_start + offset, 0x4E71);
         }
 
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         // Set both sides of the invariant to the same initial value.
         runner.set_guest_tick_for_test(0);
@@ -22216,10 +21934,10 @@ mod tests {
         let trap_pc = 0x0002_0000u32;
         let sp = 0x0010_0000u32;
         let scratch = 0x0020_0000u32;
-        runner.cpu.write_reg(Register::PC, trap_pc + 2);
-        runner.cpu.core.ppc = trap_pc;
-        runner.cpu.core.ir = 0xA975;
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA975;
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.bus.write_long(sp, 100);
         runner.bus.write_long(scratch, 0x1122_3344);
         runner.bus.write_long(0x016A, 100);
@@ -22270,7 +21988,7 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
         let work = 0x0030_0000u32;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.set_guest_tick_for_test(100);
 
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
@@ -22323,7 +22041,7 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
         let scratch = 0x0020_0000u32;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.set_guest_tick_for_test(100);
 
         // Arrival 1: baseline. Arrival 2: probe #1 armed.
@@ -22374,7 +22092,7 @@ mod tests {
         // still cancel on anything with unjournaled consequences.
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.set_guest_tick_for_test(100);
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
@@ -22545,7 +22263,7 @@ mod tests {
         for opcode in [0xA918u16, 0xA91F, 0xA928, 0xA929, 0xA9D8, 0xA9D9, 0xA9DC] {
             let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
             let trap_pc = 0x0002_0000u32;
-            runner.cpu.write_reg(Register::A7, 0x0008_0000);
+            runner.m68k.cpu.write_reg(Register::A7, 0x0008_0000);
             runner.set_guest_tick_for_test(100);
             assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
             assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
@@ -22569,9 +22287,9 @@ mod tests {
             let sp = 0x0010_0000u32;
             let te_handle = 0x0020_0000u32;
             let te_rec = 0x0020_0100u32;
-            runner.cpu.write_reg(Register::PC, trap_pc + 2);
-            runner.cpu.core.ppc = trap_pc;
-            runner.cpu.core.ir = 0xA975; // the loop's TickCount anchor
+            runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+            runner.m68k.cpu.core.ppc = trap_pc;
+            runner.m68k.cpu.core.ir = 0xA975; // the loop's TickCount anchor
             runner.bus.write_long(0x016A, 100);
             runner.set_guest_tick_for_test(100);
             runner.bus.write_long(te_handle, te_rec);
@@ -22585,26 +22303,28 @@ mod tests {
                                                      // The argument slot holds hTE before the journal opens, so the
                                                      // loop's push below rewrites the same bytes.
             runner.bus.write_long(sp - 4, te_handle);
-            runner.cpu.write_reg(Register::A7, sp);
+            runner.m68k.cpu.write_reg(Register::A7, sp);
             assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
             assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
             assert!(runner.idle_cycle_probe.is_some());
 
-            let before = CpuArchitecturalSnapshot::capture(&runner.cpu.core);
+            let before = CpuArchitecturalSnapshot::capture(&runner.m68k.cpu.core);
             // One loop iteration: push hTE, call TEIdle (which pops it).
-            runner.cpu.write_reg(Register::A7, sp - 4);
+            runner.m68k.cpu.write_reg(Register::A7, sp - 4);
             runner.bus.write_long(sp - 4, te_handle);
-            let result =
-                runner
-                    .dispatcher
-                    .dispatch_dialog(true, 0x1DA, &mut runner.cpu, &mut runner.bus);
+            let result = runner.dispatcher.dispatch_dialog(
+                true,
+                0x1DA,
+                &mut runner.m68k.cpu,
+                &mut runner.bus,
+            );
             assert!(result.unwrap().is_ok());
-            assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
             runner.note_idle_cycle_trap_result(0xA9DA);
             assert!(runner.idle_cycle_probe.is_some(), "TEIdle is admitted");
             assert_eq!(
                 before,
-                CpuArchitecturalSnapshot::capture(&runner.cpu.core),
+                CpuArchitecturalSnapshot::capture(&runner.m68k.cpu.core),
                 "TEIdle must leave the architectural state as it found it"
             );
             assert_eq!(runner.bus.read_word(te_rec + 0x38), u16::from(blink_due));
@@ -22634,10 +22354,10 @@ mod tests {
         let trap_pc = 0x0002_0000u32;
         let sp = 0x0010_0000u32;
         let keymap = 0x0020_0000u32;
-        runner.cpu.write_reg(Register::PC, trap_pc + 2);
-        runner.cpu.core.ppc = trap_pc;
-        runner.cpu.core.ir = 0xA976;
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA976;
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         // The prior (pre-proof) iteration already left the KeyMap and the
@@ -22681,11 +22401,11 @@ mod tests {
         // origin state.
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
 
-        let set_d5 = |runner: &mut FixtureRunner, v: u32| runner.cpu.core.set_d(5, v);
+        let set_d5 = |runner: &mut FixtureRunner, v: u32| runner.m68k.cpu.core.set_d(5, v);
 
         set_d5(&mut runner, 0x39);
         assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
@@ -22720,12 +22440,12 @@ mod tests {
         // fabricate a proof.
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
 
         for step in 0..24u32 {
-            runner.cpu.core.set_d(5, 0x1000 + step);
+            runner.m68k.cpu.core.set_d(5, 0x1000 + step);
             assert!(
                 !runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)),
                 "step {step} must not prove"
@@ -22738,18 +22458,18 @@ mod tests {
     fn cycle_longer_than_period_cap_never_proves() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
 
-        runner.cpu.core.set_d(5, 0);
+        runner.m68k.cpu.core.set_d(5, 0);
         assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
         assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
         for state in 1..=IDLE_CYCLE_MAX_PERIOD {
-            runner.cpu.core.set_d(5, u32::from(state));
+            runner.m68k.cpu.core.set_d(5, u32::from(state));
             assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
         }
-        runner.cpu.core.set_d(5, 0);
+        runner.m68k.cpu.core.set_d(5, 0);
         assert!(!runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)));
         assert!(runner.idle_cycle_sleep.is_none());
     }
@@ -22759,10 +22479,10 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let site_a = 0x0002_0000u32;
         let site_b = 0x0002_1000u32;
-        runner.cpu.write_reg(Register::PC, site_a + 2);
-        runner.cpu.core.ppc = site_a;
-        runner.cpu.core.ir = 0xA970;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, site_a + 2);
+        runner.m68k.cpu.core.ppc = site_a;
+        runner.m68k.cpu.core.ir = 0xA970;
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
 
@@ -22785,10 +22505,10 @@ mod tests {
     fn exact_idle_cycle_rejects_an_architectural_cpu_change() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
-        runner.cpu.write_reg(Register::PC, trap_pc + 2);
-        runner.cpu.core.ppc = trap_pc;
-        runner.cpu.core.ir = 0xA970;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA970;
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
 
@@ -22796,7 +22516,7 @@ mod tests {
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
         assert!(runner.idle_cycle_probe.is_some());
 
-        runner.cpu.write_reg(Register::D3, 1);
+        runner.m68k.cpu.write_reg(Register::D3, 1);
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
         assert_eq!(runner.guest_tick(), 100);
         assert!(runner.idle_cycle_sleep.is_none());
@@ -22875,13 +22595,13 @@ mod tests {
         ] {
             runner.bus.write_word(code + offset, word);
         }
-        runner.cpu.write_reg(Register::PC, code);
-        runner.cpu.write_reg(Register::A7, stack);
-        runner.cpu.write_reg(Register::A0, delay_base);
-        runner.cpu.write_reg(Register::A1, tick_base);
-        runner.cpu.write_reg(Register::A2, flag_base);
-        runner.cpu.write_reg(Register::D0, 0);
-        runner.cpu.write_reg(Register::D1, 0);
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner.m68k.cpu.write_reg(Register::A0, delay_base);
+        runner.m68k.cpu.write_reg(Register::A1, tick_base);
+        runner.m68k.cpu.write_reg(Register::A2, flag_base);
+        runner.m68k.cpu.write_reg(Register::D0, 0);
+        runner.m68k.cpu.write_reg(Register::D1, 0);
         runner.bus.write_word(delay_base + 16, 5);
         runner.bus.write_long(tick_base + 32, 100);
         runner.bus.write_word(flag_base + 48, 0);
@@ -22901,7 +22621,7 @@ mod tests {
         assert!(!runner.try_resume_proven_idle_cycle(Some(101)));
         assert_eq!(runner.guest_tick(), 101);
         assert!(runner.idle_cycle_sleep.is_none());
-        assert_eq!(runner.cpu.core.pc, code + 14);
+        assert_eq!(runner.m68k.cpu.core.pc, code + 14);
     }
 
     #[test]
@@ -22909,10 +22629,10 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
         let sp = 0x0010_0000u32;
-        runner.cpu.write_reg(Register::PC, trap_pc + 2);
-        runner.cpu.core.ppc = trap_pc;
-        runner.cpu.core.ir = 0xA975;
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA975;
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         runner.dispatcher.set_sent_open_app_event_for_test(true);
@@ -22929,10 +22649,10 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
         let scratch = 0x0020_0000u32;
-        runner.cpu.write_reg(Register::PC, trap_pc + 2);
-        runner.cpu.core.ppc = trap_pc;
-        runner.cpu.core.ir = 0xA975;
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA975;
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
@@ -22951,7 +22671,7 @@ mod tests {
     fn ordinary_tick_advance_cancels_an_exact_idle_cycle_probe() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
-        runner.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
@@ -22981,9 +22701,9 @@ mod tests {
         runner.bus.write_word(base + 10, 0x4E71);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D7, 100);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::D7, 100);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.bus.write_long(sp - 4, 100);
 
         let mut count = 0usize;
@@ -22992,19 +22712,19 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 101);
         assert_eq!(runner.bus.read_long(sp - 4), 101);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
         assert_eq!(count, 0, "post-trap body remains for exact CPU execution");
 
         for _ in 0..3 {
             assert!(matches!(
-                runner.cpu.step(&mut runner.bus),
+                runner.m68k.cpu.step(&mut runner.bus),
                 crate::cpu::StepResult::Ok
             ));
         }
-        assert_eq!(runner.cpu.read_reg(Register::D0), 101);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 10);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 101);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 10);
     }
 
     #[test]
@@ -23024,8 +22744,8 @@ mod tests {
         runner.bus.write_word(base + 12, 0x67F2);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D7, 100);
-        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::D7, 100);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
         runner.bus.write_long(sp - 4, 100);
 
         let mut count = 0usize;
@@ -23033,7 +22753,7 @@ mod tests {
 
         assert_eq!(runner.guest_tick(), 100);
         assert_eq!(runner.bus.read_long(sp - 4), 100);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(count, 0);
     }
 
@@ -23068,10 +22788,10 @@ mod tests {
         runner.bus.write_word(a6 + 8, 5);
         runner.bus.write_long(0x016A, 401);
         runner.set_guest_tick_for_test(401);
-        runner.cpu.write_reg(Register::A5, a5);
-        runner.cpu.write_reg(Register::A6, a6);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::A6, a6);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.bus.write_long(sp - 4, 401);
 
         let mut count = 0usize;
@@ -23080,21 +22800,21 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 405);
         assert_eq!(runner.bus.read_long(sp - 4), 405);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
         assert_eq!(count, 0, "post-trap body remains for exact CPU execution");
 
         for _ in 0..7 {
             assert!(matches!(
-                runner.cpu.step(&mut runner.bus),
+                runner.m68k.cpu.step(&mut runner.bus),
                 crate::cpu::StepResult::Ok
             ));
         }
         assert_eq!(runner.bus.read_long(a6 - 4), 405);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 5);
-        assert_eq!(runner.cpu.read_reg(Register::A0), 5);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 26);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 5);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), 5);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 26);
     }
 
     /// Regression gate for the TickCount spin fast-forward template A
@@ -23125,8 +22845,8 @@ mod tests {
         // Initial tick 100, target D3=500 so target_tick = 501.
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D3, 500);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::D3, 500);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
 
         let pc_after_trap = base + 4;
         let mut count = 0usize;
@@ -23136,11 +22856,11 @@ mod tests {
         assert_eq!(runner.guest_tick(), 501, "advanced to D3+imm");
         assert_eq!(runner.bus.read_long(0x016A), 501, "bus $016A in sync");
         // After fall-through: Dn = final_tick - imm = 501 - 1 = 500 (= D3).
-        assert_eq!(runner.cpu.read_reg(Register::D0), 500);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 500);
         // A7 += 4 (the popped tick slot).
-        assert_eq!(runner.cpu.read_reg(Register::A7), 0x0010_0004);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_0004);
         // PC past BHI (base + 12).
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 12);
         // 4 synthesised instructions accounted for.
         assert_eq!(count, 4);
     }
@@ -23165,8 +22885,8 @@ mod tests {
 
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D3, 500);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::D3, 500);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         let pc_after_trap = base + 4;
         let mut count = 0usize;
         runner.try_tickcount_spin_fastfwd(pc_after_trap, None, &mut count);
@@ -23175,7 +22895,7 @@ mod tests {
         assert_eq!(runner.guest_tick(), 100);
         // PC stays where it was (we passed pc_after_trap but the
         // fast-forward must have returned without mutating PC).
-        assert_eq!(runner.cpu.read_reg(Register::PC), 0);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0);
         assert_eq!(count, 0);
     }
 
@@ -23211,8 +22931,8 @@ mod tests {
         // Initial state
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A6, a6);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A6, a6);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
 
         let pc_after_trap = base + 4;
         let mut count = 0usize;
@@ -23223,9 +22943,9 @@ mod tests {
         assert_eq!(runner.guest_tick(), 401);
         assert_eq!(runner.bus.read_long(0x016A), 401);
         // Template B exit: D0 = final_tick (no SUBQ).
-        assert_eq!(runner.cpu.read_reg(Register::D0), 401);
-        assert_eq!(runner.cpu.read_reg(Register::A7), 0x0010_0004);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 401);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_0004);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 12);
         // Template B synthesises 3 instructions (MOVE, CMP, BLS).
         assert_eq!(count, 3);
     }
@@ -23257,10 +22977,10 @@ mod tests {
         runner.bus.write_long(0x016A, 100);
         runner.bus.write_long(sp, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A0, counter);
-        runner.cpu.write_reg(Register::D3, 0);
-        runner.cpu.write_reg(Register::A6, a6);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::A0, counter);
+        runner.m68k.cpu.write_reg(Register::D3, 0);
+        runner.m68k.cpu.write_reg(Register::A6, a6);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let mut count = 0usize;
         let hit_cap = runner.try_tickcount_spin_fastfwd(base + 8, None, &mut count);
@@ -23268,8 +22988,8 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 100);
         assert_eq!(runner.bus.read_long(counter), 7);
-        assert_eq!(runner.cpu.read_reg(Register::PC), 0);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
         assert_eq!(count, 0);
     }
 
@@ -23295,17 +23015,17 @@ mod tests {
         runner.bus.write_long(0x016A, 100);
         runner.bus.write_long(sp, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A5, a5);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let mut count = 0usize;
         let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
 
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 401);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 401);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 401);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 12);
         assert_eq!(count, 3);
     }
 
@@ -23331,17 +23051,17 @@ mod tests {
         runner.bus.write_long(0x016A, 100);
         runner.bus.write_long(sp, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A5, a5);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let mut count = 0usize;
         let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
 
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 400);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 400);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 12);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 400);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 12);
         assert_eq!(count, 3);
     }
 
@@ -23361,15 +23081,15 @@ mod tests {
         runner.bus.write_long(0x016A, 100);
         runner.bus.write_long(sp, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A5, a5);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let mut count = 0usize;
         runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
 
         assert_eq!(runner.guest_tick(), 100);
-        assert_eq!(runner.cpu.read_reg(Register::PC), 0);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
         assert_eq!(count, 0);
     }
 
@@ -23408,7 +23128,7 @@ mod tests {
         runner.bus.write_long(target_addr, 400);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
 
         let pc_after_trap = base + 4;
         let mut count = 0usize;
@@ -23417,9 +23137,9 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 400);
         assert_eq!(runner.bus.read_long(0x016A), 400);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 400);
-        assert_eq!(runner.cpu.read_reg(Register::A7), 0x0010_0004);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 14);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 400);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_0004);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 14);
         assert_eq!(count, 3);
     }
 
@@ -23451,10 +23171,10 @@ mod tests {
         runner.bus.write_long(0x016A, 100);
         runner.bus.write_long(sp - 4, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A5, a5);
-        runner.cpu.write_reg(Register::A6, a6);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::A6, a6);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
 
         let mut count = 0usize;
         let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
@@ -23462,19 +23182,19 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 405);
         assert_eq!(runner.bus.read_long(sp - 4), 405);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(count, 0, "post-trap body remains for exact CPU execution");
 
         for _ in 0..5 {
             assert!(matches!(
-                runner.cpu.step(&mut runner.bus),
+                runner.m68k.cpu.step(&mut runner.bus),
                 crate::cpu::StepResult::Ok
             ));
         }
-        assert_eq!(runner.cpu.read_reg(Register::D0), 405);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 18);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 405);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 18);
     }
 
     #[test]
@@ -23505,10 +23225,10 @@ mod tests {
         runner.bus.write_long(0x016A, 100);
         runner.bus.write_long(sp - 4, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A5, a5);
-        runner.cpu.write_reg(Register::A6, a6);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::A6, a6);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
 
         let mut count = 0usize;
         let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
@@ -23516,19 +23236,19 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 406);
         assert_eq!(runner.bus.read_long(sp - 4), 406);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(count, 0, "post-trap body remains for exact CPU execution");
 
         for _ in 0..5 {
             assert!(matches!(
-                runner.cpu.step(&mut runner.bus),
+                runner.m68k.cpu.step(&mut runner.bus),
                 crate::cpu::StepResult::Ok
             ));
         }
-        assert_eq!(runner.cpu.read_reg(Register::D0), 405);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 18);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 405);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 18);
     }
 
     #[test]
@@ -23554,9 +23274,9 @@ mod tests {
         runner.bus.write_long(0x016A, 100);
         runner.bus.write_long(sp - 4, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::A5, a5);
-        runner.cpu.write_reg(Register::A6, a6);
-        runner.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::A6, a6);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
 
         let mut count = 0usize;
         let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
@@ -23606,9 +23326,9 @@ mod tests {
 
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D7, 500);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::D7, 500);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.bus.write_long(sp - 4, 100);
 
         let mut count = 0usize;
@@ -23617,20 +23337,20 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 501);
         assert_eq!(runner.bus.read_long(sp - 4), 501);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(count, 0, "CMP/BCC remain for exact CPU execution");
 
         assert!(matches!(
-            runner.cpu.step(&mut runner.bus),
+            runner.m68k.cpu.step(&mut runner.bus),
             crate::cpu::StepResult::Ok
         ));
         assert!(matches!(
-            runner.cpu.step(&mut runner.bus),
+            runner.m68k.cpu.step(&mut runner.bus),
             crate::cpu::StepResult::Ok
         ));
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 8);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 8);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
     }
 
     #[test]
@@ -23649,9 +23369,9 @@ mod tests {
 
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D7, 100);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::D7, 100);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.bus.write_long(sp - 4, 100);
 
         let mut count = 0usize;
@@ -23660,20 +23380,20 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 101);
         assert_eq!(runner.bus.read_long(sp - 4), 101);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(count, 0, "CMP/BEQ remain for exact CPU execution");
 
         assert!(matches!(
-            runner.cpu.step(&mut runner.bus),
+            runner.m68k.cpu.step(&mut runner.bus),
             crate::cpu::StepResult::Ok
         ));
         assert!(matches!(
-            runner.cpu.step(&mut runner.bus),
+            runner.m68k.cpu.step(&mut runner.bus),
             crate::cpu::StepResult::Ok
         ));
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 8);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 8);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
     }
 
     #[test]
@@ -23688,9 +23408,9 @@ mod tests {
 
         runner.bus.write_long(0x016A, 101);
         runner.set_guest_tick_for_test(101);
-        runner.cpu.write_reg(Register::D7, 100);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::D7, 100);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.bus.write_long(sp - 4, 101);
 
         let mut count = 0usize;
@@ -23699,8 +23419,8 @@ mod tests {
         assert!(!hit_cap);
         assert_eq!(runner.guest_tick(), 101);
         assert_eq!(runner.bus.read_long(sp - 4), 101);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(count, 0);
     }
 
@@ -23715,9 +23435,9 @@ mod tests {
         runner.bus.write_word(base + 6, 0x64F8);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D7, 500);
-        runner.cpu.write_reg(Register::A7, sp - 4);
-        runner.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::D7, 500);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.bus.write_long(sp - 4, 100);
 
         let mut count = 0usize;
@@ -23726,8 +23446,8 @@ mod tests {
         assert!(hit_cap);
         assert_eq!(runner.guest_tick(), 102);
         assert_eq!(runner.bus.read_long(sp - 4), 102);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 4);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
     }
 
     #[test]
@@ -23752,10 +23472,10 @@ mod tests {
         runner.bus.write_long(target_addr, 400);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::PC, base + 4);
-        runner.cpu.write_reg(Register::A7, sp);
-        runner.cpu.write_reg(Register::D0, 0xDEAD_BEEF);
-        runner.cpu.core.set_sr_noint_nosp(0x2000);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::D0, 0xDEAD_BEEF);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
         runner.bus.write_long(sp, 100);
 
         runner.bus.write_word(task_ptr + 4, 1);
@@ -23776,9 +23496,12 @@ mod tests {
         assert_eq!(runner.guest_tick(), 101);
         assert_eq!(runner.bus.read_long(0x016A), 101);
         assert_eq!(count, 0);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 0xDEAD_BEEF);
-        assert_eq!(runner.cpu.read_reg(Register::PC), runner.vbl_trampoline);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0xDEAD_BEEF);
+        assert_eq!(
+            runner.m68k.cpu.read_reg(Register::PC),
+            runner.vbl_trampoline
+        );
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(runner.bus.read_long(sp - 4), base + 4);
 
         let active = runner
@@ -23886,8 +23609,8 @@ mod tests {
         runner.bus.write_word(sp + 6, 248);
         runner.bus.write_long(sp + 8, ctrl_handle);
         runner.bus.write_word(sp + 12, 0xBEEF);
-        runner.cpu.write_reg(Register::PC, trap_pc);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let (_steps, running) = runner.run_steps(20, None);
 
@@ -23907,8 +23630,8 @@ mod tests {
             let proc_addr = 0x0001_1000u32;
 
             runner.bus.write_word(base, 0xA9EA); // _Pack3
-            runner.cpu.write_reg(Register::PC, base);
-            runner.cpu.write_reg(Register::A7, sp);
+            runner.m68k.cpu.write_reg(Register::PC, base);
+            runner.m68k.cpu.write_reg(Register::A7, sp);
             runner.bus.write_word(sp, selector);
             runner.bus.write_long(sp + 2, reply_ptr);
             if selector == 0x0002 {
@@ -23929,8 +23652,8 @@ mod tests {
             assert!(running);
             assert_eq!(steps, 1);
             assert!(runner.dispatcher.is_standard_file_get_tracking());
-            assert_eq!(runner.cpu.read_reg(Register::PC), base);
-            assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
             assert!(runner.active_interrupt_callback.is_none());
             assert_eq!(
                 runner.dispatcher.modeless_dialog_draw_proc_queue.len(),
@@ -23942,7 +23665,7 @@ mod tests {
             assert!(idle_running);
             assert_eq!(idle_steps, 3);
             assert_eq!(runner.guest_tick(), 3);
-            assert_eq!(runner.cpu.read_reg(Register::PC), base);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base);
 
             runner.dispatcher.modeless_dialog_draw_proc_queue.clear();
             runner
@@ -23961,8 +23684,8 @@ mod tests {
             assert!(cancel_running);
             assert_eq!(cancel_steps, 1);
             assert!(!runner.dispatcher.is_standard_file_get_tracking());
-            assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
-            assert_eq!(runner.cpu.read_reg(Register::A7), sp + pop_total);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 2);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + pop_total);
             assert_eq!(runner.bus.read_byte(reply_ptr), 0);
         }
     }
@@ -23975,8 +23698,8 @@ mod tests {
         let proc_addr = 0x0001_1000u32;
         runner.bus.write_word(base, 0xA991); // _ModalDialog
         runner.bus.write_word(proc_addr, 0x4E56); // plausible userItem draw proc
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         let mut tracking = dialog_tracking_for_test(0, 0);
         tracking.draw_proc_queue.push_back((proc_addr, 1));
         tracking.draw_procs_done = false;
@@ -23994,7 +23717,7 @@ mod tests {
                 ..
             })
         ));
-        assert_ne!(runner.cpu.read_reg(Register::PC), base);
+        assert_ne!(runner.m68k.cpu.read_reg(Register::PC), base);
     }
 
     #[test]
@@ -24004,8 +23727,8 @@ mod tests {
         let sp = 0x0010_0000u32;
 
         runner.bus.write_word(base, 0xA991); // _ModalDialog
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         let mut tracking = dialog_tracking_for_test(0, 0);
         tracking.flash_remaining = 6;
         tracking.flash_delay = 3;
@@ -24038,11 +23761,11 @@ mod tests {
                 active.resume_sp
             )),
             runner.deferred_tracking_refire_pc,
-            runner.cpu.read_reg(Register::PC),
-            runner.cpu.read_reg(Register::A7),
+            runner.m68k.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::A7),
         );
         assert!(runner.deferred_tracking_refire_pc.is_none());
-        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base);
     }
 
     #[test]
@@ -24050,8 +23773,8 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         runner.bus.write_word(base, 0xA991); // _ModalDialog
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.set_guest_tick_for_test(0);
         runner.set_instructions_per_tick(1_000_000);
@@ -24063,7 +23786,7 @@ mod tests {
         assert_eq!(steps, 1);
         assert_eq!(runner.guest_tick(), 1);
         assert_eq!(runner.tick_budget, runner.instructions_per_tick() as i32);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base);
     }
 
     #[test]
@@ -24071,8 +23794,8 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         runner.bus.write_word(base, 0xA991); // _ModalDialog
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.set_guest_tick_for_test(0);
         runner.set_instructions_per_tick(1_000_000);
@@ -24083,7 +23806,7 @@ mod tests {
         assert!(running);
         assert_eq!(steps, 2);
         assert_eq!(runner.guest_tick(), 2);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base);
     }
 
     #[test]
@@ -24091,8 +23814,8 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         runner.bus.write_word(base, 0xA991); // _ModalDialog
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 182);
         runner.set_guest_tick_for_test(182);
         runner.frozen_ticks = Some(182);
@@ -24115,8 +23838,8 @@ mod tests {
         let filter_proc = 0x0001_1000u32;
         runner.bus.write_word(base, 0xA991); // _ModalDialog
         runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.set_guest_tick_for_test(0);
         runner.dispatcher.dialog_tracking =
@@ -24127,7 +23850,7 @@ mod tests {
         assert!(running);
         assert_eq!(steps, 1);
         assert_eq!(runner.guest_tick(), 0);
-        assert_ne!(runner.cpu.read_reg(Register::PC), base);
+        assert_ne!(runner.m68k.cpu.read_reg(Register::PC), base);
         assert!(!runner.has_pending_sound_work());
         assert!(
             !runner
@@ -24146,8 +23869,8 @@ mod tests {
         let filter_proc = 0x0001_1000u32;
         runner.bus.write_word(base, 0xA991); // _ModalDialog
         runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.set_guest_tick_for_test(0);
         runner
@@ -24169,7 +23892,7 @@ mod tests {
         assert!(running);
         assert_eq!(steps, 1);
         assert_eq!(runner.guest_tick(), 0);
-        assert_ne!(runner.cpu.read_reg(Register::PC), base);
+        assert_ne!(runner.m68k.cpu.read_reg(Register::PC), base);
         assert!(
             !runner
                 .dispatcher
@@ -24187,8 +23910,8 @@ mod tests {
         let filter_proc = 0x0001_1000u32;
         runner.bus.write_word(base, 0xA991); // _ModalDialog
         runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.set_guest_tick_for_test(0);
         runner
@@ -24218,7 +23941,7 @@ mod tests {
 
         assert!(running);
         assert_eq!(steps, 1);
-        assert_ne!(runner.cpu.read_reg(Register::PC), base);
+        assert_ne!(runner.m68k.cpu.read_reg(Register::PC), base);
         let event_ptr = runner.dialog_filter_event;
         assert_eq!(runner.bus.read_word(event_ptr), 1);
         assert_eq!(runner.bus.read_word(event_ptr + 10), 12);
@@ -24286,7 +24009,7 @@ mod tests {
         let window_ptr = runner.bus.alloc(170);
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             window_ptr,
             0,
             100,
@@ -24329,8 +24052,8 @@ mod tests {
 
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
-        runner.cpu.write_reg(Register::D3, 500);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::D3, 500);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         let pc_after_trap = base + 4;
         let mut count = 0usize;
         runner.try_tickcount_spin_fastfwd(pc_after_trap, None, &mut count);
@@ -24347,8 +24070,8 @@ mod tests {
         runner.bus.write_word(base, 0x594F); // SUBQ.W #4, A7 (reserve LONGINT slot)
         runner.bus.write_word(base + 2, 0xA975); // _TickCount
         runner.bus.write_word(base + 4, 0x4E71); // NOP (sentinel)
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.set_guest_tick_for_test(0x1234_5678);
         runner.bus.write_long(0x016A, 0x1234_5678);
         runner.set_instructions_per_tick(1_000_000);
@@ -24370,8 +24093,8 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         runner.bus.write_word(base, 0xA9F4); // _ExitToShell
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
 
         let (_steps, running) = runner.run_steps(1, None);
 
@@ -24391,8 +24114,8 @@ mod tests {
         let sp = 0x0010_0000u32;
         runner.bus.write_word(base, 0xAFFE);
         runner.bus.write_word(base + 2, 0x4E71);
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
 
         let (steps, running) = runner.run_steps(1, None);
 
@@ -24400,7 +24123,7 @@ mod tests {
         assert!(
             !running,
             "an unclassified HLE row must fail closed (pc=${:08X})",
-            runner.cpu.read_reg(Register::PC)
+            runner.m68k.cpu.read_reg(Register::PC)
         );
         assert!(runner.is_halted());
         assert_eq!(runner.halted_pc(), Some(base));
@@ -24428,8 +24151,8 @@ mod tests {
             .dispatcher
             .queue_pending_launch_application("Apps/Register Helper", true);
         runner.bus.write_word(base, 0xA9F4); // _ExitToShell
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
 
         let (_steps, running) = runner.run_steps(1, None);
 
@@ -24447,8 +24170,11 @@ mod tests {
     #[test]
     fn halted_by_exit_to_shell_rejects_invalid_pc_halts() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner.cpu.write_reg(Register::PC, runner.bus.ram_size());
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner
+            .m68k
+            .cpu
+            .write_reg(Register::PC, runner.bus.ram_size());
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
 
         let (_steps, running) = runner.run_steps(1, None);
 
@@ -24469,8 +24195,8 @@ mod tests {
         let rect = 0x0020_0000u32;
 
         runner.bus.write_word(base, 0xA8AD); // _PtInRect
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.set_instructions_per_tick(1_000_000);
 
         runner.bus.write_long(sp, rect);
@@ -24491,8 +24217,8 @@ mod tests {
             "runner should not halt on canonical PtInRect dispatch"
         );
         assert_eq!(steps, 1);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 8);
         assert_eq!(runner.bus.read_word(sp + 8), 0x0100);
         assert_eq!(runner.dispatcher.trap_count - before_traps, 1);
         assert_eq!(runner.dispatcher.game_trap_count - before_game, 1);
@@ -24506,8 +24232,8 @@ mod tests {
         let event = 0x0020_0000u32;
 
         runner.bus.write_word(base, 0xA971); // _EventAvail
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.set_instructions_per_tick(1_000_000);
         runner.bus.write_long(sp, event);
         runner.bus.write_word(sp + 4, 0x0008); // keyDownMask
@@ -24523,8 +24249,8 @@ mod tests {
             "runner should not halt on canonical EventAvail dispatch"
         );
         assert_eq!(steps, 1);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
-        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 6);
         assert_eq!(runner.bus.read_word(sp + 6), 0xFFFF);
         assert_eq!(runner.bus.read_word(event), 3);
         assert_eq!(
@@ -24553,8 +24279,8 @@ mod tests {
             runner.bus.write_word(program_start + offset, 0x4E71);
         }
 
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.set_instructions_per_tick(5);
 
@@ -24578,8 +24304,8 @@ mod tests {
             runner.bus.write_word(program_start + offset, 0x4E71);
         }
 
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.set_instructions_per_tick(4);
 
@@ -24596,8 +24322,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 3;
 
@@ -24619,8 +24345,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.set_wait_sleep_cap_in_headless(Some(0));
         runner.dispatcher.pending_wait_sleep_ticks = 60;
@@ -24643,8 +24369,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.set_wait_sleep_cap_in_headless(Some(1));
         runner.dispatcher.pending_wait_sleep_ticks = 60;
@@ -24670,8 +24396,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 60;
 
@@ -24694,8 +24420,8 @@ mod tests {
         let result_ptr = 0x0020_0020;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.bus.write_word(result_ptr, 0);
         runner.dispatcher.set_sent_open_app_event_for_test(true);
@@ -24818,8 +24544,8 @@ mod tests {
         let result_ptr = 0x0020_0020;
 
         runner.bus.write_word(program_start, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         runner.tick_budget = 0;
@@ -24942,8 +24668,8 @@ mod tests {
         let result_ptr = 0x0020_0020;
 
         runner.bus.write_word(stale_pc, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, stale_pc);
-        runner.cpu.write_reg(Register::A7, parked_sp);
+        runner.m68k.cpu.write_reg(Register::PC, stale_pc);
+        runner.m68k.cpu.write_reg(Register::A7, parked_sp);
         runner.bus.write_word(result_ptr, 0xA582);
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
@@ -24987,8 +24713,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         runner.tick_budget = 0;
@@ -25015,8 +24741,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
         runner.tick_budget = 0;
@@ -25044,8 +24770,8 @@ mod tests {
         let dialog_ptr = 0x0020_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.dialog_visible_snapshots.insert(
             dialog_ptr,
@@ -25074,8 +24800,8 @@ mod tests {
         let dialog_ptr = 0x0020_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.set_wait_sleep_cap_in_headless(Some(0));
         runner.dispatcher.dialog_visible_snapshots.insert(
@@ -25105,8 +24831,8 @@ mod tests {
         let dialog_ptr = 0x0020_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.dialog_visible_snapshots.insert(
             dialog_ptr,
@@ -25135,8 +24861,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 3;
 
@@ -25154,8 +24880,8 @@ mod tests {
         let program_start = 0x0001_0000;
 
         runner.bus.write_word(program_start, 0x4E71);
-        runner.cpu.write_reg(Register::PC, program_start);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, program_start);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.pending_delay_ticks = 3;
 
@@ -25164,7 +24890,7 @@ mod tests {
         assert_eq!(steps, 1);
         assert_eq!(runner.bus.read_long(0x016A), 3);
         assert_eq!(runner.dispatcher.pending_delay_ticks, 0);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 3);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 3);
     }
 
     #[test]
@@ -25188,8 +24914,8 @@ mod tests {
         );
         let filter_proc = 0x0004_2000u32;
         runner.bus.write_word(filter_proc, 0x4E56);
-        runner.cpu.write_reg(Register::PC, 0x0001_0000);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.dispatcher.dialog_tracking =
             Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
 
@@ -25212,8 +24938,8 @@ mod tests {
         let filter_proc = 0x0004_2000u32;
 
         runner.bus.write_word(filter_proc, 0x4E56);
-        runner.cpu.write_reg(Register::PC, 0x0001_0000);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.dispatcher.set_mouse_position(222, 333);
         runner.dispatcher.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
             dialog_ptr: 0x0020_0000,
@@ -25267,11 +24993,11 @@ mod tests {
         let dialog_ptr = runner.bus.alloc(170);
 
         runner.bus.write_word(filter_proc, 0x4E56);
-        runner.cpu.write_reg(Register::PC, 0x0001_0000);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             dialog_ptr,
             0,
             100,
@@ -25309,13 +25035,13 @@ mod tests {
         let dialog_ptr = runner.bus.alloc(170);
 
         runner.bus.write_word(filter_proc, 0x4E56);
-        runner.cpu.write_reg(Register::PC, 0x0001_0000);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.bus.write_long(0x016A, 17);
         runner.set_guest_tick_for_test(17);
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             dialog_ptr,
             0,
             100,
@@ -25345,8 +25071,8 @@ mod tests {
         assert_eq!(runner.bus.read_long(event_ptr + 2), dialog_ptr);
 
         runner.active_interrupt_callback = None;
-        runner.cpu.write_reg(Register::PC, 0x0001_0000);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner
             .dispatcher
             .dialog_tracking
@@ -25406,12 +25132,12 @@ mod tests {
         let dialog_ptr = runner.bus.alloc(170);
 
         runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             main_port,
             0,
             0,
@@ -25427,7 +25153,7 @@ mod tests {
         );
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             dialog_ptr,
             0,
             120,
@@ -25441,9 +25167,12 @@ mod tests {
             false,
             0,
         );
-        runner
-            .dispatcher
-            .set_current_port_state(&mut runner.bus, &mut runner.cpu, main_port, None);
+        runner.dispatcher.set_current_port_state(
+            &mut runner.bus,
+            &mut runner.m68k.cpu,
+            main_port,
+            None,
+        );
         let filter_proc = runner.bus.alloc(8);
         runner.bus.write_word(filter_proc, 0x4E56); // LINK A6, valid filter entry
 
@@ -25466,8 +25195,8 @@ mod tests {
             None
         );
 
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         let (_steps, running) = runner.run_steps(1, None);
 
         assert!(running);
@@ -25486,8 +25215,8 @@ mod tests {
 
         // Keep foreground execution stable after the callback returns.
         runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         // MPW-style proc prologue shape. It returns with plain RTS, leaving
         // callback parameters on the stack; the trampoline must restore A7.
@@ -25545,8 +25274,8 @@ mod tests {
             runner.active_interrupt_callback.is_none(),
             "dialog callback should have resumed foreground code"
         );
-        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]
@@ -25560,8 +25289,8 @@ mod tests {
         // Model an application loop that does not immediately call
         // ModalDialog again after the first injected callback returns.
         runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         for proc_addr in [proc_1, proc_2] {
             runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
@@ -25586,8 +25315,8 @@ mod tests {
         assert!(tracking.draw_procs_done);
         assert!(runner.active_interrupt_callback.is_none());
         assert!(runner.deferred_tracking_refire_pc.is_none());
-        assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
-        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), interrupted_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
     }
 
     #[test]
@@ -25601,12 +25330,12 @@ mod tests {
         let dialog_ptr = runner.bus.alloc(170);
 
         runner.bus.write_word(interrupted_pc, 0x60FE);
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.write_reg(Register::A5, a5);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::A5, a5);
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             dialog_ptr,
             0,
             120,
@@ -25651,11 +25380,11 @@ mod tests {
 
         runner.bus.write_word(base, 0xA861); // _Random
         runner.bus.write_word(base + 2, 0x60FE); // BRA.S *-0
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             dialog_ptr,
             0,
             120,
@@ -25701,12 +25430,12 @@ mod tests {
         let item_no = 5i16;
 
         runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             main_port,
             0,
             0,
@@ -25722,7 +25451,7 @@ mod tests {
         );
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             dialog_ptr,
             0,
             120,
@@ -25736,9 +25465,12 @@ mod tests {
             false,
             0,
         );
-        runner
-            .dispatcher
-            .set_current_port_state(&mut runner.bus, &mut runner.cpu, main_port, None);
+        runner.dispatcher.set_current_port_state(
+            &mut runner.bus,
+            &mut runner.m68k.cpu,
+            main_port,
+            None,
+        );
 
         runner.bus.write_word(proc_addr, 0x4E56); // LINK A6,#0
         runner.bus.write_word(proc_addr + 2, 0x0000);
@@ -25808,12 +25540,12 @@ mod tests {
         let clip_rect = 0x0004_2100u32;
 
         runner.bus.write_word(interrupted_pc, 0x60FE);
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
         for port in [dialog_ptr, other_port] {
             runner.dispatcher.init_cgraf_window(
                 &mut runner.bus,
-                &mut runner.cpu,
+                &mut runner.m68k.cpu,
                 port,
                 0,
                 120,
@@ -25830,7 +25562,7 @@ mod tests {
         }
         runner.dispatcher.set_current_port_state(
             &mut runner.bus,
-            &mut runner.cpu,
+            &mut runner.m68k.cpu,
             dialog_ptr,
             None,
         );
@@ -25903,8 +25635,8 @@ mod tests {
         let seen_dialog_addr = 0x0004_3004u32;
 
         runner.bus.write_word(interrupted_pc, 0x60FE); // BRA.S *-0
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
 
         // PROCEDURE MyItem(theWindow: WindowPtr; itemNo: INTEGER);
         // Inside Macintosh Volume I, I-405. MPW Pascal prologues observe
@@ -25969,9 +25701,9 @@ mod tests {
         let task_ptr = 0x0020_2000;
 
         runner.bus.write_word(interrupted_pc, 0x4E71);
-        runner.cpu.write_reg(Register::PC, interrupted_pc);
-        runner.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.cpu.core.set_sr_noint_nosp(0x2000);
+        runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.pending_delay_ticks = 1;
 
@@ -25992,7 +25724,7 @@ mod tests {
         assert_eq!(steps, 1);
         assert_eq!(runner.bus.read_long(0x016A), 1);
         assert_eq!(runner.dispatcher.pending_delay_ticks, 0);
-        assert_eq!(runner.cpu.read_reg(Register::D0), 1);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 1);
         assert!(matches!(
             runner.active_interrupt_callback,
             Some(ActiveInterruptCallback {
@@ -26048,27 +25780,27 @@ mod tests {
         let aline_program = 0x0010_0000;
         runner.bus.write_word(aline_program, 0xA975); // TickCount
         runner.bus.write_word(aline_program + 2, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, aline_program);
-        runner.cpu.write_reg(Register::A7, original_sp);
+        runner.m68k.cpu.write_reg(Register::PC, aline_program);
+        runner.m68k.cpu.write_reg(Register::A7, original_sp);
 
         assert_eq!(runner.run_steps(1, None), (1, true));
         let aline_frame = original_sp - 8;
-        assert_eq!(runner.cpu.read_reg(Register::PC), aline_handler);
-        assert_eq!(runner.cpu.read_reg(Register::A7), aline_frame);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), aline_handler);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), aline_frame);
         assert_eq!(runner.bus.read_long(aline_frame + 2), aline_program);
         assert_eq!(runner.bus.read_word(aline_frame + 6), 0x0028);
         assert_eq!(runner.run_steps(3, None), (3, true));
-        assert_eq!(runner.cpu.read_reg(Register::D6), 0xA10E_0010);
-        assert_eq!(runner.cpu.read_reg(Register::A7), original_sp);
-        assert_eq!(runner.cpu.read_reg(Register::PC), aline_program + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D6), 0xA10E_0010);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), original_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), aline_program + 2);
 
         // Restoring the generated vector re-enables the ordinary HLE path.
         runner.bus.write_long(0x28, defaults[0]);
-        runner.cpu.write_reg(Register::PC, aline_program);
+        runner.m68k.cpu.write_reg(Register::PC, aline_program);
         let trap_count = runner.dispatcher.trap_count;
         assert_eq!(runner.run_steps(1, None), (1, true));
         assert_eq!(runner.dispatcher.trap_count, trap_count + 1);
-        assert_eq!(runner.cpu.read_reg(Register::PC), aline_program + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), aline_program + 2);
 
         // Repeat the same architectural proof for an unsupported F-line word.
         let fline_handler = 0x0010_1100;
@@ -26082,19 +25814,19 @@ mod tests {
         let fline_program = 0x0010_0200;
         runner.bus.write_word(fline_program, 0xF000);
         runner.bus.write_word(fline_program + 2, 0x4E71);
-        runner.cpu.write_reg(Register::PC, fline_program);
-        runner.cpu.write_reg(Register::A7, original_sp);
+        runner.m68k.cpu.write_reg(Register::PC, fline_program);
+        runner.m68k.cpu.write_reg(Register::A7, original_sp);
 
         assert_eq!(runner.run_steps(1, None), (1, true));
         let fline_frame = original_sp - 8;
-        assert_eq!(runner.cpu.read_reg(Register::PC), fline_handler);
-        assert_eq!(runner.cpu.read_reg(Register::A7), fline_frame);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), fline_handler);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), fline_frame);
         assert_eq!(runner.bus.read_long(fline_frame + 2), fline_program);
         assert_eq!(runner.bus.read_word(fline_frame + 6), 0x002C);
         assert_eq!(runner.run_steps(3, None), (3, true));
-        assert_eq!(runner.cpu.read_reg(Register::D5), 0xF11E_0011);
-        assert_eq!(runner.cpu.read_reg(Register::A7), original_sp);
-        assert_eq!(runner.cpu.read_reg(Register::PC), fline_program + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D5), 0xF11E_0011);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), original_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), fline_program + 2);
         runner.bus.write_long(0x2C, defaults[1]);
     }
 
@@ -26117,14 +25849,14 @@ mod tests {
         runner.bus.write_word(program, 0xF280); // FNOP
         runner.bus.write_word(program + 2, 0x0000);
         runner.bus.write_word(program + 4, 0x4E71); // NOP
-        runner.cpu.write_reg(Register::PC, program);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
-        runner.cpu.write_reg(Register::D7, 0x1357_2468);
+        runner.m68k.cpu.write_reg(Register::PC, program);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::D7, 0x1357_2468);
 
         assert_eq!(runner.run_steps(1, None), (1, true));
-        assert_eq!(runner.cpu.read_reg(Register::PC), program + 4);
-        assert_eq!(runner.cpu.read_reg(Register::A7), 0x007F_FFC0);
-        assert_eq!(runner.cpu.read_reg(Register::D7), 0x1357_2468);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), program + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x007F_FFC0);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D7), 0x1357_2468);
     }
 
     /// Running a `DIVU.W D0,D1` with `D0 = 0` must not halt the
@@ -26148,10 +25880,10 @@ mod tests {
         runner.bus.write_word(prog + 2, 0x4E71); // NOP
         runner.bus.write_word(prog + 4, 0x4E71); // NOP
 
-        runner.cpu.write_reg(Register::PC, prog);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
-        runner.cpu.write_reg(Register::D0, 0);
-        runner.cpu.write_reg(Register::D1, 100);
+        runner.m68k.cpu.write_reg(Register::PC, prog);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::D0, 0);
+        runner.m68k.cpu.write_reg(Register::D1, 100);
 
         // 1 step: DIVU.W traps, vectors to $00FE.
         // 2nd step: RTE at $00FE pops SR/PC, returns past DIVU.
@@ -26161,12 +25893,12 @@ mod tests {
         assert!(running, "runner must not halt on zero-divide");
         assert_eq!(steps, 3);
         assert_eq!(
-            runner.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::PC),
             prog + 4,
             "PC must advance past the DIVU+NOP without re-entering the trap"
         );
         assert_eq!(
-            runner.cpu.read_reg(Register::D1),
+            runner.m68k.cpu.read_reg(Register::D1),
             100,
             "DIVU by zero must leave the destination register unchanged"
         );
@@ -26190,9 +25922,9 @@ mod tests {
         runner.bus.write_word(prog + 2, 0x0005); // imm = 5
         runner.bus.write_word(prog + 4, 0x4E71); // NOP
 
-        runner.cpu.write_reg(Register::PC, prog);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
-        runner.cpu.write_reg(Register::D0, 100);
+        runner.m68k.cpu.write_reg(Register::PC, prog);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.write_reg(Register::D0, 100);
 
         // 1 step: CHK fires (100 > 5), vectors to $00FE.
         // 2nd step: RTE pops SR/PC, returns past CHK.
@@ -26202,11 +25934,11 @@ mod tests {
         assert!(running, "runner must not halt on CHK bounds violation");
         assert_eq!(steps, 3);
         assert_eq!(
-            runner.cpu.read_reg(Register::PC),
+            runner.m68k.cpu.read_reg(Register::PC),
             prog + 6,
             "PC must advance past CHK (4 bytes) + NOP (2 bytes)"
         );
-        assert_eq!(runner.cpu.read_reg(Register::D0), 100);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 100);
     }
 
     /// TRAPV (vector 7) shares the `$00FE` RTE stub. Pre-set the V
@@ -26224,16 +25956,16 @@ mod tests {
         runner.bus.write_word(prog, 0x4E76); // TRAPV
         runner.bus.write_word(prog + 2, 0x4E71); // NOP
 
-        runner.cpu.write_reg(Register::PC, prog);
-        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
-        runner.cpu.core.set_ccr(0x02); // V flag set
+        runner.m68k.cpu.write_reg(Register::PC, prog);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.m68k.cpu.core.set_ccr(0x02); // V flag set
 
         // 1: TRAPV traps; 2: RTE; 3: NOP.
         let (steps, running) = runner.run_steps(3, None);
 
         assert!(running, "runner must not halt on TRAPV");
         assert_eq!(steps, 3);
-        assert_eq!(runner.cpu.read_reg(Register::PC), prog + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), prog + 4);
     }
 
     /// `set_mouse_position` does NOT modify MBState ($0172) — it's a
