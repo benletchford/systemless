@@ -188,22 +188,45 @@ manipulate a 68K program counter directly.
 
 ## Migration sequence
 
-1. Keep the shape guardrail green and lower its baselines only when debt is
-   removed. New fields or direct native-call sites are regressions.
-2. Finish the five walking slices end to end, including paired-ISA and nested
-   cross-ISA tests, before moving broad manager families.
-3. Introduce the task-aware execution kernel and typed effect boundary; move
-   callback scheduling and parked CPU contexts behind it.
-4. Replace the flat-RAM/foreign-sparse overlay with one address router that
-   implements both CPU bus contracts.
-5. Move manager state in dependency order: Memory/Trap/Clock, Event/Input,
-   Menu/Window/Control/Dialog/TextEdit, QuickDraw, File/Resource, Sound/Timers,
-   then AppleEvents/QD3D.
-6. Reduce `TrapDispatcher` and `PpcLoadedApp` to ABI/CPU edges, delete
-   `PpcToolboxStartupState`, and replace `ProcessContext` attachments with an
-   explicit `MacintoshProcess` service graph.
-7. Convert host integrations to semantic-effect consumers and remove every
-   branch that selects guest behavior from the active ISA.
+1. Keep exact named owner inventories and compatibility-boundary counts green.
+   Remove stale allowances in the same patch as the corresponding code.
+2. Establish a small process construction/service boundary around the existing
+   authorities. Preserve the implemented address router, low-memory clock and
+   ordinary NewHandle policy; they are foundations, not future rewrites.
+3. Finish task/context ownership and semantic effects before migrating managers
+   that must suspend for guest execution. Trap-table startup cleanup can proceed
+   independently, retaining provenance-aware live routing.
+4. Finish MenuSelect/MDEF through that execution boundary, then converge CopyBits
+   including its custom bitsProc and picture-recording behavior.
+5. Move manager operations in dependency order: remaining Memory/Trap/Clock,
+   Event/Input, UI managers, QuickDraw/color, File/Resource, Sound/Timers, then
+   AppleEvents/QD3D and the remaining process-owned native services.
+6. Reduce TrapDispatcher and PpcLoadedApp to ABI/CPU edges, delete
+   PpcToolboxStartupState, and finish replacing ProcessContext attachments with
+   explicit process services.
+7. Convert host integrations to service snapshots/effects. Retain engine-specific
+   pacing and diagnostics where they do not select guest semantics.
+
+### Executable debt accounting
+
+The shape check inventories every field name in the four compatibility owners,
+including runner and dispatcher fields whose total count previously allowed
+same-count replacement. Exact baselines require both additions and removals to
+be reviewed; a removal without a baseline reduction fails instead of leaving
+an allowance for later reintroduction.
+
+Additional checked inventories cover adapter effect conversions, current-task
+rewriting, depth-based context queries and named attachment/projection methods.
+Method inventories include the source path and preserve repeated method names.
+The lexical counters include test code, so migration tests must also stop
+constructing the retired protocol. The existing CI guardrail command also runs its Python 3 failure fixtures and
+exercise growth, removal, replacement, movement and missing baseline entries.
+
+These checks identify known debt; they are not a proof of semantic unification.
+An operation is still incomplete while its ABI paths use different manager
+policy, even if it introduces no new fields or counted syntax. The broader
+per-operation inventory and per-field scope classification must continue as the
+manager families move. Legitimate engine fields do not have a zero target.
 
 ## Executable milestones
 
