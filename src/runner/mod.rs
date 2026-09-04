@@ -26,6 +26,7 @@ use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 pub use crate::window_manager::WindowSnapshot;
+pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
 use crate::{Error, Result};
 use m68k::BatchExit;
 use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
@@ -2761,6 +2762,18 @@ impl FixtureRunner {
         }
     }
 
+    /// Inspect caller-created TextEdit records and the process's private scrap.
+    #[doc(hidden)]
+    pub fn text_edit_snapshot(&mut self) -> TextEditManagerSnapshot {
+        if let Some(app) = self.ppc_app.as_mut() {
+            let handles = app.scrap.text_edit.handles();
+            crate::text_edit::snapshot_guest_records(&handles, &mut |addr| app.memory.read_u8(addr))
+        } else {
+            let handles = self.dispatcher.textedit_states.handles();
+            crate::text_edit::snapshot_guest_records(&handles, &mut |addr| Some(self.bus.read_byte(addr)))
+        }
+    }
+
     /// Inspect logical list contents and the visibility/highlight bytes of
     /// their guest scrollbar controls on either CPU architecture.
     #[doc(hidden)]
@@ -3126,6 +3139,7 @@ impl FixtureRunner {
             || self.dispatcher.is_window_tracking()
             || self.dispatcher.is_grow_window_tracking()
             || self.dispatcher.is_region_tracking()
+            || self.dispatcher.textedit_states.click_tracking.is_some()
     }
 
     /// Advance the guest tick counter by one, firing VBL and timer tasks.

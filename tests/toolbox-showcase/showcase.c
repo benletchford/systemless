@@ -594,9 +594,10 @@ static short gPopupLastSelected = 0;
 static Boolean gPopupOpened = false;
 static Boolean gPopupRestored = false;
 
+/* MPW maps \r to LF; TextEdit requires explicit Macintosh CR bytes. */
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
-    "selection highlighting, and clipboard scrap operations.\r\r"
+    "selection highlighting, and clipboard scrap operations.\015\015"
     "Click to move the insertion point or drag across characters to select text.";
 
 static const char kTECalloutText[] =
@@ -1959,7 +1960,9 @@ static void DrawTextEditPage(void)
         DrawString("\p]");
 
         MoveTo(358, 296);
-        DrawString("\pFont: Geneva | Size: 9pt | Active: Yes");
+        DrawString("\pPrivate scrap bytes: ");
+        NumToString(TEGetScrapLength(), numStr);
+        DrawString(numStr);
     }
 
     /* Footer Note */

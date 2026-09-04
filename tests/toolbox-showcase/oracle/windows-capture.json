@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "b88553c2fd06011752b732d2103a6ae194e65bf9f52d3b5bcce52acf27ee7d7e",
+  "fixture_sha256": "c1a9be62c7d76459503fc9ae05b46e95f9278a68c758650420ca2e960eab43ef",
   "scenario": "oracle/windows.json",
   "scenario_sha256": "0e574d9865fff550b2ff5103ecc4dd499f81bf8fa2cba534852e1c71504c4189",
   "capture_date": "2026-09-05",
@@ -39,31 +39,31 @@
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/03-windows.png",
-          "sha256": "880e94fcd9b7c0342ef6d6e3debabb97735e96c4b8cece8f6e97d30923e21a43"
+          "sha256": "b07e5278754028bfb6642fec20b3e3c9c21d35623fa4f00715ced7faac88ec9b"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-aux-activated.png",
-          "sha256": "9dac917c5c78fe462c5bf077c39c6f3dc698d17f491ddbbb2b0d6769f11bc219"
+          "sha256": "5552998cdcbe933e0d003bf796a0af3a2107eec3e1004cc565578cc8ac0b0690"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-moved.png",
-          "sha256": "7fd988b8018b238e7e4c4c8c2e54449d1a19d87a414d665b83011bf52046a639"
+          "sha256": "7745d5aade179aad688fd489a3168da6936f06c156a3824affd5c4c750ee0762"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-resized.png",
-          "sha256": "a31d1d2025a3805d84a709064dd734da7af8f3db92b7e502813b39ec993445ba"
+          "sha256": "627eaf1cf463f81de5f566683f6992990c7a2f41f5a726d7403c5190085bb4da"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-hit-test.png",
-          "sha256": "b16444549a88c5882d79f32de017f8f631a820ce3353d635db8de6bbeab3db5a"
+          "sha256": "0bcb3673edd70dc3c42a3182814ab58dff652b6ba366057a6bdac5d28e40d215"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-promoted.png",
-          "sha256": "1fcf122590a76a5206ceaaad368a774f879294be4a1230e6746895c4abf551cf"
+          "sha256": "78def37c5691219a2be4c3029e3666b1470b3b2810746ccb61e2ad015e1d67f7"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-main-promoted.png",
-          "sha256": "f42edfcab46058a601197f7ef97f8ef031e9d580c5bbc1660ea6ca7685e30b3e"
+          "sha256": "b34d0ef0cc9598ac73efb50d96127d40ed28fddea1c42424debe05659d30fb99"
         }
       ]
     },
@@ -78,31 +78,31 @@
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/03-windows.png",
-          "sha256": "de708b93d810ffe38fedf5b8ac27cbcb1d82534b0a99de7592b6edbfb373682a"
+          "sha256": "8c5fafcc569dfd0742207e3767dfcfd493f40c12eef1d798222fd92b366fb3c8"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-aux-activated.png",
-          "sha256": "96f4620480164cfb4ab897b9ddd3bca9b6d3a12e92c543dfa577fac575219ed4"
+          "sha256": "47ba666e88ac4dfb4f6453b8ba3097ae01fbf3565291ab2097447d764113fcb6"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-moved.png",
-          "sha256": "79dce93540ccca9f93975694891174c585be09cd64901d187d901e27d966a469"
+          "sha256": "be8e9f4b53a8d2f222a35036202a913e56ec835b50e7ef6ed7d79ec732979a60"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-resized.png",
-          "sha256": "ad150fc9b84007d6d7293b9a7ec4a81d10bb49e04dddf534841400f4d0481103"
+          "sha256": "df9fc2440adb3db050199da2970d96452d4bc2c2ae9a5dd7d62869b706b08ba5"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-hit-test.png",
-          "sha256": "81e06fc5b8c0e00881a655e0303330db53a9aef1eaeb8f293270bd5de9a34e64"
+          "sha256": "514e4c8795a4717baaada4bc0367f067d96e4fed3fd50c71e4462af24b46fa92"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-promoted.png",
-          "sha256": "b4538b6096b5d6b1f7c96fbb9b1603c2badd528077e0ebc8487b6c422a377cd7"
+          "sha256": "b318b4037a0d8d4bdcfb9bd70b3ddb129edc15d433ec6dd79cf06676bb47bed8"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-main-promoted.png",
-          "sha256": "904bde1b33b145098b7883e11ca5771906816dbf40ac3144464d4ea350d7f011"
+          "sha256": "1ab18fa2af90d50cc860f28f3dda8004ead39158da3f4868eaf150d85f245c7d"
         }
       ]
     }

@@ -1550,7 +1550,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn window_tracking_button_down(&self, bus: &MacMemoryBus) -> bool {
+    pub(super) fn window_tracking_button_down(&self, bus: &MacMemoryBus) -> bool {
         // DragWindow owns the mouse until release. MBState is the classic
         // low-memory hardware mirror (0=down, $80=up). Host input is
         // authoritative; a low-memory down state corroborates it only while
