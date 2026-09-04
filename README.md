@@ -101,12 +101,6 @@ running the same interaction sequence through both slices and requiring
 identical semantic state and rendered checkpoints. Mixed Mode transitions must
 not copy or reconcile process-visible state, just as original software expects.
 
-The ownership laws, operation ledger, migration order, and completion gates are
-recorded in
-[`docs/architecture/unified-runtime-migration.md`](docs/architecture/unified-runtime-migration.md).
-That contract distinguishes the intended single-process architecture from
-temporary compatibility projections retained during the migration.
-
 ```text
                          APPLICATION
                               │
