@@ -16254,18 +16254,8 @@ impl super::TrapDispatcher {
                                 bus.write_long(thread_made, 0);
                             }
                             -50
-                        } else if !self
-                            .guest_calls
-                            .register_task(ExecutionTaskId::from_thread_id(
-                                self.next_cooperative_thread_id,
-                            ))
-                        {
-                            bus.write_long(thread_made, 0);
-                            -108
-                        } else {
-                            let thread_id = self.next_cooperative_thread_id;
-                            self.next_cooperative_thread_id =
-                                self.next_cooperative_thread_id.saturating_add(1);
+                        } else if let Some(task) = self.guest_calls.create_task() {
+                            let thread_id = task.thread_id();
 
                             let stack_size = if stack_size == 0 {
                                 self.cooperative_thread_stack_size
@@ -16308,6 +16298,9 @@ impl super::TrapDispatcher {
                             );
                             bus.write_long(thread_made, thread_id);
                             0
+                        } else {
+                            bus.write_long(thread_made, 0);
+                            -108
                         }
                     }
                     // CreateThreadPool(threadStyle, numToCreate, stackSize)
@@ -24240,7 +24233,10 @@ mod tests {
             bus.write_word(sp, 0x002C);
             bus.write_long(sp + 2, list_handle);
             bus.write_word(sp + 6, if draw { 0x0100 } else { 0 });
-            assert!(disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus).unwrap().is_ok());
+            assert!(disp
+                .dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
             assert_eq!(bus.read_byte(v_scroll_ptr + 16), 255);
             assert_eq!(disp.list_states[&list_handle].draw_enabled, draw);
         }
@@ -27427,6 +27423,36 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp);
         assert_eq!(bus.read_word(sp), (-50i16) as u16);
         assert_eq!(disp.guest_calls.critical_depth(), 0);
+    }
+
+    #[test]
+    fn threaddispatch_newthread_uses_the_adopted_execution_namespace() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let process = crate::guest_call::SharedGuestCallStack::default();
+        assert!(process.register_task(ExecutionTaskId::from_thread_id(40)));
+        disp.guest_calls.attach_to(&process);
+        let thread_made = bus.alloc(4);
+        for expected in [41, 43] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, thread_made);
+            bus.write_long(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 8, 1); // kNewSuspend
+            bus.write_long(TEST_SP + 12, 4096);
+            bus.write_long(TEST_SP + 16, 0);
+            bus.write_long(TEST_SP + 20, 0x0004_2000);
+            bus.write_long(TEST_SP + 24, 1);
+            cpu.write_reg(Register::D0, 0x0E03);
+            disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(bus.read_long(thread_made), expected);
+            assert!(process
+                .cooperative_context(ExecutionTaskId::from_thread_id(expected))
+                .is_some());
+            // Another creator shares the owner's namespace between classic calls.
+            assert_eq!(process.create_task().unwrap().thread_id(), expected + 1);
+        }
     }
 
     #[test]

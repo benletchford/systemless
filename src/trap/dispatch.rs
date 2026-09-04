@@ -1488,8 +1488,6 @@ pub struct TrapDispatcher {
     /// on the zero-request local path is allowed before init in the baked
     /// fixture.
     pub(crate) ppc_initialized: bool,
-    /// Next guest-visible ThreadID. IDs 1 and 2 are reserved by Threads.h.
-    pub(crate) next_cooperative_thread_id: u32,
     /// Guest trampoline entered when a ThreadEntryProc returns.
     pub(crate) thread_return_trampoline: u32,
     /// Custom `ThreadSchedulerProcPtr` installed by `SetThreadScheduler`.
@@ -3470,7 +3468,6 @@ impl TrapDispatcher {
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
-            next_cooperative_thread_id: 3,
             thread_return_trampoline: 0,
             cooperative_thread_scheduler: 0,
             cooperative_thread_stack_size: DEFAULT_COOPERATIVE_THREAD_STACK_SIZE,
