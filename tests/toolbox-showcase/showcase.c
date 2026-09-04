@@ -953,7 +953,7 @@ static void DrawWindowsPage(void)
  * - Rendering traversal loop (Q3View_StartRendering, Q3InterpolationStyle_Submit, Q3BackfacingStyle_Submit, Q3FillStyle_Submit, Q3Shader_Submit, Q3TriMesh_Submit, Q3View_EndRendering)
  * - Comprehensive resource disposal (Q3Object_Dispose)
  */
-static void RenderQD3DScene(WindowPtr window)
+static Boolean RenderQD3DScene(WindowPtr window)
 {
     TQ3DrawContextObject drawContext = nil;
     TQ3CameraObject camera = nil;
@@ -973,13 +973,16 @@ static void RenderQD3DScene(WindowPtr window)
     TQ3TriMeshData triMeshData;
     TQ3Point3D points[4];
     TQ3TriMeshTriangleData triangles[4];
-    TQ3ViewStatus viewStatus;
+    TQ3ViewStatus viewStatus = kQ3ViewStatusError;
+    TQ3Status submitted = kQ3Failure;
+    Boolean sceneReady = false;
+    short traversal = 0;
 
     if (Q3Initialize() != kQ3Success) {
-        return;
+        return false;
     }
 
-    /* Bounded 3D Viewport Pane within Section 1 of Drawing Page: local (30, 80, 125, 130) */
+    /* Bounded 3D Viewport Pane within Section 1 of Drawing Page: local (30, 80, 125, 150) */
     macDCData.drawContextData.clearImageMethod = kQ3ClearMethodWithColor;
     macDCData.drawContextData.clearImageColor.a = 1.0f;
     macDCData.drawContextData.clearImageColor.r = 0.12f;
@@ -988,7 +991,7 @@ static void RenderQD3DScene(WindowPtr window)
     macDCData.drawContextData.pane.min.x = 30.0f;
     macDCData.drawContextData.pane.min.y = 80.0f;
     macDCData.drawContextData.pane.max.x = 125.0f;
-    macDCData.drawContextData.pane.max.y = 130.0f;
+    macDCData.drawContextData.pane.max.y = 150.0f;
     macDCData.drawContextData.paneState = kQ3True;
     macDCData.drawContextData.mask.image = nil;
     macDCData.drawContextData.mask.width = 0;
@@ -1020,7 +1023,7 @@ static void RenderQD3DScene(WindowPtr window)
     cameraData.cameraData.viewPort.width = 2.0f;
     cameraData.cameraData.viewPort.height = 2.0f;
     cameraData.fov = 0.85f;
-    cameraData.aspectRatioXToY = 1.0f;
+    cameraData.aspectRatioXToY = 95.0f / 70.0f;
 
     camera = Q3ViewAngleAspectCamera_New(&cameraData);
 
@@ -1056,11 +1059,12 @@ static void RenderQD3DScene(WindowPtr window)
     }
 
     view = Q3View_New();
-    if (view != nil) {
-        if (drawContext != nil) Q3View_SetDrawContext(view, drawContext);
-        if (camera != nil) Q3View_SetCamera(view, camera);
-        if (renderer != nil) Q3View_SetRenderer(view, renderer);
-        if (lightGroup != nil) Q3View_SetLightGroup(view, lightGroup);
+    if (view != nil && drawContext != nil && camera != nil &&
+        renderer != nil && lightGroup != nil) {
+        sceneReady = Q3View_SetDrawContext(view, drawContext) == kQ3Success &&
+            Q3View_SetCamera(view, camera) == kQ3Success &&
+            Q3View_SetRenderer(view, renderer) == kQ3Success &&
+            Q3View_SetLightGroup(view, lightGroup) == kQ3Success;
     }
 
     /* 3D Tetrahedron / Pyramid Model */
@@ -1117,7 +1121,8 @@ static void RenderQD3DScene(WindowPtr window)
     geom = Q3TriMesh_New(&triMeshData);
     shader = Q3PhongIllumination_New();
 
-    if (view != nil && Q3View_StartRendering(view) == kQ3Success) {
+    if (sceneReady && geom != nil && shader != nil && attrSet != nil &&
+        Q3View_StartRendering(view) == kQ3Success) {
         do {
             Q3InterpolationStyle_Submit(kQ3InterpolationStyleVertex, view);
             Q3BackfacingStyle_Submit(kQ3BackfacingStyleBoth, view);
@@ -1125,9 +1130,11 @@ static void RenderQD3DScene(WindowPtr window)
             if (shader != nil) {
                 Q3Shader_Submit(shader, view);
             }
-            Q3TriMesh_Submit(&triMeshData, view);
+            submitted = Q3TriMesh_Submit(&triMeshData, view);
+            traversal++;
             viewStatus = Q3View_EndRendering(view);
-        } while (viewStatus == kQ3ViewStatusRetraverse);
+        } while (viewStatus == kQ3ViewStatusRetraverse &&
+                 submitted == kQ3Success && traversal < 8);
     }
 
     if (geom != nil) Q3Object_Dispose(geom);
@@ -1140,6 +1147,7 @@ static void RenderQD3DScene(WindowPtr window)
     if (drawContext != nil) Q3Object_Dispose(drawContext);
 
     Q3Exit();
+    return submitted == kQ3Success && viewStatus == kQ3ViewStatusDone;
 }
 #endif
 
@@ -1173,16 +1181,37 @@ void DrawDrawingPage(void)
     darkGray.red = darkGray.green = darkGray.blue = 0x5555;
     black.red = black.green = black.blue = 0x0000;
 
-    /* Section 1: architecture-neutral result after the native QD3D submission. */
+    /* Section 1: keep native geometry visible on PowerPC. */
     SetRect(&r, 20, 48, 270, 165);
     DrawBeveledBox(&r, false);
 
 #ifdef SHOWCASE_TARGET_PPC
-    /* Exercise the native pipeline before painting the shared visible result. */
-    RenderQD3DScene(gMainWindow);
-    DrawBeveledBox(&r, false);
-#endif
-
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 62);
+    DrawString("\pNative QuickDraw 3D");
+    TextFace(0);
+    MoveTo(28, 74);
+    DrawString("\pPowerPC rendering / visible output");
+    SetRect(&subRect, 28, 78, 127, 152);
+    DrawBeveledBox(&subRect, true);
+    MoveTo(135, 95);
+    DrawString("\p4 triangles / 4 points");
+    MoveTo(135, 110);
+    DrawString("\pAmbient + directional");
+    MoveTo(135, 125);
+    DrawString("\pPhong shading");
+    if (RenderQD3DScene(gMainWindow)) {
+        RGBForeColor(&black);
+        MoveTo(135, 145);
+        DrawString("\pTraversal complete");
+    } else {
+        RGBForeColor(&black);
+        MoveTo(135, 145);
+        DrawString("\pRender failed");
+    }
+#else
     TextFont(systemFont);
     TextSize(9);
     TextFace(bold);
@@ -1230,6 +1259,8 @@ void DrawDrawingPage(void)
     TextSize(9);
     MoveTo(38, 148);
     DrawString("\pBeveled Facet Lighting (White / Gray)");
+
+#endif
 
     /* Section 2: Polygons & Arcs */
     SetRect(&r, 280, 48, 535, 165);

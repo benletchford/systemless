@@ -22,7 +22,8 @@ test protocol. Its Pages menu selects sixteen interactive views:
 4. Drawing & 3D Bevels exercises polygons, arcs, regions, pictures, icons,
    fonts, styles, and metrics. The PowerPC slice also builds and submits a lit
    QuickDraw 3D TriMesh through a view, camera, renderer, and draw context,
-   before both slices paint the same architecture-neutral visible result.
+   and keeps its rendered scene visible. The 68K slice displays a labelled
+   QuickDraw bevel fallback.
 5. Game Preferences presents a game-style configuration panel with audio
    checkboxes, difficulty and renderer radio groups, a volume scroll bar, and
    action buttons. Its settings stay synchronized with hierarchical menus.
@@ -151,7 +152,8 @@ exact Systemless framebuffer references while performing the same sequence:
    `03-windows-resized.png`, `03-windows-hit-test.png`,
    `03-windows-promoted.png`, and `03-windows-main-promoted.png`.
 4. Choose Drawing & 3D Bevels (item 4), verify representative QuickDraw
-   output, and allow the native PowerPC QuickDraw 3D submission to complete.
+   output, require a completed native PowerPC frame, and compare its visible
+   geometry silhouette with the SheepShaver capture.
 5. Choose Game Preferences (item 5), change its controls, verify the matching
    hierarchical-menu checkmarks, then change menu items and verify the panel.
 6. Open File → Game Options and capture the nested submenu while it is live.
@@ -284,6 +286,17 @@ tracking. The longer menu exceeds the viewport even with the classic system's
 smaller window font; the earlier 39-item menu could fit without scrolling.
 Classic fonts and popup CDEF chrome remain presentation variance.
 
+The Drawing replay is [`oracle/drawing.json`](oracle/drawing.json), with
+capture identities in [`oracle/drawing-capture.json`](oracle/drawing-capture.json).
+The native PowerPC scene is no longer overwritten by the bevel fallback.
+Both Systemless and SheepShaver show the blue geometry against the dark clear
+color; the test requires overlapping geometry silhouettes, allowing small
+rasterization differences at the edges. SheepShaver's lighting gradient is the
+native reference. Systemless currently renders a uniform face when normal
+attributes are absent; [#1398](https://github.com/benletchford/systemless/issues/1398)
+tracks that separate renderer defect. The 68K checkpoint retains its labelled
+bevel and gauge fallback.
+
 The TextEdit replay is [`oracle/textedit.json`](oracle/textedit.json), with
 artifact identities and reviewed native results in
 [`oracle/textedit-capture.json`](oracle/textedit-capture.json). Both classic
@@ -338,8 +351,10 @@ animation behavior are strict comparison points rather than presentation
 variance. Cursor placement can differ between captures. Checkpoints 5 and 6
 use the documented final preference state: Veteran difficulty, full audio,
 QD3D Bevels, and 80% volume. The PowerPC run also submits native QuickDraw 3D
-geometry before the fixture paints the same architecture-neutral visible
-result; classic operating-system presentation remains environment-dependent.
+geometry into a visible pane. Its silhouette and clear color are checked
+against SheepShaver; lighting without explicit normals remains a known
+discrepancy tracked in [#1398](https://github.com/benletchford/systemless/issues/1398).
+Classic operating-system presentation remains environment-dependent.
 
 SheepShaver's oracle display is 32-bit direct color, so its animation checkpoint
 is intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11
@@ -434,7 +449,7 @@ palette, scrolling, and popup-menu checkpoint.
 | 3d. Inspector hit-test | <img src="reference/systemless-ppc/03-windows-hit-test.png" alt="Inspector activated through an exposed hit-test region in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows-hit-test.png" alt="Classic emulator window transition" width="360"> |
 | 3e. Inspector disposed | <img src="reference/systemless-ppc/03-windows-promoted.png" alt="Auxiliary window promoted after closing the inspector in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows-promoted.png" alt="Classic emulator window transition" width="360"> |
 | 3f. Main promoted | <img src="reference/systemless-ppc/03-windows-main-promoted.png" alt="Main window promoted after closing both auxiliary windows in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows-main-promoted.png" alt="Classic emulator window transition" width="360"> |
-| 4. Drawing and QuickDraw 3D | <img src="reference/systemless-ppc/04-drawing.png" alt="Shared QuickDraw drawing result after a native QuickDraw 3D submission in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/04-drawing.png" alt="Shared QuickDraw drawing result after a native QuickDraw 3D submission in SheepShaver" width="360"> |
+| 4. Drawing and QuickDraw 3D | <img src="reference/systemless-ppc/04-drawing.png" alt="Visible native QuickDraw 3D scene in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/04-drawing.png" alt="Visible native QuickDraw 3D scene in SheepShaver" width="360"> |
 | 5. Game preferences | <img src="reference/systemless-ppc/05-preferences.png" alt="Changed game preferences in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/05-preferences.png" alt="Changed game preferences in SheepShaver" width="360"> |
 | 6. Nested menus | <img src="reference/systemless-ppc/06-nested-menus.png" alt="File and nested Game Options menus in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/06-nested-menus.png" alt="File and nested Game Options menus in SheepShaver" width="360"> |
 | 7. Modal dialog | <img src="reference/systemless-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in SheepShaver" width="360"> |

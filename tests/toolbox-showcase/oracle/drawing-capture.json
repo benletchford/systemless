@@ -1,0 +1,59 @@
+{
+  "fixture_sha256": "4c00ad4e6a3ff0a38e972f6fed76a66804572844a27425fff9c7645891bf74a2",
+  "scenario": "oracle/drawing.json",
+  "scenario_sha256": "d7724d3a028ab21f5d73f8ad21fc87db0a53052c80a6706fb5026aadc46008e5",
+  "capture_date": "2026-09-05",
+  "verification": {
+    "powerpc": {
+      "pane_local_rect": [
+        80,
+        30,
+        150,
+        125
+      ],
+      "traversal": "complete",
+      "visible_geometry": true,
+      "native_clear_rgb": [
+        31,
+        41,
+        72
+      ]
+    },
+    "m68k": {
+      "visible_fallback": "raised bevel and sunken gauge"
+    },
+    "lighting_follow_up": "https://github.com/benletchford/systemless/issues/1398"
+  },
+  "runs": [
+    {
+      "emulator": "basilisk",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "checkpoints": [
+        {
+          "file": "reference/basiliskii-68k/04-drawing.png",
+          "sha256": "1f75140efcbd3cf94e1c1a91ed20e0eb381d6a3ce2db09d57419a277b01811f1"
+        }
+      ]
+    },
+    {
+      "emulator": "sheepshaver",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "system": "Mac OS 8.1",
+      "width": 800,
+      "height": 600,
+      "depth": 32,
+      "checkpoints": [
+        {
+          "file": "reference/sheepshaver-ppc/04-drawing.png",
+          "sha256": "45699ac583caea7ea57e1840c34f141b4f08eacf6c1be3b3a21768925b04efa0"
+        }
+      ]
+    }
+  ]
+}

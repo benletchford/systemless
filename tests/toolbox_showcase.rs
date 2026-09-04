@@ -655,13 +655,53 @@ fn assert_drawing_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_le
         "Drawing page 3D bevel highlight was not rendered: rgb=({bev_r}, {bev_g}, {bev_b})"
     );
 
-    // Sunken gauge well green bar at local (110, 175)
-    let [gauge_r, gauge_g, gauge_b] =
-        screen_rgb(runner, (win_top + 110) as u16, (win_left + 175) as u16);
-    assert!(
-        gauge_g > gauge_r.saturating_add(30) && gauge_g > gauge_b.saturating_add(30),
-        "Drawing page sunken gauge bar was not rendered: rgb=({gauge_r}, {gauge_g}, {gauge_b})"
-    );
+    if runner.is_powerpc_app() {
+        let [r, g, b] = screen_rgb(runner, (win_top + 82) as u16, (win_left + 32) as u16);
+        assert!(
+            r < 60 && g < 70 && (40..100).contains(&b),
+            "native QD3D pane must retain its dark clear color: {r},{g},{b}"
+        );
+        let oracle = image::open(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/toolbox-showcase/reference/sheepshaver-ppc/04-drawing.png"),
+        )
+        .expect("native QD3D oracle capture must decode")
+        .to_rgb8();
+        let (width, _, actual) = rendered_rgb(runner);
+        let geometry = |r: u8, g: u8, b: u8| b > 120 && g > 70 && b > r.saturating_add(50);
+        let mut intersection = 0;
+        let mut union = 0;
+        let mut native_pixels = 0;
+        for v in 80..150 {
+            for h in 30..125 {
+                let offset = ((win_top as u32 + v) * width + win_left as u32 + h) as usize * 3;
+                let actual_geometry =
+                    geometry(actual[offset], actual[offset + 1], actual[offset + 2]);
+                let native = oracle.get_pixel(40 + h, 50 + v).0;
+                let native_geometry = geometry(native[0], native[1], native[2]);
+                native_pixels += usize::from(native_geometry);
+                intersection += usize::from(actual_geometry && native_geometry);
+                union += usize::from(actual_geometry || native_geometry);
+            }
+        }
+        assert!(
+            native_pixels > 400,
+            "oracle must contain a substantial rendered face"
+        );
+        // The small face has one-pixel rasterization differences between renderers.
+        assert!(
+            intersection * 100 >= union * 85,
+            "native QD3D silhouette differs: {intersection} shared pixels out of {union}"
+        );
+    } else {
+        // Sunken gauge well green bar at local (110, 175)
+        let [gauge_r, gauge_g, gauge_b] =
+            screen_rgb(runner, (win_top + 110) as u16, (win_left + 175) as u16);
+        assert!(
+            gauge_g > gauge_r.saturating_add(30) && gauge_g > gauge_b.saturating_add(30),
+            "Drawing page sunken gauge bar was not rendered: rgb=({gauge_r}, {gauge_g}, {gauge_b})"
+        );
+    }
 }
 
 fn region_contains_color<F>(
