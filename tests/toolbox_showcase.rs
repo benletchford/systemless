@@ -1240,6 +1240,16 @@ fn test_toolbox_showcase() {
         (31, 39, 422, 602),
     );
     assert_windows_repainted(&mut runner, "initial stacked windows");
+    assert_eq!(
+        screen_rgb(&mut runner, 234, 558),
+        [0, 0, 0],
+        "active zoomDocProc frame must draw its zoom-box edge"
+    );
+    assert_eq!(
+        screen_rgb(&mut runner, 493, 562),
+        [0, 0, 0],
+        "DrawGrowIcon must draw the active window's diagonal size grip"
+    );
 
     // The overlap at (260, 360) must show the front stacked inspector, while
     // these two probes sample each window's unique colored body.  This is an

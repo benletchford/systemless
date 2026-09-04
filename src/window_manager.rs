@@ -45,9 +45,67 @@ pub(crate) fn standard_window_structure_bounds(content: WindowRect) -> WindowRec
 pub(crate) struct StandardWindowChrome {
     pub(crate) background: WindowRect,
     pub(crate) ink: Vec<WindowRect>,
+    pub(crate) zoom_ink: Vec<WindowRect>,
     pub(crate) title_h: i16,
     pub(crate) title_baseline: i16,
     pub(crate) title_clip: WindowRect,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StandardGrowIcon {
+    pub(crate) background: WindowRect,
+    pub(crate) ink: Vec<WindowRect>,
+}
+
+/// Build the standard document WDEF size-box presentation geometry.
+///
+/// `DrawGrowIcon` owns the 15-by-15 lower-right area of the content region.
+/// It always draws the scroll-bar delimiters, erases the size box, and adds
+/// the diagonal grow image only while the window is active.
+/// Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 4-111--4-112.
+pub(crate) fn standard_grow_icon(content: WindowRect, active: bool) -> StandardGrowIcon {
+    let (_, left, bottom, right) = content;
+    let separator_y = bottom.saturating_sub(15);
+    let separator_x = right.saturating_sub(15);
+    let mut ink = vec![
+        (
+            content.0,
+            separator_x,
+            bottom,
+            separator_x.saturating_add(1),
+        ),
+        (
+            separator_y,
+            left.saturating_sub(1),
+            separator_y.saturating_add(1),
+            right.saturating_add(2),
+        ),
+    ];
+
+    if active {
+        // Three parallel diagonals form the classic lower-right size grip.
+        // Express each pixel as a one-pixel rectangle so both CPU adapters
+        // render exactly the same WDEF geometry.
+        for length in [12i16, 8, 4] {
+            for step in 0..length {
+                let y = bottom.saturating_sub(2).saturating_sub(step);
+                let x = right
+                    .saturating_sub(2)
+                    .saturating_sub(length.saturating_sub(1).saturating_sub(step));
+                ink.push((y, x, y.saturating_add(1), x.saturating_add(1)));
+            }
+        }
+    }
+
+    StandardGrowIcon {
+        background: (
+            separator_y.saturating_add(1),
+            separator_x.saturating_add(1),
+            bottom,
+            right,
+        ),
+        ink,
+    }
 }
 
 /// Build the standard document/movable-dialog WDEF presentation geometry.
@@ -63,6 +121,7 @@ pub(crate) fn standard_window_chrome(
     document_proc: bool,
     movable_dialog: bool,
     go_away: bool,
+    zoom_box: bool,
 ) -> StandardWindowChrome {
     let (top, left, bottom, right) = content;
     let tb_top = top.saturating_sub(19).max(menu_bar_height);
@@ -138,9 +197,41 @@ pub(crate) fn standard_window_chrome(
         ]);
     }
 
+    let has_zoom_box = active && document_proc && zoom_box;
+    let mut zoom_ink = Vec::new();
+    if has_zoom_box {
+        // Standard zoom-document WDEFs draw two overlapping rectangles at
+        // the right of the title bar. The surrounding title-bar cell remains
+        // the hit region used by FindWindow and TrackBox.
+        let back_top = tb_top.saturating_add(3);
+        let back_left = right.saturating_sub(17);
+        let front_top = back_top.saturating_add(3);
+        let front_left = back_left.saturating_sub(3);
+        for (box_top, box_left) in [(back_top, back_left), (front_top, front_left)] {
+            let box_bottom = box_top.saturating_add(10);
+            let box_right = box_left.saturating_add(10);
+            zoom_ink.extend([
+                (box_top, box_left, box_top.saturating_add(1), box_right),
+                (box_top, box_left, box_bottom, box_left.saturating_add(1)),
+                (
+                    box_bottom.saturating_sub(1),
+                    box_left,
+                    box_bottom,
+                    box_right,
+                ),
+                (box_top, box_right.saturating_sub(1), box_bottom, box_right),
+            ]);
+        }
+        ink.extend(zoom_ink.iter().copied());
+    }
+
     if active {
         let stripe_left = tb_left.saturating_add(2);
-        let stripe_right = tb_right.saturating_sub(2);
+        let stripe_right = if has_zoom_box {
+            right.saturating_sub(23)
+        } else {
+            tb_right.saturating_sub(2)
+        };
         let stripe_text_left = title_clear_left.saturating_add(2);
         let stripe_text_right = title_clear_right.saturating_sub(2);
         let (close_gap_left, close_gap_right) = if has_close_box {
@@ -195,6 +286,7 @@ pub(crate) fn standard_window_chrome(
     StandardWindowChrome {
         background: (tb_top, tb_left, tb_bottom.saturating_add(1), tb_right),
         ink,
+        zoom_ink,
         title_h,
         title_baseline,
         title_clip: (tb_top, tb_left, tb_bottom.saturating_sub(2), tb_right),
@@ -260,6 +352,7 @@ mod tests {
             true,
             false,
             true,
+            true,
         );
 
         let stripe_rows = chrome
@@ -277,5 +370,21 @@ mod tests {
             standard_window_structure_bounds((49, 40, 420, 600)),
             (30, 39, 422, 602)
         );
+        assert!(
+            chrome.zoom_ink.contains(&(33, 583, 34, 593)),
+            "active zoomDocProc chrome should include the rear zoom-box edge"
+        );
+    }
+
+    #[test]
+    fn standard_grow_icon_erases_the_size_box_and_only_grips_when_active() {
+        let inactive = standard_grow_icon((155, 180, 400, 500), false);
+        assert_eq!(inactive.background, (386, 486, 400, 500));
+        assert_eq!(inactive.ink.len(), 2);
+
+        let active = standard_grow_icon((155, 180, 400, 500), true);
+        assert_eq!(active.background, inactive.background);
+        assert!(active.ink.len() > inactive.ink.len());
+        assert!(active.ink.contains(&(398, 487, 399, 488)));
     }
 }

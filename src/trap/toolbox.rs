@@ -9865,10 +9865,9 @@ impl super::TrapDispatcher {
             // ========== Misc Window/Font/String ==========
 
             // DrawGrowIcon ($A904)
+            // Draws the active size box, or erases it for an inactive window.
             // PROCEDURE DrawGrowIcon(theWindow: WindowPtr);
-            // Draws the grow icon (size box) in the bottom-right corner of the window.
-            // Inside Macintosh Volume I, I-296
-            // DrawGrowIcon ($A904): Draws size-box at window's bottom-right corner per IM:I I-296
+            // Macintosh Toolbox Essentials (1992), pp. 4-111--4-112
             (true, 0x104) => {
                 let sp = cpu.read_reg(Register::A7);
                 let window_ptr = bus.read_long(sp);
@@ -23612,6 +23611,17 @@ mod tests {
         assert!(
             read_screen_pixel_1bpp(&bus, screen_base, row_bytes, 101, sep_y),
             "horizontal delimiter should reach content right+1"
+        );
+
+        bus.write_byte(window_ptr + 111, 0xFF); // WindowRecord.hilited
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window_ptr);
+        let result = disp.dispatch_toolbox(true, 0x104, &mut cpu, &mut bus);
+        assert!(result.is_some(), "active DrawGrowIcon should be handled");
+        assert!(result.unwrap().is_ok(), "active DrawGrowIcon should succeed");
+        assert!(
+            read_screen_pixel_1bpp(&bus, screen_base, row_bytes, 87, 68),
+            "active document window should draw the longest diagonal grip"
         );
     }
 

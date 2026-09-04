@@ -6,8 +6,8 @@ Macintosh fat application. The same `showcase.c` is compiled into a 68K
 the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
 
-The public coverage is tracked by issues #1078, #1081, #1264–#1270, and
-#1338–#1339.
+The public coverage is tracked by issues #1078, #1081, #1264–#1270,
+#1338–#1339, and #1344.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
 test protocol. Its Pages menu selects sixteen interactive views:

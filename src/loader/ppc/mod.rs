@@ -1266,6 +1266,7 @@ pub enum PpcImportDispatcherTarget {
     FlashMenuBar,
     HMGetHelpMenuHandle,
     HiliteMenu,
+    DrawGrowIcon,
     MenuNoop,
     MenuKey,
     MenuChoice,
@@ -14443,9 +14444,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
         ("InterfaceLib", "InvalMenuBar") => PpcImportDispatcherTarget::InvalMenuBar,
-        ("InterfaceLib", "OpenCPicture")
-        | ("InterfaceLib", "DrawGrowIcon")
-        | ("InterfaceLib", "DebugStr") => PpcImportDispatcherTarget::MenuNoop,
+        ("InterfaceLib", "DrawGrowIcon") => PpcImportDispatcherTarget::DrawGrowIcon,
+        ("InterfaceLib", "OpenCPicture") | ("InterfaceLib", "DebugStr") => {
+            PpcImportDispatcherTarget::MenuNoop
+        }
         ("InterfaceLib", "LocalToGlobal") => PpcImportDispatcherTarget::LocalToGlobal,
         ("InterfaceLib", "GlobalToLocal") => PpcImportDispatcherTarget::GlobalToLocal,
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,
@@ -16911,6 +16913,10 @@ fn dispatch_supported_import(
                 MenuColorTable::new(&menu_color_bytes),
                 toolbox_startup.host_menu_bar_hidden,
             );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::DrawGrowIcon => {
+            ppc_draw_grow_icon(memory, gworlds, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
@@ -51799,6 +51805,7 @@ fn ppc_draw_standard_window_frame(
         matches!(proc_id, 0 | 4 | 8 | 12),
         proc_id == 5,
         go_away,
+        matches!(proc_id, 8 | 12),
     );
     let _ = ppc_paint_rect_bounds(
         memory,
@@ -51824,6 +51831,41 @@ fn ppc_draw_standard_window_frame(
             PPC_RGB_BLACK,
             None,
             &title,
+        );
+    }
+}
+
+fn ppc_draw_grow_icon(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], window: u32) {
+    if window == 0 || !matches!(ppc_window_proc_id(memory, window), 0 | 8) {
+        return;
+    }
+    let Some(content) = memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    else {
+        return;
+    };
+    let active = memory
+        .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
+        .unwrap_or(0)
+        != 0;
+    let icon = crate::window_manager::standard_grow_icon(content, active);
+    let _ = ppc_paint_rect_bounds(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        icon.background,
+        PPC_RGB_WHITE,
+        None,
+    );
+    for rect in icon.ink {
+        let _ = ppc_paint_rect_bounds(
+            memory,
+            gworlds,
+            PPC_MAIN_GWORLD,
+            rect,
+            PPC_RGB_BLACK,
+            None,
         );
     }
 }
