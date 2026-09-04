@@ -11,7 +11,7 @@
 //! consume a different continuation.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use crate::guest_procedure::GuestIsa;
@@ -21,7 +21,7 @@ use crate::guest_procedure::GuestIsa;
 /// Thread Manager IDs are already stable and process-local, so cooperative
 /// tasks use their guest-visible ID directly. The application task is ID 2,
 /// matching `kApplicationThreadID` from Threads.h. Inside Macintosh:
-/// Processes (1994), pp. 4-4--4-6.
+/// Thread Manager (1999), pp. 47--48.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ExecutionTaskId(u32);
 
@@ -35,6 +35,15 @@ impl ExecutionTaskId {
     pub(crate) const fn thread_id(self) -> u32 {
         self.0
     }
+}
+
+/// Scheduling state, independent of either engine's saved registers.
+/// Inside Macintosh: Thread Manager (1999), pp. 45, 67–70.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExecutionTaskState {
+    Ready,
+    Stopped,
+    Running,
 }
 
 /// Task-lifecycle effect emitted by a process service.
@@ -416,6 +425,9 @@ struct StoreState<R: Copy, C: Copy> {
     stacks: HashMap<ExecutionTaskId, Vec<ContinuationState<R, C>>>,
     attached_contexts: HashMap<CallId, usize>,
     retired_tasks: HashSet<ExecutionTaskId>,
+    task_states: HashMap<ExecutionTaskId, ExecutionTaskState>,
+    ready: VecDeque<ExecutionTaskId>,
+    critical_depth: u32,
 }
 
 impl<R: Copy, C: Copy> Default for StoreState<R, C> {
@@ -426,6 +438,12 @@ impl<R: Copy, C: Copy> Default for StoreState<R, C> {
             stacks: HashMap::from([(ExecutionTaskId::APPLICATION, Vec::new())]),
             attached_contexts: HashMap::new(),
             retired_tasks: HashSet::new(),
+            task_states: HashMap::from([(
+                ExecutionTaskId::APPLICATION,
+                ExecutionTaskState::Running,
+            )]),
+            ready: VecDeque::new(),
+            critical_depth: 0,
         }
     }
 }
@@ -468,6 +486,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
             return Err(ContinuationError::TaskUnavailable { task });
         }
         state.stacks.insert(task, Vec::new());
+        state.task_states.insert(task, ExecutionTaskState::Stopped);
         Ok(())
     }
 
@@ -477,8 +496,118 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         if !state.stacks.contains_key(&task) {
             return Err(ContinuationError::TaskUnavailable { task });
         }
+        if state.current_task != task {
+            if state.task_states.get(&task) != Some(&ExecutionTaskState::Ready) {
+                return Err(ContinuationError::TaskUnavailable { task });
+            }
+            if state.critical_depth != 0 {
+                return Err(ContinuationError::TaskUnavailable { task });
+            }
+            let previous = state.current_task;
+            if state.task_states.get(&previous) == Some(&ExecutionTaskState::Running) {
+                state
+                    .task_states
+                    .insert(previous, ExecutionTaskState::Ready);
+                if !state.ready.contains(&previous) {
+                    state.ready.push_back(previous);
+                }
+            }
+        }
+        state.ready.retain(|queued| *queued != task);
+        state.task_states.insert(task, ExecutionTaskState::Running);
         state.current_task = task;
         Ok(())
+    }
+
+    pub(crate) fn scheduling_state(&self, task: ExecutionTaskId) -> Option<ExecutionTaskState> {
+        self.0.borrow().task_states.get(&task).copied()
+    }
+
+    pub(crate) fn set_scheduling_state(
+        &self,
+        task: ExecutionTaskId,
+        requested: ExecutionTaskState,
+    ) -> bool {
+        self.change_scheduling_state(task, requested, false)
+    }
+
+    /// SetThreadStateEndCritical is one state transition, including failures.
+    /// Inside Macintosh: Thread Manager (1999), pp. 71--72.
+    pub(crate) fn set_state_ending_critical(
+        &self,
+        task: ExecutionTaskId,
+        requested: ExecutionTaskState,
+    ) -> bool {
+        self.change_scheduling_state(task, requested, true)
+    }
+
+    fn change_scheduling_state(
+        &self,
+        task: ExecutionTaskId,
+        requested: ExecutionTaskState,
+        end_critical: bool,
+    ) -> bool {
+        let mut state = self.0.borrow_mut();
+        let depth = if end_critical {
+            let Some(depth) = state.critical_depth.checked_sub(1) else {
+                return false;
+            };
+            depth
+        } else {
+            state.critical_depth
+        };
+        if !state.stacks.contains_key(&task)
+            || (requested == ExecutionTaskState::Running && task != state.current_task)
+            || (task == state.current_task
+                && requested != ExecutionTaskState::Running
+                && depth != 0)
+        {
+            return false;
+        }
+        state.critical_depth = depth;
+        state.ready.retain(|queued| *queued != task);
+        state.task_states.insert(task, requested);
+        if requested == ExecutionTaskState::Ready {
+            state.ready.push_back(task);
+        }
+        true
+    }
+
+    /// Selection is non-destructive: the adapter must first validate that it
+    /// can install the successor. Only the committed switch removes it.
+    pub(crate) fn next_ready_task(
+        &self,
+        suggested: Option<ExecutionTaskId>,
+    ) -> Option<ExecutionTaskId> {
+        let state = self.0.borrow();
+        if state.critical_depth != 0 {
+            return None;
+        }
+        let eligible = |task: ExecutionTaskId| {
+            task != state.current_task
+                && state.task_states.get(&task) == Some(&ExecutionTaskState::Ready)
+        };
+        suggested
+            .filter(|task| eligible(*task))
+            .or_else(|| state.ready.iter().copied().find(|task| eligible(*task)))
+    }
+
+    pub(crate) fn critical_depth(&self) -> u32 {
+        self.0.borrow().critical_depth
+    }
+
+    pub(crate) fn begin_critical(&self) {
+        let mut state = self.0.borrow_mut();
+        state.critical_depth = state.critical_depth.saturating_add(1);
+    }
+
+    pub(crate) fn end_critical(&self) -> bool {
+        let mut state = self.0.borrow_mut();
+        let Some(depth) = state.critical_depth.checked_sub(1) else {
+            return false;
+        };
+        state.critical_depth = depth;
+        true
     }
 
     pub(crate) fn apply_task_effect(
@@ -692,6 +821,8 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         }
         state.stacks.remove(&task);
         state.retired_tasks.insert(task);
+        state.task_states.remove(&task);
+        state.ready.retain(|queued| *queued != task);
         Ok(())
     }
 
@@ -1127,6 +1258,86 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_selection_is_stable_until_a_switch_and_stopped_tasks_are_removed() {
+        let store = Store::default();
+        let app = ExecutionTaskId::APPLICATION;
+        let first = ExecutionTaskId::from_thread_id(3);
+        let second = ExecutionTaskId::from_thread_id(4);
+        for task in [first, second] {
+            store.register_task(task).unwrap();
+            assert!(store.set_scheduling_state(task, ExecutionTaskState::Ready));
+        }
+        assert_eq!(store.next_ready_task(None), Some(first));
+        let before = store.clone();
+        assert_eq!(store.next_ready_task(Some(second)), Some(second));
+        assert_eq!(
+            store, before,
+            "selection must not consume a context the adapter may reject"
+        );
+        assert!(!store.set_scheduling_state(first, ExecutionTaskState::Running));
+        assert_eq!(store, before);
+        assert!(store.set_scheduling_state(first, ExecutionTaskState::Stopped));
+        assert_eq!(store.next_ready_task(Some(first)), Some(second));
+        store.switch_to_task(second).unwrap();
+        assert_eq!(
+            store.scheduling_state(second),
+            Some(ExecutionTaskState::Running)
+        );
+        assert_eq!(store.scheduling_state(app), Some(ExecutionTaskState::Ready));
+        assert_eq!(store.next_ready_task(None), Some(app));
+        store.retire_task(first).unwrap();
+        assert!(!store.set_scheduling_state(first, ExecutionTaskState::Ready));
+        assert_eq!(store.next_ready_task(None), Some(app));
+    }
+
+    #[test]
+    fn combined_state_and_critical_exit_rejects_without_partial_unmasking() {
+        let store = Store::default();
+        let app = ExecutionTaskId::APPLICATION;
+        store.begin_critical();
+        let before = store.clone();
+        assert!(!store.set_state_ending_critical(
+            ExecutionTaskId::from_thread_id(999),
+            ExecutionTaskState::Ready
+        ));
+        assert_eq!(store, before);
+        store.begin_critical();
+        let nested = store.clone();
+        assert!(!store.set_state_ending_critical(app, ExecutionTaskState::Stopped));
+        assert_eq!(store, nested);
+        assert!(store.end_critical());
+        assert!(store.set_state_ending_critical(app, ExecutionTaskState::Stopped));
+        assert_eq!(store.critical_depth(), 0);
+        assert_eq!(
+            store.scheduling_state(app),
+            Some(ExecutionTaskState::Stopped)
+        );
+    }
+
+    #[test]
+    fn nested_critical_sections_keep_task_cursor_and_schedule_unchanged() {
+        let store = Store::default();
+        let app = ExecutionTaskId::APPLICATION;
+        let worker = ExecutionTaskId::from_thread_id(3);
+        store.register_task(worker).unwrap();
+        assert!(store.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(store.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        store.begin_critical();
+        store.begin_critical();
+        let before = store.clone();
+        assert_eq!(store.next_ready_task(Some(worker)), None);
+        assert!(store.switch_to_task(worker).is_err());
+        assert!(!store.set_scheduling_state(app, ExecutionTaskState::Stopped));
+        assert_eq!(store, before);
+        assert!(store.end_critical());
+        assert_eq!(store.next_ready_task(None), None);
+        assert!(store.end_critical());
+        assert_eq!(store.next_ready_task(None), Some(worker));
+        assert!(!store.end_critical());
+        assert_eq!(store.critical_depth(), 0);
+    }
+
+    #[test]
     fn task_ids_cannot_be_created_by_submission_or_resurrected_after_retirement() {
         let store = Store::default();
         let worker = ExecutionTaskId::from_thread_id(77);
@@ -1135,6 +1346,7 @@ mod tests {
         assert!(store.submit(worker, request(worker, 0x1000), 0).is_err());
         assert_eq!(store, snapshot);
         store.register_task(worker).unwrap();
+        assert!(store.set_scheduling_state(worker, ExecutionTaskState::Ready));
         assert!(store.register_task(worker).is_err());
         store.retire_task(worker).unwrap();
         let retired = store.clone();
@@ -1266,6 +1478,7 @@ mod tests {
         let application = ExecutionTaskId::APPLICATION;
         let worker = ExecutionTaskId::from_thread_id(7);
         store.register_task(worker).unwrap();
+        assert!(store.set_scheduling_state(worker, ExecutionTaskState::Ready));
         let app_call = submit(&store, application, 0x1000);
         let worker_call = submit(&store, worker, 0x3000);
 
@@ -1290,6 +1503,7 @@ mod tests {
         let application = ExecutionTaskId::APPLICATION;
         let worker = ExecutionTaskId::from_thread_id(9);
         store.register_task(worker).unwrap();
+        assert!(store.set_scheduling_state(worker, ExecutionTaskState::Ready));
 
         assert_eq!(
             store.submit(application, request(worker, 0x1000), 0x1001),
@@ -1343,6 +1557,7 @@ mod tests {
         let application = ExecutionTaskId::APPLICATION;
         let worker = ExecutionTaskId::from_thread_id(11);
         store.register_task(worker).unwrap();
+        assert!(store.set_scheduling_state(worker, ExecutionTaskState::Ready));
         let call_id = submit(&store, application, 0x1000);
         let before = store.clone();
         assert!(matches!(
@@ -1398,6 +1613,7 @@ mod tests {
         let application = ExecutionTaskId::APPLICATION;
         let worker = ExecutionTaskId::from_thread_id(13);
         store.register_task(worker).unwrap();
+        assert!(store.set_scheduling_state(worker, ExecutionTaskState::Ready));
         let application_call = submit(&store, application, 0x1000);
         let worker_call = submit(&store, worker, 0x2000);
         let mut contexts = ExecutionContextBank::default();
