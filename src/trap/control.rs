@@ -6372,7 +6372,7 @@ mod tests {
                 .map(|tracking| tracking.highlighted_item),
             Some(2)
         );
-        let provider_rail_pixels = count_set_pixels(
+        let provider_highlight_pixels = count_set_pixels(
             &bus,
             screen_base,
             row_bytes,
@@ -6382,18 +6382,18 @@ mod tests {
             dropdown_left + 12,
         );
         assert!(
-            provider_rail_pixels > 0,
-            "systemless-default popup tracking should redraw provider-owned item rail chrome"
+            provider_highlight_pixels > 0,
+            "systemless-default popup tracking should redraw provider-owned item highlight chrome"
         );
         assert!(
-            !screen_pixel_is_set(
+            screen_pixel_is_set(
                 &bus,
                 screen_base,
                 row_bytes,
                 raw_inversion_probe_x,
                 raw_inversion_probe_y
             ),
-            "systemless-default popup tracking must not use raw full-row inversion"
+            "systemless-default popup tracking should fill the complete highlighted row"
         );
 
         disp.input_state.mouse_button = false;

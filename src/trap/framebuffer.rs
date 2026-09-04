@@ -577,7 +577,7 @@ impl super::TrapDispatcher {
         u16::from(color.r) + u16::from(color.g) + u16::from(color.b) < 128 * 3
     }
 
-    fn theme_pixel_index(&self, bus: &MacMemoryBus, color: Rgb8) -> u8 {
+    pub(super) fn theme_pixel_index(&self, bus: &MacMemoryBus, color: Rgb8) -> u8 {
         if self.screen_mode.4 == 1 {
             return if Self::theme_color_is_mono_black(color) {
                 Self::logical_black_pixel_index(bus)

@@ -5087,11 +5087,14 @@ impl super::TrapDispatcher {
             let has_command_key = Self::menu_item_has_command_key(item);
             // MTE 1992, 3-12: standard menu items can carry an icon,
             // mark, command-key equivalent, text style, and dimmed state.
+            // Keep provider row paint inside the Menu Manager-owned frame so
+            // the first and final rows cannot erase its horizontal borders
+            // (Macintosh Toolbox Essentials 1992, pp. 3-90 and 3-148--3-150).
             let provider_row_chrome = self.draw_theme_menu_item_chrome(
                 bus,
-                item_top,
+                item_top.max(top.saturating_add(1)),
                 left + 1,
-                item_bottom,
+                item_bottom.min(bottom.saturating_sub(1)),
                 right - 1,
                 row_enabled,
                 highlighted_item == i as i16 + 1,
@@ -5100,6 +5103,11 @@ impl super::TrapDispatcher {
                 item.mark != 0,
                 has_command_key,
             );
+            let provider_selected_foreground = (provider_row_chrome
+                && highlighted_item == item_no
+                && row_enabled
+                && !is_separator)
+                .then(|| self.theme_pixel_index(bus, self.ui_theme().palette().window_background));
             let layout = standard_menu_item_layout(
                 (left, right),
                 (item_top, item_height),
@@ -5125,7 +5133,9 @@ impl super::TrapDispatcher {
             };
             let dim_with_pattern = dim_row && dim_index.is_none();
             let content_index = |component_index: Option<u8>| {
-                if let Some((_, selected_foreground)) = selected_colors {
+                if let Some(selected_foreground) = provider_selected_foreground {
+                    Some(selected_foreground)
+                } else if let Some((_, selected_foreground)) = selected_colors {
                     Some(selected_foreground)
                 } else if dim_row {
                     dim_index.or(component_index)
@@ -11550,6 +11560,11 @@ mod tests {
         );
         themed.menus[0].items[0].mark = 0x12;
         themed.menus[0].items[1].icon = 7;
+        themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
+        let highlighted_text_pixel = ((rect.0 + 3)..(rect.0 + MENU_ROW_HEIGHT - 2))
+            .flat_map(|y| ((rect.1 + 15)..(rect.1 + 60)).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, *x, *y))
+            .expect("precondition: unselected menu-item text should draw");
         *themed.menu_tracking = Some(test_tracked_menu_state(themed_menu, rect, 1));
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
@@ -11566,8 +11581,22 @@ mod tests {
             "classic selected rows should remain filled away from the provider rail"
         );
         assert!(
-            !screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 100, 26),
-            "systemless-default highlight chrome should remain a provider-owned rail and frame"
+            screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 100, 26),
+            "systemless-default should fill the complete highlighted row"
+        );
+        assert!(
+            screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 100, 99),
+            "systemless-default should preserve the menu pane's bottom border"
+        );
+        assert!(
+            !screen_pixel_is_set(
+                &themed_bus,
+                themed_base,
+                themed_row_bytes,
+                highlighted_text_pixel.0,
+                highlighted_text_pixel.1,
+            ),
+            "systemless-default should redraw highlighted item text in a contrasting foreground"
         );
         assert!(
             !screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 36, 43),
@@ -11726,34 +11755,34 @@ mod tests {
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
         assert!(
-            screen_pixel_is_set(
+            !screen_pixel_is_set(
                 &themed_bus,
                 themed_base,
                 themed_row_bytes,
                 mark_pixel.0,
                 mark_pixel.1
             ),
-            "highlighted systemless-default row chrome should preserve the menu item's mark glyph"
+            "highlighted systemless-default should reverse the menu item's mark glyph"
         );
         assert!(
-            screen_pixel_is_set(
+            !screen_pixel_is_set(
                 &themed_bus,
                 themed_base,
                 themed_row_bytes,
                 command_pixel.0,
                 command_pixel.1
             ),
-            "highlighted systemless-default row chrome should preserve the full command-key equivalent"
+            "highlighted systemless-default should reverse the full command-key equivalent"
         );
         assert!(
-            screen_pixel_is_set(
+            !screen_pixel_is_set(
                 &themed_bus,
                 themed_base,
                 themed_row_bytes,
                 command_symbol_pixel.0,
                 command_symbol_pixel.1
             ),
-            "highlighted systemless-default row chrome should preserve the Command symbol itself"
+            "highlighted systemless-default should reverse the Command symbol itself"
         );
 
         themed.redraw_chrome(&mut themed_bus);
@@ -11765,8 +11794,8 @@ mod tests {
             (command_pixel, "command key"),
         ] {
             assert!(
-                screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, pixel.0, pixel.1),
-                "final themed chrome composition should preserve the highlighted {label}"
+                !screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, pixel.0, pixel.1),
+                "final themed chrome composition should preserve the reversed highlighted {label}"
             );
         }
 
@@ -11806,8 +11835,8 @@ mod tests {
             (command_pixel, "popup command key"),
         ] {
             assert!(
-                screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, pixel.0, pixel.1),
-                "final themed popup composition should preserve the highlighted {label}"
+                !screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, pixel.0, pixel.1),
+                "final themed popup composition should preserve the reversed highlighted {label}"
             );
         }
     }

@@ -1966,31 +1966,20 @@ fn draw_systemless_menu_item_chrome(
     }
 
     if state.highlighted {
-        ctx.frame_rect(inset_rect(state.rect, 1), palette.selection);
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.top + 2,
-                left: state.rect.left + 2,
-                bottom: state.rect.bottom - 2,
-                right: state.rect.left + 5,
-            },
-            palette.selection,
-        );
-        ctx.fill_rect(
-            ThemeRect {
-                top: state.rect.bottom - 3,
-                left: state.rect.left + 6,
-                bottom: state.rect.bottom - 2,
-                right: state.rect.right - 6,
-            },
-            palette.selection,
-        );
+        // Human Interface Guidelines 1992, pp. 55 and 265: tracking a menu
+        // selection highlights the complete item rather than decorating it.
+        ctx.fill_rect(state.rect, palette.selection);
     }
 
     // Row chrome must not replace the application's mark or Command-key
     // equivalent. The Menu Manager draws those semantic characteristics
     // afterward. Macintosh Toolbox Essentials (1992), pp. 3-12 and 3-16.
     if state.has_icon {
+        let icon_color = if state.highlighted {
+            palette.window_background
+        } else {
+            palette.selection
+        };
         ctx.fill_rect(
             ThemeRect {
                 top: state.rect.top + 5,
@@ -1998,7 +1987,7 @@ fn draw_systemless_menu_item_chrome(
                 bottom: state.rect.bottom - 5,
                 right: state.rect.left + 17,
             },
-            palette.selection,
+            icon_color,
         );
         ctx.fill_rect(
             ThemeRect {
@@ -2007,7 +1996,7 @@ fn draw_systemless_menu_item_chrome(
                 bottom: state.rect.bottom - 7,
                 right: state.rect.left + 19,
             },
-            palette.selection,
+            icon_color,
         );
     }
 
@@ -2934,6 +2923,39 @@ mod tests {
         assert_eq!(classic.height(), 104);
         assert_eq!(classic.rgba().len(), 176 * 104 * 4);
         assert_ne!(classic.rgba(), themed.rgba());
+    }
+
+    #[test]
+    fn systemless_highlighted_menu_item_fills_the_complete_row() {
+        let theme = UiThemeId::SystemlessDefault.provider();
+        let palette = theme.palette();
+        let mut bitmap = ThemeBitmap::new(100, 16, palette.frame_light);
+        theme.draw_menu_item(
+            &mut ThemeDrawCtx::new(&mut bitmap),
+            MenuItemState {
+                rect: ThemeRect {
+                    top: 0,
+                    left: 0,
+                    bottom: 16,
+                    right: 100,
+                },
+                enabled: true,
+                highlighted: true,
+                separator: false,
+                has_icon: false,
+                checked: false,
+                has_command_key: false,
+            },
+        );
+        let selection = [
+            palette.selection.r,
+            palette.selection.g,
+            palette.selection.b,
+        ];
+
+        assert_eq!(rgb_at(&bitmap, 0, 0), selection);
+        assert_eq!(rgb_at(&bitmap, 50, 8), selection);
+        assert_eq!(rgb_at(&bitmap, 99, 15), selection);
     }
 
     #[test]
