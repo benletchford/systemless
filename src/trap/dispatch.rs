@@ -4,11 +4,6 @@
 //! `impl TrapDispatcher` blocks with `dispatch_*` methods that return
 //! `Option<Result<()>>` — `Some` if the trap was handled, `None` to pass through.
 
-use super::types::UnderlineInfo;
-use super::manager::{
-    TrapManager, TrapManagerMemoryOp, TrapManagerMemoryResult, TrapManagerSetError,
-    TrapTableKind,
-};
 pub(crate) use super::manager::{
     raw_trap_route, OsRoutineVariant, RawTrapRoute, OS_TRAP_TABLE_BASE, OS_TRAP_TABLE_SLOTS,
     TOOLBOX_TRAP_TABLE_BASE, TOOLBOX_TRAP_TABLE_SLOTS,
@@ -16,8 +11,13 @@ pub(crate) use super::manager::{
 #[cfg(test)]
 #[cfg(test)]
 use super::manager::{resolve_trap_table_target, TrapTableTarget, COME_FROM_PATCH_SIGNATURE};
+use super::manager::{
+    TrapManager, TrapManagerMemoryOp, TrapManagerMemoryResult, TrapManagerSetError, TrapTableKind,
+};
+use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
+use crate::execution_kernel::ExecutionTaskContextBank;
 use crate::guest_call::SharedGuestCallStack;
 use crate::list_manager::ProcessListRecord;
 use crate::machine_profile::reference_machine_profile;
@@ -25,19 +25,17 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    PendingFileCompletion, ProcessContext, ProcessForkMap,
-    ProcessKeyRepeatState, ProcessLoadedResources, ProcessResourceFileMap,
-    ProcessResourceManagerState, ProcessWorkingDirectory,
-    ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord,
+    PendingFileCompletion, ProcessContext, ProcessForkMap, ProcessKeyRepeatState,
+    ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
+    ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
     SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
-    SharedProcessOpenFilePositions, SharedProcessOpenFiles,
-    SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
-    SharedProcessQuickDrawPixelStates,
-    SharedProcessScrapState, SharedProcessSoundManager, SharedProcessTextEditManager,
-    SharedProcessTickState, SharedProcessValue,
+    SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessQuickDrawHiliteColors,
+    SharedProcessQuickDrawOpColors, SharedProcessQuickDrawPixelStates, SharedProcessScrapState,
+    SharedProcessSoundManager, SharedProcessTextEditManager, SharedProcessTickState,
+    SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -1208,7 +1206,6 @@ impl TrapWordMap {
     }
 }
 
-
 /// Rust adapter identities allowed for one canonical A-line operation row.
 /// `Nonterminal` is a declared registry state, distinct from an accidental
 /// omission: its gateway remains callable and reports the exact raw word until
@@ -1525,11 +1522,9 @@ pub struct TrapDispatcher {
     /// to a single dispatcher-wide counter.
     pub(crate) thread_critical_nesting: u32,
     /// Cooperative Thread Manager contexts keyed by their opaque ThreadID.
-    pub(crate) cooperative_threads: HashMap<u32, CooperativeThread>,
+    pub(crate) cooperative_threads: ExecutionTaskContextBank<CooperativeThread>,
     /// Round-robin queue of ready cooperative threads.
     pub(crate) cooperative_thread_ready: VecDeque<u32>,
-    /// ThreadID whose register context is currently installed in the CPU.
-    pub(crate) current_cooperative_thread: u32,
     /// Next guest-visible ThreadID. IDs 1 and 2 are reserved by Threads.h.
     pub(crate) next_cooperative_thread_id: u32,
     /// Guest trampoline entered when a ThreadEntryProc returns.
@@ -1653,8 +1648,7 @@ pub struct TrapDispatcher {
     /// Read-only disk-image volumes mounted alongside the synthetic boot volume.
     pub(crate) vfs_volumes: SharedProcessValue<Vec<VfsVolume>>,
     /// Open working directories keyed by working directory reference number.
-    pub(crate) working_directories:
-        SharedProcessValue<HashMap<i16, WorkingDirectory>>,
+    pub(crate) working_directories: SharedProcessValue<HashMap<i16, WorkingDirectory>>,
     /// Open file table: refnum -> filename
     pub(crate) open_files: SharedProcessOpenFiles,
     /// Synthetic Device Manager drivers opened by name via PBOpen/OpenDriver.
@@ -2478,8 +2472,7 @@ impl TrapDispatcher {
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         let mut memory_manager = None;
         context.attach_memory_manager(&mut memory_manager);
-        let memory_manager =
-            memory_manager.expect("process context supplies a Memory Manager");
+        let memory_manager = memory_manager.expect("process context supplies a Memory Manager");
         if let Some(attached) = &self.process_memory_manager {
             assert!(
                 attached.ptr_eq(&memory_manager),
@@ -2493,14 +2486,9 @@ impl TrapDispatcher {
         context.attach_file_system(&mut self.process_file_system);
         self.open_files = self.process_file_system.files.shared_handle();
         self.write_refnums = self.process_file_system.writable_refnums.shared_handle();
-        self.pending_file_completions = self
-            .process_file_system
-            .pending_completions
-            .shared_handle();
-        self.working_directories = self
-            .process_file_system
-            .working_directories
-            .shared_handle();
+        self.pending_file_completions =
+            self.process_file_system.pending_completions.shared_handle();
+        self.working_directories = self.process_file_system.working_directories.shared_handle();
         self.next_working_dir_refnum = self
             .process_file_system
             .next_working_directory_ref_num
@@ -2640,9 +2628,12 @@ impl TrapDispatcher {
         bytes: &[u8],
     ) -> bool {
         let memory_manager = self.process_memory_manager();
-        let result = memory_manager
-            .borrow_mut()
-            .replace_native_handle_bytes(bus, handle, expected_ptr, bytes);
+        let result = memory_manager.borrow_mut().replace_native_handle_bytes(
+            bus,
+            handle,
+            expected_ptr,
+            bytes,
+        );
         match result {
             Ok((old_ptr, new_ptr)) => {
                 self.untrack_handle_ptr(old_ptr);
@@ -2651,10 +2642,7 @@ impl TrapDispatcher {
                 true
             }
             Err(error) => {
-                bus.write_word(
-                    crate::memory::globals::addr::MEM_ERR,
-                    error as u16,
-                );
+                bus.write_word(crate::memory::globals::addr::MEM_ERR, error as u16);
                 false
             }
         }
@@ -2862,7 +2850,10 @@ impl TrapDispatcher {
         let safe_label = sanitize_gui_capture_label(label);
         let filename = format!(
             "{:06}_t{:06}_tr{:08}_{}.png",
-            frame, self.current_tick(), self.trap_count, safe_label
+            frame,
+            self.current_tick(),
+            self.trap_count,
+            safe_label
         );
         let path = dir.join(&filename);
         let mut rgba = crate::display::render_screen_with_gamma(
@@ -3338,7 +3329,8 @@ impl TrapDispatcher {
 
     pub(crate) fn input_trace_state_fields(&self) -> String {
         let key_map = if self.input_state.key_map.iter().any(|&byte| byte != 0) {
-            self.input_state.key_map
+            self.input_state
+                .key_map
                 .iter()
                 .map(|byte| format!("{byte:02X}"))
                 .collect::<Vec<_>>()
@@ -3468,9 +3460,7 @@ impl TrapDispatcher {
             .application_working_directory_ref_num
             .shared_handle();
         let vfs_volumes = process_file_system.vfs_volumes.shared_handle();
-        let next_vfs_volume_ref_num = process_file_system
-            .next_vfs_volume_ref_num
-            .shared_handle();
+        let next_vfs_volume_ref_num = process_file_system.next_vfs_volume_ref_num.shared_handle();
         let vfs_directories = process_file_system.vfs_directories.shared_handle();
         let file_positions = process_file_system.files.positions();
 
@@ -3518,9 +3508,8 @@ impl TrapDispatcher {
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
             thread_critical_nesting: 0,
-            cooperative_threads: HashMap::new(),
+            cooperative_threads: ExecutionTaskContextBank::default(),
             cooperative_thread_ready: VecDeque::new(),
-            current_cooperative_thread: 2,
             next_cooperative_thread_id: 3,
             thread_return_trampoline: 0,
             cooperative_thread_scheduler: 0,
@@ -4724,7 +4713,8 @@ impl TrapDispatcher {
 
     pub(crate) fn remove_vfs_entry_from_process(&mut self, name: &str) {
         let normalized = Self::normalize_vfs_path(name);
-        self.process_file_system.remove_classic_vfs_path(&normalized);
+        self.process_file_system
+            .remove_classic_vfs_path(&normalized);
     }
 
     pub fn remove_vfs_path(&mut self, name: &str) -> bool {
@@ -4771,7 +4761,8 @@ impl TrapDispatcher {
             removed = true;
         }
 
-        self.process_file_system.remove_classic_vfs_path(&normalized);
+        self.process_file_system
+            .remove_classic_vfs_path(&normalized);
 
         removed
     }
@@ -4822,11 +4813,7 @@ impl TrapDispatcher {
         if vref == Self::boot_volume_ref_num() {
             return vref;
         }
-        if self
-            .vfs_volumes
-            .iter()
-            .any(|volume| volume.ref_num == vref)
-        {
+        if self.vfs_volumes.iter().any(|volume| volume.ref_num == vref) {
             return vref;
         }
         if let Some(working_directory) = self.working_directories.get(&vref) {
@@ -5347,7 +5334,8 @@ impl TrapDispatcher {
     /// Coordinates are in Mac screen space (0,0 = top-left of screen).
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
         self.input_state.mouse_pos = (v, h);
-        self.adb.note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
+        self.adb
+            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
     }
 
     pub(crate) fn has_unmatched_queued_mouse_down(&self) -> bool {
@@ -5366,7 +5354,8 @@ impl TrapDispatcher {
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
         self.input_state.mouse_button = true;
         self.input_state.mouse_pos = (v, h);
-        self.adb.note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
+        self.adb
+            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
         let modifiers = self.current_event_modifiers();
         let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
@@ -5387,7 +5376,8 @@ impl TrapDispatcher {
     pub fn push_mouse_up(&mut self, v: i16, h: i16) {
         self.input_state.mouse_pos = (v, h);
         self.input_state.mouse_button = false;
-        self.adb.note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
+        self.adb
+            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
         // The classic mouse has one button, so the first physical release
         // after a ModalDialog-owned press is its matching mouseUp. Consume it
         // at injection time so event masks or FlushEvents cannot leave stale
@@ -5597,7 +5587,10 @@ impl TrapDispatcher {
     /// `TrapDispatcher::new()` seeds the default arrow). Used by
     /// tests to observe SetCursor's bitmap-storage effect.
     pub fn cursor_data(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
-        self.cursor_state.image.as_ref().map(CursorImage::mono_parts)
+        self.cursor_state
+            .image
+            .as_ref()
+            .map(CursorImage::mono_parts)
     }
 
     /// Get the current mouse position.
@@ -7622,7 +7615,10 @@ impl TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 eprintln!(
                     "[TRACE-PC] trap=${:04X} pc=${:08X} tick={} sp=${:08X}",
-                    trap, trap_pc, self.current_tick(), sp
+                    trap,
+                    trap_pc,
+                    self.current_tick(),
+                    sp
                 );
                 eprintln!(
                     "[TRACE-PC]   d0=${:08X} d1=${:08X} d2=${:08X} d3=${:08X} d4=${:08X} d5=${:08X} d6=${:08X} d7=${:08X}",
@@ -11028,7 +11024,10 @@ mod tests {
             .ptr_eq(&second.pending_file_completions));
 
         first.pending_file_completions.push_back(completion);
-        assert_eq!(second.pending_file_completions.pop_front(), Some(completion));
+        assert_eq!(
+            second.pending_file_completions.pop_front(),
+            Some(completion)
+        );
         assert!(first.pending_file_completions.is_empty());
     }
 
@@ -11036,7 +11035,9 @@ mod tests {
     fn attached_menu_tracking_mutates_process_context_immediately() {
         let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(0x1234)));
+        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
+            0x1234,
+        )));
         dispatcher.attach_process_context(&mut context);
 
         assert_eq!(
@@ -11051,14 +11052,19 @@ mod tests {
                 .map(|t| (t.menu_handle, t.highlighted_item)),
             Some((0x1234, 5))
         );
-        assert_eq!(dispatcher.menu_tracking.as_ref().unwrap().highlighted_item, 5);
+        assert_eq!(
+            dispatcher.menu_tracking.as_ref().unwrap().highlighted_item,
+            5
+        );
     }
 
     #[test]
     fn attached_menu_tracking_remains_shared_through_panic() {
         let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(0x5678)));
+        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
+            0x5678,
+        )));
         dispatcher.attach_process_context(&mut context);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -11073,14 +11079,19 @@ mod tests {
                 .map(|t| (t.menu_handle, t.highlighted_item)),
             Some((0x5678, 9))
         );
-        assert_eq!(dispatcher.menu_tracking.as_ref().unwrap().highlighted_item, 9);
+        assert_eq!(
+            dispatcher.menu_tracking.as_ref().unwrap().highlighted_item,
+            9
+        );
     }
 
     #[test]
     fn attached_process_state_remains_canonical_through_panic() {
         let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(0x9abc)));
+        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
+            0x9abc,
+        )));
         dispatcher.attach_process_context(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
 
@@ -11106,16 +11117,11 @@ mod tests {
             context.event_queue().front().map(|event| event.message),
             Some(0x3333)
         );
-        assert_eq!(
-            memory_manager.borrow().handle_for_ptr(0x4444),
-            Some(0x5555)
-        );
+        assert_eq!(memory_manager.borrow().handle_for_ptr(0x4444), Some(0x5555));
         assert_eq!(memory_manager.borrow().handle_state(0x5555), 0xc0);
         assert_eq!(dispatcher.handle_for_ptr(0x4444), Some(0x5555));
         assert_eq!(dispatcher.handle_state_bits(0x5555), Some(0xc0));
-        memory_manager
-            .borrow_mut()
-            .track_handle_ptr(0x6666, 0x7777);
+        memory_manager.borrow_mut().track_handle_ptr(0x6666, 0x7777);
         assert_eq!(dispatcher.handle_for_ptr(0x6666), Some(0x7777));
         assert_eq!(
             context
@@ -11124,7 +11130,10 @@ mod tests {
             Some((0x9abc, 7))
         );
         assert_eq!(dispatcher.event_queue.len(), 1);
-        assert_eq!(dispatcher.menu_tracking.as_ref().unwrap().highlighted_item, 7);
+        assert_eq!(
+            dispatcher.menu_tracking.as_ref().unwrap().highlighted_item,
+            7
+        );
         assert!(dispatcher
             .process_memory_manager
             .as_ref()
