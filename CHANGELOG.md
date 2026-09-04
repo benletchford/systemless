@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.33.0](https://github.com/benletchford/systemless/compare/v0.32.1...v0.33.0) (2026-09-04)
+
+
+### Features
+
+* establish unified Macintosh runtime foundations ([#1364](https://github.com/benletchford/systemless/issues/1364)) ([eef89a3](https://github.com/benletchford/systemless/commit/eef89a368e21bdb0d3a374fe8fae2e1b9eebe6b6))
+* **theme:** experiment with Systemless guest chrome ([#1362](https://github.com/benletchford/systemless/issues/1362)) ([305027d](https://github.com/benletchford/systemless/commit/305027d4587bd2f0560767a57cab899de9610b95))
+
+
+### Bug Fixes
+
+* require exact unified runtime debt baselines ([d1237d2](https://github.com/benletchford/systemless/commit/d1237d244052406b7bc58e6960b129aead962896))
+
 ## [0.32.1](https://github.com/benletchford/systemless/compare/v0.32.0...v0.32.1) (2026-09-04)
 
 
