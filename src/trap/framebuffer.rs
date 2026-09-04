@@ -3977,9 +3977,6 @@ impl super::TrapDispatcher {
         Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
         Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
 
-        // Calculate title text area if we have a title
-        let text_y = chrome.title_baseline.saturating_add(5);
-
         let (title_clear_left, title_clear_right) = if !self.window_title.is_empty() {
             let text_x = chrome.title_h;
             (text_x - 8, text_x + title_width + 8)
@@ -4002,7 +3999,7 @@ impl super::TrapDispatcher {
                     screen_width,
                     screen_height,
                     text_x,
-                    text_y,
+                    chrome.title_baseline,
                     &self.window_title,
                     font_id,
                     font_size,
@@ -4189,7 +4186,7 @@ impl super::TrapDispatcher {
                     screen_width,
                     screen_height,
                     text_x,
-                    text_y - 5,
+                    chrome.title_baseline,
                     &self.window_title,
                     font_id,
                     font_size,
