@@ -1,6 +1,9 @@
 //! Framebuffer drawing methods for menu bar and window chrome rendering.
 
-use std::{collections::HashSet, sync::OnceLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
@@ -502,6 +505,7 @@ impl super::TrapDispatcher {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let rgba = bitmap.rgba();
+        let mut pixels = HashMap::new();
         for y in 0..bitmap.height() {
             for x in 0..bitmap.width() {
                 let offset = ((y * bitmap.width() + x) * 4) as usize;
@@ -510,7 +514,10 @@ impl super::TrapDispatcher {
                     g: rgba[offset + 1],
                     b: rgba[offset + 2],
                 };
-                Self::fb_set_pixel(
+                let pixel = *pixels
+                    .entry((color.r, color.g, color.b))
+                    .or_insert_with(|| self.theme_pixel_index(bus, color));
+                Self::fb_set_pixel_index(
                     bus,
                     screen_base,
                     row_bytes,
@@ -519,7 +526,7 @@ impl super::TrapDispatcher {
                     screen_height,
                     left.saturating_add(x as i16),
                     top.saturating_add(y as i16),
-                    Self::theme_color_is_mono_black(color),
+                    pixel,
                 );
             }
         }
@@ -535,6 +542,8 @@ impl super::TrapDispatcher {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let rgba = bitmap.rgba();
+        let transparent = self.ui_theme().palette().window_background;
+        let mut pixels = HashMap::new();
         for y in 0..bitmap.height() {
             for x in 0..bitmap.width() {
                 let offset = ((y * bitmap.width() + x) * 4) as usize;
@@ -543,10 +552,13 @@ impl super::TrapDispatcher {
                     g: rgba[offset + 1],
                     b: rgba[offset + 2],
                 };
-                if !Self::theme_color_is_mono_black(color) {
+                if color == transparent {
                     continue;
                 }
-                Self::fb_set_pixel(
+                let pixel = *pixels
+                    .entry((color.r, color.g, color.b))
+                    .or_insert_with(|| self.theme_pixel_index(bus, color));
+                Self::fb_set_pixel_index(
                     bus,
                     screen_base,
                     row_bytes,
@@ -555,7 +567,7 @@ impl super::TrapDispatcher {
                     screen_height,
                     left.saturating_add(x as i16),
                     top.saturating_add(y as i16),
-                    true,
+                    pixel,
                 );
             }
         }
@@ -563,6 +575,105 @@ impl super::TrapDispatcher {
 
     fn theme_color_is_mono_black(color: Rgb8) -> bool {
         u16::from(color.r) + u16::from(color.g) + u16::from(color.b) < 128 * 3
+    }
+
+    fn theme_pixel_index(&self, bus: &MacMemoryBus, color: Rgb8) -> u8 {
+        if self.screen_mode.4 == 1 {
+            return if Self::theme_color_is_mono_black(color) {
+                Self::logical_black_pixel_index(bus)
+            } else {
+                Self::logical_white_pixel_index(bus)
+            };
+        }
+        let rgb = [
+            u16::from(color.r) * 0x0101,
+            u16::from(color.g) * 0x0101,
+            u16::from(color.b) * 0x0101,
+        ];
+        Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
+            super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+        })
+    }
+
+    fn fill_theme_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        color: Rgb8,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let pixel = self.theme_pixel_index(bus, color);
+        let (top, left, bottom, right) = rect;
+        for y in top.max(0)..bottom.min(screen_height) {
+            for x in left.max(0)..right.min(screen_width) {
+                Self::fb_set_pixel_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    pixel,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn fill_theme_desktop_rect(
+        &self,
+        bus: &mut MacMemoryBus,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+            Self::fb_fill_pattern_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                crate::window_manager::STANDARD_DESKTOP_PATTERN,
+            );
+            return;
+        }
+
+        let palette = self.ui_theme().palette();
+        let light = self.theme_pixel_index(bus, palette.desktop_light);
+        let dark = self.theme_pixel_index(bus, palette.desktop_dark);
+        let top = top.max(0).min(screen_height);
+        let left = left.max(0).min(screen_width);
+        let bottom = bottom.max(0).min(screen_height);
+        let right = right.max(0).min(screen_width);
+        for y in top..bottom {
+            let pattern = crate::window_manager::STANDARD_DESKTOP_PATTERN
+                [y.rem_euclid(8) as usize];
+            for x in left..right {
+                let bit = (pattern >> (7 - x.rem_euclid(8))) & 1;
+                Self::fb_set_pixel_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    if bit == 0 { light } else { dark },
+                );
+            }
+        }
     }
 
     fn gdevice_ctab(bus: &MacMemoryBus, gdevice_handle: u32) -> Option<u32> {
@@ -1443,8 +1554,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         excluded_rect: (i16, i16, i16, i16),
     ) {
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
+        let (_, _, screen_width, screen_height, _) = self.get_screen_params();
         let top = excluded_rect.0.max(0).min(screen_height);
         let left = excluded_rect.1.max(0).min(screen_width);
         let bottom = excluded_rect.2.max(0).min(screen_height);
@@ -1457,26 +1567,24 @@ impl super::TrapDispatcher {
         ];
 
         for (rt, rl, rb, rr) in rects {
-            Self::fb_fill_pattern_rect(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                rt,
-                rl,
-                rb,
-                rr,
-                STANDARD_GRAY_PATTERN,
-            );
+            self.fill_theme_desktop_rect(bus, rt, rl, rb, rr);
         }
     }
 
     fn refresh_saved_under_with_desktop_pattern(&mut self, bus: &MacMemoryBus, window: u32) {
         let (_, _, _, _, pixel_size) = self.get_screen_params();
-        let black = Self::logical_black_pixel_index(bus);
-        let white = Self::logical_white_pixel_index(bus);
+        let palette = self.ui_theme().palette();
+        let (black, white) = if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+            (
+                Self::logical_black_pixel_index(bus),
+                Self::logical_white_pixel_index(bus),
+            )
+        } else {
+            (
+                self.theme_pixel_index(bus, palette.desktop_dark),
+                self.theme_pixel_index(bus, palette.desktop_light),
+            )
+        };
         let Some((top, left, width, height, pixels)) =
             self.window_saved_under_pixels.get_mut(&window)
         else {
@@ -3923,6 +4031,52 @@ impl super::TrapDispatcher {
         let (tb_top, tb_left, tb_bottom_exclusive, tb_right) = chrome.background;
         let tb_bottom = tb_bottom_exclusive.saturating_sub(1);
 
+        if self.ui_theme_id() != UiThemeId::ClassicSystem7 {
+            // Keep the canonical WDEF geometry and title metrics while
+            // applying Systemless-owned colors. System 7 explicitly allowed
+            // color to enhance standard window frames; the controls and
+            // measurements remain the familiar Macintosh ones.
+            // Macintosh Human Interface Guidelines (1992), pp. 156--168.
+            let palette = self.ui_theme().palette();
+            self.fill_theme_rect(bus, chrome.background, palette.frame_light);
+            for rect in chrome.ink.iter().copied() {
+                self.fill_theme_rect(bus, rect, palette.frame_dark);
+            }
+            if active {
+                // Repaint the long pinstripe runs in the logo blue. Short
+                // close/zoom glyph strokes remain dark and retain their
+                // classic legibility.
+                for rect in chrome.ink.iter().copied() {
+                    let width = rect.3.saturating_sub(rect.1);
+                    if rect.2.saturating_sub(rect.0) == 1
+                        && width >= 14
+                        && rect.0 > tb_top
+                        && rect.0 < tb_bottom
+                    {
+                        self.fill_theme_rect(bus, rect, palette.selection);
+                    }
+                }
+            }
+            if !self.window_title.is_empty() {
+                Self::fb_draw_string_clipped(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    chrome.title_h,
+                    chrome.title_baseline,
+                    &self.window_title,
+                    font_id,
+                    font_size,
+                    chrome.title_clip,
+                );
+            }
+            self.capture_gui_frame(bus, "draw_window_chrome");
+            return;
+        }
+
         // Fill title bar with white (exclusive bottom)
         Self::fb_fill_rect(
             bus,
@@ -5390,6 +5544,28 @@ mod redraw_chrome_tests {
         assert!(!screen_pixel_is_black(&disp, &bus, 200, 85));
         assert!(!screen_pixel_is_black(&disp, &bus, 160, 88));
         assert!(!screen_pixel_is_black(&disp, &bus, 628, 88));
+    }
+
+    #[test]
+    fn systemless_desktop_keeps_the_classic_checker_geometry_with_logo_colors() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+
+        disp.fill_theme_desktop_rect(&mut bus, 24, 24, 26, 26);
+
+        let (base, row_bytes, width, height, depth) = disp.screen_mode;
+        let dark = TrapDispatcher::fb_get_pixel_index(
+            &bus, base, row_bytes, depth, width as i16, height as i16, 24, 24,
+        )
+        .unwrap();
+        let light = TrapDispatcher::fb_get_pixel_index(
+            &bus, base, row_bytes, depth, width as i16, height as i16, 25, 24,
+        )
+        .unwrap();
+
+        assert_ne!(dark, light, "the desktop must retain the alternating Mac pattern");
+        assert_ne!(dark, TrapDispatcher::logical_black_pixel_index(&bus));
+        assert_ne!(light, TrapDispatcher::logical_white_pixel_index(&bus));
     }
 
     #[test]

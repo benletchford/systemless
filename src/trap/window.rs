@@ -1368,27 +1368,13 @@ impl super::TrapDispatcher {
         bottom: i16,
         right: i16,
     ) {
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
         // GrayRgn and the desktop pattern are guest Window Manager state;
         // hiding the guest menu bar is only a host presentation choice and
         // does not turn a windowed application's desktop black. A genuine
         // kiosk aperture is reapplied later by the dedicated stage compositor.
         // Inside Macintosh Volume I (1985), pp. I-282 and I-289;
         // Macintosh Toolbox Essentials (1992), pp. 4-113--4-119.
-        Self::fb_fill_pattern_rect(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            top,
-            left,
-            bottom,
-            right,
-            crate::window_manager::STANDARD_DESKTOP_PATTERN,
-        );
+        self.fill_theme_desktop_rect(bus, top, left, bottom, right);
     }
 
     fn erase_window_content_rect(
@@ -3753,6 +3739,8 @@ impl super::TrapDispatcher {
             // GetGrayRgn macro.
             (true, 0x112) => {
                 let _ = self.ensure_window_manager_port(bus);
+                let (top, left, bottom, right) = self.desktop_gray_region_rect(bus);
+                self.fill_theme_desktop_rect(bus, top, left, bottom, right);
                 Ok(())
             }
 

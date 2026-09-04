@@ -100,6 +100,9 @@ pub struct UiThemePalette {
     pub frame_dark: Rgb8,
     pub frame_light: Rgb8,
     pub selection: Rgb8,
+    pub accent: Rgb8,
+    pub desktop_light: Rgb8,
+    pub desktop_dark: Rgb8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +202,9 @@ impl UiTheme for ClassicSystem7Theme {
                 b: 255,
             },
             selection: Rgb8 { r: 0, g: 0, b: 0 },
+            accent: Rgb8 { r: 0, g: 0, b: 0 },
+            desktop_light: Rgb8 { r: 255, g: 255, b: 255 },
+            desktop_dark: Rgb8 { r: 0, g: 0, b: 0 },
         }
     }
 
@@ -275,21 +281,16 @@ impl UiTheme for SystemlessTheme {
                 g: 248,
                 b: 245,
             },
-            frame_dark: Rgb8 {
-                r: 33,
-                g: 38,
-                b: 44,
-            },
+            frame_dark: Rgb8 { r: 21, g: 19, b: 15 },
             frame_light: Rgb8 {
-                r: 255,
-                g: 255,
+                r: 223,
+                g: 246,
                 b: 255,
             },
-            selection: Rgb8 {
-                r: 51,
-                g: 102,
-                b: 204,
-            },
+            selection: Rgb8 { r: 39, g: 148, b: 196 },
+            accent: Rgb8 { r: 201, g: 177, b: 131 },
+            desktop_light: Rgb8 { r: 223, g: 246, b: 255 },
+            desktop_dark: Rgb8 { r: 39, g: 148, b: 196 },
         }
     }
 
@@ -2393,9 +2394,9 @@ fn draw_systemless_scrollbar_chrome(
             ctx.fill_rect(inset_rect(page_after, 1), palette.selection);
         }
         let thumb_fill = if state.highlighted_part == ScrollbarPart::Thumb {
-            palette.frame_dark
-        } else {
             palette.selection
+        } else {
+            palette.accent
         };
         ctx.fill_rect(inset_rect(thumb, 1), thumb_fill);
         ctx.frame_rect(thumb, palette.frame_dark);
@@ -2783,6 +2784,14 @@ mod tests {
         assert_eq!(classic.control_metrics(), themed.control_metrics());
         assert_eq!(classic.text_theme(), themed.text_theme());
         assert_ne!(classic.palette(), themed.palette());
+
+        let palette = themed.palette();
+        assert_eq!(palette.frame_dark, Rgb8 { r: 21, g: 19, b: 15 });
+        assert_eq!(palette.accent, Rgb8 { r: 201, g: 177, b: 131 });
+        assert_eq!(palette.selection, Rgb8 { r: 39, g: 148, b: 196 });
+        assert_eq!(palette.frame_light, Rgb8 { r: 223, g: 246, b: 255 });
+        assert_eq!(palette.desktop_dark, palette.selection);
+        assert_eq!(palette.desktop_light, palette.frame_light);
     }
 
     #[test]

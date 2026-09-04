@@ -2183,6 +2183,14 @@ impl FixtureRunner {
         self.config.ui_theme
     }
 
+    /// Select a presentation provider before initializing the guest UI.
+    /// Theme providers preserve classic guest metrics unless configured
+    /// separately, so this changes pixels without changing Toolbox layout.
+    pub fn set_ui_theme(&mut self, ui_theme: UiThemeId) {
+        self.config.ui_theme = ui_theme;
+        self.dispatcher.set_ui_theme_id(ui_theme);
+    }
+
     pub fn theme_metrics_mode(&self) -> ThemeMetricsMode {
         self.config.theme_metrics_mode
     }
@@ -3276,20 +3284,13 @@ impl FixtureRunner {
 
     pub(crate) fn clear_startup_framebuffer(&mut self) {
         if self.menu_bar_visible() {
-            let (scrn_base, row_bytes, screen_width, screen_height, pixel_size) =
-                self.dispatcher.screen_mode;
-            TrapDispatcher::fb_fill_pattern_rect(
+            let (_, _, screen_width, screen_height, _) = self.dispatcher.screen_mode;
+            self.dispatcher.fill_theme_desktop_rect(
                 &mut self.bus,
-                scrn_base,
-                row_bytes,
-                pixel_size,
-                screen_width as i16,
-                screen_height as i16,
                 0,
                 0,
                 screen_height as i16,
                 screen_width as i16,
-                [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
             );
             if let Some(ppc_app) = self.ppc_app.as_mut() {
                 if let Some(front_buffer) = ppc_app.presented_front_buffer() {
@@ -13533,6 +13534,17 @@ mod tests {
             classic.control_metrics()
         );
         assert_ne!(runner.ui_theme().palette(), classic.palette());
+    }
+
+    #[test]
+    fn fixture_runner_can_select_systemless_theme_before_guest_initialization() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        runner.set_ui_theme(UiThemeId::SystemlessDefault);
+
+        assert_eq!(runner.ui_theme_id(), UiThemeId::SystemlessDefault);
+        assert_eq!(runner.dispatcher().ui_theme_id(), UiThemeId::SystemlessDefault);
+        assert!(runner.uses_classic_guest_metrics());
     }
 
     fn write_double_buffer(bus: &mut MacMemoryBus, ptr: u32, samples: &[u8]) {
