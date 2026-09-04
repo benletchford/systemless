@@ -201,10 +201,12 @@ pub(crate) fn standard_window_chrome(
     if has_zoom_box {
         // The visible zoom control is an 11-by-11 outer box with the bottom
         // and right edges of its smaller state box inset by four pixels. It is
-        // centered in the standard 18-by-18 TrackBox hit cell. Macintosh Human
-        // Interface Guidelines (1992), Figure 5-38, p. 168.
+        // centered over the same rightmost 15-pixel control column as the
+        // vertical scroll bar and grow box. Macintosh Human Interface
+        // Guidelines (1992), Figure 5-38, p. 168; Macintosh Toolbox
+        // Essentials (1992), Figure 4-2 and Listing 5-17.
         let box_top = top.saturating_sub(15);
-        let box_left = right.saturating_sub(20);
+        let box_left = right.saturating_sub(13);
         let box_bottom = box_top.saturating_add(11);
         let box_right = box_left.saturating_add(11);
         let small_bottom = box_top.saturating_add(7);
@@ -238,7 +240,7 @@ pub(crate) fn standard_window_chrome(
     if active {
         let stripe_left = tb_left.saturating_add(2);
         let stripe_right = if has_zoom_box {
-            right.saturating_sub(23)
+            right.saturating_sub(15)
         } else {
             tb_right.saturating_sub(2)
         };
@@ -374,6 +376,10 @@ mod tests {
             .map(|(top, _, _, _)| *top)
             .collect::<Vec<_>>();
         assert_eq!(stripe_rows, [32, 34, 36, 38, 40, 42, 44]);
+        assert!(chrome
+            .ink
+            .iter()
+            .any(|&(top, _, bottom, right)| top == 34 && bottom == 35 && right == 585));
         assert!(chrome.ink.contains(&(30, 601, 422, 602)));
         assert!(chrome.ink.contains(&(421, 40, 422, 602)));
         assert_eq!(
@@ -384,12 +390,12 @@ mod tests {
         assert_eq!(
             chrome.zoom_ink,
             [
-                (34, 580, 35, 591),
-                (34, 580, 45, 581),
-                (44, 580, 45, 591),
-                (34, 590, 45, 591),
-                (34, 586, 41, 587),
-                (40, 580, 41, 587),
+                (34, 587, 35, 598),
+                (34, 587, 45, 588),
+                (44, 587, 45, 598),
+                (34, 597, 45, 598),
+                (34, 593, 41, 594),
+                (40, 587, 41, 594),
             ],
             "the zoom control should nest its smaller state box inside an 11-pixel frame"
         );
