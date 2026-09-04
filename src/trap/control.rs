@@ -7868,11 +7868,11 @@ mod tests {
         );
 
         assert!(
-            screen_pixel_is_set(&bus, base, row_bytes, 28, 56),
-            "enabled scrollbar should draw its provider thumb"
+            screen_pixel_is_set(&bus, base, row_bytes, 28, 48),
+            "enabled scrollbar should draw its provider thumb frame"
         );
         assert!(
-            !screen_pixel_is_set(&bus, base, row_bytes, 124, 56),
+            !screen_pixel_is_set(&bus, base, row_bytes, 124, 48),
             "inactive scrollbar should suppress the provider thumb"
         );
 

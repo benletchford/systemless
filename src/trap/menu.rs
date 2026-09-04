@@ -11346,17 +11346,18 @@ mod tests {
         let (edit_left, _edit_right) = themed_regions[1];
 
         // HIG 1992 p. 54: unavailable menu titles remain visible but dimmed.
-        // The provider-owned states add title chrome only; text placement and
-        // title geometry stay on the existing Menu Manager path.
+        // The provider leaves resting enabled titles undecorated, frames
+        // disabled titles, and keeps text placement and title geometry on the
+        // existing Menu Manager path.
         assert!(
-            screen_pixel_is_set(
+            !screen_pixel_is_set(
                 &themed_bus,
                 themed_base,
                 themed_row_bytes,
                 file_left + 4,
                 17
             ),
-            "systemless-default should draw provider chrome for an enabled menu title"
+            "systemless-default should leave an enabled menu title undecorated at rest"
         );
         assert!(
             !screen_pixel_is_set(
@@ -11366,7 +11367,7 @@ mod tests {
                 file_left + 4,
                 17
             ),
-            "classic System 7 path should not draw the systemless enabled-title underline"
+            "classic System 7 path should leave an enabled menu title undecorated at rest"
         );
         assert!(
             screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, edit_left + 2, 3),
@@ -11405,8 +11406,8 @@ mod tests {
         let regions = disp.menu_title_regions();
         let (left, right) = regions[0];
         assert!(
-            screen_pixel_is_set(&bus, base, row_bytes, left + 4, 17),
-            "precondition: enabled systemless title chrome should draw before highlighting"
+            !screen_pixel_is_set(&bus, base, row_bytes, left + 4, 17),
+            "precondition: enabled systemless title should be undecorated before highlighting"
         );
         let title_pixel = (2..16)
             .flat_map(|y| ((left + 7)..(right - 7)).map(move |x| (x, y)))
@@ -11426,7 +11427,7 @@ mod tests {
         );
         assert!(
             screen_pixel_is_set(&bus, base, row_bytes, left + 4, 17),
-            "provider-highlighted title chrome should redraw, not invert, the enabled-title underline"
+            "provider-highlighted title chrome should fill the resting decoration area"
         );
         assert!(
             !screen_pixel_is_set(&bus, base, row_bytes, title_pixel.0, title_pixel.1),

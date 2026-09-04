@@ -1528,9 +1528,10 @@ pub struct FixtureRunnerConfig {
     /// Host presentation policy for the classic Mac menu bar. The default
     /// honors guest `MBarHeight` and fullscreen transitions.
     pub menu_bar_policy: MenuBarPolicy,
-    /// Selected UI rendering provider. The default `classic-system7` provider
-    /// represents the existing renderer; non-classic themes are explicit and
-    /// must not alter guest-visible Toolbox behavior in classic metrics mode.
+    /// Selected UI rendering provider. The default `systemless-default`
+    /// provider changes presentation while preserving guest-visible Toolbox
+    /// behavior in classic metrics mode. Use `classic-system7` for the original
+    /// renderer.
     pub ui_theme: UiThemeId,
     /// Declares whether theme rendering preserves classic guest metrics or opts
     /// into future themed hit/measurement behavior.
@@ -1552,7 +1553,7 @@ impl Default for FixtureRunnerConfig {
             load_address: DEFAULT_LOAD_ADDRESS,
             arrows_as_numpad: false,
             menu_bar_policy: MenuBarPolicy::GuestControlled,
-            ui_theme: UiThemeId::ClassicSystem7,
+            ui_theme: UiThemeId::SystemlessDefault,
             theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
             addressing_32_bit: true,
             screen_depth: 8,
@@ -2172,9 +2173,9 @@ impl FixtureRunner {
         }
     }
 
-    /// Returns the selected UI theme provider. `classic-system7` is the
-    /// default and maps to the existing renderer path; non-classic providers
-    /// are explicit Systemless-owned rendering contracts.
+    /// Returns the selected UI theme provider. `systemless-default` is the
+    /// standard presentation; `classic-system7` maps to the original renderer
+    /// path for compatibility and reference snapshots.
     pub fn ui_theme(&self) -> &'static dyn UiTheme {
         self.config.ui_theme.provider()
     }
@@ -13496,12 +13497,15 @@ mod tests {
     }
 
     #[test]
-    fn fixture_runner_defaults_to_classic_system7_theme() {
+    fn fixture_runner_defaults_to_systemless_theme() {
         let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        assert_eq!(runner.ui_theme_id(), UiThemeId::ClassicSystem7);
-        assert_eq!(runner.dispatcher().ui_theme_id(), UiThemeId::ClassicSystem7);
-        assert_eq!(runner.ui_theme().id(), UiThemeId::ClassicSystem7);
+        assert_eq!(runner.ui_theme_id(), UiThemeId::SystemlessDefault);
+        assert_eq!(
+            runner.dispatcher().ui_theme_id(),
+            UiThemeId::SystemlessDefault
+        );
+        assert_eq!(runner.ui_theme().id(), UiThemeId::SystemlessDefault);
         assert_eq!(
             runner.theme_metrics_mode(),
             ThemeMetricsMode::ClassicGuestMetrics
@@ -13510,40 +13514,43 @@ mod tests {
     }
 
     #[test]
-    fn fixture_runner_accepts_explicit_systemless_theme_without_themed_metrics() {
+    fn fixture_runner_accepts_explicit_classic_theme_without_themed_metrics() {
         let runner = FixtureRunner::new(
             8 * 1024 * 1024,
             FixtureRunnerConfig {
-                ui_theme: UiThemeId::SystemlessDefault,
+                ui_theme: UiThemeId::ClassicSystem7,
                 theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
                 ..FixtureRunnerConfig::default()
             },
         );
-        let classic = UiThemeId::ClassicSystem7.provider();
+        let systemless = UiThemeId::SystemlessDefault.provider();
 
-        assert_eq!(runner.ui_theme_id(), UiThemeId::SystemlessDefault);
+        assert_eq!(runner.ui_theme_id(), UiThemeId::ClassicSystem7);
         assert_eq!(
             runner.dispatcher().ui_theme_id(),
-            UiThemeId::SystemlessDefault
+            UiThemeId::ClassicSystem7
         );
-        assert_eq!(runner.ui_theme().id(), UiThemeId::SystemlessDefault);
+        assert_eq!(runner.ui_theme().id(), UiThemeId::ClassicSystem7);
         assert!(runner.uses_classic_guest_metrics());
-        assert_eq!(runner.ui_theme().menu_metrics(), classic.menu_metrics());
+        assert_eq!(runner.ui_theme().menu_metrics(), systemless.menu_metrics());
         assert_eq!(
             runner.ui_theme().control_metrics(),
-            classic.control_metrics()
+            systemless.control_metrics()
         );
-        assert_ne!(runner.ui_theme().palette(), classic.palette());
+        assert_ne!(runner.ui_theme().palette(), systemless.palette());
     }
 
     #[test]
-    fn fixture_runner_can_select_systemless_theme_before_guest_initialization() {
+    fn fixture_runner_can_select_classic_theme_before_guest_initialization() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        runner.set_ui_theme(UiThemeId::SystemlessDefault);
+        runner.set_ui_theme(UiThemeId::ClassicSystem7);
 
-        assert_eq!(runner.ui_theme_id(), UiThemeId::SystemlessDefault);
-        assert_eq!(runner.dispatcher().ui_theme_id(), UiThemeId::SystemlessDefault);
+        assert_eq!(runner.ui_theme_id(), UiThemeId::ClassicSystem7);
+        assert_eq!(
+            runner.dispatcher().ui_theme_id(),
+            UiThemeId::ClassicSystem7
+        );
         assert!(runner.uses_classic_guest_metrics());
     }
 

@@ -157,7 +157,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "THEME",
-        default_value = "classic-system7",
+        default_value = "systemless-default",
         value_parser = UiThemeId::parse
     )]
     ui_theme: UiThemeId,
@@ -3168,12 +3168,12 @@ mod tests {
     }
 
     #[test]
-    fn cli_defaults_to_one_physical_host_pixel_per_guest_pixel() {
+    fn cli_defaults_to_one_physical_host_pixel_and_systemless_theme() {
         let cli = Cli::try_parse_from(["systemless", "game.sit"])
             .expect("default display scale should parse");
         assert_eq!(cli.display_scale, 1);
         assert_eq!(cli.screen_depth, None);
-        assert_eq!(cli.ui_theme, UiThemeId::ClassicSystem7);
+        assert_eq!(cli.ui_theme, UiThemeId::SystemlessDefault);
         assert_eq!(
             guest_scaled_physical_size(800, 600, cli.display_scale),
             winit::dpi::PhysicalSize::new(800, 600)

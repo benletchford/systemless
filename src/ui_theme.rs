@@ -1,10 +1,10 @@
 //! UI theme contract for dialog, menu, control, and text rendering.
 //!
-//! The first boundary is intentionally semantic and non-invasive: the default
-//! `classic-system7` provider represents the current renderer, while
-//! `systemless-default` is an explicit non-classic provider for future
-//! Systemless-owned snapshots. Guest-visible Toolbox behavior remains outside
-//! this boundary.
+//! The first boundary is intentionally semantic and non-invasive:
+//! `systemless-default` is the standard presentation provider, while
+//! `classic-system7` preserves the original renderer for compatibility and
+//! reference snapshots. Guest-visible Toolbox behavior remains outside this
+//! boundary.
 
 pub const CLASSIC_SYSTEM7_THEME: &str = "classic-system7";
 pub const SYSTEMLESS_DEFAULT_THEME: &str = "systemless-default";
