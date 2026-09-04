@@ -1370,39 +1370,25 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        if self.menu_bar_hidden || self.fullscreen_locked {
-            Self::fb_fill_rect(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                top,
-                left,
-                bottom,
-                right,
-                true,
-            );
-        } else {
-            // SetDeskCPat defines the desktop as the Window Manager's
-            // patterned background. Systemless uses the standard QuickDraw
-            // gray pattern when app-style hosting exposes desktop areas.
-            // Inside Macintosh Volume V, V-210
-            Self::fb_fill_pattern_rect(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                top,
-                left,
-                bottom,
-                right,
-                crate::window_manager::STANDARD_DESKTOP_PATTERN,
-            );
-        }
+        // GrayRgn and the desktop pattern are guest Window Manager state;
+        // hiding the guest menu bar is only a host presentation choice and
+        // does not turn a windowed application's desktop black. A genuine
+        // kiosk aperture is reapplied later by the dedicated stage compositor.
+        // Inside Macintosh Volume I (1985), pp. I-282 and I-289;
+        // Macintosh Toolbox Essentials (1992), pp. 4-113--4-119.
+        Self::fb_fill_pattern_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            crate::window_manager::STANDARD_DESKTOP_PATTERN,
+        );
     }
 
     fn erase_window_content_rect(
@@ -12128,13 +12114,13 @@ mod tests {
     }
 
     #[test]
-    fn move_window_restores_exposed_desktop_when_menu_bar_visible() {
+    fn move_window_restores_exposed_desktop_when_host_hides_menu_bar() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc(800 * 600);
         bus.write_long(0x0824, screen_base);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.menu_bar_hidden = false;
+        disp.menu_bar_hidden = true;
         super::super::TrapDispatcher::fb_fill_pattern_rect(
             &mut bus,
             screen_base,
@@ -12179,7 +12165,7 @@ mod tests {
         assert_eq!(
             bus.read_byte(old_content_probe),
             255,
-            "moving a visible window should restore the exposed old area to the desktop pattern"
+            "host menu suppression must not turn the exposed desktop black"
         );
         let new_content_probe = screen_base + 250 * 800 + 460;
         assert_eq!(
