@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "7d52fceebdf2f952da64c8fa3ad9752b6f8fdcae3c335b9fe5ad6be34a22e5cd",
+  "fixture_sha256": "b88553c2fd06011752b732d2103a6ae194e65bf9f52d3b5bcce52acf27ee7d7e",
   "scenario": "oracle/popup.json",
   "scenario_sha256": "f57f7a2a1777697bc7d0d8b046a260e634fa51cd77e5cd6d92defb68dfced3c8",
   "capture_date": "2026-09-05",
@@ -22,19 +22,19 @@
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/35-popup-lists-open.png",
-          "sha256": "1f28d3c7161c1625105caec0aaefabe4139da4ee6aa62575781038cbc9242550"
+          "sha256": "8811f830607fe36af6b6e2210fb569932b36efb83bb89d9a98ccc213cb8e196f"
         },
         {
           "file": "reference/basiliskii-68k/36-popup-lists-scrolled.png",
-          "sha256": "9c3baf17beefba4f0394e7545f76d0ca9bd8ce0e0870c7011b56b7af4f2a6329"
+          "sha256": "c237246a56ad151c102f1ec0bc49cc29cfcae44383a7a3bbd105843b6804408f"
         },
         {
           "file": "reference/basiliskii-68k/36-popup-lists-deep-selected.png",
-          "sha256": "0124f051fbc3810361afdc4a6ad5ff23ace482e7591cbcfa2a23d18b361b214b"
+          "sha256": "c2801a085404ad42861b35c5b4c9c59c4f3cc6031e299b69728c0aa51fa87fe8"
         },
         {
           "file": "reference/basiliskii-68k/37-popup-lists-selected.png",
-          "sha256": "b3bcdd14ab8a9b6dcbd0bee40610e8f851ac3b4ed4d7f3156eb2dcdf353c42ed"
+          "sha256": "c77e105f28272eedfa7a71f3b072c90f28d42402214f2502c7e8c6e670ea24a7"
         }
       ]
     },
@@ -49,19 +49,19 @@
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/35-popup-lists-open.png",
-          "sha256": "24206f58ca30ae3a8abd3a59107a498d3c8af7b9ba980ad814ae87d9a95e195b"
+          "sha256": "b8ca6827fd0d89fd4c67172df97d6c633e39dbb69485f0f8039748bfc2ac1ec4"
         },
         {
           "file": "reference/sheepshaver-ppc/36-popup-lists-scrolled.png",
-          "sha256": "56c4a0f7b926f88dba7256a5972ec73b07d67206d0d2e05d24eb0b1388ebff40"
+          "sha256": "86eb8f3f64260028b97dae1d5d1ee7195da7e8f46a50178afddddaee388d3f43"
         },
         {
           "file": "reference/sheepshaver-ppc/36-popup-lists-deep-selected.png",
-          "sha256": "8a3b4430af8e730c5ae6e1580fbe824a6aaf2c45b83870a079fa856bb44474a7"
+          "sha256": "20376a03f05c8eedd3e142e14540d6afb8f397185a2452c21b0f1a194f88779a"
         },
         {
           "file": "reference/sheepshaver-ppc/37-popup-lists-selected.png",
-          "sha256": "89bfe753eed6a68798d04906079cd27de40e75e2e5f16d9cafbbe5612a7c82aa"
+          "sha256": "cdd4f4e8f2ff944d687acbc66e271c13fd9dc868eb2eebed5cf915ae103cf97f"
         }
       ]
     }

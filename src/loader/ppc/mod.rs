@@ -22999,9 +22999,9 @@ fn dispatch_supported_import(
                     for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
                         let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
                         if let Some(control) = ppc_control_ptr(memory, control_handle) {
-                            // Inside Macintosh: More Macintosh Toolbox (1993),
-                            // pp. 4-75--4-76: an inactive list disables its
-                            // standard scroll bars through contrlHilite.
+                            // LActivate: IM IV-276 describes hiding the bars.
+                            // Mac OS 8.1 keeps contrlVis and sets contrlHilite=255
+                            // (BasiliskII/SheepShaver probe).
                             let _ = memory.write_u8(
                                 control + PPC_CONTROL_HILITE_OFFSET,
                                 if active { 0 } else { 0xff },
@@ -23031,10 +23031,11 @@ fn dispatch_supported_import(
                     for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
                         let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
                         if let Some(control) = ppc_control_ptr(memory, control_handle) {
-                            let _ = memory.write_u8(
-                                control + PPC_CONTROL_VISIBLE_OFFSET,
-                                if draw_enabled { 0xff } else { 0 },
-                            );
+                            // LDoDraw(FALSE) disables cell drawing, not control
+                            // visibility (IM IV-275; Mac OS 8.1 oracle probe).
+                            if draw_enabled {
+                                let _ = memory.write_u8(control + PPC_CONTROL_VISIBLE_OFFSET, 0xff);
+                            }
                         }
                     }
                 }
@@ -69007,7 +69008,7 @@ fn ppc_control_part_at_point(
 ) -> Option<i16> {
     let control = ppc_control_ptr(memory, handle)?;
     if memory.read_u8(control + PPC_CONTROL_VISIBLE_OFFSET)? == 0
-        || memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET)? == 0xff
+        || memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET)? >= 0xfe
     {
         return None;
     }
@@ -71603,26 +71604,7 @@ fn ppc_list_visible_rect(
 }
 
 fn ppc_list_set_visible_origin(record: &mut PpcListRecord, row: i16, column: i16) {
-    let row_page = record.visible.2.saturating_sub(record.visible.0).max(1);
-    let column_page = record.visible.3.saturating_sub(record.visible.1).max(1);
-    let max_row = record
-        .data_bounds
-        .2
-        .saturating_sub(row_page)
-        .max(record.data_bounds.0);
-    let max_column = record
-        .data_bounds
-        .3
-        .saturating_sub(column_page)
-        .max(record.data_bounds.1);
-    let top = row.clamp(record.data_bounds.0, max_row);
-    let left = column.clamp(record.data_bounds.1, max_column);
-    record.visible = (
-        top,
-        left,
-        top.saturating_add(row_page).min(record.data_bounds.2),
-        left.saturating_add(column_page).min(record.data_bounds.3),
-    );
+    record.set_visible_origin(row, column);
 }
 
 fn ppc_list_recompute_visible(record: &mut PpcListRecord) {
@@ -71676,24 +71658,7 @@ fn ppc_list_scrollbar_bounds(record: &PpcListRecord, vertical: bool) -> (i16, i1
 }
 
 fn ppc_list_scrollbar_limits(record: &PpcListRecord, vertical: bool) -> (i16, i16, i16) {
-    let (data_start, data_end, visible_start, visible_end) = if vertical {
-        (
-            record.data_bounds.0,
-            record.data_bounds.2,
-            record.visible.0,
-            record.visible.2,
-        )
-    } else {
-        (
-            record.data_bounds.1,
-            record.data_bounds.3,
-            record.visible.1,
-            record.visible.3,
-        )
-    };
-    let page = visible_end.saturating_sub(visible_start).max(1);
-    let max = data_end.saturating_sub(page).max(data_start);
-    (visible_start.clamp(data_start, max), data_start, max)
+    record.scrollbar_limits(vertical)
 }
 
 fn ppc_list_sync_guest_scrollbars(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
@@ -72223,6 +72188,12 @@ fn ppc_list_redraw(
         else {
             continue;
         };
+        if !record.active {
+            if let Some(control) = ppc_control_ptr(memory, control_handle) {
+                // LUpdate's inactive-list scrollbar state on Mac OS 8.1.
+                let _ = memory.write_u8(control + PPC_CONTROL_HILITE_OFFSET, 254);
+            }
+        }
         let _ = ppc_draw_control(
             memory,
             handles,
@@ -159983,6 +159954,15 @@ pub(crate) mod tests {
             Some(0xff)
         );
 
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LSetDrawingMode);
+        assert!(!loaded.list_manager[&list].draw_enabled);
+        assert_eq!(loaded.memory.read_u8(vertical_scroll_ptr + PPC_CONTROL_VISIBLE_OFFSET), Some(0xff));
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = list;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LSetDrawingMode);
+
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LSetCell;
@@ -160055,7 +160035,7 @@ pub(crate) mod tests {
             loaded
                 .memory
                 .read_u8(vertical_scroll_ptr + PPC_CONTROL_HILITE_OFFSET),
-            Some(0xff)
+            Some(0xfe)
         );
         loaded.cpu.gpr[3] = (10u32 << 16) | 20;
         loaded.cpu.gpr[4] = 0;

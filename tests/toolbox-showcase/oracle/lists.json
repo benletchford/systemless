@@ -1,0 +1,299 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 155,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 155,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "15-lists.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 263,
+      "h": 544
+    },
+    {
+      "type": "mouse_down",
+      "v": 263,
+      "h": 544
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 263,
+      "h": 544
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 304,
+      "h": 120
+    },
+    {
+      "type": "mouse_down",
+      "v": 304,
+      "h": 120
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 304,
+      "h": 120
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "15-lists-selected.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 304,
+      "h": 245
+    },
+    {
+      "type": "mouse_down",
+      "v": 304,
+      "h": 245
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 304,
+      "h": 245
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "15-lists-mutated.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 304,
+      "h": 374
+    },
+    {
+      "type": "mouse_down",
+      "v": 304,
+      "h": 374
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 304,
+      "h": 374
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "15-lists-scrolled.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 304,
+      "h": 482
+    },
+    {
+      "type": "mouse_down",
+      "v": 304,
+      "h": 482
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 304,
+      "h": 482
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "15-lists-resized.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 336,
+      "h": 137
+    },
+    {
+      "type": "mouse_down",
+      "v": 336,
+      "h": 137
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 336,
+      "h": 137
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "15-lists-inactive.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 336,
+      "h": 137
+    },
+    {
+      "type": "mouse_down",
+      "v": 336,
+      "h": 137
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 336,
+      "h": 137
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "16-lists-interacted.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 267,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 267,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "34-popup-lists.png"
+    }
+  ]
+}
