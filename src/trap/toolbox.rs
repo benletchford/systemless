@@ -1283,18 +1283,18 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
     ) -> bool {
         let task = ExecutionTaskId::from_thread_id(thread_id);
-        let finished = self.guest_calls.cooperative_context(task);
-        if !self.guest_calls.remove_task(task) {
+        let Some((finished, _)) =
+            self.guest_calls
+                .retire_cooperative_context(task, None, |saved| {
+                    saved.result_destination == 0
+                        || bus.try_write_long(saved.result_destination, result)
+                })
+        else {
             return false;
-        }
-        if let Some(finished) = finished {
-            if finished.result_destination != 0 {
-                bus.write_long(finished.result_destination, result);
-            }
-            if finished.stack_base != 0 {
-                self.cooperative_thread_pool
-                    .push((finished.stack_base, finished.stack_limit));
-            }
+        };
+        if finished.stack_base != 0 {
+            self.cooperative_thread_pool
+                .push((finished.stack_base, finished.stack_limit));
         }
         true
     }
@@ -1316,18 +1316,27 @@ impl super::TrapDispatcher {
         result: u32,
     ) -> bool {
         let finished = self.guest_calls.current_task();
-        if !self.guest_calls.task_is_empty(finished) {
-            return false;
-        }
-        // Select and validate the successor before releasing the outgoing
-        // snapshot or stack. A failed installation leaves the task retryable.
         let Some(next) = self.next_ready_cooperative_thread(0) else {
             return false;
         };
-        if !self.switch_to_cooperative_thread(cpu, next) {
+        let Some((saved, Some(successor))) = self.guest_calls.retire_cooperative_context(
+            finished,
+            Some(ExecutionTaskId::from_thread_id(next)),
+            |saved| {
+                saved.result_destination == 0
+                    || bus.try_write_long(saved.result_destination, result)
+            },
+        ) else {
             return false;
+        };
+        // The execution owner validated both contexts and committed the result.
+        // Installing this owned snapshot cannot yield or fail.
+        Self::install_cooperative_thread(cpu, &successor);
+        if saved.stack_base != 0 {
+            self.cooperative_thread_pool
+                .push((saved.stack_base, saved.stack_limit));
         }
-        self.retire_cooperative_thread(finished.thread_id(), result, bus)
+        true
     }
 
     /// Claim a pooled stack of at least `stack_size` bytes, or allocate a
@@ -27290,6 +27299,74 @@ mod tests {
                 .scheduling_state(ExecutionTaskId::APPLICATION),
             Some(ExecutionTaskState::Running)
         );
+    }
+
+    #[test]
+    fn thread_retirement_rejects_partial_result_writes_and_can_retry() {
+        for self_exit in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let worker = ExecutionTaskId::from_thread_id(3);
+            let application = ExecutionTaskId::APPLICATION;
+            let result_slot = TEST_SP + 0x100;
+            bus.write_long(result_slot, 0x1234_5678);
+            bus.protect_readonly_code(result_slot + 2, 2);
+            assert!(disp.guest_calls.register_task(worker));
+            assert!(disp
+                .guest_calls
+                .set_scheduling_state(worker, ExecutionTaskState::Ready));
+            let mut saved = super::CooperativeThread::default();
+            saved.result_destination = result_slot;
+            saved.stack_base = 0x1000;
+            saved.stack_limit = 0x2000;
+            assert!(disp
+                .guest_calls
+                .save_cooperative_context(worker, saved.clone()));
+            let mut app = super::CooperativeThread::default();
+            app.pc = 0x4321;
+            app.a_regs[0] = 0x8765;
+            assert!(disp.guest_calls.save_cooperative_context(application, app));
+            if self_exit {
+                assert!(disp.guest_calls.switch_to_task(worker));
+            }
+            cpu.write_reg(Register::PC, 0x1234);
+            cpu.write_reg(Register::A0, 0xcafe_babe);
+            let current = disp.guest_calls.current_task();
+            let ready = disp.guest_calls.next_ready_task(None);
+            let retired = if self_exit {
+                disp.finish_cooperative_thread(&mut cpu, &mut bus)
+            } else {
+                disp.retire_cooperative_thread(worker.thread_id(), 0xcafe_babe, &mut bus)
+            };
+            assert!(!retired);
+            assert_eq!(disp.guest_calls.current_task(), current);
+            assert_eq!(disp.guest_calls.next_ready_task(None), ready);
+            assert_eq!(
+                disp.guest_calls.cooperative_context(worker),
+                Some(saved.clone())
+            );
+            assert_eq!(bus.read_long(result_slot), 0x1234_5678);
+            assert_eq!(cpu.read_reg(Register::PC), 0x1234);
+            assert_eq!(cpu.read_reg(Register::A0), 0xcafe_babe);
+            assert!(disp.cooperative_thread_pool.is_empty());
+
+            saved.result_destination = result_slot + 8;
+            assert!(disp.guest_calls.save_cooperative_context(worker, saved));
+            let retired = if self_exit {
+                disp.finish_cooperative_thread(&mut cpu, &mut bus)
+            } else {
+                disp.retire_cooperative_thread(worker.thread_id(), 0xcafe_babe, &mut bus)
+            };
+            assert!(retired);
+            assert_eq!(disp.guest_calls.current_task(), application);
+            assert!(disp.guest_calls.cooperative_context(worker).is_none());
+            assert_eq!(disp.guest_calls.scheduling_state(worker), None);
+            assert_eq!(bus.read_long(result_slot + 8), 0xcafe_babe);
+            assert_eq!(disp.cooperative_thread_pool, vec![(0x1000, 0x2000)]);
+            if self_exit {
+                assert_eq!(cpu.read_reg(Register::PC), 0x4321);
+                assert_eq!(cpu.read_reg(Register::A0), 0x8765);
+            }
+        }
     }
 
     #[test]
