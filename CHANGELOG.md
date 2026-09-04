@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.33.1](https://github.com/benletchford/systemless/compare/v0.33.0...v0.33.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* install only the systemless application binary ([#1379](https://github.com/benletchford/systemless/issues/1379)) ([8f35930](https://github.com/benletchford/systemless/commit/8f35930b4e2e7c8bf75194c88b363615b779de7f))
+* preserve task scheduling invariants across thread switches ([a1ce5d7](https://github.com/benletchford/systemless/commit/a1ce5d784fc919b588a4af750554501d4b2a538e))
+* preserve task-owned callers across mixed mode transitions ([5740187](https://github.com/benletchford/systemless/commit/5740187aaffb6bee1be0351e856924fbf6bf1c88))
+* **showcase:** prove standard popup tracking on classic Macs ([d3a9153](https://github.com/benletchford/systemless/commit/d3a91532a8b1cc528dec4d8aa68fbf101f8b89cb))
+
 ## [0.33.0](https://github.com/benletchford/systemless/compare/v0.32.1...v0.33.0) (2026-09-04)
 
 
