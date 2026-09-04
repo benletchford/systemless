@@ -139602,12 +139602,12 @@ pub(crate) mod tests {
                 "{depth}bpp document top frame did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -18)),),
                 Some(white),
                 "{depth}bpp title bar did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
                 Some(black),
                 "{depth}bpp active title stripes did not draw",
             );
@@ -139669,7 +139669,7 @@ pub(crate) mod tests {
                 Some(0),
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
                 Some(white),
                 "{depth}bpp inactive title retained stripes",
             );
@@ -139682,7 +139682,7 @@ pub(crate) mod tests {
             loaded.cpu.gpr[4] = 1;
             run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
                 Some(black),
                 "{depth}bpp reactivated title did not restore stripes",
             );
@@ -139736,7 +139736,7 @@ pub(crate) mod tests {
                 "{depth}bpp new front window was not activated",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
                 Some(white),
                 "{depth}bpp previous title was not visibly deactivated",
             );
@@ -139744,7 +139744,7 @@ pub(crate) mod tests {
                 ppc_quickdraw_read_pixel(
                     &mut loaded.memory,
                     front,
-                    second_surface.local_point((30, -16)),
+                    second_surface.local_point((30, -17)),
                 ),
                 Some(black),
                 "{depth}bpp new title was not visibly activated",
@@ -139761,7 +139761,7 @@ pub(crate) mod tests {
                 Some(0),
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
                 Some(black),
                 "{depth}bpp selected title was not visibly activated",
             );
@@ -139769,7 +139769,7 @@ pub(crate) mod tests {
                 ppc_quickdraw_read_pixel(
                     &mut loaded.memory,
                     front,
-                    second_surface.local_point((30, -16)),
+                    second_surface.local_point((30, -17)),
                 ),
                 Some(white),
                 "{depth}bpp prior title was not visibly deactivated by SelectWindow",
