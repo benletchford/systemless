@@ -2616,6 +2616,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // NewControl ($A954)
             // Allocates a new control and adds it to the specified window.
@@ -5900,7 +5901,10 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp);
 
         // A held arrow repeats at the classic 20 Hz cadence.
-        disp.tick_count += TrapDispatcher::SCROLLBAR_ACTION_REPEAT_TICKS;
+        let next_tick = disp
+            .current_tick()
+            .wrapping_add(TrapDispatcher::SCROLLBAR_ACTION_REPEAT_TICKS);
+        disp.set_tick_count_for_test(&mut bus, next_tick);
         cpu.write_reg(Register::PC, trap_pc + 2);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()

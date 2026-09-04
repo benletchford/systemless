@@ -722,10 +722,11 @@ impl super::TrapDispatcher {
             .next()?;
         let selection = (menu_id, item_number);
         if self.pending_native_menu_selection.stage(selection) {
+            let tick = self.current_tick();
             self.pending_native_menu_event = Some(super::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
-                when: self.tick_count,
+                when: tick,
                 where_v: 10,
                 where_h: region.left + (region.right - region.left) / 2,
                 modifiers: self.current_event_modifiers(),
@@ -1702,6 +1703,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // InitMenus ($A930)
             // Initializes an empty current menu list and menu color table.

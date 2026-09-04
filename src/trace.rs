@@ -143,12 +143,12 @@ mod tests {
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.set_trace_sink(Box::new(MemSink(cap.clone())));
         dispatcher.set_screen_mode_for_test(0x2000, 800, 800, 600, 8);
-        dispatcher.tick_count = 77;
         dispatcher.instruction_count = 1234;
         dispatcher.device_clut[7] = [0xFFFF, 0x0000, 0x0000];
 
         let mut bus = MacMemoryBus::new(0x2000 + 800 * 600 + 1024);
         bus.write_byte(0x2000, 7);
+        dispatcher.set_tick_count_for_test(&mut bus, 77);
 
         dispatcher
             .record_trace_event(

@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use super::globals::LowMemGlobals;
-use super::{GuestAddressSpace, SharedGuestAddressSpace};
+use super::{
+    flat_memory_route, GuestAddressSpace, GuestMemoryRoute, SharedGuestAddressSpace,
+};
 use crate::process_context::SharedClassicHeapAllocator;
 
 const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
@@ -514,6 +516,47 @@ pub struct MacMemoryBus {
     foreign_address_space: Option<SharedGuestAddressSpace>,
 }
 
+/// Immutable snapshot of system-owned protected-code ranges. Trap Manager
+/// operations use this snapshot while a mutable bus closure performs the
+/// corresponding guest access, avoiding an aliasing borrow of the bus while
+/// retaining exact 24-bit translation and range-union semantics.
+#[derive(Clone, Debug)]
+pub(crate) struct ProtectedCodeOwnership {
+    addressing_32_bit: bool,
+    ranges: Vec<(u32, u32)>,
+}
+
+impl ProtectedCodeOwnership {
+    #[inline]
+    pub(crate) fn contains(&self, address: u32) -> bool {
+        let translated = if self.addressing_32_bit {
+            address
+        } else {
+            address & 0x00FF_FFFF
+        };
+        let end = (u64::from(translated) + 4).min(1u64 << 32);
+        if end != u64::from(translated) + 4 {
+            return false;
+        }
+        let mut cursor = u64::from(translated);
+        while cursor < end {
+            let mut covered_end = cursor;
+            for &(start, stop) in &self.ranges {
+                let start = u64::from(start);
+                let stop = u64::from(stop);
+                if start <= cursor && cursor < stop {
+                    covered_end = covered_end.max(stop.min(end));
+                }
+            }
+            if covered_end == cursor {
+                return false;
+            }
+            cursor = covered_end;
+        }
+        true
+    }
+}
+
 /// An exact-state probe journals the words an idle cycle writes: a spilled
 /// register or two, an event record, a saved keymap -- tens of bytes, a few
 /// hundred at most. A journal past this many distinct words is not
@@ -574,6 +617,18 @@ impl std::fmt::Debug for SharedRamRegion {
 impl SharedRamRegion {
     pub(crate) fn len(&self) -> usize {
         self.len
+    }
+
+    /// Whether two views point into the same owned RAM allocation.
+    #[inline]
+    pub(crate) fn same_backing(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.ram.0, &other.ram.0)
+    }
+
+    /// Offset of this view within its shared allocation.
+    #[inline]
+    pub(crate) fn backing_offset(&self) -> usize {
+        self.offset
     }
 
     /// Read a byte from the shared subrange.
@@ -1068,18 +1123,18 @@ impl MacMemoryBus {
         if (count as i32) <= 0 {
             return;
         }
+        let count_usize = count as usize;
+        let flat_route = self.route(src, count_usize) == GuestMemoryRoute::Flat
+            && self.route(dst, count_usize) == GuestMemoryRoute::Flat;
         #[cfg(debug_assertions)]
-        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && !self.foreign_ordinary_sparse_overlaps(src, count as usize)
-            && !self.foreign_ordinary_sparse_overlaps(dst, count as usize)
+        let fast = flat_route
+            && !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = !self.foreign_ordinary_sparse_overlaps(src, count as usize)
-            && !self.foreign_ordinary_sparse_overlaps(dst, count as usize)
+        let fast = flat_route
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
-        let count_usize = count as usize;
         let translated_src = self.range_translates_contiguously(src, count_usize);
         let translated_dst = self.range_translates_contiguously(dst, count_usize);
         let src_for_overlap = self.translate_guest_address(src);
@@ -1088,7 +1143,8 @@ impl MacMemoryBus {
         let dst = translated_dst.unwrap_or(dst);
         let src_end = (src as u64).saturating_add(count as u64);
         let dst_end = (dst as u64).saturating_add(count as u64);
-        if (fast || self.only_write_probe_blocks_fast_path())
+        if flat_route
+            && (fast || self.only_write_probe_blocks_fast_path())
             && translated_src.is_some()
             && translated_dst.is_some()
             && !self.readonly_code_overlaps(dst, count)
@@ -1254,6 +1310,171 @@ impl MacMemoryBus {
         self.foreign_address_space = None;
     }
 
+    /// Resolve one guest range through the architecture-neutral address-space
+    /// router. Shared aliases installed by the process runner point back into
+    /// this bus's RAM, so the classic adapter presents a wholly-local shared
+    /// range as `Flat` and retains its write probes, protection checks, and
+    /// direct slice paths. A shared mapping that is outside this bus's RAM is
+    /// left as `Shared` and is serviced through the attached view.
+    #[inline]
+    fn route(&self, address: u32, len: usize) -> GuestMemoryRoute {
+        // The neutral router receives the translated start plus a length, but
+        // 24-bit mode wraps at $0100_0000.  A range crossing that boundary is
+        // necessarily mixed and must use the byte-wise bus path even when
+        // the backing RAM itself is larger than 16 MiB.
+        if self.range_translates_contiguously(address, len).is_none() {
+            return GuestMemoryRoute::Mixed;
+        }
+        let translated = self.translate_guest_address(address);
+        let Some(memory) = self.foreign_address_space.as_ref() else {
+            return flat_memory_route(translated, len, self.ram_size);
+        };
+        let route = memory.route(translated, len, Some(self.ram_size));
+        if route == GuestMemoryRoute::Shared
+            && flat_memory_route(translated, len, self.ram_size) == GuestMemoryRoute::Flat
+        {
+            let local_ram = match &self.ram {
+                RamStorage::Shared(ram) => Some(SharedRamRegion {
+                    ram: ram.clone(),
+                    offset: 0,
+                    len: self.ram_size as usize,
+                }),
+                RamStorage::Owned(_) | RamStorage::External(_, _) => None,
+            };
+            if let Some(local_ram) = local_ram.as_ref() {
+                if memory.shared_range_is_local_flat(translated, len, local_ram) {
+                    return GuestMemoryRoute::Flat;
+                }
+            }
+        }
+        route
+    }
+
+    /// Whether every byte in a guest range has a backing selected by the
+    /// neutral router. This is used by instruction-entry validation: a native
+    /// process may execute above the classic RAM limit when its address-space
+    /// view supplies a shared or sparse mapping.
+    pub(crate) fn is_guest_address_mapped(&self, address: u32, len: usize) -> bool {
+        fn mapped(route: GuestMemoryRoute) -> bool {
+            matches!(
+                route,
+                GuestMemoryRoute::Flat
+                    | GuestMemoryRoute::Shared
+                    | GuestMemoryRoute::SharedReadOnly
+                    | GuestMemoryRoute::Sparse
+            )
+        }
+        if len == 0 {
+            return true;
+        }
+        if mapped(self.route(address, len)) {
+            return true;
+        }
+        matches!(self.route(address, 1), route if mapped(route))
+            && (1..len).all(|offset| {
+                mapped(self.route(address.wrapping_add(offset as u32), 1))
+            })
+    }
+
+    /// Whether every byte in a guest range is mapped and accepts writes.
+    /// This is the atomic preflight for routed bulk copies: a mixed flat /
+    /// sparse span may be valid, while any hole or read-only byte rejects the
+    /// operation before the first destination byte changes.
+    fn is_guest_address_writable(&self, address: u32, len: usize) -> bool {
+        (0..len).all(|offset| {
+            let guest_address = address.wrapping_add(offset as u32);
+            let translated = self.translate_guest_address(guest_address);
+            match self.route(guest_address, 1) {
+                GuestMemoryRoute::Flat => !self.readonly_code_overlaps(translated, 1),
+                GuestMemoryRoute::Shared | GuestMemoryRoute::Sparse => self
+                    .foreign_address_space
+                    .as_ref()
+                    .is_some_and(|memory| {
+                        memory.routed_byte_is_writable(translated, Some(self.ram_size))
+                    }),
+                GuestMemoryRoute::SharedReadOnly
+                | GuestMemoryRoute::Unmapped
+                | GuestMemoryRoute::Mixed => false,
+            }
+        })
+    }
+
+    /// Return whether a guest longword can be written, and commit it only
+    /// after every destination byte has passed the routed protection check.
+    /// Trap Manager uses this status-bearing path because the public 68K bus
+    /// trait intentionally retains its historical write-and-ignore contract.
+    pub(crate) fn try_write_long(&mut self, address: u32, value: u32) -> bool {
+        self.try_write_bytes_atomic(address, &value.to_be_bytes())
+    }
+
+    /// Read one guest longword only when all four routed bytes are mapped.
+    /// `MemoryBus::read_long` preserves the classic unmapped-zero behavior,
+    /// which is useful to emulated code but cannot distinguish a missing Trap
+    /// Manager table cell from a real zero value.
+    pub(crate) fn try_read_long(&self, address: u32) -> Option<u32> {
+        self.is_guest_address_mapped(address, 4)
+            .then(|| self.read_long(address))
+    }
+
+    /// Commit one byte through the same route and protection policy used by
+    /// the public bus writer, while retaining the success status needed by
+    /// atomic service operations.
+    #[inline]
+    fn try_write_byte(&mut self, address: u32, value: u8) -> bool {
+        let translated = self.translate_guest_address(address);
+        match self.route(address, 1) {
+            GuestMemoryRoute::Shared | GuestMemoryRoute::Sparse => self
+                .foreign_address_space
+                .as_ref()
+                .and_then(|memory| {
+                    memory.write_routed_u8(translated, value, Some(self.ram_size))
+                })
+                .is_some(),
+            GuestMemoryRoute::SharedReadOnly | GuestMemoryRoute::Unmapped | GuestMemoryRoute::Mixed => {
+                false
+            }
+            GuestMemoryRoute::Flat => {
+                if translated >= self.ram_size || self.readonly_code_overlaps(translated, 1) {
+                    return false;
+                }
+                // Keep write probes, tracers, and watchpoints on the normal
+                // bus path for the actual commit.
+                self.write_byte(address, value);
+                true
+            }
+        }
+    }
+
+    /// Atomically write bytes through mixed flat/shared/sparse routing. The
+    /// destination is preflighted before the first commit; the original bytes
+    /// make the operation recoverable even if a later routed write reports an
+    /// unexpected failure.
+    fn try_write_bytes_atomic(&mut self, address: u32, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return true;
+        }
+        if !self.is_guest_address_writable(address, data.len()) {
+            return false;
+        }
+        let originals = (0..data.len())
+            .map(|offset| {
+                let guest_address = address.wrapping_add(offset as u32);
+                (guest_address, self.read_byte(guest_address))
+            })
+            .collect::<Vec<_>>();
+        for (offset, &byte) in data.iter().enumerate() {
+            let guest_address = address.wrapping_add(offset as u32);
+            if !self.try_write_byte(guest_address, byte) {
+                for &(rollback_address, original) in originals[..offset].iter().rev() {
+                    let restored = self.try_write_byte(rollback_address, original);
+                    debug_assert!(restored);
+                }
+                return false;
+            }
+        }
+        true
+    }
+
     /// Whether an address is mapped into a foreign guest address space's
     /// ordinary sparse regions (and not in a shared flat-RAM overlay).
     #[inline]
@@ -1261,7 +1482,8 @@ impl MacMemoryBus {
         let Some(foreign) = self.foreign_address_space.as_ref() else {
             return false;
         };
-        foreign.is_ordinary_sparse_mapped(address)
+        foreign.route_byte(self.translate_guest_address(address), Some(self.ram_size))
+            == GuestMemoryRoute::Sparse
     }
 
     #[inline]
@@ -1272,7 +1494,7 @@ impl MacMemoryBus {
         let Ok(len) = u32::try_from(len) else {
             return true;
         };
-        foreign.ordinary_mapping_overlaps(self.translate_guest_address(address), len)
+        foreign.sparse_mapping_overlaps(self.translate_guest_address(address), len)
     }
 
     /// Return the end of a read-only process mapping that overlaps a proposed
@@ -1303,62 +1525,6 @@ impl MacMemoryBus {
     ) -> Option<R> {
         let foreign = self.foreign_address_space.as_ref()?;
         Some(foreign.with_mut(f))
-    }
-
-    #[inline]
-    fn foreign_read_u8(&self, address: u32) -> Option<u8> {
-        let memory = self.foreign_address_space.as_ref()?;
-        memory.read_u8(address)
-    }
-
-    #[inline]
-    fn foreign_read_u16(&self, address: u32) -> Option<u16> {
-        let memory = self.foreign_address_space.as_ref()?;
-        memory.read_u16_be(address)
-    }
-
-    #[inline]
-    fn foreign_read_u32(&self, address: u32) -> Option<u32> {
-        let memory = self.foreign_address_space.as_ref()?;
-        memory.read_u32_be(address)
-    }
-
-    #[inline]
-    fn foreign_write_u8_if_mapped(&mut self, address: u32, value: u8) -> bool {
-        let Some(memory) = self.foreign_address_space.as_ref() else {
-            return false;
-        };
-        // A readable but non-writable mapping is still authoritative: ignore
-        // the store instead of falling through into same-address flat RAM.
-        if memory.read_u8(address).is_none() {
-            return false;
-        }
-        let _ = memory.write_u8(address, value);
-        true
-    }
-
-    #[inline]
-    fn foreign_write_u16_if_mapped(&mut self, address: u32, value: u16) -> bool {
-        let Some(memory) = self.foreign_address_space.as_ref() else {
-            return false;
-        };
-        if memory.read_u16_be(address).is_none() {
-            return false;
-        }
-        let _ = memory.write_u16_be(address, value);
-        true
-    }
-
-    #[inline]
-    fn foreign_write_u32_if_mapped(&mut self, address: u32, value: u32) -> bool {
-        let Some(memory) = self.foreign_address_space.as_ref() else {
-            return false;
-        };
-        if memory.read_u32_be(address).is_none() {
-            return false;
-        }
-        let _ = memory.write_u32_be(address, value);
-        true
     }
 
     /// Begin journaling original RAM bytes for an exact-state execution
@@ -1543,7 +1709,9 @@ impl MacMemoryBus {
 
     pub(crate) fn protect_readonly_code(&mut self, address: u32, len: u32) {
         if len != 0 {
-            let end = address.saturating_add(len);
+            let Some(end) = address.checked_add(len) else {
+                return;
+            };
             self.readonly_code_ranges.push((address, end));
             self.readonly_code_span = Some(match self.readonly_code_span {
                 Some((lo, hi)) => (lo.min(address), hi.max(end)),
@@ -1556,6 +1724,66 @@ impl MacMemoryBus {
         if (address as u64) + 2 <= self.ram_size as u64 {
             self.ram.write_word_in_bounds(address as usize, value);
         }
+    }
+
+    /// Whether the complete range is covered by system-owned protected code.
+    /// This provenance is distinct from the bytes stored there: writable guest
+    /// RAM that happens to contain a come-from signature must remain an
+    /// ordinary direct target.
+    fn readonly_code_contains(&self, address: u32, len: usize) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let end = (u64::from(address))
+            .checked_add(len as u64)
+            .filter(|&end| end <= (1u64 << 32));
+        let Some(end) = end else {
+            return false;
+        };
+        let mut cursor = u64::from(address);
+        while cursor < end {
+            let mut covered_end = cursor;
+            for &(start, stop) in &self.readonly_code_ranges {
+                let start = u64::from(start);
+                let stop = u64::from(stop);
+                if start <= cursor && cursor < stop {
+                    covered_end = covered_end.max(stop.min(end));
+                }
+            }
+            if covered_end == cursor {
+                return false;
+            }
+            cursor = covered_end;
+        }
+        true
+    }
+
+    /// Snapshot the protected-code ownership used by a Trap Manager call.
+    /// The caller can then retain a mutable bus borrow for status-bearing
+    /// reads/writes without sharing an immutable borrow of this bus.
+    pub(crate) fn protected_code_ownership(&self) -> ProtectedCodeOwnership {
+        ProtectedCodeOwnership {
+            addressing_32_bit: self.addressing_32_bit,
+            ranges: self.readonly_code_ranges.clone(),
+        }
+    }
+
+    /// Privileged, status-bearing longword write for a known system-owned
+    /// protected chain link. The entire range must be in RAM and covered by
+    /// protected code before either halfword is changed, so holes, wrapping
+    /// addresses, and partial protections cannot leave a torn chain edge.
+    pub(crate) fn try_write_protected_code_long(&mut self, address: u32, value: u32) -> bool {
+        let Some(translated) = self.range_translates_contiguously(address, 4) else {
+            return false;
+        };
+        if (u64::from(translated) + 4) > u64::from(self.ram_size)
+            || !self.readonly_code_contains(translated, 4)
+        {
+            return false;
+        }
+        self.write_readonly_code_word(translated, (value >> 16) as u16);
+        self.write_readonly_code_word(translated + 2, value as u16);
+        true
     }
 
     fn readonly_code_overlaps(&self, address: u32, len: u32) -> bool {
@@ -1645,11 +1873,22 @@ impl MacMemoryBus {
     /// tracing are active so diagnostics still observe each destination byte.
     #[inline]
     pub fn copy_ram_bytes(&mut self, src: u32, dst: u32, len: u32) -> bool {
-        if self.foreign_ordinary_sparse_overlaps(src, len as usize)
-            || self.foreign_ordinary_sparse_overlaps(dst, len as usize)
+        // Both source coverage and destination writability are checked before
+        // taking either the flat slice path or the routed byte path. This is
+        // what keeps a mixed/readonly destination atomic.
+        if !self.is_guest_address_mapped(src, len as usize)
+            || !self.is_guest_address_writable(dst, len as usize)
         {
-            self.block_move(src, dst, len);
-            return true;
+            return false;
+        }
+        if self.route(src, len as usize) != GuestMemoryRoute::Flat
+            || self.route(dst, len as usize) != GuestMemoryRoute::Flat
+        {
+            // Routed aliases can overlap the same backing through unrelated
+            // guest addresses, so address ordering alone cannot prove
+            // memmove safety. Snapshot the source before committing.
+            let bytes = self.read_bytes(src, len as usize);
+            return self.try_write_bytes_atomic(dst, &bytes);
         }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
@@ -1693,21 +1932,19 @@ impl MacMemoryBus {
     /// translation without allocating a scratch row.
     #[inline]
     pub fn copy_mapped_ram_bytes(&mut self, src: u32, dst: u32, len: u32, map: &[u8; 256]) -> bool {
-        if self.foreign_ordinary_sparse_overlaps(src, len as usize)
-            || self.foreign_ordinary_sparse_overlaps(dst, len as usize)
+        // See `copy_ram_bytes`: no destination byte may change until every
+        // routed byte has proved writable.
+        if !self.is_guest_address_mapped(src, len as usize)
+            || !self.is_guest_address_writable(dst, len as usize)
         {
-            if dst > src && dst < src.saturating_add(len) {
-                for offset in (0..len).rev() {
-                    let value = map[self.read_byte(src.wrapping_add(offset)) as usize];
-                    self.write_byte(dst.wrapping_add(offset), value);
-                }
-            } else {
-                for offset in 0..len {
-                    let value = map[self.read_byte(src.wrapping_add(offset)) as usize];
-                    self.write_byte(dst.wrapping_add(offset), value);
-                }
-            }
-            return true;
+            return false;
+        }
+        if self.route(src, len as usize) != GuestMemoryRoute::Flat
+            || self.route(dst, len as usize) != GuestMemoryRoute::Flat
+        {
+            let mut bytes = self.read_bytes(src, len as usize);
+            bytes.iter_mut().for_each(|byte| *byte = map[*byte as usize]);
+            return self.try_write_bytes_atomic(dst, &bytes);
         }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
@@ -1888,16 +2125,25 @@ impl MacMemoryBus {
 impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_byte(&self, address: u32) -> u8 {
+        let guest_address = address;
         let address = self.translate_guest_address(address);
-        let v = if let Some(value) = self.foreign_read_u8(address) {
-            value
-        } else if address < self.ram_size {
-            self.ram.get_in_bounds(address as usize)
-        } else if let Some(value) = Self::boot_rom_shadow_byte(address) {
-            value
-        } else {
-            tracing::warn!("Read from unmapped address ${:08X}", address);
-            0
+        let v = match self.route(guest_address, 1) {
+            GuestMemoryRoute::Flat => self.ram.get_in_bounds(address as usize),
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => self
+                .foreign_address_space
+                .as_ref()
+                .and_then(|memory| memory.read_routed_u8(address, Some(self.ram_size)))
+                .unwrap_or(0),
+            GuestMemoryRoute::Unmapped | GuestMemoryRoute::Mixed => {
+                if let Some(value) = Self::boot_rom_shadow_byte(address) {
+                    value
+                } else {
+                    tracing::warn!("Read from unmapped address ${:08X}", address);
+                    0
+                }
+            }
         };
         maybe_log_mem_read(address, 1, v as u32);
         v
@@ -1913,24 +2159,23 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_word(&self, address: u32) -> u16 {
         let foreign_address = self.translate_guest_address(address);
-        if let Some(value) = self.foreign_read_u16(foreign_address) {
-            maybe_log_mem_read(address, 2, value as u32);
-            return value;
-        }
-        if self.foreign_ordinary_sparse_overlaps(foreign_address, 2) {
-            let value = (u16::from(self.read_byte(address)) << 8)
-                | u16::from(self.read_byte(address.wrapping_add(1)));
-            maybe_log_mem_read(address, 2, value as u32);
-            return value;
-        }
-        let translated = self.range_translates_contiguously(address, 2);
-        let v = if translated.is_some_and(|address| (address as u64) + 2 <= self.ram_size as u64) {
-            let address = translated.unwrap();
-            self.ram.read_word_in_bounds(address as usize)
-        } else {
-            let hi = self.read_byte(address) as u16;
-            let lo = self.read_byte(address.wrapping_add(1)) as u16;
-            (hi << 8) | lo
+        let v = match self.route(address, 2) {
+            GuestMemoryRoute::Flat => self.ram.read_word_in_bounds(foreign_address as usize),
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => self
+                .foreign_address_space
+                .as_ref()
+                .and_then(|memory| memory.read_routed_u16(foreign_address, Some(self.ram_size)))
+                .unwrap_or_else(|| {
+                    (u16::from(self.read_byte(address)) << 8)
+                        | u16::from(self.read_byte(address.wrapping_add(1)))
+                }),
+            GuestMemoryRoute::Unmapped | GuestMemoryRoute::Mixed => {
+                let hi = self.read_byte(address) as u16;
+                let lo = self.read_byte(address.wrapping_add(1)) as u16;
+                (hi << 8) | lo
+            }
         };
         maybe_log_mem_read(address, 2, v as u32);
         v
@@ -1943,34 +2188,47 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_long(&self, address: u32) -> u32 {
         let foreign_address = self.translate_guest_address(address);
-        if let Some(value) = self.foreign_read_u32(foreign_address) {
-            maybe_log_mem_read(address, 4, value);
-            return value;
-        }
-        if self.foreign_ordinary_sparse_overlaps(foreign_address, 4) {
-            let value = (u32::from(self.read_word(address)) << 16)
-                | u32::from(self.read_word(address.wrapping_add(2)));
-            maybe_log_mem_read(address, 4, value);
-            return value;
-        }
-        let translated = self.range_translates_contiguously(address, 4);
-        let v = if translated.is_some_and(|address| (address as u64) + 4 <= self.ram_size as u64) {
-            let address = translated.unwrap();
-            self.ram.read_long_in_bounds(address as usize)
-        } else {
-            let hi = self.read_word(address) as u32;
-            let lo = self.read_word(address.wrapping_add(2)) as u32;
-            (hi << 16) | lo
+        let v = match self.route(address, 4) {
+            GuestMemoryRoute::Flat => self.ram.read_long_in_bounds(foreign_address as usize),
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => self
+                .foreign_address_space
+                .as_ref()
+                .and_then(|memory| memory.read_routed_u32(foreign_address, Some(self.ram_size)))
+                .unwrap_or_else(|| {
+                    (u32::from(self.read_word(address)) << 16)
+                        | u32::from(self.read_word(address.wrapping_add(2)))
+                }),
+            GuestMemoryRoute::Unmapped | GuestMemoryRoute::Mixed => {
+                let hi = self.read_word(address) as u32;
+                let lo = self.read_word(address.wrapping_add(2)) as u32;
+                (hi << 16) | lo
+            }
         };
         maybe_log_mem_read(address, 4, v);
         v
     }
 
     fn write_byte(&mut self, address: u32, value: u8) {
+        let guest_address = address;
         let address = self.translate_guest_address(address);
-        if self.foreign_write_u8_if_mapped(address, value) {
-            maybe_log_mem_write(address, 1, value as u32);
-            return;
+        match self.route(guest_address, 1) {
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => {
+                // A non-local shared mapping is still authoritative. Local
+                // shared aliases were classified as `Flat` above, preserving
+                // all classic bus policy hooks below.
+                if let Some(memory) = self.foreign_address_space.as_ref() {
+                    let _ = memory.write_routed_u8(address, value, Some(self.ram_size));
+                }
+                maybe_log_mem_write(address, 1, value as u32);
+                return;
+            }
+            GuestMemoryRoute::Flat
+            | GuestMemoryRoute::Unmapped
+            | GuestMemoryRoute::Mixed => {}
         }
         if self.readonly_code_overlaps(address, 1) {
             return;
@@ -2122,7 +2380,7 @@ impl MemoryBus for MacMemoryBus {
         if address < self.ram_size {
             self.ram.set_in_bounds(address as usize, value);
         } else {
-            tracing::warn!(
+                tracing::warn!(
                 "Write to unmapped address ${:08X} = ${:02X}",
                 address,
                 value
@@ -2140,8 +2398,32 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn write_word(&mut self, address: u32, value: u16) {
         let foreign_address = self.translate_guest_address(address);
-        if self.foreign_write_u16_if_mapped(foreign_address, value) {
-            maybe_log_mem_write(address, 2, value as u32);
+        match self.route(address, 2) {
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => {
+                if !self.is_guest_address_writable(address, 2) {
+                    return;
+                }
+                if let Some(memory) = self.foreign_address_space.as_ref() {
+                    let _ = memory.write_routed_u16(foreign_address, value, Some(self.ram_size));
+                }
+                maybe_log_mem_write(address, 2, value as u32);
+                return;
+            }
+            // A wide access may straddle flat RAM, a sparse mapping, and a
+            // hole.  Do not let the contiguous local-RAM fast path hide the
+            // route transition: preflight every byte and commit through the
+            // status-bearing byte path so a rejected byte cannot leave a
+            // partially-written word behind.
+            GuestMemoryRoute::Mixed => {
+                let _ = self.try_write_bytes_atomic(address, &value.to_be_bytes());
+                return;
+            }
+            GuestMemoryRoute::Unmapped => return,
+            GuestMemoryRoute::Flat => {}
+        }
+        if !self.is_guest_address_writable(address, 2) {
             return;
         }
         let translated = self.range_translates_contiguously(address, 2);
@@ -2184,8 +2466,29 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn write_long(&mut self, address: u32, value: u32) {
         let foreign_address = self.translate_guest_address(address);
-        if self.foreign_write_u32_if_mapped(foreign_address, value) {
-            maybe_log_mem_write(address, 4, value);
+        match self.route(address, 4) {
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => {
+                if !self.is_guest_address_writable(address, 4) {
+                    return;
+                }
+                if let Some(memory) = self.foreign_address_space.as_ref() {
+                    let _ = memory.write_routed_u32(foreign_address, value, Some(self.ram_size));
+                }
+                maybe_log_mem_write(address, 4, value);
+                return;
+            }
+            // See the word-sized mixed-route path above.  A longword must
+            // either pass all four routed-byte checks or remain untouched.
+            GuestMemoryRoute::Mixed => {
+                let _ = self.try_write_bytes_atomic(address, &value.to_be_bytes());
+                return;
+            }
+            GuestMemoryRoute::Unmapped => return,
+            GuestMemoryRoute::Flat => {}
+        }
+        if !self.is_guest_address_writable(address, 4) {
             return;
         }
         let translated = self.range_translates_contiguously(address, 4);
@@ -2227,16 +2530,16 @@ impl MemoryBus for MacMemoryBus {
     /// that pulls more than a few bytes at once.
     #[inline]
     fn read_bytes(&self, address: u32, len: usize) -> Vec<u8> {
-        if self.foreign_ordinary_sparse_overlaps(address, len) {
+        if self.route(address, len) != GuestMemoryRoute::Flat {
             return (0..len)
                 .map(|offset| self.read_byte(address.wrapping_add(offset as u32)))
                 .collect();
         }
         let translated = self.range_translates_contiguously(address, len);
-        let address = translated.unwrap_or(address);
-        let end = (address as u64).saturating_add(len as u64);
+        let translated_address = translated.unwrap_or(address);
+        let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
-            if let Some(slice) = self.ram.slice_at(address as usize, len) {
+            if let Some(slice) = self.ram.slice_at(translated_address as usize, len) {
                 return slice.to_vec();
             }
         }
@@ -2253,7 +2556,7 @@ impl MemoryBus for MacMemoryBus {
     /// copying twice per row.
     #[inline]
     fn read_bytes_into(&self, address: u32, dst: &mut [u8]) {
-        if self.foreign_ordinary_sparse_overlaps(address, dst.len()) {
+        if self.route(address, dst.len()) != GuestMemoryRoute::Flat {
             for (offset, byte) in dst.iter_mut().enumerate() {
                 *byte = self.read_byte(address.wrapping_add(offset as u32));
             }
@@ -2261,10 +2564,10 @@ impl MemoryBus for MacMemoryBus {
         }
         let len = dst.len();
         let translated = self.range_translates_contiguously(address, len);
-        let address = translated.unwrap_or(address);
-        let end = (address as u64).saturating_add(len as u64);
+        let translated_address = translated.unwrap_or(address);
+        let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
-            if let Some(slice) = self.ram.slice_at(address as usize, len) {
+            if let Some(slice) = self.ram.slice_at(translated_address as usize, len) {
                 dst.copy_from_slice(slice);
                 return;
             }
@@ -2280,7 +2583,7 @@ impl MemoryBus for MacMemoryBus {
     /// trigger; same for the FB-write tracer.
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
-        if self.foreign_ordinary_sparse_overlaps(address, data.len()) {
+        if self.route(address, data.len()) != GuestMemoryRoute::Flat {
             for (offset, byte) in data.iter().copied().enumerate() {
                 self.write_byte(address.wrapping_add(offset as u32), byte);
             }
@@ -2297,16 +2600,16 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
-        let address = translated.unwrap_or(address);
-        let end = (address as u64).saturating_add(data.len() as u64);
+        let translated_address = translated.unwrap_or(address);
+        let end = (translated_address as u64).saturating_add(data.len() as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
             if fast {
-                self.ram.write_bytes_in_bounds(address as usize, data);
+                self.ram.write_bytes_in_bounds(translated_address as usize, data);
                 return;
             }
             if self.only_write_probe_blocks_fast_path() {
-                self.record_write_probe_range(address, data.len() as u32);
-                self.ram.write_bytes_in_bounds(address as usize, data);
+                self.record_write_probe_range(translated_address, data.len() as u32);
+                self.ram.write_bytes_in_bounds(translated_address as usize, data);
                 return;
             }
         }
@@ -2317,7 +2620,7 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_zeros(&mut self, address: u32, len: u32) {
-        if self.foreign_ordinary_sparse_overlaps(address, len as usize) {
+        if self.route(address, len as usize) != GuestMemoryRoute::Flat {
             for offset in 0..len {
                 self.write_byte(address.wrapping_add(offset), 0);
             }
@@ -2334,18 +2637,18 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
-        let address = translated.unwrap_or(address);
-        let end = (address as u64).saturating_add(len as u64);
+        let translated_address = translated.unwrap_or(address);
+        let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
             if fast {
                 self.ram
-                    .fill_zeros_in_bounds(address as usize, len as usize);
+                    .fill_zeros_in_bounds(translated_address as usize, len as usize);
                 return;
             }
             if self.only_write_probe_blocks_fast_path() {
-                self.record_write_probe_range(address, len);
+                self.record_write_probe_range(translated_address, len);
                 self.ram
-                    .fill_zeros_in_bounds(address as usize, len as usize);
+                    .fill_zeros_in_bounds(translated_address as usize, len as usize);
                 return;
             }
         }
@@ -2366,7 +2669,7 @@ impl MemoryBus for MacMemoryBus {
         }
         let span = u64::from(stride) * u64::from(count - 1) + 1;
         if span > usize::MAX as u64
-            || self.foreign_ordinary_sparse_overlaps(address, span as usize)
+            || self.route(address, span as usize) != GuestMemoryRoute::Flat
         {
             for offset in 0..count {
                 self.write_byte(address.wrapping_add(offset.wrapping_mul(stride)), value);
@@ -2402,7 +2705,7 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
-        if self.foreign_ordinary_sparse_overlaps(address, len as usize) {
+        if self.route(address, len as usize) != GuestMemoryRoute::Flat {
             for offset in 0..len {
                 self.write_byte(address.wrapping_add(offset), value);
             }
@@ -2419,18 +2722,18 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
-        let address = translated.unwrap_or(address);
-        let end = (address as u64).saturating_add(len as u64);
+        let translated_address = translated.unwrap_or(address);
+        let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
             if fast {
                 self.ram
-                    .fill_bytes_in_bounds(address as usize, len as usize, value);
+                    .fill_bytes_in_bounds(translated_address as usize, len as usize, value);
                 return;
             }
             if self.only_write_probe_blocks_fast_path() {
-                self.record_write_probe_range(address, len);
+                self.record_write_probe_range(translated_address, len);
                 self.ram
-                    .fill_bytes_in_bounds(address as usize, len as usize, value);
+                    .fill_bytes_in_bounds(translated_address as usize, len as usize, value);
                 return;
             }
         }
@@ -2480,6 +2783,23 @@ mod tests {
         assert_eq!(bus.read_bytes(0xCDFF_FFFF, 2), [0x12, 0x34]);
 
         bus.write_word(0xEFFF_FFFF, 0x5678);
+        assert_eq!(bus.read_byte(0x00FF_FFFF), 0x56);
+        assert_eq!(bus.read_byte(0), 0x78);
+    }
+
+    #[test]
+    fn twenty_four_bit_router_keeps_boundary_words_bytewise_with_large_ram() {
+        let mut bus = MacMemoryBus::new(0x0200_0000);
+        bus.set_addressing_32_bit(false);
+        bus.write_byte(0x00FF_FFFF, 0x12);
+        bus.write_byte(0, 0x34);
+
+        // RAM extends beyond the 24-bit window, so only the address-width
+        // boundary must force the neutral route to `Mixed`.
+        assert_eq!(bus.route(0x00FF_FFFF, 2), GuestMemoryRoute::Mixed);
+        assert_eq!(bus.read_word(0xABFF_FFFF), 0x1234);
+
+        bus.write_word(0xC0FF_FFFF, 0x5678);
         assert_eq!(bus.read_byte(0x00FF_FFFF), 0x56);
         assert_eq!(bus.read_byte(0), 0x78);
     }
@@ -3319,5 +3639,191 @@ mod tests {
 
         bus.detach_guest_address_space();
         assert!(!bus.is_foreign_ordinary_sparse_address(0x2050));
+    }
+
+    #[test]
+    fn attached_local_shared_alias_preserves_bus_policies_and_ppc_view() {
+        use crate::memory::GuestAddressSpace;
+        use ppc::PpcMemory;
+
+        const ALIAS: u32 = 0x2000;
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_long(ALIAS, 0x1122_3344);
+
+        let mut memory = GuestAddressSpace::new();
+        let shared = bus
+            .shared_ram_region(ALIAS, 0x100)
+            .expect("local RAM alias");
+        // SAFETY: this test serializes access to the bus and address space.
+        unsafe {
+            memory.add_shared_region(ALIAS, shared);
+        }
+        bus.attach_guest_address_space(memory.shared_view());
+
+        // The neutral router recognizes this as the bus's own flat RAM, so a
+        // classic write probe still observes the write while PPC sees the
+        // same bytes through the shared backing.
+        assert_eq!(bus.route(ALIAS, 4), GuestMemoryRoute::Flat);
+        bus.begin_write_probe();
+        bus.write_word(ALIAS, 0xaabb);
+        assert!(!bus.finish_write_probe_unchanged());
+        assert_eq!(PpcMemory::read_u32_be(&mut memory, ALIAS), Some(0xaabb_3344));
+
+        bus.protect_readonly_code(ALIAS + 2, 1);
+        let protected = bus.read_byte(ALIAS + 2);
+        bus.write_byte(ALIAS + 2, protected ^ 0xff);
+        assert_eq!(bus.read_byte(ALIAS + 2), protected);
+
+        // A read-only shared alias remains authoritative for the classic
+        // adapter and cannot fall through to its local RAM write path.
+        let readonly = bus
+            .shared_ram_region(ALIAS + 4, 1)
+            .expect("read-only alias");
+        // SAFETY: access remains serialized as above.
+        unsafe {
+            memory.add_shared_readonly_region(ALIAS + 4, readonly);
+        }
+        let before = bus.read_byte(ALIAS + 4);
+        bus.write_byte(ALIAS + 4, before ^ 0xff);
+        assert_eq!(bus.read_byte(ALIAS + 4), before);
+        assert_eq!(PpcMemory::write_u8(&mut memory, ALIAS + 4, before ^ 0xff), None);
+    }
+
+    #[test]
+    fn mapped_query_uses_shared_sparse_and_24_bit_routes() {
+        use crate::memory::GuestAddressSpace;
+
+        let mut bus = MacMemoryBus::new(0x0200_0000);
+        assert!(bus.is_guest_address_mapped(0x1000, 4));
+        assert!(!bus.is_guest_address_mapped(0x0200_0000, 1));
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x0303_0000, vec![0; 4]);
+        let shared = bus.shared_ram_region(0x1000, 4).expect("local alias");
+        // SAFETY: access is serialized for this test.
+        unsafe {
+            memory.add_shared_region(0x1000, shared);
+        }
+        bus.attach_guest_address_space(memory.shared_view());
+        assert!(bus.is_guest_address_mapped(0x0303_0000, 4));
+        assert!(bus.is_guest_address_mapped(0x1000, 4));
+        assert!(!bus.is_guest_address_mapped(0x0304_0000, 4));
+
+        bus.set_addressing_32_bit(false);
+        assert!(bus.is_guest_address_mapped(0x00ff_ffff, 2));
+    }
+
+    #[test]
+    fn routed_bulk_copies_preflight_mixed_and_readonly_destinations() {
+        use crate::memory::GuestAddressSpace;
+
+        const SOURCE: u32 = 0x0002_0000;
+        const MIXED_DESTINATION: u32 = 0x0000_ffff;
+        const MAPPED_DESTINATION: u32 = 0x0002_1000;
+        const READONLY_DESTINATION: u32 = 0x0002_2000;
+        const LOW_READONLY_DESTINATION: u32 = 0x0000_3000;
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_byte(MIXED_DESTINATION, 0xee);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(SOURCE, vec![1, 2, 3, 4]);
+        memory.add_region(0x0001_0000, vec![0xee; 3]);
+        memory.add_region(MAPPED_DESTINATION, vec![0xee; 4]);
+        memory.add_readonly_region(READONLY_DESTINATION, vec![0xee; 4]);
+        memory.add_readonly_region(LOW_READONLY_DESTINATION, vec![0xee; 4]);
+        bus.attach_guest_address_space(memory.shared_view());
+
+        assert_eq!(
+            bus.route(MIXED_DESTINATION, 4),
+            GuestMemoryRoute::Mixed
+        );
+        assert!(bus.copy_ram_bytes(SOURCE, MIXED_DESTINATION, 4));
+        assert_eq!(bus.read_bytes(MIXED_DESTINATION, 4), [1, 2, 3, 4]);
+
+        let mut map = [0u8; 256];
+        for (index, value) in map.iter_mut().enumerate() {
+            *value = (index as u8).wrapping_add(10);
+        }
+        assert!(bus.copy_mapped_ram_bytes(SOURCE, MAPPED_DESTINATION, 4, &map));
+        assert_eq!(bus.read_bytes(MAPPED_DESTINATION, 4), [11, 12, 13, 14]);
+
+        let before = bus.read_bytes(READONLY_DESTINATION, 4);
+        assert!(!bus.copy_ram_bytes(SOURCE, READONLY_DESTINATION, 4));
+        assert!(!bus.copy_mapped_ram_bytes(
+            SOURCE,
+            READONLY_DESTINATION,
+            4,
+            &map,
+        ));
+        assert_eq!(bus.read_bytes(READONLY_DESTINATION, 4), before);
+
+        // An ordinary read-only sparse mapping remains authoritative even
+        // when it lies below the classic flat-RAM limit. It must not be
+        // mistaken for writable flat RAM by the routed-byte preflight.
+        let low_before = bus.read_bytes(LOW_READONLY_DESTINATION, 4);
+        assert!(!bus.copy_ram_bytes(SOURCE, LOW_READONLY_DESTINATION, 4));
+        assert!(!bus.copy_mapped_ram_bytes(
+            SOURCE,
+            LOW_READONLY_DESTINATION,
+            4,
+            &map,
+        ));
+        assert_eq!(bus.read_bytes(LOW_READONLY_DESTINATION, 4), low_before);
+    }
+
+    #[test]
+    fn scalar_mixed_writes_preflight_every_routed_byte() {
+        use crate::memory::GuestAddressSpace;
+
+        const MIXED_WORD: u32 = 0x3FFF;
+        const MIXED_LONG: u32 = 0x3FFD;
+        const READONLY_SPARSE: u32 = 0x4000;
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_bytes(MIXED_LONG, &[0x10, 0x11, 0x12, 0x13]);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_readonly_region(READONLY_SPARSE, vec![0x20, 0x21]);
+        bus.attach_guest_address_space(memory.shared_view());
+
+        assert_eq!(bus.route(MIXED_WORD, 2), GuestMemoryRoute::Mixed);
+        assert_eq!(bus.route(MIXED_LONG, 4), GuestMemoryRoute::Mixed);
+        let before_word = bus.read_bytes(MIXED_WORD, 2);
+        let before_long = bus.read_bytes(MIXED_LONG, 4);
+
+        bus.write_word(MIXED_WORD, 0xAABB);
+        bus.write_long(MIXED_LONG, 0xCCDD_EEFF);
+
+        assert_eq!(bus.read_bytes(MIXED_WORD, 2), before_word);
+        assert_eq!(bus.read_bytes(MIXED_LONG, 4), before_long);
+    }
+
+    #[test]
+    fn same_address_alias_from_another_bus_stays_shared_for_scalar_and_bulk_access() {
+        use crate::memory::GuestAddressSpace;
+
+        const ALIAS: u32 = 0x2400;
+        let mut donor = MacMemoryBus::new(64 * 1024);
+        donor.write_bytes(ALIAS, &[1, 2, 3, 4]);
+        let shared = donor
+            .shared_ram_region(ALIAS, 4)
+            .expect("donor RAM alias");
+
+        let mut receiver = MacMemoryBus::new(64 * 1024);
+        receiver.write_bytes(ALIAS, &[9, 9, 9, 9]);
+        let mut memory = GuestAddressSpace::new();
+        // SAFETY: the test serializes access to donor, receiver, and view.
+        unsafe {
+            memory.add_shared_region(ALIAS, shared);
+        }
+        receiver.attach_guest_address_space(memory.shared_view());
+
+        assert_eq!(receiver.route(ALIAS, 4), GuestMemoryRoute::Shared);
+        assert_eq!(receiver.read_bytes(ALIAS, 4), [1, 2, 3, 4]);
+        receiver.write_bytes(ALIAS, &[5, 6, 7, 8]);
+        assert_eq!(donor.read_bytes(ALIAS, 4), [5, 6, 7, 8]);
+
+        receiver.fill_bytes(ALIAS, 4, 0xaa);
+        assert_eq!(donor.read_bytes(ALIAS, 4), [0xaa; 4]);
+        receiver.detach_guest_address_space();
+        assert_eq!(receiver.read_bytes(ALIAS, 4), [9, 9, 9, 9]);
     }
 }

@@ -1,6 +1,7 @@
 //! Toolbox Utility trap handlers (events, Random, Sound, misc).
 
 use crate::cpu::{CpuOps, Register};
+use crate::guest_call::ExecutionTaskId;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::get_font_face_scaled;
@@ -1277,6 +1278,8 @@ impl super::TrapDispatcher {
             return false;
         }
         next.state = Self::THREAD_STATE_RUNNING;
+        self.guest_calls
+            .switch_to_task(ExecutionTaskId::from_thread_id(next_id));
         Self::install_cooperative_thread(cpu, &next);
         self.cooperative_threads.insert(next_id, next);
         self.current_cooperative_thread = next_id;
@@ -1327,7 +1330,26 @@ impl super::TrapDispatcher {
 
     /// Retire `thread_id`, storing its entry-proc result and returning its
     /// stack to the pool so `NewThread` can recycle it.
-    fn retire_cooperative_thread(&mut self, thread_id: u32, result: u32, bus: &mut MacMemoryBus) {
+    fn retire_cooperative_thread(
+        &mut self,
+        thread_id: u32,
+        result: u32,
+        bus: &mut MacMemoryBus,
+    ) -> bool {
+        let task = ExecutionTaskId::from_thread_id(thread_id);
+        // A continuation belongs to the task that created it. Disposing a
+        // different task while one of its calls is suspended would strand a
+        // parked CPU/context and make the next task switch ambiguous. Return
+        // the documented protocol error at the trap boundary instead of
+        // asserting on guest-controlled state.
+        if !self.guest_calls.task_is_empty(task) {
+            return false;
+        }
+        if thread_id != self.current_cooperative_thread
+            && !self.guest_calls.remove_task(task)
+        {
+            return false;
+        }
         if let Some(finished) = self.cooperative_threads.remove(&thread_id) {
             if finished.result_destination != 0 {
                 bus.write_long(finished.result_destination, result);
@@ -1339,15 +1361,22 @@ impl super::TrapDispatcher {
         }
         self.cooperative_thread_ready
             .retain(|queued| *queued != thread_id);
+        true
     }
 
     /// Entered through the return trampoline when a `ThreadEntryProc`
     /// returns. The proc's `void *` result arrives in A0, per the 68K
     /// convention for a pointer-valued result.
-    fn finish_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+    fn finish_cooperative_thread<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> bool {
         let finished_id = self.current_cooperative_thread;
         let result = cpu.read_reg(Register::A0);
-        self.retire_cooperative_thread(finished_id, result, bus);
+        if !self.retire_cooperative_thread(finished_id, result, bus) {
+            return false;
+        }
 
         // The finished thread has no context left to return to, so a
         // successor must be installed. The application thread always has a
@@ -1357,7 +1386,9 @@ impl super::TrapDispatcher {
             .filter(|next_id| *next_id != finished_id);
         if let Some(next_id) = next {
             if self.switch_to_cooperative_thread(cpu, next_id) {
-                return;
+                return self
+                    .guest_calls
+                    .remove_task(ExecutionTaskId::from_thread_id(finished_id));
             }
         }
         if let Some(mut application) = self
@@ -1368,11 +1399,17 @@ impl super::TrapDispatcher {
             self.cooperative_thread_ready
                 .retain(|queued| *queued != Self::APPLICATION_THREAD_ID);
             application.state = Self::THREAD_STATE_RUNNING;
+            self.guest_calls
+                .switch_to_task(ExecutionTaskId::APPLICATION);
             Self::install_cooperative_thread(cpu, &application);
             self.cooperative_threads
                 .insert(Self::APPLICATION_THREAD_ID, application);
             self.current_cooperative_thread = Self::APPLICATION_THREAD_ID;
+            return self
+                .guest_calls
+                .remove_task(ExecutionTaskId::from_thread_id(finished_id));
         }
+        false
     }
 
     /// Claim a pooled stack of at least `stack_size` bytes, or allocate a
@@ -5088,6 +5125,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // ========== Toolbox Event Traps ==========
 
@@ -5281,7 +5319,7 @@ impl super::TrapDispatcher {
                         event_ptr,
                         0,
                         0,
-                        self.tick_count,
+                        self.current_tick(),
                         self.input_state.mouse_pos.0,
                         self.input_state.mouse_pos.1,
                         self.current_event_modifiers(),
@@ -5292,7 +5330,7 @@ impl super::TrapDispatcher {
                         record: EventRecordSnapshot {
                             what: 0,
                             message: 0,
-                            when: self.tick_count,
+                            when: self.current_tick(),
                             where_v: self.input_state.mouse_pos.0,
                             where_h: self.input_state.mouse_pos.1,
                             modifiers: self.current_event_modifiers(),
@@ -5430,47 +5468,13 @@ impl super::TrapDispatcher {
             }
 
             // TickCount ($A975)
+            // Returns the number of ticks since the system last started up.
             // FUNCTION TickCount: LongInt;
-            // Inside Macintosh Volume I, I-260; Macintosh Toolbox
-            // Essentials 1992, pp. 2-111..2-112; Inside Macintosh
-            // Volume VI 1991 (low-memory global discussion).
-            //
-            // Returns the current number of ticks (1/60.15-second
-            // intervals) since the system last started up. The value
-            // is also accessible via the low-memory global `Ticks`
-            // at $016A — MTE 1992 p. 2-112 assembly-language note,
-            // and IM:VI explicitly: "the TickCount function returns
-            // the same value that is contained in the low-memory
-            // global variable Ticks."
-            //
-            // Pascal FUNCTION calling convention: TickCount has no
-            // arguments and returns a LongInt. The caller pre-
-            // allocates a 4-byte LongInt result slot before pushing
-            // arguments (none, here) — under MPW the slot ends up
-            // at SP+0 immediately before the A-trap dispatches.
-            // The trap writes the LongInt to (SP+0) and does NOT
-            // advance A7; the caller pops the result.
-            //
-            // Monotonicity: per MTE 1992 p. 2-112 the tick count
-            // is incremented during the vertical retrace interrupt.
-            // IM:I I-260 warns: "check for 'greater than or equal
-            // to' (since an interrupt task may keep control for
-            // more than one tick)." The HLE's read-and-write
-            // pattern is monotonic for the same reason — the
-            // runner's advance_guest_tick only ever increments
-            // tick_count and writes the new value to $016A.
-            //
-            // Bus-read elision: reads `self.tick_count` (the
-            // runner-mirrored copy of $016A) rather than the bus
-            // long at $016A. The two values are kept in lockstep
-            // by advance_guest_tick, so this saves one bus
-            // round-trip per call on what is a very hot trap (game
-            // event loops, animation pacing, double-click timing,
-            // Time Manager polling all hit it per frame).
-            // TickCount ($A975): Returns tick count from low-memory global `$016A`
+            // Macintosh Toolbox Essentials (1992), pp. 2-111--2-112;
+            // Inside Macintosh Volume I (1985), p. I-260.
             (true, 0x175) => {
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_long(sp, self.current_tick());
+                bus.write_long(sp, self.read_tick_count(bus));
                 Ok(())
             }
 
@@ -16281,7 +16285,15 @@ impl super::TrapDispatcher {
 
                 let result = match selector {
                     0xFFFE => {
-                        self.finish_cooperative_thread(cpu, bus);
+                        if self.finish_cooperative_thread(cpu, bus) {
+                            return Some(Ok(()));
+                        }
+                        // A thread cannot finish while one of its guest
+                        // continuations is suspended. This is a guest-visible
+                        // protocol failure, not an emulator invariant that
+                        // justifies panicking.
+                        bus.write_word(sp, Self::THREAD_PROTOCOL_ERR as u16);
+                        cpu.write_reg(Register::D0, Self::THREAD_PROTOCOL_ERR as u32);
                         return Some(Ok(()));
                     }
                     0x0205 => {
@@ -16465,12 +16477,19 @@ impl super::TrapDispatcher {
                         } else if thread_to_dump == self.current_cooperative_thread {
                             // Threads.h allows a thread to dispose of itself;
                             // the call never returns to it.
-                            self.retire_cooperative_thread(thread_to_dump, thread_result, bus);
-                            self.finish_cooperative_thread(cpu, bus);
-                            return Some(Ok(()));
+                            if !self.retire_cooperative_thread(thread_to_dump, thread_result, bus)
+                            {
+                                Self::THREAD_PROTOCOL_ERR
+                            } else {
+                                self.finish_cooperative_thread(cpu, bus);
+                                return Some(Ok(()));
+                            }
                         } else {
-                            self.retire_cooperative_thread(thread_to_dump, thread_result, bus);
-                            0
+                            if self.retire_cooperative_thread(thread_to_dump, thread_result, bus) {
+                                0
+                            } else {
+                                Self::THREAD_PROTOCOL_ERR
+                            }
                         }
                     }
                     // GetThreadState(threadToGet, threadState), and
@@ -16525,8 +16544,28 @@ impl super::TrapDispatcher {
                                     if let Some(next_id) =
                                         self.next_ready_cooperative_thread(suggested_thread)
                                     {
-                                        self.switch_to_cooperative_thread(cpu, next_id);
+                                        if self.switch_to_cooperative_thread(cpu, next_id) {
+                                            return Some(Ok(()));
+                                        }
                                     }
+                                    // No runnable successor was available (or
+                                    // the suggested one was no longer ready).
+                                    // Keep the installed context and its task
+                                    // owner coherent rather than labelling a
+                                    // still-running CPU as stopped.
+                                    if let Some(current) =
+                                        self.cooperative_threads.get_mut(&thread_to_set)
+                                    {
+                                        current.state = Self::THREAD_STATE_RUNNING;
+                                    }
+                                    self.cooperative_thread_ready
+                                        .retain(|thread_id| *thread_id != thread_to_set);
+                                    self.guest_calls.switch_to_task(
+                                        ExecutionTaskId::from_thread_id(thread_to_set),
+                                    );
+                                    bus.write_word(sp + 10, 0);
+                                    cpu.write_reg(Register::A7, sp + 10);
+                                    cpu.write_reg(Register::D0, 0);
                                     return Some(Ok(()));
                                 }
                                 0
@@ -18318,7 +18357,7 @@ mod tests {
         assert_eq!(bus.read_word(sp + 14), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 14);
         assert_eq!(disp.pending_wait_sleep_ticks, 60);
-        assert_eq!(disp.tick_count, 100);
+        assert_eq!(disp.current_tick(), 100);
         assert_eq!(bus.read_long(0x200000 + 6), 100);
     }
 
@@ -19086,11 +19125,11 @@ mod tests {
     fn test_tick_count() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-        // TickCount reads self.tick_count directly (kept in sync with
-        // $016A by advance_guest_tick). In production advance_guest_tick
-        // updates both; the test sets both here to match.
+        // TickCount observes the guest-visible low-memory Ticks value through
+        // the shared process clock. Seed both sides to model a process whose
+        // adapters have just been attached.
         bus.write_long(0x016A, 12345);
-        disp.tick_count = 12345;
+        disp.set_tick_count_for_test(&mut bus, 12345);
 
         let result = disp.dispatch_toolbox(true, 0x175, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -19099,6 +19138,29 @@ mod tests {
         assert_eq!(bus.read_long(sp), 12345);
         // SP unchanged
         assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn tickcount_observes_a_direct_low_memory_mutation_between_calls() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let first = 0x0001_2345;
+        let second = 0x89AB_CDEF;
+
+        disp.set_tick_count_for_test(&mut bus, first);
+        let first_result = disp.dispatch_toolbox(true, 0x175, &mut cpu, &mut bus);
+        assert!(first_result.is_some_and(|result| result.is_ok()));
+        assert_eq!(bus.read_long(sp), first);
+
+        // Low-memory Ticks is writable guest state. A subsequent call must
+        // resolve the same shared semantic operation from the newly written
+        // bytes, regardless of which adapter performed the store.
+        bus.write_long(crate::memory::globals::addr::TICKS, second);
+        cpu.write_reg(Register::A7, sp);
+        let second_result = disp.dispatch_toolbox(true, 0x175, &mut cpu, &mut bus);
+        assert!(second_result.is_some_and(|result| result.is_ok()));
+        assert_eq!(bus.read_long(sp), second);
+        assert_eq!(disp.current_tick(), second);
     }
 
     #[test]
@@ -19122,8 +19184,7 @@ mod tests {
         bus.write_long(sp, 0xDEAD_BEEF); // pre-poison result slot
         bus.write_long(sp + 4, 0xCAFE_BABE); // pre-poison past-result slot
         bus.write_long(sp.wrapping_sub(4), 0xFEED_FACE); // pre-poison pre-result slot
-        disp.tick_count = 0x0000_4321;
-        bus.write_long(0x016A, 0x0000_4321);
+        disp.set_tick_count_for_test(&mut bus, 0x0000_4321);
 
         let result = disp.dispatch_toolbox(true, 0x175, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -19142,15 +19203,13 @@ mod tests {
     fn tickcount_returns_monotonically_nondecreasing_across_two_calls() {
         // Per MTE 1992 p. 2-112: "The tick count is incremented during
         // the vertical retrace interrupt"; IM:I I-260 warns to use
-        // ">= previous" comparisons. Systemless's HLE reads self.tick_count
-        // which is monotonic by construction (advance_guest_tick only
-        // increments). This contract test asserts that two consecutive
-        // dispatches with self.tick_count incremented between them
-        // return monotonic results.
+        // ">= previous" comparisons. The shared process clock is advanced
+        // only by the runner's vertical-retrace policy. This contract test
+        // asserts that two consecutive dispatches with that clock advanced
+        // between them return monotonic results.
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-        disp.tick_count = 1_000;
-        bus.write_long(0x016A, 1_000);
+        disp.set_tick_count_for_test(&mut bus, 1_000);
 
         let r1 = disp.dispatch_toolbox(true, 0x175, &mut cpu, &mut bus);
         assert!(r1.unwrap().is_ok());
@@ -19158,8 +19217,8 @@ mod tests {
 
         // Advance tick globally (mirroring what advance_guest_tick does
         // between trap dispatches in the runner).
-        disp.tick_count += 1;
-        bus.write_long(0x016A, disp.tick_count);
+        let next_tick = disp.current_tick().wrapping_add(1);
+        disp.set_tick_count_for_test(&mut bus, next_tick);
 
         let r2 = disp.dispatch_toolbox(true, 0x175, &mut cpu, &mut bus);
         assert!(r2.unwrap().is_ok());
@@ -27319,6 +27378,15 @@ mod tests {
         let app_pc = 0x000F_0000;
         cpu.write_reg(Register::PC, app_pc);
         cpu.write_reg(Register::D3, 0xCAFE_BABE);
+        disp.guest_calls.begin_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: 0x000E_0000,
+                rtoc: 0,
+            },
+            0x000E_1000,
+            app_sp,
+        );
         bus.write_long(app_sp, 0); // YieldToAnyThread's synthetic ThreadID
         bus.write_word(app_sp + 4, 0xBEEF);
         cpu.write_reg(Register::D0, 0x0205);
@@ -27327,6 +27395,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(disp.current_cooperative_thread, 3);
+        assert_eq!(
+            disp.guest_calls.depth(),
+            0,
+            "the worker must not inherit the application task's continuation"
+        );
+        disp.guest_calls.begin_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: 0x000D_0000,
+                rtoc: 0,
+            },
+            0x000D_1000,
+            cpu.read_reg(Register::A7),
+        );
         assert_eq!(cpu.read_reg(Register::PC), entry);
         assert_eq!(cpu.read_reg(Register::A5), 0x00AA_5500);
         let thread_sp = cpu.read_reg(Register::A7);
@@ -27343,6 +27425,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(disp.current_cooperative_thread, 2);
+        assert_eq!(
+            disp.guest_calls.depth(),
+            1,
+            "returning to the application must restore its continuation owner"
+        );
+        assert_eq!(
+            disp.guest_calls
+                .task_depth(crate::guest_call::ExecutionTaskId::from_thread_id(3)),
+            1,
+            "the suspended worker continuation must remain task-local"
+        );
         assert_eq!(cpu.read_reg(Register::PC), app_pc);
         assert_eq!(cpu.read_reg(Register::A7), app_sp + 4);
         assert_eq!(cpu.read_reg(Register::D3), 0xCAFE_BABE);
@@ -33697,7 +33790,7 @@ mod tests {
         let movie = create_test_movie_from_file(&mut disp, &mut cpu, &mut bus, sp);
 
         // Begin playback at tick 0.
-        disp.set_tick_count_for_test(0);
+        disp.set_tick_count_for_test(&mut bus, 0);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x000B); // StartMovie
         bus.write_long(sp, movie);
@@ -33709,7 +33802,7 @@ mod tests {
         // Advance the guest clock well past the movie duration, then service:
         // MoviesTask is timeline-driven, so the movie completes only after real
         // elapsed time covers its duration.
-        disp.set_tick_count_for_test(100_000);
+        disp.set_tick_count_for_test(&mut bus, 100_000);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0005); // MoviesTask
         bus.write_long(sp, 0); // maxMilliSecToUse: service once

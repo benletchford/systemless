@@ -2871,10 +2871,11 @@ impl super::TrapDispatcher {
             },
             window_ptr,
         );
+        let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
             what: 8,
             message: window_ptr,
-            when: self.tick_count,
+            when: tick,
             where_v: 0,
             where_h: 0,
             modifiers: active_flag,
@@ -3211,10 +3212,11 @@ impl super::TrapDispatcher {
                 window_ptr, self.current_tick()
             );
         }
+        let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
             what: 6,
             message: window_ptr,
-            when: self.tick_count,
+            when: tick,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -3338,7 +3340,7 @@ impl super::TrapDispatcher {
             .map(|window_ptr| QueuedEvent {
                 what: 6,
                 message: window_ptr,
-                when: self.tick_count,
+                when: self.current_tick(),
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -3722,6 +3724,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // LayerDispatch ($A829), selector 2: IsLayer.
             //
@@ -5528,7 +5531,7 @@ impl super::TrapDispatcher {
                             .or(Some(QueuedEvent {
                                 what: 6,
                                 message: window,
-                                when: self.tick_count,
+                                when: self.current_tick(),
                                 where_v: 0,
                                 where_h: 0,
                                 modifiers: 0,

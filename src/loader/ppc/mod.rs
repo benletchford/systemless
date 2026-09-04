@@ -18,7 +18,10 @@ use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackSchedulin
 use crate::event_queue::{
     EventProbeResult, EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
 };
-use crate::guest_call::SharedGuestCallStack;
+use crate::guest_call::{
+    format_ppc_import_action, GuestCallContinuation, GuestCallEffect, GuestCallRequest,
+    GuestCallTarget, SharedGuestCallStack,
+};
 use crate::guest_procedure::{
     resolve_guest_procedure, GuestIsa, GuestProcedure,
     ROUTINE_DESCRIPTOR_HEADER_SIZE as PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
@@ -74,8 +77,9 @@ use crate::menu_manager::{
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAppleEventHandler, ProcessContext, ProcessCursorState, ProcessFileSystemState,
-    ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState, ProcessMemoryManager,
-    ProcessMixedModeM68kState,
+    ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState,
+    ProcessMemoryManager, ProcessMixedModeM68kState, ProcessNewHandleBackend,
+    ProcessNewHandleRequest,
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
     ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
@@ -100,6 +104,9 @@ use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
 use crate::trap::extended80::Extended80;
+use crate::trap::manager::{
+    TrapManager, TrapManagerMemoryOp, TrapManagerMemoryResult, TrapManagerSetError, TrapTableKind,
+};
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, Rect};
 use crate::trap::{pict, TrapDispatcher};
 use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
@@ -2298,31 +2305,7 @@ fn format_isp_last_virtual_bindings(
 }
 
 fn format_hle_import_action(action: &PpcImportAction) -> String {
-    match action {
-        PpcImportAction::Return(value) => format!("return(${:08X})", value),
-        PpcImportAction::ReturnPreserve => "return-preserve".to_string(),
-        PpcImportAction::ReturnPreserveWithExtraCycles(extra_cycles) => {
-            format!("return-preserve+{}cycles", extra_cycles)
-        }
-        PpcImportAction::ReturnWithExtraCycles(value, extra_cycles) => {
-            format!("return(${:08X})+{}cycles", value, extra_cycles)
-        }
-        PpcImportAction::Continue => "continue".to_string(),
-        PpcImportAction::Yield(cycles) => format!("yield({cycles}cycles)"),
-        PpcImportAction::CallNative {
-            entry,
-            rtoc,
-            return_pc,
-            final_pc,
-            restore_rtoc,
-            ..
-        } => format!(
-            "call-native(entry=${:08X},rtoc=${:08X},return_pc=${:08X},final_pc=${:08X},restore_rtoc=${:08X})",
-            entry, rtoc, return_pc, final_pc, restore_rtoc
-        ),
-        PpcImportAction::RaiseException(exception) => format!("exception({:?})", exception),
-        PpcImportAction::Halt => "halt".to_string(),
-    }
+    format_ppc_import_action(action)
 }
 
 fn ppc_import_action_with_extra_cycles(
@@ -2345,11 +2328,7 @@ fn ppc_import_action_with_extra_cycles(
         PpcImportAction::ReturnWithExtraCycles(value, existing) => {
             PpcImportAction::ReturnWithExtraCycles(value, existing.saturating_add(extra_cycles))
         }
-        action @ PpcImportAction::Continue
-        | action @ PpcImportAction::Yield(_)
-        | action @ PpcImportAction::CallNative { .. }
-        | action @ PpcImportAction::RaiseException(_)
-        | action @ PpcImportAction::Halt => action,
+        _ => action,
     }
 }
 
@@ -3470,14 +3449,11 @@ pub struct PpcLoadedApp {
     pub stack_base: u32,
     pub stack_size: u32,
     pub stack_pointer: u32,
-    /// Guest-visible projection of the process-owned wrapping Macintosh tick
-    /// counter. Keep this field as a `u32` for loader/test compatibility; the
-    /// private `tick_state` is authoritative once the adapter is attached.
-    /// Inside Macintosh Volume I (1985), p. I-260; Volume II (1985),
-    /// pp. II-349--II-350.
-    pub tick_count: u32,
+    /// Process-scoped host pacing snapshot for the wrapping Macintosh clock.
+    /// Guest-visible time is always read from low-memory `Ticks`; this handle
+    /// only lets callback scheduling share the last observed value while a
+    /// native slice is active.
     pub(crate) tick_state: SharedProcessTickState,
-    pub(crate) last_projected_tick: u32,
     pub clock_cycles_per_tick: u32,
     pub clock_cycle_phase: u32,
     pub native_exception_handler: u32,
@@ -4061,13 +4037,7 @@ impl PpcLoadedApp {
         context.attach_file_system(&mut self.process_file_system);
         self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
-        // Preserve the old public `tick_count` field as an input projection
-        // at adapter boundaries, then make the process handle authoritative.
-        // A direct public write is intentional fixture/loader input; ordinary
-        // execution reads and publishes through `tick_state` below.
-        self.import_public_tick_projection();
         context.attach_tick_state(&mut self.tick_state);
-        self.refresh_tick_projection();
         context.attach_callback_tasks(
             &mut self.timer_tasks,
             &mut self.vbl_tasks,
@@ -4213,39 +4183,57 @@ impl PpcLoadedApp {
     }
 
     pub fn set_tick_count(&mut self, tick_count: u32) {
-        self.import_public_tick_projection();
+        // This explicit setter is a guest-memory operation for detached
+        // loader/test setup. Production execution reads `$016A` directly;
+        // no adapter scalar is projected back into guest memory implicitly.
         self.tick_state.set_tick(tick_count);
-        self.refresh_tick_projection();
+        let _ = self
+            .memory
+            .write_u32_be(crate::memory::globals::addr::TICKS, tick_count);
         self.callback_scheduling.current_subtick = self
             .callback_scheduling
             .current_subtick
             .max(u64::from(tick_count) * 1_000_000);
     }
 
-    fn import_public_tick_projection(&mut self) {
-        if self.tick_count != self.last_projected_tick {
-            self.tick_state.set_tick(self.tick_count);
-            self.last_projected_tick = self.tick_count;
-        }
-    }
-
-    fn refresh_tick_projection(&mut self) -> u32 {
-        let tick = self.tick_state.current_tick();
-        self.tick_count = tick;
-        self.last_projected_tick = tick;
-        tick
-    }
-
-    fn current_tick(&mut self) -> u32 {
-        self.import_public_tick_projection();
-        self.refresh_tick_projection()
+    pub(crate) fn current_tick(&mut self) -> u32 {
+        let guest_ticks = self
+            .memory
+            .read_u32_be(crate::memory::globals::addr::TICKS)
+            .unwrap_or_else(|| self.tick_state.current_tick());
+        self.tick_state.read_tick_count(guest_ticks);
+        guest_ticks
     }
 
     pub(crate) fn publish_tick(&mut self, candidate: u32) -> u32 {
-        self.import_public_tick_projection();
-        let tick = self.tick_state.publish_tick(candidate);
-        self.tick_count = tick;
-        self.last_projected_tick = tick;
+        // A guest store may have happened during the native slice. Import it
+        // before applying the host's next VBL candidate. Only the current
+        // value or its single next host VBL are valid candidates: a caller's
+        // pre-slice value may be arbitrarily stale after a direct guest store,
+        // and SharedProcessTickState's wrapping "newer" comparison alone
+        // cannot distinguish that stale value from legitimate forward time.
+        let guest_ticks = self.current_tick();
+        let tick = if candidate == guest_ticks || candidate == guest_ticks.wrapping_add(1) {
+            self.tick_state.publish_tick(candidate)
+        } else {
+            guest_ticks
+        };
+        let _ = self
+            .memory
+            .write_u32_be(crate::memory::globals::addr::TICKS, tick);
+        tick
+    }
+
+    /// Apply one tick from a host cycle epoch that has already been charged by
+    /// the runner. Unlike [`Self::publish_tick`], this is an explicit replay
+    /// operation: the runner owns the trusted baseline and elapsed-VBL count,
+    /// so intermediate ticks must be visible to callbacks even though the
+    /// guest bytes were advanced to the epoch's final tick before replay.
+    pub(crate) fn publish_host_epoch_tick(&mut self, tick: u32) -> u32 {
+        self.tick_state.set_tick(tick);
+        let _ = self
+            .memory
+            .write_u32_be(crate::memory::globals::addr::TICKS, tick);
         tick
     }
 
@@ -7394,7 +7382,7 @@ impl PpcLoadedApp {
         let input = self.current_input_snapshot();
         let mut event_queue = std::mem::take(&mut self.event_queue);
         let process_memory_manager = process_memory_manager.native_mut();
-        self.current_tick();
+        let _ = self.current_tick();
         let tick_state = self.tick_state.shared_handle();
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
@@ -7574,7 +7562,10 @@ impl PpcLoadedApp {
                 // before every import so TickCount and EventRecord.when use
                 // the same canonical process clock while retaining this
                 // slice's native cycle phase.
-                let process_tick = tick_state.current_tick();
+                let process_tick = memory
+                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                    .map(|guest_ticks| tick_state.read_tick_count(guest_ticks))
+                    .unwrap_or_else(|| tick_state.current_tick());
                 let mut import_tick_count = ppc_virtual_tick_count(
                     process_tick,
                     clock_cycles_per_tick,
@@ -8396,12 +8387,9 @@ impl PpcLoadedApp {
         };
         drop(fetch_observer);
 
-        // `tick_count` is only the execution-slice baseline used to produce
-        // virtual PPC clock reads. Do not write it back here: a nested Mixed
-        // Mode callback may have advanced the process-owned clock while this
-        // slice was running, and restoring the stale baseline would regress
-        // both adapters. The runner publishes elapsed ticks at its boundary.
-        self.refresh_tick_projection();
+        // Native execution never projects a scalar baseline back into guest
+        // memory. Low-memory `Ticks` remains the source of truth, including
+        // when a nested Mixed Mode callback changed it during this slice.
         self.native_exception_handler = native_exception_handler.get();
         self.native_exception_stack = native_exception_stack;
         self.stdc_qsort_stack = stdc_qsort_stack;
@@ -13092,9 +13080,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         stack_base,
         stack_size,
         stack_pointer,
-        tick_count: 0,
         tick_state: SharedProcessTickState::default(),
-        last_projected_tick: 0,
         clock_cycles_per_tick: 1,
         clock_cycle_phase: 0,
         native_exception_handler: 0,
@@ -15725,25 +15711,42 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::NewHandle { clear } => {
             let size = cpu.gpr[3];
-            let handle = process_memory_manager.new_native_handle(memory, size, clear);
+            let result = process_memory_manager.new_handle(
+                ProcessNewHandleRequest::new(size as i32, clear, ProcessHandleHeap::Current),
+                ProcessNewHandleBackend::Native(memory),
+            );
+            *last_mem_error = result.error;
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
                 heap_cursor,
                 last_mem_error,
             );
-            if let Some(record) = process_memory_manager.native_allocation(handle) {
-                handles.push(record);
+            if result.succeeded() {
+                if let Some(record) = process_memory_manager.native_allocation(result.handle) {
+                    handles.push(record);
+                }
             }
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] NewHandle size={} clear={} lr=${:08X} -> ${:08X} heap=${:08X}..${:08X} err={}",
-                    size, clear, cpu.lr, handle, *heap_cursor, heap_limit, *last_mem_error
+                    size,
+                    clear,
+                    cpu.lr,
+                    result.handle,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error
                 );
             }
-            Some(PpcImportAction::Return(handle))
+            Some(PpcImportAction::Return(result.handle))
         }
         PpcImportDispatcherTarget::TempNewHandle => {
+            // TempNewHandle is deliberately separate from the ordinary
+            // NewHandle request/result service: its second argument is a
+            // caller-owned result-code pointer and its allocation has
+            // temporary-lifetime semantics. Inside Macintosh: Memory (1992),
+            // pp. 2-67--2-68.
             let result_code_ptr = cpu.gpr[4];
             if result_code_ptr != 0 && memory.read_u16_be(result_code_ptr).is_none() {
                 process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
@@ -30931,14 +30934,20 @@ fn ppc_qsort_compare_next(
         .checked_add(state.index.checked_mul(state.width)?)?;
     let right = left.checked_add(state.width)?;
     ppc_install_native_call_arguments(cpu, memory, &[left, right])?;
-    Some(PpcImportAction::CallNative {
-        entry: state.comparator.entry,
-        rtoc: state.comparator.rtoc,
-        return_pc: PPC_GUEST_CALL_RETURN_PC,
-        final_pc: cpu.pc,
-        restore_rtoc: state.restore_rtoc,
-        return_gpr3: PpcNativeReturnGpr3::Preserve,
-    })
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry: state.comparator.entry,
+            rtoc: state.comparator.rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            cpu.pc,
+            state.restore_rtoc,
+            PpcNativeReturnGpr3::Preserve,
+        ),
+    )
+    .into_ppc_import_action()
 }
 
 fn ppc_dispatch_stdc_qsort(
@@ -44110,14 +44119,22 @@ fn ppc_call_universal_proc(
                 }
                 None => ppc_install_legacy_call_universal_proc_arguments(cpu),
             }
-            Some(PpcImportAction::CallNative {
-                entry: target.entry,
-                rtoc: target.rtoc,
-                return_pc: PPC_GUEST_CALL_RETURN_PC,
-                final_pc,
-                restore_rtoc,
-                return_gpr3,
-            })
+            Some(
+                GuestCallEffect::call_guest(
+                    GuestCallRequest::new(GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: target.entry,
+                        rtoc: target.rtoc,
+                    }),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        final_pc,
+                        restore_rtoc,
+                        return_gpr3,
+                    ),
+                )
+                .into_ppc_import_action()?,
+            )
         }
         GuestIsa::M68k => ppc_begin_m68k_universal_proc(
             cpu,
@@ -50147,17 +50164,24 @@ fn ppc_get_shared_library(
     let final_pc = cpu.lr;
     let restore_rtoc = cpu.gpr[2];
     cpu.gpr[12] = init_addr;
-    PpcImportAction::CallNative {
-        entry,
-        rtoc,
-        return_pc: PPC_GUEST_CALL_RETURN_PC,
-        final_pc,
-        restore_rtoc,
-        return_gpr3: PpcNativeReturnGpr3::ZeroOrSet {
-            zero: ppc_i16_result(PPC_NO_ERR),
-            nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
-        },
-    }
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry,
+            rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            final_pc,
+            restore_rtoc,
+            PpcNativeReturnGpr3::ZeroOrSet {
+                zero: ppc_i16_result(PPC_NO_ERR),
+                nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
+            },
+        ),
+    )
+    .into_ppc_import_action()
+    .expect("validated CFM initialization target must be native PowerPC")
 }
 
 fn ppc_close_connection(
@@ -50434,17 +50458,24 @@ fn ppc_get_mem_fragment(
     let final_pc = cpu.lr;
     let restore_rtoc = cpu.gpr[2];
     cpu.gpr[12] = init_addr;
-    PpcImportAction::CallNative {
-        entry,
-        rtoc,
-        return_pc: PPC_GUEST_CALL_RETURN_PC,
-        final_pc,
-        restore_rtoc,
-        return_gpr3: PpcNativeReturnGpr3::ZeroOrSet {
-            zero: ppc_i16_result(PPC_NO_ERR),
-            nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
-        },
-    }
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry,
+            rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            final_pc,
+            restore_rtoc,
+            PpcNativeReturnGpr3::ZeroOrSet {
+                zero: ppc_i16_result(PPC_NO_ERR),
+                nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
+            },
+        ),
+    )
+    .into_ppc_import_action()
+    .expect("validated CFM initialization target must be native PowerPC")
 }
 
 fn ppc_create_mem_fragment_init_block(
@@ -60012,14 +60043,7 @@ fn ppc_dsp_context_set_clut_entries(
 fn ppc_i16_return_value(action: &PpcImportAction) -> Option<i16> {
     match *action {
         PpcImportAction::Return(value) => Some(value as i16),
-        PpcImportAction::ReturnPreserve
-        | PpcImportAction::ReturnPreserveWithExtraCycles(_)
-        | PpcImportAction::ReturnWithExtraCycles(_, _)
-        | PpcImportAction::Continue
-        | PpcImportAction::Yield(_)
-        | PpcImportAction::CallNative { .. }
-        | PpcImportAction::RaiseException(_)
-        | PpcImportAction::Halt => None,
+        _ => None,
     }
 }
 
@@ -63646,16 +63670,23 @@ fn ppc_process_apple_event(
             descriptors,
             event_handle,
             reply_handle,
-        });
+    });
     match handler.procedure.isa {
-        GuestIsa::PowerPc => PpcImportAction::CallNative {
-            entry: handler.procedure.entry,
-            rtoc: handler.procedure.rtoc,
-            return_pc: PPC_GUEST_CALL_RETURN_PC,
-            final_pc: cpu.lr,
-            restore_rtoc: cpu.gpr[2],
-            return_gpr3: PpcNativeReturnGpr3::Preserve,
-        },
+        GuestIsa::PowerPc => GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: handler.procedure.entry,
+                rtoc: handler.procedure.rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                PPC_GUEST_CALL_RETURN_PC,
+                cpu.lr,
+                cpu.gpr[2],
+                PpcNativeReturnGpr3::Preserve,
+            ),
+        )
+        .into_ppc_import_action()
+        .expect("validated AppleEvent handler must be native PowerPC"),
         GuestIsa::M68k => {
             // AEEventHandlerProc is a Pascal function returning a two-byte
             // OSErr with three four-byte arguments. Interapplication
@@ -67309,14 +67340,21 @@ fn ppc_next_dialog_callback(
         if ppc_install_native_call_arguments(cpu, memory, &[dialog, item_number]).is_none() {
             continue;
         }
-        return PpcImportAction::CallNative {
-            entry: target.entry,
-            rtoc: target.rtoc,
-            return_pc: PPC_GUEST_CALL_RETURN_PC,
-            final_pc: cpu.pc,
-            restore_rtoc,
-            return_gpr3: PpcNativeReturnGpr3::Preserve,
-        };
+        return GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: target.entry,
+                rtoc: target.rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                PPC_GUEST_CALL_RETURN_PC,
+                cpu.pc,
+                restore_rtoc,
+                PpcNativeReturnGpr3::Preserve,
+            ),
+        )
+        .into_ppc_import_action()
+        .expect("validated dialog callback must be native PowerPC");
     }
 }
 
@@ -68633,14 +68671,22 @@ fn ppc_dispatch_legacy_control(
             let final_pc = cpu.lr;
             let target = ppc_resolve_callback_target(memory, cpu.gpr[5], restore_rtoc, None)?;
             ppc_install_native_call_arguments(cpu, memory, &[cpu.gpr[3], part as u16 as u32])?;
-            Some(PpcImportAction::CallNative {
-                entry: target.entry,
-                rtoc: target.rtoc,
-                return_pc: PPC_GUEST_CALL_RETURN_PC,
-                final_pc,
-                restore_rtoc,
-                return_gpr3: PpcNativeReturnGpr3::Set(ppc_i16_result(part)),
-            })
+            Some(
+                GuestCallEffect::call_guest(
+                    GuestCallRequest::new(GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: target.entry,
+                        rtoc: target.rtoc,
+                    }),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        final_pc,
+                        restore_rtoc,
+                        PpcNativeReturnGpr3::Set(ppc_i16_result(part)),
+                    ),
+                )
+                .into_ppc_import_action()?,
+            )
         }
         "Draw1Control" => {
             let _ = ppc_draw_control(
@@ -71482,14 +71528,22 @@ fn ppc_dm_get_indexed_display_mode_values(
         memory,
         &[user_data, item_index, list + PPC_DM_MODE_LIST_ENTRY_OFFSET],
     )?;
-    Some(PpcImportAction::CallNative {
-        entry: target.entry,
-        rtoc: target.rtoc,
-        return_pc: PPC_GUEST_CALL_RETURN_PC,
-        final_pc,
-        restore_rtoc,
-        return_gpr3: PpcNativeReturnGpr3::Set(ppc_i16_result(PPC_NO_ERR)),
-    })
+    Some(
+        GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: target.entry,
+                rtoc: target.rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                PPC_GUEST_CALL_RETURN_PC,
+                final_pc,
+                restore_rtoc,
+                PpcNativeReturnGpr3::Set(ppc_i16_result(PPC_NO_ERR)),
+            ),
+        )
+        .into_ppc_import_action()?,
+    )
 }
 
 fn ppc_te_read_rect(memory: &mut PpcSectionMem, rect_ptr: u32) -> Option<[u16; 4]> {
@@ -75340,14 +75394,22 @@ fn ppc_dispatch_native_menu_definition_with_return(
     match target.isa {
         GuestIsa::PowerPc => {
             ppc_install_native_call_arguments(cpu, memory, &call.native_arguments())?;
-            Some(PpcImportAction::CallNative {
-                entry: target.entry,
-                rtoc: target.rtoc,
-                return_pc: PPC_GUEST_CALL_RETURN_PC,
-                final_pc,
-                restore_rtoc: cpu.gpr[2],
-                return_gpr3,
-            })
+            Some(
+                GuestCallEffect::call_guest(
+                    GuestCallRequest::new(GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: target.entry,
+                        rtoc: target.rtoc,
+                    }),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        final_pc,
+                        cpu.gpr[2],
+                        return_gpr3,
+                    ),
+                )
+                .into_ppc_import_action()?,
+            )
         }
         GuestIsa::M68k => ppc_begin_m68k_menu_definition(
             cpu,
@@ -80506,13 +80568,14 @@ fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     PPC_NO_ERR
 }
 
+#[cfg(test)]
 fn ppc_raw_trap_table_entry(trap_word: u16, toolbox: bool) -> u32 {
-    let typed_word = if toolbox {
-        0xA800 | (trap_word & 0x03FF)
+    let kind = if toolbox {
+        TrapTableKind::Toolbox
     } else {
-        0xA000 | (trap_word & 0x00FF)
+        TrapTableKind::OperatingSystem
     };
-    crate::trap::dispatch::raw_trap_route(typed_word).table_address
+    TrapManager::table_address(trap_word, kind)
 }
 
 fn ppc_logical_trap_address(
@@ -80520,15 +80583,24 @@ fn ppc_logical_trap_address(
     trap_word: u16,
     toolbox: bool,
 ) -> Option<u32> {
-    let raw = memory.read_u32_be(ppc_raw_trap_table_entry(trap_word, toolbox))?;
-    match crate::trap::dispatch::resolve_trap_table_target(raw, |address| {
-        memory.read_u32_be(address)
-    })? {
-        crate::trap::dispatch::TrapTableTarget::Direct(target) => Some(target),
-        crate::trap::dispatch::TrapTableTarget::Protected {
-            logical_successor, ..
-        } => Some(logical_successor),
-    }
+    let kind = if toolbox {
+        TrapTableKind::Toolbox
+    } else {
+        TrapTableKind::OperatingSystem
+    };
+    let protected_memory = memory.shared_view();
+    TrapManager::get_address_with_provenance(
+        trap_word,
+        kind,
+        |operation| match operation {
+            TrapManagerMemoryOp::ReadLong(address) => {
+                Some(TrapManagerMemoryResult::Long(memory.read_u32_be(address)?))
+            }
+            TrapManagerMemoryOp::WriteLong { .. }
+            | TrapManagerMemoryOp::WriteProtectedLong { .. } => None,
+        },
+        move |address| protected_memory.is_shared_readonly_range(address, 4),
+    )
 }
 
 fn ppc_set_logical_trap_address(
@@ -80537,28 +80609,35 @@ fn ppc_set_logical_trap_address(
     toolbox: bool,
     handler: u32,
 ) -> bool {
-    // A permanent come-from head cannot itself be installed as a patch.
-    // NSetTrapAddress raises system error 12 for this malformed splice.
-    // Inside Macintosh: Operating System Utilities (1994), p. 8-30.
-    if memory.read_u32_be(handler) == Some(crate::trap::dispatch::COME_FROM_PATCH_SIGNATURE) {
-        let _ = memory.write_u16_be(crate::memory::globals::addr::DS_ERR_CODE, 12);
-        return false;
-    }
-    let entry = ppc_raw_trap_table_entry(trap_word, toolbox);
-    let Some(raw) = memory.read_u32_be(entry) else {
-        return false;
+    let kind = if toolbox {
+        TrapTableKind::Toolbox
+    } else {
+        TrapTableKind::OperatingSystem
     };
-    match crate::trap::dispatch::resolve_trap_table_target(raw, |address| {
-        memory.read_u32_be(address)
-    }) {
-        Some(crate::trap::dispatch::TrapTableTarget::Protected { last_head, .. }) => memory
-            .write_shared_system_u32_be(last_head.wrapping_add(4), handler)
-            .is_some(),
-        Some(crate::trap::dispatch::TrapTableTarget::Direct(_)) => {
-            memory.write_u32_be(entry, handler).is_some()
-        }
-        None => false,
+    let protected_memory = memory.shared_view();
+    let result = TrapManager::set_address_with_provenance(
+        trap_word,
+        kind,
+        handler,
+        |operation| match operation {
+            TrapManagerMemoryOp::ReadLong(address) => {
+                Some(TrapManagerMemoryResult::Long(memory.read_u32_be(address)?))
+            }
+            TrapManagerMemoryOp::WriteLong { address, value } => memory
+                .write_u32_be(address, value)
+                .map(|()| TrapManagerMemoryResult::Written),
+            TrapManagerMemoryOp::WriteProtectedLong { address, value } => memory
+                .write_shared_system_u32_be(address, value)
+                .map(|()| TrapManagerMemoryResult::Written),
+        },
+        move |address| protected_memory.is_shared_readonly_range(address, 4),
+    );
+    if matches!(result, Err(TrapManagerSetError::InvalidComeFromHead)) {
+        // NSetTrapAddress raises system error 12 for this malformed splice.
+        // Inside Macintosh: Operating System Utilities (1994), p. 8-30.
+        let _ = memory.write_u16_be(crate::memory::globals::addr::DS_ERR_CODE, 12);
     }
+    result.is_ok()
 }
 
 fn ppc_write_rect(
@@ -83684,14 +83763,22 @@ fn ppc_standard_file_filter_next_action(
         vec![state.filter_pb]
     };
     ppc_install_native_call_arguments(cpu, memory, &arguments)?;
-    Some(PpcImportAction::CallNative {
-        entry: state.callback.entry,
-        rtoc: state.callback.rtoc,
-        return_pc: PPC_GUEST_CALL_RETURN_PC,
-        final_pc: state.import_pc,
-        restore_rtoc: state.restore_rtoc,
-        return_gpr3: PpcNativeReturnGpr3::Mask(0xff),
-    })
+    Some(
+        GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: state.callback.entry,
+                rtoc: state.callback.rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                PPC_GUEST_CALL_RETURN_PC,
+                state.import_pc,
+                state.restore_rtoc,
+                PpcNativeReturnGpr3::Mask(0xff),
+            ),
+        )
+        .into_ppc_import_action()?,
+    )
 }
 
 fn ppc_standard_file_dispose_filter_pb(
@@ -92899,15 +92986,21 @@ pub(crate) mod tests {
         )
         .expect("native custom MDEF should be callable");
 
-        assert!(matches!(
-            action,
-            PpcImportAction::CallNative {
-                entry,
-                rtoc,
-                final_pc: actual_final_pc,
-                ..
-            } if entry == callback_entry && rtoc == callback_rtoc && actual_final_pc == final_pc
-        ));
+        let GuestCallEffect::CallGuest {
+            request,
+            continuation:
+                GuestCallContinuation::ReturnToPowerPc {
+                    final_pc: actual_final_pc,
+                    ..
+                },
+        } = GuestCallEffect::from_ppc_import_action(action)
+            .expect("native custom MDEF should produce a guest-call effect")
+        else {
+            panic!("native custom MDEF returned an unsupported guest-call effect");
+        };
+        assert_eq!(request.target.entry, callback_entry);
+        assert_eq!(request.target.rtoc, callback_rtoc);
+        assert_eq!(actual_final_pc, final_pc);
         let scratch = loaded.toolbox_startup.menu_def_scratch;
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, scratch, 10),
@@ -96032,14 +96125,21 @@ pub(crate) mod tests {
         // so this reliably unwinds execution after the file records have
         // been made live. A process-owned collection must remain populated
         // even when a native execution slice exits abnormally.
-        let action = PpcImportAction::CallNative {
-            entry: native.entry_pc,
-            rtoc: native.rtoc,
-            return_pc: PPC_GUEST_CALL_RETURN_PC,
-            final_pc: native.entry_pc,
-            restore_rtoc: native.rtoc,
-            return_gpr3: PpcNativeReturnGpr3::Preserve,
-        };
+        let action = GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: native.entry_pc,
+                rtoc: native.rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                PPC_GUEST_CALL_RETURN_PC,
+                native.entry_pc,
+                native.rtoc,
+                PpcNativeReturnGpr3::Preserve,
+            ),
+        )
+        .into_ppc_import_action()
+        .expect("native test request should adapt to the PPC ABI");
         assert!(matches!(
             native
                 .guest_calls
@@ -96214,14 +96314,21 @@ pub(crate) mod tests {
         // process Memory Manager reliably unwinds execution after the native
         // records are live. Process-owned Resource Manager records must stay
         // visible to the classic adapter even on this early exit.
-        let action = PpcImportAction::CallNative {
-            entry: native.entry_pc,
-            rtoc: native.rtoc,
-            return_pc: PPC_GUEST_CALL_RETURN_PC,
-            final_pc: native.entry_pc,
-            restore_rtoc: native.rtoc,
-            return_gpr3: PpcNativeReturnGpr3::Preserve,
-        };
+        let action = GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: native.entry_pc,
+                rtoc: native.rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                PPC_GUEST_CALL_RETURN_PC,
+                native.entry_pc,
+                native.rtoc,
+                PpcNativeReturnGpr3::Preserve,
+            ),
+        )
+        .into_ppc_import_action()
+        .expect("native test request should adapt to the PPC ABI");
         assert!(matches!(
             native
                 .guest_calls
@@ -97054,7 +97161,7 @@ pub(crate) mod tests {
             &memory_manager,
         );
         assert_eq!(standalone.handle_states(), attached.handle_states());
-        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0xc0));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x80));
 
         standalone.cpu.gpr[3] = handle;
         standalone.cpu.gpr[4] = 48;
@@ -97099,7 +97206,7 @@ pub(crate) mod tests {
         );
         let handle = native.cpu.gpr[3];
         let retained = native.process_memory_manager.0.clone();
-        assert_eq!(retained.borrow().state_for_handle(handle), Some(0x40));
+        assert_eq!(retained.borrow().state_for_handle(handle), Some(0));
 
         retained.borrow_mut().set_state_for_handle(handle, 0xa0);
         native.cpu.gpr[3] = handle;
@@ -98364,11 +98471,11 @@ pub(crate) mod tests {
                 .0
                 .borrow()
                 .state_for_handle(handle),
-            Some(0x40)
+            Some(0)
         );
         detached.cpu.gpr[3] = handle;
         run_test_import(&mut detached, PpcImportDispatcherTarget::HGetState);
-        assert_eq!(detached.cpu.gpr[3], 0x40);
+        assert_eq!(detached.cpu.gpr[3], 0);
     }
 
     #[test]
@@ -98548,7 +98655,7 @@ pub(crate) mod tests {
                 let original = memory_manager.native_allocation(handle).unwrap();
                 let detached_memory_manager = memory_manager.detached_clone();
                 assert_eq!(original.size, 24);
-                assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x40));
+                assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0));
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
@@ -98562,9 +98669,9 @@ pub(crate) mod tests {
                 native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HLock;
                 native.cpu.gpr[3] = handle;
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
-                assert_eq!(memory_manager.handle_state(handle), 0xc0);
-                assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0xc0));
-                assert_eq!(detached_memory_manager.state_for_handle(handle), Some(0x40));
+                assert_eq!(memory_manager.handle_state(handle), 0x80);
+                assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x80));
+                assert_eq!(detached_memory_manager.state_for_handle(handle), Some(0));
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
@@ -106750,6 +106857,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn native_trap_apis_do_not_promote_a_writable_signature_to_a_protected_head() {
+        let trap_word = 0xA823;
+        let table_entry = ppc_raw_trap_table_entry(trap_word, true);
+        let writable_head: u32 = 0x0030_0000;
+        let apparent_successor: u32 = 0x0040_0000;
+        let replacement: u32 = 0x0050_0000;
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(table_entry, writable_head.to_be_bytes().to_vec());
+        let mut head_bytes = Vec::from(
+            crate::trap::manager::COME_FROM_PATCH_SIGNATURE.to_be_bytes(),
+        );
+        head_bytes.extend_from_slice(&apparent_successor.to_be_bytes());
+        memory.add_region(writable_head, head_bytes);
+
+        assert_eq!(
+            ppc_logical_trap_address(&mut memory, trap_word, true),
+            Some(writable_head)
+        );
+        assert!(ppc_set_logical_trap_address(
+            &mut memory,
+            trap_word,
+            true,
+            replacement,
+        ));
+        assert_eq!(memory.read_u32_be(table_entry), Some(replacement));
+        assert_eq!(
+            memory.read_u32_be(writable_head + 4),
+            Some(apparent_successor)
+        );
+    }
+
+    #[test]
     fn native_trap_apis_share_permanent_come_from_topology() {
         let pef = synthetic_pef_with_import(b"NGetTrapAddress");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -106808,6 +106947,27 @@ pub(crate) mod tests {
         assert_eq!(bus.read_long(second_head), 0x6006_4ef9);
         assert_eq!(bus.read_long(second_head + 4), original);
 
+        // The 68K Trap Manager and the PPC import adapter must observe one
+        // raw guest table, including the hidden successor of a permanent
+        // come-from chain.  Mutate the chain through the 68K-side service and
+        // read it through the PPC side before exercising the inverse route.
+        assert_eq!(
+            dispatcher.trap_table_address(&bus, trap_word),
+            Some(original)
+        );
+        let m68k_patch = 0x0022_0000;
+        dispatcher
+            .install_trap_address(&mut bus, trap_word, m68k_patch)
+            .expect("68K patch must install into the materialized table");
+        assert_eq!(bus.read_long(table_entry), head);
+        assert_eq!(bus.read_long(head + 4), second_head);
+        assert_eq!(bus.read_long(second_head + 4), m68k_patch);
+
+        loaded.cpu.gpr[3] = u32::from(trap_word);
+        loaded.cpu.gpr[4] = 1;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], m68k_patch);
+
         loaded.cpu.gpr[3] = 0xAA6E;
         loaded.cpu.gpr[4] = 1;
         loaded.run_with_hle_imports(64);
@@ -106825,7 +106985,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = u32::from(trap_word);
         loaded.cpu.gpr[4] = 1;
         loaded.run_with_hle_imports(64);
-        assert_eq!(loaded.cpu.gpr[3], original);
+        assert_eq!(loaded.cpu.gpr[3], m68k_patch);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -106837,7 +106997,7 @@ pub(crate) mod tests {
         assert_eq!(bus.read_word(crate::memory::globals::addr::DS_ERR_CODE), 12);
         assert_eq!(bus.read_long(table_entry), head);
         assert_eq!(bus.read_long(head + 4), second_head);
-        assert_eq!(bus.read_long(second_head + 4), original);
+        assert_eq!(bus.read_long(second_head + 4), m68k_patch);
 
         let replacement = PPC_CODE_BASE;
         loaded.cpu.pc = loaded.entry_pc;
@@ -106864,6 +107024,11 @@ pub(crate) mod tests {
             .write_u32_be(table_entry, original)
             .expect("raw trap table remains guest-writable");
         assert_eq!(bus.read_long(table_entry), original);
+        assert_eq!(
+            dispatcher.trap_table_address(&bus, trap_word),
+            Some(original),
+            "68K getter must observe a PPC-side raw table overwrite"
+        );
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = u32::from(trap_word);
@@ -107190,6 +107355,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn ppc_publish_tick_rejects_stale_candidate_after_guest_ticks_store() {
+        use crate::memory::globals::addr;
+
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        loaded.set_tick_count(41);
+        loaded
+            .memory
+            .write_u32_be(addr::TICKS, 7)
+            .expect("direct guest Ticks store");
+
+        // A native slice that started at 41 must not restore its old
+        // candidate after guest code rewound the writable low-memory cell.
+        assert_eq!(loaded.publish_tick(42), 7);
+        assert_eq!(loaded.memory.read_u32_be(addr::TICKS), Some(7));
+    }
+
+    #[test]
     fn ppc_timer_manager_schedules_and_invokes_native_callbacks() {
         let pef = synthetic_pef_with_import(b"InsTime");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -107235,7 +107417,7 @@ pub(crate) mod tests {
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PrimeTime;
         loaded.cpu.gpr[3] = task_ptr;
         loaded.cpu.gpr[4] = 33;
-        loaded.tick_count = 10;
+        loaded.set_tick_count(10);
         loaded.set_clock_cycle_timing(1_000, 0);
         let probe = loaded.run_with_hle_imports(64);
 
@@ -110662,6 +110844,170 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn new_handle_abi_marshalling_shares_semantics_without_sharing_addresses() {
+        fn classic_outcome(
+            trap_word: u16,
+            clear: bool,
+            size: u32,
+        ) -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+            let (mut dispatcher, mut cpu, mut bus) = crate::trap::test_helpers::setup();
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, size);
+            dispatcher
+                .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+                .expect("classic NewHandle should be handled")
+                .expect("classic NewHandle should return cleanly");
+
+            let handle = cpu.read_reg(Register::A0);
+            let error = cpu.read_reg(Register::D0) as i16;
+            if handle == 0 {
+                return (false, error, None, None, None);
+            }
+
+            let state = dispatcher.handle_state_bits(handle);
+            let ptr = bus.read_long(handle);
+            let memory_manager = dispatcher.process_memory_manager();
+            let memory_manager = memory_manager.borrow();
+            let allocation_size = memory_manager.classic_allocation_size(ptr);
+            let contents_zero = clear.then(|| {
+                bus.read_bytes(ptr, allocation_size.unwrap_or(0) as usize)
+                    .iter()
+                    .all(|&byte| byte == 0)
+            });
+            (true, error, state, allocation_size, contents_zero)
+        }
+
+        fn native_outcome(
+            clear: bool,
+            size: u32,
+        ) -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+            let import = if clear {
+                b"NewHandleClear".as_slice()
+            } else {
+                b"NewHandle".as_slice()
+            };
+            let pef = synthetic_pef_with_import(import);
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = size;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::NewHandle { clear },
+            );
+
+            let handle = loaded.cpu.gpr[3];
+            let error = loaded.last_mem_error();
+            let (state, record) = {
+                let memory_manager = loaded.process_memory_manager.0.borrow();
+                (
+                    memory_manager.state_for_handle(handle),
+                    memory_manager.native_allocation(handle),
+                )
+            };
+            let contents_zero = if clear {
+                record.map(|record| {
+                    (0..record.size)
+                        .all(|offset| loaded.memory.read_u8(record.ptr + offset) == Some(0))
+                })
+            } else {
+                // Ordinary NewHandle contents are undefined. Do not compare
+                // whatever byte pattern a backend happens to leave there.
+                None
+            };
+            (
+                handle != 0,
+                error,
+                state,
+                record.map(|record| record.size),
+                contents_zero,
+            )
+        }
+
+        // The four classic trap variants (current/system × clear/non-clear)
+        // must reach the same semantic operation as the native InterfaceLib
+        // entry points. Handles and data pointers are intentionally omitted
+        // from the compared outcome because each allocator owns its physical
+        // address, alignment, and layout.
+        for (trap_word, clear) in [
+            (0xA022, false),
+            (0xA322, true),
+            (0xA422, false),
+            (0xA622, true),
+        ] {
+            let classic = classic_outcome(trap_word, clear, 13);
+            let native = native_outcome(clear, 13);
+            assert_eq!(classic, native, "trap ${trap_word:04X} semantic outcome");
+            assert_eq!(
+                classic,
+                (true, 0, Some(0), Some(13), clear.then_some(true))
+            );
+        }
+
+        // Macintosh Size is signed. Both ABI adapters reject the same
+        // negative value before entering an unsigned physical allocator.
+        let classic = classic_outcome(0xA022, false, u32::MAX);
+        let native = native_outcome(false, u32::MAX);
+        assert_eq!(classic, native);
+        assert_eq!(classic, (false, -108, None, None, None));
+
+        fn classic_mem_full_outcome() -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+            let (mut dispatcher, mut cpu, mut bus) = crate::trap::test_helpers::setup();
+            let heap_limit = bus.classic_heap_limit();
+            bus.reserve_heap_until(heap_limit);
+            dispatcher.current_trap_word = 0xA022;
+            cpu.write_reg(Register::D0, 24);
+            dispatcher
+                .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+                .expect("classic NewHandle should be handled")
+                .expect("classic NewHandle failure should stay in the ABI shim");
+            (
+                cpu.read_reg(Register::A0) != 0,
+                cpu.read_reg(Register::D0) as i16,
+                dispatcher.handle_state_bits(cpu.read_reg(Register::A0)),
+                None,
+                None,
+            )
+        }
+
+        fn native_mem_full_outcome() -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+            let pef = synthetic_pef_with_import(b"NewHandle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let heap_cursor = loaded.heap_cursor();
+            loaded.set_heap_limit(heap_cursor + 8);
+            loaded.cpu.gpr[3] = 24;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::NewHandle { clear: false },
+            );
+            let handle = loaded.cpu.gpr[3];
+            let state = loaded
+                .process_memory_manager
+                .0
+                .borrow()
+                .state_for_handle(handle);
+            (
+                handle != 0,
+                loaded.last_mem_error(),
+                state,
+                None,
+                None,
+            )
+        }
+
+        let classic = classic_mem_full_outcome();
+        let native = native_mem_full_outcome();
+        assert_eq!(classic, native);
+        assert_eq!(classic, (false, -108, None, None, None));
+
+        // TempNewHandle has a result-code pointer and temporary lifetime, so
+        // it remains a distinct ABI route rather than silently inheriting the
+        // ordinary NewHandle request/result operation above.
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "TempNewHandle"),
+            PpcImportDispatcherTarget::TempNewHandle
+        );
+    }
+
+    #[test]
     fn hle_import_runner_reuses_disposed_handle_capacity() {
         let pef = synthetic_pef_with_import(b"NewHandleClear");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -111323,7 +111669,7 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.memory.read_u32_be(main_addr).unwrap();
         loaded.cpu.gpr[2] = loaded.memory.read_u32_be(main_addr + 4).unwrap();
         loaded.cpu.lr = PPC_HALT_PC;
-        loaded.tick_count = 77;
+        loaded.set_tick_count(77);
         loaded.set_clock_cycle_timing(1_000, 0);
         let run_probe = loaded.run_with_hle_imports(128);
 
@@ -159246,7 +159592,7 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::TEClick;
-        loaded.tick_count = 100;
+        loaded.set_tick_count(100);
         loaded.cpu.gpr[3] = (12u32 << 16) | 20;
         loaded.cpu.gpr[4] = 0;
         loaded.cpu.gpr[5] = te_handle;
@@ -164849,7 +165195,7 @@ pub(crate) mod tests {
             )
         };
 
-        assert!(matches!(action, PpcImportAction::CallNative { .. }));
+        assert!(GuestCallEffect::from_ppc_import_action(action).is_some());
         assert_eq!(apple_events.pending_dispatches.len(), 1);
         let descriptors = native.cpu.gpr[3];
         assert_eq!(native.cpu.gpr[4], descriptors + 8);

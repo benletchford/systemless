@@ -5,6 +5,17 @@
 //! `Option<Result<()>>` — `Some` if the trap was handled, `None` to pass through.
 
 use super::types::UnderlineInfo;
+use super::manager::{
+    TrapManager, TrapManagerMemoryOp, TrapManagerMemoryResult, TrapManagerSetError,
+    TrapTableKind,
+};
+pub(crate) use super::manager::{
+    raw_trap_route, OsRoutineVariant, RawTrapRoute, OS_TRAP_TABLE_BASE, OS_TRAP_TABLE_SLOTS,
+    TOOLBOX_TRAP_TABLE_BASE, TOOLBOX_TRAP_TABLE_SLOTS,
+};
+#[cfg(test)]
+#[cfg(test)]
+use super::manager::{resolve_trap_table_target, TrapTableTarget, COME_FROM_PATCH_SIGNATURE};
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
 use crate::guest_call::SharedGuestCallStack;
@@ -1113,10 +1124,12 @@ pub(crate) struct InverseTableCacheEntry {
     pub bytes: Vec<u8>,
 }
 
-/// Pre-initialization mirror of native trap installations.
+/// Pre-initialization compatibility mirror of native trap installations.
 ///
 /// Focused dispatcher tests and early startup consult this before the raw
-/// guest tables exist. Once materialized, the guest longs are authoritative.
+/// guest tables exist. It is never an authority for an active process: once
+/// the raw guest tables are materialized, their longs are authoritative and
+/// direct guest stores must be visible without synchronization.
 /// The default `HashMap` paid
 /// SipHash plus a SwissTable probe per lookup, and a linear scan is
 /// unbounded: `SetTrapAddress`/`NSetTrapAddress` can populate arbitrarily
@@ -1195,313 +1208,6 @@ impl TrapWordMap {
     }
 }
 
-/// Mac OS 8.1 trap-table layout selected by the reference machine profile.
-/// The Operating System table contains 256 routine addresses and the Toolbox
-/// table contains 1,024. Inside Macintosh: Operating System Utilities (1994),
-/// pp. 8-4--8-6 describes the table shapes; Inside Macintosh Volume VI (1991),
-/// Gestalt Manager constants `gestaltOSTable` and `gestaltToolboxTable`, expose
-/// their bases to applications.
-pub(crate) const OS_TRAP_TABLE_BASE: u32 = 0x0400;
-pub(crate) const TOOLBOX_TRAP_TABLE_BASE: u32 = 0x0E00;
-pub(crate) const OS_TRAP_TABLE_SLOTS: u16 = 0x0100;
-pub(crate) const TOOLBOX_TRAP_TABLE_SLOTS: u16 = 0x0400;
-pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
-
-/// Source-backed meanings for OS-trap routine bits 10 and 9.
-///
-/// These bits are private to each OS routine; they must not be interpreted as
-/// global dispatcher flags. The Memory Manager meanings below come from
-/// *Inside Macintosh: Memory* (1992), pp. 2-31, 2-33, 2-35, 2-53--2-55,
-/// 2-65--2-68, and 2-71--2-74. The text transformations come from *Inside
-/// Macintosh*, Volume VI (1991), pp. 14-62--14-63 and Appendix C, table C-2.
-/// The string-comparison permutations come from *Inside Macintosh: Text*
-/// (1993), pp. 5-51--5-52 and 5-60--5-61. The later table is authoritative
-/// over the contradictory MARKS annotation in Volume II (1985), p. II-377.
-/// UpperString's MARKS form comes from the same book, pp. 5-64--5-65.
-/// Parameter-block synchronous, immediate, and asynchronous forms come from
-/// *Inside Macintosh: Devices* (1994), p. 1-16.
-/// Original and extended Time Manager task installation comes from *Inside
-/// Macintosh: Processes* (1994), pp. 3-18--3-20.
-/// Trap Manager legacy, new-OS, and new-Tool forms come from *Inside Macintosh:
-/// Operating System Utilities* (1994), pp. 8-27--8-31 and 8-32--8-33.
-/// Gestalt, NewGestalt, and ReplaceGestalt come from the same book,
-/// pp. 1-31--1-36.
-/// SleepQInstall and SleepQRemove come from *Inside Macintosh: Devices*
-/// (1994), pp. 6-18, 6-26, and 6-33.
-/// IdleUpdate, IdleState, and SerialPower come from the same book,
-/// pp. 6-29--6-30 and 6-33--6-35.
-/// File Manager synchronous, asynchronous, and HFS forms come from *Inside
-/// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
-/// summary. Universal Interfaces 3.4 independently declares reviewed exact
-/// words in `MacMemory.h` (lines 436--1010, 1331--1362), `TextUtils.h` (lines
-/// 404--455), `Devices.h` (lines 905--1044, 1282--1415), and `Files.h` (lines
-/// 1315--3343); `Timer.h` lines 74--100 declares InsTime and InsXTime;
-/// `Patches.h` lines 80--231 declares the Trap Manager forms;
-/// `Gestalt.h` lines 55--105 declares the three Gestalt Manager forms;
-/// `Power.h` lines 447--461 and 705--731 declares the sleep-queue record and
-/// register entry points; lines 650--701 and 733--791 declares the idle-state
-/// and serial-power entry points;
-/// `StringCompare.h` lines 567--596 retains the comparison APIs;
-/// `Devices.h` lines 1109--1141 declares DriverInstall and its bit-10
-/// DriverInstallReserveMem form; `MacMemory.h` lines 1184--1202 declares
-/// ReallocateHandle and ReallocateHandleSys.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OsRoutineVariant {
-    Unclassified,
-    CurrentHeap,
-    SystemHeap,
-    CurrentHeapClear,
-    SystemHeapClear,
-    LowerText,
-    StripText,
-    UpperText,
-    StripUpperText,
-    TextCompareFoldCaseAndMarks,
-    TextCompareFoldCase,
-    TextCompareStripMarks,
-    TextCompareExact,
-    UpperStringPreserveMarks,
-    UpperStringStripMarks,
-    ParameterBlockSynchronous,
-    ParameterBlockImmediate,
-    ParameterBlockAsynchronous,
-    TimeTaskOriginal,
-    TimeTaskExtended,
-    TrapAddressLegacy,
-    TrapAddressNewOs,
-    TrapAddressNewTool,
-    GestaltQuery,
-    GestaltRegister,
-    GestaltReplace,
-    SleepQueueInstall,
-    SleepQueueRemove,
-    PowerIdleUpdate,
-    PowerIdleState,
-    PowerSerial,
-    DriverInstall,
-    DriverInstallReserveMemory,
-    FileSynchronous,
-    FileAsynchronous,
-    FileHfsSynchronous,
-    FileHfsAsynchronous,
-}
-
-impl OsRoutineVariant {
-    /// Returns `(case_sensitive, diacritic_sensitive)` for CmpString/RelString.
-    pub(crate) const fn text_comparison_sensitivity(self) -> Option<(bool, bool)> {
-        match self {
-            Self::TextCompareFoldCaseAndMarks => Some((false, false)),
-            Self::TextCompareFoldCase => Some((false, true)),
-            Self::TextCompareStripMarks => Some((true, false)),
-            Self::TextCompareExact => Some((true, true)),
-            _ => None,
-        }
-    }
-}
-
-const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
-    if (raw_word & 0x0800) != 0 {
-        return OsRoutineVariant::Unclassified;
-    }
-
-    let slot = raw_word & 0x00FF;
-    let routine_bits = raw_word & 0x0600;
-    match (slot, routine_bits) {
-        // NewPtr and NewHandle use bit 10 for SYS and bit 9 for CLEAR.
-        (0x1E | 0x22, 0x0000) => OsRoutineVariant::CurrentHeap,
-        (0x1E | 0x22, 0x0200) => OsRoutineVariant::CurrentHeapClear,
-        (0x1E | 0x22, 0x0400) => OsRoutineVariant::SystemHeap,
-        (0x1E | 0x22, 0x0600) => OsRoutineVariant::SystemHeapClear,
-
-        // These Memory Manager routines document only bit 10 as SYS. Leave
-        // their bit-9 forms unclassified rather than inventing a meaning.
-        (0x1C | 0x1D | 0x27 | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0000) => {
-            OsRoutineVariant::CurrentHeap
-        }
-        (0x1C | 0x1D | 0x27 | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0400) => {
-            OsRoutineVariant::SystemHeap
-        }
-
-        // LowerText, StripText, UpperText, and StripUpperText share slot $56.
-        (0x56, 0x0000) => OsRoutineVariant::LowerText,
-        (0x56, 0x0200) => OsRoutineVariant::StripText,
-        (0x56, 0x0400) => OsRoutineVariant::UpperText,
-        (0x56, 0x0600) => OsRoutineVariant::StripUpperText,
-
-        // Text 1993, pp. 5-51--5-52 and 5-60--5-61: MARKS (bit 9)
-        // makes comparison diacritic-sensitive and CASE (bit 10) makes it
-        // case-sensitive. Both CmpString and RelString use this table.
-        (0x3C | 0x50, 0x0000) => OsRoutineVariant::TextCompareFoldCaseAndMarks,
-        (0x3C | 0x50, 0x0200) => OsRoutineVariant::TextCompareFoldCase,
-        (0x3C | 0x50, 0x0400) => OsRoutineVariant::TextCompareStripMarks,
-        (0x3C | 0x50, 0x0600) => OsRoutineVariant::TextCompareExact,
-
-        // Text 1993, pp. 5-64--5-65: bare UprString preserves marks while
-        // MARKS (bit 9) strips them. Bit 10 has no documented meaning here.
-        (0x54, 0x0000) => OsRoutineVariant::UpperStringPreserveMarks,
-        (0x54, 0x0200) => OsRoutineVariant::UpperStringStripMarks,
-
-        // Devices 1994, p. 1-16 and UI 3.4 Devices.h lines 905--1044 and
-        // 1282--1415: these PB slots have exact Sync/Immed/Async declarations.
-        // Slot $00 is excluded because $A200 also means PBHOpenSync/OpenSlotSync.
-        (0x01..=0x06, 0x0000) => OsRoutineVariant::ParameterBlockSynchronous,
-        (0x01..=0x06, 0x0200) => OsRoutineVariant::ParameterBlockImmediate,
-        (0x01..=0x06, 0x0400) => OsRoutineVariant::ParameterBlockAsynchronous,
-
-        // Processes 1994, pp. 3-18--3-20 and UI 3.4 Timer.h lines 74--100:
-        // bit 10 selects InsXTime's extended, drift-free TMTask record.
-        // Bit 9 has no documented meaning for this slot.
-        (0x58, 0x0000) => OsRoutineVariant::TimeTaskOriginal,
-        (0x58, 0x0400) => OsRoutineVariant::TimeTaskExtended,
-
-        // Operating System Utilities 1994, pp. 8-27--8-31: bit 9 selects
-        // the new typed form and bit 10 then selects the Toolbox table.
-        // UI 3.4 Patches.h lines 80--231 declares the exact legacy, new-OS,
-        // and new-Tool getter/setter words. Bit 10 alone is not declared.
-        (0x46 | 0x47, 0x0000) => OsRoutineVariant::TrapAddressLegacy,
-        (0x46 | 0x47, 0x0200) => OsRoutineVariant::TrapAddressNewOs,
-        (0x46 | 0x47, 0x0600) => OsRoutineVariant::TrapAddressNewTool,
-
-        // Operating System Utilities 1994, pp. 1-31--1-36 and UI 3.4
-        // Gestalt.h lines 55--105: the three operations share slot $AD.
-        // Bit 9 selects NewGestalt and bit 10 selects ReplaceGestalt; the
-        // combined form remains unclassified. UI 3.4 Traps.h line 804 names
-        // $A7AD as _GetGestaltProcPtr, but the reviewed sources do not define
-        // its ABI or semantics.
-        (0xAD, 0x0000) => OsRoutineVariant::GestaltQuery,
-        (0xAD, 0x0200) => OsRoutineVariant::GestaltRegister,
-        (0xAD, 0x0400) => OsRoutineVariant::GestaltReplace,
-
-        // Devices 1994, pp. 6-18, 6-26, and 6-33; UI 3.4 Power.h lines
-        // 447--461 and 705--731: bit 9 installs an A0-supplied SleepQRec and
-        // bit 10 removes it. The combined form has no reviewed semantics.
-        (0x8A, 0x0200) => OsRoutineVariant::SleepQueueInstall,
-        (0x8A, 0x0400) => OsRoutineVariant::SleepQueueRemove,
-
-        // Devices 1994, pp. 6-29--6-30 and 6-33--6-35; UI 3.4 Power.h
-        // lines 650--701 and 733--791: bits 9 and 10 distinguish the three
-        // Power Manager entry points sharing slot $85. The bare form has no
-        // reviewed routine identity.
-        (0x85, 0x0200) => OsRoutineVariant::PowerIdleUpdate,
-        (0x85, 0x0400) => OsRoutineVariant::PowerIdleState,
-        (0x85, 0x0600) => OsRoutineVariant::PowerSerial,
-
-        // Devices 1994, pp. 1-83--1-85 and UI 3.4 Devices.h lines
-        // 1109--1141: bit 10 selects DriverInstallReserveMem, which calls
-        // ReserveMem before the shared DCE installation. Bit 9 and the
-        // combined form have no reviewed meanings.
-        (0x3D, 0x0000) => OsRoutineVariant::DriverInstall,
-        (0x3D, 0x0400) => OsRoutineVariant::DriverInstallReserveMemory,
-
-        // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
-        // reviewed slots have exact basic Sync/Async declarations in UI 3.4
-        // Files.h; do not extend the meanings to other OS-table slots.
-        (
-            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x11 | 0x12 | 0x13 | 0x14
-            | 0x15 | 0x18 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45,
-            0x0000,
-        ) => OsRoutineVariant::FileSynchronous,
-        (
-            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x11 | 0x12 | 0x13 | 0x14
-            | 0x15 | 0x18 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45,
-            0x0400,
-        ) => OsRoutineVariant::FileAsynchronous,
-
-        // These slots additionally have exact PBH...Sync/PBH...Async words.
-        // A200/PBHOpen is deliberately excluded because UI 3.4 also declares
-        // that word as PBOpenImmed, so one label would overstate the evidence.
-        (
-            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x14 | 0x15 | 0x41 | 0x42,
-            0x0200,
-        ) => OsRoutineVariant::FileHfsSynchronous,
-        (
-            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x14 | 0x15 | 0x41 | 0x42,
-            0x0600,
-        ) => OsRoutineVariant::FileHfsAsynchronous,
-        _ => OsRoutineVariant::Unclassified,
-    }
-}
-
-/// One raw A-line word's table selection and preserved variant metadata.
-///
-/// The Trap Dispatcher must classify the complete word before masking it to
-/// a table slot. Operating System words use bits 10--8 as routine/A0 flags
-/// and bits 7--0 as the slot; Toolbox words use bit 10 as auto-pop and bits
-/// 9--0 as the slot. Inside Macintosh: Operating System Utilities (1994),
-/// pp. 8-10--8-15 and 8-20--8-21.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct RawTrapRoute {
-    pub(crate) raw_word: u16,
-    pub(crate) canonical_word: u16,
-    pub(crate) table_slot: u16,
-    pub(crate) table_index: u16,
-    pub(crate) table_address: u32,
-    pub(crate) is_toolbox: bool,
-    pub(crate) os_flags: u16,
-    pub(crate) os_routine_variant: OsRoutineVariant,
-    pub(crate) os_returns_a0: bool,
-    pub(crate) toolbox_auto_pop: bool,
-}
-
-const EMPTY_RAW_TRAP_ROUTE: RawTrapRoute = RawTrapRoute {
-    raw_word: 0,
-    canonical_word: 0,
-    table_slot: 0,
-    table_index: 0,
-    table_address: 0,
-    is_toolbox: false,
-    os_flags: 0,
-    os_routine_variant: OsRoutineVariant::Unclassified,
-    os_returns_a0: false,
-    toolbox_auto_pop: false,
-};
-
-const fn generate_raw_trap_routes() -> [RawTrapRoute; 4096] {
-    let mut routes = [EMPTY_RAW_TRAP_ROUTE; 4096];
-    let mut low_word = 0u16;
-    while low_word < 4096 {
-        let raw_word = 0xA000 | low_word;
-        let is_toolbox = (raw_word & 0x0800) != 0;
-        let table_slot = if is_toolbox {
-            raw_word & 0x03FF
-        } else {
-            raw_word & 0x00FF
-        };
-        routes[low_word as usize] = RawTrapRoute {
-            raw_word,
-            canonical_word: if is_toolbox {
-                0xA800 | table_slot
-            } else {
-                0xA000 | table_slot
-            },
-            table_slot,
-            table_index: if is_toolbox {
-                OS_TRAP_TABLE_SLOTS + table_slot
-            } else {
-                table_slot
-            },
-            table_address: if is_toolbox {
-                TOOLBOX_TRAP_TABLE_BASE + table_slot as u32 * 4
-            } else {
-                OS_TRAP_TABLE_BASE + table_slot as u32 * 4
-            },
-            is_toolbox,
-            os_flags: if is_toolbox { 0 } else { raw_word & 0x0700 },
-            os_routine_variant: classify_os_routine_variant(raw_word),
-            os_returns_a0: !is_toolbox && (raw_word & 0x0100) != 0,
-            toolbox_auto_pop: is_toolbox && (raw_word & 0x0400) != 0,
-        };
-        low_word += 1;
-    }
-    routes
-}
-
-/// Complete generated routing denominator for `$A000..=$AFFF`.
-const RAW_TRAP_ROUTES: [RawTrapRoute; 4096] = generate_raw_trap_routes();
-
-pub(crate) fn raw_trap_route(trap_word: u16) -> &'static RawTrapRoute {
-    &RAW_TRAP_ROUTES[usize::from(trap_word & 0x0FFF)]
-}
 
 /// Rust adapter identities allowed for one canonical A-line operation row.
 /// `Nonterminal` is a declared registry state, distinct from an accidental
@@ -1555,45 +1261,6 @@ const DEFAULT_TRAP_ROUTES: [DefaultTrapRoute; 1280] = include!("generated_defaul
 
 pub(crate) fn default_trap_route(trap_word: u16) -> &'static DefaultTrapRoute {
     &DEFAULT_TRAP_ROUTES[usize::from(raw_trap_route(trap_word).table_index)]
-}
-
-/// The observable target behind a raw trap-table long.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TrapTableTarget {
-    Direct(u32),
-    Protected {
-        last_head: u32,
-        logical_successor: u32,
-    },
-}
-
-/// Follow every protected come-from head and return the last mutable edge.
-/// Trap Manager getters hide all permanent heads, while setters replace the
-/// exit JMP target in the last head. Inside Macintosh: Operating System
-/// Utilities (1994), pp. 8-8--8-9 and 8-27--8-31.
-pub(crate) fn resolve_trap_table_target(
-    raw_target: u32,
-    mut read_long: impl FnMut(u32) -> Option<u32>,
-) -> Option<TrapTableTarget> {
-    let mut target = raw_target;
-    let mut last_head = None;
-    let mut visited = HashSet::new();
-    loop {
-        if read_long(target) != Some(COME_FROM_PATCH_SIGNATURE) {
-            return Some(match last_head {
-                Some(last_head) => TrapTableTarget::Protected {
-                    last_head,
-                    logical_successor: target,
-                },
-                None => TrapTableTarget::Direct(target),
-            });
-        }
-        if !visited.insert(target) {
-            return None;
-        }
-        last_head = Some(target);
-        target = read_long(target.checked_add(4)?)?;
-    }
 }
 
 /// Trap-table topology selected for the emulated Mac OS 8.1 machine.
@@ -2095,14 +1762,13 @@ pub struct TrapDispatcher {
     pub(crate) outline_preferred: bool,
     /// Font Manager glyph-preservation preference (`SetPreserveGlyph` / `GetPreserveGlyph`).
     pub(crate) preserve_glyph: bool,
-    /// Guest-visible projection of the process-owned wrapping Macintosh tick
-    /// counter. The private `tick_state` is authoritative after process
-    /// attachment; this scalar remains for existing fixture/adapter callers.
-    /// Inside Macintosh Volume I (1985), p. I-260; Volume II (1985),
-    /// pp. II-349--II-350.
-    pub(crate) tick_count: u32,
+    /// Process-scoped pacing state for the wrapping Macintosh clock.
+    ///
+    /// The guest-visible low-memory `Ticks` bytes are authoritative. This
+    /// handle is retained only so host scheduling and manager bookkeeping can
+    /// share the last value observed at an ABI boundary; it is never a source
+    /// from which guest bytes are projected.
     tick_state: SharedProcessTickState,
-    last_projected_tick: std::cell::Cell<u32>,
     /// Tick at which IdleUpdate last reset the Power Manager activity timer.
     /// Inside Macintosh: Devices (1994), p. 6-29.
     pub(crate) power_idle_last_update_tick: u32,
@@ -2547,12 +2213,20 @@ pub struct TrapDispatcher {
     pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
     /// Complete bitmap PICT captured by CopyBits during OpenPicture.
     pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
-    /// Pre-initialization mirror mapping a canonical trap word to a native 68K
-    /// handler. SetTrapAddress keeps it coherent for focused unit tests. It is
-    /// cleared when a process table is activated; initialized runners dispatch
+    /// Pre-initialization compatibility mapping from a canonical trap word to
+    /// a native 68K handler. SetTrapAddress keeps it available for focused
+    /// standalone tests and early startup before a process table exists. It
+    /// is cleared when a process table is activated and is ignored whenever
+    /// `trap_tables_materialized` is true; initialized runners dispatch
     /// exclusively from writable guest cells. Native handlers execute as
     /// simulated JSR targets, allowing CRT-installed LoadSeg, UnloadSeg, and
     /// ExitToShell patches to relocate code normally.
+    //
+    // Deletion gate: migrate the remaining direct pre-initialization writers
+    // in runner/loader fixtures to an explicit process-table setup, then
+    // remove this field and the unmaterialized fallback together. Keeping the
+    // field until those callers move is intentional compatibility debt, not a
+    // second active-process authority.
     pub(crate) native_trap_table: TrapWordMap,
     /// Whether the selected profile's two raw trap tables have been written
     /// into guest low memory. Before application initialization, focused trap
@@ -2842,9 +2516,7 @@ impl TrapDispatcher {
             .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_sound_manager(&mut self.sound_manager);
-        self.import_public_tick_projection();
         context.attach_tick_state(&mut self.tick_state);
-        self.refresh_tick_projection();
         context.attach_callback_tasks(
             &mut self.timer_tasks,
             &mut self.vbl_tasks,
@@ -3303,49 +2975,41 @@ impl TrapDispatcher {
         self.restore_dialog_pixels(bus, rect, saved);
     }
 
-    /// Test-only: set the tick count.
-    /// Return the process-owned wrapping Macintosh tick counter.
+    /// Return the process-scoped wrapping Macintosh tick counter.
+    ///
+    /// Callers entering from a guest ABI must first use `read_tick_count` so
+    /// direct stores to low-memory `Ticks` are imported before this accessor
+    /// is used by manager policy.
     pub(crate) fn current_tick(&self) -> u32 {
-        self.import_public_tick_projection();
         self.tick_state.current_tick()
     }
 
-    fn import_public_tick_projection(&self) {
-        if self.tick_count != self.last_projected_tick.get() {
-            self.tick_state.set_tick(self.tick_count);
-            self.last_projected_tick.set(self.tick_count);
-        }
+    /// Resolve the architecture-neutral TickCount operation from the
+    /// guest-visible low-memory value. A direct guest write is accepted at
+    /// the ABI boundary and updates the host pacing snapshot; it is never
+    /// overwritten by an adapter scalar.
+    pub(crate) fn read_tick_count(&mut self, bus: &MacMemoryBus) -> u32 {
+        let guest_ticks = bus.read_long(crate::memory::globals::addr::TICKS);
+        self.tick_state.read_tick_count(guest_ticks);
+        guest_ticks
     }
 
-    pub(crate) fn refresh_tick_projection(&mut self) -> u32 {
-        let tick = self.tick_state.current_tick();
-        self.tick_count = tick;
-        self.last_projected_tick.set(tick);
-        tick
+    /// Set low-memory `Ticks` for an explicit fixture synchronization and
+    /// import the bytes into the host pacing snapshot. Production callers
+    /// should write guest memory at their ABI boundary and use
+    /// `read_tick_count` directly.
+    #[cfg(test)]
+    pub(crate) fn set_tick_count_for_test(&mut self, bus: &mut MacMemoryBus, tick: u32) {
+        bus.write_long(crate::memory::globals::addr::TICKS, tick);
+        self.read_tick_count(bus);
     }
 
-    /// Set the process clock for an explicit runner/fixture synchronization.
-    /// Native slice teardown uses the process state's monotonic publication
-    /// rules instead of restoring a local snapshot.
-    pub(crate) fn set_tick_count(&mut self, tick: u32) {
-        self.tick_state.set_tick(tick);
-        self.tick_count = tick;
-        self.last_projected_tick.set(tick);
-    }
-
-    /// Advance the canonical process clock by one wrapping tick and refresh
-    /// its low-memory-facing scalar projection.
+    /// Advance the host pacing snapshot by one wrapping tick. The caller
+    /// writes the returned value to guest low memory as part of the same VBL
+    /// boundary.
     pub(crate) fn advance_tick(&mut self) -> u32 {
-        self.import_public_tick_projection();
         let tick = self.tick_state.advance_ticks(1);
-        self.tick_count = tick;
-        self.last_projected_tick.set(tick);
         tick
-    }
-
-    /// Production code uses advance_guest_tick() to update tick_count.
-    pub fn set_tick_count_for_test(&mut self, tick: u32) {
-        self.set_tick_count(tick);
     }
 
     /// Test-only: mark the synthetic kAEOpenApplication event as
@@ -3925,9 +3589,7 @@ impl TrapDispatcher {
             tx_size: 12,
             outline_preferred: false,
             preserve_glyph: false,
-            tick_count: 0,
             tick_state: SharedProcessTickState::default(),
-            last_projected_tick: std::cell::Cell::new(0),
             power_idle_last_update_tick: 0,
             power_idle_disable_count: 0,
             serial_port_a_powered: false,
@@ -5706,10 +5368,11 @@ impl TrapDispatcher {
         self.input_state.mouse_pos = (v, h);
         self.adb.note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
         let modifiers = self.current_event_modifiers();
+        let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
             what: 1, // mouseDown
             message: 0,
-            when: self.tick_count,
+            when: tick,
             where_v: v,
             where_h: h,
             modifiers,
@@ -5735,10 +5398,11 @@ impl TrapDispatcher {
             return;
         }
         let modifiers = self.current_event_modifiers();
+        let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
             what: 2, // mouseUp
             message: 0,
-            when: self.tick_count,
+            when: tick,
             where_v: v,
             where_h: h,
             modifiers,
@@ -5780,10 +5444,11 @@ impl TrapDispatcher {
             return;
         }
         let message = ((key_code as u32) << 8) | (char_code as u32);
+        let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
             what: 3, // keyDown
             message,
-            when: self.tick_count,
+            when: tick,
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers,
@@ -5848,10 +5513,11 @@ impl TrapDispatcher {
         // keyUpMask through SetEventMask. Inside Macintosh Volume I, I-254;
         // Macintosh Toolbox Essentials 1992, pp. 2-28..2-29 and 2-99.
         if Self::posted_event_is_enabled(system_event_mask, 4) {
+            let tick = self.current_tick();
             self.event_queue.push_back(QueuedEvent {
                 what: 4, // keyUp
                 message,
-                when: self.tick_count,
+                when: tick,
                 where_v: self.input_state.mouse_pos.0,
                 where_h: self.input_state.mouse_pos.1,
                 modifiers,
@@ -7069,6 +6735,7 @@ impl TrapDispatcher {
         raw_trap_route(trap_word).canonical_word
     }
 
+    #[cfg(test)]
     fn raw_trap_table_entry(trap_word: u16) -> u32 {
         raw_trap_route(trap_word).table_address
     }
@@ -7138,9 +6805,7 @@ impl TrapDispatcher {
                 self.get_or_create_os_trap_trampoline(bus, route.default_gateway_word)
             };
             let default = self
-                .native_trap_table
-                .get(&trap_word)
-                .copied()
+                .pre_materialization_trap_handler(trap_word)
                 .unwrap_or(default);
             raw_entries.push(if route.has_permanent_come_from {
                 self.create_trap_come_from_head(bus, default)
@@ -7159,9 +6824,7 @@ impl TrapDispatcher {
                 self.get_or_create_tool_trap_trampoline(bus, route.default_gateway_word)
             };
             let default = self
-                .native_trap_table
-                .get(&trap_word)
-                .copied()
+                .pre_materialization_trap_handler(trap_word)
                 .unwrap_or(default);
             raw_entries.push(if route.has_permanent_come_from {
                 self.create_trap_come_from_head(bus, default)
@@ -7288,15 +6951,23 @@ impl TrapDispatcher {
             return None;
         }
         let canonical = Self::canonical_trap_word(trap_word);
-        let installed = bus.read_long(Self::raw_trap_table_entry(canonical));
-        Some(
-            match resolve_trap_table_target(installed, |address| Some(bus.read_long(address))) {
-                Some(TrapTableTarget::Direct(target)) => target,
-                Some(TrapTableTarget::Protected {
-                    logical_successor, ..
-                }) => logical_successor,
-                None => installed,
+        let kind = if raw_trap_route(canonical).is_toolbox {
+            TrapTableKind::Toolbox
+        } else {
+            TrapTableKind::OperatingSystem
+        };
+        let protected_code = bus.protected_code_ownership();
+        TrapManager::get_address_with_provenance(
+            canonical,
+            kind,
+            |operation| match operation {
+                TrapManagerMemoryOp::ReadLong(address) => bus
+                    .try_read_long(address)
+                    .map(TrapManagerMemoryResult::Long),
+                TrapManagerMemoryOp::WriteLong { .. }
+                | TrapManagerMemoryOp::WriteProtectedLong { .. } => None,
             },
+            move |address| protected_code.contains(address),
         )
     }
 
@@ -7313,8 +6984,18 @@ impl TrapDispatcher {
                 Some(logical)
             }
         } else {
-            self.native_trap_table.get(&canonical).copied()
+            self.pre_materialization_trap_handler(canonical)
         }
+    }
+
+    /// Read the compatibility projection only while no guest trap table is
+    /// active. This guard is deliberately separate from the active lookup so
+    /// a later refactor cannot accidentally let the mirror win over guest
+    /// table bytes.
+    fn pre_materialization_trap_handler(&self, canonical: u16) -> Option<u32> {
+        (!self.trap_tables_materialized)
+            .then(|| self.native_trap_table.get(&canonical).copied())
+            .flatten()
     }
 
     pub(crate) fn install_trap_address(
@@ -7322,35 +7003,51 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         trap_word: u16,
         handler: u32,
-    ) {
+    ) -> std::result::Result<(), TrapManagerSetError> {
         let canonical = Self::canonical_trap_word(trap_word);
-        let protected_tail = if self.trap_tables_materialized {
-            let raw = bus.read_long(Self::raw_trap_table_entry(canonical));
-            match resolve_trap_table_target(raw, |address| Some(bus.read_long(address))) {
-                Some(TrapTableTarget::Direct(_)) => None,
-                Some(TrapTableTarget::Protected { last_head, .. }) => Some(last_head),
-                None => return,
-            }
-        } else {
-            None
-        };
-        if self.trap_tables_materialized {
-            let entry = if self.default_trap_gateway(canonical) == Some(handler) {
-                self.default_trap_gateway(canonical).unwrap_or(handler)
+        if !self.trap_tables_materialized {
+            let protected_code = bus.protected_code_ownership();
+            TrapManager::validate_handler_with_provenance(
+                handler,
+                |address| bus.try_read_long(address),
+                move |address| protected_code.contains(address),
+            )?;
+            if self.default_trap_gateway(canonical) == Some(handler) {
+                self.native_trap_table.remove(&canonical);
             } else {
-                handler
-            };
-            let raw_entry = Self::raw_trap_table_entry(canonical);
-            if let Some(last_head) = protected_tail {
-                Self::write_readonly_code_long(bus, last_head + 4, entry);
-            } else {
-                bus.write_long(raw_entry, entry);
+                self.native_trap_table.insert(canonical, handler);
             }
-        } else if self.default_trap_gateway(canonical) == Some(handler) {
-            self.native_trap_table.remove(&canonical);
-        } else {
-            self.native_trap_table.insert(canonical, handler);
+            return Ok(());
         }
+
+        let entry = if self.default_trap_gateway(canonical) == Some(handler) {
+            self.default_trap_gateway(canonical).unwrap_or(handler)
+        } else {
+            handler
+        };
+        let kind = if raw_trap_route(canonical).is_toolbox {
+            TrapTableKind::Toolbox
+        } else {
+            TrapTableKind::OperatingSystem
+        };
+        let protected_code = bus.protected_code_ownership();
+        TrapManager::set_address_with_provenance(
+            canonical,
+            kind,
+            entry,
+            |operation| match operation {
+                TrapManagerMemoryOp::ReadLong(address) => bus
+                    .try_read_long(address)
+                    .map(TrapManagerMemoryResult::Long),
+                TrapManagerMemoryOp::WriteLong { address, value } => bus
+                    .try_write_long(address, value)
+                    .then_some(TrapManagerMemoryResult::Written),
+                TrapManagerMemoryOp::WriteProtectedLong { address, value } => bus
+                    .try_write_protected_code_long(address, value)
+                    .then_some(TrapManagerMemoryResult::Written),
+            },
+            move |address| protected_code.contains(address),
+        )
     }
 
     fn retain_native_trap_call(&mut self, trap_word: u16, call: NativeTrapCallState) {
@@ -7842,6 +7539,11 @@ impl TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Result<()> {
+        // Low-memory Ticks is guest-owned writable state. Import it at the
+        // ABI boundary before any manager, trace, or diagnostic path observes
+        // the process clock so a direct guest store cannot be shadowed by a
+        // stale host pacing snapshot.
+        self.read_tick_count(bus);
         if self.process_window_list_attached {
             self.front_window = self
                 .window_list
@@ -8381,7 +8083,6 @@ impl TrapDispatcher {
                 self.trap_time_ns[(trap & 0xFFF) as usize].saturating_add(ns);
         }
 
-        self.refresh_tick_projection();
         result
     }
 }
@@ -8931,7 +8632,9 @@ mod tests {
                 let invoked_word = bus.read_word(saved_default);
                 let invoked_operation = profile_route.default_gateway_word;
                 let declared = *default_trap_route(invoked_operation);
-                dispatcher.install_trap_address(&mut bus, canonical_word, PATCH);
+                dispatcher
+                    .install_trap_address(&mut bus, canonical_word, PATCH)
+                    .expect("patch must install into the materialized table");
                 assert_eq!(
                     dispatcher.native_trap_handler(&bus, canonical_word),
                     Some(PATCH)
@@ -9519,7 +9222,9 @@ mod tests {
         assert_eq!([bus.read_long(0x28), bus.read_long(0x2C)], first_defaults);
         let first_aline_patch = 0x0020_F000;
         bus.write_long(0x28, first_aline_patch);
-        dispatcher.install_trap_address(&mut bus, protected_word, first_protected_patch);
+        dispatcher
+            .install_trap_address(&mut bus, protected_word, first_protected_patch)
+            .expect("first protected patch must install");
         bus.write_long(direct_entry, first_direct_patch);
         dispatcher.pending_native_trap_calls.insert(
             0xA039,
@@ -9552,7 +9257,9 @@ mod tests {
         assert!(dispatcher.pending_native_trap_calls.is_empty());
         assert_eq!(dispatcher.current_trap_caller, None);
 
-        dispatcher.install_trap_address(&mut bus, protected_word, second_protected_patch);
+        dispatcher
+            .install_trap_address(&mut bus, protected_word, second_protected_patch)
+            .expect("second protected patch must install");
         bus.write_long(direct_entry, second_direct_patch);
         dispatcher.pending_native_trap_calls.insert(
             0xA975,
@@ -9718,7 +9425,9 @@ mod tests {
                 Some(shared_default)
             );
 
-            dispatcher.install_trap_address(&mut bus, alias, patch);
+            dispatcher
+                .install_trap_address(&mut bus, alias, patch)
+                .expect("alias patch must install");
             assert_eq!(dispatcher.native_trap_handler(&bus, alias), Some(patch));
             assert_eq!(
                 dispatcher.trap_table_address(&bus, target),
@@ -9726,7 +9435,9 @@ mod tests {
                 "patching alias ${alias:04X} must not patch ${target:04X}"
             );
 
-            dispatcher.install_trap_address(&mut bus, alias, shared_default);
+            dispatcher
+                .install_trap_address(&mut bus, alias, shared_default)
+                .expect("alias default must restore");
             assert_eq!(dispatcher.native_trap_handler(&bus, alias), None);
             assert_eq!(
                 dispatcher.trap_table_address(&bus, alias),
@@ -9862,7 +9573,9 @@ mod tests {
         let trap_word = 0xA004;
         let handler = 0x00F0_A004;
 
-        dispatcher.install_trap_address(&mut bus, trap_word, handler);
+        dispatcher
+            .install_trap_address(&mut bus, trap_word, handler)
+            .expect("arbitrary handler pointer must install");
 
         assert_eq!(
             dispatcher.trap_table_address(&bus, trap_word),
@@ -10333,7 +10046,7 @@ mod tests {
         let gateway = dispatcher.get_or_create_tool_trap_trampoline(&mut bus, 0xA975);
         let caller_pc = 0x0021_0000u32;
         let sp = 0x003F_FF00u32;
-        dispatcher.tick_count = 0x1234_5678;
+        dispatcher.set_tick_count_for_test(&mut bus, 0x1234_5678);
         dispatcher.native_trap_table.insert(0xA975, 0x0030_0000);
         bus.write_long(sp, caller_pc);
         cpu.write_reg(Register::PC, 0x0020_0002);

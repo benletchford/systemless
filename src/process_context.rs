@@ -1265,11 +1265,13 @@ pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
-/// Canonical wrapping Macintosh tick counter shared by both CPU adapters.
+/// Host pacing snapshot for the wrapping Macintosh clock.
 ///
-/// The low-memory `Ticks` global is only a guest-memory projection of this
-/// process value. Inside Macintosh Volume I (1985), p. I-260; Volume II
-/// (1985), pp. II-349--II-350.
+/// Guest-visible time lives in the low-memory `Ticks` bytes. This process
+/// value is retained only so host scheduling and callback bookkeeping can
+/// share the most recently observed guest value across CPU adapters; it is
+/// never a competing source of guest time. Inside Macintosh Volume I (1985),
+/// p. I-260; Volume II (1985), pp. II-349--II-350.
 pub(crate) type SharedProcessTickState = SharedProcessValue<u32>;
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 pub(crate) type SharedProcessMenuTracking = SharedProcessValue<Option<ProcessMenuTrackingState>>;
@@ -1532,6 +1534,21 @@ impl<T> SharedProcessValue<T> {
 }
 
 impl SharedProcessValue<u32> {
+    /// Import the guest-visible low-memory value into the host pacing
+    /// snapshot for the architecture-neutral `TickCount` operation.
+    /// `Ticks` is writable guest state, so a direct store must be observed by
+    /// the next Toolbox trap or native import. Both ABI adapters call this
+    /// operation rather than implementing their own TickCount semantics; the
+    /// low-memory bytes remain authoritative after the observation.
+    ///
+    /// The value is the number of ticks since startup as exposed by the
+    /// low-memory `Ticks` global. Macintosh Toolbox Essentials (1992),
+    /// pp. 2-111--2-112; Inside Macintosh Volume I (1985), p. I-260.
+    pub(crate) fn read_tick_count(&self, guest_ticks: u32) -> u32 {
+        self.set_tick(guest_ticks);
+        guest_ticks
+    }
+
     /// Read the process clock without exposing a reference into the
     /// `UnsafeCell`-backed value. A Mixed Mode callback may enter the other
     /// adapter after this operation returns.
@@ -1864,6 +1881,106 @@ pub struct ProcessHandleRecord {
     pub ptr: u32,
     pub size: u32,
     pub capacity: u32,
+}
+
+/// Heap selected by a Memory Manager handle request.
+///
+/// Classic trap words carry this distinction in their OS-routine bits. The
+/// native InterfaceLib entry points used by this runtime currently expose the
+/// process's current heap only. The allocator backends may still retain their
+/// own physical layout: the request records the Macintosh policy while the
+/// selected backend chooses addresses and alignment. Inside Macintosh:
+/// Memory (1992), pp. 2-29--2-32 and 2-80--2-84.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessHandleHeap {
+    Current,
+    System,
+}
+
+/// Architecture-neutral request for an ordinary `NewHandle` operation.
+///
+/// ABI adapters decode their signed Macintosh `Size` into this value and
+/// encode the returned [`ProcessNewHandleResult`]. `TempNewHandle` is
+/// intentionally not represented here: its result-code pointer and temporary
+/// lifetime are a separate operation. Inside Macintosh: Memory (1992),
+/// pp. 2-29--2-32 and 2-67--2-68.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessNewHandleRequest {
+    pub(crate) logical_size: i32,
+    pub(crate) clear: bool,
+    pub(crate) heap: ProcessHandleHeap,
+}
+
+impl ProcessNewHandleRequest {
+    pub(crate) const fn new(logical_size: i32, clear: bool, heap: ProcessHandleHeap) -> Self {
+        Self {
+            logical_size,
+            clear,
+            heap,
+        }
+    }
+
+    pub(crate) fn from_unsigned(
+        logical_size: u32,
+        clear: bool,
+        heap: ProcessHandleHeap,
+    ) -> Option<Self> {
+        Some(Self::new(i32::try_from(logical_size).ok()?, clear, heap))
+    }
+}
+
+/// Architecture-neutral completion of an ordinary `NewHandle` operation.
+///
+/// `handle` and `data_ptr` are guest addresses selected by the backend and are
+/// deliberately not compared across ISAs. The error and initial handle state
+/// are the semantic result shared by both ABI adapters. Inside Macintosh:
+/// Memory (1992), pp. 2-29--2-32 and 2-46--2-49.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessNewHandleResult {
+    pub(crate) handle: u32,
+    pub(crate) data_ptr: u32,
+    pub(crate) error: i16,
+    pub(crate) state_bits: u8,
+}
+
+impl ProcessNewHandleResult {
+    // NewHandle returns an unlocked, unpurgeable, non-resource block. The
+    // resource and purgeable bits are clear in the Memory Manager's state
+    // byte until the caller explicitly changes them. Inside Macintosh:
+    // Memory (1992), pp. 2-27 and 2-46--2-49.
+    const INITIAL_STATE_BITS: u8 = 0;
+
+    fn success(handle: u32, data_ptr: u32) -> Self {
+        Self {
+            handle,
+            data_ptr,
+            error: 0,
+            state_bits: Self::INITIAL_STATE_BITS,
+        }
+    }
+
+    fn failure(error: i16) -> Self {
+        Self {
+            handle: 0,
+            data_ptr: 0,
+            error,
+            state_bits: 0,
+        }
+    }
+
+    pub(crate) fn succeeded(self) -> bool {
+        self.error == 0 && self.handle != 0 && self.data_ptr != 0
+    }
+}
+
+/// Physical guest-memory backend for one process-level `NewHandle` request.
+///
+/// This is an ABI-neutral service boundary, not an allocator abstraction:
+/// classic allocations remain 4-byte aligned in `MacMemoryBus`, while native
+/// allocations retain their 16-byte alignment and native free lists.
+pub(crate) enum ProcessNewHandleBackend<'a> {
+    Classic(&'a mut MacMemoryBus),
+    Native(&'a mut GuestAddressSpace),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2941,16 +3058,73 @@ impl ProcessNativeMemoryManager {
         }
     }
 
+    /// Run one ordinary `NewHandle` request through the process Memory
+    /// Manager. ABI adapters only decode their calling convention and encode
+    /// this result; allocation addresses remain backend-owned. Current and
+    /// system heap requests intentionally share the classic allocator until a
+    /// distinct system-zone backend is modelled. `TempNewHandle` is not routed
+    /// here because its result-code pointer and temporary lifetime are a
+    /// separate operation. Inside Macintosh: Memory (1992), pp. 2-29--2-32.
+    pub(crate) fn new_handle(
+        &mut self,
+        request: ProcessNewHandleRequest,
+        backend: ProcessNewHandleBackend<'_>,
+    ) -> ProcessNewHandleResult {
+        let heap = request.heap;
+        let size = match u32::try_from(request.logical_size) {
+            Ok(size) => size,
+            Err(_) => {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return ProcessNewHandleResult::failure(Self::MEM_FULL_ERR);
+            }
+        };
+
+        let result = match backend {
+            ProcessNewHandleBackend::Classic(bus) => self
+                .allocate_classic_handle(bus, size, request.clear, heap)
+                .map(|record| ProcessNewHandleResult::success(record.handle, record.ptr))
+                .unwrap_or_else(ProcessNewHandleResult::failure),
+            ProcessNewHandleBackend::Native(memory) => {
+                debug_assert_eq!(
+                    heap,
+                    ProcessHandleHeap::Current,
+                    "native InterfaceLib exposes only current-heap NewHandle"
+                );
+                let handle = self.allocate_native_handle(memory, size, request.clear);
+                if handle == 0 {
+                    let error = self
+                        .native_heap_state()
+                        .map(|heap| heap.last_mem_error)
+                        .unwrap_or(Self::MEM_FULL_ERR);
+                    ProcessNewHandleResult::failure(error)
+                } else {
+                    self.native_allocation(handle)
+                        .map(|record| ProcessNewHandleResult::success(record.handle, record.ptr))
+                        .unwrap_or_else(|| ProcessNewHandleResult::failure(Self::NIL_HANDLE_ERR))
+                }
+            }
+        };
+
+        // The native allocator carries the process-level `MemError` state;
+        // the 68K edge additionally publishes this same result to low-memory
+        // `MemErr`. Keeping the error in the neutral result makes both ABIs
+        // observe one policy while preserving their distinct return ABI.
+        self.set_native_mem_error(result.error);
+        result
+    }
+
     /// Allocate a classic relocatable block and stable master pointer.
     ///
     /// `NewHandle` creates an unlocked, unpurgeable block and returns `NIL`
     /// if either allocation fails. Inside Macintosh: Memory (1992),
     /// pp. 2-29--2-31.
-    pub(crate) fn new_classic_handle(
+    fn allocate_classic_handle(
         &mut self,
         bus: &mut MacMemoryBus,
         size: u32,
-    ) -> Result<(u32, u32), i16> {
+        clear: bool,
+        _heap: ProcessHandleHeap,
+    ) -> Result<ProcessHandleRecord, i16> {
         self.assert_classic_memory_bus_attached(bus);
         let allocator = self.classic_allocator();
         let ptr = allocator.allocate(size, 4, self.classic_heap_ceiling());
@@ -2963,8 +3137,41 @@ impl ProcessNativeMemoryManager {
             return Err(Self::MEM_FULL_ERR);
         }
         bus.write_long(handle, ptr);
-        self.ptr_to_handle.insert(ptr, handle);
-        Ok((handle, ptr))
+        if clear && size > 0 {
+            bus.fill_zeros(ptr, size);
+        }
+        let record = ProcessHandleRecord {
+            handle,
+            ptr,
+            size,
+            capacity: allocator
+                .allocation_capacity(ptr)
+                .unwrap_or_else(|| SharedClassicHeapAllocator::allocation_bucket_size(size)),
+        };
+        self.commit_new_handle_record(record, false);
+        Ok(record)
+    }
+
+    /// Compatibility wrapper for process-owned callers that already have a
+    /// classic bus. New ordinary `NewHandle` entry points use [`Self::new_handle`]
+    /// so clear/heap policy and the semantic result are shared across ABIs.
+    pub(crate) fn new_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        size: u32,
+    ) -> Result<(u32, u32), i16> {
+        let Some(request) =
+            ProcessNewHandleRequest::from_unsigned(size, false, ProcessHandleHeap::Current)
+        else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        };
+        let result = self.new_handle(request, ProcessNewHandleBackend::Classic(bus));
+        if result.error == Self::NO_ERR {
+            Ok((result.handle, result.data_ptr))
+        } else {
+            Err(result.error)
+        }
     }
 
     /// Allocate a current-heap handle containing a copy of `bytes`.
@@ -3791,6 +3998,28 @@ impl ProcessNativeMemoryManager {
             *existing = record;
         } else {
             self.native_allocations.push(record);
+        }
+    }
+
+    /// Commit the process-visible part of a successful ordinary handle
+    /// allocation. Physical allocator bookkeeping stays in the selected
+    /// backend, but the master-pointer reverse index and initial handle state
+    /// are one process-level authority for both classic and native handles.
+    fn commit_new_handle_record(&mut self, record: ProcessHandleRecord, native: bool) {
+        if record.handle == 0 {
+            return;
+        }
+        if record.ptr != 0 {
+            self.ptr_to_handle.insert(record.ptr, record.handle);
+        }
+        self.handle_state_bits
+            .insert(record.handle, ProcessNewHandleResult::INITIAL_STATE_BITS);
+        if native {
+            self.set_native_allocation_record(record);
+            if record.ptr != 0 {
+                self.native_handle_ptrs.insert(record.ptr);
+            }
+            self.native_handles.insert(record.handle);
         }
     }
 
@@ -4725,7 +4954,7 @@ impl ProcessNativeMemoryManager {
     /// A handle addresses a nonrelocatable master pointer whose contents may
     /// change when the relocatable block moves. Inside Macintosh: Memory
     /// (1992), pp. 1-18--1-19 and 2-40--2-41.
-    pub(crate) fn new_native_handle(
+    fn allocate_native_handle(
         &mut self,
         memory: &mut GuestAddressSpace,
         size: u32,
@@ -4878,13 +5107,29 @@ impl ProcessNativeMemoryManager {
             allocator.heap.heap_cursor = next_cursor;
         }
         allocator.heap.last_mem_error = Self::NO_ERR;
-        self.set_native_allocation_record(record);
-        self.ptr_to_handle.insert(record.ptr, record.handle);
-        self.native_handle_ptrs.insert(record.ptr);
-        self.handle_state_bits.insert(record.handle, 0x40);
-        self.native_handles.insert(record.handle);
+        self.commit_new_handle_record(record, true);
         self.native_allocator_dirty = true;
         record.handle
+    }
+
+    /// Compatibility wrapper for process-owned native callers that already
+    /// use the native address-space backend. Ordinary InterfaceLib
+    /// `NewHandle` imports use [`Self::new_handle`] so both ABIs share one
+    /// request/result boundary.
+    pub(crate) fn new_native_handle(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        size: u32,
+        clear: bool,
+    ) -> u32 {
+        let Some(request) =
+            ProcessNewHandleRequest::from_unsigned(size, clear, ProcessHandleHeap::Current)
+        else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        self.new_handle(request, ProcessNewHandleBackend::Native(memory))
+            .handle
     }
 
     /// Allocate a native relocatable block containing a copy of `bytes`.

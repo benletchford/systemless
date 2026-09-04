@@ -3,10 +3,14 @@
 use super::dispatch::{
     raw_trap_route, selector_operation_route, OsRoutineVariant, SelectorOperationRoute,
 };
+use super::manager::{TrapManager, TrapManagerSetError, TrapTableKind};
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
+use crate::process_context::{
+    ProcessHandleHeap, ProcessNewHandleBackend, ProcessNewHandleRequest, ProcessNewHandleResult,
+};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -269,6 +273,24 @@ fn set_mem_error(bus: &mut MacMemoryBus, result: u32) {
 fn write_memory_result<C: CpuOps>(cpu: &mut C, bus: &mut MacMemoryBus, result: u32) {
     set_mem_error(bus, result);
     cpu.write_reg(Register::D0, result);
+}
+
+/// Translate a Trap Manager table-write failure at the 68K ABI edge.
+///
+/// Trap Manager owns the come-from-chain validation and reports structural
+/// failures as a typed error. The classic 68K setter has no result register;
+/// its system-error path publishes the failure through DSErrCode and halts
+/// the HLE invocation. Inside Macintosh: Operating System Utilities (1994),
+/// pp. 8-29--8-31.
+fn handle_trap_manager_set_error(bus: &mut MacMemoryBus, error: TrapManagerSetError) -> Result<()> {
+    let system_error = match error {
+        TrapManagerSetError::InvalidComeFromHead
+        | TrapManagerSetError::UnreadableTable
+        | TrapManagerSetError::MalformedComeFromChain
+        | TrapManagerSetError::WriteRejected => 12,
+    };
+    bus.write_word(addr::DS_ERR_CODE, system_error);
+    Err(Error::Halted)
 }
 
 fn vm_page_span(start: u32, count: u32) -> Option<(u32, u32)> {
@@ -558,33 +580,31 @@ impl super::TrapDispatcher {
     }
 
     fn trap_address_table_key(&self, trap_word: u16) -> u16 {
-        let typed_word = match raw_trap_route(self.current_trap_word).os_routine_variant {
+        let kind = match raw_trap_route(self.current_trap_word).os_routine_variant {
             // `_GetTrapAddress newTool` / `_SetTrapAddress newTool`.
             // Inside Macintosh: Operating System Utilities (1994),
             // pp. 8-27--8-31: trapNum may be an A-line instruction or trap
             // number; irrelevant high bits are masked to the selected table.
-            OsRoutineVariant::TrapAddressNewTool => 0xA800 | (trap_word & 0x03FF),
+            OsRoutineVariant::TrapAddressNewTool => TrapTableKind::Toolbox,
             // The newOS forms mask to the low 8-bit Operating System table.
-            OsRoutineVariant::TrapAddressNewOs => 0xA000 | (trap_word & 0x00FF),
+            OsRoutineVariant::TrapAddressNewOs => TrapTableKind::OperatingSystem,
             // Legacy GetTrapAddress ($A146) and SetTrapAddress ($A047)
             // ignore the high-order bits and infer the table from the trap
             // number: $00-$4F, $54, and $57 are OS traps; all others are
             // Toolbox traps. Inside Macintosh: Operating System Utilities
             // 1994, pp. 8-32 to 8-33.
-            variant => {
+            OsRoutineVariant::TrapAddressLegacy | OsRoutineVariant::Unclassified => {
                 debug_assert!(matches!(
-                    variant,
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
                     OsRoutineVariant::TrapAddressLegacy | OsRoutineVariant::Unclassified
                 ));
-                let trap_num = trap_word & 0x03FF;
-                if matches!(trap_num, 0x000..=0x04F | 0x054 | 0x057) {
-                    0xA000 | (trap_num & 0x00FF)
-                } else {
-                    0xA800 | trap_num
-                }
+                TrapTableKind::Legacy
+            }
+            variant => {
+                unreachable!("non-Trap Manager route reached trap-address handler: {variant:?}")
             }
         };
-        super::dispatch::raw_trap_route(typed_word).canonical_word
+        TrapManager::canonical_trap_word(trap_word, kind)
     }
 
     fn looks_like_callable_proc(bus: &MacMemoryBus, proc_ptr: u32) -> bool {
@@ -702,12 +722,31 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         size: u32,
     ) -> std::result::Result<(u32, u32), u32> {
+        let Some(request) =
+            ProcessNewHandleRequest::from_unsigned(size, false, ProcessHandleHeap::Current)
+        else {
+            return Err(MEM_FULL_ERR);
+        };
+        let result = self.new_process_handle(bus, request);
+        if result.error == 0 {
+            Ok((result.handle, result.data_ptr))
+        } else {
+            Err(result.error as i32 as u32)
+        }
+    }
+
+    /// Decode one classic Memory Manager heap request through the process
+    /// service. The trap remains responsible only for attaching its bus and
+    /// later publishing the neutral result through the 68K ABI.
+    pub(super) fn new_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        request: ProcessNewHandleRequest,
+    ) -> ProcessNewHandleResult {
         let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
         memory_manager.attach_classic_memory_bus(bus);
-        memory_manager
-            .new_classic_handle(bus, size)
-            .map_err(|error| error as i32 as u32)
+        memory_manager.new_handle(request, ProcessNewHandleBackend::Classic(bus))
     }
 
     pub(super) fn new_empty_process_classic_handle(
@@ -871,6 +910,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.read_tick_count(bus);
         let result = match (is_tool, trap_num) {
             // ========== Memory Manager ==========
             // NewPtr ($A11E) / NewPtrSys ($A51E) / NewPtrClear ($A31E) / NewPtrSysClear ($A71E)
@@ -927,32 +967,40 @@ impl super::TrapDispatcher {
             (false, 0x22) => {
                 let size = cpu.read_reg(Register::D0);
                 let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
-                // `Size` is a signed Macintosh LONGINT; negative sizes are
-                // invalid and must not be passed to the unsigned allocator.
-                if (size as i32) < 0 {
-                    cpu.write_reg(Register::A0, 0);
-                    write_memory_result(cpu, bus, MEM_FULL_ERR);
-                    return Some(Ok(()));
-                }
-                let (handle, ptr) = match self.new_process_classic_handle(bus, size) {
-                    Ok(allocation) => allocation,
-                    Err(error) => {
-                        cpu.write_reg(Register::A0, 0);
-                        write_memory_result(cpu, bus, error);
-                        return Some(Ok(()));
+                let heap = match variant {
+                    OsRoutineVariant::SystemHeap | OsRoutineVariant::SystemHeapClear => {
+                        ProcessHandleHeap::System
                     }
+                    _ => ProcessHandleHeap::Current,
                 };
-                if matches!(
+                let clear = matches!(
                     variant,
                     OsRoutineVariant::CurrentHeapClear | OsRoutineVariant::SystemHeapClear
-                ) && size > 0
-                {
-                    bus.fill_zeros(ptr, size);
+                );
+                let result = self.new_process_handle(
+                    bus,
+                    ProcessNewHandleRequest::new(size as i32, clear, heap),
+                );
+                if result.succeeded() {
+                    // The clear contract is handled by the process service.
+                    // For the ordinary 68K edge, retain its existing A5
+                    // marker as a deterministic compatibility aid; the
+                    // neutral operation deliberately leaves non-clear bytes
+                    // undefined and this marker is not cross-ABI policy.
+                    if !clear {
+                        scribble_uninitialized_allocation(bus, result.data_ptr, size);
+                    }
+                    cpu.write_reg(Register::A0, result.handle);
+                    write_memory_result(cpu, bus, result.error as i32 as u32);
                 } else {
-                    scribble_uninitialized_allocation(bus, ptr, size);
+                    cpu.write_reg(Register::A0, 0);
+                    let error = if result.error == 0 {
+                        MEM_FULL_ERR
+                    } else {
+                        result.error as i32 as u32
+                    };
+                    write_memory_result(cpu, bus, error);
                 }
-                cpu.write_reg(Register::A0, handle);
-                write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
 
@@ -1288,20 +1336,15 @@ impl super::TrapDispatcher {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_table_key = self.trap_address_table_key(trap_word);
                 let handler_addr = cpu.read_reg(Register::A0);
-                // The permanent system come-from format starts with
-                // `BRA.S +6; JMP absolute`. Installing such a routine as an
-                // application patch would splice a system head into the wrong
-                // chain, so NSetTrapAddress raises system error 12. Inside
-                // Macintosh: Operating System Utilities (1994), p. 8-30.
-                if bus.read_long(handler_addr) == 0x6006_4EF9 {
-                    bus.write_word(addr::DS_ERR_CODE, 12);
-                    return Some(Err(crate::Error::Halted));
+                // The shared service updates the writable guest table once it
+                // is initialized, or the explicitly transitional mirror for
+                // focused pre-materialization fixtures. It also validates
+                // permanent come-from heads before either representation is
+                // mutated.
+                match self.install_trap_address(bus, trap_table_key, handler_addr) {
+                    Ok(()) => Ok(()),
+                    Err(error) => handle_trap_manager_set_error(bus, error),
                 }
-                // The helper updates the writable guest table as well as the
-                // pre-initialization mirror. Writing that slot's default
-                // callable gateway restores HLE dispatch without recursion.
-                self.install_trap_address(bus, trap_table_key, handler_addr);
-                Ok(())
             }
 
             // StripAddress ($A055)
@@ -4521,7 +4564,10 @@ mod tests {
     use crate::process_context::{
         ProcessContext, ProcessHandleRecord, ProcessNativeHeapState, ProcessPtrRecord,
     };
-    use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
+    use crate::trap::dispatch::{
+        LoadedResources, ResourceFileMap, TrapTableProfile, TOOLBOX_TRAP_TABLE_BASE,
+    };
+    use crate::trap::manager::COME_FROM_PATCH_SIGNATURE;
     use std::collections::HashMap;
 
     // ==================== OS Traps (is_tool=false) ====================
@@ -5654,7 +5700,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
-        assert_eq!(detached.borrow().state_for_handle(handle), None);
+        assert_eq!(
+            detached.borrow().state_for_handle(handle),
+            Some(0),
+            "detached fresh NewHandle keeps the neutral initial state"
+        );
     }
 
     #[test]
@@ -6007,7 +6057,7 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
 
-        dispatcher.tick_count = 0x1234_5678;
+        dispatcher.set_tick_count_for_test(&mut bus, 0x1234_5678);
         dispatcher.dispatch(0xA285, &mut cpu, &mut bus).unwrap();
         assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
         assert_eq!(dispatcher.power_idle_last_update_tick, 0x1234_5678);
@@ -8031,6 +8081,61 @@ mod tests {
             0x00400000,
             "GetTrapAddress should return the handler set by SetTrapAddress"
         );
+    }
+
+    #[test]
+    fn set_trap_address_does_not_promote_a_writable_signature_to_protected_code() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let handler = bus.alloc(4);
+        bus.write_long(handler, COME_FROM_PATCH_SIGNATURE);
+        bus.write_word(addr::DS_ERR_CODE, 0xBEEF);
+        dispatcher.current_trap_word = 0xA047;
+        cpu.write_reg(Register::D0, 0x0175);
+        cpu.write_reg(Register::A0, handler);
+
+        let result = dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetTrapAddress should be handled");
+
+        assert!(result.is_ok());
+        assert_eq!(bus.read_word(addr::DS_ERR_CODE), 0xBEEF);
+        assert_eq!(dispatcher.native_trap_table.get(&0xA975), Some(&handler));
+    }
+
+    #[test]
+    fn initialized_68k_trap_manager_reads_and_writes_guest_table_bytes() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        let trap_word = 0xA975;
+        let table_entry = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
+        let installed = 0x0021_0000;
+        let direct_guest_write = 0x0021_1000;
+
+        assert!(dispatcher.trap_tables_materialized);
+        assert_eq!(dispatcher.native_trap_table.get(&trap_word), None);
+
+        dispatcher.current_trap_word = 0xA047;
+        cpu.write_reg(Register::D0, 0x0175);
+        cpu.write_reg(Register::A0, installed);
+        dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetTrapAddress should be handled")
+            .expect("SetTrapAddress should write the initialized table");
+        assert_eq!(bus.read_long(table_entry), installed);
+        assert_eq!(dispatcher.native_trap_table.get(&trap_word), None);
+
+        // A guest/native store bypasses the setter and is immediately visible
+        // through the same 68K Trap Manager getter. This is the active
+        // guest-byte authority proof; the compatibility mirror is untouched.
+        bus.write_long(table_entry, direct_guest_write);
+        dispatcher.current_trap_word = 0xA146;
+        cpu.write_reg(Register::D0, 0x0175);
+        dispatcher
+            .dispatch_memory(false, 0x46, &mut cpu, &mut bus)
+            .expect("GetTrapAddress should be handled")
+            .expect("GetTrapAddress should read the guest table");
+        assert_eq!(cpu.read_reg(Register::A0), direct_guest_write);
+        assert_eq!(dispatcher.native_trap_table.get(&trap_word), None);
     }
 
     #[test]

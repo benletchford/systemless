@@ -873,7 +873,7 @@ fn scripted_menu_setup() -> (TrapDispatcher, M68kCpu, MacMemoryBus) {
         addr::MENU_FLASH,
         crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
     );
-    dispatcher.tick_count = 100;
+    dispatcher.read_tick_count(&bus);
 
     let screen_base = 0x300000u32;
     let row_bytes = 64u32;
