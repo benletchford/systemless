@@ -6845,6 +6845,7 @@ mod tests {
         context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0x1234,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -6882,6 +6883,7 @@ mod tests {
         context.event_queue_mut().push_back(QueuedEvent {
             what: 2,
             message: 0x5678,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -8885,6 +8887,7 @@ mod tests {
         classic.push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -8898,6 +8901,7 @@ mod tests {
         native.push_back(QueuedEvent {
             what: 2,
             message: 0x2222,
+            when: 0,
             where_v: 30,
             where_h: 40,
             modifiers: 0,

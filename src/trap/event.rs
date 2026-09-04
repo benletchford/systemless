@@ -2,6 +2,7 @@
 
 use super::dispatch::trace_input_enabled;
 use crate::cpu::{CpuOps, Register};
+use crate::event_queue::{EventProbeResult, EventRecordSnapshot};
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::Result;
@@ -260,6 +261,7 @@ impl super::TrapDispatcher {
         Some(super::dispatch::QueuedEvent {
             what: Self::OS_EVENT,
             message: Self::MOUSE_MOVED_MESSAGE,
+            when: self.tick_count,
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers: self.current_event_modifiers(),
@@ -288,6 +290,7 @@ impl super::TrapDispatcher {
         super::dispatch::QueuedEvent {
             what,
             message,
+            when: self.tick_count,
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers: self.current_event_modifiers(),
@@ -308,7 +311,7 @@ impl super::TrapDispatcher {
         bus.write_word(ptr + 4, Self::EVQEL_QTYPE);
         bus.write_word(ptr + Self::EVQEL_WHAT_OFFSET, event.what);
         bus.write_long(ptr + Self::EVQEL_MESSAGE_OFFSET, event.message);
-        bus.write_long(ptr + Self::EVQEL_WHEN_OFFSET, self.current_tick());
+        bus.write_long(ptr + Self::EVQEL_WHEN_OFFSET, event.when);
         bus.write_word(ptr + Self::EVQEL_WHERE_V_OFFSET, event.where_v as u16);
         bus.write_word(ptr + Self::EVQEL_WHERE_H_OFFSET, event.where_h as u16);
         bus.write_word(ptr + Self::EVQEL_MODIFIERS_OFFSET, event.modifiers);
@@ -394,6 +397,7 @@ impl super::TrapDispatcher {
         self.event_queue.push_front(super::dispatch::QueuedEvent {
             what: Self::K_HIGH_LEVEL_EVENT,
             message: Self::K_CORE_EVENT_CLASS,
+            when: self.tick_count,
             where_v: (Self::K_AE_OPEN_APPLICATION >> 16) as i16,
             where_h: (Self::K_AE_OPEN_APPLICATION & 0xFFFF) as i16,
             modifiers: 0,
@@ -433,6 +437,7 @@ impl super::TrapDispatcher {
         self.event_queue.push_back(super::dispatch::QueuedEvent {
             what: Self::AUTO_KEY_EVENT,
             message,
+            when: self.tick_count,
             where_v: self.input_state.mouse_pos.0,
             where_h: self.input_state.mouse_pos.1,
             modifiers,
@@ -561,7 +566,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         event_mask: u16,
-    ) -> (u16, u32, i16, i16, u16, bool) {
+    ) -> (u16, u32, u32, i16, i16, u16, bool) {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
@@ -596,6 +601,7 @@ impl super::TrapDispatcher {
             return (
                 event.what,
                 event.message,
+                event.when,
                 event.where_v,
                 event.where_h,
                 event.modifiers,
@@ -623,6 +629,7 @@ impl super::TrapDispatcher {
             return (
                 event.what,
                 event.message,
+                event.when,
                 event.where_v,
                 event.where_h,
                 event.modifiers,
@@ -644,6 +651,7 @@ impl super::TrapDispatcher {
                 return (
                     0,
                     0,
+                    self.tick_count,
                     self.input_state.mouse_pos.0,
                     self.input_state.mouse_pos.1,
                     self.current_event_modifiers(),
@@ -670,6 +678,7 @@ impl super::TrapDispatcher {
             return (
                 event.what,
                 event.message,
+                event.when,
                 event.where_v,
                 event.where_h,
                 event.modifiers,
@@ -687,6 +696,7 @@ impl super::TrapDispatcher {
             return (
                 event.what,
                 event.message,
+                event.when,
                 event.where_v,
                 event.where_h,
                 event.modifiers,
@@ -705,6 +715,7 @@ impl super::TrapDispatcher {
         (
             0,
             0,
+            self.tick_count,
             self.input_state.mouse_pos.0,
             self.input_state.mouse_pos.1,
             self.current_event_modifiers(),
@@ -714,19 +725,33 @@ impl super::TrapDispatcher {
 
     /// Write an EventRecord to guest memory and update low-memory mouse globals.
     pub(crate) fn write_event_record(
-        &self,
+        &mut self,
         bus: &mut MacMemoryBus,
         event_ptr: u32,
         what: u16,
         message: u32,
+        when: u32,
         where_v: i16,
         where_h: i16,
         modifiers: u16,
     ) {
+        self.debug_last_event_record = Some(EventRecordSnapshot {
+            what,
+            message,
+            when,
+            where_v,
+            where_h,
+            modifiers,
+        });
+        if what == 8 {
+            self.debug_activation_event_seen = true;
+        }
+        if what == 6 {
+            self.debug_update_event_seen = true;
+        }
         // Pack the 16-byte EventRecord into one big-endian buffer and issue
         // a single bus.write_bytes call (faster than 6 word/long writes for
         // hot paths like WaitNextEvent).
-        let when = self.current_tick();
         let rec: [u8; 16] = [
             (what >> 8) as u8,
             what as u8,
@@ -778,7 +803,7 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &MacMemoryBus,
         event_mask: u16,
-    ) -> (u16, u32, i16, i16, u16, bool) {
+    ) -> (u16, u32, u32, i16, i16, u16, bool) {
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
             event_mask,
@@ -792,6 +817,7 @@ impl super::TrapDispatcher {
                 return (
                     event.what,
                     event.message,
+                    event.when,
                     event.where_v,
                     event.where_h,
                     event.modifiers,
@@ -817,6 +843,7 @@ impl super::TrapDispatcher {
             (
                 ev.what,
                 ev.message,
+                ev.when,
                 ev.where_v,
                 ev.where_h,
                 ev.modifiers,
@@ -826,6 +853,7 @@ impl super::TrapDispatcher {
             (
                 0,
                 0,
+                self.tick_count,
                 self.input_state.mouse_pos.0,
                 self.input_state.mouse_pos.1,
                 self.current_event_modifiers(),
@@ -950,6 +978,7 @@ impl super::TrapDispatcher {
                 let event_code = cpu.read_reg(Register::A0) as u16;
                 let event_msg = cpu.read_reg(Register::D0);
                 let (result, qel_ptr) = self.post_os_event(bus, event_code, event_msg);
+                self.debug_event_queue_probe.post_result = Some(result as i16);
                 cpu.write_reg(Register::D0, result);
                 if (self.current_trap_word & 0x0100) != 0 {
                     cpu.write_reg(Register::A0, qel_ptr);
@@ -1237,10 +1266,22 @@ impl super::TrapDispatcher {
                         event_ptr,
                         event.what,
                         event.message,
+                        event.when,
                         event.where_v,
                         event.where_h,
                         event.modifiers,
                     );
+                    self.debug_event_queue_probe.os_event_avail = Some(EventProbeResult {
+                        available: true,
+                        record: EventRecordSnapshot {
+                            what: event.what,
+                            message: event.message,
+                            when: event.when,
+                            where_v: event.where_v,
+                            where_h: event.where_h,
+                            modifiers: event.modifiers,
+                        },
+                    });
                     // D0=0 means event found (TRUE); D0=$FFFF means null (FALSE).
                     // TB Essentials 1992, p. 2-98; confirmed by MPW disassembly (ADDQ+BEQ pattern).
                     cpu.write_reg(Register::D0, 0);
@@ -1250,10 +1291,22 @@ impl super::TrapDispatcher {
                         event_ptr,
                         0,
                         0,
+                        self.tick_count,
                         self.input_state.mouse_pos.0,
                         self.input_state.mouse_pos.1,
                         self.current_event_modifiers(),
                     );
+                    self.debug_event_queue_probe.os_event_avail = Some(EventProbeResult {
+                        available: false,
+                        record: EventRecordSnapshot {
+                            what: 0,
+                            message: 0,
+                            when: self.tick_count,
+                            where_v: self.input_state.mouse_pos.0,
+                            where_h: self.input_state.mouse_pos.1,
+                            modifiers: self.current_event_modifiers(),
+                        },
+                    });
                     cpu.write_reg(Register::D0, 0xFFFF);
                 }
                 Ok(())
@@ -1266,9 +1319,22 @@ impl super::TrapDispatcher {
             (false, 0x31) => {
                 let event_mask = cpu.read_reg(Register::D0) as u16;
                 let event_ptr = cpu.read_reg(Register::A0);
-                let (what, message, where_v, where_h, modifiers, has_event) =
+                let (what, message, when, where_v, where_h, modifiers, has_event) =
                     self.dequeue_event(bus, event_mask);
-                self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
+                self.write_event_record(
+                    bus, event_ptr, what, message, when, where_v, where_h, modifiers,
+                );
+                self.debug_event_queue_probe.get_os_event = Some(EventProbeResult {
+                    available: has_event,
+                    record: EventRecordSnapshot {
+                        what,
+                        message,
+                        when,
+                        where_v,
+                        where_h,
+                        modifiers,
+                    },
+                });
                 // D0=0 means event found (TRUE); D0=$FFFF means null (FALSE).
                 // TB Essentials 1992, p. 2-97; confirmed by MPW disassembly (ADDQ+BEQ pattern).
                 cpu.write_reg(Register::D0, if has_event { 0 } else { 0xFFFF });
@@ -1297,22 +1363,23 @@ mod tests {
         disp.pending_native_menu_event = Some(QueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: 10,
             where_h: 42,
             modifiers: 0,
         });
 
         let first = disp.dequeue_event(&bus, 1 << 1);
-        assert!(first.5);
-        assert_eq!((first.0, first.2, first.3), (1, 10, 42));
+        assert!(first.6);
+        assert_eq!((first.0, first.3, first.4), (1, 10, 42));
         assert!(disp.pending_native_menu_event.is_some());
 
         let same_tick = disp.dequeue_event(&bus, 1 << 1);
-        assert!(!same_tick.5, "latched click must not spin an event loop");
+        assert!(!same_tick.6, "latched click must not spin an event loop");
 
         disp.tick_count += 1;
         let next_tick = disp.dequeue_event(&bus, 1 << 1);
-        assert!(next_tick.5, "ignored menu click must be presented again");
+        assert!(next_tick.6, "ignored menu click must be presented again");
         assert!(disp.pending_native_menu_event.is_some());
     }
 
@@ -1323,6 +1390,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x1234,
+            when: 0,
             where_v: 20,
             where_h: 30,
             modifiers: 0,
@@ -1330,6 +1398,7 @@ mod tests {
         disp.pending_native_menu_event = Some(QueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: 10,
             where_h: 42,
             modifiers: 0,
@@ -1339,12 +1408,13 @@ mod tests {
         let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
         assert_eq!((event.0, event.1), (3, 0x1234));
         let event = disp.dequeue_event(&bus, u16::MAX);
-        assert_eq!((event.0, event.2, event.3), (1, 10, 42));
+        assert_eq!((event.0, event.3, event.4), (1, 10, 42));
 
         disp.tick_count += 1;
         disp.event_queue.push_back(QueuedEvent {
             what: 4,
             message: 0x5678,
+            when: 0,
             where_v: 20,
             where_h: 30,
             modifiers: 0,
@@ -1361,6 +1431,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -1368,6 +1439,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 42,
+            when: 0,
             where_v: 30,
             where_h: 40,
             modifiers: 0,
@@ -1411,7 +1483,7 @@ mod tests {
         disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x7D, 31); // Down Arrow
-        let (what, message, _, _, _, has_event) =
+        let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event, "initial keyDown should be delivered");
         assert_eq!(what, 3);
@@ -1420,14 +1492,14 @@ mod tests {
         let first_repeat_tick = disp.tick_count + TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
 
         disp.tick_count = first_repeat_tick - 1;
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(
             !has_event,
             "autoKey should wait for the 16-tick default threshold"
         );
 
         disp.tick_count = first_repeat_tick;
-        let (what, message, _, _, _, has_event) =
+        let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(has_event, "held key should generate autoKey at threshold");
         assert_eq!(what, 5);
@@ -1436,14 +1508,14 @@ mod tests {
         let second_repeat_tick = disp.tick_count + TrapDispatcher::AUTO_KEY_RATE_TICKS;
 
         disp.tick_count = second_repeat_tick - 1;
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(
             !has_event,
             "autoKey should wait for the 4-tick default repeat rate"
         );
 
         disp.tick_count = second_repeat_tick;
-        let (what, message, _, _, _, has_event) =
+        let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(has_event, "held key should repeat after the rate interval");
         assert_eq!(what, 5);
@@ -1458,12 +1530,12 @@ mod tests {
             0x7D,
             31,
         );
-        let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+        let (what, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
         assert!(has_event, "keyUp should be delivered");
         assert_eq!(what, 4);
 
         disp.tick_count = 100;
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(!has_event, "released key should not keep auto-keying");
     }
 
@@ -1473,14 +1545,14 @@ mod tests {
         disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x00, b'a');
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event, "initial keyDown should be delivered");
 
         disp.tick_count += TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
         disp.post_auto_key_if_due(bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK));
 
         disp.push_key_up(0x00, b'a');
-        let (what, message, _, _, _, has_event) =
+        let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(
             has_event,
@@ -1496,7 +1568,7 @@ mod tests {
         disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x24, 13);
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(
             has_event,
             "keyDown should use the default system event mask"
@@ -1505,7 +1577,7 @@ mod tests {
 
         disp.push_key_up(0x24, 13);
         assert!(!disp.key_is_down(0x24), "keyUp must clear physical state");
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
         assert!(
             !has_event,
             "the default SysEvtMask must not post keyUp events"
@@ -1557,7 +1629,7 @@ mod tests {
             first_repeat_tick,
             "a repeated host callback must not postpone autoKey"
         );
-        let (what, message, _, _, _, has_event) =
+        let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event);
         assert_eq!((what, message), (3, 0x0000_3009));
@@ -1569,7 +1641,7 @@ mod tests {
         disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x7D, 31);
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event, "initial keyDown should be drained");
 
         disp.tick_count += TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
@@ -1598,7 +1670,7 @@ mod tests {
         disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x38, 0); // Shift
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(disp.key_is_down(0x38), "Shift must update the KeyMap");
         assert!(
             !has_event,
@@ -1610,11 +1682,27 @@ mod tests {
             !disp.key_is_down(0x38),
             "Shift release must clear the KeyMap"
         );
-        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+        let (_, _, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
         assert!(
             !has_event,
             "modifier keys must not generate standalone keyUp events"
         );
+    }
+
+    #[test]
+    fn printable_key_event_carries_held_shift_modifier() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_sent_open_app_event_for_test(true);
+
+        disp.push_key_down(0x38, 0); // Shift
+        disp.push_key_down(0x00, b'e');
+        let (what, message, _, _, _, modifiers, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+
+        assert!(has_event);
+        assert_eq!(what, 3);
+        assert_eq!(message, 0x0000_0065);
+        assert_ne!(modifiers & 0x0200, 0, "shiftKey must be carried by keyDown");
     }
 
     #[test]
@@ -1626,7 +1714,7 @@ mod tests {
         assert!(disp.key_is_down(0x39), "first press should latch Caps Lock");
         assert_eq!(disp.current_event_modifiers() & 0x0400, 0x0400);
         assert!(
-            !disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008).5,
+            !disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008).6,
             "Caps Lock must not post a standalone keyDown event"
         );
 
@@ -1642,7 +1730,7 @@ mod tests {
         );
         assert_eq!(disp.current_event_modifiers() & 0x0400, 0x0400);
         disp.push_key_down(0x00, b'a');
-        let (what, _, _, _, modifiers, has_event) =
+        let (what, _, _, _, _, modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event);
         assert_eq!(what, 3);
@@ -1665,7 +1753,7 @@ mod tests {
             "second physical release must leave Caps Lock clear"
         );
         disp.push_key_down(0x00, b'a');
-        let (_, _, _, _, modifiers, has_event) =
+        let (_, _, _, _, _, modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event);
         assert_eq!(
@@ -1683,7 +1771,7 @@ mod tests {
         disp.push_key_down(0x37, 0); // Command
         disp.push_key_down(0x01, b's');
 
-        let (what, message, _, _, modifiers, has_event) =
+        let (what, message, _, _, _, modifiers, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
         assert!(has_event);
         assert_eq!(what, 3, "only the character key should post keyDown");
@@ -2470,6 +2558,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn posted_event_timestamp_survives_later_retrieval() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let posted_at = 0x1020_3040;
+        let retrieved_at = 0x5566_7788;
+
+        bus.write_word(crate::memory::globals::addr::SYS_EVT_MASK, u16::MAX);
+        disp.tick_count = posted_at;
+        cpu.write_reg(Register::A0, 4);
+        cpu.write_reg(Register::D0, 0xA1B2_C3D4);
+        let result = disp.dispatch_event(false, 0x2F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.event_queue.front().map(|event| event.when), Some(posted_at));
+
+        disp.tick_count = retrieved_at;
+        let (what, message, when, where_v, where_h, modifiers, has_event) =
+            disp.dequeue_event(&bus, 1 << 4);
+        assert!(has_event);
+        assert_eq!(
+            (what, message, when),
+            (4, 0xA1B2_C3D4, posted_at),
+            "EventRecord.when must retain the posting tick rather than retrieval time"
+        );
+        assert_eq!((where_v, where_h), (0, 0));
+        assert_eq!(modifiers & 0x0080, 0x0080);
+    }
+
     // ---- OSEventAvail ($A030) ----
 
     #[test]
@@ -2496,6 +2612,7 @@ mod tests {
         disp.pending_native_menu_event = Some(QueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: 10,
             where_h: 42,
             modifiers: 0,
@@ -2542,6 +2659,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: 0x1000,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -2549,6 +2667,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 23,
             message: u32::from_be_bytes(*b"aevt"),
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -2589,6 +2708,7 @@ mod tests {
             disp.event_queue.push_back(QueuedEvent {
                 what,
                 message,
+                when: 0,
                 where_v: 10,
                 where_h: 20,
                 modifiers: 0,
@@ -2611,6 +2731,7 @@ mod tests {
             disp.event_queue.push_back(QueuedEvent {
                 what,
                 message,
+                when: 0,
                 where_v: 10,
                 where_h: 20,
                 modifiers: 0,
@@ -2654,6 +2775,7 @@ mod tests {
             disp.event_queue.push_back(QueuedEvent {
                 what,
                 message: 0,
+                when: 0,
                 where_v: 10,
                 where_h: 20,
                 modifiers: 0,
@@ -2709,6 +2831,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: hidden,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -2720,6 +2843,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: hidden,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -2737,6 +2861,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: 0x1234_5678,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -2762,6 +2887,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 15,
             message: 0,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -2780,6 +2906,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 15,
             message: 0,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -2788,7 +2915,7 @@ mod tests {
         let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
         assert_eq!(event.0, 15);
         let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
-        assert!(!event.5, "a dirty region alone must not stream updateEvts");
+        assert!(!event.6, "a dirty region alone must not stream updateEvts");
     }
 
     #[test]
@@ -2799,7 +2926,7 @@ mod tests {
 
         assert!(disp.peek_toolbox_event(&bus, u16::MAX).is_none());
         let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
-        assert!(!event.5);
+        assert!(!event.6);
         assert_eq!(event.0, 0);
     }
 

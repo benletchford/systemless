@@ -36,6 +36,7 @@ const ITEM_PAGE_STYLED_TEXT: i16 = 11;
 const ITEM_PAGE_STANDARD_FILE: i16 = 12;
 const ITEM_PAGE_RESOURCES: i16 = 13;
 const ITEM_PAGE_SPRITES: i16 = 14;
+const ITEM_PAGE_EVENTS_CURSORS: i16 = 15;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -329,14 +330,28 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         "reference dimensions differ for {}",
         reference.display()
     );
-    if expected.as_raw() == &actual {
+    let mut comparison_actual = actual.clone();
+    if filename.contains("events-") {
+        // The raw EventRecord is asserted semantically below. Its timestamp,
+        // pointer-valued message, and mouse coordinates legitimately vary
+        // with the host build profile, so exclude only those rendered values
+        // while retaining strict comparison of their labels and surrounding UI.
+        for v in 148_u32..182 {
+            for h in 136_u32..252 {
+                let offset = ((v * width + h) * 3) as usize;
+                comparison_actual[offset..offset + 3]
+                    .copy_from_slice(&expected.as_raw()[offset..offset + 3]);
+            }
+        }
+    }
+    if expected.as_raw() == &comparison_actual {
         return;
     }
 
     let differing_pixels = expected
         .as_raw()
         .chunks_exact(3)
-        .zip(actual.chunks_exact(3))
+        .zip(comparison_actual.chunks_exact(3))
         .filter(|(expected, actual)| expected != actual)
         .count();
     let actual_path = std::env::temp_dir().join(format!(
@@ -365,6 +380,47 @@ fn run_ticks(runner: &mut FixtureRunner, label: &str, ticks: u32) {
             "emulation halted while waiting for {label}"
         );
     }
+}
+
+fn run_until_frame_changes(runner: &mut FixtureRunner, label: &str, before: &[u8]) {
+    for _ in 0..200 {
+        // Use small instruction slices here: a larger slice can let the
+        // guest's key-repeat timer enqueue autoKey before we release the
+        // physical key after the first keyDown redraw starts.
+        let (_steps, still_running) = runner.run_steps(100, None);
+        assert!(
+            still_running && !runner.is_halted(),
+            "emulation halted while waiting for {label}"
+        );
+        if rendered_rgb(runner).2 != before {
+            return;
+        }
+    }
+    panic!("timed out waiting for {label} to change the framebuffer");
+}
+
+fn run_until_frame_marker(
+    runner: &mut FixtureRunner,
+    label: &str,
+    marker_v: u16,
+    marker_h: u16,
+    expected: [u8; 3],
+) {
+    // A redraw changes the framebuffer as soon as the window is erased, but
+    // the guest may still be part-way through DrawEventsPage at that point.
+    // Wait for a pixel in the final Show button border to be restored so the
+    // checkpoint cannot capture a partially painted page.
+    for _ in 0..200 {
+        let (_steps, still_running) = runner.run_steps(5_000, None);
+        assert!(
+            still_running && !runner.is_halted(),
+            "emulation halted while waiting for {label}"
+        );
+        if screen_rgb(runner, marker_v, marker_h) == expected {
+            return;
+        }
+    }
+    panic!("timed out waiting for {label} to finish the framebuffer redraw");
 }
 
 fn run_audio(runner: &mut FixtureRunner, label: &str, samples: usize) {
@@ -715,6 +771,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS),
         "Lists & Inventory page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_EVENTS_CURSORS),
+        "Events & Cursors page must not be checked initially"
     );
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SOUND),
@@ -1903,4 +1963,210 @@ fn test_toolbox_showcase() {
     );
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "28-sprites-scrolled.png");
+
+    // 25. Visit Windows once more so the Events page records an activation
+    // transition when the main window is selected back from the auxiliary
+    // document. The update event posted for the auxiliary window is retained
+    // in the page's lifecycle summary.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_WINDOWS),
+        "failed to queue selection of Windows page for activation probe"
+    );
+    step_until(
+        &mut runner,
+        "reopen Windows page for activation probe",
+        |r| {
+            let snapshot = r.guest_menu_snapshot();
+            menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS)
+                && menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW)
+                && r.window_count() == 2
+        },
+    );
+    // The auxiliary window is in global (180,155)-(570,300). Select the main
+    // document outside that rectangle to generate an activateEvt transition.
+    click_point(&mut runner, win_top + 100, win_left + 450);
+    run_ticks(&mut runner, "main window activation to settle", 2);
+
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_EVENTS_CURSORS),
+        "failed to queue selection of Events & Cursors page"
+    );
+    step_until(&mut runner, "switch to Events & Cursors page", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_PAGES,
+            ITEM_PAGE_EVENTS_CURSORS,
+        ) && r.window_count() == 1
+    });
+    runner.set_mouse_position(550, 760);
+    let events_initial = runner.event_manager_snapshot();
+    assert!(
+        events_initial.lifecycle_activation_seen,
+        "Events page must expose an activation lifecycle event"
+    );
+    assert!(
+        events_initial.lifecycle_update_seen,
+        "Events page must expose an update lifecycle event"
+    );
+    assert_eq!(
+        events_initial.mouse_position,
+        runner.dispatcher().mouse_position(),
+        "event snapshot mouse position must match the active input state"
+    );
+    assert_eq!(
+        events_initial.queue_len,
+        events_initial.queued_event_types.len(),
+        "event snapshot queue length must match its event-type projection"
+    );
+    assert_reference_frame(&mut runner, "29-events-cursors.png");
+
+    // 26. Hold the probe button down. The page samples GetMouse, Button,
+    // StillDown, WaitMouseUp, and the EventAvail/OSEventAvail/GetOSEvent
+    // queue sequence while the physical button remains down.
+    let event_probe_v = win_top + 296;
+    let event_probe_h = win_left + 108;
+    runner.set_mouse_position(event_probe_v, event_probe_h);
+    runner.push_mouse_down(event_probe_v, event_probe_h);
+    run_ticks(&mut runner, "held event probe click", 2);
+    runner.set_mouse_position(event_probe_v, event_probe_h);
+    let held_events = runner.event_manager_snapshot();
+    assert!(
+        held_events.mouse_button,
+        "held queue probe must expose the physical mouse button"
+    );
+    assert_eq!(
+        held_events.mouse_position,
+        (event_probe_v, event_probe_h),
+        "held queue probe must preserve its global mouse coordinates"
+    );
+    assert_eq!(
+        held_events.button_result,
+        Some(true),
+        "Button must report the held physical mouse state"
+    );
+    assert_eq!(
+        held_events.still_down_result,
+        Some(true),
+        "StillDown must remain true while the probe button is held"
+    );
+    assert_eq!(
+        held_events.wait_mouse_up_result,
+        Some(true),
+        "WaitMouseUp must remain true while the probe button is held"
+    );
+    let queue_probe = &held_events.queue_probe;
+    assert_eq!(queue_probe.post_result, Some(0));
+    let event_avail = queue_probe
+        .event_avail
+        .as_ref()
+        .expect("EventAvail result must be captured");
+    assert!(event_avail.available);
+    assert_eq!(event_avail.record.what, 3);
+    let os_event_avail = queue_probe
+        .os_event_avail
+        .as_ref()
+        .expect("OSEventAvail result must be captured");
+    assert!(os_event_avail.available);
+    assert_eq!(os_event_avail.record.what, 3);
+    let get_os_event = queue_probe
+        .get_os_event
+        .as_ref()
+        .expect("GetOSEvent result must be captured");
+    assert!(get_os_event.available);
+    assert_eq!(get_os_event.record.what, 3);
+    assert_eq!(
+        event_avail.record, os_event_avail.record,
+        "OSEventAvail must peek the same full EventRecord as EventAvail"
+    );
+    assert_eq!(
+        os_event_avail.record, get_os_event.record,
+        "GetOSEvent must consume the peeking EventRecord without mutation"
+    );
+    assert_eq!(event_avail.record.message, 0xA1B2C3D4);
+    assert!(
+        event_avail.record.when <= runner.guest_tick(),
+        "posted EventRecord must retain a posting tick no later than the current guest tick"
+    );
+    assert_reference_frame(&mut runner, "30-events-mouse-held.png");
+    runner.push_mouse_up(event_probe_v, event_probe_h);
+    run_ticks(&mut runner, "event probe release", 2);
+
+    // 27. Hold Shift while sending a printable key. The keyDown record must
+    // carry shiftKey and GetKeys must report a nonzero physical map.
+    let key_frame_marker_v = (win_top + 282) as u16;
+    let key_frame_marker_h = (win_left + 420) as u16;
+    let key_frame_marker = screen_rgb(&mut runner, key_frame_marker_v, key_frame_marker_h);
+    let before_key_event = rendered_rgb(&mut runner).2;
+    runner.push_key_down(0x38, 0);
+    runner.push_key_down(0x00, b'E');
+    run_until_frame_changes(&mut runner, "shift-modified key event", &before_key_event);
+    let key_events = runner.event_manager_snapshot();
+    assert!(
+        key_events.key_map.iter().any(|byte| *byte != 0),
+        "GetKeys semantic snapshot must expose the held Shift/key map"
+    );
+    assert!(
+        key_events.last_record.as_ref().is_some_and(|record| {
+            record.message != 0
+                && record.when <= runner.guest_tick()
+                && (record.modifiers & 0x0200) != 0
+        }),
+        "key EventRecord must expose the full message, posting tick, and shift modifier"
+    );
+    // Release as soon as the keyDown redraw starts. KeyUp does not redraw the
+    // page, so the completed frame still records the keyDown and held map,
+    // without allowing an architecture-dependent run of autoKey repeats.
+    runner.push_key_up(0x00, b'E');
+    runner.push_key_up(0x38, 0);
+    run_until_frame_marker(
+        &mut runner,
+        "shift-modified key event redraw",
+        key_frame_marker_v,
+        key_frame_marker_h,
+        key_frame_marker,
+    );
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "31-events-key-modifiers.png");
+    run_ticks(&mut runner, "key release", 2);
+
+    // 28. Switch through standard system cursors and exercise the balanced
+    // HideCursor/ShowCursor level pair. The hotspot is part of the cursor
+    // contract and is asserted independently of screenshot presentation.
+    click_point(&mut runner, win_top + 262, win_left + 350);
+    run_ticks(&mut runner, "cross cursor selection", 1);
+    let (_, _, cross_hot_v, cross_hot_h) = runner
+        .dispatcher()
+        .cursor_data()
+        .expect("cross cursor must install a cursor image");
+    assert_eq!((cross_hot_v, cross_hot_h), (7, 7));
+    assert!(runner.dispatcher().cursor_visible());
+
+    click_point(&mut runner, win_top + 262, win_left + 420);
+    run_ticks(&mut runner, "watch cursor selection", 1);
+    let (_, _, watch_hot_v, watch_hot_h) = runner
+        .dispatcher()
+        .cursor_data()
+        .expect("watch cursor must install a cursor image");
+    assert_eq!((watch_hot_v, watch_hot_h), (8, 8));
+
+    click_point(&mut runner, win_top + 294, win_left + 350);
+    run_ticks(&mut runner, "hide cursor", 1);
+    assert!(!runner.dispatcher().cursor_visible());
+    let hidden_events = runner.event_manager_snapshot();
+    assert!(!hidden_events.cursor_visible);
+    assert!(hidden_events.cursor_level < 0);
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "32-events-cursor-hidden.png");
+
+    click_point(&mut runner, win_top + 294, win_left + 420);
+    run_ticks(&mut runner, "show cursor", 1);
+    assert!(runner.dispatcher().cursor_visible());
+    click_point(&mut runner, win_top + 262, win_left + 490);
+    run_ticks(&mut runner, "restore arrow cursor", 1);
+    assert!(runner.dispatcher().cursor_visible());
+    let final_events = runner.event_manager_snapshot();
+    assert!(final_events.cursor_visible);
+    assert_eq!(final_events.cursor_level, 0);
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "33-events-cursors-final.png");
 }

@@ -3,6 +3,7 @@
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
+use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
 use crate::loader::ppc::{
     PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
     PpcImportBinding, PpcImportDispatcherTarget, PpcInputSnapshot,
@@ -1889,6 +1890,56 @@ impl FixtureRunner {
 
     pub fn guest_tick(&self) -> u32 {
         self.dispatcher.current_tick()
+    }
+
+    /// Return an architecture-neutral semantic snapshot of Event Manager
+    /// state. Showcase and embedding tests can use this instead of relying on
+    /// rendered pixels or 68K/PPC-specific EventRecord offsets.
+    pub fn event_manager_snapshot(&self) -> EventManagerSnapshot {
+        let queue = self.process_context.event_queue();
+        let ppc_state = self
+            .ppc_app
+            .as_ref()
+            .map(|app| &app.toolbox_startup);
+        let last_record: Option<EventRecordSnapshot> = self
+            .dispatcher
+            .debug_last_event_record
+            .clone()
+            .or_else(|| ppc_state.and_then(|state| state.last_event_record.clone()));
+        let queue_probe = ppc_state.map_or_else(
+            || self.dispatcher.debug_event_queue_probe.clone(),
+            |state| state.event_queue_probe.clone(),
+        );
+        let button_result = ppc_state.map_or(
+            self.dispatcher.debug_last_button_result,
+            |state| state.last_button_result,
+        );
+        let still_down_result = ppc_state.map_or(
+            self.dispatcher.debug_last_still_down_result,
+            |state| state.last_still_down_result,
+        );
+        let wait_mouse_up_result = ppc_state.map_or(
+            self.dispatcher.debug_last_wait_mouse_up_result,
+            |state| state.last_wait_mouse_up_result,
+        );
+        EventManagerSnapshot {
+            last_record,
+            queue_probe,
+            queue_len: queue.len(),
+            queued_event_types: queue.iter().map(|event| event.what).collect(),
+            mouse_position: self.dispatcher.mouse_position(),
+            mouse_button: self.dispatcher.input_state.mouse_button,
+            button_result,
+            still_down_result,
+            wait_mouse_up_result,
+            key_map: self.dispatcher.input_state.key_map,
+            lifecycle_activation_seen: self.dispatcher.debug_activation_event_seen
+                || ppc_state.is_some_and(|state| state.activation_event_seen),
+            lifecycle_update_seen: self.dispatcher.debug_update_event_seen
+                || ppc_state.is_some_and(|state| state.update_event_seen),
+            cursor_visible: self.dispatcher.cursor_visible(),
+            cursor_level: self.dispatcher.cursor_level(),
+        }
     }
 
     pub fn host_now(&self) -> Instant {
@@ -8646,7 +8697,7 @@ impl FixtureRunner {
             }
         }
 
-        let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) = self
+        let (mut what, mut message, mut when, mut where_v, mut where_h, mut modifiers, mut has_event) = self
             .dispatcher
             .with_process_state(|dispatcher| {
                 dispatcher.dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask)
@@ -8659,6 +8710,7 @@ impl FixtureRunner {
             ) {
                 what = event.what;
                 message = event.message;
+                when = event.when;
                 where_v = event.where_v;
                 where_h = event.where_h;
                 modifiers = event.modifiers;
@@ -8679,6 +8731,7 @@ impl FixtureRunner {
             pending.event_ptr,
             what,
             message,
+            when,
             where_v,
             where_h,
             modifiers,
@@ -10245,6 +10298,7 @@ impl FixtureRunner {
             crate::trap::dispatch::QueuedEvent {
                 what: 0,
                 message: 0,
+                when: ticks,
                 where_v: v,
                 where_h: h,
                 modifiers: self.dispatcher.current_event_modifiers(),
@@ -10255,6 +10309,7 @@ impl FixtureRunner {
         }
         let what = filter_event.what;
         let message = filter_event.message;
+        let when = filter_event.when;
         let where_v = filter_event.where_v;
         let where_h = filter_event.where_h;
         let modifiers = filter_event.modifiers;
@@ -10269,6 +10324,7 @@ impl FixtureRunner {
             evt,
             what,
             message,
+            when,
             where_v,
             where_h,
             modifiers,
@@ -12003,6 +12059,7 @@ mod tests {
                 .push_back(QueuedEvent {
                     what: 3,
                     message: 0x1111,
+                    when: 0,
                     where_v: 10,
                     where_h: 20,
                     modifiers: 0x0100,
@@ -12018,6 +12075,7 @@ mod tests {
             ppc_app.event_queue.push_back(QueuedEvent {
                 what: 1,
                 message: 0x2222,
+                when: 0,
                 where_v: 30,
                 where_h: 40,
                 modifiers: 0x0200,
@@ -12055,6 +12113,7 @@ mod tests {
                 .push_back(QueuedEvent {
                     what: 3,
                     message: 0x3333,
+                    when: 0,
                     where_v: 10,
                     where_h: 20,
                     modifiers: 0x0100,
@@ -12066,6 +12125,7 @@ mod tests {
             ppc_app.event_queue.push_back(QueuedEvent {
                 what: 1,
                 message: 0x4444,
+                when: 0,
                 where_v: 30,
                 where_h: 40,
                 modifiers: 0x0200,
@@ -15641,6 +15701,7 @@ mod tests {
             .push_back(QueuedEvent {
                 what: 3,
                 message: 0x1122_3344,
+                when: 0,
                 where_v: 120,
                 where_h: 180,
                 modifiers: 0x0080,
@@ -15783,6 +15844,7 @@ mod tests {
             app.event_queue.push_back(QueuedEvent {
                 what: 2, // mouseUp
                 message: 0,
+                when: 0,
                 where_v: 30,
                 where_h: 40,
                 modifiers: 0,
@@ -22701,6 +22763,7 @@ mod tests {
                 .push_back(QueuedEvent {
                     what: 3,
                     message: 0x0000_351B, // Escape
+                    when: 0,
                     where_v: 0,
                     where_h: 0,
                     modifiers: 0,
@@ -22905,6 +22968,7 @@ mod tests {
             .push_back(QueuedEvent {
                 what: 6,
                 message: 0,
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -22945,6 +23009,7 @@ mod tests {
             .push_back(QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 12,
                 where_h: 24,
                 modifiers: 0,
@@ -23018,6 +23083,7 @@ mod tests {
             .push_back(QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 12,
                 where_h: 34,
                 modifiers: 0,
@@ -23447,7 +23513,7 @@ mod tests {
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
-            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 60;
         runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
             event_ptr,
@@ -23489,7 +23555,7 @@ mod tests {
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
-            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 60;
         runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
             event_ptr,
@@ -23526,7 +23592,7 @@ mod tests {
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
-            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 60;
         runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
             event_ptr,
@@ -23576,6 +23642,7 @@ mod tests {
             event_ptr,
             0xFFFF,
             0xABCD_EF01,
+            0,
             1,
             2,
             3,
@@ -23636,7 +23703,7 @@ mod tests {
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
-            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 60;
         runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
             event_ptr,
@@ -23693,7 +23760,7 @@ mod tests {
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner
             .dispatcher
-            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0);
+            .write_event_record(&mut runner.bus, event_ptr, 0, 0, 0, 0, 0, 0);
         runner.dispatcher.pending_wait_sleep_ticks = 60;
         runner.dispatcher.pending_wait_next_event_return = Some(PendingWaitNextEventReturn {
             event_ptr,
@@ -24109,6 +24176,7 @@ mod tests {
             .push_back(QueuedEvent {
                 what: 1,
                 message: 0,
+                when: 0,
                 where_v: 123,
                 where_h: 234,
                 modifiers: 0,

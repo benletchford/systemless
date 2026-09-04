@@ -58,6 +58,9 @@ pub mod disk_image;
 pub mod display;
 mod error;
 mod event_queue;
+pub use event_queue::{
+    EventManagerSnapshot, EventProbeResult, EventQueueProbeSnapshot, EventRecordSnapshot,
+};
 pub mod game;
 mod guest_call;
 mod guest_procedure;

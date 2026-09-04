@@ -12,7 +12,8 @@ use std::sync::OnceLock;
 use super::dispatch::{
     raw_trap_route, selector_operation_route, AeCoercionHandler, AeDescriptor, AeObjectAccessor,
     AePrivateHashTable, AeResolveLevel, AeResolveState, CooperativeThread, DialogItem, MovieState,
-    OsRoutineVariant, SelectorOperationRoute, StandardFileGetEntry, StandardFileGetTrackingState,
+    EventProbeResult, EventRecordSnapshot, OsRoutineVariant, SelectorOperationRoute,
+    StandardFileGetEntry, StandardFileGetTrackingState,
     StandardFilePutTrackingState, SyntheticAppleEvent,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
@@ -5105,9 +5106,11 @@ impl super::TrapDispatcher {
                 self.event_counter = self.event_counter.wrapping_add(1);
                 self.debug_get_next_event_count = self.debug_get_next_event_count.saturating_add(1);
 
-                let (what, message, where_v, where_h, modifiers, has_event) =
+                let (what, message, when, where_v, where_h, modifiers, has_event) =
                     self.dequeue_toolbox_event(cpu, bus, event_mask);
-                self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
+                self.write_event_record(
+                    bus, event_ptr, what, message, when, where_v, where_h, modifiers,
+                );
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] GetNextEvent mask=${:04X} -> has_event={} what={} message=${:08X}",
@@ -5150,7 +5153,7 @@ impl super::TrapDispatcher {
                 // Finder delivers kAEOpenApplication as a queued high-level
                 // event at launch. Make it visible through the normal toolbox
                 // event APIs instead of special-casing WaitNextEvent only.
-                let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) =
+                let (mut what, mut message, mut when, mut where_v, mut where_h, mut modifiers, mut has_event) =
                     self.dequeue_toolbox_event(cpu, bus, event_mask);
 
                 if !has_event {
@@ -5159,6 +5162,7 @@ impl super::TrapDispatcher {
                     {
                         what = event.what;
                         message = event.message;
+                        when = event.when;
                         where_v = event.where_v;
                         where_h = event.where_h;
                         modifiers = event.modifiers;
@@ -5190,7 +5194,9 @@ impl super::TrapDispatcher {
                 } else {
                     self.pending_wait_next_event_return = None;
                 }
-                self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
+                self.write_event_record(
+                    bus, event_ptr, what, message, when, where_v, where_h, modifiers,
+                );
                 if super::dispatch::trace_input_enabled() {
                     let dump: Vec<String> = (0..16u32)
                         .map(|i| format!("{:02X}", bus.read_byte(sp + i)))
@@ -5246,11 +5252,23 @@ impl super::TrapDispatcher {
                         event_ptr,
                         ev.what,
                         ev.message,
+                        ev.when,
                         ev.where_v,
                         ev.where_h,
                         ev.modifiers,
                     );
                     bus.write_word(sp + 6, 0xFFFF);
+                    self.debug_event_queue_probe.event_avail = Some(EventProbeResult {
+                        available: true,
+                        record: EventRecordSnapshot {
+                            what: ev.what,
+                            message: ev.message,
+                            when: ev.when,
+                            where_v: ev.where_v,
+                            where_h: ev.where_h,
+                            modifiers: ev.modifiers,
+                        },
+                    });
                     if super::dispatch::trace_input_enabled() {
                         eprintln!(
                             "[INPUT] EventAvail mask=${:04X} -> has_event=true what={} message=${:08X}",
@@ -5263,11 +5281,23 @@ impl super::TrapDispatcher {
                         event_ptr,
                         0,
                         0,
+                        self.tick_count,
                         self.input_state.mouse_pos.0,
                         self.input_state.mouse_pos.1,
                         self.current_event_modifiers(),
                     );
                     bus.write_word(sp + 6, 0);
+                    self.debug_event_queue_probe.event_avail = Some(EventProbeResult {
+                        available: false,
+                        record: EventRecordSnapshot {
+                            what: 0,
+                            message: 0,
+                            when: self.tick_count,
+                            where_v: self.input_state.mouse_pos.0,
+                            where_h: self.input_state.mouse_pos.1,
+                            modifiers: self.current_event_modifiers(),
+                        },
+                    });
                     if super::dispatch::trace_input_enabled() {
                         eprintln!(
                             "[INPUT] EventAvail mask=${:04X} -> has_event=false",
@@ -5346,6 +5376,7 @@ impl super::TrapDispatcher {
                     self.debug_still_down_false_count =
                         self.debug_still_down_false_count.saturating_add(1);
                 }
+                self.debug_last_still_down_result = Some(result);
                 if super::dispatch::trace_input_enabled() && !result {
                     let pc = cpu.read_reg(Register::PC);
                     eprintln!(
@@ -5393,6 +5424,7 @@ impl super::TrapDispatcher {
                 } else {
                     self.debug_button_false_count = self.debug_button_false_count.saturating_add(1);
                 }
+                self.debug_last_button_result = Some(pressed);
                 bus.write_word(sp, if pressed { 0xFFFF } else { 0 });
                 Ok(())
             }
@@ -10267,6 +10299,7 @@ impl super::TrapDispatcher {
                     self.debug_wait_mouse_up_false_count =
                         self.debug_wait_mouse_up_false_count.saturating_add(1);
                 }
+                self.debug_last_wait_mouse_up_result = Some(still_down);
                 bus.write_word(sp, if still_down { 0xFFFF } else { 0 });
                 Ok(())
             }
@@ -17889,6 +17922,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 1,
             message: 0,
+            when: 0,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
@@ -18218,6 +18252,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 1, // mouseDown (not in keyDownMask)
             message: 0,
+            when: 0,
             where_v: 44,
             where_h: 88,
             modifiers: 0,
@@ -18490,6 +18525,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 1, // mouseDown
             message: 0,
+            when: 0,
             where_v: 5,
             where_h: 15,
             modifiers: 0,
@@ -18544,6 +18580,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 1, // mouseDown
             message: 0x1234_5678,
+            when: 0,
             where_v: 11,
             where_h: 22,
             modifiers: 0,
@@ -18574,6 +18611,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 1,
             message: 0xCAFEBABE,
+            when: 0,
             where_v: 9,
             where_h: 19,
             modifiers: 0,
@@ -27928,6 +27966,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D, // Return opens the Pilots folder
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -27939,6 +27978,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_7D1F, // ArrowDown
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -27950,6 +27990,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D, // Return
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -28056,6 +28097,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -28075,6 +28117,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_351B,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -28186,6 +28229,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D, // Return opens the Pilots folder
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -28197,6 +28241,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -28314,6 +28359,7 @@ mod tests {
             disp.event_queue.push_back(QueuedEvent {
                 what: 3,
                 message: (u32::from(*byte) << 8) | u32::from(*byte),
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -28326,6 +28372,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -28374,6 +28421,7 @@ mod tests {
             disp.event_queue.push_back(QueuedEvent {
                 what: 3,
                 message: (u32::from(*byte) << 8) | u32::from(*byte),
+                when: 0,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -28386,6 +28434,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -28513,6 +28562,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 3,
             message: 0x0000_240D,
+            when: 0,
             where_v: 0,
             where_h: 0,
             modifiers: 0,

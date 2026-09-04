@@ -2822,6 +2822,7 @@ impl super::TrapDispatcher {
         self.event_queue.push_back(QueuedEvent {
             what: 8,
             message: window_ptr,
+            when: self.tick_count,
             where_v: 0,
             where_h: 0,
             modifiers: active_flag,
@@ -3161,6 +3162,7 @@ impl super::TrapDispatcher {
         self.event_queue.push_back(QueuedEvent {
             what: 6,
             message: window_ptr,
+            when: self.tick_count,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
@@ -3284,6 +3286,7 @@ impl super::TrapDispatcher {
             .map(|window_ptr| QueuedEvent {
                 what: 6,
                 message: window_ptr,
+                when: self.tick_count,
                 where_v: 0,
                 where_h: 0,
                 modifiers: 0,
@@ -5473,6 +5476,7 @@ impl super::TrapDispatcher {
                             .or(Some(QueuedEvent {
                                 what: 6,
                                 message: window,
+                                when: self.tick_count,
                                 where_v: 0,
                                 where_h: 0,
                                 modifiers: 0,
@@ -5492,6 +5496,7 @@ impl super::TrapDispatcher {
                             event_ptr,
                             ev.what,
                             ev.message,
+                            ev.when,
                             ev.where_v,
                             ev.where_h,
                             ev.modifiers,
@@ -11309,6 +11314,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: update_window,
+            when: 0,
             where_v: 77,
             where_h: 123,
             modifiers: 0x4400,
@@ -11402,6 +11408,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: ordinary_window,
+            when: 0,
             where_v: 77,
             where_h: 123,
             modifiers: 0x4400,
@@ -11489,7 +11496,7 @@ mod tests {
             picture,
         );
 
-        let (what, message, _, _, _, has_event) =
+        let (what, message, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1u16 << 6);
         assert!(has_event);
         assert_eq!(what, 6);
@@ -11504,7 +11511,7 @@ mod tests {
 
         disp.begin_update_window(&mut bus, ordinary_front);
         disp.end_update_window(&mut bus, ordinary_front);
-        let (what, _, _, _, _, has_event) =
+        let (what, _, _, _, _, _, has_event) =
             disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1u16 << 6);
         assert!(!has_event);
         assert_eq!(what, 0);
@@ -11529,6 +11536,7 @@ mod tests {
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: 0x00A0_4000,
+            when: 0,
             where_v: 12,
             where_h: 34,
             modifiers: 0x4400,
