@@ -12,10 +12,10 @@ use std::sync::OnceLock;
 
 use super::dispatch::{
     raw_trap_route, selector_operation_route, AeCoercionHandler, AeDescriptor, AeObjectAccessor,
-    AePrivateHashTable, AeResolveLevel, AeResolveState, CooperativeThread, DialogItem, MovieState,
-    EventProbeResult, EventRecordSnapshot, OsRoutineVariant, SelectorOperationRoute,
-    StandardFileGetEntry, StandardFileGetTrackingState,
-    StandardFilePutTrackingState, SyntheticAppleEvent,
+    AePrivateHashTable, AeResolveLevel, AeResolveState, CooperativeThread, DialogItem,
+    EventProbeResult, EventRecordSnapshot, MovieState, OsRoutineVariant, SelectorOperationRoute,
+    StandardFileGetEntry, StandardFileGetTrackingState, StandardFilePutTrackingState,
+    SyntheticAppleEvent,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
@@ -1186,7 +1186,7 @@ impl super::TrapDispatcher {
     /// `kNoThreadID` (0) both name the running thread, per Threads.h.
     fn resolve_cooperative_thread_id(&self, thread_id: u32) -> u32 {
         if thread_id == 0 || thread_id == 1 {
-            self.current_cooperative_thread
+            self.guest_calls.current_task().thread_id()
         } else {
             thread_id
         }
@@ -1204,24 +1204,28 @@ impl super::TrapDispatcher {
         if thread_id == Self::APPLICATION_THREAD_ID
             && !self
                 .cooperative_threads
-                .contains_key(&Self::APPLICATION_THREAD_ID)
+                .contains(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
         {
-            let state = if self.current_cooperative_thread == Self::APPLICATION_THREAD_ID {
-                Self::THREAD_STATE_RUNNING
-            } else {
-                Self::THREAD_STATE_READY
-            };
+            let state =
+                if self.guest_calls.current_task().thread_id() == Self::APPLICATION_THREAD_ID {
+                    Self::THREAD_STATE_RUNNING
+                } else {
+                    Self::THREAD_STATE_READY
+                };
             let thread = Self::capture_cooperative_thread(cpu, state, 0);
-            self.cooperative_threads
-                .insert(Self::APPLICATION_THREAD_ID, thread);
+            self.cooperative_threads.insert(
+                ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID),
+                thread,
+            );
         }
-        self.cooperative_threads.get_mut(&thread_id)
+        self.cooperative_threads
+            .get_mut(ExecutionTaskId::from_thread_id(thread_id))
     }
 
     /// Save the running thread's registers into its record without
     /// changing its scheduling state.
     fn save_current_cooperative_thread<C: CpuOps>(&mut self, cpu: &C) {
-        let current_id = self.current_cooperative_thread;
+        let current_id = self.guest_calls.current_task().thread_id();
         let saved = Self::capture_cooperative_thread(cpu, Self::THREAD_STATE_RUNNING, 0);
         match self.cooperative_thread_mut(cpu, current_id) {
             Some(thread) => {
@@ -1231,7 +1235,8 @@ impl super::TrapDispatcher {
                 thread.ccr = saved.ccr;
             }
             None => {
-                self.cooperative_threads.insert(current_id, saved);
+                self.cooperative_threads
+                    .insert(ExecutionTaskId::from_thread_id(current_id), saved);
             }
         }
     }
@@ -1240,7 +1245,7 @@ impl super::TrapDispatcher {
     /// ready thread, matching `YieldToThread`; otherwise the ready queue
     /// runs round-robin, as the stock 68K scheduler does.
     fn next_ready_cooperative_thread(&mut self, suggested_thread: u32) -> Option<u32> {
-        let current_id = self.current_cooperative_thread;
+        let current_id = self.guest_calls.current_task().thread_id();
         if suggested_thread > 1 && suggested_thread != current_id {
             if let Some(position) = self
                 .cooperative_thread_ready
@@ -1258,7 +1263,7 @@ impl super::TrapDispatcher {
             }
             let ready = self
                 .cooperative_threads
-                .get(&candidate)
+                .get(ExecutionTaskId::from_thread_id(candidate))
                 .is_some_and(|thread| thread.state == Self::THREAD_STATE_READY);
             if ready {
                 return Some(candidate);
@@ -1270,7 +1275,11 @@ impl super::TrapDispatcher {
     /// Install `next_id` as the running thread. The caller has already
     /// saved and re-queued the outgoing context.
     fn switch_to_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, next_id: u32) -> bool {
-        let Some(mut next) = self.cooperative_threads.get(&next_id).cloned() else {
+        let Some(mut next) = self
+            .cooperative_threads
+            .get(ExecutionTaskId::from_thread_id(next_id))
+            .cloned()
+        else {
             return false;
         };
         if next.state != Self::THREAD_STATE_READY {
@@ -1278,11 +1287,15 @@ impl super::TrapDispatcher {
             return false;
         }
         next.state = Self::THREAD_STATE_RUNNING;
-        self.guest_calls
-            .switch_to_task(ExecutionTaskId::from_thread_id(next_id));
+        if !self
+            .guest_calls
+            .switch_to_task(ExecutionTaskId::from_thread_id(next_id))
+        {
+            return false;
+        }
         Self::install_cooperative_thread(cpu, &next);
-        self.cooperative_threads.insert(next_id, next);
-        self.current_cooperative_thread = next_id;
+        self.cooperative_threads
+            .insert(ExecutionTaskId::from_thread_id(next_id), next);
         true
     }
 
@@ -1294,16 +1307,19 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let current_id = self.current_cooperative_thread;
+        let current_id = self.guest_calls.current_task().thread_id();
         self.save_current_cooperative_thread(cpu);
-        if let Some(thread) = self.cooperative_threads.get_mut(&current_id) {
+        if let Some(thread) = self
+            .cooperative_threads
+            .get_mut(ExecutionTaskId::from_thread_id(current_id))
+        {
             if thread.state == Self::THREAD_STATE_RUNNING {
                 thread.state = Self::THREAD_STATE_READY;
             }
         }
         let requeue = self
             .cooperative_threads
-            .get(&current_id)
+            .get(ExecutionTaskId::from_thread_id(current_id))
             .is_some_and(|thread| thread.state == Self::THREAD_STATE_READY)
             && !self.cooperative_thread_ready.contains(&current_id);
         if requeue {
@@ -1311,7 +1327,10 @@ impl super::TrapDispatcher {
         }
 
         let restore_running = |dispatcher: &mut Self| {
-            if let Some(thread) = dispatcher.cooperative_threads.get_mut(&current_id) {
+            if let Some(thread) = dispatcher
+                .cooperative_threads
+                .get_mut(ExecutionTaskId::from_thread_id(current_id))
+            {
                 thread.state = Self::THREAD_STATE_RUNNING;
             }
             dispatcher
@@ -1345,12 +1364,15 @@ impl super::TrapDispatcher {
         if !self.guest_calls.task_is_empty(task) {
             return false;
         }
-        if thread_id != self.current_cooperative_thread
+        if thread_id != self.guest_calls.current_task().thread_id()
             && !self.guest_calls.remove_task(task)
         {
             return false;
         }
-        if let Some(finished) = self.cooperative_threads.remove(&thread_id) {
+        if let Some(finished) = self
+            .cooperative_threads
+            .remove(ExecutionTaskId::from_thread_id(thread_id))
+        {
             if finished.result_destination != 0 {
                 bus.write_long(finished.result_destination, result);
             }
@@ -1372,7 +1394,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> bool {
-        let finished_id = self.current_cooperative_thread;
+        let finished_id = self.guest_calls.current_task().thread_id();
         let result = cpu.read_reg(Register::A0);
         if !self.retire_cooperative_thread(finished_id, result, bus) {
             return false;
@@ -1393,7 +1415,7 @@ impl super::TrapDispatcher {
         }
         if let Some(mut application) = self
             .cooperative_threads
-            .get(&Self::APPLICATION_THREAD_ID)
+            .get(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
             .cloned()
         {
             self.cooperative_thread_ready
@@ -1402,9 +1424,10 @@ impl super::TrapDispatcher {
             self.guest_calls
                 .switch_to_task(ExecutionTaskId::APPLICATION);
             Self::install_cooperative_thread(cpu, &application);
-            self.cooperative_threads
-                .insert(Self::APPLICATION_THREAD_ID, application);
-            self.current_cooperative_thread = Self::APPLICATION_THREAD_ID;
+            self.cooperative_threads.insert(
+                ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID),
+                application,
+            );
             return self
                 .guest_calls
                 .remove_task(ExecutionTaskId::from_thread_id(finished_id));
@@ -3456,7 +3479,8 @@ impl super::TrapDispatcher {
     }
 
     fn serialized_scrap_size(&self) -> u32 {
-        self.scrap.entries
+        self.scrap
+            .entries
             .iter()
             .map(|(_, data)| {
                 let padded = (data.len() as u32 + 1) & !1;
@@ -5191,8 +5215,15 @@ impl super::TrapDispatcher {
                 // Finder delivers kAEOpenApplication as a queued high-level
                 // event at launch. Make it visible through the normal toolbox
                 // event APIs instead of special-casing WaitNextEvent only.
-                let (mut what, mut message, mut when, mut where_v, mut where_h, mut modifiers, mut has_event) =
-                    self.dequeue_toolbox_event(cpu, bus, event_mask);
+                let (
+                    mut what,
+                    mut message,
+                    mut when,
+                    mut where_v,
+                    mut where_h,
+                    mut modifiers,
+                    mut has_event,
+                ) = self.dequeue_toolbox_event(cpu, bus, event_mask);
 
                 if !has_event {
                     if let Some(event) =
@@ -6720,9 +6751,7 @@ impl super::TrapDispatcher {
                     // re-seed from vfs_rsrc here, the writes are lost.
                     let refnum = self.allocate_process_file_refnum();
                     let rsrc_key = format!("__rsrc__{}", vfs_key);
-                    self.vfs
-                        .entry(rsrc_key.clone())
-                        .or_insert(rsrc_data.into());
+                    self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data.into());
                     self.open_files.insert(refnum, rsrc_key);
                     self.file_positions.insert(refnum, 0);
                     bus.write_word(pb + 24, refnum);
@@ -8274,9 +8303,7 @@ impl super::TrapDispatcher {
                             bus.read_word(event_record + 14)
                         );
                     }
-                    if let Some(handler) =
-                        self.apple_event_handler_for(oapp_class, oapp_id)
-                    {
+                    if let Some(handler) = self.apple_event_handler_for(oapp_class, oapp_id) {
                         let handler_ptr = handler.procedure.original_pointer;
                         let refcon = handler.refcon;
                         // Lazily allocate the trampoline on first use.
@@ -8369,9 +8396,7 @@ impl super::TrapDispatcher {
                             }
                             crate::guest_procedure::GuestIsa::PowerPc => {
                                 let arguments = crate::guest_call::PowerPcArguments::from_slice(&[
-                                    event_desc,
-                                    reply_desc,
-                                    refcon,
+                                    event_desc, reply_desc, refcon,
                                 ])
                                 .expect("AppleEvent handler has three arguments");
                                 let started = self.guest_calls.begin_m68k_to_powerpc(
@@ -8488,9 +8513,7 @@ impl super::TrapDispatcher {
                                 crate::guest_procedure::GuestIsa::PowerPc => {
                                     let arguments =
                                         crate::guest_call::PowerPcArguments::from_slice(&[
-                                            event_desc,
-                                            reply_desc,
-                                            refcon,
+                                            event_desc, reply_desc, refcon,
                                         ])
                                         .expect("AppleEvent handler has three arguments");
                                     if !self.guest_calls.begin_m68k_to_powerpc(
@@ -10246,13 +10269,21 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] GetKeys tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
-                        self.current_tick(), trap_pc, keys_ptr, self.input_state.key_map
+                        self.current_tick(),
+                        trap_pc,
+                        keys_ptr,
+                        self.input_state.key_map
                     );
                 }
-                if trace_getkeys_nonzero_enabled() && self.input_state.key_map.iter().any(|&byte| byte != 0) {
+                if trace_getkeys_nonzero_enabled()
+                    && self.input_state.key_map.iter().any(|&byte| byte != 0)
+                {
                     eprintln!(
                         "[INPUT] GetKeys nonzero tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
-                        self.current_tick(), trap_pc, keys_ptr, self.input_state.key_map
+                        self.current_tick(),
+                        trap_pc,
+                        keys_ptr,
+                        self.input_state.key_map
                     );
                 }
                 if self.input_state.key_map.iter().any(|&byte| byte != 0) {
@@ -11740,21 +11771,23 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let d_rows = bus.read_word(sp + 6) as i16;
                         let d_cols = bus.read_word(sp + 8) as i16;
-                        let should_draw = if let Some(state) = self.list_states.get_mut(&list_handle) {
-                            Self::set_list_visible_origin(
-                                state,
-                                state.visible.0.saturating_add(d_rows),
-                                state.visible.1.saturating_add(d_cols),
-                            );
-                            Self::sync_list_state_to_guest(bus, list_handle, state);
-                            state.draw_enabled
-                        } else {
-                            false
-                        };
+                        let should_draw =
+                            if let Some(state) = self.list_states.get_mut(&list_handle) {
+                                Self::set_list_visible_origin(
+                                    state,
+                                    state.visible.0.saturating_add(d_rows),
+                                    state.visible.1.saturating_add(d_cols),
+                                );
+                                Self::sync_list_state_to_guest(bus, list_handle, state);
+                                state.draw_enabled
+                            } else {
+                                false
+                            };
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get(&list_handle).cloned() {
-                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10) {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
+                                {
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
@@ -11769,25 +11802,27 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let height = bus.read_word(sp + 6) as i16;
                         let width = bus.read_word(sp + 8) as i16;
-                        let should_draw = if let Some(state) = self.list_states.get_mut(&list_handle) {
-                            let old_origin = (state.visible.0, state.visible.1);
-                            state.view_rect.2 = state.view_rect.0.saturating_add(height.max(0));
-                            state.view_rect.3 = state.view_rect.1.saturating_add(width.max(0));
-                            state.visible = Self::compute_list_visible_rect(
-                                state.view_rect,
-                                state.data_bounds,
-                                state.cell_size,
-                            );
-                            Self::set_list_visible_origin(state, old_origin.0, old_origin.1);
-                            Self::sync_list_state_to_guest(bus, list_handle, state);
-                            state.draw_enabled
-                        } else {
-                            false
-                        };
+                        let should_draw =
+                            if let Some(state) = self.list_states.get_mut(&list_handle) {
+                                let old_origin = (state.visible.0, state.visible.1);
+                                state.view_rect.2 = state.view_rect.0.saturating_add(height.max(0));
+                                state.view_rect.3 = state.view_rect.1.saturating_add(width.max(0));
+                                state.visible = Self::compute_list_visible_rect(
+                                    state.view_rect,
+                                    state.data_bounds,
+                                    state.cell_size,
+                                );
+                                Self::set_list_visible_origin(state, old_origin.0, old_origin.1);
+                                Self::sync_list_state_to_guest(bus, list_handle, state);
+                                state.draw_enabled
+                            } else {
+                                false
+                            };
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get(&list_handle).cloned() {
-                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10) {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
+                                {
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
@@ -11805,11 +11840,17 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let act = Self::stack_bool_slot(bus, sp + 6);
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
-                        let should_draw = if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        let should_draw = if let Some(state) =
+                            self.list_states.get_mut(&list_handle)
+                        {
                             state.active = act;
                             if list_ptr != 0 {
-                                bus.write_byte(list_ptr + Self::LIST_ACTIVE_OFFSET, if act { 1 } else { 0 });
-                                for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
+                                bus.write_byte(
+                                    list_ptr + Self::LIST_ACTIVE_OFFSET,
+                                    if act { 1 } else { 0 },
+                                );
+                                for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET]
+                                {
                                     let control_handle = bus.read_long(list_ptr + offset);
                                     let control = if control_handle != 0 {
                                         bus.read_long(control_handle)
@@ -11831,7 +11872,8 @@ impl super::TrapDispatcher {
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get(&list_handle).cloned() {
-                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 8) {
+                                if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 8)
+                                {
                                     return Some(Ok(()));
                                 }
                                 self.draw_list_fallback(cpu, bus, &state, None);
@@ -16244,7 +16286,7 @@ impl super::TrapDispatcher {
                     0 => return_noerr_and_pop(cpu, pop_bytes),
                     _ => return_error_and_pop(cpu, pop_bytes, -50),
                 }
-            },
+            }
 
             // ThreadDispatch ($ABF2) — cooperative Thread Manager
             // Inside Macintosh: Thread Manager (1999), pp. 1-56 to 1-58:
@@ -16310,7 +16352,10 @@ impl super::TrapDispatcher {
                         if current_thread == 0 {
                             -50
                         } else {
-                            bus.write_long(current_thread, self.current_cooperative_thread);
+                            bus.write_long(
+                                current_thread,
+                                self.guest_calls.current_task().thread_id(),
+                            );
                             0
                         }
                     }
@@ -16333,6 +16378,14 @@ impl super::TrapDispatcher {
                                 bus.write_long(thread_made, 0);
                             }
                             -50
+                        } else if !self
+                            .guest_calls
+                            .register_task(ExecutionTaskId::from_thread_id(
+                                self.next_cooperative_thread_id,
+                            ))
+                        {
+                            bus.write_long(thread_made, 0);
+                            -108
                         } else {
                             let thread_id = self.next_cooperative_thread_id;
                             self.next_cooperative_thread_id =
@@ -16365,7 +16418,8 @@ impl super::TrapDispatcher {
                             thread.a_regs[7] = entry_sp;
                             thread.stack_base = stack_base;
                             thread.stack_limit = stack_limit;
-                            self.cooperative_threads.insert(thread_id, thread);
+                            self.cooperative_threads
+                                .insert(ExecutionTaskId::from_thread_id(thread_id), thread);
                             if state == Self::THREAD_STATE_READY {
                                 self.cooperative_thread_ready.push_back(thread_id);
                             }
@@ -16440,7 +16494,7 @@ impl super::TrapDispatcher {
                         if free_stack == 0 {
                             -50
                         } else {
-                            let running = thread == self.current_cooperative_thread;
+                            let running = thread == self.guest_calls.current_task().thread_id();
                             let current_sp = cpu.read_reg(Register::A7);
                             match self.cooperative_thread_mut(cpu, thread) {
                                 None => Self::THREAD_NOT_FOUND_ERR,
@@ -16470,15 +16524,16 @@ impl super::TrapDispatcher {
                         let thread_result = bus.read_long(sp + 2);
                         let thread_to_dump =
                             self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
-                        if !self.cooperative_threads.contains_key(&thread_to_dump)
+                        if !self
+                            .cooperative_threads
+                            .contains(ExecutionTaskId::from_thread_id(thread_to_dump))
                             && thread_to_dump != Self::APPLICATION_THREAD_ID
                         {
                             Self::THREAD_NOT_FOUND_ERR
-                        } else if thread_to_dump == self.current_cooperative_thread {
+                        } else if thread_to_dump == self.guest_calls.current_task().thread_id() {
                             // Threads.h allows a thread to dispose of itself;
                             // the call never returns to it.
-                            if !self.retire_cooperative_thread(thread_to_dump, thread_result, bus)
-                            {
+                            if !self.retire_cooperative_thread(thread_to_dump, thread_result, bus) {
                                 Self::THREAD_PROTOCOL_ERR
                             } else {
                                 self.finish_cooperative_thread(cpu, bus);
@@ -16553,8 +16608,9 @@ impl super::TrapDispatcher {
                                     // Keep the installed context and its task
                                     // owner coherent rather than labelling a
                                     // still-running CPU as stopped.
-                                    if let Some(current) =
-                                        self.cooperative_threads.get_mut(&thread_to_set)
+                                    if let Some(current) = self
+                                        .cooperative_threads
+                                        .get_mut(ExecutionTaskId::from_thread_id(thread_to_set))
                                     {
                                         current.state = Self::THREAD_STATE_RUNNING;
                                     }
@@ -16661,7 +16717,7 @@ impl super::TrapDispatcher {
                 } else {
                     return_error_and_pop(cpu, argument_bytes, result)
                 }
-            },
+            }
 
             // _TranslationDispatch (0xABFC)
             // Dispatches Translation Manager routines selected by D0.
@@ -16673,7 +16729,7 @@ impl super::TrapDispatcher {
                     translation_dispatch_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
                 return_error_and_pop(cpu, 4, -50)
-            },
+            }
 
             _ => return None,
         })
@@ -16959,6 +17015,7 @@ mod tests {
         STANDARD_FILE_GET_VOLUME_RECT,
     };
     use crate::cpu::{CpuOps, Register};
+    use crate::execution_kernel::ExecutionTaskId;
     use crate::memory::globals::addr;
     use crate::memory::MacMemoryBus;
     use crate::memory::MemoryBus;
@@ -17561,9 +17618,8 @@ mod tests {
         assert_eq!(bus.read_word(sp + 6), 0xCAFE);
 
         // Wrong trap form clears stale identity
-        disp.current_selector_operation = Some(
-            "selector-operation:_Pack15:0x0800:d0-low-word-immediate:16",
-        );
+        disp.current_selector_operation =
+            Some("selector-operation:_Pack15:0x0800:d0-low-word-immediate:16");
         disp.current_trap_word = 0xA931;
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0800);
@@ -18364,7 +18420,9 @@ mod tests {
     #[test]
     fn test_wait_next_event_zero_mask_takes_null_event_path() {
         let (mut disp, mut cpu, mut bus) = setup();
-        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
+        assert!(!disp
+            .apple_event_launch_state
+            .is_open_application_event_sent());
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
 
@@ -18382,7 +18440,9 @@ mod tests {
         assert_eq!(bus.read_word(sp + 14), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 14);
         assert_eq!(bus.read_word(event_ptr), 0);
-        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
+        assert!(!disp
+            .apple_event_launch_state
+            .is_open_application_event_sent());
         assert_eq!(disp.pending_wait_sleep_ticks, 1);
     }
 
@@ -18490,8 +18550,11 @@ mod tests {
     #[test]
     fn test_wait_next_event_synthesizes_open_app() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.apple_event_launch_state.set_high_level_event_aware(true);
-        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
+        disp.apple_event_launch_state
+            .set_high_level_event_aware(true);
+        assert!(!disp
+            .apple_event_launch_state
+            .is_open_application_event_sent());
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, 0); // mouseRgn
@@ -18514,7 +18577,9 @@ mod tests {
         assert_eq!(bus.read_word(event_ptr + 10), 0x6F61); // where.v
         assert_eq!(bus.read_word(event_ptr + 12), 0x7070); // where.h
                                                            // Flag should be set
-        assert!(disp.apple_event_launch_state.is_open_application_event_sent());
+        assert!(disp
+            .apple_event_launch_state
+            .is_open_application_event_sent());
 
         // Second call should NOT return synthetic event
         cpu.write_reg(Register::A7, sp);
@@ -18545,7 +18610,9 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_word(sp + 14), 0);
         assert_eq!(bus.read_word(event_ptr), 0);
-        assert!(!disp.apple_event_launch_state.is_open_application_event_sent());
+        assert!(!disp
+            .apple_event_launch_state
+            .is_open_application_event_sent());
     }
 
     // EventAvail ($A971) — with event (peeks, does not remove)
@@ -18680,7 +18747,8 @@ mod tests {
     #[test]
     fn test_event_avail_synthesizes_open_app_without_consuming() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.apple_event_launch_state.set_high_level_event_aware(true);
+        disp.apple_event_launch_state
+            .set_high_level_event_aware(true);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -18701,7 +18769,8 @@ mod tests {
     #[test]
     fn test_get_next_event_synthesizes_open_app() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.apple_event_launch_state.set_high_level_event_aware(true);
+        disp.apple_event_launch_state
+            .set_high_level_event_aware(true);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         bus.write_long(sp, event_ptr);
@@ -21040,10 +21109,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0x89AB_CDEF);
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(bus.read_word(0x0936), 1);
-        assert_eq!(
-            disp.launched_app_path(),
-            Some("LaunchTargets/NoSuchApp")
-        );
+        assert_eq!(disp.launched_app_path(), Some("LaunchTargets/NoSuchApp"));
         assert!(
             disp.take_pending_launch_application(false, true).is_none(),
             "a missing legacy target must not be queued"
@@ -21091,10 +21157,7 @@ mod tests {
         assert_eq!(bus.read_long(launch_pb + 28), 0);
         assert_eq!(bus.read_long(launch_pb + 32), 0);
         assert_eq!(bus.read_long(launch_pb + 36), 0);
-        assert_eq!(
-            disp.launched_app_path(),
-            Some("LaunchTargets/NoSuchApp")
-        );
+        assert_eq!(disp.launched_app_path(), Some("LaunchTargets/NoSuchApp"));
         assert_eq!(*disp.default_dir_id, target_dir_id);
         assert_ne!(disp.app_wd_refnum, 0);
     }
@@ -21140,10 +21203,7 @@ mod tests {
         assert_eq!(bus.read_long(launch_pb + 28), 0);
         assert_eq!(bus.read_long(launch_pb + 32), 0);
         assert_eq!(bus.read_long(launch_pb + 36), 0);
-        assert_eq!(
-            disp.launched_app_path(),
-            Some("LaunchTargets/NoSuchApp")
-        );
+        assert_eq!(disp.launched_app_path(), Some("LaunchTargets/NoSuchApp"));
         assert_eq!(*disp.default_dir_id, target_dir_id);
         assert_ne!(disp.app_wd_refnum, 0);
     }
@@ -21333,10 +21393,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(bus.read_word(0x0936), 0x0001);
-        assert_eq!(
-            disp.launched_app_path(),
-            Some("ChainTargets/NoSuchApp")
-        );
+        assert_eq!(disp.launched_app_path(), Some("ChainTargets/NoSuchApp"));
         assert_eq!(*disp.default_dir_id, target_dir_id);
         assert_ne!(disp.app_wd_refnum, 0);
     }
@@ -23677,7 +23734,10 @@ mod tests {
         bus.write_long(sp, window_ptr);
         let result = disp.dispatch_toolbox(true, 0x104, &mut cpu, &mut bus);
         assert!(result.is_some(), "active DrawGrowIcon should be handled");
-        assert!(result.unwrap().is_ok(), "active DrawGrowIcon should succeed");
+        assert!(
+            result.unwrap().is_ok(),
+            "active DrawGrowIcon should succeed"
+        );
         assert!(
             read_screen_pixel_1bpp(&bus, screen_base, row_bytes, 87, 68),
             "active document window should draw the longest diagonal grip"
@@ -24300,7 +24360,11 @@ mod tests {
         assert_ne!(v_scroll_handle, 0);
         let v_scroll_ptr = bus.read_long(v_scroll_handle);
         assert_eq!(bus.read_byte(list_ptr + 37), 1, "initial lActive must be 1");
-        assert_eq!(bus.read_byte(v_scroll_ptr + 17), 0, "initial contrlHilite must be 0");
+        assert_eq!(
+            bus.read_byte(v_scroll_ptr + 17),
+            0,
+            "initial contrlHilite must be 0"
+        );
 
         // Call LActivate(FALSE, list)
         cpu.write_reg(Register::A7, sp);
@@ -24310,8 +24374,16 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
-        assert_eq!(bus.read_byte(list_ptr + 37), 0, "lActive must be 0 when deactivated");
-        assert_eq!(bus.read_byte(v_scroll_ptr + 17), 255, "scrollbar contrlHilite must be 255 when deactivated");
+        assert_eq!(
+            bus.read_byte(list_ptr + 37),
+            0,
+            "lActive must be 0 when deactivated"
+        );
+        assert_eq!(
+            bus.read_byte(v_scroll_ptr + 17),
+            255,
+            "scrollbar contrlHilite must be 255 when deactivated"
+        );
 
         // Call LActivate(TRUE, list)
         cpu.write_reg(Register::A7, sp);
@@ -24321,8 +24393,16 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
-        assert_eq!(bus.read_byte(list_ptr + 37), 1, "lActive must be 1 when reactivated");
-        assert_eq!(bus.read_byte(v_scroll_ptr + 17), 0, "scrollbar contrlHilite must be 0 when reactivated");
+        assert_eq!(
+            bus.read_byte(list_ptr + 37),
+            1,
+            "lActive must be 1 when reactivated"
+        );
+        assert_eq!(
+            bus.read_byte(v_scroll_ptr + 17),
+            0,
+            "scrollbar contrlHilite must be 0 when reactivated"
+        );
     }
 
     #[test]
@@ -27192,7 +27272,7 @@ mod tests {
 
         let thread = disp
             .cooperative_threads
-            .get(&2)
+            .get(ExecutionTaskId::from_thread_id(2))
             .expect("the application thread record must exist");
         assert_eq!(thread.switch_in, (0x0003_0000, 0x1111_2222));
         assert_eq!(thread.switch_out, (0, 0), "switch-out stays unset");
@@ -27234,7 +27314,9 @@ mod tests {
             .expect("DisposeThread returns");
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 10);
-        assert!(!disp.cooperative_threads.contains_key(&new_id));
+        assert!(!disp
+            .cooperative_threads
+            .contains(ExecutionTaskId::from_thread_id(new_id)));
         assert!(!disp.cooperative_thread_ready.contains(&new_id));
         assert_eq!(disp.cooperative_thread_pool.len(), 1);
 
@@ -27394,7 +27476,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(disp.current_cooperative_thread, 3);
+        assert_eq!(disp.guest_calls.current_task().thread_id(), 3);
         assert_eq!(
             disp.guest_calls.depth(),
             0,
@@ -27424,7 +27506,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(disp.current_cooperative_thread, 2);
+        assert_eq!(disp.guest_calls.current_task().thread_id(), 2);
         assert_eq!(
             disp.guest_calls.depth(),
             1,
@@ -27498,8 +27580,10 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(disp.current_cooperative_thread, 2);
-        assert!(!disp.cooperative_threads.contains_key(&3));
+        assert_eq!(disp.guest_calls.current_task().thread_id(), 2);
+        assert!(!disp
+            .cooperative_threads
+            .contains(ExecutionTaskId::from_thread_id(3)));
         assert_eq!(bus.read_long(thread_result), 0xCAFE_BABE);
         assert_eq!(cpu.read_reg(Register::PC), 0x000F_0000);
         assert_eq!(cpu.read_reg(Register::A7), app_sp + 4);
@@ -34406,7 +34490,7 @@ mod tests {
         disp.current_trap_word = 0xA82D;
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0xABCD_0A02); // NewSection ($0A02, 20 arg bytes)
-        // Pascal entry order: sectionH*, mode, ID, kind, document, container.
+                                                  // Pascal entry order: sectionH*, mode, ID, kind, document, container.
         bus.write_long(sp, out_section_handle);
         bus.write_word(sp + 4, 0);
         bus.write_long(sp + 6, 42);
@@ -34519,7 +34603,9 @@ mod tests {
             assert_eq!(route.routine_name, routine_name);
             assert_eq!(
                 route.operation_id,
-                format!("selector-operation:_TranslationDispatch:0x{selector:04X}:d0-moveq-immediate:8")
+                format!(
+                    "selector-operation:_TranslationDispatch:0x{selector:04X}:d0-moveq-immediate:8"
+                )
             );
         }
 

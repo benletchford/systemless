@@ -11,8 +11,10 @@
 //! consume a different continuation.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+use crate::guest_procedure::GuestIsa;
 
 /// Stable execution-task identity used by the continuation owner.
 ///
@@ -29,6 +31,18 @@ impl ExecutionTaskId {
     pub(crate) const fn from_thread_id(thread_id: u32) -> Self {
         Self(thread_id)
     }
+
+    pub(crate) const fn thread_id(self) -> u32 {
+        self.0
+    }
+}
+
+/// Task-lifecycle effect emitted by a process service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExecutionTaskEffect {
+    Register(ExecutionTaskId),
+    SwitchTo(ExecutionTaskId),
+    Retire(ExecutionTaskId),
 }
 
 /// A request type that identifies the task which owns its continuation.
@@ -38,6 +52,247 @@ impl ExecutionTaskId {
 /// task metadata instead of rewriting it.
 pub(crate) trait TaskOwned {
     fn task(&self) -> ExecutionTaskId;
+}
+
+/// Architecture-neutral destination of one guest procedure invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuestCallTarget {
+    pub(crate) isa: GuestIsa,
+    pub(crate) entry: u32,
+    pub(crate) rtoc: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct M68kRegisterState {
+    pub(crate) data: [u32; 8],
+    pub(crate) address: [u32; 7],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum M68kResultSource {
+    Data(u8),
+    Address(u8),
+    Memory {
+        address: u32,
+        size: u8,
+    },
+    SpecialCase {
+        selector: u8,
+        arguments: PowerPcArguments,
+        stack_result: Option<u32>,
+    },
+}
+
+pub(crate) const MAX_POWERPC_GUEST_ARGUMENTS: usize = 13;
+
+/// Bounded, copyable native argument list carried by a semantic call request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PowerPcArguments {
+    values: [u32; MAX_POWERPC_GUEST_ARGUMENTS],
+    len: u8,
+}
+
+impl PowerPcArguments {
+    pub(crate) fn from_slice(values: &[u32]) -> Option<Self> {
+        if values.len() > MAX_POWERPC_GUEST_ARGUMENTS {
+            return None;
+        }
+        let mut arguments = Self {
+            values: [0; MAX_POWERPC_GUEST_ARGUMENTS],
+            len: u8::try_from(values.len()).ok()?,
+        };
+        arguments.values[..values.len()].copy_from_slice(values);
+        Some(arguments)
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u32] {
+        &self.values[..usize::from(self.len)]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum M68kResultTarget {
+    Data { index: u8, size: u8 },
+    Address { index: u8, size: u8 },
+    Ccr { mask: u8 },
+    Memory { address: u32, size: u8 },
+    SpecialCase { selector: u8, scratch: u32 },
+}
+
+/// Architecture-neutral policy for placing a guest callback's result in the
+/// caller's result slot.
+///
+/// The architecture adapter translates this policy to its ABI vocabulary.
+/// Inside Macintosh: PowerPC System Software (1994), pp. 2-12--2-16.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallReturnPolicy {
+    Preserve,
+    Mask(u32),
+    Set(u32),
+    ZeroOrSet { zero: u32, nonzero: u32 },
+    CrBit(u8),
+    XerCa,
+    XerOv,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PowerPcReturnState {
+    pub(crate) gpr3: u32,
+}
+
+/// The architecture-neutral payload supplied to a guest call.
+///
+/// A call into native PowerPC code receives its values through the PPC ABI
+/// registers/parameter area, while a call into 68K code needs the emulated
+/// stack/register interval. Both are represented here so the process-owned
+/// continuation stack does not have to infer an ABI from a CPU action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct M68kCallRequest {
+    pub(crate) entry: u32,
+    pub(crate) initial_sp: u32,
+    pub(crate) final_sp: u32,
+    pub(crate) registers: M68kRegisterState,
+    pub(crate) result: Option<M68kResultSource>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallArguments {
+    None,
+    PowerPc(PowerPcArguments),
+    M68k(M68kCallRequest),
+}
+
+/// One architecture-neutral guest procedure request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuestCallRequest {
+    pub(crate) task: ExecutionTaskId,
+    pub(crate) target: GuestCallTarget,
+    pub(crate) arguments: GuestCallArguments,
+}
+
+impl GuestCallRequest {
+    pub(crate) fn new(target: GuestCallTarget) -> Self {
+        Self::for_task(ExecutionTaskId::APPLICATION, target)
+    }
+
+    pub(crate) fn for_task(task: ExecutionTaskId, target: GuestCallTarget) -> Self {
+        Self {
+            task,
+            target,
+            arguments: GuestCallArguments::None,
+        }
+    }
+
+    pub(crate) fn with_powerpc_arguments(mut self, arguments: PowerPcArguments) -> Self {
+        self.arguments = GuestCallArguments::PowerPc(arguments);
+        self
+    }
+
+    pub(crate) fn with_m68k_request(mut self, request: M68kCallRequest) -> Self {
+        self.arguments = GuestCallArguments::M68k(request);
+        self
+    }
+}
+
+impl TaskOwned for GuestCallRequest {
+    fn task(&self) -> ExecutionTaskId {
+        self.task
+    }
+}
+
+/// Typed resumption metadata for one guest call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallContinuation {
+    ReturnToM68k {
+        return_pc: u32,
+        final_sp: u32,
+        result: Option<M68kResultTarget>,
+    },
+    ReturnToPowerPc {
+        return_pc: u32,
+        final_pc: u32,
+        restore_rtoc: u32,
+        return_gpr3: GuestCallReturnPolicy,
+    },
+}
+
+impl GuestCallContinuation {
+    pub(crate) const fn to_m68k(
+        return_pc: u32,
+        final_sp: u32,
+        result: Option<M68kResultTarget>,
+    ) -> Self {
+        Self::ReturnToM68k {
+            return_pc,
+            final_sp,
+            result,
+        }
+    }
+
+    pub(crate) fn to_powerpc(
+        return_pc: u32,
+        final_pc: u32,
+        restore_rtoc: u32,
+        return_gpr3: impl Into<GuestCallReturnPolicy>,
+    ) -> Self {
+        Self::ReturnToPowerPc {
+            return_pc,
+            final_pc,
+            restore_rtoc,
+            return_gpr3: return_gpr3.into(),
+        }
+    }
+}
+
+/// Semantic guest-execution effect emitted by either ABI edge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestCallEffect {
+    CallGuest {
+        request: GuestCallRequest,
+        continuation: GuestCallContinuation,
+    },
+}
+
+impl GuestCallEffect {
+    pub(crate) const fn call_guest(
+        request: GuestCallRequest,
+        continuation: GuestCallContinuation,
+    ) -> Self {
+        Self::CallGuest {
+            request,
+            continuation,
+        }
+    }
+
+    pub(crate) fn request(self) -> GuestCallRequest {
+        match self {
+            Self::CallGuest { request, .. } => request,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingPowerPcExecution {
+    pub(crate) target: GuestCallTarget,
+    pub(crate) arguments: PowerPcArguments,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingM68kExecution {
+    pub(crate) entry: u32,
+    pub(crate) initial_sp: u32,
+    pub(crate) return_pc: u32,
+    pub(crate) final_sp: u32,
+    pub(crate) registers: M68kRegisterState,
+    pub(crate) result: Option<M68kResultSource>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct M68kResume {
+    pub(crate) return_pc: u32,
+    pub(crate) final_sp: u32,
+    pub(crate) result: Option<M68kResultTarget>,
+    pub(crate) powerpc: PowerPcReturnState,
 }
 
 /// Opaque, monotonically allocated identity for one submitted continuation.
@@ -94,6 +349,13 @@ impl<R: Copy, C: Copy> ContinuationState<R, C> {
 /// Why a transactional continuation operation was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ContinuationError {
+    TaskUnavailable {
+        task: ExecutionTaskId,
+    },
+    /// The adapter rejected its prepared return without changing live state.
+    CommitRefused {
+        call_id: CallId,
+    },
     /// A request's embedded owner disagreed with the task supplied to submit.
     TaskMismatch {
         expected: ExecutionTaskId,
@@ -119,10 +381,18 @@ pub(crate) enum ContinuationError {
         actual: ContinuationPhase,
         expected: ContinuationPhase,
     },
+    /// A concrete adapter context is still parked against the call. The
+    /// context must be restored before the semantic continuation can leave
+    /// the kernel.
+    ContextAttached {
+        call_id: CallId,
+        count: usize,
+    },
     /// A task with suspended continuations cannot be retired.
     RetirementRefused {
         task: ExecutionTaskId,
         depth: usize,
+        contexts: usize,
         current: bool,
     },
     /// The monotonic ID namespace is exhausted. This is practically
@@ -144,6 +414,8 @@ struct StoreState<R: Copy, C: Copy> {
     current_task: ExecutionTaskId,
     next_call_id: u64,
     stacks: HashMap<ExecutionTaskId, Vec<ContinuationState<R, C>>>,
+    attached_contexts: HashMap<CallId, usize>,
+    retired_tasks: HashSet<ExecutionTaskId>,
 }
 
 impl<R: Copy, C: Copy> Default for StoreState<R, C> {
@@ -152,6 +424,8 @@ impl<R: Copy, C: Copy> Default for StoreState<R, C> {
             current_task: ExecutionTaskId::APPLICATION,
             next_call_id: 1,
             stacks: HashMap::from([(ExecutionTaskId::APPLICATION, Vec::new())]),
+            attached_contexts: HashMap::new(),
+            retired_tasks: HashSet::new(),
         }
     }
 }
@@ -178,7 +452,6 @@ impl<R: Copy + Eq, C: Copy + Eq> Eq for ContinuationStore<R, C> {}
 
 impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     /// Return a handle sharing this store's live state.
-    #[cfg(test)]
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
@@ -188,12 +461,35 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         self.0.borrow().current_task
     }
 
-    /// Select the task subsequent activation, completion, and retirement may
-    /// consume. Selecting a task creates an empty stack if necessary.
-    pub(crate) fn switch_to_task(&self, task: ExecutionTaskId) {
+    /// Register a new task exactly once for this process lifetime.
+    pub(crate) fn register_task(&self, task: ExecutionTaskId) -> Result<(), ContinuationError> {
         let mut state = self.0.borrow_mut();
-        state.stacks.entry(task).or_default();
+        if state.stacks.contains_key(&task) || state.retired_tasks.contains(&task) {
+            return Err(ContinuationError::TaskUnavailable { task });
+        }
+        state.stacks.insert(task, Vec::new());
+        Ok(())
+    }
+
+    /// Select an existing task without manufacturing or resurrecting it.
+    pub(crate) fn switch_to_task(&self, task: ExecutionTaskId) -> Result<(), ContinuationError> {
+        let mut state = self.0.borrow_mut();
+        if !state.stacks.contains_key(&task) {
+            return Err(ContinuationError::TaskUnavailable { task });
+        }
         state.current_task = task;
+        Ok(())
+    }
+
+    pub(crate) fn apply_task_effect(
+        &self,
+        effect: ExecutionTaskEffect,
+    ) -> Result<(), ContinuationError> {
+        match effect {
+            ExecutionTaskEffect::Register(task) => self.register_task(task),
+            ExecutionTaskEffect::SwitchTo(task) => self.switch_to_task(task),
+            ExecutionTaskEffect::Retire(task) => self.retire_task(task),
+        }
     }
 
     /// Submit a continuation to `task` and allocate its explicit call ID.
@@ -214,6 +510,9 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
                 actual: task,
             });
         }
+        if !state.stacks.contains_key(&task) {
+            return Err(ContinuationError::TaskUnavailable { task });
+        }
         let Some(next_call_id) = state.next_call_id.checked_add(1) else {
             return Err(ContinuationError::CallIdExhausted);
         };
@@ -221,8 +520,8 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         state.next_call_id = next_call_id;
         state
             .stacks
-            .entry(task)
-            .or_default()
+            .get_mut(&task)
+            .expect("registered task")
             .push(ContinuationState {
                 call_id,
                 task,
@@ -252,6 +551,24 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         Ok(*frame)
     }
 
+    fn activate_attaching_context(
+        &self,
+        task: ExecutionTaskId,
+        call_id: CallId,
+    ) -> Result<ContinuationState<R, C>, ContinuationError> {
+        let mut state = self.0.borrow_mut();
+        Self::validate_transition(&state, task, call_id, ContinuationPhase::Pending)?;
+        let frame = state
+            .stacks
+            .get_mut(&task)
+            .and_then(|stack| stack.last_mut())
+            .expect("validated continuation must remain present");
+        frame.phase = ContinuationPhase::Active;
+        let frame = *frame;
+        *state.attached_contexts.entry(call_id).or_default() += 1;
+        Ok(frame)
+    }
+
     /// Complete the active top continuation with an optional neutral result.
     /// The result is retained until [`Self::retire`] consumes the frame.
     pub(crate) fn complete(
@@ -272,6 +589,33 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         Ok(*frame)
     }
 
+    fn complete_detaching_context(
+        &self,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        result: Option<u32>,
+    ) -> Result<ContinuationState<R, C>, ContinuationError> {
+        let mut state = self.0.borrow_mut();
+        Self::validate_transition(&state, task, call_id, ContinuationPhase::Active)?;
+        let Some(context_count) = state.attached_contexts.get(&call_id).copied() else {
+            return Err(ContinuationError::ContextAttached { call_id, count: 0 });
+        };
+        let frame = state
+            .stacks
+            .get_mut(&task)
+            .and_then(|stack| stack.last_mut())
+            .expect("validated continuation must remain present");
+        frame.phase = ContinuationPhase::Completed;
+        frame.result = result;
+        let frame = *frame;
+        if context_count == 1 {
+            state.attached_contexts.remove(&call_id);
+        } else {
+            state.attached_contexts.insert(call_id, context_count - 1);
+        }
+        Ok(frame)
+    }
+
     /// Retire a completed top continuation after validating its exact ID.
     ///
     /// Retirement is separate from completion so a scheduler can observe the
@@ -283,6 +627,9 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     ) -> Result<ContinuationState<R, C>, ContinuationError> {
         let mut state = self.0.borrow_mut();
         Self::validate_transition(&state, task, call_id, ContinuationPhase::Completed)?;
+        if let Some(count) = state.attached_contexts.get(&call_id).copied() {
+            return Err(ContinuationError::ContextAttached { call_id, count });
+        }
         Ok(state
             .stacks
             .get_mut(&task)
@@ -300,6 +647,9 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     ) -> Result<ContinuationState<R, C>, ContinuationError> {
         let mut state = self.0.borrow_mut();
         Self::validate_transition(&state, task, call_id, ContinuationPhase::Pending)?;
+        if let Some(count) = state.attached_contexts.get(&call_id).copied() {
+            return Err(ContinuationError::ContextAttached { call_id, count });
+        }
         Ok(state
             .stacks
             .get_mut(&task)
@@ -314,16 +664,34 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     /// first, then call this method.
     pub(crate) fn retire_task(&self, task: ExecutionTaskId) -> Result<(), ContinuationError> {
         let mut state = self.0.borrow_mut();
-        let depth = state.stacks.get(&task).map_or(0, Vec::len);
+        let Some(stack) = state.stacks.get(&task) else {
+            return Err(ContinuationError::TaskUnavailable { task });
+        };
+        let depth = stack.len();
+        let contexts = state
+            .stacks
+            .get(&task)
+            .into_iter()
+            .flatten()
+            .map(|continuation| {
+                state
+                    .attached_contexts
+                    .get(&continuation.call_id)
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .sum();
         let current = state.current_task == task;
-        if current || depth != 0 {
+        if current || depth != 0 || contexts != 0 {
             return Err(ContinuationError::RetirementRefused {
                 task,
                 depth,
+                contexts,
                 current,
             });
         }
         state.stacks.remove(&task);
+        state.retired_tasks.insert(task);
         Ok(())
     }
 
@@ -354,7 +722,8 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     }
 
     pub(crate) fn task_is_empty(&self, task: ExecutionTaskId) -> bool {
-        self.task_depth(task) == 0
+        let state = self.0.borrow();
+        state.stacks.get(&task).is_none_or(Vec::is_empty)
     }
 
     /// Snapshot one task's stack in bottom-to-top order. The semantic layer
@@ -366,6 +735,67 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
             .stacks
             .get(&task)
             .map_or_else(Vec::new, |stack| stack.clone())
+    }
+
+    #[cfg(test)]
+    fn attach_context(
+        &self,
+        task: ExecutionTaskId,
+        call_id: CallId,
+    ) -> Result<(), ContinuationError> {
+        let mut state = self.0.borrow_mut();
+        Self::validate_context_owner(&state, task, call_id)?;
+        *state.attached_contexts.entry(call_id).or_default() += 1;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn detach_context(
+        &self,
+        task: ExecutionTaskId,
+        call_id: CallId,
+    ) -> Result<(), ContinuationError> {
+        let mut state = self.0.borrow_mut();
+        Self::validate_context_owner(&state, task, call_id)?;
+        let Some(count) = state.attached_contexts.get_mut(&call_id) else {
+            return Err(ContinuationError::ContextAttached { call_id, count: 0 });
+        };
+        *count -= 1;
+        if *count == 0 {
+            state.attached_contexts.remove(&call_id);
+        }
+        Ok(())
+    }
+
+    fn validate_context_owner(
+        state: &StoreState<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+    ) -> Result<(), ContinuationError> {
+        let Some(owner) = Self::owner_of(state, call_id) else {
+            return Err(ContinuationError::CallIdMismatch {
+                task,
+                expected: state
+                    .stacks
+                    .get(&task)
+                    .and_then(|stack| stack.last())
+                    .map(|frame| frame.call_id()),
+                actual: call_id,
+            });
+        };
+        if owner != task {
+            return Err(ContinuationError::TaskMismatch {
+                expected: owner,
+                actual: task,
+            });
+        }
+        if state.current_task != task {
+            return Err(ContinuationError::TaskNotCurrent {
+                current: state.current_task,
+                requested: task,
+            });
+        }
+        Ok(())
     }
 
     fn validate_transition(
@@ -420,6 +850,256 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     }
 }
 
+/// Concrete adapter state parked against an exact semantic continuation.
+///
+/// The bank is generic so the execution kernel remains CPU-free. It owns the
+/// `(task, call)` association and registers every parked value with the
+/// continuation store, while an ISA adapter supplies the concrete context.
+/// Mixed Mode switch frames preserve nonvolatile state until the matching
+/// return crosses the mode boundary; they are linked in exact LIFO order.
+/// Inside Macintosh: PowerPC System Software (1994), pp. 2-9--2-13.
+#[derive(Clone, Debug)]
+pub(crate) struct ExecutionContextBank<T> {
+    by_call: HashMap<(ExecutionTaskId, CallId), T>,
+}
+
+/// Process-task snapshots keyed by the same stable identities as
+/// continuations and parked ISA contexts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExecutionTaskContextBank<T> {
+    by_task: HashMap<ExecutionTaskId, T>,
+}
+
+impl<T> Default for ExecutionContextBank<T> {
+    fn default() -> Self {
+        Self {
+            by_call: HashMap::new(),
+        }
+    }
+}
+
+impl<T> Default for ExecutionTaskContextBank<T> {
+    fn default() -> Self {
+        Self {
+            by_task: HashMap::new(),
+        }
+    }
+}
+
+impl<T> ExecutionTaskContextBank<T> {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.by_task.is_empty()
+    }
+
+    pub(crate) fn contains(&self, task: ExecutionTaskId) -> bool {
+        self.by_task.contains_key(&task)
+    }
+
+    pub(crate) fn get(&self, task: ExecutionTaskId) -> Option<&T> {
+        self.by_task.get(&task)
+    }
+
+    pub(crate) fn get_mut(&mut self, task: ExecutionTaskId) -> Option<&mut T> {
+        self.by_task.get_mut(&task)
+    }
+
+    pub(crate) fn insert(&mut self, task: ExecutionTaskId, context: T) -> Option<T> {
+        self.by_task.insert(task, context)
+    }
+
+    pub(crate) fn remove(&mut self, task: ExecutionTaskId) -> Option<T> {
+        self.by_task.remove(&task)
+    }
+}
+
+impl<T> ExecutionContextBank<T> {
+    pub(crate) fn contains(&self, task: ExecutionTaskId, call_id: CallId) -> bool {
+        self.by_call.contains_key(&(task, call_id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.by_call.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.by_call.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task_len(&self, task: ExecutionTaskId) -> usize {
+        self.by_call
+            .keys()
+            .filter(|(owner, _)| *owner == task)
+            .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn park<R: Copy + TaskOwned, C: Copy>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        context: T,
+    ) -> Result<(), (ContinuationError, T)> {
+        if self.contains(task, call_id) {
+            return Err((
+                ContinuationError::ContextAttached { call_id, count: 1 },
+                context,
+            ));
+        }
+        if let Err(error) = kernel.attach_context(task, call_id) {
+            return Err((error, context));
+        }
+        let replaced = self.by_call.insert((task, call_id), context);
+        debug_assert!(replaced.is_none());
+        Ok(())
+    }
+
+    pub(crate) fn park_while_activating<R: Copy + TaskOwned, C: Copy>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        context: T,
+    ) -> Result<ContinuationState<R, C>, (ContinuationError, T)> {
+        if self.contains(task, call_id) {
+            return Err((
+                ContinuationError::ContextAttached { call_id, count: 1 },
+                context,
+            ));
+        }
+        let semantic = match kernel.activate_attaching_context(task, call_id) {
+            Ok(semantic) => semantic,
+            Err(error) => return Err((error, context)),
+        };
+        let replaced = self.by_call.insert((task, call_id), context);
+        debug_assert!(replaced.is_none());
+        Ok(semantic)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take<R: Copy + TaskOwned, C: Copy>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+    ) -> Result<T, ContinuationError> {
+        if !self.contains(task, call_id) {
+            return Err(ContinuationError::ContextAttached { call_id, count: 0 });
+        }
+        kernel.detach_context(task, call_id)?;
+        Ok(self
+            .by_call
+            .remove(&(task, call_id))
+            .expect("validated context must remain parked"))
+    }
+
+    pub(crate) fn take_while_completing<R: Copy + TaskOwned, C: Copy>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        result: Option<u32>,
+    ) -> Result<(T, ContinuationState<R, C>), ContinuationError> {
+        if !self.contains(task, call_id) {
+            return Err(ContinuationError::ContextAttached { call_id, count: 0 });
+        }
+        let semantic = kernel.complete_detaching_context(task, call_id, result)?;
+        let context = self
+            .by_call
+            .remove(&(task, call_id))
+            .expect("validated context must remain parked");
+        Ok((context, semantic))
+    }
+
+    /// Park the enclosing caller and activate its nested call as one change.
+    /// All identity/phase checks precede replacement of the installed engine.
+    pub(crate) fn activate_parking_caller<R: Copy + TaskOwned, C: Copy>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        caller: Option<CallId>,
+        installed: &mut T,
+    ) -> Result<(), ContinuationError>
+    where
+        T: Default,
+    {
+        let mut state = kernel.0.borrow_mut();
+        ContinuationStore::validate_transition(&state, task, call_id, ContinuationPhase::Pending)?;
+        if let Some(caller) = caller {
+            ContinuationStore::validate_context_owner(&state, task, caller)?;
+            if caller == call_id {
+                return Err(ContinuationError::CallIdMismatch {
+                    task,
+                    expected: None,
+                    actual: caller,
+                });
+            }
+            if self.contains(task, caller) {
+                // Sibling callbacks reuse the enclosing caller's saved state.
+                *installed = T::default();
+            } else {
+                self.by_call
+                    .insert((task, caller), std::mem::take(installed));
+                *state.attached_contexts.entry(caller).or_default() += 1;
+            }
+        }
+        state
+            .stacks
+            .get_mut(&task)
+            .and_then(|stack| stack.last_mut())
+            .expect("validated continuation")
+            .phase = ContinuationPhase::Active;
+        Ok(())
+    }
+
+    /// Validate the complete return boundary before allowing adapter writes.
+    /// The closure must validate all fallible ABI work before mutating state;
+    /// it cannot execute guest code or reenter this store. Once it succeeds,
+    /// removal of the exact context and continuation cannot fail.
+    pub(crate) fn retire_with_context<R: Copy + TaskOwned, C: Copy>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        apply: impl FnOnce(Option<&mut T>) -> bool,
+    ) -> Result<Option<T>, ContinuationError> {
+        let mut state = kernel.0.borrow_mut();
+        ContinuationStore::validate_transition(
+            &state,
+            task,
+            call_id,
+            ContinuationPhase::Completed,
+        )?;
+        let expected = usize::from(self.contains(task, call_id));
+        let attached = state.attached_contexts.get(&call_id).copied().unwrap_or(0);
+        if attached != expected {
+            return Err(ContinuationError::ContextAttached {
+                call_id,
+                count: attached,
+            });
+        }
+        if !apply(self.by_call.get_mut(&(task, call_id))) {
+            return Err(ContinuationError::CommitRefused { call_id });
+        }
+        state.attached_contexts.remove(&call_id);
+        state.stacks.get_mut(&task).expect("validated task").pop();
+        Ok(self.by_call.remove(&(task, call_id)))
+    }
+
+    pub(crate) fn same_slots<U>(&self, other: &ExecutionContextBank<U>) -> bool {
+        self.by_call.len() == other.by_call.len()
+            && self
+                .by_call
+                .keys()
+                .all(|key| other.by_call.contains_key(key))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,6 +1124,100 @@ mod tests {
 
     fn submit(store: &Store, task: ExecutionTaskId, entry: u32) -> CallId {
         store.submit(task, request(task, entry), entry + 1).unwrap()
+    }
+
+    #[test]
+    fn task_ids_cannot_be_created_by_submission_or_resurrected_after_retirement() {
+        let store = Store::default();
+        let worker = ExecutionTaskId::from_thread_id(77);
+        let snapshot = store.clone();
+        assert!(store.switch_to_task(worker).is_err());
+        assert!(store.submit(worker, request(worker, 0x1000), 0).is_err());
+        assert_eq!(store, snapshot);
+        store.register_task(worker).unwrap();
+        assert!(store.register_task(worker).is_err());
+        store.retire_task(worker).unwrap();
+        let retired = store.clone();
+        assert!(store.register_task(worker).is_err());
+        assert!(store.switch_to_task(worker).is_err());
+        assert!(store.submit(worker, request(worker, 0x1000), 0).is_err());
+        assert!(store.retire_task(worker).is_err());
+        assert_eq!(store, retired);
+    }
+
+    #[test]
+    fn nested_activation_validates_before_replacing_the_installed_caller() {
+        let store = Store::default();
+        let task = ExecutionTaskId::APPLICATION;
+        let outer = submit(&store, task, 0x1000);
+        store.activate(task, outer).unwrap();
+        let inner = submit(&store, task, 0x2000);
+        let mut bank = ExecutionContextBank::default();
+        let mut installed = 42_u32;
+        let before = store.clone();
+        assert!(bank
+            .activate_parking_caller(&store, task, inner, Some(inner), &mut installed)
+            .is_err());
+        assert_eq!(installed, 42);
+        assert_eq!(store, before);
+        assert!(bank.is_empty());
+        bank.activate_parking_caller(&store, task, inner, Some(outer), &mut installed)
+            .unwrap();
+        assert_eq!(installed, 0);
+        assert_eq!(store.peek(task).unwrap().phase(), ContinuationPhase::Active);
+        installed = 99;
+        assert!(bank
+            .activate_parking_caller(&store, task, inner, Some(outer), &mut installed)
+            .is_err());
+        assert_eq!(installed, 99);
+        store.complete(task, inner, None).unwrap();
+        store.retire(task, inner).unwrap();
+        store.complete(task, outer, None).unwrap();
+        assert_eq!(
+            bank.retire_with_context(&store, task, outer, |_| true),
+            Ok(Some(42))
+        );
+    }
+
+    #[test]
+    fn return_commit_validates_contexts_before_adapter_writes_and_retries() {
+        let store = Store::default();
+        let task = ExecutionTaskId::APPLICATION;
+        let call = submit(&store, task, 0x1000);
+        let mut bank = ExecutionContextBank::default();
+        bank.park(&store, task, call, 42_u32).unwrap();
+        // Pending calls cannot expose the parked caller to result writes.
+        assert!(bank
+            .retire_with_context(&store, task, call, |_| panic!("not completed"))
+            .is_err());
+        store.activate(task, call).unwrap();
+        store.complete(task, call, Some(7)).unwrap();
+        let snapshot = store.clone();
+        let mut wrong_bank = ExecutionContextBank::<u32>::default();
+        assert!(wrong_bank
+            .retire_with_context(&store, task, call, |_| panic!("missing context"))
+            .is_err());
+        assert_eq!(store, snapshot);
+        assert_eq!(
+            bank.retire_with_context(&store, task, call, |context| {
+                assert_eq!(context.as_deref(), Some(&42));
+                false
+            }),
+            Err(ContinuationError::CommitRefused { call_id: call })
+        );
+        assert_eq!(store, snapshot);
+        assert_eq!(
+            bank.retire_with_context(&store, task, call, |context| {
+                *context.unwrap() = 7;
+                true
+            }),
+            Ok(Some(7))
+        );
+        assert!(store.is_empty());
+        assert!(bank.is_empty());
+        assert!(bank
+            .retire_with_context(&store, task, call, |_| panic!("stale return"))
+            .is_err());
     }
 
     #[test]
@@ -491,16 +1265,17 @@ mod tests {
         let store = Store::default();
         let application = ExecutionTaskId::APPLICATION;
         let worker = ExecutionTaskId::from_thread_id(7);
+        store.register_task(worker).unwrap();
         let app_call = submit(&store, application, 0x1000);
         let worker_call = submit(&store, worker, 0x3000);
 
-        store.switch_to_task(worker);
+        store.switch_to_task(worker).unwrap();
         assert_eq!(store.depth(), 1);
         store.activate(worker, worker_call).unwrap();
         store.complete(worker, worker_call, None).unwrap();
         store.retire(worker, worker_call).unwrap();
 
-        store.switch_to_task(application);
+        store.switch_to_task(application).unwrap();
         assert_eq!(store.depth(), 1);
         assert_eq!(store.peek(application).unwrap().call_id(), app_call);
         store.activate(application, app_call).unwrap();
@@ -514,6 +1289,7 @@ mod tests {
         let store = Store::default();
         let application = ExecutionTaskId::APPLICATION;
         let worker = ExecutionTaskId::from_thread_id(9);
+        store.register_task(worker).unwrap();
 
         assert_eq!(
             store.submit(application, request(worker, 0x1000), 0x1001),
@@ -566,6 +1342,7 @@ mod tests {
         let store = Store::default();
         let application = ExecutionTaskId::APPLICATION;
         let worker = ExecutionTaskId::from_thread_id(11);
+        store.register_task(worker).unwrap();
         let call_id = submit(&store, application, 0x1000);
         let before = store.clone();
         assert!(matches!(
@@ -573,28 +1350,30 @@ mod tests {
             Err(ContinuationError::RetirementRefused {
                 task,
                 depth: 1,
+                contexts: 0,
                 current: true,
             }) if task == application
         ));
         assert_eq!(store, before);
 
-        store.switch_to_task(worker);
+        store.switch_to_task(worker).unwrap();
         let before = store.clone();
         assert!(matches!(
             store.retire_task(application),
             Err(ContinuationError::RetirementRefused {
                 task,
                 depth: 1,
+                contexts: 0,
                 current: false,
             }) if task == application
         ));
         assert_eq!(store, before);
 
-        store.switch_to_task(application);
+        store.switch_to_task(application).unwrap();
         store.activate(application, call_id).unwrap();
         store.complete(application, call_id, None).unwrap();
         store.retire(application, call_id).unwrap();
-        store.switch_to_task(worker);
+        store.switch_to_task(worker).unwrap();
         assert_eq!(store.retire_task(application), Ok(()));
         assert!(store.task_is_empty(application));
     }
@@ -611,5 +1390,58 @@ mod tests {
         assert_eq!(shared.peek(task).unwrap().call_id(), call_id);
         shared.activate(task, call_id).unwrap();
         assert_eq!(store.peek(task).unwrap().phase(), ContinuationPhase::Active);
+    }
+
+    #[test]
+    fn concrete_contexts_are_keyed_by_exact_task_and_call() {
+        let store = Store::default();
+        let application = ExecutionTaskId::APPLICATION;
+        let worker = ExecutionTaskId::from_thread_id(13);
+        store.register_task(worker).unwrap();
+        let application_call = submit(&store, application, 0x1000);
+        let worker_call = submit(&store, worker, 0x2000);
+        let mut contexts = ExecutionContextBank::default();
+
+        assert_eq!(
+            contexts.park(&store, application, application_call, 0xaaaa),
+            Ok(())
+        );
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts.task_len(application), 1);
+        assert_eq!(contexts.task_len(worker), 0);
+
+        store.switch_to_task(worker).unwrap();
+        assert_eq!(contexts.park(&store, worker, worker_call, 0xbbbb), Ok(()));
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts.task_len(application), 1);
+        assert_eq!(contexts.task_len(worker), 1);
+        assert_eq!(contexts.take(&store, worker, worker_call), Ok(0xbbbb));
+        assert!(!contexts.contains(worker, worker_call));
+
+        store.switch_to_task(application).unwrap();
+        assert_eq!(
+            contexts.take(&store, application, application_call),
+            Ok(0xaaaa)
+        );
+        assert!(contexts.is_empty());
+    }
+
+    #[test]
+    fn attached_context_blocks_call_retirement_until_exact_restore() {
+        let store = Store::default();
+        let task = ExecutionTaskId::APPLICATION;
+        let call_id = submit(&store, task, 0x1000);
+        store.activate(task, call_id).unwrap();
+        let mut contexts = ExecutionContextBank::default();
+        contexts.park(&store, task, call_id, 7).unwrap();
+        store.complete(task, call_id, None).unwrap();
+
+        assert_eq!(
+            store.retire(task, call_id),
+            Err(ContinuationError::ContextAttached { call_id, count: 1 })
+        );
+        assert_eq!(contexts.take(&store, task, call_id), Ok(7));
+        assert_eq!(store.retire(task, call_id).unwrap().call_id(), call_id);
+        assert!(store.is_empty());
     }
 }

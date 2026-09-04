@@ -4,6 +4,7 @@ use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
+use crate::execution_kernel::ExecutionContextBank;
 use crate::guest_call::ExecutionTaskId;
 use crate::loader::ppc::{
     PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
@@ -338,17 +339,6 @@ const HFS_VCB_SIZE: u32 = 178;
 // that do substantially more work than a normal foreground interpreter batch.
 const PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES: u64 = 250_000;
 
-/// Architecture-specific 68K contexts suspended by a cross-ISA callback.
-///
-/// A context is owned by the execution task whose continuation suspended it.
-/// Keeping the task key next to the parked CPU prevents a callback on one
-/// cooperative Thread Manager task from consuming another task's caller when
-/// the tasks yield while nested Mixed Mode work is in flight.
-#[derive(Default)]
-struct ParkedM68kContexts {
-    by_task: HashMap<ExecutionTaskId, Vec<M68kCpu>>,
-}
-
 /// Result of charging one native execution slice against the runner's host
 /// cycle clock.
 ///
@@ -363,41 +353,6 @@ struct PpcCycleAdvanceResult {
     baseline_tick: u32,
     /// Number of VBL boundaries crossed by the host cycle budget.
     elapsed_ticks: u32,
-}
-
-impl ParkedM68kContexts {
-    fn clear(&mut self) {
-        self.by_task.clear();
-    }
-
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.by_task.values().all(Vec::is_empty)
-    }
-
-    /// Total number of contexts, retaining the old diagnostic meaning of
-    /// `FixtureRunner::parked_m68k_cpus.len()`.
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.by_task.values().map(Vec::len).sum()
-    }
-
-    fn task_len(&self, task: ExecutionTaskId) -> usize {
-        self.by_task.get(&task).map_or(0, Vec::len)
-    }
-
-    fn push(&mut self, task: ExecutionTaskId, cpu: M68kCpu) {
-        self.by_task.entry(task).or_default().push(cpu);
-    }
-
-    fn pop(&mut self, task: ExecutionTaskId) -> Option<M68kCpu> {
-        let contexts = self.by_task.get_mut(&task)?;
-        let context = contexts.pop();
-        if contexts.is_empty() {
-            self.by_task.remove(&task);
-        }
-        context
-    }
 }
 
 fn trace_dialog_filter_enabled() -> bool {
@@ -1672,7 +1627,7 @@ pub struct FixtureRunner {
     cpu: M68kCpu,
     /// Complete 68K CPU contexts parked by nested Mixed Mode switch frames,
     /// owned by the execution task that suspended each context.
-    parked_m68k_cpus: ParkedM68kContexts,
+    parked_m68k_cpus: ExecutionContextBank<M68kCpu>,
     ppc_app: Option<PpcLoadedApp>,
     /// Native execution adapter retained by a classic foreground process.
     /// It runs only while the process guest-call stack contains a pending
@@ -1940,7 +1895,7 @@ impl FixtureRunner {
         let dialog_callback_scratch_base = bus.alloc_synthetic(DIALOG_CALLBACK_SCRATCH_SIZE);
         Self {
             cpu: M68kCpu::new(),
-            parked_m68k_cpus: ParkedM68kContexts::default(),
+            parked_m68k_cpus: ExecutionContextBank::default(),
             ppc_app: None,
             ppc_companion: None,
             staged_ppc_companion: None,
@@ -2049,8 +2004,7 @@ impl FixtureRunner {
     }
 
     pub fn guest_tick(&self) -> u32 {
-        self.bus
-            .read_long(crate::memory::globals::addr::TICKS)
+        self.bus.read_long(crate::memory::globals::addr::TICKS)
     }
 
     /// Test-only: seed the guest-owned low-memory clock. Production clock
@@ -2068,10 +2022,7 @@ impl FixtureRunner {
     /// rendered pixels or 68K/PPC-specific EventRecord offsets.
     pub fn event_manager_snapshot(&self) -> EventManagerSnapshot {
         let queue = self.process_context.event_queue();
-        let ppc_state = self
-            .ppc_app
-            .as_ref()
-            .map(|app| &app.toolbox_startup);
+        let ppc_state = self.ppc_app.as_ref().map(|app| &app.toolbox_startup);
         let last_record: Option<EventRecordSnapshot> = self
             .dispatcher
             .debug_last_event_record
@@ -2081,18 +2032,17 @@ impl FixtureRunner {
             || self.dispatcher.debug_event_queue_probe.clone(),
             |state| state.event_queue_probe.clone(),
         );
-        let button_result = ppc_state.map_or(
-            self.dispatcher.debug_last_button_result,
-            |state| state.last_button_result,
-        );
-        let still_down_result = ppc_state.map_or(
-            self.dispatcher.debug_last_still_down_result,
-            |state| state.last_still_down_result,
-        );
-        let wait_mouse_up_result = ppc_state.map_or(
-            self.dispatcher.debug_last_wait_mouse_up_result,
-            |state| state.last_wait_mouse_up_result,
-        );
+        let button_result = ppc_state.map_or(self.dispatcher.debug_last_button_result, |state| {
+            state.last_button_result
+        });
+        let still_down_result = ppc_state
+            .map_or(self.dispatcher.debug_last_still_down_result, |state| {
+                state.last_still_down_result
+            });
+        let wait_mouse_up_result = ppc_state
+            .map_or(self.dispatcher.debug_last_wait_mouse_up_result, |state| {
+                state.last_wait_mouse_up_result
+            });
         EventManagerSnapshot {
             last_record,
             queue_probe,
@@ -2226,9 +2176,10 @@ impl FixtureRunner {
 
     /// Number of live guest windows, independent of the active CPU adapter.
     pub fn window_count(&mut self) -> usize {
-        self.ppc_app
-            .as_mut()
-            .map_or_else(|| self.dispatcher.window_count(), PpcLoadedApp::window_count)
+        self.ppc_app.as_mut().map_or_else(
+            || self.dispatcher.window_count(),
+            PpcLoadedApp::window_count,
+        )
     }
 
     /// Return the live Window Manager stack in front-to-back order.
@@ -2713,10 +2664,9 @@ impl FixtureRunner {
     }
 
     fn redraw_chrome(&mut self) {
-        self.dispatcher
-            .with_process_state(|dispatcher| {
-                dispatcher.redraw_chrome(&mut self.bus);
-            });
+        self.dispatcher.with_process_state(|dispatcher| {
+            dispatcher.redraw_chrome(&mut self.bus);
+        });
     }
 
     /// Enable or disable arrow-key-to-numpad remapping.
@@ -2946,10 +2896,9 @@ impl FixtureRunner {
     pub fn push_key_down(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.read_tick_count(&self.bus);
-        self.dispatcher
-            .with_process_state(|d| {
-                d.push_key_down(key, char_code);
-            });
+        self.dispatcher.with_process_state(|d| {
+            d.push_key_down(key, char_code);
+        });
         self.sync_key_map_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2962,10 +2911,9 @@ impl FixtureRunner {
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
-        self.dispatcher
-            .with_process_state(|d| {
-                d.push_key_up_with_system_event_mask(sys_evt_mask, key, char_code);
-            });
+        self.dispatcher.with_process_state(|d| {
+            d.push_key_up_with_system_event_mask(sys_evt_mask, key, char_code);
+        });
         self.sync_key_map_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -3063,8 +3011,7 @@ impl FixtureRunner {
                     architecture: CallbackTaskArchitecture::PowerPc,
                     ..
                 }
-                |
-                crate::sound::PendingSoundCallback::FileCompletion {
+                | crate::sound::PendingSoundCallback::FileCompletion {
                     architecture: CallbackTaskArchitecture::PowerPc,
                     ..
                 } => self.ppc_app.is_some(),
@@ -3301,7 +3248,12 @@ impl FixtureRunner {
 
     fn vfs_file_stat_for_path(&mut self, path: &str) -> Option<VfsFileStat> {
         let metadata = self.dispatcher.vfs_file_metadata(path)?;
-        let data_len = self.dispatcher.vfs.get(path).map(|bytes| bytes.len()).unwrap_or(0);
+        let data_len = self
+            .dispatcher
+            .vfs
+            .get(path)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
         let resource_len = self
             .dispatcher
             .vfs_rsrc
@@ -3353,7 +3305,8 @@ impl FixtureRunner {
         // direct-loaded image. Reserve the image itself, plus the zone header,
         // without throwing that lower partition space away.
         // Inside Macintosh: Memory (1992), pp. 1-7 to 1-9 and 2-19.
-        self.process_context.reserve_classic_heap(APP_ZONE_HEADER_SIZE);
+        self.process_context
+            .reserve_classic_heap(APP_ZONE_HEADER_SIZE);
         self.process_context
             .reserve_classic_heap_range(image_start, heap_start);
         self.dispatcher.load_resources(fork, &mut self.bus);
@@ -3704,7 +3657,7 @@ impl FixtureRunner {
     /// Think C runtimes, e.g. Koji / Munchies) sees `CurStackBase` =
     /// 0 and spins forever in the globals-decompression loop.
     pub fn init_app(&mut self, app: &LoadedApp) {
-        self.parked_m68k_cpus.clear();
+        self.parked_m68k_cpus = ExecutionContextBank::default();
         self.ppc_companion = None;
         if let Some(ppc_app) = app.ppc.clone() {
             self.staged_ppc_companion = None;
@@ -3771,7 +3724,7 @@ impl FixtureRunner {
             .launch_ticks_override
             .map_or(DEFAULT_LAUNCH_TICKS, |floor| {
                 DEFAULT_LAUNCH_TICKS.max(floor)
-        });
+            });
         self.bus.write_long(addr::TICKS, launch_ticks);
         self.dispatcher.read_tick_count(&self.bus);
         let time = self
@@ -4194,8 +4147,7 @@ impl FixtureRunner {
 
         let gdh = self.dispatcher.ensure_main_gdevice(&mut self.bus);
         self.bus.write_long(0x8A4, gdh);
-        self.bus
-            .write_long(0xCC8, *self.dispatcher.current_gdevice);
+        self.bus.write_long(0xCC8, *self.dispatcher.current_gdevice);
         self.bus.write_long(0x8A8, gdh);
         if let Some(front_buffer) = ppc_app.presented_front_buffer() {
             self.ensure_ppc_host_screen_mode(front_buffer);
@@ -4240,8 +4192,7 @@ impl FixtureRunner {
             let start = mapping_start.max(classic_heap_floor);
             let end = mapping_end.min(classic_heap_limit);
             if start < end {
-                self.process_context
-                    .reserve_classic_heap_range(start, end);
+                self.process_context.reserve_classic_heap_range(start, end);
             }
         }
 
@@ -4752,8 +4703,7 @@ impl FixtureRunner {
 
         let memory_unchanged = self.bus.finish_write_probe_unchanged();
         let cpu_unchanged = sleep.cpu == CpuArchitecturalSnapshot::capture(&self.cpu.core);
-        let tick_unchanged =
-            self.guest_tick() == sleep.tick
+        let tick_unchanged = self.guest_tick() == sleep.tick
                 // The canonical process clock owns the value, while this
                 // second check verifies its low-memory guest projection did
                 // not diverge during the idle probe.
@@ -5419,9 +5369,10 @@ impl FixtureRunner {
         // until the application task is selected again. Otherwise the runner
         // would execute the PPC caller after the switch and consume the wrong
         // task's continuation.
-        let current_task = ExecutionTaskId::from_thread_id(self.dispatcher.current_cooperative_thread);
-        let native_foreground_task = self.ppc_app.is_some()
-            && current_task == ExecutionTaskId::APPLICATION;
+        let current_task =
+            ExecutionTaskId::from_thread_id(self.dispatcher.guest_calls.current_task().thread_id());
+        let native_foreground_task =
+            self.ppc_app.is_some() && current_task == ExecutionTaskId::APPLICATION;
         if native_foreground_task {
             if yield_for_ui {
                 return self.run_ppc_steps(
@@ -5450,14 +5401,16 @@ impl FixtureRunner {
                 // CPU now belongs to the selected worker; stop the native
                 // loop before it can execute that continuation on the wrong
                 // task.
-                if ExecutionTaskId::from_thread_id(self.dispatcher.current_cooperative_thread)
-                    != ExecutionTaskId::APPLICATION
+                if ExecutionTaskId::from_thread_id(
+                    self.dispatcher.guest_calls.current_task().thread_id(),
+                ) != ExecutionTaskId::APPLICATION
                 {
                     break;
                 }
             }
-            if ExecutionTaskId::from_thread_id(self.dispatcher.current_cooperative_thread)
-                != ExecutionTaskId::APPLICATION
+            if ExecutionTaskId::from_thread_id(
+                self.dispatcher.guest_calls.current_task().thread_id(),
+            ) != ExecutionTaskId::APPLICATION
             {
                 if finish_frame {
                     self.sync_ppc_deferred_host_state();
@@ -6022,9 +5975,9 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
-                    let dispatch_result = self.dispatcher.with_process_state(
-                        |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
-                    );
+                    let dispatch_result = self.dispatcher.with_process_state(|dispatcher| {
+                        dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus)
+                    });
                     match dispatch_result {
                         Ok(()) => {
                             let null_event = self.note_idle_cycle_trap_result(opcode);
@@ -6376,26 +6329,23 @@ impl FixtureRunner {
             // the native caller is parked. Do not deliver the native
             // application's VBL/Time Manager work against that successor's
             // task; the callback phase is retried once its owner is selected.
-            let native_callbacks_allowed =
-                ppc_app.guest_calls.current_task() == ppc_task
-                    && ExecutionTaskId::from_thread_id(
-                        self.dispatcher.current_cooperative_thread,
-                    ) == ppc_task;
+            let native_callbacks_allowed = ppc_app.guest_calls.current_task() == ppc_task
+                && ExecutionTaskId::from_thread_id(
+                    self.dispatcher.guest_calls.current_task().thread_id(),
+                ) == ppc_task;
             let (vbl_probes, timer_probes) = if native_callbacks_allowed {
-                ppc_app.with_process_memory_manager(
-                    |app, memory_manager| {
-                        Self::fire_ppc_tick_callbacks(
-                            app,
-                            memory_manager,
-                            tick_advance.baseline_tick,
-                            ppc_start_time,
-                            tick_advance.elapsed_ticks,
-                            u64::from(cycles_per_tick),
-                            false,
-                            false,
-                        )
-                    },
-                )
+                ppc_app.with_process_memory_manager(|app, memory_manager| {
+                    Self::fire_ppc_tick_callbacks(
+                        app,
+                        memory_manager,
+                        tick_advance.baseline_tick,
+                        ppc_start_time,
+                        tick_advance.elapsed_ticks,
+                        u64::from(cycles_per_tick),
+                        false,
+                        false,
+                    )
+                })
             } else {
                 (Vec::new(), Vec::new())
             };
@@ -6446,16 +6396,14 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let probe = ppc_app.with_process_memory_manager(
-            |app, memory_manager| {
-                app.run_with_process_memory_manager(
-                    ppc_max_steps as u64,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                    memory_manager,
-                )
-            },
-        );
+        let probe = ppc_app.with_process_memory_manager(|app, memory_manager| {
+            app.run_with_process_memory_manager(
+                ppc_max_steps as u64,
+                trace_ppc_imports,
+                trace_ppc_fetches,
+                memory_manager,
+            )
+        });
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
         let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
@@ -6493,26 +6441,23 @@ impl FixtureRunner {
             (Vec::new(), Vec::new())
         } else {
             let tick_advance = self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
-            let native_callbacks_allowed =
-                ppc_app.guest_calls.current_task() == ppc_task
-                    && ExecutionTaskId::from_thread_id(
-                        self.dispatcher.current_cooperative_thread,
-                    ) == ppc_task;
+            let native_callbacks_allowed = ppc_app.guest_calls.current_task() == ppc_task
+                && ExecutionTaskId::from_thread_id(
+                    self.dispatcher.guest_calls.current_task().thread_id(),
+                ) == ppc_task;
             if native_callbacks_allowed {
-                ppc_app.with_process_memory_manager(
-                    |app, memory_manager| {
-                        Self::fire_ppc_tick_callbacks(
-                            app,
-                            memory_manager,
-                            tick_advance.baseline_tick,
-                            ppc_start_time,
-                            tick_advance.elapsed_ticks,
-                            u64::from(cycles_per_tick),
-                            trace_ppc_imports,
-                            trace_ppc_fetches,
-                        )
-                    },
-                )
+                ppc_app.with_process_memory_manager(|app, memory_manager| {
+                    Self::fire_ppc_tick_callbacks(
+                        app,
+                        memory_manager,
+                        tick_advance.baseline_tick,
+                        ppc_start_time,
+                        tick_advance.elapsed_ticks,
+                        u64::from(cycles_per_tick),
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                    )
+                })
             } else {
                 (Vec::new(), Vec::new())
             }
@@ -6736,26 +6681,12 @@ impl FixtureRunner {
     ) -> Option<(usize, bool)> {
         let task = ppc_app.guest_calls.current_task();
         let active = ppc_app.guest_calls.active_m68k();
-        let pending = active.or_else(|| ppc_app.guest_calls.activate_m68k())?;
+        let pending = active.or_else(|| {
+            ppc_app
+                .guest_calls
+                .activate_m68k_parking(&mut self.parked_m68k_cpus, &mut self.cpu)
+        })?;
         if active.is_none() {
-            let suspended_depth = ppc_app.guest_calls.suspended_m68k_context_depth();
-            if suspended_depth > 0 {
-                match self.parked_m68k_cpus.task_len(task) {
-                    parked if parked == suspended_depth => {
-                        // A sibling PowerPC-to-68k call at this depth replaces
-                        // the completed nested context, while its caller stays
-                        // parked in the existing stack entry.
-                        self.cpu = M68kCpu::new();
-                    }
-                    parked if parked.checked_add(1) == Some(suspended_depth) => {
-                        // The first PowerPC-to-68k call at this depth parks the
-                        // live classic caller before installing a fresh context.
-                        let parked = std::mem::take(&mut self.cpu);
-                        self.parked_m68k_cpus.push(task, parked);
-                    }
-                    _ => return Some((0, false)),
-                }
-            }
             for (index, value) in pending.registers.data.into_iter().enumerate() {
                 self.cpu.core.set_d(index, value);
             }
@@ -6819,13 +6750,11 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let dispatch_err = self.dispatcher.with_process_state(
-                        |dispatcher| {
-                            dispatcher
-                                .dispatch(opcode, &mut self.cpu, &mut self.bus)
-                                .is_err()
-                        },
-                    );
+                    let dispatch_err = self.dispatcher.with_process_state(|dispatcher| {
+                        dispatcher
+                            .dispatch(opcode, &mut self.cpu, &mut self.bus)
+                            .is_err()
+                    });
                     if dispatch_err {
                         running = false;
                         break;
@@ -6859,42 +6788,55 @@ impl FixtureRunner {
     }
 
     fn resume_m68k_after_powerpc(&mut self, ppc_app: &mut PpcLoadedApp) -> bool {
-        use crate::guest_call::M68kResultTarget;
-
-        let task = ppc_app.guest_calls.current_task();
-        let suspended_depth = ppc_app.guest_calls.suspended_m68k_context_depth();
-        let restore_parked = if suspended_depth == 0 {
-            false
-        } else {
-            match self.parked_m68k_cpus.task_len(task) {
-                parked if parked == suspended_depth => true,
-                parked if parked.checked_add(1) == Some(suspended_depth) => false,
-                _ => return false,
-            }
-        };
-        // Result placement can fail when a classic result slot is unmapped,
-        // read-only, or malformed. Inspect the completed continuation first;
-        // retirement and parked-context removal happen only after the result
-        // has been accepted, so the same completion remains retryable.
-        let Some(resume) = ppc_app.guest_calls.peek_m68k_resume() else {
+        let calls = ppc_app.guest_calls.shared_handle();
+        let Some(parked) =
+            calls.commit_m68k_resume(&mut self.parked_m68k_cpus, |resume, parked| {
+                let cpu = parked.unwrap_or(&mut self.cpu);
+                if !Self::apply_m68k_resume_result(cpu, &mut ppc_app.memory, resume) {
+                    return false;
+                }
+                cpu.write_reg(Register::PC, resume.return_pc);
+                cpu.write_reg(Register::A7, resume.final_sp);
+                true
+            })
+        else {
             return false;
         };
+        if let Some(parked) = parked {
+            self.cpu = parked;
+        }
+        // A native RoutineDescriptor can be the head of a raw A-line patch.
+        // Mixed Mode resumes at the synthesized JSR continuation directly,
+        // so retire that Trap Manager frame before the next 68k instruction.
+        self.dispatcher
+            .retire_returned_native_trap_call(&mut self.cpu);
+        true
+    }
+
+    fn apply_m68k_resume_result(
+        cpu: &mut M68kCpu,
+        memory: &mut PpcSectionMem,
+        resume: crate::guest_call::M68kResume,
+    ) -> bool {
+        use crate::guest_call::M68kResultTarget;
+
         let mask_value = |value: u32, size: u8| match size {
             1 => Some(value & 0xff),
             2 => Some(value & 0xffff),
             4 => Some(value),
             _ => None,
         };
-        let result_applied = match resume.result {
+        match resume.result {
             None => true,
-            Some(M68kResultTarget::Data { index, size }) => mask_value(resume.powerpc.gpr3, size)
-                .is_some_and(|value| {
-                    self.cpu.core.set_d(usize::from(index), value);
-                    true
-                }),
-            Some(M68kResultTarget::Address { index, size }) => {
+            Some(M68kResultTarget::Data { index, size }) if index < 8 => {
                 mask_value(resume.powerpc.gpr3, size).is_some_and(|value| {
-                    self.cpu.core.set_a(usize::from(index), value);
+                    cpu.core.set_d(usize::from(index), value);
+                    true
+                })
+            }
+            Some(M68kResultTarget::Address { index, size }) if index < 8 => {
+                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| {
+                    cpu.core.set_a(usize::from(index), value);
                     true
                 })
             }
@@ -6904,45 +6846,34 @@ impl FixtureRunner {
                 // including a CCR bit. Inside Macintosh: PowerPC System
                 // Software (1994), pp. 2-10--2-12.
                 let set = resume.powerpc.gpr3 != 0;
-                let ccr = (self.cpu.core.get_ccr() & !mask) | if set { mask } else { 0 };
-                self.cpu.core.set_ccr(ccr);
+                let ccr = (cpu.core.get_ccr() & !mask) | if set { mask } else { 0 };
+                cpu.core.set_ccr(ccr);
                 true
             }
             Some(M68kResultTarget::Memory { address, size }) => {
                 mask_value(resume.powerpc.gpr3, size).is_some_and(|value| match size {
-                    1 => ppc_app.memory.write_u8(address, value as u8).is_some(),
-                    2 => ppc_app.memory.write_u16_be(address, value as u16).is_some(),
-                    4 => ppc_app.memory.write_u32_be(address, value).is_some(),
+                    1 => memory.write_u8(address, value as u8).is_some(),
+                    2 => memory.write_u16_be(address, value as u16).is_some(),
+                    4 => memory.write_u32_be(address, value).is_some(),
                     _ => false,
                 })
             }
             Some(M68kResultTarget::SpecialCase { selector, scratch }) => {
-                self.apply_m68k_special_case_result(ppc_app, selector, scratch, resume.powerpc.gpr3)
+                Self::apply_m68k_special_case_result(
+                    cpu,
+                    memory,
+                    selector,
+                    scratch,
+                    resume.powerpc.gpr3,
+                )
             }
-        };
-        if !result_applied {
-            return false;
+            _ => false,
         }
-        if !ppc_app.guest_calls.retire_m68k_resume() {
-            return false;
-        }
-        if restore_parked {
-            self.cpu = self.parked_m68k_cpus.pop(task)
-                .expect("depth proves a parked 68k CPU context");
-        }
-        self.cpu.write_reg(Register::PC, resume.return_pc);
-        self.cpu.write_reg(Register::A7, resume.final_sp);
-        // A native RoutineDescriptor can be the head of a raw A-line patch.
-        // Mixed Mode resumes at the synthesized JSR continuation directly,
-        // so retire that Trap Manager frame before the next 68k instruction.
-        self.dispatcher
-            .retire_returned_native_trap_call(&mut self.cpu);
-        true
     }
 
     fn apply_m68k_special_case_result(
-        &mut self,
-        ppc_app: &mut PpcLoadedApp,
+        cpu: &mut M68kCpu,
+        memory: &mut PpcSectionMem,
         selector: u8,
         scratch: u32,
         native_result: u32,
@@ -6962,69 +6893,86 @@ impl FixtureRunner {
             special_case::EOL_HOOK
             | special_case::PROTOCOL_HANDLER
             | special_case::SOCKET_LISTENER => {
-                set_z(&mut self.cpu, native_result & 0xff != 0);
+                set_z(cpu, native_result & 0xff != 0);
                 true
             }
             special_case::WIDTH_HOOK | special_case::NWIDTH_HOOK => {
-                set_data_word(&mut self.cpu, 1, native_result);
+                set_data_word(cpu, 1, native_result);
                 true
             }
             special_case::HIT_TEST_HOOK => {
-                let Some(pixel_width) = ppc_app.memory.read_u16_be(scratch) else {
+                let Some(pixel_width) = memory.read_u16_be(scratch) else {
                     return false;
                 };
-                let Some(char_offset) = ppc_app.memory.read_u16_be(scratch + 2) else {
+                let Some(char_offset) = scratch
+                    .checked_add(2)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
                     return false;
                 };
-                let Some(pixel_in_char) = ppc_app.memory.read_u8(scratch + 4) else {
+                let Some(pixel_in_char) = scratch
+                    .checked_add(4)
+                    .and_then(|address| memory.read_u8(address))
+                else {
                     return false;
                 };
-                self.cpu
-                    .core
+                cpu.core
                     .set_d(0, ((native_result & 0xff) << 16) | u32::from(pixel_width));
-                set_data_word(&mut self.cpu, 1, u32::from(char_offset));
-                set_data_word(&mut self.cpu, 2, u32::from(pixel_in_char));
+                set_data_word(cpu, 1, u32::from(char_offset));
+                set_data_word(cpu, 2, u32::from(pixel_in_char));
                 true
             }
             special_case::TE_FIND_WORD => {
-                let Some(word_start) = ppc_app.memory.read_u16_be(scratch) else {
+                let Some(word_start) = memory.read_u16_be(scratch) else {
                     return false;
                 };
-                let Some(word_end) = ppc_app.memory.read_u16_be(scratch + 2) else {
+                let Some(word_end) = scratch
+                    .checked_add(2)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
                     return false;
                 };
-                set_data_word(&mut self.cpu, 0, u32::from(word_start));
-                set_data_word(&mut self.cpu, 1, u32::from(word_end));
+                set_data_word(cpu, 0, u32::from(word_start));
+                set_data_word(cpu, 1, u32::from(word_end));
                 true
             }
             special_case::TE_RECALC => {
-                let Some(line_start) = ppc_app.memory.read_u16_be(scratch) else {
+                let Some(line_start) = memory.read_u16_be(scratch) else {
                     return false;
                 };
-                let Some(first_char) = ppc_app.memory.read_u16_be(scratch + 2) else {
+                let Some(first_char) = scratch
+                    .checked_add(2)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
                     return false;
                 };
-                let Some(last_char) = ppc_app.memory.read_u16_be(scratch + 4) else {
+                let Some(last_char) = scratch
+                    .checked_add(4)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
                     return false;
                 };
-                set_data_word(&mut self.cpu, 2, u32::from(line_start));
-                set_data_word(&mut self.cpu, 3, u32::from(first_char));
-                set_data_word(&mut self.cpu, 4, u32::from(last_char));
+                set_data_word(cpu, 2, u32::from(line_start));
+                set_data_word(cpu, 3, u32::from(first_char));
+                set_data_word(cpu, 4, u32::from(last_char));
                 true
             }
             special_case::TE_DO_TEXT => {
-                let Some(current_graf_port) = ppc_app.memory.read_u32_be(scratch) else {
+                let Some(current_graf_port) = memory.read_u32_be(scratch) else {
                     return false;
                 };
-                let Some(char_position) = ppc_app.memory.read_u16_be(scratch + 4) else {
+                let Some(char_position) = scratch
+                    .checked_add(4)
+                    .and_then(|address| memory.read_u16_be(address))
+                else {
                     return false;
                 };
-                self.cpu.core.set_a(0, current_graf_port);
-                set_data_word(&mut self.cpu, 0, u32::from(char_position));
+                cpu.core.set_a(0, current_graf_port);
+                set_data_word(cpu, 0, u32::from(char_position));
                 true
             }
             special_case::MBAR_HOOK => {
-                set_data_word(&mut self.cpu, 0, native_result);
+                set_data_word(cpu, 0, native_result);
                 true
             }
             _ => false,
@@ -7107,6 +7055,12 @@ impl FixtureRunner {
                 Ok(Some(self.cpu.core.d(1) & 0xffff))
             }
             special_case::HIT_TEST_HOOK => {
+                if ![(arguments[6], 2), (arguments[7], 2), (arguments[8], 1)]
+                    .into_iter()
+                    .all(|(address, size)| ppc_app.memory.preflight_writable_range(address, size))
+                {
+                    return Err(());
+                }
                 ppc_app
                     .memory
                     .write_u16_be(arguments[6], self.cpu.core.d(0) as u16)
@@ -7122,6 +7076,12 @@ impl FixtureRunner {
                 Ok(Some((self.cpu.core.d(0) >> 16) & 0xff))
             }
             special_case::TE_FIND_WORD => {
+                if ![(arguments[4], 2), (arguments[5], 2)]
+                    .into_iter()
+                    .all(|(address, size)| ppc_app.memory.preflight_writable_range(address, size))
+                {
+                    return Err(());
+                }
                 ppc_app
                     .memory
                     .write_u16_be(arguments[4], self.cpu.core.d(0) as u16)
@@ -7133,6 +7093,13 @@ impl FixtureRunner {
                 Ok(None)
             }
             special_case::TE_RECALC => {
+                if !arguments[2..5]
+                    .iter()
+                    .copied()
+                    .all(|address| ppc_app.memory.preflight_writable_range(address, 2))
+                {
+                    return Err(());
+                }
                 for (argument, register) in arguments[2..5].iter().copied().zip(2..=4) {
                     ppc_app
                         .memory
@@ -7142,6 +7109,12 @@ impl FixtureRunner {
                 Ok(None)
             }
             special_case::TE_DO_TEXT => {
+                if ![(arguments[4], 4), (arguments[5], 2)]
+                    .into_iter()
+                    .all(|(address, size)| ppc_app.memory.preflight_writable_range(address, size))
+                {
+                    return Err(());
+                }
                 ppc_app
                     .memory
                     .write_u32_be(arguments[4], self.cpu.core.a(0))
@@ -7157,6 +7130,9 @@ impl FixtureRunner {
                     .memory
                     .read_u16_be(stack_result.ok_or(())?)
                     .ok_or(())?;
+                if !ppc_app.memory.preflight_writable_range(arguments[1], 1) {
+                    return Err(());
+                }
                 ppc_app
                     .memory
                     .write_u8(arguments[1], result as u8)
@@ -7197,9 +7173,8 @@ impl FixtureRunner {
         let mut timer_probes = Vec::new();
         let mut callback_time = start_time;
         for tick_offset in 0..elapsed_ticks {
-            let callback_tick = ppc_app.publish_host_epoch_tick(
-                baseline_tick.wrapping_add(tick_offset).wrapping_add(1),
-            );
+            let callback_tick = ppc_app
+                .publish_host_epoch_tick(baseline_tick.wrapping_add(tick_offset).wrapping_add(1));
             if callback_tick.is_multiple_of(60) {
                 callback_time = callback_time.wrapping_add(1);
             }
@@ -7917,17 +7892,15 @@ impl FixtureRunner {
                 .pending_process_doublebacks
                 .remove(index);
             let resume_pc = ppc_app.cpu.pc;
-            let probe = ppc_app.with_process_memory_manager(
-                |app, memory_manager| {
-                    app.run_sound_doubleback_callback_with_process_memory_manager(
-                        doubleback,
-                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                        trace_ppc_imports,
-                        trace_ppc_fetches,
-                        memory_manager,
-                    )
-                },
-            );
+            let probe = ppc_app.with_process_memory_manager(|app, memory_manager| {
+                app.run_sound_doubleback_callback_with_process_memory_manager(
+                    doubleback,
+                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                    memory_manager,
+                )
+            });
             let invocation = probe.invocation;
             if trace_sound_runner_enabled() {
                 eprintln!(
@@ -7964,17 +7937,15 @@ impl FixtureRunner {
             self.prepare_ppc_execution_clock(&mut ppc_app);
 
             let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
-            if let Some(playback) =
-                ppc_app
-                    .sound
-                    .manager
-                    .double_buffer_playbacks
-                    .iter_mut()
-                    .rev()
-                    .find(|playback| {
-                        playback.channel == doubleback.channel
-                            && playback.header == doubleback.header
-                    })
+            if let Some(playback) = ppc_app
+                .sound
+                .manager
+                .double_buffer_playbacks
+                .iter_mut()
+                .rev()
+                .find(|playback| {
+                    playback.channel == doubleback.channel && playback.header == doubleback.header
+                })
             {
                 playback.callback_pending_mask &= !buffer_bit;
             }
@@ -8124,17 +8095,15 @@ impl FixtureRunner {
                 scheduled_tick: self.guest_tick(),
                 scheduled_instruction_count: self.total_instructions,
             };
-            let probe = ppc_app.with_process_memory_manager(
-                |app, memory_manager| {
-                    app.run_sound_completion_callback_with_process_memory_manager(
-                        completion,
-                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                        trace_ppc_imports,
-                        trace_ppc_fetches,
-                        memory_manager,
-                    )
-                },
-            );
+            let probe = ppc_app.with_process_memory_manager(|app, memory_manager| {
+                app.run_sound_completion_callback_with_process_memory_manager(
+                    completion,
+                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                    memory_manager,
+                )
+            });
             let invocation = probe.invocation;
             if record_ppc_imports {
                 self.record_ppc_import_trace(&probe.import_trace);
@@ -8942,10 +8911,9 @@ impl FixtureRunner {
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
-        self.dispatcher
-            .with_process_state(|d| {
-                d.post_auto_key_if_due(sys_evt_mask);
-            });
+        self.dispatcher.with_process_state(|d| {
+            d.post_auto_key_if_due(sys_evt_mask);
+        });
 
         // Sync MBState ($0172) from the internal button state.
         // On real hardware the VBL interrupt handler reads the ADB mouse
@@ -8960,11 +8928,9 @@ impl FixtureRunner {
         // to 0x80 even when no GetNextEvent ever drains the queue —
         // critical for polling-only games (Bonkheads-Deluxe class titles)
         // that would otherwise see the button as "held forever".
-        let has_pending_unmatched_down =
-            self.dispatcher
-                .with_process_state(|d| {
-                    d.has_unmatched_queued_mouse_down()
-                });
+        let has_pending_unmatched_down = self
+            .dispatcher
+            .with_process_state(|d| d.has_unmatched_queued_mouse_down());
         let pressed = self.dispatcher.input_state.mouse_button || has_pending_unmatched_down;
         let mb_state: u8 = if pressed { 0x00 } else { 0x80 };
         self.bus.write_byte(0x0172, mb_state);
@@ -9028,11 +8994,17 @@ impl FixtureRunner {
             }
         }
 
-        let (mut what, mut message, mut when, mut where_v, mut where_h, mut modifiers, mut has_event) = self
-            .dispatcher
-            .with_process_state(|dispatcher| {
-                dispatcher.dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask)
-            });
+        let (
+            mut what,
+            mut message,
+            mut when,
+            mut where_v,
+            mut where_h,
+            mut modifiers,
+            mut has_event,
+        ) = self.dispatcher.with_process_state(|dispatcher| {
+            dispatcher.dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask)
+        });
         if !has_event {
             if let Some(event) = self.dispatcher.mouse_moved_event_for_region(
                 &self.bus,
@@ -9264,9 +9236,7 @@ impl FixtureRunner {
         self.advance_guest_tick();
         self.tick_budget = self.instructions_per_tick as i32;
 
-        tick_cap
-            .map(|cap| self.guest_tick() >= cap)
-            .unwrap_or(true)
+        tick_cap.map(|cap| self.guest_tick() >= cap).unwrap_or(true)
     }
 
     fn unfreeze_ticks_to(&mut self, target_tick: Option<u32>) {
@@ -9388,12 +9358,9 @@ impl FixtureRunner {
                         == CallbackTaskArchitecture::M68k
             })
             .or_else(|| {
-                self.dispatcher
-                    .vbl_tasks
-                    .iter()
-                    .position(|task| {
-                        task.architecture == CallbackTaskArchitecture::M68k && task.pending
-                    })
+                self.dispatcher.vbl_tasks.iter().position(|task| {
+                    task.architecture == CallbackTaskArchitecture::M68k && task.pending
+                })
             });
         let due_task = due_index.map(|index| {
             let task = &mut self.dispatcher.vbl_tasks[index];
@@ -9919,11 +9886,10 @@ impl FixtureRunner {
                     crate::sound::PendingSoundCallback::Command {
                         architecture: CallbackTaskArchitecture::M68k,
                         ..
+                    } | crate::sound::PendingSoundCallback::FileCompletion {
+                        architecture: CallbackTaskArchitecture::M68k,
+                        ..
                     }
-                        | crate::sound::PendingSoundCallback::FileCompletion {
-                            architecture: CallbackTaskArchitecture::M68k,
-                            ..
-                        }
                 )
             });
         let Some(callback_index) = callback_index else {
@@ -10883,9 +10849,9 @@ impl FixtureRunner {
                         count += 1;
                         continue;
                     }
-                    let dispatch_result = self.dispatcher.with_process_state(
-                        |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
-                    );
+                    let dispatch_result = self.dispatcher.with_process_state(|dispatcher| {
+                        dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus)
+                    });
                     match dispatch_result {
                         Ok(()) => {
                             // Smart PC Advance:
@@ -12214,7 +12180,8 @@ mod tests {
             "fresh app launch should see a realistic nonzero post-boot TickCount"
         );
         assert_eq!(
-            runner.guest_tick(), DEFAULT_LAUNCH_TICKS,
+            runner.guest_tick(),
+            DEFAULT_LAUNCH_TICKS,
             "TickCount fast path must stay in sync with low-memory Ticks"
         );
     }
@@ -12274,7 +12241,12 @@ mod tests {
         assert_eq!(runner.guest_tick(), 4321);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
-        assert_eq!(ppc_app.memory.read_u32_be(crate::memory::globals::addr::TICKS), Some(4321));
+        assert_eq!(
+            ppc_app
+                .memory
+                .read_u32_be(crate::memory::globals::addr::TICKS),
+            Some(4321)
+        );
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(4321));
         assert_eq!(
             ppc_app.memory.read_u32_be(addr::RND_SEED),
@@ -12368,7 +12340,12 @@ mod tests {
         assert_eq!(runner.guest_tick(), 0);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1020_3040);
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
-        assert_eq!(ppc_app.memory.read_u32_be(crate::memory::globals::addr::TICKS), Some(0));
+        assert_eq!(
+            ppc_app
+                .memory
+                .read_u32_be(crate::memory::globals::addr::TICKS),
+            Some(0)
+        );
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(0));
         assert_eq!(ppc_app.memory.read_u32_be(addr::TIME), Some(0x1020_3040));
         assert_eq!(
@@ -12504,7 +12481,10 @@ mod tests {
         assert_eq!(&*ppc_app.window_list, &[0x1000, 0x2000]);
         ppc_app.window_list.insert(0, 0x3000);
         assert_eq!(&*runner.dispatcher.window_list, &[0x3000, 0x1000, 0x2000]);
-        runner.dispatcher.window_list.retain(|window| *window != 0x1000);
+        runner
+            .dispatcher
+            .window_list
+            .retain(|window| *window != 0x1000);
         assert_eq!(&*ppc_app.window_list, &[0x3000, 0x2000]);
         assert_eq!(&*detached, &[0x1000, 0x2000]);
     }
@@ -12535,7 +12515,12 @@ mod tests {
         assert_eq!(runner.bus.read_long(addr::TICKS), 42);
         assert_eq!(runner.guest_tick(), 42);
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
-        assert_eq!(ppc_app.memory.read_u32_be(crate::memory::globals::addr::TICKS), Some(42));
+        assert_eq!(
+            ppc_app
+                .memory
+                .read_u32_be(crate::memory::globals::addr::TICKS),
+            Some(42)
+        );
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(42));
     }
 
@@ -12670,8 +12655,8 @@ mod tests {
                 CALLBACK,
                 [
                     0x3880_BEEFu32, // li r4,$BEEF
-                    0xB083_000E,     // sth r4,14(r3): callback marker
-                    0x4E80_0020,     // blr
+                    0xB083_000E,    // sth r4,14(r3): callback marker
+                    0x4E80_0020,    // blr
                 ]
                 .into_iter()
                 .flat_map(u32::to_be_bytes)
@@ -12747,9 +12732,9 @@ mod tests {
                 CALLBACK,
                 [
                     0x3880_016Au32, // li r4,$016A
-                    0x80A4_0000,     // lwz r5,0(r4): read guest Ticks
-                    0x90A3_0010,     // stw r5,16(r3): record on task
-                    0x4E80_0020,     // blr
+                    0x80A4_0000,    // lwz r5,0(r4): read guest Ticks
+                    0x90A3_0010,    // stw r5,16(r3): record on task
+                    0x4E80_0020,    // blr
                 ]
                 .into_iter()
                 .flat_map(u32::to_be_bytes)
@@ -12822,9 +12807,10 @@ mod tests {
         runner.cpu.write_reg(Register::A7, sp);
         let first = 0x1020_3040;
         runner.bus.write_long(addr::TICKS, first);
-        let first_result = runner
-            .dispatcher
-            .dispatch_toolbox(true, 0x175, &mut runner.cpu, &mut runner.bus);
+        let first_result =
+            runner
+                .dispatcher
+                .dispatch_toolbox(true, 0x175, &mut runner.cpu, &mut runner.bus);
         assert!(first_result.is_some_and(|result| result.is_ok()));
         assert_eq!(runner.bus.read_long(sp), first);
 
@@ -12840,9 +12826,10 @@ mod tests {
             .write_u32_be(addr::TICKS, second)
             .expect("shared Ticks write");
         runner.cpu.write_reg(Register::A7, sp);
-        let second_result = runner
-            .dispatcher
-            .dispatch_toolbox(true, 0x175, &mut runner.cpu, &mut runner.bus);
+        let second_result =
+            runner
+                .dispatcher
+                .dispatch_toolbox(true, 0x175, &mut runner.cpu, &mut runner.bus);
         assert!(second_result.is_some_and(|result| result.is_ok()));
         assert_eq!(runner.bus.read_long(sp), second);
 
@@ -12851,12 +12838,7 @@ mod tests {
         ppc_app.cpu.pc = PPC_IMPORT_TRAP_BASE;
         ppc_app.cpu.lr = PPC_HALT_PC;
         let mut memory_manager = runner.process_context.memory_manager_mut();
-        let probe = ppc_app.run_with_process_memory_manager(
-            64,
-            false,
-            false,
-            &mut memory_manager,
-        );
+        let probe = ppc_app.run_with_process_memory_manager(64, false, false, &mut memory_manager);
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(ppc_app.cpu.gpr[3], third);
@@ -14374,12 +14356,8 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(
-                TrapDispatcher::standard_mac_8bpp_clut(),
-            ),
-            device_gamma: SharedProcessValue::from_value(
-                crate::display::default_display_gamma(),
-            ),
+            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
             device_gamma_explicit: SharedProcessValue::from_value(false),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
@@ -14387,7 +14365,8 @@ mod tests {
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(),
+            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
+            ),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -14527,19 +14506,13 @@ mod tests {
                 .sound
                 .manager
                 .ptr_eq(&runner.dispatcher.sound_manager));
-            ppc_app
-                .sound
-                .manager
-                .register_channel(
-                    0x0050_1000,
-                    false,
-                    0x0012_3456,
-                    CallbackTaskArchitecture::M68k,
-                );
-            ppc_app
-                .sound
-                .manager
-                .set_default_output_volume(0x0000_8000);
+            ppc_app.sound.manager.register_channel(
+                0x0050_1000,
+                false,
+                0x0012_3456,
+                CallbackTaskArchitecture::M68k,
+            );
+            ppc_app.sound.manager.set_default_output_volume(0x0000_8000);
         }
 
         let classic_channel = runner
@@ -14551,7 +14524,10 @@ mod tests {
             .expect("native channel visible to classic adapter");
         assert_eq!(classic_channel.callback_addr, 0x0012_3456);
         classic_channel.set_volume(0x0000_4000);
-        runner.dispatcher.sound_manager.set_sys_beep_volume(0x0000_2000);
+        runner
+            .dispatcher
+            .sound_manager
+            .set_sys_beep_volume(0x0000_2000);
 
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app");
         assert_eq!(ppc_app.sound.manager.default_output_volume(), 0x0000_8000);
@@ -15596,29 +15572,6 @@ mod tests {
     }
 
     #[test]
-    fn parked_m68k_contexts_remain_owned_by_their_execution_task() {
-        let application = ExecutionTaskId::APPLICATION;
-        let worker = ExecutionTaskId::from_thread_id(3);
-        let mut parked = ParkedM68kContexts::default();
-
-        parked.push(application, M68kCpu::new());
-        parked.push(worker, M68kCpu::new());
-        parked.push(application, M68kCpu::new());
-
-        assert_eq!(parked.len(), 3);
-        assert_eq!(parked.task_len(application), 2);
-        assert_eq!(parked.task_len(worker), 1);
-        assert!(parked.pop(worker).is_some());
-        assert_eq!(parked.task_len(worker), 0);
-        assert_eq!(parked.task_len(application), 2);
-        assert_eq!(parked.len(), 2);
-        assert!(parked.pop(worker).is_none());
-        assert!(parked.pop(application).is_some());
-        assert!(parked.pop(application).is_some());
-        assert!(parked.is_empty());
-    }
-
-    #[test]
     fn nested_cross_isa_callback_survives_a_cooperative_task_switch() {
         use crate::guest_procedure::{
             ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
@@ -15650,10 +15603,14 @@ mod tests {
             .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
         ppc_app.memory.add_region(
             OUTER_ENTRY,
-            [0x4ef9, (OUTER_DESCRIPTOR >> 16) as u16, OUTER_DESCRIPTOR as u16]
-                .into_iter()
-                .flat_map(u16::to_be_bytes)
-                .collect(),
+            [
+                0x4ef9,
+                (OUTER_DESCRIPTOR >> 16) as u16,
+                OUTER_DESCRIPTOR as u16,
+            ]
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect(),
         );
         ppc_app.memory.add_region(
             INNER_ENTRY,
@@ -15707,16 +15664,28 @@ mod tests {
             .memory
             .write_u8(OUTER_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
             .unwrap();
-        ppc_app.memory.write_u16_be(OUTER_DESCRIPTOR + 10, 0).unwrap();
-        let outer_record = OUTER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
-        ppc_app.memory.write_u32_be(outer_record, proc_info).unwrap();
         ppc_app
             .memory
-            .write_u8(outer_record + ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_POWERPC_ISA)
+            .write_u16_be(OUTER_DESCRIPTOR + 10, 0)
+            .unwrap();
+        let outer_record = OUTER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        ppc_app
+            .memory
+            .write_u32_be(outer_record, proc_info)
             .unwrap();
         ppc_app
             .memory
-            .write_u16_be(outer_record + ROUTINE_RECORD_FLAGS_OFFSET, ROUTINE_FLAG_USE_NATIVE_ISA)
+            .write_u8(
+                outer_record + ROUTINE_RECORD_ISA_OFFSET,
+                ROUTINE_RECORD_POWERPC_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u16_be(
+                outer_record + ROUTINE_RECORD_FLAGS_OFFSET,
+                ROUTINE_FLAG_USE_NATIVE_ISA,
+            )
             .unwrap();
         ppc_app
             .memory
@@ -15743,7 +15712,10 @@ mod tests {
             .memory
             .write_u8(INNER_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
             .unwrap();
-        ppc_app.memory.write_u16_be(INNER_DESCRIPTOR + 10, 0).unwrap();
+        ppc_app
+            .memory
+            .write_u16_be(INNER_DESCRIPTOR + 10, 0)
+            .unwrap();
         let inner_record = INNER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
         ppc_app
             .memory
@@ -15751,7 +15723,10 @@ mod tests {
             .unwrap();
         ppc_app
             .memory
-            .write_u8(inner_record + ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA)
+            .write_u8(
+                inner_record + ROUTINE_RECORD_ISA_OFFSET,
+                ROUTINE_RECORD_M68K_ISA,
+            )
             .unwrap();
         ppc_app
             .memory
@@ -15780,7 +15755,8 @@ mod tests {
                 .flat_map(u32::to_be_bytes)
                 .collect(),
         );
-        let mut call_universal_proc = test_ppc_import_binding(0, "InterfaceLib", "CallUniversalProc");
+        let mut call_universal_proc =
+            test_ppc_import_binding(0, "InterfaceLib", "CallUniversalProc");
         call_universal_proc.trap_pc = PPC_IMPORT_TRAP_BASE;
         call_universal_proc.dispatcher_target = PpcImportDispatcherTarget::CallUniversalProc;
         ppc_app.import_count = 1;
@@ -15805,8 +15781,12 @@ mod tests {
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
+        assert!(runner
+            .dispatcher
+            .guest_calls
+            .register_task(ExecutionTaskId::from_thread_id(3)));
         runner.dispatcher.cooperative_threads.insert(
-            3,
+            ExecutionTaskId::from_thread_id(3),
             CooperativeThread {
                 d_regs: [0; 8],
                 a_regs: [0, 0, 0, 0, 0, 0, 0, WORKER_SP],
@@ -15825,7 +15805,7 @@ mod tests {
 
         let (_, running) = runner.run_steps(128, None);
         assert!(running);
-        assert_eq!(runner.dispatcher.current_cooperative_thread, 3);
+        assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 3);
         assert_eq!(
             runner
                 .parked_m68k_cpus
@@ -15843,7 +15823,7 @@ mod tests {
 
         let (_, running) = runner.run_steps(128, None);
         assert!(running);
-        assert_eq!(runner.dispatcher.current_cooperative_thread, 2);
+        assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
         assert_eq!(
             runner
                 .parked_m68k_cpus
@@ -15854,7 +15834,7 @@ mod tests {
 
         let (_, running) = runner.run_steps(128, None);
         assert!(running);
-        assert_eq!(runner.dispatcher.current_cooperative_thread, 2);
+        assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
         assert!(runner.dispatcher.guest_calls.is_empty());
         assert!(runner.parked_m68k_cpus.is_empty());
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
@@ -16151,15 +16131,17 @@ mod tests {
             special_case::PROTOCOL_HANDLER,
             special_case::SOCKET_LISTENER,
         ] {
-            assert!(runner.apply_m68k_special_case_result(
-                &mut ppc_app,
+            assert!(FixtureRunner::apply_m68k_special_case_result(
+                &mut runner.cpu,
+                &mut ppc_app.memory,
                 u8::try_from(selector).unwrap(),
                 SCRATCH,
                 1,
             ));
             assert_eq!(runner.cpu.core.get_ccr(), 0x17);
-            assert!(runner.apply_m68k_special_case_result(
-                &mut ppc_app,
+            assert!(FixtureRunner::apply_m68k_special_case_result(
+                &mut runner.cpu,
+                &mut ppc_app.memory,
                 u8::try_from(selector).unwrap(),
                 SCRATCH,
                 0,
@@ -16169,8 +16151,9 @@ mod tests {
 
         runner.cpu.core.set_d(1, 0xaaaa_0000);
         for selector in [special_case::WIDTH_HOOK, special_case::NWIDTH_HOOK] {
-            assert!(runner.apply_m68k_special_case_result(
-                &mut ppc_app,
+            assert!(FixtureRunner::apply_m68k_special_case_result(
+                &mut runner.cpu,
+                &mut ppc_app.memory,
                 u8::try_from(selector).unwrap(),
                 SCRATCH,
                 0x1234_5678,
@@ -16183,8 +16166,9 @@ mod tests {
         ppc_app.memory.write_u16_be(SCRATCH, 0x1111).unwrap();
         ppc_app.memory.write_u16_be(SCRATCH + 2, 0x2222).unwrap();
         ppc_app.memory.write_u8(SCRATCH + 4, 1).unwrap();
-        assert!(runner.apply_m68k_special_case_result(
-            &mut ppc_app,
+        assert!(FixtureRunner::apply_m68k_special_case_result(
+            &mut runner.cpu,
+            &mut ppc_app.memory,
             u8::try_from(special_case::HIT_TEST_HOOK).unwrap(),
             SCRATCH,
             1,
@@ -16197,8 +16181,9 @@ mod tests {
         runner.cpu.core.set_d(1, 0xbbbb_0000);
         ppc_app.memory.write_u16_be(SCRATCH, 0x3333).unwrap();
         ppc_app.memory.write_u16_be(SCRATCH + 2, 0x4444).unwrap();
-        assert!(runner.apply_m68k_special_case_result(
-            &mut ppc_app,
+        assert!(FixtureRunner::apply_m68k_special_case_result(
+            &mut runner.cpu,
+            &mut ppc_app.memory,
             u8::try_from(special_case::TE_FIND_WORD).unwrap(),
             SCRATCH,
             0,
@@ -16215,8 +16200,9 @@ mod tests {
         runner.cpu.core.set_d(2, 0xaaaa_0000);
         runner.cpu.core.set_d(3, 0xbbbb_0000);
         runner.cpu.core.set_d(4, 0xcccc_0000);
-        assert!(runner.apply_m68k_special_case_result(
-            &mut ppc_app,
+        assert!(FixtureRunner::apply_m68k_special_case_result(
+            &mut runner.cpu,
+            &mut ppc_app.memory,
             u8::try_from(special_case::TE_RECALC).unwrap(),
             SCRATCH,
             0,
@@ -16228,8 +16214,9 @@ mod tests {
         ppc_app.memory.write_u32_be(SCRATCH, 0xcafe_babe).unwrap();
         ppc_app.memory.write_u16_be(SCRATCH + 4, 0x8888).unwrap();
         runner.cpu.core.set_d(0, 0xdddd_0000);
-        assert!(runner.apply_m68k_special_case_result(
-            &mut ppc_app,
+        assert!(FixtureRunner::apply_m68k_special_case_result(
+            &mut runner.cpu,
+            &mut ppc_app.memory,
             u8::try_from(special_case::TE_DO_TEXT).unwrap(),
             SCRATCH,
             0,
@@ -16238,14 +16225,21 @@ mod tests {
         assert_eq!(runner.cpu.core.d(0), 0xdddd_8888);
 
         runner.cpu.core.set_d(0, 0xeeee_0000);
-        assert!(runner.apply_m68k_special_case_result(
-            &mut ppc_app,
+        assert!(FixtureRunner::apply_m68k_special_case_result(
+            &mut runner.cpu,
+            &mut ppc_app.memory,
             u8::try_from(special_case::MBAR_HOOK).unwrap(),
             SCRATCH,
             0x1234_9999,
         ));
         assert_eq!(runner.cpu.core.d(0), 0xeeee_9999);
-        assert!(!runner.apply_m68k_special_case_result(&mut ppc_app, 13, SCRATCH, 0));
+        assert!(!FixtureRunner::apply_m68k_special_case_result(
+            &mut runner.cpu,
+            &mut ppc_app.memory,
+            13,
+            SCRATCH,
+            0
+        ));
         runner.ppc_app = Some(ppc_app);
     }
 
@@ -16411,6 +16405,22 @@ mod tests {
         );
         assert_eq!(ppc_app.memory.read_u8(SCRATCH + 26), Some(1));
 
+        // The callback writes multiple output locations as one ABI result.
+        // A bad later destination must not leave an earlier output changed.
+        ppc_app.memory.write_u16_be(SCRATCH + 30, 0xaaaa).unwrap();
+        runner.cpu.core.set_d(0, 0x1111);
+        runner.cpu.core.set_d(1, 0x2222);
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::TE_FIND_WORD).unwrap(),
+                arguments(&[0, 0, 0, 0, SCRATCH + 30, 0x0500_0000]),
+                None,
+            ),
+            Err(()),
+        );
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 30), Some(0xaaaa));
+
         runner.cpu.core.set_d(0, 0xaaaa_abcd);
         assert_eq!(
             runner.complete_m68k_special_case_result(
@@ -16484,6 +16494,110 @@ mod tests {
     }
 
     #[test]
+    fn malformed_m68k_return_shapes_leave_registers_unchanged() {
+        use crate::guest_call::{M68kResultTarget, M68kResume, PowerPcReturnState};
+        let mut cpu = M68kCpu::new();
+        let mut memory = PpcSectionMem::new();
+        cpu.core.set_d(0, 0xabcd_1234);
+        cpu.core.set_a(0, 0x1234_abcd);
+        cpu.core.set_ccr(0x15);
+        for target in [
+            M68kResultTarget::Data { index: 8, size: 4 },
+            M68kResultTarget::Address { index: 8, size: 4 },
+            M68kResultTarget::Data { index: 0, size: 3 },
+            M68kResultTarget::SpecialCase {
+                selector: crate::mixed_mode::special_case::TE_FIND_WORD as u8,
+                scratch: u32::MAX,
+            },
+        ] {
+            assert!(!FixtureRunner::apply_m68k_resume_result(
+                &mut cpu,
+                &mut memory,
+                M68kResume {
+                    return_pc: 0x1000,
+                    final_sp: 0x2000,
+                    result: Some(target),
+                    powerpc: PowerPcReturnState { gpr3: 42 },
+                }
+            ));
+            assert_eq!(cpu.core.d(0), 0xabcd_1234);
+            assert_eq!(cpu.core.a(0), 0x1234_abcd);
+            assert_eq!(cpu.core.get_ccr(), 0x15);
+        }
+    }
+
+    #[test]
+    fn parked_m68k_caller_receives_native_register_and_ccr_results() {
+        use crate::guest_call::M68kResultTarget;
+        use crate::mixed_mode::special_case;
+
+        const RETURN_PC: u32 = 0x0306_5000;
+        const FINAL_SP: u32 = 0x0306_6000;
+        for target in [
+            M68kResultTarget::Data { index: 2, size: 4 },
+            M68kResultTarget::Address { index: 3, size: 4 },
+            M68kResultTarget::Ccr { mask: 4 },
+            M68kResultTarget::SpecialCase {
+                selector: special_case::WIDTH_HOOK as u8,
+                scratch: 0,
+            },
+        ] {
+            let app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.init_app(&app);
+            let mut ppc_app = runner.ppc_app.take().unwrap();
+            assert!(ppc_app.guest_calls.begin_m68k_to_powerpc(
+                crate::guest_call::GuestCallTarget {
+                    isa: crate::guest_procedure::GuestIsa::PowerPc,
+                    entry: PPC_CODE_BASE,
+                    rtoc: 0,
+                },
+                crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
+                RETURN_PC,
+                FINAL_SP,
+                Some(target),
+            ));
+            ppc_app
+                .guest_calls
+                .activate_powerpc_from_m68k(&mut ppc_app.cpu, RETURN_PC)
+                .unwrap();
+            ppc_app.cpu.pc = RETURN_PC;
+            ppc_app.cpu.gpr[3] = 0x1234_5678;
+            assert!(ppc_app
+                .guest_calls
+                .complete_powerpc_for_m68k(&mut ppc_app.cpu));
+            let (task, call_id) = ppc_app.guest_calls.pending_m68k_resume_owner().unwrap();
+            runner.cpu.core.set_d(1, 0xabcd_0000);
+            runner.cpu.core.set_d(7, 0xcafe_babe);
+            runner.cpu.core.set_ccr(0x11);
+            assert!(ppc_app
+                .guest_calls
+                .park_context(
+                    &mut runner.parked_m68k_cpus,
+                    task,
+                    call_id,
+                    std::mem::take(&mut runner.cpu),
+                )
+                .is_ok());
+            assert!(runner.resume_m68k_after_powerpc(&mut ppc_app), "{target:?}");
+            match target {
+                M68kResultTarget::Data { .. } => assert_eq!(runner.cpu.core.d(2), 0x1234_5678),
+                M68kResultTarget::Address { .. } => assert_eq!(runner.cpu.core.a(3), 0x1234_5678),
+                M68kResultTarget::Ccr { .. } => assert_eq!(runner.cpu.core.get_ccr(), 0x15),
+                M68kResultTarget::SpecialCase { .. } => {
+                    assert_eq!(runner.cpu.core.d(1), 0xabcd_5678)
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(runner.cpu.core.d(7), 0xcafe_babe);
+            assert_eq!(runner.cpu.read_reg(Register::PC), RETURN_PC);
+            assert_eq!(runner.cpu.read_reg(Register::A7), FINAL_SP);
+            assert!(ppc_app.guest_calls.is_empty());
+            assert!(runner.parked_m68k_cpus.is_empty());
+        }
+    }
+
+    #[test]
     fn failed_m68k_result_application_keeps_resume_and_parked_context_retryable() {
         use crate::guest_call::M68kResultTarget;
 
@@ -16523,13 +16637,30 @@ mod tests {
 
         // Model the caller parked by a nested native-to-68K transition. The
         // failed write must not consume either this context or its completion.
-        let task = ppc_app.guest_calls.current_task();
+        let (task, call_id) = ppc_app
+            .guest_calls
+            .pending_m68k_resume_owner()
+            .expect("completed continuation owner");
         runner.cpu.core.set_d(0, PARKED_D0);
-        runner.parked_m68k_cpus.push(task, std::mem::take(&mut runner.cpu));
+        assert!(ppc_app
+            .guest_calls
+            .park_context(
+                &mut runner.parked_m68k_cpus,
+                task,
+                call_id,
+                std::mem::take(&mut runner.cpu),
+            )
+            .is_ok());
         assert_eq!(runner.parked_m68k_cpus.task_len(task), 1);
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
+        assert_eq!(runner.parked_m68k_cpus.task_len(task), 1);
+        assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
+
+        ppc_app.memory.add_readonly_region(RESULT, vec![0xaa; 4]);
+        assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
+        assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(0xaaaa_aaaa));
         assert_eq!(runner.parked_m68k_cpus.task_len(task), 1);
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
@@ -16772,21 +16903,9 @@ mod tests {
     #[test]
     fn ppc_sound_completions_preserve_centered_viewport_event_coordinates() {
         let mut sound = PpcSoundState::default();
-        queue_ppc_sound_completion(
-            &mut sound,
-            0x0300_1000,
-            PPC_SOUND_GET_EVENT_CALLBACK,
-        );
-        queue_ppc_sound_completion(
-            &mut sound,
-            0x0300_1000,
-            PPC_SOUND_POST_EVENT_CALLBACK,
-        );
-        queue_ppc_sound_completion(
-            &mut sound,
-            0x0300_1000,
-            PPC_SOUND_SET_EVENT_MASK_CALLBACK,
-        );
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, PPC_SOUND_GET_EVENT_CALLBACK);
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, PPC_SOUND_POST_EVENT_CALLBACK);
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, PPC_SOUND_SET_EVENT_MASK_CALLBACK);
         let app = halted_ppc_app_with_sound(sound);
 
         assert_ppc_sound_event_boundary(app, FixtureRunner::fire_pending_ppc_sound_completions);
@@ -17073,7 +17192,12 @@ mod tests {
         assert_eq!(runner.bus.read_long(addr::TICKS), 43);
         assert_eq!(runner.guest_tick(), 43);
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
-        assert_eq!(ppc_app.memory.read_u32_be(crate::memory::globals::addr::TICKS), Some(43));
+        assert_eq!(
+            ppc_app
+                .memory
+                .read_u32_be(crate::memory::globals::addr::TICKS),
+            Some(43)
+        );
         assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(43));
         assert_eq!(ppc_app.sound.completion_invocations.len(), 2);
         assert_eq!(ppc_app.sound.completion_invocations[1].end_r3, 42);
@@ -17108,12 +17232,8 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(
-                TrapDispatcher::standard_mac_8bpp_clut(),
-            ),
-            device_gamma: SharedProcessValue::from_value(
-                crate::display::default_display_gamma(),
-            ),
+            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
             device_gamma_explicit: SharedProcessValue::from_value(false),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
@@ -17121,7 +17241,8 @@ mod tests {
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(),
+            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
+            ),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -17164,61 +17285,61 @@ mod tests {
             callback_scheduling: Default::default(),
             process_file_system: SharedProcessFileSystem::from_state(
                 ProcessFileSystemState {
-                files: Default::default(),
-                stdio_streams: ppc_initial_stdio_streams(),
-                vfs_volumes: crate::process_context::SharedProcessValue::default(),
-                vfs_directories: crate::process_context::SharedProcessValue::from_value(vec![PpcVfsDirectory {
-                    dir_id: 18,
-                    parent_dir_id: 17,
-                    path: "System Folder/Preferences/Test App Saves".to_string(),
-                    creator: u32::from_be_bytes(*b"Nano"),
-                    file_type: u32::from_be_bytes(*b"dir "),
-                    finder_flags: 0x0080,
-                    dirty: true,
-                }]),
-                next_vfs_dir_id: crate::process_context::SharedProcessValue::from_value(18),
-                default_dir_id: crate::process_context::SharedProcessValue::from_value(2),
-                vfs_files: vec![PpcVfsFileRecord {
-                    path: "System Folder/Preferences/Test App Prefs".to_string(),
-                    data: (b"prefs".to_vec()).into(),
-                    creator: u32::from_be_bytes(*b"Nano"),
-                    file_type: u32::from_be_bytes(*b"pref"),
-                    finder_flags: 0x0200,
-                    dirty: true,
-                }]
-                .into(),
-                deleted_vfs_file_paths: vec![
-                    "System Folder/Preferences/Old Prefs".to_string(),
-                ],
-                resource_manager: Default::default(),
-                next_file_ref_num: 128,
-                ..ProcessFileSystemState::default()
-            }
-            .with_resources(
-                Vec::new(),
-                vec![PpcVfsResourceFileRecord {
-                    path: "System Folder/Preferences/Test App HighScores".to_string(),
-                    creator: u32::from_be_bytes(*b"Nano"),
-                    file_type: u32::from_be_bytes(*b"pref"),
-                    finder_flags: 0x0400,
-                    resource_len: 0,
-                    raw_data: None,
-                    map_attrs: 0,
-                    dirty: true,
-                }],
-                vec![PpcVfsResourceRecord {
-                    ref_num: 128,
-                    path: "System Folder/Preferences/Test App HighScores".to_string(),
-                    res_type: u32::from_be_bytes(*b"pref"),
-                    res_id: 200,
-                    name: b"Scores".to_vec(),
-                    data: b"score".to_vec(),
-                    raw_data: None,
-                    raw_attrs: None,
-                    attrs: 0,
-                    handle: 0,
-                }],
-            ),
+                    files: Default::default(),
+                    stdio_streams: ppc_initial_stdio_streams(),
+                    vfs_volumes: crate::process_context::SharedProcessValue::default(),
+                    vfs_directories: crate::process_context::SharedProcessValue::from_value(vec![
+                        PpcVfsDirectory {
+                            dir_id: 18,
+                            parent_dir_id: 17,
+                            path: "System Folder/Preferences/Test App Saves".to_string(),
+                            creator: u32::from_be_bytes(*b"Nano"),
+                            file_type: u32::from_be_bytes(*b"dir "),
+                            finder_flags: 0x0080,
+                            dirty: true,
+                        },
+                    ]),
+                    next_vfs_dir_id: crate::process_context::SharedProcessValue::from_value(18),
+                    default_dir_id: crate::process_context::SharedProcessValue::from_value(2),
+                    vfs_files: vec![PpcVfsFileRecord {
+                        path: "System Folder/Preferences/Test App Prefs".to_string(),
+                        data: (b"prefs".to_vec()).into(),
+                        creator: u32::from_be_bytes(*b"Nano"),
+                        file_type: u32::from_be_bytes(*b"pref"),
+                        finder_flags: 0x0200,
+                        dirty: true,
+                    }]
+                    .into(),
+                    deleted_vfs_file_paths: vec!["System Folder/Preferences/Old Prefs".to_string()],
+                    resource_manager: Default::default(),
+                    next_file_ref_num: 128,
+                    ..ProcessFileSystemState::default()
+                }
+                .with_resources(
+                    Vec::new(),
+                    vec![PpcVfsResourceFileRecord {
+                        path: "System Folder/Preferences/Test App HighScores".to_string(),
+                        creator: u32::from_be_bytes(*b"Nano"),
+                        file_type: u32::from_be_bytes(*b"pref"),
+                        finder_flags: 0x0400,
+                        resource_len: 0,
+                        raw_data: None,
+                        map_attrs: 0,
+                        dirty: true,
+                    }],
+                    vec![PpcVfsResourceRecord {
+                        ref_num: 128,
+                        path: "System Folder/Preferences/Test App HighScores".to_string(),
+                        res_type: u32::from_be_bytes(*b"pref"),
+                        res_id: 200,
+                        name: b"Scores".to_vec(),
+                        data: b"score".to_vec(),
+                        raw_data: None,
+                        raw_attrs: None,
+                        attrs: 0,
+                        handle: 0,
+                    }],
+                ),
             ),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -17364,9 +17485,7 @@ mod tests {
             .dispatcher()
             .vfs_directories
             .iter()
-            .find(|directory| {
-                directory.path == "System Folder/Preferences/Test App Saves"
-            })
+            .find(|directory| directory.path == "System Folder/Preferences/Test App Saves")
             .expect("dirty PPC directory should remain in the shared catalogue");
         assert_eq!(
             TrapDispatcher::vfs_basename(&saves_directory.path),
@@ -17827,10 +17946,7 @@ mod tests {
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
 
         assert_eq!(
-            runner
-                .dispatcher
-                .sound_manager
-                .toggle_file_paused(channel),
+            runner.dispatcher.sound_manager.toggle_file_paused(channel),
             Some(false)
         );
         runner.mix_host_audio(samples.len());
@@ -17959,12 +18075,8 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(
-                TrapDispatcher::standard_mac_8bpp_clut(),
-            ),
-            device_gamma: SharedProcessValue::from_value(
-                crate::display::default_display_gamma(),
-            ),
+            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
             device_gamma_explicit: SharedProcessValue::from_value(false),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
@@ -17972,7 +18084,8 @@ mod tests {
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(),
+            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
+            ),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -18114,12 +18227,8 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(
-                TrapDispatcher::standard_mac_8bpp_clut(),
-            ),
-            device_gamma: SharedProcessValue::from_value(
-                crate::display::default_display_gamma(),
-            ),
+            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
             device_gamma_explicit: SharedProcessValue::from_value(false),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
@@ -18127,7 +18236,8 @@ mod tests {
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(),
+            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
+            ),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -18501,12 +18611,8 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(
-                TrapDispatcher::standard_mac_8bpp_clut(),
-            ),
-            device_gamma: SharedProcessValue::from_value(
-                crate::display::default_display_gamma(),
-            ),
+            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
             device_gamma_explicit: SharedProcessValue::from_value(false),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
@@ -18541,7 +18647,8 @@ mod tests {
                     pixels_no_purge: false,
                 },
             ],
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(),
+            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
+            ),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -18782,12 +18889,8 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(
-                TrapDispatcher::standard_mac_8bpp_clut(),
-            ),
-            device_gamma: SharedProcessValue::from_value(
-                crate::display::default_display_gamma(),
-            ),
+            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
             device_gamma_explicit: SharedProcessValue::from_value(false),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
@@ -18807,7 +18910,8 @@ mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }],
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(),
+            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
+            ),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -22111,7 +22215,8 @@ mod tests {
             assert!(runner.bus.fast_mem_window().is_some());
         }
         assert_eq!(
-            runner.guest_tick(), 100,
+            runner.guest_tick(),
+            100,
             "a busy site is never fast-forwarded"
         );
 
