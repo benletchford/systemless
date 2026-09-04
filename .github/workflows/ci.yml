@@ -100,6 +100,19 @@ jobs:
           RUSTDOCFLAGS: -D warnings -D rustdoc::private_intra_doc_links
         run: cargo doc --all-features --locked --no-deps --document-private-items
 
+      - name: Verify the public binary list
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 > metadata.json
+          python3 - <<'PYTHON'
+          import json
+          with open("metadata.json") as source:
+              metadata = json.load(source)
+          crate = next(p for p in metadata["packages"] if p["name"] == "systemless")
+          binaries = [t["name"] for t in crate["targets"] if "bin" in t["kind"]]
+          assert binaries == ["systemless"], binaries
+          PYTHON
+          rm metadata.json
+
       # Catch packaging/metadata problems before a release ever runs.
       - name: Package dry-run
         run: cargo publish --locked --dry-run
