@@ -1241,9 +1241,9 @@ fn test_toolbox_showcase() {
     );
     assert_windows_repainted(&mut runner, "initial stacked windows");
     assert_eq!(
-        screen_rgb(&mut runner, 234, 558),
+        screen_rgb(&mut runner, 235, 558),
         [0, 0, 0],
-        "active zoomDocProc frame must draw its zoom-box edge"
+        "active zoomDocProc frame must draw its aligned zoom-box edge"
     );
     assert_eq!(
         screen_rgb(&mut runner, 493, 562),

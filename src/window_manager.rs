@@ -133,8 +133,7 @@ pub(crate) fn standard_window_chrome(
     let title_baseline = tb_top
         .saturating_add(1)
         .saturating_add(title_interior_height.saturating_sub(title_height) / 2)
-        .saturating_add(title_ascent)
-        .saturating_sub(5);
+        .saturating_add(title_ascent);
     let title_h =
         tb_left.saturating_add(tb_right.saturating_sub(tb_left).saturating_sub(title_width) / 2);
     let (title_clear_left, title_clear_right) = if has_title {
@@ -200,28 +199,39 @@ pub(crate) fn standard_window_chrome(
     let has_zoom_box = active && document_proc && zoom_box;
     let mut zoom_ink = Vec::new();
     if has_zoom_box {
-        // Standard zoom-document WDEFs draw two overlapping rectangles at
-        // the right of the title bar. The surrounding title-bar cell remains
-        // the hit region used by FindWindow and TrackBox.
-        let back_top = tb_top.saturating_add(3);
-        let back_left = right.saturating_sub(17);
-        let front_top = back_top.saturating_add(3);
-        let front_left = back_left.saturating_sub(3);
-        for (box_top, box_left) in [(back_top, back_left), (front_top, front_left)] {
-            let box_bottom = box_top.saturating_add(10);
-            let box_right = box_left.saturating_add(10);
-            zoom_ink.extend([
-                (box_top, box_left, box_top.saturating_add(1), box_right),
-                (box_top, box_left, box_bottom, box_left.saturating_add(1)),
-                (
-                    box_bottom.saturating_sub(1),
-                    box_left,
-                    box_bottom,
-                    box_right,
-                ),
-                (box_top, box_right.saturating_sub(1), box_bottom, box_right),
-            ]);
-        }
+        // The visible zoom glyph is an 11-by-11 outer frame containing a
+        // 7-by-7 frame at its upper-left. It is centered in the standard
+        // 18-by-18 TrackBox hit cell and shares the close box's vertical
+        // origin. Macintosh Toolbox Essentials (1992), pp. 4-8 and 4-47.
+        let box_top = top.saturating_sub(15);
+        let box_left = right.saturating_sub(20);
+        let box_bottom = box_top.saturating_add(11);
+        let box_right = box_left.saturating_add(11);
+        let inner_bottom = box_top.saturating_add(7);
+        let inner_right = box_left.saturating_add(7);
+        zoom_ink.extend([
+            (box_top, box_left, box_top.saturating_add(1), box_right),
+            (box_top, box_left, box_bottom, box_left.saturating_add(1)),
+            (
+                box_bottom.saturating_sub(1),
+                box_left,
+                box_bottom,
+                box_right,
+            ),
+            (box_top, box_right.saturating_sub(1), box_bottom, box_right),
+            (
+                box_top,
+                inner_right.saturating_sub(1),
+                inner_bottom,
+                inner_right,
+            ),
+            (
+                inner_bottom.saturating_sub(1),
+                box_left,
+                inner_bottom,
+                inner_right,
+            ),
+        ]);
         ink.extend(zoom_ink.iter().copied());
     }
 
@@ -370,9 +380,18 @@ mod tests {
             standard_window_structure_bounds((49, 40, 420, 600)),
             (30, 39, 422, 602)
         );
-        assert!(
-            chrome.zoom_ink.contains(&(33, 583, 34, 593)),
-            "active zoomDocProc chrome should include the rear zoom-box edge"
+        assert_eq!(chrome.title_baseline, 44);
+        assert_eq!(
+            chrome.zoom_ink,
+            [
+                (34, 580, 35, 591),
+                (34, 580, 45, 581),
+                (44, 580, 45, 591),
+                (34, 590, 45, 591),
+                (34, 586, 41, 587),
+                (40, 580, 41, 587),
+            ],
+            "the zoom glyph should be an aligned 11-pixel frame with a nested 7-pixel frame"
         );
     }
 
