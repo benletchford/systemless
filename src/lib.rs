@@ -85,6 +85,7 @@ pub mod runner;
 pub mod scripted_traces;
 pub mod sound;
 mod text_edit;
+mod thread_manager;
 pub mod trace;
 pub mod trap;
 mod ui_art;

@@ -8,6 +8,7 @@ use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::get_font_face_scaled;
 use crate::quickdraw::text::{get_font_metrics, get_glyph};
+use crate::thread_manager::ThreadManager;
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -1098,8 +1099,8 @@ impl super::TrapDispatcher {
     const THREAD_STATE_STOPPED: u16 = 1;
     const THREAD_STATE_RUNNING: u16 = 2;
     /// `threadNotFoundErr` and `threadProtocolErr` from Errors.h.
-    const THREAD_NOT_FOUND_ERR: i16 = -617;
-    const THREAD_PROTOCOL_ERR: i16 = -619;
+    const THREAD_NOT_FOUND_ERR: i16 = crate::thread_manager::THREAD_NOT_FOUND_ERR;
+    const THREAD_PROTOCOL_ERR: i16 = crate::thread_manager::THREAD_PROTOCOL_ERR;
 
     fn capture_cooperative_thread<C: CpuOps>(
         cpu: &C,
@@ -1185,11 +1186,7 @@ impl super::TrapDispatcher {
     /// Resolve a guest-supplied ThreadID. `kCurrentThreadID` (1) and
     /// `kNoThreadID` (0) both name the running thread, per Threads.h.
     fn resolve_cooperative_thread_id(&self, thread_id: u32) -> u32 {
-        if thread_id == 0 || thread_id == 1 {
-            self.guest_calls.current_task().thread_id()
-        } else {
-            thread_id
-        }
+        ThreadManager::new(&self.guest_calls).resolve_thread(thread_id)
     }
 
     /// Materialise the record for the thread the process launched on.
@@ -16231,14 +16228,11 @@ impl super::TrapDispatcher {
                     // GetCurrentThread(currentThreadID)
                     0x0206 => {
                         let current_thread = bus.read_long(sp);
-                        if current_thread == 0 {
-                            -50
-                        } else {
-                            bus.write_long(
-                                current_thread,
-                                self.guest_calls.current_task().thread_id(),
-                            );
+                        let id = ThreadManager::new(&self.guest_calls).current_thread();
+                        if current_thread != 0 && bus.try_write_long(current_thread, id) {
                             0
+                        } else {
+                            -50
                         }
                     }
                     // NewThread(threadStyle, threadEntry, threadParam,
@@ -16446,26 +16440,10 @@ impl super::TrapDispatcher {
                         if thread_state == 0 {
                             -50
                         } else {
-                            match self
-                                .guest_calls
-                                .scheduling_state(ExecutionTaskId::from_thread_id(thread_to_get))
-                            {
-                                Some(state) => {
-                                    bus.write_word(
-                                        thread_state,
-                                        match state {
-                                            ExecutionTaskState::Ready => Self::THREAD_STATE_READY,
-                                            ExecutionTaskState::Stopped => {
-                                                Self::THREAD_STATE_STOPPED
-                                            }
-                                            ExecutionTaskState::Running => {
-                                                Self::THREAD_STATE_RUNNING
-                                            }
-                                        },
-                                    );
-                                    0
-                                }
-                                None => Self::THREAD_NOT_FOUND_ERR,
+                            match ThreadManager::new(&self.guest_calls).state(thread_to_get) {
+                                Ok(state) if bus.try_write_word(thread_state, state) => 0,
+                                Ok(_) => -50,
+                                Err(error) => error,
                             }
                         }
                     }
@@ -16595,15 +16573,8 @@ impl super::TrapDispatcher {
                             0
                         }
                     }
-                    0x000B => {
-                        self.guest_calls.begin_critical();
-                        0
-                    }
-                    0x000C if self.guest_calls.critical_depth() == 0 => Self::THREAD_PROTOCOL_ERR,
-                    0x000C => {
-                        self.guest_calls.end_critical();
-                        0
-                    }
+                    0x000B => ThreadManager::new(&self.guest_calls).begin_critical(),
+                    0x000C => ThreadManager::new(&self.guest_calls).end_critical(),
                     _ => -50,
                 };
                 let argument_bytes = (selector >> 8) * 2;
@@ -27277,6 +27248,26 @@ mod tests {
             .expect("GetDefaultThreadStackSize handled")
             .expect("GetDefaultThreadStackSize returns");
         assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+    }
+
+    #[test]
+    fn threaddispatch_queries_reject_protected_output_without_partial_writes() {
+        for selector in [0x0206, 0x0407] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let out = TEST_SP + 0x100;
+            bus.write_long(out, 0xaabb_ccdd);
+            bus.protect_readonly_code(out + 1, 1);
+            bus.write_long(TEST_SP, out);
+            if selector == 0x0407 {
+                bus.write_long(TEST_SP + 4, 1);
+            }
+            cpu.write_reg(Register::D0, selector);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+            assert_eq!(bus.read_long(out), 0xaabb_ccdd);
+        }
     }
 
     #[test]
