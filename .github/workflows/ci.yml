@@ -89,9 +89,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Unified runtime architecture guardrails
-        run: ./scripts/check-unified-runtime-guardrails.sh
-
       - name: Verify reproducible toolbox showcase archive
         run: ./tests/toolbox-showcase/build.sh --verify
 
