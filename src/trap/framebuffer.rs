@@ -3919,6 +3919,7 @@ impl super::TrapDispatcher {
             Self::window_is_document_proc(self.window_proc_id),
             self.window_proc_id == 5,
             self.go_away_flag,
+            matches!(self.window_proc_id, 8 | 12),
         );
         let (tb_top, tb_left, tb_bottom_exclusive, tb_right) = chrome.background;
         let tb_bottom = tb_bottom_exclusive.saturating_sub(1);
@@ -3941,6 +3942,7 @@ impl super::TrapDispatcher {
         let is_movable_modal = self.window_proc_id == 5;
         let has_go_away =
             active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
+        let has_zoom_box = active && matches!(self.window_proc_id, 8 | 12);
 
         // Draw title bar border. Classic document WDEFs leave the top edge
         // open; System 7.5.3 paints only side edges, bottom separator, and
@@ -4072,6 +4074,22 @@ impl super::TrapDispatcher {
                 );
             }
 
+            for (top, left, bottom, right) in chrome.zoom_ink.iter().copied() {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    true,
+                );
+            }
+
             // Draw horizontal stripe pattern in title bar (classic Mac pinstripes)
             // Only active windows get stripes; inactive windows have plain white title bars
             //
@@ -4084,7 +4102,11 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-188 figure 5-3.
             if active {
                 let stripe_left_edge = tb_left + 2;
-                let stripe_right_end = tb_right - 2;
+                let stripe_right_end = if has_zoom_box {
+                    wind_right - 23
+                } else {
+                    tb_right - 2
+                };
                 let stripe_text_left = title_clear_left + 2;
                 let stripe_text_right = title_clear_right - 2;
 
@@ -4223,13 +4245,6 @@ impl super::TrapDispatcher {
     pub(crate) fn draw_grow_icon(&self, bus: &mut MacMemoryBus, window_ptr: u32) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let screen = (
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-        );
         // Read portRect (top, left, bottom, right) from the window record
         let port_top = bus.read_word(window_ptr + 16) as i16;
         let port_left = bus.read_word(window_ptr + 18) as i16;
@@ -4259,29 +4274,43 @@ impl super::TrapDispatcher {
         let content_bottom = scr_top + port_bottom;
         let content_right = scr_left + port_right;
 
-        // DrawGrowIcon draws the scroll bar separator lines:
-        // - Vertical line at content_right - 15 from content_top to content_bottom
-        // - Horizontal line at content_bottom - 15 from border_left to border_right
-        let sep_x = content_right - 15;
-        let sep_y = content_bottom - 15;
-        let border_left = content_left - 1;
-        let border_right = content_right + 1;
-
-        // Vertical scroll separator (full content height)
-        Self::fb_vline(bus, screen, sep_x, content_top, content_bottom, true);
-        // Horizontal scroll separator (border to border)
-        Self::fb_hline(
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        if !matches!(proc_id, 0 | 8) {
+            return;
+        }
+        let active = bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) != 0;
+        let icon = crate::window_manager::standard_grow_icon(
+            (content_top, content_left, content_bottom, content_right),
+            active,
+        );
+        Self::fb_fill_rect(
             bus,
             screen_base,
             row_bytes,
             pixel_size,
             screen_width,
             screen_height,
-            sep_y,
-            border_left,
-            border_right + 1,
-            true,
+            icon.background.0,
+            icon.background.1,
+            icon.background.2,
+            icon.background.3,
+            false,
         );
+        for (top, left, bottom, right) in icon.ink {
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                true,
+            );
+        }
     }
 
     /// Draw a 2-pixel thick rectangle border (FrameRect with PenSize 2,2).

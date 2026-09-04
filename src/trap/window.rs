@@ -42,7 +42,7 @@ impl super::TrapDispatcher {
     const USER_WINDOW_KIND: u16 = 8;
     const WINDOW_KIND_OFFSET: u32 = 108;
     const WINDOW_VISIBLE_OFFSET: u32 = 110;
-    const WINDOW_HILITED_OFFSET: u32 = 111;
+    pub(super) const WINDOW_HILITED_OFFSET: u32 = 111;
     const WINDOW_GO_AWAY_FLAG_OFFSET: u32 = 112;
     const WINDOW_SPARE_FLAG_OFFSET: u32 = 113;
     const WINDOW_STRUC_RGN_OFFSET: u32 = 114;
