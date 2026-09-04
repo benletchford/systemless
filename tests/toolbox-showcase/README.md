@@ -306,6 +306,14 @@ screenshots are the expected device-depth quantization of the same logical
 colors. The Systemless 68K and BasiliskII captures exercise the actual 8-bit
 indexed paths.
 
+### Systemless theme experiment
+
+The complete 43-frame 68K theme audit lives in
+[`reference/systemless-theme-68k`](reference/systemless-theme-68k). It follows
+the same deterministic interaction sequence as the classic Systemless baseline,
+including every window activation, move, resize, z-order, dialog, scrollbar,
+palette, scrolling, and popup-menu checkpoint.
+
 ### 68K
 
 | Checkpoint | Systemless | BasiliskII |
@@ -414,4 +422,5 @@ diff before committing it:
 ```sh
 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 SYSTEMLESS_PREFER_POWERPC=1 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
+SYSTEMLESS_TOOLBOX_THEME=systemless-default SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 ```

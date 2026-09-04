@@ -8,6 +8,7 @@ use systemless::display::render_screen_with_gamma;
 use systemless::game::{init_game, load_game, new_runner_with_screen_depth};
 use systemless::menu_model::GuestMenuSnapshot;
 use systemless::runner::{FixtureRunner, ResourceManagerSnapshot, WindowSnapshot};
+use systemless::ui_theme::UiThemeId;
 
 const SHOWCASE_SIT: &[u8] = include_bytes!("toolbox-showcase/toolbox-showcase.sit");
 
@@ -92,12 +93,20 @@ const ITEM_FILE_QUIT: i16 = 4;
 const ITEM_APPLE_ABOUT: i16 = 1;
 
 const REFERENCE_UPDATE_ENV: &str = "SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES";
+const SHOWCASE_THEME_ENV: &str = "SYSTEMLESS_TOOLBOX_THEME";
 
 fn prefer_powerpc() -> bool {
     matches!(
         std::env::var("SYSTEMLESS_PREFER_POWERPC").ok().as_deref(),
         Some("1" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES")
     )
+}
+
+fn showcase_theme() -> UiThemeId {
+    std::env::var(SHOWCASE_THEME_ENV).map_or(UiThemeId::ClassicSystem7, |theme| {
+        UiThemeId::parse(&theme)
+            .unwrap_or_else(|error| panic!("invalid {SHOWCASE_THEME_ENV}: {error}"))
+    })
 }
 
 fn menu_item_checked(snapshot: &GuestMenuSnapshot, menu_id: i16, item_number: i16) -> bool {
@@ -314,10 +323,21 @@ fn screen_rgb(runner: &mut FixtureRunner, v: u16, h: u16) -> [u8; 3] {
     [rgba[offset], rgba[offset + 1], rgba[offset + 2]]
 }
 
+fn is_dark_chrome(rgb: [u8; 3]) -> bool {
+    rgb.into_iter().all(|channel| channel < 64)
+}
+
 fn reference_path(powerpc: bool, filename: &str) -> PathBuf {
+    let theme = showcase_theme();
+    assert!(
+        theme == UiThemeId::ClassicSystem7 || !powerpc,
+        "the Systemless theme reference set currently targets the 68K HLE adapter"
+    );
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/toolbox-showcase/reference")
-        .join(if powerpc {
+        .join(if theme == UiThemeId::SystemlessDefault {
+            "systemless-theme-68k"
+        } else if powerpc {
             "systemless-ppc"
         } else {
             "systemless-68k"
@@ -401,6 +421,8 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
     let reference = reference_path(runner.is_powerpc_app(), filename);
 
     if update_references() {
+        std::fs::create_dir_all(reference.parent().unwrap())
+            .unwrap_or_else(|error| panic!("failed to create {}: {error}", reference.display()));
         write_rgb(&reference, width, height, actual);
         eprintln!("updated {}", reference.display());
         return;
@@ -907,6 +929,7 @@ fn assert_popup_selected_title_pixels(
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
     let powerpc = prefer_powerpc();
+    runner.set_ui_theme(showcase_theme());
     runner
         .set_powerpc_screen_depth(if powerpc { 16 } else { 8 })
         .expect("selected PowerPC fixture screen depth must be supported");
@@ -1240,14 +1263,12 @@ fn test_toolbox_showcase() {
         (31, 39, 422, 602),
     );
     assert_windows_repainted(&mut runner, "initial stacked windows");
-    assert_eq!(
-        screen_rgb(&mut runner, 231, 400),
-        [0, 0, 0],
+    assert!(
+        is_dark_chrome(screen_rgb(&mut runner, 231, 400)),
         "active zoomDocProc frame must draw its upper title-bar border"
     );
-    assert_eq!(
-        screen_rgb(&mut runner, 240, 572),
-        [0, 0, 0],
+    assert!(
+        is_dark_chrome(screen_rgb(&mut runner, 240, 572)),
         "active zoomDocProc frame must align its zoom-box edge with the scrollbar column"
     );
     let stripe_edge_pixels = [
@@ -1255,12 +1276,11 @@ fn test_toolbox_showcase() {
         screen_rgb(&mut runner, 235, 559),
     ];
     assert!(
-        stripe_edge_pixels.contains(&[0, 0, 0]),
+        stripe_edge_pixels[0] != stripe_edge_pixels[1],
         "active zoomDocProc frame must extend its title stripes to the control column"
     );
-    assert_eq!(
-        screen_rgb(&mut runner, 493, 562),
-        [0, 0, 0],
+    assert!(
+        is_dark_chrome(screen_rgb(&mut runner, 493, 562)),
         "DrawGrowIcon must draw the active window's diagonal size grip"
     );
 
