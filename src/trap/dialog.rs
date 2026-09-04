@@ -26172,7 +26172,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_dialog_systemless_theme_routes_frame_through_provider() {
+    fn draw_dialog_systemless_theme_uses_single_outer_frame() {
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
         let bounds = (40, 40, 100, 140);
@@ -26202,8 +26202,12 @@ mod tests {
             "classic dBoxProc leaves the gap between outer and inner borders clear"
         );
         assert!(
-            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 38),
-            "systemless-default provider should own dialog frame accent pixels"
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 32),
+            "systemless-default provider should draw the outer dialog frame"
+        );
+        assert!(
+            !screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 38),
+            "systemless-default should leave the dialog frame interior uncluttered"
         );
     }
 
@@ -26230,7 +26234,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_window_frame_systemless_theme_routes_border_through_provider() {
+    fn draw_window_frame_systemless_theme_uses_single_outer_border() {
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
 
@@ -26252,8 +26256,12 @@ mod tests {
             "classic dBoxProc window frame keeps the structure gap clear"
         );
         assert!(
-            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 34),
-            "systemless-default provider should own window frame accent pixels"
+            screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 32),
+            "systemless-default provider should draw the outer window frame"
+        );
+        assert!(
+            !screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 50, 34),
+            "systemless-default should leave the window frame interior uncluttered"
         );
     }
 

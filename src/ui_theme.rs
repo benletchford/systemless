@@ -1622,34 +1622,26 @@ fn draw_systemless_dialog_frame_chrome(
     state: DialogFrameState,
 ) {
     fill_dialog_frame_background(ctx, state, palette.window_background);
-    ctx.frame_rect(state.frame_rect, palette.frame_dark);
-    ctx.frame_rect(state.content_rect, palette.frame_dark);
-
-    let inner_frame = inset_rect(state.frame_rect, 2);
-    if inner_frame.top < inner_frame.bottom && inner_frame.left < inner_frame.right {
-        ctx.frame_rect(inner_frame, palette.selection);
-    }
 
     match state.kind {
-        DialogFrameKind::DialogBox => {
-            draw_dialog_frame_accent(ctx, palette, state.content_rect);
-            ctx.frame_rect(outset_rect(state.content_rect, 4), palette.frame_dark);
-        }
-        DialogFrameKind::PlainDialog => {
-            draw_dialog_frame_accent(ctx, palette, state.content_rect);
+        DialogFrameKind::DialogBox | DialogFrameKind::PlainDialog => {
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
         }
         DialogFrameKind::MovableDialog => {
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
+            ctx.frame_rect(state.content_rect, palette.frame_dark);
             draw_systemless_title_band(ctx, palette, state);
-            draw_two_pixel_frame(ctx, outset_rect(state.content_rect, 5), palette.frame_dark);
         }
         DialogFrameKind::Document | DialogFrameKind::NoGrowDocument => {
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
+            ctx.frame_rect(state.content_rect, palette.frame_dark);
             draw_systemless_title_band(ctx, palette, state);
             if state.active {
                 draw_dialog_shadow(ctx, palette, state.content_rect);
             }
         }
         DialogFrameKind::AlertDialog | DialogFrameKind::Unknown => {
-            draw_dialog_frame_accent(ctx, palette, state.content_rect);
+            ctx.frame_rect(state.frame_rect, palette.frame_dark);
             draw_dialog_shadow(ctx, palette, state.content_rect);
         }
     }
@@ -1707,22 +1699,6 @@ fn fill_rect_excluding_inner(
             right: outer.right,
         },
         color,
-    );
-}
-
-fn draw_dialog_frame_accent(
-    ctx: &mut ThemeDrawCtx<'_>,
-    palette: UiThemePalette,
-    content: ThemeRect,
-) {
-    ctx.fill_rect(
-        ThemeRect {
-            top: content.top - 2,
-            left: content.left + 3,
-            bottom: content.top - 1,
-            right: content.right - 3,
-        },
-        palette.selection,
     );
 }
 
@@ -2824,9 +2800,22 @@ mod tests {
         ];
 
         assert_eq!(
+            rgb_at(&themed, 10, 10),
+            [
+                palette.frame_dark.r,
+                palette.frame_dark.g,
+                palette.frame_dark.b,
+            ],
+            "dialog box should use one restrained provider frame"
+        );
+        assert_eq!(
             rgb_at(&themed, 24, 16),
-            selection,
-            "dialog-box accent should use provider selection chrome"
+            [
+                palette.window_background.r,
+                palette.window_background.g,
+                palette.window_background.b,
+            ],
+            "dialog box should not add decorative lines inside its outer frame"
         );
         assert_eq!(
             rgb_at(&themed, 36, 40),
