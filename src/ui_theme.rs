@@ -2350,10 +2350,12 @@ fn draw_systemless_scrollbar_chrome(
         if state.highlighted_part == ScrollbarPart::PageAfter {
             ctx.fill_rect(inset_rect(page_after, 1), palette.selection);
         }
+        // Human Interface Guidelines 1992, pp. 148 and 158: the scroll box
+        // is a colored, prominent control within the lighter scroll track.
         let thumb_fill = if state.highlighted_part == ScrollbarPart::Thumb {
-            palette.selection
-        } else {
             palette.accent
+        } else {
+            palette.selection
         };
         ctx.fill_rect(inset_rect(thumb, 1), thumb_fill);
         ctx.frame_rect(thumb, palette.frame_dark);
@@ -2581,44 +2583,72 @@ fn draw_scrollbar_arrow(
 ) {
     let center_y = (rect.top + rect.bottom) / 2;
     let center_x = (rect.left + rect.right) / 2;
-    for row in 0..5 {
-        let half = row.min(4 - row) as i16;
-        let (top, left, bottom, right) = match (orientation, decrement) {
-            (ScrollbarOrientation::Vertical, true) => (
-                center_y - 3 + row as i16,
-                center_x - half,
-                center_y - 2 + row as i16,
-                center_x + half + 1,
-            ),
-            (ScrollbarOrientation::Vertical, false) => (
-                center_y + 1 - row as i16,
-                center_x - half,
-                center_y + 2 - row as i16,
-                center_x + half + 1,
-            ),
-            (ScrollbarOrientation::Horizontal, true) => (
-                center_y - half,
-                center_x - 3 + row as i16,
-                center_y + half + 1,
-                center_x - 2 + row as i16,
-            ),
-            (ScrollbarOrientation::Horizontal, false) => (
-                center_y - half,
-                center_x + 1 - row as i16,
-                center_y + half + 1,
-                center_x + 2 - row as i16,
-            ),
-        };
-        ctx.fill_rect(
-            ThemeRect {
-                top,
-                left,
-                bottom,
-                right,
+    // HIG 1992 p. 158: each end control contains an arrow pointing toward
+    // the hidden content. Use a three-step head and short shaft; mirroring a
+    // diamond around the center loses that directional meaning.
+    for step in 0..3 {
+        let step = step as i16;
+        let half = if decrement { step } else { 2 - step };
+        let rect = match orientation {
+            ScrollbarOrientation::Vertical => ThemeRect {
+                top: if decrement {
+                    center_y - 3 + step
+                } else {
+                    center_y + step
+                },
+                left: center_x - half,
+                bottom: if decrement {
+                    center_y - 2 + step
+                } else {
+                    center_y + step + 1
+                },
+                right: center_x + half + 1,
             },
-            palette.frame_dark,
-        );
+            ScrollbarOrientation::Horizontal => ThemeRect {
+                top: center_y - half,
+                left: if decrement {
+                    center_x - 3 + step
+                } else {
+                    center_x + step
+                },
+                bottom: center_y + half + 1,
+                right: if decrement {
+                    center_x - 2 + step
+                } else {
+                    center_x + step + 1
+                },
+            },
+        };
+        ctx.fill_rect(rect, palette.frame_dark);
     }
+
+    let shaft = match (orientation, decrement) {
+        (ScrollbarOrientation::Vertical, true) => ThemeRect {
+            top: center_y,
+            left: center_x,
+            bottom: center_y + 3,
+            right: center_x + 1,
+        },
+        (ScrollbarOrientation::Vertical, false) => ThemeRect {
+            top: center_y - 3,
+            left: center_x,
+            bottom: center_y,
+            right: center_x + 1,
+        },
+        (ScrollbarOrientation::Horizontal, true) => ThemeRect {
+            top: center_y,
+            left: center_x,
+            bottom: center_y + 1,
+            right: center_x + 3,
+        },
+        (ScrollbarOrientation::Horizontal, false) => ThemeRect {
+            top: center_y,
+            left: center_x - 3,
+            bottom: center_y + 1,
+            right: center_x,
+        },
+    };
+    ctx.fill_rect(shaft, palette.frame_dark);
 }
 
 fn draw_scrollbar_grip(
@@ -2877,6 +2907,58 @@ mod tests {
         assert_eq!(classic.height(), 104);
         assert_eq!(classic.rgba().len(), 144 * 104 * 4);
         assert_ne!(classic.rgba(), themed.rgba());
+    }
+
+    #[test]
+    fn systemless_scrollbar_uses_directional_arrows_and_blue_thumb() {
+        let theme = UiThemeId::SystemlessDefault.provider();
+        let palette = theme.palette();
+        let state = ScrollbarState {
+            rect: ThemeRect {
+                top: 0,
+                left: 0,
+                bottom: 16,
+                right: 96,
+            },
+            orientation: ScrollbarOrientation::Horizontal,
+            enabled: true,
+            value: 50,
+            min: 0,
+            max: 100,
+            highlighted_part: ScrollbarPart::None,
+        };
+        let mut bitmap = ThemeBitmap::new(96, 16, palette.window_background);
+        theme.draw_scrollbar(&mut ThemeDrawCtx::new(&mut bitmap), state);
+        let dark = [
+            palette.frame_dark.r,
+            palette.frame_dark.g,
+            palette.frame_dark.b,
+        ];
+        let background = [
+            palette.window_background.r,
+            palette.window_background.g,
+            palette.window_background.b,
+        ];
+        let selection = [
+            palette.selection.r,
+            palette.selection.g,
+            palette.selection.b,
+        ];
+        let thumb = scrollbar_thumb_rect(state).expect("enabled scrollbar thumb");
+
+        assert_eq!(rgb_at(&bitmap, 5, 8), dark, "left arrow tip");
+        assert_eq!(rgb_at(&bitmap, 10, 8), dark, "left arrow shaft");
+        assert_eq!(
+            rgb_at(&bitmap, 8, 7),
+            background,
+            "left arrow should not close back into a diamond"
+        );
+        assert_eq!(rgb_at(&bitmap, 90, 8), dark, "right arrow tip");
+        assert_eq!(
+            rgb_at(&bitmap, (thumb.left + 2) as u32, (thumb.top + 2) as u32,),
+            selection,
+            "resting thumb should use the Systemless blue"
+        );
     }
 
     #[test]
