@@ -6549,7 +6549,9 @@ impl FixtureRunner {
             cycles_per_tick.saturating_sub(remaining_cycles),
         );
         if ppc_app.guest_calls.pending_powerpc_from_m68k().is_some()
-            && ppc_app.activate_powerpc_from_m68k().is_none()
+            && ppc_app
+                .activate_powerpc_from_m68k(&mut self.m68k.cpu)
+                .is_none()
         {
             self.halted = true;
             self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));

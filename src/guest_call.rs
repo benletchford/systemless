@@ -1449,9 +1449,28 @@ impl SharedGuestCallStack {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn activate_powerpc_from_m68k(
         &self,
         cpu: &mut PpcCpu,
+        return_pc: u32,
+    ) -> Option<PendingPowerPcExecution> {
+        self.activate_powerpc_transition(cpu, None, return_pc)
+    }
+
+    pub(crate) fn activate_powerpc_with_classic_caller(
+        &self,
+        cpu: &mut PpcCpu,
+        caller: &mut M68kCpu,
+        return_pc: u32,
+    ) -> Option<PendingPowerPcExecution> {
+        self.activate_powerpc_transition(cpu, Some(caller), return_pc)
+    }
+
+    fn activate_powerpc_transition(
+        &self,
+        cpu: &mut PpcCpu,
+        caller: Option<&mut M68kCpu>,
         return_pc: u32,
     ) -> Option<PendingPowerPcExecution> {
         let (task, call_id, target, arguments) = {
@@ -1470,10 +1489,25 @@ impl SharedGuestCallStack {
         };
         let mut tasks = self.0.borrow_mut();
         let kernel = tasks.kernel.shared_handle();
-        tasks
-            .powerpc_contexts
-            .park_while_activating(&kernel, task, call_id, Box::new(cpu.clone()))
-            .ok()?;
+        if let Some(caller) = caller {
+            let bank = Rc::clone(&tasks.m68k_contexts);
+            tasks
+                .powerpc_contexts
+                .park_pair_while_activating(
+                    &mut bank.borrow_mut(),
+                    &kernel,
+                    task,
+                    call_id,
+                    Box::new(cpu.clone()),
+                    caller,
+                )
+                .ok()?;
+        } else {
+            tasks
+                .powerpc_contexts
+                .park_while_activating(&kernel, task, call_id, Box::new(cpu.clone()))
+                .ok()?;
+        }
         let frame = tasks
             .frames
             .get_mut(&call_id)
@@ -2570,6 +2604,81 @@ mod tests {
         assert!(calls.complete_powerpc(&mut cpu));
         assert_eq!(cpu.pc, 0x2000);
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn initial_native_transition_owns_its_classic_caller_and_refuses_duplicate_contexts() {
+        for occupied in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            assert!(calls.begin_m68k_to_powerpc(
+                GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: 0x1000,
+                    rtoc: 0x2000
+                },
+                PowerPcArguments::from_slice(&[]).unwrap(),
+                0x3000,
+                0x4000,
+                None
+            ));
+            let (call, _) = calls.top_frame().unwrap();
+            let bank = calls.m68k_context_bank();
+            if occupied {
+                assert!(calls
+                    .park_context(
+                        &mut bank.borrow_mut(),
+                        ExecutionTaskId::APPLICATION,
+                        call,
+                        M68kCpu::new()
+                    )
+                    .is_ok());
+            }
+            let mut classic = M68kCpu::new();
+            classic.core.set_a(7, 0x9876);
+            classic.core.set_d(6, 0xabcdef);
+            let mut native = PpcCpu::new();
+            native.pc = 0x5000;
+            native.gpr[3] = 99;
+            let activated =
+                calls.activate_powerpc_with_classic_caller(&mut native, &mut classic, RETURN_PC);
+            if occupied {
+                assert!(activated.is_none());
+                assert_eq!(classic.core.a(7), 0x9876);
+                assert_eq!(classic.core.d(6), 0xabcdef);
+                assert_eq!(native.pc, 0x5000);
+                assert_eq!(native.gpr[3], 99);
+                assert!(calls.pending_powerpc_from_m68k().is_some());
+                assert!(calls.0.borrow().powerpc_contexts.is_empty());
+                assert_eq!(bank.borrow().len(), 1);
+                continue;
+            }
+            assert!(activated.is_some());
+            assert!(bank.borrow().contains(ExecutionTaskId::APPLICATION, call));
+            assert!(calls
+                .0
+                .borrow()
+                .powerpc_contexts
+                .contains(ExecutionTaskId::APPLICATION, call));
+            classic.core.set_a(7, 0x1111);
+            assert!(calls
+                .activate_powerpc_with_classic_caller(&mut native, &mut classic, RETURN_PC)
+                .is_none());
+            assert_eq!(classic.core.a(7), 0x1111);
+            native.pc = RETURN_PC;
+            assert!(calls.complete_powerpc_for_m68k(&mut native));
+            let restored = calls
+                .commit_m68k_resume(|_, context| {
+                    let context = context.expect("the initial classic caller must be parked");
+                    assert_eq!(context.core.a(7), 0x9876);
+                    assert_eq!(context.core.d(6), 0xabcdef);
+                    true
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored.core.a(7), 0x9876);
+            assert!(bank.borrow().is_empty());
+            assert!(calls.is_empty());
+        }
     }
 
     #[test]

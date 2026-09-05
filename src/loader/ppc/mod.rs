@@ -4144,7 +4144,10 @@ impl PpcLoadedApp {
     /// Park the current native context and enter a PowerPC routine selected by
     /// a 68k RoutineDescriptor. The new ABI frame protects the parked caller's
     /// linkage and parameter areas while the shared continuation owns return.
-    pub(crate) fn activate_powerpc_from_m68k(&mut self) -> Option<()> {
+    pub(crate) fn activate_powerpc_from_m68k(
+        &mut self,
+        caller: &mut crate::cpu::M68kCpu,
+    ) -> Option<()> {
         let pending = self.guest_calls.pending_powerpc_from_m68k()?;
         let parameter_slots = pending
             .arguments
@@ -4171,9 +4174,11 @@ impl PpcLoadedApp {
         self.memory
             .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, self.cpu.gpr[2])?;
 
-        let pending = self
-            .guest_calls
-            .activate_powerpc_from_m68k(&mut self.cpu, PPC_GUEST_CALL_RETURN_PC)?;
+        let pending = self.guest_calls.activate_powerpc_with_classic_caller(
+            &mut self.cpu,
+            caller,
+            PPC_GUEST_CALL_RETURN_PC,
+        )?;
         self.cpu.gpr[1] = callback_sp;
         self.cpu.pc = pending.target.entry;
         self.cpu.lr = PPC_GUEST_CALL_RETURN_PC;
@@ -108881,7 +108886,9 @@ pub(crate) mod tests {
             None,
         ));
 
-        loaded.activate_powerpc_from_m68k().unwrap();
+        loaded
+            .activate_powerpc_from_m68k(&mut crate::cpu::M68kCpu::new())
+            .unwrap();
 
         let callback_sp = loaded.cpu.gpr[1];
         assert!(callback_sp < caller.gpr[1]);

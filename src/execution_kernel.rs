@@ -1297,6 +1297,47 @@ impl<T> ExecutionContextBank<T> {
         Ok(())
     }
 
+    /// Attach both sides of an ISA transition under one validated call token.
+    /// Refusal leaves the installed caller and both banks unchanged.
+    pub(crate) fn park_pair_while_activating<R: Copy + TaskOwned, C: Copy, U: Default>(
+        &mut self,
+        caller_bank: &mut ExecutionContextBank<U>,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        context: T,
+        caller: &mut U,
+    ) -> Result<(), (ContinuationError, T)> {
+        let mut state = kernel.0.borrow_mut();
+        if let Err(error) = ContinuationStore::validate_transition(
+            &state,
+            task,
+            call_id,
+            ContinuationPhase::Pending,
+        ) {
+            return Err((error, context));
+        }
+        if self.contains(task, call_id) || caller_bank.contains(task, call_id) {
+            return Err((
+                ContinuationError::ContextAttached { call_id, count: 1 },
+                context,
+            ));
+        }
+        let replacement = U::default();
+        state
+            .stacks
+            .get_mut(&task)
+            .and_then(|stack| stack.last_mut())
+            .expect("validated activation")
+            .phase = ContinuationPhase::Active;
+        *state.attached_contexts.entry(call_id).or_default() += 2;
+        self.by_call.insert((task, call_id), context);
+        caller_bank
+            .by_call
+            .insert((task, call_id), std::mem::replace(caller, replacement));
+        Ok(())
+    }
+
     pub(crate) fn park_while_activating<R: Copy + TaskOwned, C: Copy>(
         &mut self,
         kernel: &ContinuationStore<R, C>,
