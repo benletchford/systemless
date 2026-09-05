@@ -2840,6 +2840,17 @@ impl MemoryBus for MacMemoryBus {
 }
 
 impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
+    fn trap_code_allocation_bucket(&self, size: u32) -> u32 {
+        Self::allocation_bucket_size(size)
+    }
+
+    fn can_allocate_trap_code(&self, size: u32) -> bool {
+        let table_end = crate::trap::manager::TOOLBOX_TRAP_TABLE_BASE
+            + u32::from(crate::trap::manager::TOOLBOX_TRAP_TABLE_SLOTS) * 4;
+        self.synthetic_code_allocation_start(size)
+            .is_some_and(|start| start >= table_end)
+    }
+
     fn publish_trap_code(&mut self, existing: Option<u32>, words: &[u16]) -> u32 {
         let size = words.len() as u32 * 2;
         let address = existing.unwrap_or_else(|| self.alloc_synthetic(size));

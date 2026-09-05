@@ -108117,10 +108117,12 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
         let mut dispatcher = TrapDispatcher::new();
-        dispatcher.materialize_trap_tables(
-            &mut bus,
-            crate::trap::dispatch::TrapTableProfile::PowerPc604,
-        );
+        dispatcher
+            .materialize_trap_tables(
+                &mut bus,
+                crate::trap::dispatch::TrapTableProfile::PowerPc604,
+            )
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA823u16;
         let table_entry = ppc_raw_trap_table_entry(trap_word, true);
         let head = bus.read_long(table_entry);

@@ -1990,7 +1990,9 @@ impl FixtureRunner {
         // Establish the writable tables and vector identities before any
         // guest patch or instruction can observe the process environment.
         // Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-6.
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         Self {
             m68k: M68kExecution::new(&dispatcher.guest_calls),
             native: NativeExecution::default(),
@@ -4127,7 +4129,8 @@ impl FixtureRunner {
         // low memory. Materialize all 1,280 callable entries before installing
         // the adjacent QuickDraw vectors. IM:OSUtils 1994, pp. 8-4--8-6.
         self.dispatcher
-            .materialize_trap_tables(&mut self.bus, TrapTableProfile::M68k68040);
+            .materialize_trap_tables(&mut self.bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         // JHideCursor ($0800): argument-free QuickDraw cursor bottleneck.
         // Adapt a direct JSR to the existing A-line trap by removing the JSR
         // return address before dispatch and jumping back afterward.
@@ -4286,7 +4289,8 @@ impl FixtureRunner {
         let rnd_seed = self.launch_rnd_seed_override.unwrap_or(time);
         self.bus.write_long(addr::RND_SEED, rnd_seed);
         self.dispatcher
-            .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604);
+            .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604)
+            .expect("trap table construction requires writable cells and system storage");
         self.share_ppc_process_memory(&mut ppc_app);
         let detached_events = std::mem::take(&mut *ppc_app.event_queue);
         self.process_context
