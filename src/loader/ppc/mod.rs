@@ -24330,8 +24330,12 @@ fn dispatch_supported_import(
             let created = toolbox_startup.guest_calls.create_native_thread(
                 crate::guest_call::NativeThreadContext {
                     cpu: Box::new(thread_cpu),
+                },
+                crate::guest_call::ThreadStorage {
                     result_destination,
                     stack_base: stack,
+                    stack_limit: top,
+                    managed_pointer: true,
                 },
                 options & 1 != 0,
                 |task| memory.write_u32_be(made, task.thread_id()).is_some(),
@@ -90684,7 +90688,7 @@ fn ppc_retire_native_thread(
     }) else {
         return false;
     };
-    if finished.stack_base != 0 {
+    if finished.stack_base != 0 && finished.managed_pointer {
         manager.dispose_native_ptr(finished.stack_base);
     }
     true
@@ -167798,8 +167802,12 @@ pub(crate) mod tests {
                 .create_native_thread(
                     NativeThreadContext {
                         cpu: Box::new(worker_cpu),
+                    },
+                    crate::guest_call::ThreadStorage {
                         result_destination: 0,
                         stack_base: 0,
+                        stack_limit: 0,
+                        managed_pointer: true,
                     },
                     false,
                     |_| true,

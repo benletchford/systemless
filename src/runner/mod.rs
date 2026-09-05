@@ -15532,6 +15532,130 @@ mod tests {
     }
 
     #[test]
+    fn opposite_abi_thread_disposal_preserves_stack_provenance_and_retries_results() {
+        const FRAME: u32 = 0x6000;
+        const MADE: u32 = 0x7000;
+        const RESULT: u32 = 0x7100;
+        for native_worker in [false, true] {
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let loaded = app.ppc.as_mut().unwrap();
+            loaded.entry_pc = PPC_IMPORT_TRAP_BASE;
+            loaded.cpu.pc = PPC_IMPORT_TRAP_BASE;
+            loaded.memory.add_region(PPC_IMPORT_TRAP_BASE, vec![0; 4]);
+            let name = if native_worker {
+                "NewThread"
+            } else {
+                "DisposeThread"
+            };
+            let mut binding = test_ppc_import_binding(0, "InterfaceLib", name);
+            binding.dispatcher_target = if native_worker {
+                PpcImportDispatcherTarget::NewThread
+            } else {
+                PpcImportDispatcherTarget::DisposeThread
+            };
+            binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+            loaded.import_count = 1;
+            loaded.imports.push(binding);
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.init_app(&app);
+            if native_worker {
+                let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                cpu.lr = PPC_CODE_BASE;
+                cpu.gpr[3] = 1;
+                cpu.gpr[4] = PPC_CODE_BASE;
+                cpu.gpr[5] = 0;
+                cpu.gpr[6] = 1024;
+                cpu.gpr[7] = 1;
+                cpu.gpr[8] = RESULT;
+                cpu.gpr[9] = MADE;
+                assert!(runner.run_steps(32, None).1);
+            } else {
+                runner.m68k.cpu.write_reg(Register::A7, FRAME);
+                runner.m68k.cpu.write_reg(Register::D0, 0x0e03);
+                for (offset, value) in [
+                    (0, MADE),
+                    (4, RESULT),
+                    (8, 1),
+                    (12, 1024),
+                    (16, 0),
+                    (20, 0x8000),
+                    (24, 1),
+                ] {
+                    runner.bus.write_long(FRAME + offset, value);
+                }
+                runner
+                    .dispatcher
+                    .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0);
+            }
+            let calls = runner.dispatcher.guest_calls.shared_handle();
+            let worker = ExecutionTaskId::from_thread_id(runner.bus.read_long(MADE));
+            assert_eq!(worker.thread_id(), 3);
+            let mut storage = calls.thread_storage(worker).unwrap();
+            assert_eq!(storage.managed_pointer, native_worker);
+            assert_ne!(storage.stack_base, 0);
+            runner.bus.write_long(RESULT, 0x12345678);
+            storage.result_destination = u32::MAX - 1;
+            assert!(calls.set_thread_storage(worker, storage));
+            for (attempt, expected) in [(0, -619_i16), (1, 0), (2, -618)] {
+                if attempt == 1 {
+                    storage.result_destination = RESULT;
+                    assert!(calls.set_thread_storage(worker, storage));
+                }
+                if native_worker {
+                    runner.m68k.cpu.write_reg(Register::A7, FRAME);
+                    runner.m68k.cpu.write_reg(Register::D0, 0x0504);
+                    runner.bus.write_word(FRAME, 0);
+                    runner.bus.write_long(FRAME + 2, 0xcafebabe);
+                    runner.bus.write_long(FRAME + 6, worker.thread_id());
+                    runner
+                        .dispatcher
+                        .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(runner.m68k.cpu.read_reg(Register::D0) as i16, expected);
+                } else {
+                    let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                    cpu.pc = PPC_IMPORT_TRAP_BASE;
+                    cpu.lr = PPC_CODE_BASE;
+                    cpu.gpr[3] = worker.thread_id();
+                    cpu.gpr[4] = 0xcafebabe;
+                    cpu.gpr[5] = 0;
+                    assert!(runner.run_steps(32, None).1);
+                    assert_eq!(
+                        runner.native.application().unwrap().cpu.gpr[3] as i16,
+                        expected
+                    );
+                }
+                assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+                assert_eq!(calls.thread_storage(worker).is_some(), attempt == 0);
+                assert_eq!(
+                    runner.bus.read_long(RESULT),
+                    if attempt == 0 { 0x12345678 } else { 0xcafebabe }
+                );
+                if native_worker {
+                    let manager = runner.dispatcher.process_memory_manager();
+                    let live = manager
+                        .borrow_mut()
+                        .native_mut()
+                        .native_ptr_records()
+                        .iter()
+                        .any(|record| record.ptr == storage.stack_base);
+                    assert_eq!(live, attempt == 0);
+                    assert_eq!(calls.classic_thread_pool_count(0), 0);
+                } else {
+                    assert_eq!(
+                        calls.classic_thread_pool_count(0),
+                        usize::from(attempt != 0)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn stopped_last_thread_waits_for_a_task_reference_wakeup() {
         use crate::cpu::CpuOps;
         use crate::execution_kernel::ExecutionTaskState;
@@ -15677,7 +15801,13 @@ mod tests {
             context.pc = CLASSIC_ENTRY;
             context.a_regs[0] = 0x5566_7788;
             context.a_regs[7] = CLASSIC_SP;
-            context.result_destination = RESULT;
+            assert!(calls.set_thread_storage(
+                worker,
+                crate::guest_call::ThreadStorage {
+                    result_destination: RESULT,
+                    ..Default::default()
+                }
+            ));
             assert!(calls.save_cooperative_context(worker, context));
             assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
             let (_, running) = runner.run_steps(64, None);
@@ -16000,10 +16130,12 @@ mod tests {
                     .dispatcher
                     .guest_calls
                     .create_native_thread(
-                        crate::guest_call::NativeThreadContext {
-                            cpu: Box::new(cpu),
+                        crate::guest_call::NativeThreadContext { cpu: Box::new(cpu) },
+                        crate::guest_call::ThreadStorage {
                             result_destination: 0,
                             stack_base: 0,
+                            stack_limit: 0,
+                            managed_pointer: true,
                         },
                         true,
                         |_| true,
@@ -16015,6 +16147,14 @@ mod tests {
                     .dispatcher
                     .guest_calls
                     .register_task(ExecutionTaskId::from_thread_id(3)));
+                assert!(runner.dispatcher.guest_calls.set_thread_storage(
+                    ExecutionTaskId::from_thread_id(3),
+                    crate::guest_call::ThreadStorage {
+                        stack_base: WORKER_STACK,
+                        stack_limit: WORKER_STACK + 0x40,
+                        ..Default::default()
+                    }
+                ));
                 runner.dispatcher.guest_calls.save_cooperative_context(
                     ExecutionTaskId::from_thread_id(3),
                     CooperativeThread {
@@ -16022,9 +16162,6 @@ mod tests {
                         a_regs: [0, 0, 0, 0, 0, 0, 0, WORKER_SP],
                         pc: WORKER_ENTRY,
                         ccr: 0,
-                        result_destination: 0,
-                        stack_base: WORKER_STACK,
-                        stack_limit: WORKER_STACK + 0x40,
                         switch_in: (0, 0),
                         switch_out: (0, 0),
                         terminator: (0, 0),
@@ -16793,8 +16930,12 @@ mod tests {
             .create_native_thread(
                 crate::guest_call::NativeThreadContext {
                     cpu: Box::new(PpcCpu::new()),
+                },
+                crate::guest_call::ThreadStorage {
                     result_destination: 0,
                     stack_base: 0,
+                    stack_limit: 0,
+                    managed_pointer: true,
                 },
                 true,
                 |_| true,

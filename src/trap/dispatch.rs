@@ -1495,9 +1495,6 @@ pub struct TrapDispatcher {
     /// Default cooperative stack size reported by
     /// `GetDefaultThreadStackSize` and used when `NewThread` is passed 0.
     pub(crate) cooperative_thread_stack_size: u32,
-    /// Cooperative stacks banked by `CreateThreadPool` and recycled by
-    /// `DisposeThread`, reused by `NewThread` before allocating.
-    pub(crate) cooperative_thread_pool: Vec<(u32, u32)>,
     /// Synthetic Component Manager instances opened for HLE-provided
     /// components such as the QuickTime movie controller.
     pub(crate) synthetic_component_instances: HashSet<u32>,
@@ -3471,7 +3468,6 @@ impl TrapDispatcher {
             thread_return_trampoline: 0,
             cooperative_thread_scheduler: 0,
             cooperative_thread_stack_size: DEFAULT_COOPERATIVE_THREAD_STACK_SIZE,
-            cooperative_thread_pool: Vec::new(),
             synthetic_component_instances: HashSet::new(),
             next_synthetic_component_instance: 0x00C1_0001,
             saved_draw_old_regions: HashMap::new(),

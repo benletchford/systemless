@@ -1101,10 +1101,7 @@ impl super::TrapDispatcher {
     const THREAD_NOT_FOUND_ERR: i16 = crate::thread_manager::THREAD_NOT_FOUND_ERR;
     const THREAD_PROTOCOL_ERR: i16 = crate::thread_manager::THREAD_PROTOCOL_ERR;
 
-    fn capture_cooperative_thread<C: CpuOps>(
-        cpu: &C,
-        result_destination: u32,
-    ) -> CooperativeThread {
+    fn capture_cooperative_thread<C: CpuOps>(cpu: &C) -> CooperativeThread {
         let d_regs = [
             cpu.read_reg(Register::D0),
             cpu.read_reg(Register::D1),
@@ -1130,9 +1127,6 @@ impl super::TrapDispatcher {
             a_regs,
             pc: cpu.read_reg(Register::PC),
             ccr: cpu.get_ccr(),
-            result_destination,
-            stack_base: 0,
-            stack_limit: 0,
             switch_in: (0, 0),
             switch_out: (0, 0),
             terminator: (0, 0),
@@ -1203,7 +1197,7 @@ impl super::TrapDispatcher {
                 .cooperative_context(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
                 .is_some()
         {
-            let thread = Self::capture_cooperative_thread(cpu, 0);
+            let thread = Self::capture_cooperative_thread(cpu);
             self.guest_calls.save_cooperative_context(
                 ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID),
                 thread,
@@ -1217,7 +1211,7 @@ impl super::TrapDispatcher {
     /// changing its scheduling state.
     fn save_current_cooperative_thread<C: CpuOps>(&mut self, cpu: &C) {
         let current_id = self.guest_calls.current_task().thread_id();
-        let saved = Self::capture_cooperative_thread(cpu, 0);
+        let saved = Self::capture_cooperative_thread(cpu);
         match self.cooperative_thread_snapshot(cpu, current_id) {
             Some(mut thread) => {
                 thread.d_regs = saved.d_regs;
@@ -1285,9 +1279,11 @@ impl super::TrapDispatcher {
         else {
             return false;
         };
-        if finished.stack_base != 0 {
-            self.cooperative_thread_pool
-                .push((finished.stack_base, finished.stack_limit));
+        if finished.stack_base != 0 && finished.managed_pointer {
+            self.process_memory_manager()
+                .borrow_mut()
+                .native_mut()
+                .dispose_native_ptr(finished.stack_base);
         }
         true
     }
@@ -1327,9 +1323,11 @@ impl super::TrapDispatcher {
         if let Some(successor) = successor {
             Self::install_cooperative_thread(cpu, &successor);
         }
-        if saved.stack_base != 0 {
-            self.cooperative_thread_pool
-                .push((saved.stack_base, saved.stack_limit));
+        if saved.stack_base != 0 && saved.managed_pointer {
+            self.process_memory_manager()
+                .borrow_mut()
+                .native_mut()
+                .dispose_native_ptr(saved.stack_base);
         }
         true
     }
@@ -1341,12 +1339,8 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         stack_size: u32,
     ) -> (u32, u32) {
-        if let Some(position) = self
-            .cooperative_thread_pool
-            .iter()
-            .position(|(base, limit)| limit.saturating_sub(*base) >= stack_size)
-        {
-            return self.cooperative_thread_pool.swap_remove(position);
+        if let Some(stack) = self.guest_calls.take_classic_thread_stack(stack_size) {
+            return stack;
         }
         let base = bus.alloc(stack_size);
         (base, base.wrapping_add(stack_size))
@@ -16276,12 +16270,18 @@ impl super::TrapDispatcher {
                             } else {
                                 Self::THREAD_STATE_READY
                             };
-                            let mut thread =
-                                Self::capture_cooperative_thread(cpu, result_destination);
+                            let mut thread = Self::capture_cooperative_thread(cpu);
                             thread.pc = thread_entry;
                             thread.a_regs[7] = entry_sp;
-                            thread.stack_base = stack_base;
-                            thread.stack_limit = stack_limit;
+                            self.guest_calls.set_thread_storage(
+                                task,
+                                crate::guest_call::ThreadStorage {
+                                    result_destination,
+                                    stack_base,
+                                    stack_limit,
+                                    managed_pointer: false,
+                                },
+                            );
                             self.guest_calls.save_cooperative_context(
                                 ExecutionTaskId::from_thread_id(thread_id),
                                 thread,
@@ -16315,8 +16315,11 @@ impl super::TrapDispatcher {
                                 stack_size
                             };
                             for _ in 0..count.max(0) {
-                                let stack = self.acquire_cooperative_thread_stack(bus, stack_size);
-                                self.cooperative_thread_pool.push(stack);
+                                let base = bus.alloc(stack_size);
+                                self.guest_calls.recycle_classic_thread_stack((
+                                    base,
+                                    base.wrapping_add(stack_size),
+                                ));
                             }
                             0
                         }
@@ -16328,7 +16331,10 @@ impl super::TrapDispatcher {
                         if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
                             -50
                         } else {
-                            bus.write_word(free_count, self.cooperative_thread_pool.len() as u16);
+                            bus.write_word(
+                                free_count,
+                                self.guest_calls.classic_thread_pool_count(0) as u16,
+                            );
                             0
                         }
                     }
@@ -16341,11 +16347,7 @@ impl super::TrapDispatcher {
                         if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
                             -50
                         } else {
-                            let matching = self
-                                .cooperative_thread_pool
-                                .iter()
-                                .filter(|(base, limit)| limit.saturating_sub(*base) >= stack_size)
-                                .count();
+                            let matching = self.guest_calls.classic_thread_pool_count(stack_size);
                             bus.write_word(free_count, matching as u16);
                             0
                         }
@@ -16377,7 +16379,11 @@ impl super::TrapDispatcher {
                                     // stack, whose base this record does not
                                     // track, so report the default size rather
                                     // than a bogus multi-megabyte figure.
-                                    let free = if record.stack_base == 0 {
+                                    let storage = self
+                                        .guest_calls
+                                        .thread_storage(ExecutionTaskId::from_thread_id(thread))
+                                        .unwrap_or_default();
+                                    let free = if storage.stack_base == 0 {
                                         DEFAULT_COOPERATIVE_THREAD_STACK_SIZE
                                     } else {
                                         let stack_pointer = if running {
@@ -16385,7 +16391,7 @@ impl super::TrapDispatcher {
                                         } else {
                                             record.a_regs[7]
                                         };
-                                        stack_pointer.saturating_sub(record.stack_base)
+                                        stack_pointer.saturating_sub(storage.stack_base)
                                     };
                                     bus.write_long(free_stack, free);
                                     0
@@ -16400,7 +16406,7 @@ impl super::TrapDispatcher {
                             self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
                         if !self
                             .guest_calls
-                            .cooperative_context(ExecutionTaskId::from_thread_id(thread_to_dump))
+                            .thread_storage(ExecutionTaskId::from_thread_id(thread_to_dump))
                             .is_some()
                             && thread_to_dump != Self::APPLICATION_THREAD_ID
                         {
@@ -16453,7 +16459,7 @@ impl super::TrapDispatcher {
                         let state = bus.read_word(sp + 4);
                         let thread = bus.read_long(sp + 6);
                         let current = self.guest_calls.current_task();
-                        let saved = Self::capture_cooperative_thread(cpu, 0);
+                        let saved = Self::capture_cooperative_thread(cpu);
                         let mut outgoing = self
                             .guest_calls
                             .cooperative_context(current)
@@ -27196,7 +27202,7 @@ mod tests {
                 .scheduling_state(ExecutionTaskId::from_thread_id(new_id))
                 != Some(ExecutionTaskState::Ready)
         );
-        assert_eq!(disp.cooperative_thread_pool.len(), 1);
+        assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 1);
 
         // GetFreeThreadCount(threadStyle, freeCount)
         let out = TEST_SP + 0x420;
@@ -27213,6 +27219,32 @@ mod tests {
 
     /// `GetDefaultThreadStackSize` reports the size `NewThread` uses when
     /// passed 0, and refuses the preemptive style.
+    #[test]
+    fn thread_pool_creation_adds_distinct_stacks_to_the_execution_owner() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for expected_count in [3, 6] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0501);
+            bus.write_long(TEST_SP, 1024);
+            bus.write_word(TEST_SP + 4, 3);
+            bus.write_long(TEST_SP + 6, 1);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(
+                disp.guest_calls.classic_thread_pool_count(1024),
+                expected_count
+            );
+        }
+        let mut stacks = Vec::new();
+        while let Some(stack) = disp.guest_calls.take_classic_thread_stack(1024) {
+            assert!(!stacks.contains(&stack));
+            stacks.push(stack);
+        }
+        assert_eq!(stacks.len(), 6);
+    }
+
     #[test]
     fn threaddispatch_default_stack_size_is_reported_and_refuses_preemptive() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -27328,10 +27360,14 @@ mod tests {
             assert!(disp
                 .guest_calls
                 .set_scheduling_state(worker, ExecutionTaskState::Ready));
-            let mut saved = super::CooperativeThread::default();
-            saved.result_destination = result_slot;
-            saved.stack_base = 0x1000;
-            saved.stack_limit = 0x2000;
+            let saved = super::CooperativeThread::default();
+            let mut storage = crate::guest_call::ThreadStorage {
+                result_destination: result_slot,
+                stack_base: 0x1000,
+                stack_limit: 0x2000,
+                managed_pointer: false,
+            };
+            assert!(disp.guest_calls.set_thread_storage(worker, storage));
             assert!(disp
                 .guest_calls
                 .save_cooperative_context(worker, saved.clone()));
@@ -27361,10 +27397,10 @@ mod tests {
             assert_eq!(bus.read_long(result_slot), 0x1234_5678);
             assert_eq!(cpu.read_reg(Register::PC), 0x1234);
             assert_eq!(cpu.read_reg(Register::A0), 0xcafe_babe);
-            assert!(disp.cooperative_thread_pool.is_empty());
+            assert!(disp.guest_calls.classic_thread_pool_count(0) == 0);
 
-            saved.result_destination = result_slot + 8;
-            assert!(disp.guest_calls.save_cooperative_context(worker, saved));
+            storage.result_destination = result_slot + 8;
+            assert!(disp.guest_calls.set_thread_storage(worker, storage));
             let retired = if self_exit {
                 disp.finish_cooperative_thread(&mut cpu, &mut bus)
             } else {
@@ -27375,7 +27411,10 @@ mod tests {
             assert!(disp.guest_calls.cooperative_context(worker).is_none());
             assert_eq!(disp.guest_calls.scheduling_state(worker), None);
             assert_eq!(bus.read_long(result_slot + 8), 0xcafe_babe);
-            assert_eq!(disp.cooperative_thread_pool, vec![(0x1000, 0x2000)]);
+            assert_eq!(
+                disp.guest_calls.take_classic_thread_stack(0),
+                Some((0x1000, 0x2000))
+            );
             if self_exit {
                 assert_eq!(cpu.read_reg(Register::PC), 0x4321);
                 assert_eq!(cpu.read_reg(Register::A0), 0x8765);
@@ -27393,10 +27432,16 @@ mod tests {
         assert!(disp
             .guest_calls
             .set_scheduling_state(worker, ExecutionTaskState::Ready));
-        let mut saved = super::CooperativeThread::default();
-        saved.result_destination = result_slot;
-        saved.stack_base = 0x1000;
-        saved.stack_limit = 0x2000;
+        let saved = super::CooperativeThread::default();
+        assert!(disp.guest_calls.set_thread_storage(
+            worker,
+            crate::guest_call::ThreadStorage {
+                result_destination: result_slot,
+                stack_base: 0x1000,
+                stack_limit: 0x2000,
+                managed_pointer: false
+            }
+        ));
         assert!(disp
             .guest_calls
             .save_cooperative_context(worker, saved.clone()));
@@ -27407,7 +27452,7 @@ mod tests {
         assert_eq!(disp.guest_calls.current_task(), worker);
         assert_eq!(disp.guest_calls.cooperative_context(worker), Some(saved));
         assert_eq!(bus.read_long(result_slot), 0x1234_5678);
-        assert!(disp.cooperative_thread_pool.is_empty());
+        assert!(disp.guest_calls.classic_thread_pool_count(0) == 0);
     }
 
     #[test]
