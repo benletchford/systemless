@@ -9642,21 +9642,22 @@ impl super::TrapDispatcher {
                     }
                 }
 
-                // Read the icon's color table to remap pixels through the
-                // canonical screen CLUT. ctab_ptr was already computed
-                // above (`ctab_ptr_for_data`) so that the inline-pixel-data
-                // fallback has the right offset; reuse it here.
-                let ctab_ptr = ctab_ptr_for_data;
-                let ct_size = bus.read_word(ctab_ptr + 6) as usize;
-                let mut icon_clut = vec![[0u16; 3]; ct_size + 1];
-                for (i, slot) in icon_clut.iter_mut().enumerate() {
-                    let entry = ctab_ptr + 8 + (i as u32) * 8;
-                    *slot = [
-                        bus.read_word(entry + 2),
-                        bus.read_word(entry + 4),
-                        bus.read_word(entry + 6),
-                    ];
-                }
+                // Image ColorTables associate RGB colors with ColorSpec.value,
+                // not the entry position; sparse tables can omit unused pixels.
+                // Consult the live iconPMap table installed by GetCIcon, falling
+                // back to the inline resource table for raw CIcon records.
+                // Inside Macintosh Volume V (1986), Color QuickDraw, "Color
+                // Tables"; More Macintosh Toolbox (1993), pp. 5-25 to 5-26.
+                let icon_ctab_handle = bus.read_long(icon_ptr + 42);
+                let icon_ctab_ptr = if icon_ctab_handle != 0 {
+                    bus.read_long(icon_ctab_handle)
+                } else {
+                    0
+                };
+                let icon_clut = self.read_color_table_ptr_clut(
+                    bus,
+                    if icon_ctab_ptr != 0 { icon_ctab_ptr } else { ctab_ptr_for_data },
+                );
 
                 // Screen-backed color ports retain their own PixMap color
                 // table, but the pixels are interpreted by the live screen
@@ -9675,6 +9676,9 @@ impl super::TrapDispatcher {
                 } else {
                     *self.device_clut
                 };
+                // Resolve each source color once per draw. The mapping stays
+                // local so changes to either guest color table remain visible.
+                let mut mapped_indices = [None; 256];
                 for dst_y_local in clip_top..clip_bottom {
                     let Some(sy) =
                         Self::scale_coord(pm_top, pm_bottom, dst_top, dst_bottom, dst_y_local)
@@ -9762,29 +9766,18 @@ impl super::TrapDispatcher {
                                 ) else {
                                     continue;
                                 };
-                                let mut rgb = icon_clut
-                                    .get(src_index as usize)
-                                    .copied()
-                                    .unwrap_or(self.device_clut[src_index as usize]);
-                                if (self.icon_transform_override & 0x4000) != 0 {
-                                    // ttSelected darkens the standard color
-                                    // icon before mapping it to the active
-                                    // device. This is the selection mechanism
-                                    // used by Finder-style icon controls.
-                                    // More Macintosh Toolbox (1993), pp. 5-20
-                                    // to 5-21 and 5-37; Macintosh Human
-                                    // Interface Guidelines (1992), p. 241.
-                                    for component in &mut rgb {
-                                        *component /= 2;
-                                    }
-                                }
-                                // PlotCIcon performs ordinary Color Manager
-                                // inverse mapping. Do not apply the PICT-only
-                                // grayscale-ramp preference here: a standard
-                                // icon table drawn under an application
-                                // palette must be allowed to select the
-                                // nearest tinted device color.
-                                let dst_index = Self::nearest_palette_index(&dst_clut, rgb);
+                                let dst_index = *mapped_indices[src_index as usize]
+                                    .get_or_insert_with(|| {
+                                        let mut rgb = icon_clut[src_index as usize];
+                                        // ttSelected darkens the icon before device mapping.
+                                        // More Macintosh Toolbox (1993), pp. 5-20 to 5-21.
+                                        if (self.icon_transform_override & 0x4000) != 0 {
+                                            for component in &mut rgb {
+                                                *component /= 2;
+                                            }
+                                        }
+                                        Self::nearest_palette_index(&dst_clut, rgb)
+                                    });
                                 bus.write_byte(dst_base + dst_y * dst_row_bytes + dst_x, dst_index);
                             }
                             1 => {
@@ -38185,6 +38178,111 @@ mod tests {
             vec![7, 9, 42, 255],
             "packed 4bpp source nibbles should decode and remap through the icon ColorTable"
         );
+    }
+
+    #[test]
+    fn plotcicon_resolves_sparse_color_spec_values() {
+        // More Macintosh Toolbox (1993), p. 5-25 / Inside Macintosh V
+        // (1986), p. V-76: PlotCIcon stretches the iconPMap and remaps its
+        // pixels to the current depth and color table.
+        let (mut d, mut cpu, mut bus) = setup();
+        *d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
+        d.device_clut[9] = [0x0000, 0x2222, 0x0000];
+        d.device_clut[42] = [0x0000, 0x0000, 0x3333];
+        assert_eq!(
+            crate::trap::pict::closest_clut_index(0x1111, 0x0000, 0x0000, &d.device_clut),
+            7
+        );
+
+        let dst_base = bus.alloc(8);
+        bus.fill_zeros(dst_base, 8);
+
+        let pm_handle = bus.alloc(4);
+        let pm_ptr = bus.alloc(64);
+        bus.fill_zeros(pm_ptr, 64);
+        bus.write_long(pm_handle, pm_ptr);
+        write_pixmap_8(&mut bus, pm_ptr, dst_base, 4, 1, 0);
+
+        let port_ptr = bus.alloc(128);
+        bus.fill_zeros(port_ptr, 128);
+        bus.write_long(port_ptr + 2, pm_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+
+        let a5 = cpu.read_reg(Register::A5);
+        let globals_ptr = bus.read_long(a5);
+        bus.write_long(globals_ptr, port_ptr);
+
+        let mut icon_entries = [[0, 0, 0]; 16];
+        icon_entries[1] = d.device_clut[7];
+        icon_entries[2] = d.device_clut[9];
+        icon_entries[3] = d.device_clut[42];
+        let dense = make_test_cicn_resource_4bpp([0x12, 0x3F], &icon_entries);
+        let mut cicn_data = dense[..92].to_vec();
+        cicn_data[90..92].copy_from_slice(&3u16.to_be_bytes());
+        for index in [15usize, 3, 1, 2] {
+            cicn_data.extend_from_slice(&dense[92 + index * 8..100 + index * 8]);
+        }
+        cicn_data.extend_from_slice(&[0x12, 0x3F]);
+        d.install_test_resource(&mut bus, *b"cicn", 129, &cicn_data);
+
+        bus.write_word(TEST_SP, 129);
+        let get_icon = d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus);
+        assert!(get_icon.unwrap().is_ok());
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(icon_handle, 0);
+        let icon_ptr = bus.read_long(icon_handle);
+        assert_eq!(bus.read_word(icon_ptr + 32), 4);
+        let icon_data_handle = bus.read_long(icon_ptr + 78);
+        let icon_data_ptr = bus.read_long(icon_data_handle);
+        assert_eq!(bus.read_bytes(icon_data_ptr, 2), vec![0x12, 0x3F]);
+        assert_eq!(
+            TrapDispatcher::read_packed_bitmap_index(&bus, icon_data_ptr, 2, 4, 0, 0, 1, 4, 0, 0),
+            Some(1)
+        );
+        assert_eq!(
+            TrapDispatcher::read_packed_bitmap_index(&bus, icon_data_ptr, 2, 4, 0, 0, 1, 4, 0, 2),
+            Some(3)
+        );
+
+        let rect_ptr = 0x300160u32;
+        write_rect(&mut bus, rect_ptr, 0, 0, 1, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let plot = d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus);
+        assert!(plot.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(
+            bus.read_bytes(dst_base, 4),
+            vec![7, 9, 42, 255],
+            "sparse, reordered ColorSpec values must retain their pixel indices"
+        );
+
+        // A client may edit the live PixMap table between PlotCIcon calls.
+        let live_table = bus.read_long(bus.read_long(icon_ptr + 42));
+        bus.write_word(live_table + 10, 0);
+        bus.write_word(live_table + 12, 0x2222);
+        bus.write_word(live_table + 14, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_bytes(dst_base, 4), vec![7, 9, 42, 9]);
+
+        // A raw CIcon without an owned color-table handle uses the same
+        // sparse lookup for its inline resource table.
+        bus.write_long(icon_ptr + 42, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_bytes(dst_base, 4), vec![7, 9, 42, 255]);
     }
 
     #[test]
