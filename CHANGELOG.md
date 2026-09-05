@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.1](https://github.com/benletchford/systemless/compare/v0.34.0...v0.34.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* exclude visual oracle assets from crate uploads ([2247573](https://github.com/benletchford/systemless/commit/22475734ef94615eb4872ad9cb2e4a6632dc778d))
+
 ## [0.34.0](https://github.com/benletchford/systemless/compare/v0.33.1...v0.34.0) (2026-09-05)
 
 
