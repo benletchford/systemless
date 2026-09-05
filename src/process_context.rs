@@ -4327,6 +4327,25 @@ impl ProcessNativeMemoryManager {
         disposed
     }
 
+    /// Allocate tracked implementation-owned scratch without changing MemErr.
+    pub(crate) fn new_native_scratch(&mut self, memory: &mut GuestAddressSpace, size: u32) -> u32 {
+        let error = self.native_heap_state().map(|heap| heap.last_mem_error);
+        let ptr = self.new_native_ptr(memory, size, true);
+        if let Some(error) = error {
+            self.set_native_mem_error(error);
+        }
+        ptr
+    }
+
+    /// Release implementation-owned scratch without overwriting guest MemErr.
+    pub(crate) fn release_native_scratch(&mut self, ptr: u32) {
+        let error = self.native_heap_state().map(|heap| heap.last_mem_error);
+        self.dispose_native_ptr(ptr);
+        if let Some(error) = error {
+            self.set_native_mem_error(error);
+        }
+    }
+
     /// Replace native fixed storage while preserving its existing bytes.
     ///
     /// StdCLib `realloc` may move a block, unlike the Memory Manager's

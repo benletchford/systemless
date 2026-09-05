@@ -23,6 +23,7 @@ use crate::execution_kernel::{
 };
 use crate::guest_procedure::GuestIsa;
 use crate::memory::GuestAddressSpace;
+use crate::process_context::ProcessNativeMemoryManager;
 use ppc::{PpcCpu, PpcImportAction, PpcMemory, PpcNativeReturnGpr3};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -180,6 +181,7 @@ enum GuestCallOrigin {
 struct GuestCallFrame {
     target: GuestCallTarget,
     origin: GuestCallOrigin,
+    native_scratch: Option<u32>,
     m68k_execution: Option<M68kExecution>,
     powerpc_execution: Option<PowerPcExecution>,
 }
@@ -314,6 +316,7 @@ impl GuestCallEffect {
                     final_sp,
                     result,
                 }),
+                native_scratch: None,
                 m68k_execution: None,
                 powerpc_execution: None,
             }),
@@ -332,6 +335,7 @@ impl GuestCallEffect {
                     final_sp,
                     result,
                 }),
+                native_scratch: None,
                 m68k_execution: None,
                 powerpc_execution: Some(PowerPcExecution {
                     arguments,
@@ -356,6 +360,7 @@ impl GuestCallEffect {
                     restore_rtoc,
                     return_gpr3,
                 }),
+                native_scratch: None,
                 m68k_execution: None,
                 powerpc_execution: None,
             }),
@@ -376,6 +381,7 @@ impl GuestCallEffect {
                     restore_rtoc,
                     return_gpr3,
                 }),
+                native_scratch: None,
                 m68k_execution: Some(M68kExecution {
                     entry: request.entry,
                     initial_sp: request.initial_sp,
@@ -428,6 +434,7 @@ impl PartialEq for GuestCallFrame {
     fn eq(&self, other: &Self) -> bool {
         self.target == other.target
             && self.origin == other.origin
+            && self.native_scratch == other.native_scratch
             && self.m68k_execution == other.m68k_execution
             && match (&self.powerpc_execution, &other.powerpc_execution) {
                 (None, None) => true,
@@ -1983,11 +1990,24 @@ impl SharedGuestCallStack {
     /// Activate a native call without discarding its task or logical arguments.
     /// The entire parameter area must be writable before any call state or
     /// architectural state changes. No guest execution intervenes in commit.
+    #[cfg(test)]
     pub(crate) fn activate_powerpc_effect(
         &self,
         cpu: &mut PpcCpu,
         memory: &mut GuestAddressSpace,
         effect: GuestCallEffect,
+    ) -> bool {
+        self.activate_powerpc_effect_with_scratch(cpu, memory, effect, None)
+    }
+
+    /// Transfer a tracked temporary allocation to this exact call on success.
+    /// On refusal, its producer retains responsibility for releasing it.
+    pub(crate) fn activate_powerpc_effect_with_scratch(
+        &self,
+        cpu: &mut PpcCpu,
+        memory: &mut GuestAddressSpace,
+        effect: GuestCallEffect,
+        scratch: Option<u32>,
     ) -> bool {
         let GuestCallEffect::CallGuest {
             request,
@@ -2019,6 +2039,12 @@ impl SharedGuestCallStack {
         let Some(call_id) = self.submit_effect(effect) else {
             return false;
         };
+        self.0
+            .borrow_mut()
+            .frames
+            .get_mut(&call_id)
+            .expect("submitted call has its architectural frame")
+            .native_scratch = scratch;
         // Submission just installed this task's pending top frame. This
         // synchronous transition cannot be displaced by another guest call.
         self.0
@@ -2080,8 +2106,25 @@ impl SharedGuestCallStack {
 
     /// Complete the top native frame only when the CPU reached its exact
     /// synthetic return import. A frame belonging to 68k remains untouched.
+    #[cfg(test)]
     pub(crate) fn complete_powerpc(&self, cpu: &mut PpcCpu) -> bool {
-        let (task, call_id, origin) = {
+        self.complete_powerpc_inner(cpu, None)
+    }
+
+    pub(crate) fn complete_powerpc_releasing_scratch(
+        &self,
+        cpu: &mut PpcCpu,
+        memory_manager: &mut ProcessNativeMemoryManager,
+    ) -> bool {
+        self.complete_powerpc_inner(cpu, Some(memory_manager))
+    }
+
+    fn complete_powerpc_inner(
+        &self,
+        cpu: &mut PpcCpu,
+        memory_manager: Option<&mut ProcessNativeMemoryManager>,
+    ) -> bool {
+        let (task, call_id, origin, scratch) = {
             let tasks = self.0.borrow();
             let task = tasks.kernel.current_task();
             let semantic = match tasks.kernel.peek(task) {
@@ -2098,7 +2141,17 @@ impl SharedGuestCallStack {
             if frame.target.isa != GuestIsa::PowerPc || cpu.pc != origin.return_pc {
                 return false;
             }
-            (task, semantic.call_id(), origin)
+            if let Some(scratch) = frame.native_scratch {
+                if !memory_manager.as_deref().is_some_and(|manager| {
+                    manager
+                        .native_ptr_records()
+                        .iter()
+                        .any(|record| record.ptr == scratch)
+                }) {
+                    return false;
+                }
+            }
+            (task, semantic.call_id(), origin, frame.native_scratch)
         };
         let mut tasks = self.0.borrow_mut();
         if tasks
@@ -2116,6 +2169,11 @@ impl SharedGuestCallStack {
             .frames
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
+        if let Some(scratch) = scratch {
+            memory_manager
+                .expect("scratch return requires its memory manager")
+                .release_native_scratch(scratch);
+        }
         Self::apply_powerpc_return(cpu, origin);
         true
     }
