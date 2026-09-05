@@ -430,7 +430,7 @@ impl SndChannel {
             samples,
             sample_rate_fixed,
             position: 0,
-            step: fixed_div(sample_rate_fixed as u64, (OUTPUT_RATE as u64) << 16),
+            step: playback_step(sample_rate_fixed, UNITY_RATE_FIXED),
         });
         self.playback_kind = Some(kind);
         self.file_completion_addr = file_completion_addr;
@@ -1190,7 +1190,17 @@ fn fixed_div(x: u64, y: u64) -> u64 {
 
 fn playback_step(sample_rate_fixed: u32, rate_fixed: u32) -> u64 {
     let base = fixed_div(sample_rate_fixed as u64, (OUTPUT_RATE as u64) << 16);
-    ((base as u128 * rate_fixed as u128) >> 16) as u64
+    let step = ((base as u128 * rate_fixed as u128) >> 16) as u64;
+    // Match the Fixed-precision conversion increment observed in native
+    // Mac OS 8.1 PCM. Keeping extra division bits accumulates phase drift
+    // during sustained playback (covered by the native waveform regression).
+    let rounded = step.saturating_add(0x8000) & !0xffff;
+    // Preserve progress for positive rates smaller than one Fixed increment.
+    if rounded == 0 {
+        step
+    } else {
+        rounded
+    }
 }
 
 fn resampled_sample(samples: &[StereoSample], position: u64, step: u64) -> Option<StereoSample> {
@@ -1509,7 +1519,7 @@ mod tests {
     /// source sample rate and the user rate multiplier (both 16.16
     /// Fixed). The formula is:
     ///   base = fixed_div(sample_rate, OUTPUT_RATE << 16)
-    ///   step = (base * rate_fixed) >> 16
+    ///   step = (base * rate_fixed) >> 16, rounded to 16.16 precision
     ///
     /// Critical invariants:
     ///   - Source rate == OUTPUT_RATE with UNITY rate → step
@@ -1544,6 +1554,68 @@ mod tests {
             0x8000_0000,
             "22050 Hz source + 0.5x rate = step 0.5"
         );
+    }
+
+    #[test]
+    fn sustained_rate22khz_playback_matches_native_pcm() {
+        let waveform = [
+            128, 160, 192, 224, 240, 224, 192, 160, 128, 96, 64, 32, 16, 32, 64, 96,
+        ];
+        for (volume, native) in [
+            (
+                0x01000100,
+                include_bytes!(
+                    "../tests/toolbox-showcase/reference/native-audio/sndplay-full-44100.u8"
+                )
+                .as_slice(),
+            ),
+            (
+                0x00c000c0,
+                include_bytes!(
+                    "../tests/toolbox-showcase/reference/native-audio/sndplay-volume75-44100.u8"
+                )
+                .as_slice(),
+            ),
+            (
+                0x00800080,
+                include_bytes!(
+                    "../tests/toolbox-showcase/reference/native-audio/sndplay-volume50-44100.u8"
+                )
+                .as_slice(),
+            ),
+        ] {
+            let mut manager = SoundManager::new();
+            let mut channel = SndChannel::new(0x1000, true);
+            channel.play_buffer(
+                waveform.into_iter().cycle().take(131072).collect(),
+                RATE_22KHZ_FIXED,
+                PlaybackKind::Buffer,
+                0,
+            );
+            channel.set_volume(volume);
+            manager.channels.push(channel);
+            let expected: Vec<u8> = native.iter().step_by(2).copied().collect();
+            let actual = manager.mix_frame(expected.len());
+            assert_eq!(actual.len(), expected.len(), "native waveform must be complete");
+            let mut total_error = 0usize;
+            for (index, (&actual, &native)) in actual.iter().zip(&expected).enumerate() {
+                let error = actual.abs_diff(native);
+                assert!(
+                    error <= 3,
+                    "volume {volume:08x}, sample {index}: actual {actual}, native {native}"
+                );
+                total_error += usize::from(error);
+            }
+            assert!(
+                total_error <= expected.len(),
+                "mean native PCM error exceeds one level"
+            );
+            manager.mix_frame(1);
+            assert!(
+                !manager.channels[0].has_active_playback(),
+                "native playback duration differs"
+            );
+        }
     }
 
     /// `fixed_div(x, y)` returns `x / y` with 32 fractional

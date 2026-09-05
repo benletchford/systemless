@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "4c00ad4e6a3ff0a38e972f6fed76a66804572844a27425fff9c7645891bf74a2",
+  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
   "scenario": "oracle/lists.json",
   "scenario_sha256": "cc8bad1ba5fee115e3bf613ec528001cb6b70f9c296c3f68a6febe21dc991dec",
   "capture_date": "2026-09-05",
@@ -49,7 +49,7 @@
         },
         {
           "file": "reference/basiliskii-68k/15-lists-inactive.png",
-          "sha256": "513ff9836d592266e9e18c71d7dbac833d3c848d5968cc806767f33b8ecf38af"
+          "sha256": "1910fce93e7e2c973d6ee441cd62ebdfbdb670e05de20e419ff21b94334af4b1"
         },
         {
           "file": "reference/basiliskii-68k/16-lists-interacted.png",
@@ -57,7 +57,7 @@
         },
         {
           "file": "reference/basiliskii-68k/34-popup-lists.png",
-          "sha256": "e31a17a8c833b85bffa24dbdb30add41ecf77043f9417a7a2c39fb7631e98def"
+          "sha256": "dcbeeae62fb455185cd6750b9e93fa5ee902921bd8066d8eb063fb4973303267"
         }
       ]
     },
@@ -72,7 +72,7 @@
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/15-lists.png",
-          "sha256": "48399b59b1f6472c3b9dacda9d7e6f080eec926f636a87dd2ac1ef8344872808"
+          "sha256": "eeda6076d2870fa845fd138eb5a7d1ca1014040398a53fa25cc8894f7c842a9b"
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-selected.png",
@@ -80,7 +80,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-mutated.png",
-          "sha256": "85609fdb4025e8c4cf71fa4c97ac46b7dc0c64f1c2768f1fb4735d73a7ac5776"
+          "sha256": "fe4d1beb84f05411b182583d7c02413e3de3b2274aaa84f25fda8742ef6db84c"
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-scrolled.png",

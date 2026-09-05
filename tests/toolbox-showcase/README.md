@@ -184,9 +184,11 @@ exact Systemless framebuffer references while performing the same sequence:
     with `LSize`, capturing each resulting list state.
 17. Toggle the list inactive and active with `LActivate`, capturing both
     activation states.
-18. Activate Sound & Channels (item 10), verify SysBeep and `SndPlay` produce
-    PCM, queue volume/callback commands, issue immediate flush/quiet, wait for
-    the callback checkmark, then dispose the channel.
+18. Activate Sound & Channels (item 10), verify SysBeep output, then exercise
+    sustained `SndPlay` playback. Prove queued volume waits, flush retains the
+    current sample, quiet stops it, and the flushed callback never arrives.
+    Compare complete waveforms at full, 75% and 50% volume with both native
+    emulators, verify the callback checkmark, then dispose the channel.
 19. Activate Styled Text & Fonts (item 11), verify the rendered multistyled
     TextEdit and its Font Manager/measurement readouts, and capture the page.
 20. Activate Standard File (item 12). Capture the page, open the modern
@@ -296,6 +298,36 @@ SheepShaver's lighting gradient within eight levels per RGB channel, allowing
 one 5-bit display quantization step. This exercises geometric normals and the
 default specular material when the application omits those attributes. The 68K
 checkpoint retains its labelled bevel and gauge fallback.
+
+The Sound Manager replay is [`oracle/audio.json`](oracle/audio.json), with
+capture identities and PCM extraction records in
+[`oracle/audio-capture.json`](oracle/audio-capture.json). The resource contains
+131,072 unsigned 8-bit samples at the classic `rate22khz` rate (about 5.89 seconds).
+This leaves time for real mouse input to queue commands, flush the queue and
+stop playback. The replay waits for the displayed busy and completion states;
+fixed guest-tick delays alone do not synchronize the host audio device.
+
+Both Mac OS 8.1 emulators produce identical sampled-sound waveforms at full,
+75% and 50% volume. The native device captures are 44,100 Hz signed 16-bit
+big-endian stereo; both channels are equal. The published `.u8` evidence in
+[`reference/native-audio`](reference/native-audio) retains the signed high byte
+converted to unsigned mono. Extraction retains one silent sample before the
+first non-silent frame and excludes device startup latency. Systemless emits
+22,050 Hz unsigned mono, so the test compares every second native sample,
+allowing one final sample of duration rounding, at most three 8-bit levels per
+sample and a mean absolute error no greater than one level. It does not fit
+the phase, gain or frequency of the waveform.
+The mixer rounds its conversion increment to 16.16 Fixed precision, matching
+the native recordings and avoiding accumulating phase drift in sustained audio.
+
+The native evidence also distinguishes flush (current playback continues)
+from quiet (audible output stops), and retains the callback/status readouts.
+The SDL capture position is measured in written audio blocks and is not an
+exact raster timestamp. SysBeep's alert waveform depends on the operating
+system's configured alert sound; the integration test checks audible output
+and channel lifetime separately from the strict resource-backed PCM comparison.
+Set `SYSTEMLESS_TOOLBOX_AUDIO_OUTPUT` to a directory to retain the Systemless
+PCM evidence from a test run (`m68k` or `ppc`, unsigned 8-bit mono at 22,050 Hz).
 
 The TextEdit replay is [`oracle/textedit.json`](oracle/textedit.json), with
 artifact identities and reviewed native results in

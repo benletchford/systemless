@@ -1,0 +1,173 @@
+{
+  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
+  "scenario": "oracle/audio.json",
+  "scenario_sha256": "6758a6eb6e038c2e18daf3d46ec77552c05143056fd13def1788c481c4170c2c",
+  "capture_date": "2026-09-05",
+  "verification": {
+    "resource_samples": 131072,
+    "resource_sample_rate_fixed": "0x56ee8ba3",
+    "native_format": "44100 Hz signed 16-bit big-endian stereo, equal channels",
+    "published_format": "44100 Hz unsigned 8-bit mono, signed high byte plus 128",
+    "waveform_extraction": "one silent frame before first non-silent frame through last non-silent frame; device startup latency excluded",
+    "systemless_comparison": {
+      "output_rate": 22050,
+      "native_decimation": 2,
+      "maximum_duration_difference_samples": 1,
+      "maximum_sample_difference": 3,
+      "maximum_mean_sample_difference": 1
+    },
+    "outcomes": [
+      "full/75%/50% waveforms identical across both native emulators",
+      "flush preserves current sample",
+      "quiet stops current sample without flushed callback",
+      "normal completion flag and State checkmark received",
+      "channel disposed"
+    ]
+  },
+  "runs": [
+    {
+      "emulator": "basilisk",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "system": "Mac OS 8.1",
+      "clock_source": "live guest clock",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "source_pcm_sha256": "5e259dcd565150ddceadee4945499579b5b8c0c4cec5f39476606fb385b7c029",
+      "checkpoints": [
+        {
+          "file": "reference/basiliskii-68k/17-sound-controls.png",
+          "sha256": "6df8780b551771882083c72a5babefac1466f1cf4c5aec5fd40d973651457102"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-playing.png",
+          "sha256": "1a749bbfb3314eb502f3f7895a745d86bcd784f20bc5c59654355c90d6d2e247"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-completed.png",
+          "sha256": "d53d4aafe58fc41413fed4556461cc7861b7ba2edb286068d7445e5a1d52a678"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-volume75.png",
+          "sha256": "d53d4aafe58fc41413fed4556461cc7861b7ba2edb286068d7445e5a1d52a678"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-queued-idle.png",
+          "sha256": "d53d4aafe58fc41413fed4556461cc7861b7ba2edb286068d7445e5a1d52a678"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-flushed.png",
+          "sha256": "27752d7ccf3178cf754f4d11ac550cf8af315c525239ae0d26a707c82368ee78"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-quiet.png",
+          "sha256": "ba2a68af48ed84f619b4a26740a2b26a52427b3cecb6f6122a7a5ad4158f0da1"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-volume50.png",
+          "sha256": "d53d4aafe58fc41413fed4556461cc7861b7ba2edb286068d7445e5a1d52a678"
+        },
+        {
+          "file": "reference/basiliskii-68k/18-sound-complete.png",
+          "sha256": "b0138b244e3c28480bffd813b66acce90c6a202d8705e42fcab43d115333b8d6"
+        },
+        {
+          "file": "reference/basiliskii-68k/17-sound-disposed.png",
+          "sha256": "42ffb64c4243466aaf08946e1f3dd8e5a41257a8ea5b8d36dde3b46373dd5790"
+        },
+        {
+          "file": "reference/native-audio/sndplay-full-44100.u8",
+          "sha256": "13530e553ed51ee29f13061f4b0fe6d851911d382de1078ebfcd065f66731b58",
+          "source_start_frame": 712706,
+          "source_end_frame_exclusive": 972439
+        },
+        {
+          "file": "reference/native-audio/sndplay-volume75-44100.u8",
+          "sha256": "916407349a8c0db5e3626ea335cffe20595d8e4f23846007fd71527778ad4540",
+          "source_start_frame": 1064962,
+          "source_end_frame_exclusive": 1324695
+        },
+        {
+          "file": "reference/native-audio/sndplay-volume50-44100.u8",
+          "sha256": "d79ceb27ef76e590ca1bf8ae816b68a413c6f62ff59935004759dd72f0821d37",
+          "source_start_frame": 1851394,
+          "source_end_frame_exclusive": 2111127
+        }
+      ],
+      "cancelled_frames": 225277
+    },
+    {
+      "emulator": "sheepshaver",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "system": "Mac OS 8.1",
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "width": 800,
+      "height": 600,
+      "depth": 32,
+      "source_pcm_sha256": "cd7e476ac1436754b72a3e79adef37c1ffa700173445891e2ae321d69d842556",
+      "checkpoints": [
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-controls.png",
+          "sha256": "5a5d8759f991815e533d785e21d498d3a92871c132e37f5ae412c3a0540dbf02"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-playing.png",
+          "sha256": "afdafcde943f09d9a79bb323047360aa41ce2e170e9296a6e6bcd724f14cd8fe"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-completed.png",
+          "sha256": "9f37fc1987b4de09a57c8927732087c60dd97c20a8254460b3a84e205d76e136"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-volume75.png",
+          "sha256": "f61d9f4a04a0ab047fe070c19791d71975de3eefe4b04c151bc12653cdf65989"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-queued-idle.png",
+          "sha256": "c3d1c813f18ca6cdaf20ed9c2bff203852a140f5418c12cecb2557f55bb11289"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-flushed.png",
+          "sha256": "6ed16196fb1682c198d9c9e2c988ab58bf8b9e045b16cee55ffc2db62d13d240"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-quiet.png",
+          "sha256": "414179e07db53dc403559c8b9dfdfd94bc84f7a794a188f4e1566711d1dd4c61"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-volume50.png",
+          "sha256": "f61d9f4a04a0ab047fe070c19791d71975de3eefe4b04c151bc12653cdf65989"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/18-sound-complete.png",
+          "sha256": "35150443ecb91fb01fa0b39bfbd1801e490b123545d4e8b674736fc523f098ad"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/17-sound-disposed.png",
+          "sha256": "45eb74b8ffefbe939bb7fb4da17ac761def2123040fb6a05e19a4924da3d7810"
+        },
+        {
+          "file": "reference/native-audio/sndplay-full-44100.u8",
+          "sha256": "13530e553ed51ee29f13061f4b0fe6d851911d382de1078ebfcd065f66731b58",
+          "source_start_frame": 831490,
+          "source_end_frame_exclusive": 1091223
+        },
+        {
+          "file": "reference/native-audio/sndplay-volume75-44100.u8",
+          "sha256": "916407349a8c0db5e3626ea335cffe20595d8e4f23846007fd71527778ad4540",
+          "source_start_frame": 1150978,
+          "source_end_frame_exclusive": 1410711
+        },
+        {
+          "file": "reference/native-audio/sndplay-volume50-44100.u8",
+          "sha256": "d79ceb27ef76e590ca1bf8ae816b68a413c6f62ff59935004759dd72f0821d37",
+          "source_start_frame": 1650690,
+          "source_end_frame_exclusive": 1910423
+        }
+      ],
+      "cancelled_frames": 40957
+    }
+  ]
+}

@@ -1801,7 +1801,7 @@ static void DrawSoundPage(void)
     MoveTo(24, 56);
     DrawString("\pSysBeep, SndPlay, FIFO commands, immediate control, and callbacks.");
     MoveTo(24, 70);
-    DrawString("\pThe small resource-backed sample is mixed into the deterministic audio stream.");
+    DrawString("\pSustained sampled audio exposes queued commands, volume, flush and quiet.");
 
     SetRect(&r, 20, 82, 290, 238);
     DrawBeveledBox(&r, false);

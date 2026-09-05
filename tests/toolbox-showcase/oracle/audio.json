@@ -1,0 +1,427 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 171,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 171,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-controls.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "mouse_down",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 158,
+      "y": 183,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 900,
+      "label": "SndPlay channel busy before completion"
+    },
+    {
+      "type": "run",
+      "ticks": 1
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-playing.png"
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 165,
+      "y": 237,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 900,
+      "label": "Sound Manager completion received"
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-completed.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "mouse_down",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 158,
+      "y": 183,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 900,
+      "label": "SndPlay channel busy before completion"
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 165,
+      "y": 237,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 900,
+      "label": "Sound Manager completion received"
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-volume75.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 302
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 302
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 302
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-queued-idle.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 197
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 197
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 197
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 302
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 302
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 302
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 392
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 392
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 392
+    },
+    {
+      "type": "run",
+      "ticks": 1
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-flushed.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 462
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 462
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 462
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-quiet.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "mouse_down",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 352,
+      "h": 122
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 158,
+      "y": 183,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 900,
+      "label": "SndPlay channel busy before completion"
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 165,
+      "y": 237,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 900,
+      "label": "Sound Manager completion received"
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-volume50.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 108
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 108
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "screenshot",
+      "path": "18-sound-complete.png"
+    },
+    {
+      "type": "mouse_up",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 352,
+      "h": 240
+    },
+    {
+      "type": "mouse_down",
+      "v": 352,
+      "h": 240
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 352,
+      "h": 240
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "17-sound-disposed.png"
+    }
+  ]
+}
