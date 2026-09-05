@@ -16226,6 +16226,7 @@ mod tests {
                         a_regs: [0, 0, 0, 0, 0, 0, 0, WORKER_SP],
                         pc: WORKER_ENTRY,
                         ccr: 0,
+                        extended: None,
                         switch_in: (0, 0),
                         switch_out: (0, 0),
                         terminator: (0, 0),

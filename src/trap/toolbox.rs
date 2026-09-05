@@ -1096,69 +1096,6 @@ impl super::TrapDispatcher {
     const THREAD_NOT_FOUND_ERR: i16 = crate::thread_manager::THREAD_NOT_FOUND_ERR;
     const THREAD_PROTOCOL_ERR: i16 = crate::thread_manager::THREAD_PROTOCOL_ERR;
 
-    fn capture_cooperative_thread<C: CpuOps>(cpu: &C) -> CooperativeThread {
-        let d_regs = [
-            cpu.read_reg(Register::D0),
-            cpu.read_reg(Register::D1),
-            cpu.read_reg(Register::D2),
-            cpu.read_reg(Register::D3),
-            cpu.read_reg(Register::D4),
-            cpu.read_reg(Register::D5),
-            cpu.read_reg(Register::D6),
-            cpu.read_reg(Register::D7),
-        ];
-        let a_regs = [
-            cpu.read_reg(Register::A0),
-            cpu.read_reg(Register::A1),
-            cpu.read_reg(Register::A2),
-            cpu.read_reg(Register::A3),
-            cpu.read_reg(Register::A4),
-            cpu.read_reg(Register::A5),
-            cpu.read_reg(Register::A6),
-            cpu.read_reg(Register::A7),
-        ];
-        CooperativeThread {
-            d_regs,
-            a_regs,
-            pc: cpu.read_reg(Register::PC),
-            ccr: cpu.get_ccr(),
-            switch_in: (0, 0),
-            switch_out: (0, 0),
-            terminator: (0, 0),
-        }
-    }
-
-    fn install_cooperative_thread<C: CpuOps>(cpu: &mut C, thread: &CooperativeThread) {
-        let d_registers = [
-            Register::D0,
-            Register::D1,
-            Register::D2,
-            Register::D3,
-            Register::D4,
-            Register::D5,
-            Register::D6,
-            Register::D7,
-        ];
-        let a_registers = [
-            Register::A0,
-            Register::A1,
-            Register::A2,
-            Register::A3,
-            Register::A4,
-            Register::A5,
-            Register::A6,
-            Register::A7,
-        ];
-        for (register, value) in d_registers.into_iter().zip(thread.d_regs) {
-            cpu.write_reg(register, value);
-        }
-        for (register, value) in a_registers.into_iter().zip(thread.a_regs) {
-            cpu.write_reg(register, value);
-        }
-        cpu.write_reg(Register::PC, thread.pc);
-        cpu.set_ccr(thread.ccr);
-    }
-
     fn thread_return_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
         if self.thread_return_trampoline == 0 {
             let trampoline = bus.alloc(8);
@@ -1196,7 +1133,7 @@ impl super::TrapDispatcher {
                 .cooperative_context(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
                 .is_some()
         {
-            let thread = Self::capture_cooperative_thread(cpu);
+            let thread = CooperativeThread::capture(cpu);
             self.guest_calls.save_cooperative_context(
                 ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID),
                 thread,
@@ -1210,21 +1147,12 @@ impl super::TrapDispatcher {
     /// changing its scheduling state.
     fn save_current_cooperative_thread<C: CpuOps>(&mut self, cpu: &C) {
         let current_id = self.guest_calls.current_task().thread_id();
-        let saved = Self::capture_cooperative_thread(cpu);
-        match self.cooperative_thread_snapshot(cpu, current_id) {
-            Some(mut thread) => {
-                thread.d_regs = saved.d_regs;
-                thread.a_regs = saved.a_regs;
-                thread.pc = saved.pc;
-                thread.ccr = saved.ccr;
-                self.guest_calls
-                    .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), thread);
-            }
-            None => {
-                self.guest_calls
-                    .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), saved);
-            }
-        }
+        let mut thread = self
+            .cooperative_thread_snapshot(cpu, current_id)
+            .unwrap_or_default();
+        thread.save_registers(cpu);
+        self.guest_calls
+            .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), thread);
     }
 
     /// Pick the next ready thread. `suggested_thread` wins when it names a
@@ -1245,7 +1173,7 @@ impl super::TrapDispatcher {
             return false;
         };
         if let Some(next) = next {
-            Self::install_cooperative_thread(cpu, &next);
+            next.install(cpu);
         }
         true
     }
@@ -1326,7 +1254,7 @@ impl super::TrapDispatcher {
         // The execution owner validated both contexts and committed the result.
         // Installing this owned snapshot cannot yield or fail.
         if let Some(successor) = successor {
-            Self::install_cooperative_thread(cpu, &successor);
+            successor.install(cpu);
         }
         if !recycle && saved.stack_base != 0 {
             if saved.managed_pointer {
@@ -16296,7 +16224,7 @@ impl super::TrapDispatcher {
                                 }
                                 return Err(-50);
                             }
-                            let mut thread = Self::capture_cooperative_thread(cpu);
+                            let mut thread = CooperativeThread::capture(cpu);
                             thread.pc = thread_entry;
                             thread.a_regs[7] = entry_sp;
                             let mut frame = [0u8; 8];
@@ -16519,15 +16447,11 @@ impl super::TrapDispatcher {
                         let state = bus.read_word(sp + 4);
                         let thread = bus.read_long(sp + 6);
                         let current = self.guest_calls.current_task();
-                        let saved = Self::capture_cooperative_thread(cpu);
                         let mut outgoing = self
                             .guest_calls
                             .cooperative_context(current)
-                            .unwrap_or_else(|| saved.clone());
-                        outgoing.d_regs = saved.d_regs;
-                        outgoing.a_regs = saved.a_regs;
-                        outgoing.pc = saved.pc;
-                        outgoing.ccr = saved.ccr;
+                            .unwrap_or_default();
+                        outgoing.save_registers(cpu);
                         outgoing.d_regs[0] = 0;
                         outgoing.a_regs[7] = sp + 10;
                         match self.guest_calls.set_classic_thread_state(
@@ -16544,7 +16468,7 @@ impl super::TrapDispatcher {
                                 if switched {
                                     if let Some(next) = self.guest_calls.take_classic_task_handoff()
                                     {
-                                        Self::install_cooperative_thread(cpu, &next);
+                                        next.install(cpu);
                                     }
                                 }
                                 return Some(Ok(()));
@@ -27908,7 +27832,23 @@ mod tests {
 
     #[test]
     fn threaddispatch_yield_to_any_thread_roundtrips_complete_68k_contexts() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, _, mut bus) = setup();
+        let mut cpu = crate::cpu::M68kCpu::new();
+        cpu.core.set_sr(0x3010);
+        cpu.core.fpr = std::array::from_fn(|i| m68k::fpu::FloatX80 {
+            mantissa: 0x8000_0000_0000_0001 + i as u64,
+            sign_exp: 0x7fff,
+        });
+        cpu.core.fpcr = 0x1234;
+        cpu.core.fpsr = 0x5678;
+        cpu.core.fpiar = 0x0010_2340;
+        let initial_fpu = (
+            cpu.core.fpr,
+            cpu.core.fpcr,
+            cpu.core.fpsr,
+            cpu.core.fpiar,
+            cpu.core.fpu_just_reset,
+        );
         let new_sp = TEST_SP;
         let thread_made = bus.alloc(4);
         let entry = 0x0012_3456;
@@ -27931,6 +27871,20 @@ mod tests {
 
         let app_sp = new_sp + 28;
         let app_pc = 0x000F_0000;
+        cpu.core.set_sr(0x851b);
+        cpu.write_reg(Register::A7, app_sp);
+        cpu.core.fpr.reverse();
+        cpu.core.fpcr = 0x4321;
+        cpu.core.fpsr = 0x8765;
+        cpu.core.fpiar = 0x0010_9870;
+        cpu.core.fpu_just_reset = false;
+        let app_fpu = (
+            cpu.core.fpr,
+            cpu.core.fpcr,
+            cpu.core.fpsr,
+            cpu.core.fpiar,
+            cpu.core.fpu_just_reset,
+        );
         cpu.write_reg(Register::PC, app_pc);
         cpu.write_reg(Register::D3, 0xCAFE_BABE);
         disp.guest_calls.begin_m68k(
@@ -27964,6 +27918,17 @@ mod tests {
             0x000D_1000,
             cpu.read_reg(Register::A7),
         );
+        assert_eq!(cpu.core.get_sr() & 0xff00, 0x3000);
+        assert_eq!(
+            (
+                cpu.core.fpr,
+                cpu.core.fpcr,
+                cpu.core.fpsr,
+                cpu.core.fpiar,
+                cpu.core.fpu_just_reset
+            ),
+            initial_fpu
+        );
         assert_eq!(cpu.read_reg(Register::PC), entry);
         assert_eq!(cpu.read_reg(Register::A5), 0x00AA_5500);
         let thread_sp = cpu.read_reg(Register::A7);
@@ -27991,10 +27956,60 @@ mod tests {
             1,
             "the suspended worker continuation must remain task-local"
         );
+        assert_eq!(cpu.core.get_sr(), 0x851b);
+        assert_eq!(
+            (
+                cpu.core.fpr,
+                cpu.core.fpcr,
+                cpu.core.fpsr,
+                cpu.core.fpiar,
+                cpu.core.fpu_just_reset
+            ),
+            app_fpu
+        );
         assert_eq!(cpu.read_reg(Register::PC), app_pc);
         assert_eq!(cpu.read_reg(Register::A7), app_sp + 4);
         assert_eq!(cpu.read_reg(Register::D3), 0xCAFE_BABE);
         assert_eq!(bus.read_word(app_sp + 4), 0);
+
+        // SetThreadState has a separate ABI path for saving the outgoing task.
+        // Refresh every register while preserving its registered hooks.
+        let app = ExecutionTaskId::from_thread_id(2);
+        let mut saved = disp.guest_calls.cooperative_context(app).unwrap();
+        saved.switch_in = (0x1000, 1);
+        saved.switch_out = (0x2000, 2);
+        saved.terminator = (0x3000, 3);
+        assert!(disp.guest_calls.save_cooperative_context(app, saved));
+        cpu.core.set_sr(0x3209);
+        cpu.core.fpr.rotate_left(1);
+        cpu.core.fpcr = 0x40;
+        cpu.core.fpsr = 0x80;
+        cpu.core.fpiar = 0x0012_1000;
+        cpu.core.fpu_just_reset = true;
+        let latest = cpu.capture_extended_context();
+        cpu.write_reg(Register::A7, app_sp);
+        bus.write_long(app_sp, 3);
+        bus.write_word(app_sp + 4, 0); // ready
+        bus.write_long(app_sp + 6, 1); // current thread
+        cpu.write_reg(Register::D0, 0x0508);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.guest_calls.current_task().thread_id(), 3);
+        let worker_sp = cpu.read_reg(Register::A7) - 8;
+        cpu.write_reg(Register::A7, worker_sp);
+        bus.write_long(worker_sp, 2);
+        cpu.write_reg(Register::D0, 0x0205);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.guest_calls.current_task(), app);
+        assert_eq!(cpu.capture_extended_context(), latest);
+        assert_eq!(cpu.read_reg(Register::A7), app_sp + 10);
+        let saved = disp.guest_calls.cooperative_context(app).unwrap();
+        assert_eq!(saved.switch_in, (0x1000, 1));
+        assert_eq!(saved.switch_out, (0x2000, 2));
+        assert_eq!(saved.terminator, (0x3000, 3));
     }
 
     #[test]

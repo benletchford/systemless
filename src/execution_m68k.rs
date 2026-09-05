@@ -23,14 +23,7 @@ impl M68kExecution {
 
     pub(crate) fn apply_task_handoff(&mut self) {
         if let Some(context) = self.calls.take_classic_task_handoff() {
-            for (index, value) in context.d_regs.into_iter().enumerate() {
-                self.cpu.core.set_d(index, value);
-            }
-            for (index, value) in context.a_regs.into_iter().enumerate() {
-                self.cpu.core.set_a(index, value);
-            }
-            self.cpu.write_reg(Register::PC, context.pc);
-            self.cpu.core.set_ccr(context.ccr);
+            context.install(&mut self.cpu);
         }
     }
 
@@ -406,6 +399,82 @@ mod tests {
     use super::*;
     use crate::guest_call::GuestCallTarget;
     use crate::guest_procedure::GuestIsa;
+
+    #[test]
+    fn native_task_handoff_restores_classic_status_fpu_and_frame_state() {
+        use crate::cpu::{CpuOps, StepResult};
+        use crate::guest_call::{CooperativeThread, ExecutionTaskId, ThreadStorage};
+        use crate::memory::{MacMemoryBus, MemoryBus};
+
+        for just_reset in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            calls.start_native_engine();
+            assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+            let mut engine = M68kExecution::new(&calls);
+            engine.cpu.core.set_sr(0x250a);
+            engine.cpu.core.fpr = std::array::from_fn(|i| m68k::fpu::FloatX80 {
+                mantissa: 0x8000_0000_0000_0021 + i as u64,
+                sign_exp: 0xffff,
+            });
+            engine.cpu.core.fpcr = 0x20;
+            engine.cpu.core.fpsr = 0x0800_0000;
+            engine.cpu.core.fpiar = 0x0010_1000;
+            engine.cpu.core.fpu_just_reset = just_reset;
+            engine.cpu.write_reg(Register::PC, 0x0010_0000);
+            engine.cpu.write_reg(Register::A0, 0x0010_2000);
+            engine.cpu.write_reg(Register::A7, 0x0010_8000);
+            let mut saved = CooperativeThread::capture(&engine.cpu);
+            // A result may update CCR after the extended snapshot was taken.
+            saved.ccr = 0x11;
+            let worker = calls
+                .create_classic_thread(
+                    saved.clone(),
+                    ThreadStorage {
+                        stack_base: 0x0010_4000,
+                        stack_limit: 0x0010_9000,
+                        ..Default::default()
+                    },
+                    false,
+                    |_| true,
+                )
+                .unwrap();
+
+            engine.cpu.core.set_sr(0);
+            engine.cpu.core.fpr.fill(Default::default());
+            engine.cpu.core.fpcr = 0;
+            engine.cpu.core.fpsr = 0;
+            engine.cpu.core.fpiar = 0;
+            engine.cpu.core.fpu_just_reset = !just_reset;
+            engine.cpu.write_reg(Register::A7, 0x0010_3000);
+            let untouched = CooperativeThread::capture(&engine.cpu);
+            let mut native = ppc::PpcCpu::new();
+            native.lr = 0x1234;
+            assert_eq!(
+                calls.yield_native_thread(&mut native, worker.thread_id()),
+                Ok(true)
+            );
+            assert_eq!(CooperativeThread::capture(&engine.cpu), untouched);
+            assert!(calls.has_classic_task_handoff());
+            engine.apply_task_handoff();
+            assert!(!calls.has_classic_task_handoff());
+            assert_eq!(engine.cpu.core.get_sr(), 0x2511);
+            assert_eq!(engine.cpu.core.a(7), saved.a_regs[7]);
+            let mut expected = saved.extended.unwrap();
+            expected.sr = 0x2511;
+            assert_eq!(engine.cpu.capture_extended_context(), Some(expected));
+
+            // Check the frame through a guest FSAVE instruction, not just
+            // the implementation's null/idle bookkeeping bit.
+            let mut bus = MacMemoryBus::new(0x400000);
+            bus.write_word(0x0010_0000, 0xf310); // FSAVE (A0)
+            bus.write_long(0x0010_2000, 0xdead_beef);
+            assert!(matches!(engine.cpu.step(&mut bus), StepResult::Ok));
+            assert_eq!(bus.read_long(0x0010_2000) == 0, just_reset);
+            let after = CooperativeThread::capture(&engine.cpu);
+            engine.apply_task_handoff();
+            assert_eq!(CooperativeThread::capture(&engine.cpu), after);
+        }
+    }
 
     #[test]
     fn relaunch_waits_for_the_bound_process_calls_to_finish() {
