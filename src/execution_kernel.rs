@@ -65,12 +65,6 @@ pub(crate) enum ExecutionRoute {
     Blocked,
 }
 
-/// Task-lifecycle effect emitted by a process service.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ExecutionTaskEffect {
-    SwitchTo(ExecutionTaskId),
-}
-
 /// A request type that identifies the task which owns its continuation.
 ///
 /// The kernel does not know the request's ABI or payload. Each semantic edge
@@ -527,13 +521,26 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
 
     /// Allocate from the same monotonic namespace used by explicit registration.
     /// Exhaustion never wraps into aliases, the application task or retired IDs.
+    #[cfg(test)]
     pub(crate) fn create_task(&self) -> Result<ExecutionTaskId, ContinuationError> {
+        self.create_task_with(|_| true)
+    }
+
+    /// The synchronous commit must not reenter this owner or change state on
+    /// failure. Publish guest output only after preparation, before registration.
+    pub(crate) fn create_task_with(
+        &self,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Result<ExecutionTaskId, ContinuationError> {
         let id = self
             .0
             .borrow()
             .next_task_id
             .ok_or(ContinuationError::TaskIdsExhausted)?;
         let task = ExecutionTaskId::from_thread_id(id);
+        if !commit(task) {
+            return Err(ContinuationError::TaskCommitRefused { task });
+        }
         self.register_task(task)?;
         Ok(task)
     }
@@ -615,6 +622,14 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         })
     }
 
+    pub(crate) fn has_live_workers(&self) -> bool {
+        self.0
+            .borrow()
+            .task_states
+            .keys()
+            .any(|task| *task != ExecutionTaskId::APPLICATION)
+    }
+
     pub(crate) fn scheduling_state(&self, task: ExecutionTaskId) -> Option<ExecutionTaskState> {
         self.0.borrow().task_states.get(&task).copied()
     }
@@ -629,6 +644,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
 
     /// SetThreadStateEndCritical is one state transition, including failures.
     /// Inside Macintosh: Thread Manager (1999), pp. 71--72.
+    #[cfg(test)]
     pub(crate) fn set_state_ending_critical(
         &self,
         task: ExecutionTaskId,
@@ -669,14 +685,90 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         true
     }
 
+    /// Validate state, critical depth and successor before the adapter commits
+    /// its return. The callback is synchronous and must not reenter this store.
+    /// Inside Macintosh: Thread Manager (1999), pp. 67–72.
+    pub(crate) fn change_thread_state_with(
+        &self,
+        task: ExecutionTaskId,
+        requested: ExecutionTaskState,
+        suggested: Option<ExecutionTaskId>,
+        end_critical: bool,
+        commit: impl FnOnce(Option<ExecutionTaskId>) -> bool,
+    ) -> Option<Option<ExecutionTaskId>> {
+        let mut state = self.0.borrow_mut();
+        let depth = if end_critical {
+            state.critical_depth.checked_sub(1)?
+        } else {
+            state.critical_depth
+        };
+        if !state.stacks.contains_key(&task)
+            || (requested == ExecutionTaskState::Running && task != state.current_task)
+        {
+            return None;
+        }
+        let switching = task == state.current_task && requested != ExecutionTaskState::Running;
+        if switching && depth != 0 {
+            return None;
+        }
+        let successor = if switching {
+            let eligible = |candidate: ExecutionTaskId| {
+                candidate != task
+                    && state.task_states.get(&candidate) == Some(&ExecutionTaskState::Ready)
+            };
+            let next = suggested
+                .filter(|candidate| eligible(*candidate))
+                .or_else(|| {
+                    state
+                        .ready
+                        .iter()
+                        .copied()
+                        .find(|candidate| eligible(*candidate))
+                });
+            next
+        } else {
+            None
+        };
+        if !commit(successor) {
+            return None;
+        }
+        state.critical_depth = depth;
+        state.ready.retain(|queued| *queued != task);
+        let final_state =
+            if switching && successor.is_none() && requested == ExecutionTaskState::Ready {
+                ExecutionTaskState::Running
+            } else {
+                requested
+            };
+        state.task_states.insert(task, final_state);
+        if final_state == ExecutionTaskState::Ready {
+            state.ready.push_back(task);
+        }
+        if let Some(next) = successor {
+            state.ready.retain(|queued| *queued != next);
+            state.task_states.insert(next, ExecutionTaskState::Running);
+            state.current_task = next;
+        }
+        Some(successor)
+    }
+
     /// Selection is non-destructive: the adapter must first validate that it
     /// can install the successor. Only the committed switch removes it.
     pub(crate) fn next_ready_task(
         &self,
         suggested: Option<ExecutionTaskId>,
     ) -> Option<ExecutionTaskId> {
+        self.next_ready_task_after_critical(suggested, false)
+    }
+
+    pub(crate) fn next_ready_task_after_critical(
+        &self,
+        suggested: Option<ExecutionTaskId>,
+        end_critical: bool,
+    ) -> Option<ExecutionTaskId> {
         let state = self.0.borrow();
-        if state.critical_depth != 0 {
+        let depth = state.critical_depth.checked_sub(u32::from(end_critical))?;
+        if depth != 0 {
             return None;
         }
         let eligible = |task: ExecutionTaskId| {
@@ -688,7 +780,6 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
             .or_else(|| state.ready.iter().copied().find(|task| eligible(*task)))
     }
 
-    #[cfg(test)]
     pub(crate) fn critical_depth(&self) -> u32 {
         self.0.borrow().critical_depth
     }
@@ -705,15 +796,6 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         };
         state.critical_depth = depth;
         true
-    }
-
-    pub(crate) fn apply_task_effect(
-        &self,
-        effect: ExecutionTaskEffect,
-    ) -> Result<(), ContinuationError> {
-        match effect {
-            ExecutionTaskEffect::SwitchTo(task) => self.switch_to_task(task),
-        }
     }
 
     /// Submit a continuation to `task` and allocate its explicit call ID.
@@ -1146,6 +1228,14 @@ impl<T> Default for ExecutionTaskContextBank<T> {
 }
 
 impl<T> ExecutionTaskContextBank<T> {
+    pub(crate) fn same_tasks<U>(&self, other: &ExecutionTaskContextBank<U>) -> bool {
+        self.by_task.len() == other.by_task.len()
+            && self
+                .by_task
+                .keys()
+                .all(|task| other.by_task.contains_key(task))
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.by_task.is_empty()
     }
@@ -1204,6 +1294,47 @@ impl<T> ExecutionContextBank<T> {
         }
         let replaced = self.by_call.insert((task, call_id), context);
         debug_assert!(replaced.is_none());
+        Ok(())
+    }
+
+    /// Attach both sides of an ISA transition under one validated call token.
+    /// Refusal leaves the installed caller and both banks unchanged.
+    pub(crate) fn park_pair_while_activating<R: Copy + TaskOwned, C: Copy, U: Default>(
+        &mut self,
+        caller_bank: &mut ExecutionContextBank<U>,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        context: T,
+        caller: &mut U,
+    ) -> Result<(), (ContinuationError, T)> {
+        let mut state = kernel.0.borrow_mut();
+        if let Err(error) = ContinuationStore::validate_transition(
+            &state,
+            task,
+            call_id,
+            ContinuationPhase::Pending,
+        ) {
+            return Err((error, context));
+        }
+        if self.contains(task, call_id) || caller_bank.contains(task, call_id) {
+            return Err((
+                ContinuationError::ContextAttached { call_id, count: 1 },
+                context,
+            ));
+        }
+        let replacement = U::default();
+        state
+            .stacks
+            .get_mut(&task)
+            .and_then(|stack| stack.last_mut())
+            .expect("validated activation")
+            .phase = ContinuationPhase::Active;
+        *state.attached_contexts.entry(call_id).or_default() += 2;
+        self.by_call.insert((task, call_id), context);
+        caller_bank
+            .by_call
+            .insert((task, call_id), std::mem::replace(caller, replacement));
         Ok(())
     }
 
@@ -1277,8 +1408,31 @@ impl<T> ExecutionContextBank<T> {
     where
         T: Default,
     {
+        self.activate_parking_caller_with_context::<R, C, ()>(
+            kernel, task, call_id, caller, installed, None,
+        )
+    }
+
+    pub(crate) fn activate_parking_caller_with_context<R: Copy + TaskOwned, C: Copy, U>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        caller: Option<CallId>,
+        installed: &mut T,
+        companion: Option<(&mut ExecutionContextBank<U>, U)>,
+    ) -> Result<(), ContinuationError>
+    where
+        T: Default,
+    {
         let mut state = kernel.0.borrow_mut();
         ContinuationStore::validate_transition(&state, task, call_id, ContinuationPhase::Pending)?;
+        if companion
+            .as_ref()
+            .is_some_and(|(bank, _)| bank.contains(task, call_id))
+        {
+            return Err(ContinuationError::ContextAttached { call_id, count: 1 });
+        }
         if let Some(caller) = caller {
             ContinuationStore::validate_context_owner(&state, task, caller)?;
             if caller == call_id {
@@ -1296,6 +1450,10 @@ impl<T> ExecutionContextBank<T> {
                     .insert((task, caller), std::mem::take(installed));
                 *state.attached_contexts.entry(caller).or_default() += 1;
             }
+        }
+        if let Some((bank, context)) = companion {
+            bank.by_call.insert((task, call_id), context);
+            *state.attached_contexts.entry(call_id).or_default() += 1;
         }
         state
             .stacks
@@ -1453,6 +1611,15 @@ mod tests {
         assert_eq!(store.next_ready_task(None), Some(worker));
         assert!(!store.end_critical());
         assert_eq!(store.critical_depth(), 0);
+    }
+
+    #[test]
+    fn refused_task_creation_does_not_consume_identity_or_publish_state() {
+        let store = Store::default();
+        let before = store.clone();
+        assert!(store.create_task_with(|_| false).is_err());
+        assert_eq!(store, before);
+        assert_eq!(store.create_task().unwrap().thread_id(), 3);
     }
 
     #[test]

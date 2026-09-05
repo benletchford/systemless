@@ -1420,7 +1420,7 @@ impl MacMemoryBus {
     /// This is the atomic preflight for routed bulk copies: a mixed flat /
     /// sparse span may be valid, while any hole or read-only byte rejects the
     /// operation before the first destination byte changes.
-    fn is_guest_address_writable(&self, address: u32, len: usize) -> bool {
+    pub(crate) fn is_guest_address_writable(&self, address: u32, len: usize) -> bool {
         (0..len).all(|offset| {
             let guest_address = address.wrapping_add(offset as u32);
             let translated = self.translate_guest_address(guest_address);
@@ -1450,6 +1450,37 @@ impl MacMemoryBus {
     /// Commit a 16-bit ABI result only when all routed bytes accept writes.
     pub(crate) fn try_write_word(&mut self, address: u32, value: u16) -> bool {
         self.try_write_bytes_atomic(address, &value.to_be_bytes())
+    }
+
+    /// Commit a prepared operation's discontiguous outputs together. No guest
+    /// code or mapping mutation may run between preflight and these writes.
+    pub(crate) fn try_write_ranges_atomic(&mut self, writes: &[(u32, &[u8])]) -> bool {
+        if writes
+            .iter()
+            .any(|(address, bytes)| !self.is_guest_address_writable(*address, bytes.len()))
+        {
+            return false;
+        }
+        let originals: Vec<Vec<u8>> = writes
+            .iter()
+            .map(|(address, bytes)| {
+                (0..bytes.len())
+                    .map(|offset| self.read_byte(address.wrapping_add(offset as u32)))
+                    .collect()
+            })
+            .collect();
+        for (index, (address, bytes)) in writes.iter().enumerate() {
+            if !self.try_write_bytes_atomic(*address, bytes) {
+                for ((address, _), original) in
+                    writes[..index].iter().zip(&originals[..index]).rev()
+                {
+                    let restored = self.try_write_bytes_atomic(*address, original);
+                    debug_assert!(restored);
+                }
+                return false;
+            }
+        }
+        true
     }
 
     /// Read one guest longword only when all four routed bytes are mapped.
@@ -3699,6 +3730,20 @@ mod tests {
                 "in-RAM tail of straddling fill_zeros"
             );
         }
+    }
+
+    #[test]
+    fn prepared_discontiguous_writes_refuse_before_changing_any_destination() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_long(0x2000, 0x11223344);
+        bus.write_long(0x3000, 0x55667788);
+        bus.protect_readonly_code(0x3002, 2);
+        assert!(!bus.try_write_ranges_atomic(&[(0x2000, &[1, 2, 3, 4]), (0x3000, &[5, 6, 7, 8])]));
+        assert_eq!(bus.read_long(0x2000), 0x11223344);
+        assert_eq!(bus.read_long(0x3000), 0x55667788);
+        assert!(bus.try_write_ranges_atomic(&[(0x2000, &[1, 2, 3, 4]), (0x3000, &[5, 6])]));
+        assert_eq!(bus.read_long(0x2000), 0x01020304);
+        assert_eq!(bus.read_long(0x3000), 0x05067788);
     }
 
     #[test]

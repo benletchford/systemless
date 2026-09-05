@@ -4320,6 +4320,7 @@ impl FixtureRunner {
             crate::guest_procedure::GuestIsa::PowerPc
         ));
         ppc_app.set_ui_theme(self.config.ui_theme);
+        ppc_app.guest_calls.start_native_engine();
         self.native
             .install(NativeEngineRole::Application, ppc_app)
             .unwrap_or_else(|_| panic!("native engine slot is occupied"));
@@ -5601,6 +5602,8 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: bool,
     ) -> (usize, bool) {
+        self.dispatcher.guest_calls.resume_ready_task();
+        self.m68k.apply_task_handoff();
         let route = self
             .dispatcher
             .guest_calls
@@ -6533,6 +6536,9 @@ impl FixtureRunner {
         let mut ppc_app = native_context.adapter_mut();
 
         ppc_app.set_ui_theme(self.config.ui_theme);
+        if !ppc_app.guest_calls.prepare_native_task(&mut ppc_app.cpu) {
+            return (0, !self.halted);
+        }
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let cycles_per_tick = self.instructions_per_tick.max(1);
@@ -6543,7 +6549,9 @@ impl FixtureRunner {
             cycles_per_tick.saturating_sub(remaining_cycles),
         );
         if ppc_app.guest_calls.pending_powerpc_from_m68k().is_some()
-            && ppc_app.activate_powerpc_from_m68k().is_none()
+            && ppc_app
+                .activate_powerpc_from_m68k(&mut self.m68k.cpu)
+                .is_none()
         {
             self.halted = true;
             self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
@@ -6568,7 +6576,8 @@ impl FixtureRunner {
             // the native caller is parked. Do not deliver the native
             // application's VBL/Time Manager work against that successor's
             // task; the callback phase is retried once its owner is selected.
-            let native_callbacks_allowed = ppc_app.guest_calls.current_task() == ppc_task
+            let native_callbacks_allowed = ppc_app.guest_calls.current_task_is_running()
+                && ppc_app.guest_calls.current_task() == ppc_task
                 && ExecutionTaskId::from_thread_id(
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
@@ -6678,7 +6687,8 @@ impl FixtureRunner {
             (Vec::new(), Vec::new())
         } else {
             let tick_advance = self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
-            let native_callbacks_allowed = ppc_app.guest_calls.current_task() == ppc_task
+            let native_callbacks_allowed = ppc_app.guest_calls.current_task_is_running()
+                && ppc_app.guest_calls.current_task() == ppc_task
                 && ExecutionTaskId::from_thread_id(
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
@@ -6914,15 +6924,24 @@ impl FixtureRunner {
         ppc_app: &mut PpcLoadedApp,
         max_steps: usize,
     ) -> Option<(usize, bool)> {
+        self.m68k.apply_task_handoff();
+        if !ppc_app.guest_calls.has_m68k_execution() {
+            return None;
+        }
+        if !ppc_app.guest_calls.prepare_native_task(&mut ppc_app.cpu) {
+            return Some((0, true));
+        }
         let task = ppc_app.guest_calls.current_task();
-        let pending = self.m68k.activate_pending()?;
+        let pending = self.m68k.activate_pending(&ppc_app.cpu)?;
 
         // Thread Manager calls are allowed to yield while guest callback code
         // is running. Once that happens, `self.m68k.cpu` belongs to the successor
         // task and the continuation captured above must remain suspended until
         // its owner is scheduled again. Continuing here would execute the old
         // callback against the new task's registers and stack.
-        if ppc_app.guest_calls.current_task() != task {
+        if ppc_app.guest_calls.current_task() != task
+            || !ppc_app.guest_calls.current_task_is_running()
+        {
             return Some((0, true));
         }
 
@@ -6984,7 +7003,9 @@ impl FixtureRunner {
                         running = false;
                         break;
                     }
-                    if ppc_app.guest_calls.current_task() != task {
+                    if ppc_app.guest_calls.current_task() != task
+                        || !ppc_app.guest_calls.current_task_is_running()
+                    {
                         // The trap switched cooperative tasks. Preserve the active
                         // frame and let the outer scheduler run the newly selected
                         // task; only this task may resume the captured continuation.
@@ -15513,6 +15534,371 @@ mod tests {
     }
 
     #[test]
+    fn opposite_abi_thread_disposal_preserves_stack_provenance_and_retries_results() {
+        const FRAME: u32 = 0x6000;
+        const MADE: u32 = 0x7000;
+        const RESULT: u32 = 0x7100;
+        for (native_worker, recycle) in [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let loaded = app.ppc.as_mut().unwrap();
+            loaded.entry_pc = PPC_IMPORT_TRAP_BASE;
+            loaded.cpu.pc = PPC_IMPORT_TRAP_BASE;
+            loaded.memory.add_region(PPC_IMPORT_TRAP_BASE, vec![0; 4]);
+            let name = if native_worker {
+                "NewThread"
+            } else {
+                "DisposeThread"
+            };
+            let mut binding = test_ppc_import_binding(0, "InterfaceLib", name);
+            binding.dispatcher_target = if native_worker {
+                PpcImportDispatcherTarget::NewThread
+            } else {
+                PpcImportDispatcherTarget::DisposeThread
+            };
+            binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+            loaded.import_count = 1;
+            loaded.imports.push(binding);
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.init_app(&app);
+            if native_worker {
+                let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                cpu.lr = PPC_CODE_BASE;
+                cpu.gpr[3] = 1;
+                cpu.gpr[4] = PPC_CODE_BASE;
+                cpu.gpr[5] = 0;
+                cpu.gpr[6] = 1024;
+                cpu.gpr[7] = 1;
+                cpu.gpr[8] = RESULT;
+                cpu.gpr[9] = MADE;
+                assert!(runner.run_steps(32, None).1);
+            } else {
+                runner.m68k.cpu.write_reg(Register::A7, FRAME);
+                runner.m68k.cpu.write_reg(Register::D0, 0x0e03);
+                for (offset, value) in [
+                    (0, MADE),
+                    (4, RESULT),
+                    (8, 1),
+                    (12, 1024),
+                    (16, 0),
+                    (20, 0x8000),
+                    (24, 1),
+                ] {
+                    runner.bus.write_long(FRAME + offset, value);
+                }
+                runner
+                    .dispatcher
+                    .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0);
+            }
+            let calls = runner.dispatcher.guest_calls.shared_handle();
+            let worker = ExecutionTaskId::from_thread_id(runner.bus.read_long(MADE));
+            assert_eq!(worker.thread_id(), 3);
+            let mut storage = calls.thread_storage(worker).unwrap();
+            assert_eq!(storage.managed_pointer, native_worker);
+            assert_ne!(storage.stack_base, 0);
+            runner.bus.write_long(RESULT, 0x12345678);
+            storage.result_destination = u32::MAX - 1;
+            assert!(calls.set_thread_storage(worker, storage));
+            for (attempt, expected) in [(0, -619_i16), (1, 0), (2, -618)] {
+                if attempt == 1 {
+                    storage.result_destination = RESULT;
+                    assert!(calls.set_thread_storage(worker, storage));
+                }
+                if native_worker {
+                    runner.m68k.cpu.write_reg(Register::A7, FRAME);
+                    runner.m68k.cpu.write_reg(Register::D0, 0x0504);
+                    runner
+                        .bus
+                        .write_word(FRAME, if recycle { 0x0100 } else { 0 });
+                    runner.bus.write_long(FRAME + 2, 0xcafebabe);
+                    runner.bus.write_long(FRAME + 6, worker.thread_id());
+                    runner
+                        .dispatcher
+                        .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(runner.m68k.cpu.read_reg(Register::D0) as i16, expected);
+                } else {
+                    let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                    cpu.pc = PPC_IMPORT_TRAP_BASE;
+                    cpu.lr = PPC_CODE_BASE;
+                    cpu.gpr[3] = worker.thread_id();
+                    cpu.gpr[4] = 0xcafebabe;
+                    cpu.gpr[5] = u32::from(recycle);
+                    assert!(runner.run_steps(32, None).1);
+                    assert_eq!(
+                        runner.native.application().unwrap().cpu.gpr[3] as i16,
+                        expected
+                    );
+                }
+                assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+                assert_eq!(calls.thread_storage(worker).is_some(), attempt == 0);
+                assert_eq!(
+                    runner.bus.read_long(RESULT),
+                    if attempt == 0 { 0x12345678 } else { 0xcafebabe }
+                );
+                if native_worker {
+                    let manager = runner.dispatcher.process_memory_manager();
+                    let live = manager
+                        .borrow_mut()
+                        .native_mut()
+                        .native_ptr_records()
+                        .iter()
+                        .any(|record| record.ptr == storage.stack_base);
+                    assert_eq!(live, attempt == 0 || recycle);
+                    assert_eq!(calls.classic_thread_pool_count(0), 0);
+                } else {
+                    assert_eq!(
+                        runner.bus.get_alloc_size(storage.stack_base).is_some(),
+                        attempt == 0 || recycle
+                    );
+                    assert_eq!(
+                        calls.classic_thread_pool_count(0),
+                        usize::from(attempt != 0 && recycle)
+                    );
+                }
+            }
+            // Request the recycled stack through its original ABI. A released
+            // stack is unavailable, while recycled storage keeps its allocation
+            // and acquires a fresh identity and result destination.
+            if native_worker {
+                let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                cpu.pc = PPC_IMPORT_TRAP_BASE;
+                cpu.lr = PPC_CODE_BASE;
+                cpu.gpr[3] = 1;
+                cpu.gpr[4] = PPC_CODE_BASE;
+                cpu.gpr[5] = 0xabcdef;
+                cpu.gpr[6] = 1024;
+                cpu.gpr[7] = 1 | 2 | 16;
+                cpu.gpr[8] = RESULT + 4;
+                cpu.gpr[9] = MADE;
+                assert!(runner.run_steps(32, None).1);
+                assert_eq!(
+                    runner.native.application().unwrap().cpu.gpr[3] as i16,
+                    if recycle { 0 } else { -617 }
+                );
+            } else {
+                runner.m68k.cpu.write_reg(Register::A7, FRAME);
+                runner.m68k.cpu.write_reg(Register::D0, 0x0e03);
+                for (offset, value) in [
+                    (0, MADE),
+                    (4, RESULT + 4),
+                    (8, 1 | 2 | 16),
+                    (12, 1024),
+                    (16, 0xabcdef),
+                    (20, 0x8000),
+                    (24, 1),
+                ] {
+                    runner.bus.write_long(FRAME + offset, value);
+                }
+                runner
+                    .dispatcher
+                    .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    runner.m68k.cpu.read_reg(Register::D0) as i16,
+                    if recycle { 0 } else { -617 }
+                );
+            }
+            assert_eq!(runner.bus.read_long(MADE), if recycle { 4 } else { 0 });
+            if recycle {
+                let reused = calls
+                    .thread_storage(ExecutionTaskId::from_thread_id(4))
+                    .unwrap();
+                assert_eq!(reused.stack_base, storage.stack_base);
+                assert_eq!(reused.stack_limit, storage.stack_limit);
+                assert_eq!(reused.managed_pointer, native_worker);
+                assert_eq!(reused.result_destination, RESULT + 4);
+                assert!(calls.thread_storage(worker).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn stopped_last_thread_waits_for_a_task_reference_wakeup() {
+        use crate::cpu::CpuOps;
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::trap::test_helpers::{setup, TEST_SP};
+        const CLASSIC_PC: u32 = 0x4000;
+        const CLASSIC_SP: u32 = 0x5000;
+        for native in [false, true] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            if native {
+                let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+                let loaded = app.ppc.as_mut().unwrap();
+                loaded.entry_pc = PPC_IMPORT_TRAP_BASE;
+                loaded.cpu.pc = PPC_IMPORT_TRAP_BASE;
+                loaded.memory.add_region(PPC_IMPORT_TRAP_BASE, vec![0; 4]);
+                loaded.memory.add_region(
+                    PPC_CODE_BASE,
+                    [0x3a800055_u32, 0x48000000]
+                        .into_iter()
+                        .flat_map(u32::to_be_bytes)
+                        .collect(),
+                );
+                let mut binding = test_ppc_import_binding(0, "InterfaceLib", "SetThreadState");
+                binding.dispatcher_target = PpcImportDispatcherTarget::SetThreadState;
+                binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+                loaded.import_count = 1;
+                loaded.imports.push(binding);
+                runner.init_app(&app);
+                let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                cpu.lr = PPC_CODE_BASE;
+                cpu.gpr[3] = 1;
+                cpu.gpr[4] = 1;
+                cpu.gpr[5] = 0;
+                cpu.gpr[20] = 0;
+            } else {
+                for (i, word) in [0x303cu16, 0x0508, 0xabf2, 0x7c55, 0x60fe]
+                    .into_iter()
+                    .enumerate()
+                {
+                    runner.bus.write_word(CLASSIC_PC + i as u32 * 2, word);
+                }
+                runner.bus.write_long(CLASSIC_SP, 0);
+                runner.bus.write_word(CLASSIC_SP + 4, 1);
+                runner.bus.write_long(CLASSIC_SP + 6, 1);
+                runner.m68k.cpu.write_reg(Register::PC, CLASSIC_PC);
+                runner.m68k.cpu.write_reg(Register::A7, CLASSIC_SP);
+                runner.m68k.cpu.write_reg(Register::D6, 0);
+            }
+            let calls = runner.dispatcher.guest_calls.shared_handle();
+            let (steps, running) = runner.run_steps(32, None);
+            assert!(steps > 0 && running);
+            assert_eq!(
+                calls.scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Stopped)
+            );
+            assert!(!runner.m68k.can_relaunch());
+            for _ in 0..3 {
+                assert_eq!(runner.run_steps(32, None), (0, true));
+            }
+            if native {
+                let cpu = &runner.native.application().unwrap().cpu;
+                assert_eq!(cpu.pc, PPC_CODE_BASE);
+                assert_eq!(cpu.gpr[20], 0);
+            } else {
+                assert_eq!(runner.m68k.cpu.read_reg(Register::PC), CLASSIC_PC + 6);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D6), 0);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::A7), CLASSIC_SP + 10);
+            }
+            // An interrupt/completion edge may mark the stopped thread ready;
+            // the wake call must not execute or replace the suspended CPU.
+            let (mut wake, mut cpu, mut bus) = setup();
+            wake.guest_calls = calls.shared_handle();
+            bus.write_long(TEST_SP, ExecutionTaskId::APPLICATION.thread_id());
+            bus.write_long(TEST_SP + 4, 2);
+            cpu.write_reg(Register::D0, 0x0410);
+            wake.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(
+                calls.scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Ready)
+            );
+            let (steps, running) = runner.run_steps(32, None);
+            assert!(steps > 0 && running);
+            assert!(calls.current_task_is_running());
+            if native {
+                assert_eq!(runner.native.application().unwrap().cpu.gpr[20], 0x55);
+            } else {
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D6), 0x55);
+            }
+        }
+    }
+
+    #[test]
+    fn native_yield_roundtrips_classic_worker_yield_and_retirement() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::CooperativeThread;
+        const CLASSIC_ENTRY: u32 = 0x0305_0000;
+        const CLASSIC_SP: u32 = 0x0305_1100;
+        const RESULT: u32 = 0x0305_2000;
+        for retire in [false, true] {
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let native = app.ppc.as_mut().unwrap();
+            native.cpu.pc = PPC_IMPORT_TRAP_BASE;
+            native.entry_pc = PPC_IMPORT_TRAP_BASE;
+            native.cpu.lr = PPC_CODE_BASE;
+            native.cpu.gpr[20] = 0x1122_3344;
+            native.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
+            native.cpu.cr = 0x1357_2468;
+            native.memory.add_region(PPC_IMPORT_TRAP_BASE, vec![0; 4]);
+            native
+                .memory
+                .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+            native.memory.add_region(
+                CLASSIC_ENTRY,
+                [
+                    0x7c55u16,
+                    0x303c,
+                    if retire { 0xfffe } else { 0x0205 },
+                    0xabf2,
+                    0x60fe,
+                ]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+            );
+            native.memory.add_region(CLASSIC_SP, vec![0; 16]);
+            native.memory.write_u32_be(CLASSIC_SP, 2).unwrap();
+            native.memory.add_region(RESULT, vec![0; 4]);
+            let mut binding = test_ppc_import_binding(0, "InterfaceLib", "YieldToAnyThread");
+            binding.dispatcher_target = PpcImportDispatcherTarget::YieldToAnyThread;
+            binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+            native.import_count = 1;
+            native.imports.push(binding);
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.init_app(&app);
+            // Launch installs its entry return convention; use a live continuation
+            // that loops after the yield so it cannot halt the test's process.
+            runner.native.application_mut().unwrap().cpu.lr = PPC_CODE_BASE;
+            let calls = runner.dispatcher.guest_calls.shared_handle();
+            let worker = calls.create_task().unwrap();
+            let mut context = CooperativeThread::default();
+            context.pc = CLASSIC_ENTRY;
+            context.a_regs[0] = 0x5566_7788;
+            context.a_regs[7] = CLASSIC_SP;
+            assert!(calls.set_thread_storage(
+                worker,
+                crate::guest_call::ThreadStorage {
+                    result_destination: RESULT,
+                    ..Default::default()
+                }
+            ));
+            assert!(calls.save_cooperative_context(worker, context));
+            assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+            let (_, running) = runner.run_steps(64, None);
+            assert!(running);
+            assert_eq!(calls.current_task(), worker);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), CLASSIC_ENTRY);
+            let (_, running) = runner.run_steps(64, None);
+            assert!(running);
+            assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D6), 0x55);
+            assert!(calls.has_pending_task_handoff());
+            assert!(!runner.m68k.can_relaunch());
+            if retire {
+                assert_eq!(calls.scheduling_state(worker), None);
+                assert_eq!(runner.bus.read_long(RESULT), 0x5566_7788);
+            }
+            let (_, running) = runner.run_steps(64, None);
+            assert!(running);
+            assert!(!calls.has_pending_task_handoff());
+            let native = runner.native.application().unwrap();
+            assert_eq!(native.cpu.pc, PPC_CODE_BASE);
+            assert_eq!(native.cpu.gpr[20], 0x1122_3344);
+            assert_eq!(native.cpu.fpr[20], 0x4009_21fb_5444_2d18);
+            assert_eq!(native.cpu.cr, 0x1357_2468);
+        }
+    }
+
+    #[test]
     fn classic_worker_uses_native_application_engine_and_stops_at_its_return() {
         use crate::execution_kernel::ExecutionTaskState;
         use crate::guest_call::{GuestCallTarget, M68kResultTarget, PowerPcArguments};
@@ -15578,274 +15964,331 @@ mod tests {
 
     #[test]
     fn nested_cross_isa_callback_survives_a_cooperative_task_switch() {
-        use crate::guest_procedure::{
-            ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
-            ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_FLAGS_OFFSET,
-            ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA, ROUTINE_RECORD_POWERPC_ISA,
-            ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
-        };
-        use crate::mixed_mode::proc_info;
+        for native_worker in [false, true] {
+            use crate::guest_procedure::{
+                ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+                ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA,
+                ROUTINE_RECORD_FLAGS_OFFSET, ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA,
+                ROUTINE_RECORD_POWERPC_ISA, ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            };
+            use crate::mixed_mode::proc_info;
 
-        const OUTER_ENTRY: u32 = 0x0301_0000;
-        const OUTER_DESCRIPTOR: u32 = 0x0301_0100;
-        const OUTER_TVECTOR: u32 = 0x0301_0200;
-        const PPC_CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
-        const CALLBACK_RTOC: u32 = 0x0301_0300;
-        const INNER_DESCRIPTOR: u32 = 0x0301_0400;
-        const INNER_ENTRY: u32 = 0x0301_0500;
-        const STACK_BASE: u32 = 0x0302_0000;
-        const INITIAL_SP: u32 = STACK_BASE + 0x80;
-        const OUTER_RETURN: u32 = 0x0302_0110;
-        const WORKER_ENTRY: u32 = 0x0303_0000;
-        const WORKER_STACK: u32 = 0x0303_1000;
-        const WORKER_SP: u32 = WORKER_STACK + 0x10;
-        const ARGUMENT: u32 = 0x1020_3040;
+            const OUTER_ENTRY: u32 = 0x0301_0000;
+            const OUTER_DESCRIPTOR: u32 = 0x0301_0100;
+            const OUTER_TVECTOR: u32 = 0x0301_0200;
+            const PPC_CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+            const CALLBACK_RTOC: u32 = 0x0301_0300;
+            const INNER_DESCRIPTOR: u32 = 0x0301_0400;
+            const INNER_ENTRY: u32 = 0x0301_0500;
+            const STACK_BASE: u32 = 0x0302_0000;
+            const INITIAL_SP: u32 = STACK_BASE + 0x80;
+            const OUTER_RETURN: u32 = 0x0302_0110;
+            const WORKER_ENTRY: u32 = 0x0303_0000;
+            const WORKER_STACK: u32 = 0x0303_1000;
+            const WORKER_SP: u32 = WORKER_STACK + 0x10;
+            const ARGUMENT: u32 = 0x1020_3040;
 
-        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
-        let ppc_app = app.ppc.as_mut().expect("PPC app");
-        ppc_app
-            .memory
-            .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
-        ppc_app.memory.add_region(
-            OUTER_ENTRY,
-            [
-                0x4ef9,
-                (OUTER_DESCRIPTOR >> 16) as u16,
-                OUTER_DESCRIPTOR as u16,
-            ]
-            .into_iter()
-            .flat_map(u16::to_be_bytes)
-            .collect(),
-        );
-        ppc_app.memory.add_region(
-            INNER_ENTRY,
-            [
-                0x303c, 0x0205, // MOVE.W #YieldToAnyThread,D0
-                0xabf2, // ThreadDispatch
-                0x598f, // SUBQ.L #4,SP (undo the selector frame pop)
-                0x4e75, // RTS through the PPC Mixed Mode gateway
-            ]
-            .into_iter()
-            .flat_map(u16::to_be_bytes)
-            .collect(),
-        );
-        ppc_app.memory.add_region(
-            WORKER_ENTRY,
-            [
-                0x303c, 0x0205, // MOVE.W #YieldToAnyThread,D0
-                0xabf2, // ThreadDispatch back to the application task
-                0x60fe, // BRA.S -2 if no successor is currently runnable
-            ]
-            .into_iter()
-            .flat_map(u16::to_be_bytes)
-            .collect(),
-        );
-        ppc_app.memory.add_region(OUTER_DESCRIPTOR, vec![0; 0x100]);
-        ppc_app.memory.add_region(INNER_DESCRIPTOR, vec![0; 0x100]);
-        ppc_app.memory.add_region(OUTER_TVECTOR, vec![0; 8]);
-        ppc_app.memory.add_region(STACK_BASE, vec![0; 0x200]);
-        ppc_app.memory.add_region(WORKER_STACK, vec![0; 0x40]);
-
-        // A Pascal native-to-68K call owns one return long followed by its
-        // argument. The descriptor consumes both, so the completion boundary
-        // is exactly eight bytes above the initial stack pointer.
-        ppc_app
-            .memory
-            .write_u32_be(INITIAL_SP, OUTER_RETURN)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u32_be(INITIAL_SP + 4, ARGUMENT)
-            .unwrap();
-        ppc_app.memory.write_u32_be(WORKER_SP, 0).unwrap();
-
-        let proc_info = proc_info::PASCAL_STACK_BASED
-            | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE);
-        ppc_app
-            .memory
-            .write_u16_be(OUTER_DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u8(OUTER_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u16_be(OUTER_DESCRIPTOR + 10, 0)
-            .unwrap();
-        let outer_record = OUTER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
-        ppc_app
-            .memory
-            .write_u32_be(outer_record, proc_info)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u8(
-                outer_record + ROUTINE_RECORD_ISA_OFFSET,
-                ROUTINE_RECORD_POWERPC_ISA,
-            )
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u16_be(
-                outer_record + ROUTINE_RECORD_FLAGS_OFFSET,
-                ROUTINE_FLAG_USE_NATIVE_ISA,
-            )
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u32_be(
-                outer_record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
-                OUTER_TVECTOR,
-            )
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u32_be(OUTER_TVECTOR, PPC_CALLBACK)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u32_be(OUTER_TVECTOR + 4, CALLBACK_RTOC)
-            .unwrap();
-
-        let inner_proc_info = proc_info::PASCAL_STACK_BASED;
-        ppc_app
-            .memory
-            .write_u16_be(INNER_DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u8(INNER_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u16_be(INNER_DESCRIPTOR + 10, 0)
-            .unwrap();
-        let inner_record = INNER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
-        ppc_app
-            .memory
-            .write_u32_be(inner_record, inner_proc_info)
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u8(
-                inner_record + ROUTINE_RECORD_ISA_OFFSET,
-                ROUTINE_RECORD_M68K_ISA,
-            )
-            .unwrap();
-        ppc_app
-            .memory
-            .write_u32_be(
-                inner_record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
-                INNER_ENTRY,
-            )
-            .unwrap();
-
-        let callback_words = [
-            0x7fe8_02a6, // MFLR R31
-            0x3c60_0000 | (INNER_DESCRIPTOR >> 16),
-            0x6063_0000 | (INNER_DESCRIPTOR & 0xffff),
-            0x3c80_0000, // LIS R4,0 (void ProcInfo)
-            0x6084_0000, // ORI R4,R4,0
-            0x38a0_0000, // LI R5,0 (unused for a void signature)
-            ppc_test_relative_branch(PPC_CALLBACK + 6 * 4, PPC_IMPORT_TRAP_BASE) | 1,
-            0x7fe8_03a6, // MTLR R31
-            0x3863_0007, // ADDI R3,R3,7
-            0x4e80_0020, // BLR
-        ];
-        ppc_app.memory.add_region(
-            PPC_CALLBACK,
-            callback_words
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let ppc_app = app.ppc.as_mut().expect("PPC app");
+            ppc_app
+                .memory
+                .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+            ppc_app.memory.add_region(
+                OUTER_ENTRY,
+                [
+                    0x4ef9,
+                    (OUTER_DESCRIPTOR >> 16) as u16,
+                    OUTER_DESCRIPTOR as u16,
+                ]
                 .into_iter()
-                .flat_map(u32::to_be_bytes)
+                .flat_map(u16::to_be_bytes)
                 .collect(),
-        );
-        let mut call_universal_proc =
-            test_ppc_import_binding(0, "InterfaceLib", "CallUniversalProc");
-        call_universal_proc.trap_pc = PPC_IMPORT_TRAP_BASE;
-        call_universal_proc.dispatcher_target = PpcImportDispatcherTarget::CallUniversalProc;
-        ppc_app.import_count = 1;
-        ppc_app.imports = vec![call_universal_proc];
+            );
+            ppc_app.memory.add_region(
+                INNER_ENTRY,
+                [
+                    0x303c, 0x0205, // MOVE.W #YieldToAnyThread,D0
+                    0xabf2, // ThreadDispatch
+                    0x598f, // SUBQ.L #4,SP (undo the selector frame pop)
+                    0x4e75, // RTS through the PPC Mixed Mode gateway
+                ]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+            );
+            ppc_app.memory.add_region(
+                WORKER_ENTRY,
+                [
+                    0x303c, 0x0205, // MOVE.W #YieldToAnyThread,D0
+                    0xabf2, // ThreadDispatch back to the application task
+                    0x60fe, // BRA.S -2 if no successor is currently runnable
+                ]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+            );
+            ppc_app.memory.add_region(OUTER_DESCRIPTOR, vec![0; 0x100]);
+            ppc_app.memory.add_region(INNER_DESCRIPTOR, vec![0; 0x100]);
+            ppc_app.memory.add_region(OUTER_TVECTOR, vec![0; 8]);
+            ppc_app.memory.add_region(STACK_BASE, vec![0; 0x200]);
+            ppc_app.memory.add_region(WORKER_STACK, vec![0; 0x40]);
 
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
-            crate::guest_call::GuestCallTarget {
-                isa: crate::guest_procedure::GuestIsa::M68k,
-                entry: OUTER_ENTRY,
-                rtoc: 0,
-            },
-            OUTER_ENTRY,
-            INITIAL_SP,
-            OUTER_RETURN,
-            INITIAL_SP + 8,
-            crate::guest_call::M68kRegisterState::default(),
-            None,
-            PPC_CODE_BASE,
-            0,
-            PpcNativeReturnGpr3::Preserve,
-        ));
+            // A Pascal native-to-68K call owns one return long followed by its
+            // argument. The descriptor consumes both, so the completion boundary
+            // is exactly eight bytes above the initial stack pointer.
+            ppc_app
+                .memory
+                .write_u32_be(INITIAL_SP, OUTER_RETURN)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u32_be(INITIAL_SP + 4, ARGUMENT)
+                .unwrap();
+            ppc_app.memory.write_u32_be(WORKER_SP, 0).unwrap();
 
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner.init_app(&app);
-        assert!(runner
-            .dispatcher
-            .guest_calls
-            .register_task(ExecutionTaskId::from_thread_id(3)));
-        runner.dispatcher.guest_calls.save_cooperative_context(
-            ExecutionTaskId::from_thread_id(3),
-            CooperativeThread {
-                d_regs: [0; 8],
-                a_regs: [0, 0, 0, 0, 0, 0, 0, WORKER_SP],
-                pc: WORKER_ENTRY,
-                ccr: 0,
-                result_destination: 0,
-                stack_base: WORKER_STACK,
-                stack_limit: WORKER_STACK + 0x40,
-                switch_in: (0, 0),
-                switch_out: (0, 0),
-                terminator: (0, 0),
-            },
-        );
-        assert!(runner.dispatcher.guest_calls.set_scheduling_state(
-            ExecutionTaskId::from_thread_id(3),
-            crate::execution_kernel::ExecutionTaskState::Ready
-        ));
+            let proc_info = proc_info::PASCAL_STACK_BASED
+                | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE);
+            ppc_app
+                .memory
+                .write_u16_be(OUTER_DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u8(OUTER_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u16_be(OUTER_DESCRIPTOR + 10, 0)
+                .unwrap();
+            let outer_record = OUTER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+            ppc_app
+                .memory
+                .write_u32_be(outer_record, proc_info)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u8(
+                    outer_record + ROUTINE_RECORD_ISA_OFFSET,
+                    ROUTINE_RECORD_POWERPC_ISA,
+                )
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u16_be(
+                    outer_record + ROUTINE_RECORD_FLAGS_OFFSET,
+                    ROUTINE_FLAG_USE_NATIVE_ISA,
+                )
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u32_be(
+                    outer_record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+                    OUTER_TVECTOR,
+                )
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u32_be(OUTER_TVECTOR, PPC_CALLBACK)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u32_be(OUTER_TVECTOR + 4, CALLBACK_RTOC)
+                .unwrap();
 
-        let (_, running) = runner.run_steps(128, None);
-        assert!(running);
-        assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 3);
-        assert_eq!(
-            runner.m68k.parked.task_len(ExecutionTaskId::APPLICATION),
+            let inner_proc_info = proc_info::PASCAL_STACK_BASED;
+            ppc_app
+                .memory
+                .write_u16_be(INNER_DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u8(INNER_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u16_be(INNER_DESCRIPTOR + 10, 0)
+                .unwrap();
+            let inner_record = INNER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+            ppc_app
+                .memory
+                .write_u32_be(inner_record, inner_proc_info)
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u8(
+                    inner_record + ROUTINE_RECORD_ISA_OFFSET,
+                    ROUTINE_RECORD_M68K_ISA,
+                )
+                .unwrap();
+            ppc_app
+                .memory
+                .write_u32_be(
+                    inner_record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+                    INNER_ENTRY,
+                )
+                .unwrap();
+
+            let callback_words = [
+                0x7fe8_02a6, // MFLR R31
+                0x3c60_0000 | (INNER_DESCRIPTOR >> 16),
+                0x6063_0000 | (INNER_DESCRIPTOR & 0xffff),
+                0x3c80_0000, // LIS R4,0 (void ProcInfo)
+                0x6084_0000, // ORI R4,R4,0
+                0x38a0_0000, // LI R5,0 (unused for a void signature)
+                ppc_test_relative_branch(PPC_CALLBACK + 6 * 4, PPC_IMPORT_TRAP_BASE) | 1,
+                0x7fe8_03a6, // MTLR R31
+                0x3863_0007, // ADDI R3,R3,7
+                0x4e80_0020, // BLR
+            ];
+            ppc_app.memory.add_region(
+                PPC_CALLBACK,
+                callback_words
+                    .into_iter()
+                    .flat_map(u32::to_be_bytes)
+                    .collect(),
+            );
+            let mut call_universal_proc =
+                test_ppc_import_binding(0, "InterfaceLib", "CallUniversalProc");
+            call_universal_proc.trap_pc = PPC_IMPORT_TRAP_BASE;
+            call_universal_proc.dispatcher_target = PpcImportDispatcherTarget::CallUniversalProc;
+            ppc_app.import_count = 1;
+            ppc_app.imports = vec![call_universal_proc];
+            if native_worker {
+                let mut yielding = test_ppc_import_binding(1, "InterfaceLib", "YieldToThread");
+                yielding.dispatcher_target = PpcImportDispatcherTarget::YieldToThread;
+                yielding.trap_pc = PPC_IMPORT_TRAP_BASE + 4;
+                ppc_app
+                    .memory
+                    .add_region(PPC_IMPORT_TRAP_BASE + 4, vec![0; 4]);
+                ppc_app.imports.push(yielding);
+                ppc_app.import_count = 2;
+            }
+
+            assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+                crate::guest_call::GuestCallTarget {
+                    isa: crate::guest_procedure::GuestIsa::M68k,
+                    entry: OUTER_ENTRY,
+                    rtoc: 0,
+                },
+                OUTER_ENTRY,
+                INITIAL_SP,
+                OUTER_RETURN,
+                INITIAL_SP + 8,
+                crate::guest_call::M68kRegisterState::default(),
+                None,
+                PPC_CODE_BASE,
+                0,
+                PpcNativeReturnGpr3::Preserve,
+            ));
+
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.init_app(&app);
+            if native_worker {
+                let mut cpu = PpcCpu::new();
+                cpu.pc = PPC_IMPORT_TRAP_BASE + 4;
+                cpu.lr = PPC_CODE_BASE;
+                cpu.gpr[1] = WORKER_SP;
+                cpu.gpr[3] = ExecutionTaskId::APPLICATION.thread_id();
+                let task = runner
+                    .dispatcher
+                    .guest_calls
+                    .create_native_thread(
+                        crate::guest_call::NativeThreadContext { cpu: Box::new(cpu) },
+                        crate::guest_call::ThreadStorage {
+                            result_destination: 0,
+                            stack_base: 0,
+                            stack_limit: 0,
+                            managed_pointer: true,
+                        },
+                        true,
+                        |_| true,
+                    )
+                    .unwrap();
+                assert_eq!(task.thread_id(), 3);
+            } else {
+                assert!(runner
+                    .dispatcher
+                    .guest_calls
+                    .register_task(ExecutionTaskId::from_thread_id(3)));
+                assert!(runner.dispatcher.guest_calls.set_thread_storage(
+                    ExecutionTaskId::from_thread_id(3),
+                    crate::guest_call::ThreadStorage {
+                        stack_base: WORKER_STACK,
+                        stack_limit: WORKER_STACK + 0x40,
+                        ..Default::default()
+                    }
+                ));
+                runner.dispatcher.guest_calls.save_cooperative_context(
+                    ExecutionTaskId::from_thread_id(3),
+                    CooperativeThread {
+                        d_regs: [0; 8],
+                        a_regs: [0, 0, 0, 0, 0, 0, 0, WORKER_SP],
+                        pc: WORKER_ENTRY,
+                        ccr: 0,
+                        switch_in: (0, 0),
+                        switch_out: (0, 0),
+                        terminator: (0, 0),
+                    },
+                );
+            }
+            assert!(runner.dispatcher.guest_calls.set_scheduling_state(
+                ExecutionTaskId::from_thread_id(3),
+                crate::execution_kernel::ExecutionTaskState::Ready
+            ));
+
+            let (_, running) = runner.run_steps(128, None);
+            assert!(running);
+            assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 3);
+            assert_eq!(
+            runner.dispatcher.guest_calls.m68k_context_bank().borrow().task_len(ExecutionTaskId::APPLICATION),
             1,
             "the application-owned nested 68K context must stay parked while its callback yields"
         );
-        assert_eq!(
-            runner
-                .m68k
-                .parked
-                .task_len(ExecutionTaskId::from_thread_id(3)),
-            0,
-            "the worker must not consume the application's parked context"
-        );
+            assert_eq!(
+                runner
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow()
+                    .task_len(ExecutionTaskId::from_thread_id(3)),
+                0,
+                "the worker must not consume the application's parked context"
+            );
 
-        let (_, running) = runner.run_steps(128, None);
-        assert!(running);
-        assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
-        assert_eq!(
-            runner.m68k.parked.task_len(ExecutionTaskId::APPLICATION),
-            1,
-            "returning from the worker must leave the nested application context parked"
-        );
+            let (_, running) = runner.run_steps(128, None);
+            assert!(running);
+            assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
+            if !native_worker {
+                assert_eq!(
+                    runner
+                        .dispatcher
+                        .guest_calls
+                        .m68k_context_bank()
+                        .borrow()
+                        .task_len(ExecutionTaskId::APPLICATION),
+                    1,
+                    "returning from the worker must leave the nested application context parked"
+                );
+            }
 
-        let (_, running) = runner.run_steps(128, None);
-        assert!(running);
-        assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
-        assert!(runner.dispatcher.guest_calls.is_empty());
-        assert!(runner.m68k.parked.is_empty());
-        let ppc_app = runner.native.application().expect("PPC app retained");
-        assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
-        // The outer routine has a void ProcInfo, so its internal callback's
-        // transient R3 value must not leak into the parked native caller.
-        assert_eq!(ppc_app.cpu.gpr[3], 0);
+            if !runner.dispatcher.guest_calls.is_empty() {
+                let (_, running) = runner.run_steps(128, None);
+                assert!(running);
+            }
+            assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
+            assert!(runner.dispatcher.guest_calls.is_empty());
+            assert!(runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .is_empty());
+            let ppc_app = runner.native.application().expect("PPC app retained");
+            assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
+            // The outer routine has a void ProcInfo, so its internal callback's
+            // transient R3 value must not leak into the parked native caller.
+            assert_eq!(ppc_app.cpu.gpr[3], 0);
+        }
     }
 
     #[test]
@@ -16039,17 +16482,36 @@ mod tests {
                 runner.m68k.cpu.read_reg(Register::PC),
                 runner.m68k.cpu.read_reg(Register::A7),
                 runner.dispatcher.guest_calls.len(),
-                runner.m68k.parked.len(),
+                runner.dispatcher.guest_calls.m68k_context_bank().borrow().len(),
                 runner.native.application()
                     .map_or(0, |ppc_app| ppc_app.cpu.pc),
             );
-            maximum_parked = maximum_parked.max(runner.m68k.parked.len());
-            if !runner.m68k.parked.is_empty()
+            maximum_parked = maximum_parked.max(
+                runner
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow()
+                    .len(),
+            );
+            if !runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .is_empty()
                 && runner.m68k.cpu.read_reg(Register::PC) == M68K_INNER + 6
             {
                 inner_entries += 1;
             }
-            if !checked_wrong_boundary && !runner.m68k.parked.is_empty() {
+            if !checked_wrong_boundary
+                && !runner
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow()
+                    .is_empty()
+            {
                 let frame_count = runner.dispatcher.guest_calls.len();
                 let mut native_context = runner
                     .native
@@ -16057,7 +16519,15 @@ mod tests {
                     .expect("PPC app");
                 let mut ppc_app = native_context.adapter_mut();
                 assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
-                assert_eq!(runner.m68k.parked.len(), 1);
+                assert_eq!(
+                    runner
+                        .dispatcher
+                        .guest_calls
+                        .m68k_context_bank()
+                        .borrow()
+                        .len(),
+                    1
+                );
                 assert_eq!(ppc_app.guest_calls.len(), frame_count);
                 runner
                     .native
@@ -16073,7 +16543,12 @@ mod tests {
         assert!(checked_wrong_boundary);
         assert_eq!(inner_entries, 2);
         assert_eq!(maximum_parked, 1);
-        assert!(runner.m68k.parked.is_empty());
+        assert!(runner
+            .dispatcher
+            .guest_calls
+            .m68k_context_bank()
+            .borrow()
+            .is_empty());
         assert!(runner.dispatcher.guest_calls.is_empty());
         assert_eq!(runner.m68k.cpu.core.d(6), OUTER_D6);
         let ppc_app = runner.native.application_mut().expect("PPC app retained");
@@ -16558,6 +17033,27 @@ mod tests {
         assert!(calls.complete_m68k(0x2002, 0x3000));
         runner.init_app(&app);
         assert!(runner.m68k.can_relaunch());
+        let worker = calls
+            .create_native_thread(
+                crate::guest_call::NativeThreadContext {
+                    cpu: Box::new(PpcCpu::new()),
+                },
+                crate::guest_call::ThreadStorage {
+                    result_destination: 0,
+                    stack_base: 0,
+                    stack_limit: 0,
+                    managed_pointer: true,
+                },
+                true,
+                |_| true,
+            )
+            .unwrap();
+        let native_pc = runner.native.application().unwrap().cpu.pc;
+        let rejected =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.init_app(&app)));
+        assert!(rejected.is_err());
+        assert_eq!(runner.native.application().unwrap().cpu.pc, native_pc);
+        assert!(calls.scheduling_state(worker).is_some());
     }
 
     #[test]
@@ -16641,7 +17137,11 @@ mod tests {
             assert!(ppc_app
                 .guest_calls
                 .park_context(
-                    &mut runner.m68k.parked,
+                    &mut runner
+                        .dispatcher
+                        .guest_calls
+                        .m68k_context_bank()
+                        .borrow_mut(),
                     task,
                     call_id,
                     std::mem::take(&mut runner.m68k.cpu),
@@ -16663,7 +17163,12 @@ mod tests {
             assert_eq!(runner.m68k.cpu.read_reg(Register::PC), RETURN_PC);
             assert_eq!(runner.m68k.cpu.read_reg(Register::A7), FINAL_SP);
             assert!(ppc_app.guest_calls.is_empty());
-            assert!(runner.m68k.parked.is_empty());
+            assert!(runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .is_empty());
         }
     }
 
@@ -16719,28 +17224,64 @@ mod tests {
         assert!(ppc_app
             .guest_calls
             .park_context(
-                &mut runner.m68k.parked,
+                &mut runner
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow_mut(),
                 task,
                 call_id,
                 std::mem::take(&mut runner.m68k.cpu),
             )
             .is_ok());
-        assert_eq!(runner.m68k.parked.task_len(task), 1);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            1
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
-        assert_eq!(runner.m68k.parked.task_len(task), 1);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            1
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         ppc_app.memory.add_readonly_region(RESULT, vec![0xaa; 4]);
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(0xaaaa_aaaa));
-        assert_eq!(runner.m68k.parked.task_len(task), 1);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            1
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         ppc_app.memory.add_region(RESULT, vec![0; 4]);
         assert!(runner.resume_m68k_after_powerpc(&mut ppc_app));
-        assert_eq!(runner.m68k.parked.task_len(task), 0);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            0
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_none());
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(RESULT_VALUE));
         assert_eq!(runner.m68k.cpu.core.d(0), PARKED_D0);

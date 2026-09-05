@@ -8,6 +8,7 @@
 //! while each adapter remains responsible for its architectural registers and
 //! ABI frame.
 
+use crate::cpu::M68kCpu;
 #[cfg(test)]
 pub(crate) use crate::execution_kernel::MAX_POWERPC_GUEST_ARGUMENTS;
 pub(crate) use crate::execution_kernel::{
@@ -17,8 +18,8 @@ pub(crate) use crate::execution_kernel::{
     PendingPowerPcExecution, PowerPcArguments, PowerPcReturnState,
 };
 use crate::execution_kernel::{
-    ExecutionContextBank, ExecutionRoute, ExecutionTaskContextBank, ExecutionTaskEffect,
-    ExecutionTaskState, NativeAvailability,
+    ExecutionContextBank, ExecutionRoute, ExecutionTaskContextBank, ExecutionTaskState,
+    NativeAvailability,
 };
 use crate::guest_procedure::GuestIsa;
 use ppc::{PpcCpu, PpcImportAction, PpcNativeReturnGpr3};
@@ -38,13 +39,6 @@ pub(crate) struct CooperativeThread {
     pub(crate) a_regs: [u32; 8],
     pub(crate) pc: u32,
     pub(crate) ccr: u8,
-    /// `void **threadResult` the entry proc's return value is stored to.
-    pub(crate) result_destination: u32,
-    /// Lowest address of the private guest stack, or 0 for the
-    /// application thread, which keeps the process stack.
-    pub(crate) stack_base: u32,
-    /// Address one past the top of the private guest stack.
-    pub(crate) stack_limit: u32,
     /// `SetThreadSwitcher` switch-in proc and its `switchProcParam`.
     pub(crate) switch_in: (u32, u32),
     /// `SetThreadSwitcher` switch-out proc and its `switchProcParam`.
@@ -359,6 +353,39 @@ impl PartialEq for GuestCallFrame {
 
 impl Eq for GuestCallFrame {}
 
+/// Full native engine state is retained, including the CPU's private import
+/// continuations. The active CPU remains with its engine between task switches.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeThreadContext {
+    pub(crate) cpu: Box<PpcCpu>,
+}
+
+/// Process-owned storage provenance is independent of a task's current ISA.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ThreadStorage {
+    pub(crate) result_destination: u32,
+    pub(crate) stack_base: u32,
+    pub(crate) stack_limit: u32,
+    /// Managed pointers are released through the process Memory Manager;
+    /// reserved guest stacks use the classic allocator when not recycled.
+    pub(crate) managed_pointer: bool,
+}
+
+#[derive(Clone, Debug)]
+enum TaskResumeContext {
+    Classic(CooperativeThread),
+    Native(Box<PpcCpu>),
+}
+
+impl TaskResumeContext {
+    fn isa(&self) -> GuestIsa {
+        match self {
+            Self::Classic(_) => GuestIsa::M68k,
+            Self::Native(_) => GuestIsa::PowerPc,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ExecutionTaskCalls {
     /// Authoritative task/order/phase state. The frame map below is only the
@@ -366,16 +393,32 @@ struct ExecutionTaskCalls {
     kernel: ContinuationStore,
     frames: HashMap<CallId, GuestCallFrame>,
     powerpc_contexts: ExecutionContextBank<Box<PpcCpu>>,
+    m68k_contexts: Rc<RefCell<ExecutionContextBank<M68kCpu>>>,
     cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
+    native_threads: ExecutionTaskContextBank<NativeThreadContext>,
+    thread_storage: ExecutionTaskContextBank<ThreadStorage>,
+    thread_pool: Vec<(GuestIsa, ThreadStorage)>,
+    native_cpu_task: Option<ExecutionTaskId>,
+    handoff: Option<(ExecutionTaskId, TaskResumeContext)>,
 }
 
 impl Clone for ExecutionTaskCalls {
     fn clone(&self) -> Self {
+        assert!(
+            self.m68k_contexts.borrow().is_empty(),
+            "cannot clone an execution owner while a non-cloneable 68K engine is parked"
+        );
         Self {
             kernel: self.kernel.clone(),
             frames: self.frames.clone(),
             powerpc_contexts: self.powerpc_contexts.clone(),
+            m68k_contexts: Rc::new(RefCell::new(ExecutionContextBank::default())),
             cooperative_contexts: self.cooperative_contexts.clone(),
+            native_threads: self.native_threads.clone(),
+            thread_storage: self.thread_storage.clone(),
+            thread_pool: self.thread_pool.clone(),
+            native_cpu_task: self.native_cpu_task,
+            handoff: self.handoff.clone(),
         }
     }
 }
@@ -385,7 +428,23 @@ impl PartialEq for ExecutionTaskCalls {
         self.kernel == other.kernel
             && self.frames == other.frames
             && self.powerpc_contexts.same_slots(&other.powerpc_contexts)
+            && self
+                .m68k_contexts
+                .borrow()
+                .same_slots(&other.m68k_contexts.borrow())
             && self.cooperative_contexts == other.cooperative_contexts
+            && self.native_threads.same_tasks(&other.native_threads)
+            && self.thread_storage == other.thread_storage
+            && self.thread_pool == other.thread_pool
+            && self.native_cpu_task == other.native_cpu_task
+            && self
+                .handoff
+                .as_ref()
+                .map(|(task, context)| (*task, context.isa()))
+                == other
+                    .handoff
+                    .as_ref()
+                    .map(|(task, context)| (*task, context.isa()))
     }
 }
 
@@ -397,14 +456,236 @@ impl Default for ExecutionTaskCalls {
             kernel: ContinuationStore::default(),
             frames: HashMap::new(),
             powerpc_contexts: ExecutionContextBank::default(),
+            m68k_contexts: Rc::new(RefCell::new(ExecutionContextBank::default())),
             cooperative_contexts: ExecutionTaskContextBank::default(),
+            native_threads: ExecutionTaskContextBank::default(),
+            thread_storage: ExecutionTaskContextBank::default(),
+            thread_pool: Vec::new(),
+            native_cpu_task: None,
+            handoff: None,
         }
     }
 }
 
 impl ExecutionTaskCalls {
+    fn saved_context(&self, task: ExecutionTaskId) -> Option<TaskResumeContext> {
+        let isa = self
+            .kernel
+            .peek(task)
+            .and_then(|call| {
+                let frame = self.frames.get(&call.call_id())?;
+                Some(
+                    if call.phase() == crate::execution_kernel::ContinuationPhase::Active {
+                        frame.target.isa
+                    } else {
+                        match frame.origin {
+                            GuestCallOrigin::M68k(_) => GuestIsa::M68k,
+                            GuestCallOrigin::PowerPc(_) => GuestIsa::PowerPc,
+                        }
+                    },
+                )
+            })
+            .unwrap_or_else(|| {
+                if self.kernel.task_entry_isa(task) == Some(GuestIsa::PowerPc)
+                    || (self.native_threads.get(task).is_some()
+                        && self.cooperative_contexts.get(task).is_none())
+                {
+                    GuestIsa::PowerPc
+                } else {
+                    GuestIsa::M68k
+                }
+            });
+        match isa {
+            GuestIsa::M68k => self
+                .cooperative_contexts
+                .get(task)
+                .cloned()
+                .map(TaskResumeContext::Classic),
+            GuestIsa::PowerPc => self
+                .native_threads
+                .get(task)
+                .map(|saved| TaskResumeContext::Native(saved.cpu.clone())),
+        }
+    }
+
+    fn change_thread_state(
+        &mut self,
+        thread: u32,
+        new_state: u16,
+        suggested: u32,
+        end_critical: bool,
+        commit: impl FnOnce() -> bool,
+    ) -> Result<Option<(ExecutionTaskId, TaskResumeContext)>, i16> {
+        use crate::thread_manager::{THREAD_NOT_FOUND_ERR, THREAD_PROTOCOL_ERR};
+        let task = if thread <= 1 {
+            self.kernel.current_task()
+        } else {
+            ExecutionTaskId::from_thread_id(thread)
+        };
+        if self.kernel.scheduling_state(task).is_none() {
+            return Err(THREAD_NOT_FOUND_ERR);
+        }
+        let requested = match new_state {
+            0 => ExecutionTaskState::Ready,
+            1 => ExecutionTaskState::Stopped,
+            2 => ExecutionTaskState::Running,
+            _ => return Err(THREAD_PROTOCOL_ERR),
+        };
+        if self.handoff.is_some() {
+            return Err(THREAD_PROTOCOL_ERR);
+        }
+        // Capture only the selected candidate before the kernel's atomic commit.
+        let candidate = self
+            .kernel
+            .next_ready_task_after_critical(
+                (suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested)),
+                end_critical,
+            )
+            .and_then(|next| self.saved_context(next).map(|context| (next, context)));
+        let mut successor = None;
+        self.kernel
+            .change_thread_state_with(
+                task,
+                requested,
+                (suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested)),
+                end_critical,
+                |next| {
+                    if let Some(next) = next {
+                        let Some((task, context)) = candidate else {
+                            return false;
+                        };
+                        if task != next {
+                            return false;
+                        }
+                        successor = Some((next, context));
+                    }
+                    commit()
+                },
+            )
+            .ok_or(THREAD_PROTOCOL_ERR)?;
+        Ok(successor)
+    }
+
+    fn create_thread(
+        &mut self,
+        context: TaskResumeContext,
+        storage: ThreadStorage,
+        suspended: bool,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Option<ExecutionTaskId> {
+        let task = self.kernel.create_task_with(commit).ok()?;
+        self.kernel.bind_task_entry_isa(task, context.isa());
+        match context {
+            TaskResumeContext::Classic(context) => {
+                self.cooperative_contexts.insert(task, context);
+            }
+            TaskResumeContext::Native(cpu) => {
+                self.native_threads
+                    .insert(task, NativeThreadContext { cpu });
+            }
+        }
+        self.thread_storage.insert(task, storage);
+        if !suspended {
+            assert!(self
+                .kernel
+                .set_scheduling_state(task, ExecutionTaskState::Ready));
+        }
+        Some(task)
+    }
+
+    fn retire_thread(
+        &mut self,
+        task: ExecutionTaskId,
+        successor: Option<ExecutionTaskId>,
+        recycle: bool,
+        commit: impl FnOnce(&ThreadStorage) -> bool,
+    ) -> Option<(ThreadStorage, Option<(ExecutionTaskId, TaskResumeContext)>)> {
+        // Thread Manager (1999), p. 60: DisposeThread may never retire
+        // the application thread, even while a worker is running.
+        if task == ExecutionTaskId::APPLICATION {
+            return None;
+        }
+        if self.handoff.is_some() {
+            return None;
+        }
+        if self.cooperative_contexts.get(task).is_none() && self.native_threads.get(task).is_none()
+        {
+            return None;
+        }
+        let storage = self.thread_storage.get(task).copied().unwrap_or_default();
+        let pooled_isa = if recycle && storage.stack_base != 0 {
+            Some(self.kernel.task_entry_isa(task)?)
+        } else {
+            None
+        };
+        let next = match successor {
+            Some(next) => Some((next, self.saved_context(next)?)),
+            None => None,
+        };
+        self.kernel
+            .retire_task_with(task, successor, || commit(&storage))
+            .ok()?;
+        self.cooperative_contexts.remove(task);
+        self.native_threads.remove(task);
+        self.thread_storage.remove(task);
+        if let Some(isa) = pooled_isa {
+            self.thread_pool.push((
+                isa,
+                ThreadStorage {
+                    result_destination: 0,
+                    ..storage
+                },
+            ));
+        }
+        if self.native_cpu_task == Some(task) {
+            self.native_cpu_task = None;
+        }
+        Some((storage, next))
+    }
+
+    fn save_native_cpu(&mut self, task: ExecutionTaskId, cpu: &PpcCpu) {
+        if self.kernel.scheduling_state(task).is_none() {
+            return;
+        }
+        let mut context = self
+            .native_threads
+            .get(task)
+            .cloned()
+            .unwrap_or(NativeThreadContext {
+                cpu: Box::new(cpu.clone()),
+            });
+        context.cpu = Box::new(cpu.clone());
+        self.native_threads.insert(task, context);
+    }
+
+    fn install_native_successor(
+        &mut self,
+        task: ExecutionTaskId,
+        context: TaskResumeContext,
+        cpu: &mut PpcCpu,
+    ) {
+        match context {
+            TaskResumeContext::Classic(context) => {
+                self.handoff = Some((task, TaskResumeContext::Classic(context)));
+            }
+            TaskResumeContext::Native(next) => {
+                let time_base = cpu.time_base().max(next.time_base());
+                *cpu = *next;
+                cpu.set_time_base(time_base);
+                self.native_cpu_task = Some(task);
+            }
+        }
+    }
+
     fn is_pristine(&self) -> bool {
-        self.kernel.is_pristine() && self.cooperative_contexts.is_empty()
+        self.kernel.is_pristine()
+            && self.m68k_contexts.borrow().is_empty()
+            && self.cooperative_contexts.is_empty()
+            && self.native_threads.is_empty()
+            && self.thread_storage.is_empty()
+            && self.thread_pool.is_empty()
+            && self.native_cpu_task.is_none()
+            && self.handoff.is_none()
     }
 }
 
@@ -413,7 +694,8 @@ impl ExecutionTaskCalls {
 /// Both CPU adapters share this owner, but every Thread Manager task has an
 /// independent LIFO stack. Switching tasks changes which stack subsequent
 /// Mixed Mode operations address; it cannot expose another task's suspended
-/// call. Ordinary `Clone` still creates an independent process snapshot.
+/// call. Ordinary `Clone` creates an independent process snapshot only when
+/// no non-cloneable 68K engine is parked; `shared_handle` preserves custody.
 #[derive(Debug, Default)]
 pub(crate) struct SharedGuestCallStack(Rc<RefCell<ExecutionTaskCalls>>);
 
@@ -469,6 +751,22 @@ impl SharedGuestCallStack {
     /// parked contexts with the same cooperative task.  The task owner itself
     /// remains process-wide; this is a view of its current cursor, not a second
     /// owner.  Inside Macintosh: Processes (1994), pp. 4-4--4-6.
+    /// Borrowing this process-owned bank never spans guest execution. Each
+    /// transition selects the bank from its execution owner instead of keeping
+    /// a separate bank handle on the CPU adapter.
+    fn classic_contexts(&self) -> Rc<RefCell<ExecutionContextBank<M68kCpu>>> {
+        Rc::clone(&self.0.borrow().m68k_contexts)
+    }
+
+    pub(crate) fn has_parked_m68k_contexts(&self) -> bool {
+        !self.classic_contexts().borrow().is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn m68k_context_bank(&self) -> Rc<RefCell<ExecutionContextBank<M68kCpu>>> {
+        self.classic_contexts()
+    }
+
     pub(crate) fn current_task(&self) -> ExecutionTaskId {
         self.0.borrow().kernel.current_task()
     }
@@ -479,10 +777,12 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.register_task(task).is_ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn switch_to_task(&self, task: ExecutionTaskId) -> bool {
-        self.apply_task_effect(ExecutionTaskEffect::SwitchTo(task))
+        self.0.borrow().kernel.switch_to_task(task).is_ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn create_task(&self) -> Option<ExecutionTaskId> {
         self.0.borrow().kernel.create_task().ok()
     }
@@ -527,17 +827,6 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.set_scheduling_state(task, state)
     }
 
-    pub(crate) fn set_state_ending_critical(
-        &self,
-        task: ExecutionTaskId,
-        state: ExecutionTaskState,
-    ) -> bool {
-        self.0
-            .borrow()
-            .kernel
-            .set_state_ending_critical(task, state)
-    }
-
     pub(crate) fn next_ready_task(
         &self,
         suggested: Option<ExecutionTaskId>,
@@ -556,10 +845,6 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.end_critical()
     }
 
-    fn apply_task_effect(&self, effect: ExecutionTaskEffect) -> bool {
-        self.0.borrow().kernel.apply_task_effect(effect).is_ok()
-    }
-
     /// Drop a retired task's empty continuation stack.
     ///
     /// A non-empty stack denotes suspended execution and cannot be discarded.
@@ -570,6 +855,8 @@ impl SharedGuestCallStack {
             return false;
         }
         tasks.cooperative_contexts.remove(task);
+        tasks.native_threads.remove(task);
+        tasks.thread_storage.remove(task);
         true
     }
 
@@ -579,20 +866,418 @@ impl SharedGuestCallStack {
         &self,
         task: ExecutionTaskId,
         successor: Option<ExecutionTaskId>,
-        commit: impl FnOnce(&CooperativeThread) -> bool,
-    ) -> Option<(CooperativeThread, Option<CooperativeThread>)> {
+        recycle: bool,
+        commit: impl FnOnce(&ThreadStorage) -> bool,
+    ) -> Option<(ThreadStorage, Option<CooperativeThread>)> {
         let mut tasks = self.0.borrow_mut();
-        let finished = tasks.cooperative_contexts.get(task)?.clone();
-        let next = match successor {
-            Some(next) => Some(tasks.cooperative_contexts.get(next)?.clone()),
+        let (finished, next) = tasks.retire_thread(task, successor, recycle, commit)?;
+        let classic = match next {
+            Some((_, TaskResumeContext::Classic(context))) => Some(context),
+            Some((next, context)) => {
+                tasks.handoff = Some((next, context));
+                None
+            }
             None => None,
         };
+        Some((finished, classic))
+    }
+
+    pub(crate) fn thread_storage(&self, task: ExecutionTaskId) -> Option<ThreadStorage> {
+        let tasks = self.0.borrow();
+        tasks.kernel.scheduling_state(task)?;
+        Some(tasks.thread_storage.get(task).copied().unwrap_or_default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_thread_storage(&self, task: ExecutionTaskId, storage: ThreadStorage) -> bool {
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.scheduling_state(task).is_none() {
+            return false;
+        }
+        tasks.thread_storage.insert(task, storage);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_classic_thread_stack(&self, size: u32) -> Option<(u32, u32)> {
+        self.request_classic_thread_stack(size, 2).ok().flatten()
+    }
+
+    pub(crate) fn request_classic_thread_stack(
+        &self,
+        size: u32,
+        options: u32,
+    ) -> Result<Option<(u32, u32)>, i16> {
+        self.request_thread_stack(GuestIsa::M68k, size, options)
+            .map(|storage| storage.map(|storage| (storage.stack_base, storage.stack_limit)))
+    }
+
+    /// Select storage without publishing a task. Thread Manager (1999),
+    /// pp. 48, 57–58: same-ISA pool use, best fit, exact match and -617 refusal.
+    pub(crate) fn request_thread_stack(
+        &self,
+        isa: GuestIsa,
+        size: u32,
+        options: u32,
+    ) -> Result<Option<ThreadStorage>, i16> {
+        if options & 2 == 0 {
+            return Ok(None);
+        }
+        let mut tasks = self.0.borrow_mut();
+        let index = tasks
+            .thread_pool
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (entry_isa, storage))| {
+                let available = storage.stack_limit.checked_sub(storage.stack_base)?;
+                (*entry_isa == isa
+                    && storage.stack_base != 0
+                    && available >= size
+                    && (options & 16 == 0 || available == size))
+                    .then_some((index, available))
+            })
+            .min_by_key(|&(_, available)| available)
+            .map(|(index, _)| index);
+        match index {
+            Some(index) => Ok(Some(tasks.thread_pool.swap_remove(index).1)),
+            None if options & 4 != 0 => Ok(None),
+            None => Err(-617),
+        }
+    }
+
+    pub(crate) fn recycle_thread_stack(&self, isa: GuestIsa, storage: ThreadStorage) {
+        self.0.borrow_mut().thread_pool.push((
+            isa,
+            ThreadStorage {
+                result_destination: 0,
+                ..storage
+            },
+        ));
+    }
+
+    pub(crate) fn recycle_classic_thread_stack(&self, stack: (u32, u32)) {
+        self.recycle_thread_stack(
+            GuestIsa::M68k,
+            ThreadStorage {
+                stack_base: stack.0,
+                stack_limit: stack.1,
+                ..ThreadStorage::default()
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn classic_thread_pool_count(&self, minimum_size: u32) -> usize {
+        self.thread_pool_count(GuestIsa::M68k, minimum_size)
+    }
+
+    pub(crate) fn thread_pool_count(&self, isa: GuestIsa, minimum_size: u32) -> usize {
+        self.0
+            .borrow()
+            .thread_pool
+            .iter()
+            .filter(|(entry_isa, storage)| {
+                *entry_isa == isa
+                    && storage.stack_limit.saturating_sub(storage.stack_base) >= minimum_size
+            })
+            .count()
+    }
+
+    pub(crate) fn publish_thread_pool(&self, isa: GuestIsa, storage: Vec<ThreadStorage>) {
+        self.0
+            .borrow_mut()
+            .thread_pool
+            .extend(storage.into_iter().map(|storage| (isa, storage)));
+    }
+
+    pub(crate) fn switch_from_classic(
+        &self,
+        next: ExecutionTaskId,
+    ) -> Option<Option<CooperativeThread>> {
+        let mut tasks = self.0.borrow_mut();
+        if tasks.handoff.is_some() {
+            return None;
+        }
+        let context = tasks.saved_context(next)?;
+        tasks.kernel.switch_to_task(next).ok()?;
+        match context {
+            TaskResumeContext::Classic(context) => Some(Some(context)),
+            context => {
+                tasks.handoff = Some((next, context));
+                Some(None)
+            }
+        }
+    }
+
+    pub(crate) fn take_classic_task_handoff(&self) -> Option<CooperativeThread> {
+        let mut tasks = self.0.borrow_mut();
+        let Some((task, TaskResumeContext::Classic(_))) = tasks.handoff.as_ref() else {
+            return None;
+        };
+        if *task != tasks.kernel.current_task() {
+            return None;
+        }
+        match tasks.handoff.take()? {
+            (_, TaskResumeContext::Classic(context)) => Some(context),
+            _ => unreachable!(),
+        }
+    }
+
+    pub(crate) fn start_native_engine(&self) {
+        let mut tasks = self.0.borrow_mut();
+        assert!(
+            tasks.handoff.is_none(),
+            "cannot launch across a pending task handoff"
+        );
+        tasks.native_cpu_task = Some(tasks.kernel.current_task());
+    }
+
+    /// Select bounds for the installed native engine, which can still belong
+    /// to a suspended task while a classic task owns the scheduling cursor.
+    pub(crate) fn native_stack_bounds(
+        &self,
+        application_base: u32,
+        application_limit: u32,
+    ) -> Option<(u32, u32)> {
+        let tasks = self.0.borrow();
+        if let Some(task) = tasks.native_cpu_task {
+            if task != ExecutionTaskId::APPLICATION
+                && tasks.kernel.task_entry_isa(task) == Some(GuestIsa::PowerPc)
+            {
+                let storage = tasks.thread_storage.get(task)?;
+                return Some((storage.stack_base, storage.stack_limit));
+            }
+        }
+        Some((application_base, application_limit))
+    }
+
+    pub(crate) fn has_classic_task_handoff(&self) -> bool {
+        matches!(
+            self.0.borrow().handoff,
+            Some((_, TaskResumeContext::Classic(_)))
+        )
+    }
+
+    /// Preserve the previous native owner before replacing its engine. A
+    /// classic task may execute while this native CPU is suspended in a callback.
+    pub(crate) fn prepare_native_task(&self, cpu: &mut PpcCpu) -> bool {
+        let mut tasks = self.0.borrow_mut();
+        let current = tasks.kernel.current_task();
+        if tasks.kernel.scheduling_state(current) != Some(ExecutionTaskState::Running) {
+            return false;
+        }
+        if tasks
+            .handoff
+            .as_ref()
+            .is_some_and(|(task, _)| *task != current)
+        {
+            return false;
+        }
+        if matches!(tasks.handoff, Some((_, TaskResumeContext::Classic(_)))) {
+            return false;
+        }
+        let pending_native = matches!(tasks.handoff, Some((_, TaskResumeContext::Native(_))));
+        let next = if pending_native {
+            match tasks.handoff.take().unwrap().1 {
+                TaskResumeContext::Native(cpu) => Some(cpu),
+                _ => unreachable!(),
+            }
+        } else if tasks.native_cpu_task != Some(current) {
+            tasks
+                .native_threads
+                .get(current)
+                .map(|context| context.cpu.clone())
+        } else {
+            None
+        };
+        if tasks.native_cpu_task != Some(current) {
+            if let Some(previous) = tasks.native_cpu_task {
+                tasks.save_native_cpu(previous, cpu);
+            }
+        }
+        if let Some(next) = next {
+            let time_base = cpu.time_base().max(next.time_base());
+            *cpu = *next;
+            cpu.set_time_base(time_base);
+        }
+        tasks.native_cpu_task = Some(current);
+        true
+    }
+
+    pub(crate) fn has_pending_task_handoff(&self) -> bool {
+        self.0.borrow().handoff.is_some()
+    }
+
+    pub(crate) fn has_live_workers(&self) -> bool {
+        self.0.borrow().kernel.has_live_workers()
+    }
+
+    pub(crate) fn create_classic_thread(
+        &self,
+        context: CooperativeThread,
+        storage: ThreadStorage,
+        suspended: bool,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Option<ExecutionTaskId> {
+        self.0.borrow_mut().create_thread(
+            TaskResumeContext::Classic(context),
+            storage,
+            suspended,
+            commit,
+        )
+    }
+
+    pub(crate) fn create_native_thread(
+        &self,
+        context: NativeThreadContext,
+        storage: ThreadStorage,
+        suspended: bool,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Option<ExecutionTaskId> {
+        self.0.borrow_mut().create_thread(
+            TaskResumeContext::Native(context.cpu),
+            storage,
+            suspended,
+            commit,
+        )
+    }
+
+    /// Scheduling resumes only after a wake operation marks a task ready and
+    /// its saved engine context can be installed. A stopped cursor owns no work.
+    pub(crate) fn resume_ready_task(&self) -> bool {
+        let mut tasks = self.0.borrow_mut();
+        if tasks.handoff.is_some() || tasks.kernel.critical_depth() != 0 {
+            return false;
+        }
+        let current = tasks.kernel.current_task();
+        let next = match tasks.kernel.scheduling_state(current) {
+            Some(ExecutionTaskState::Running) => return false,
+            Some(ExecutionTaskState::Ready) => current,
+            _ => match tasks.kernel.next_ready_task(None) {
+                Some(next) => next,
+                None => return false,
+            },
+        };
+        let Some(context) = tasks.saved_context(next) else {
+            return false;
+        };
+        if tasks.kernel.switch_to_task(next).is_err() {
+            return false;
+        }
+        tasks.handoff = Some((next, context));
+        true
+    }
+
+    pub(crate) fn current_task_is_running(&self) -> bool {
+        let tasks = self.0.borrow();
+        tasks.kernel.scheduling_state(tasks.kernel.current_task())
+            == Some(ExecutionTaskState::Running)
+    }
+
+    pub(crate) fn set_native_thread_state(
+        &self,
+        cpu: &mut PpcCpu,
+        thread: u32,
+        new_state: u16,
+        suggested: u32,
+        end_critical: bool,
+    ) -> Result<bool, i16> {
+        let mut tasks = self.0.borrow_mut();
+        let current = tasks.kernel.current_task();
+        let successor =
+            tasks.change_thread_state(thread, new_state, suggested, end_critical, || true)?;
+        if successor.is_none()
+            && tasks.kernel.scheduling_state(current) != Some(ExecutionTaskState::Stopped)
+        {
+            return Ok(false);
+        }
+        let mut outgoing = cpu.clone();
+        outgoing.pc = outgoing.lr;
+        outgoing.gpr[3] = 0;
+        tasks.save_native_cpu(current, &outgoing);
+        *cpu = outgoing;
+        tasks.native_cpu_task = Some(current);
+        if let Some((next, context)) = successor {
+            tasks.install_native_successor(next, context, cpu);
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn set_classic_thread_state(
+        &self,
+        thread: u32,
+        new_state: u16,
+        suggested: u32,
+        end_critical: bool,
+        outgoing: CooperativeThread,
+        commit: impl FnOnce() -> bool,
+    ) -> Result<bool, i16> {
+        let mut tasks = self.0.borrow_mut();
+        let current = tasks.kernel.current_task();
+        let successor =
+            tasks.change_thread_state(thread, new_state, suggested, end_critical, commit)?;
+        if successor.is_none()
+            && tasks.kernel.scheduling_state(current) != Some(ExecutionTaskState::Stopped)
+        {
+            return Ok(false);
+        }
+        tasks.cooperative_contexts.insert(current, outgoing);
+        tasks.handoff = successor;
+        Ok(true)
+    }
+
+    /// Native ABI edge supplies the live CPU; the owner validates the next
+    /// snapshot before saving the return and committing the selected task.
+    pub(crate) fn yield_native_thread(
+        &self,
+        cpu: &mut PpcCpu,
+        suggested: u32,
+    ) -> Result<bool, i16> {
+        use crate::thread_manager::THREAD_PROTOCOL_ERR;
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.critical_depth() != 0 || tasks.handoff.is_some() {
+            return Err(THREAD_PROTOCOL_ERR);
+        }
+        let current = tasks.kernel.current_task();
+        let Some(next) = tasks
+            .kernel
+            .next_ready_task((suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested)))
+        else {
+            return Ok(false);
+        };
+        let next_context = tasks.saved_context(next).ok_or(THREAD_PROTOCOL_ERR)?;
+        let mut outgoing = cpu.clone();
+        outgoing.pc = outgoing.lr;
+        outgoing.gpr[3] = 0;
         tasks
             .kernel
-            .retire_task_with(task, successor, || commit(&finished))
-            .ok()?;
-        tasks.cooperative_contexts.remove(task);
-        Some((finished, next))
+            .switch_to_task(next)
+            .map_err(|_| THREAD_PROTOCOL_ERR)?;
+        tasks.save_native_cpu(current, &outgoing);
+        *cpu = outgoing;
+        tasks.native_cpu_task = Some(current);
+        tasks.install_native_successor(next, next_context, cpu);
+        Ok(true)
+    }
+
+    pub(crate) fn retire_native_thread(
+        &self,
+        task: ExecutionTaskId,
+        cpu: &mut PpcCpu,
+        recycle: bool,
+        commit: impl FnOnce(&ThreadStorage) -> bool,
+    ) -> Option<ThreadStorage> {
+        let mut tasks = self.0.borrow_mut();
+        let successor = if task == tasks.kernel.current_task() {
+            Some(tasks.kernel.next_ready_task(None)?)
+        } else {
+            None
+        };
+        let (finished, successor) = tasks.retire_thread(task, successor, recycle, commit)?;
+        if let Some((next, context)) = successor {
+            tasks.install_native_successor(next, context, cpu);
+        }
+        Some(finished)
     }
 
     pub(crate) fn cooperative_context(&self, task: ExecutionTaskId) -> Option<CooperativeThread> {
@@ -737,9 +1422,9 @@ impl SharedGuestCallStack {
         ))
     }
 
-    /// Park a native caller and retain the emulated 68k execution interval
-    /// that will satisfy it. The caller's PowerPC registers remain in its CPU
-    /// context; only the documented return state is applied at completion.
+    /// Prepare the emulated 68K interval for a native caller. Activation
+    /// retains its complete native context; completion restores that context
+    /// before applying the documented return state.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin_powerpc_to_m68k(
         &self,
@@ -783,9 +1468,28 @@ impl SharedGuestCallStack {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn activate_powerpc_from_m68k(
         &self,
         cpu: &mut PpcCpu,
+        return_pc: u32,
+    ) -> Option<PendingPowerPcExecution> {
+        self.activate_powerpc_transition(cpu, None, return_pc)
+    }
+
+    pub(crate) fn activate_powerpc_with_classic_caller(
+        &self,
+        cpu: &mut PpcCpu,
+        caller: &mut M68kCpu,
+        return_pc: u32,
+    ) -> Option<PendingPowerPcExecution> {
+        self.activate_powerpc_transition(cpu, Some(caller), return_pc)
+    }
+
+    fn activate_powerpc_transition(
+        &self,
+        cpu: &mut PpcCpu,
+        caller: Option<&mut M68kCpu>,
         return_pc: u32,
     ) -> Option<PendingPowerPcExecution> {
         let (task, call_id, target, arguments) = {
@@ -804,10 +1508,25 @@ impl SharedGuestCallStack {
         };
         let mut tasks = self.0.borrow_mut();
         let kernel = tasks.kernel.shared_handle();
-        tasks
-            .powerpc_contexts
-            .park_while_activating(&kernel, task, call_id, Box::new(cpu.clone()))
-            .ok()?;
+        if let Some(caller) = caller {
+            let bank = Rc::clone(&tasks.m68k_contexts);
+            tasks
+                .powerpc_contexts
+                .park_pair_while_activating(
+                    &mut bank.borrow_mut(),
+                    &kernel,
+                    task,
+                    call_id,
+                    Box::new(cpu.clone()),
+                    caller,
+                )
+                .ok()?;
+        } else {
+            tasks
+                .powerpc_contexts
+                .park_while_activating(&kernel, task, call_id, Box::new(cpu.clone()))
+                .ok()?;
+        }
         let frame = tasks
             .frames
             .get_mut(&call_id)
@@ -962,11 +1681,12 @@ impl SharedGuestCallStack {
     /// Commit the ABI result and restore the exact caller under one validated
     /// retirement boundary. The adapter closure must leave state unchanged
     /// when it rejects a result and must not execute guest code.
-    pub(crate) fn commit_m68k_resume<T>(
+    pub(crate) fn commit_m68k_resume(
         &self,
-        bank: &mut ExecutionContextBank<T>,
-        apply: impl FnOnce(M68kResume, Option<&mut T>) -> bool,
-    ) -> Option<Option<T>> {
+        apply: impl FnOnce(M68kResume, Option<&mut M68kCpu>) -> bool,
+    ) -> Option<Option<M68kCpu>> {
+        let bank = self.classic_contexts();
+        let mut bank = bank.borrow_mut();
         let resume = self.peek_m68k_resume()?;
         let (task, call_id) = self.pending_m68k_resume_owner()?;
         let mut tasks = self.0.borrow_mut();
@@ -995,16 +1715,24 @@ impl SharedGuestCallStack {
     /// Return the top cross-ISA 68k interval and mark its CPU context active.
     #[cfg(test)]
     pub(crate) fn activate_m68k(&self) -> Option<PendingM68kExecution> {
-        self.activate_m68k_in_bank(&mut ExecutionContextBank::<()>::default(), &mut (), None)
+        self.activate_m68k_in_bank(
+            &mut ExecutionContextBank::<()>::default(),
+            &mut (),
+            None,
+            None,
+        )
     }
 
-    pub(crate) fn activate_m68k_parking<T: Default>(
+    pub(crate) fn activate_m68k_parking(
         &self,
-        bank: &mut ExecutionContextBank<T>,
-        installed: &mut T,
+        installed: &mut M68kCpu,
+        native: &PpcCpu,
     ) -> Option<PendingM68kExecution> {
         let caller = self.suspended_m68k_context_owner().map(|(_, call)| call);
-        self.activate_m68k_in_bank(bank, installed, caller)
+        let bank = self.classic_contexts();
+        let pending =
+            self.activate_m68k_in_bank(&mut bank.borrow_mut(), installed, caller, Some(native));
+        pending
     }
 
     fn activate_m68k_in_bank<T: Default>(
@@ -1012,6 +1740,7 @@ impl SharedGuestCallStack {
         bank: &mut ExecutionContextBank<T>,
         installed: &mut T,
         caller: Option<CallId>,
+        native: Option<&PpcCpu>,
     ) -> Option<PendingM68kExecution> {
         let (task, call_id, pending, started) = {
             let tasks = self.0.borrow();
@@ -1033,8 +1762,21 @@ impl SharedGuestCallStack {
             return Some(pending);
         }
         let mut tasks = self.0.borrow_mut();
-        bank.activate_parking_caller(&tasks.kernel, task, call_id, caller, installed)
+        if let Some(native) = native {
+            let kernel = tasks.kernel.shared_handle();
+            bank.activate_parking_caller_with_context(
+                &kernel,
+                task,
+                call_id,
+                caller,
+                installed,
+                Some((&mut tasks.powerpc_contexts, Box::new(native.clone()))),
+            )
             .ok()?;
+        } else {
+            bank.activate_parking_caller(&tasks.kernel, task, call_id, caller, installed)
+                .ok()?;
+        }
         let frame = tasks
             .frames
             .get_mut(&call_id)
@@ -1194,9 +1936,27 @@ impl SharedGuestCallStack {
             (task, semantic.call_id(), origin)
         };
         let mut tasks = self.0.borrow_mut();
-        if tasks.kernel.complete(task, call_id, result).is_err() {
+        let native = if tasks.powerpc_contexts.contains(task, call_id) {
+            let kernel = tasks.kernel.shared_handle();
+            let Ok((context, _)) = tasks
+                .powerpc_contexts
+                .take_while_completing(&kernel, task, call_id, result)
+            else {
+                return false;
+            };
+            Some(context)
+        } else {
+            #[cfg(not(test))]
             return false;
-        }
+            #[cfg(test)]
+            {
+                // Register-only unit fixtures have no native engine to retain.
+                if tasks.kernel.complete(task, call_id, result).is_err() {
+                    return false;
+                }
+                None
+            }
+        };
         let _ = tasks
             .kernel
             .retire(task, call_id)
@@ -1205,6 +1965,11 @@ impl SharedGuestCallStack {
             .frames
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
+        if let Some(native) = native {
+            let time_base = cpu.time_base().max(native.time_base());
+            *cpu = *native;
+            cpu.set_time_base(time_base);
+        }
         if let Some(result) = result {
             cpu.gpr[3] = result;
         }
@@ -1302,6 +2067,271 @@ mod tests {
         )
         .into_ppc_import_action()
         .expect("native PowerPC request should adapt to CallNative")
+    }
+
+    #[test]
+    fn classic_parked_engines_follow_the_process_owner_and_refuse_snapshot_duplication() {
+        let calls = SharedGuestCallStack::default();
+        assert!(calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0
+            },
+            0x2000,
+            0x3000
+        ));
+        let (call, _) = calls.top_frame().unwrap();
+        let bank = calls.m68k_context_bank();
+        let mut cpu = M68kCpu::new();
+        cpu.core.set_a(7, 0x7654);
+        cpu.core.set_d(6, 0xabcdef);
+        assert!(calls
+            .park_context(
+                &mut bank.borrow_mut(),
+                ExecutionTaskId::APPLICATION,
+                call,
+                cpu
+            )
+            .is_ok());
+        let shared = calls.shared_handle();
+        assert!(Rc::ptr_eq(&bank, &shared.m68k_context_bank()));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| calls.clone())).is_err());
+        assert!(bank.borrow().contains(ExecutionTaskId::APPLICATION, call));
+        let mut adopting = SharedGuestCallStack::default();
+        adopting.attach_to(&calls);
+        assert!(Rc::ptr_eq(&bank, &adopting.m68k_context_bank()));
+        assert!(!adopting.is_pristine());
+        let restored = bank
+            .borrow_mut()
+            .take(&calls.0.borrow().kernel, ExecutionTaskId::APPLICATION, call)
+            .unwrap();
+        assert_eq!(restored.core.a(7), 0x7654);
+        assert_eq!(restored.core.d(6), 0xabcdef);
+        assert!(adopting.m68k_context_bank().borrow().is_empty());
+        let snapshot = calls.clone();
+        assert!(!Rc::ptr_eq(&bank, &snapshot.m68k_context_bank()));
+        assert_eq!(calls, snapshot);
+    }
+
+    #[test]
+    fn thread_disposal_refuses_the_application_before_committing_either_abi_result() {
+        let calls = SharedGuestCallStack::default();
+        assert!(calls
+            .save_cooperative_context(ExecutionTaskId::APPLICATION, CooperativeThread::default()));
+        let worker = calls
+            .create_classic_thread(
+                CooperativeThread::default(),
+                ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        for recycle in [false, true] {
+            assert!(calls
+                .retire_cooperative_context(
+                    ExecutionTaskId::APPLICATION,
+                    Some(worker),
+                    recycle,
+                    |_| panic!("application disposal must not write its result")
+                )
+                .is_none());
+            assert!(calls
+                .retire_native_thread(
+                    ExecutionTaskId::APPLICATION,
+                    &mut PpcCpu::new(),
+                    recycle,
+                    |_| panic!("application disposal must not write its result")
+                )
+                .is_none());
+            assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+            assert_eq!(calls.next_ready_task(None), Some(worker));
+        }
+        assert!(calls.switch_to_task(worker));
+        assert!(calls
+            .retire_cooperative_context(ExecutionTaskId::APPLICATION, None, false, |_| panic!(
+                "a worker must not dispose its application"
+            ))
+            .is_none());
+        assert_eq!(calls.current_task(), worker);
+        assert!(calls
+            .cooperative_context(ExecutionTaskId::APPLICATION)
+            .is_some());
+    }
+
+    #[test]
+    fn thread_recycled_storage_retains_entry_isa_and_is_unavailable_until_retirement_commits() {
+        let calls = SharedGuestCallStack::default();
+        let classic_storage = ThreadStorage {
+            result_destination: 0x8000,
+            stack_base: 0x1000,
+            stack_limit: 0x1800,
+            managed_pointer: false,
+        };
+        let classic = calls
+            .create_classic_thread(CooperativeThread::default(), classic_storage, true, |_| {
+                true
+            })
+            .unwrap();
+        let native = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    cpu: Box::new(PpcCpu::new()),
+                },
+                ThreadStorage {
+                    stack_base: 0x2000,
+                    stack_limit: 0x3000,
+                    managed_pointer: true,
+                    ..classic_storage
+                },
+                true,
+                |_| true,
+            )
+            .unwrap();
+        assert!(calls
+            .retire_cooperative_context(classic, None, true, |_| false)
+            .is_none());
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::M68k, 1024, 2),
+            Err(-617)
+        );
+        assert_eq!(calls.thread_storage(classic), Some(classic_storage));
+        assert!(calls
+            .retire_cooperative_context(classic, None, true, |_| true)
+            .is_some());
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::PowerPc, 1024, 2),
+            Err(-617)
+        );
+        assert!(calls
+            .retire_native_thread(native, &mut PpcCpu::new(), true, |_| true)
+            .is_some());
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::PowerPc, 1024, 2 | 16),
+            Err(-617)
+        );
+        let pooled_native = calls
+            .request_thread_stack(GuestIsa::PowerPc, 4096, 2 | 16)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pooled_native.stack_base, 0x2000);
+        assert!(pooled_native.managed_pointer);
+        assert_eq!(pooled_native.result_destination, 0);
+        let pooled_classic = calls
+            .request_thread_stack(GuestIsa::M68k, 1024, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pooled_classic.stack_base, classic_storage.stack_base);
+        assert!(!pooled_classic.managed_pointer);
+        assert_eq!(pooled_classic.result_destination, 0);
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::M68k, 1024, 2),
+            Err(-617)
+        );
+    }
+
+    #[test]
+    fn native_retirement_hands_off_to_classic_without_losing_the_native_caller() {
+        let calls = SharedGuestCallStack::default();
+        let mut cpu = PpcCpu::new();
+        cpu.pc = 0x1234;
+        cpu.gpr[20] = 0x1122_3344;
+        calls.start_native_engine();
+        assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+        let classic = calls.create_task().unwrap();
+        let mut context = CooperativeThread::default();
+        context.pc = 0x5678;
+        assert!(calls.save_cooperative_context(classic, context));
+        assert!(calls.set_scheduling_state(classic, ExecutionTaskState::Ready));
+        let native = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    cpu: Box::new(PpcCpu::new()),
+                },
+                crate::guest_call::ThreadStorage {
+                    result_destination: 0,
+                    stack_base: 0,
+                    stack_limit: 0,
+                    managed_pointer: true,
+                },
+                false,
+                |_| true,
+            )
+            .unwrap();
+        assert!(calls.switch_to_task(native));
+        assert!(calls.prepare_native_task(&mut cpu));
+        assert!(calls
+            .retire_native_thread(native, &mut cpu, false, |_| true)
+            .is_some());
+        assert_eq!(calls.current_task(), classic);
+        assert!(calls.has_classic_task_handoff());
+        let blocked_pc = cpu.pc;
+        assert!(!calls.prepare_native_task(&mut cpu));
+        assert_eq!(cpu.pc, blocked_pc);
+        assert!(calls
+            .switch_from_classic(ExecutionTaskId::APPLICATION)
+            .is_none());
+        assert_eq!(calls.take_classic_task_handoff().unwrap().pc, 0x5678);
+        assert!(calls
+            .switch_from_classic(ExecutionTaskId::APPLICATION)
+            .unwrap()
+            .is_none());
+        assert!(calls.prepare_native_task(&mut cpu));
+        assert_eq!(cpu.pc, 0x1234);
+        assert_eq!(cpu.gpr[20], 0x1122_3344);
+        assert!(!calls.has_pending_task_handoff());
+    }
+
+    #[test]
+    fn native_yield_preflights_context_and_critical_state_before_saving_return() {
+        let calls = SharedGuestCallStack::default();
+        let mut cpu = PpcCpu::new();
+        cpu.pc = 0x1234;
+        cpu.lr = 0x4560;
+        cpu.gpr[3] = 99;
+        let worker = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    cpu: Box::new(PpcCpu::new()),
+                },
+                crate::guest_call::ThreadStorage {
+                    result_destination: 0,
+                    stack_base: 0,
+                    stack_limit: 0,
+                    managed_pointer: true,
+                },
+                false,
+                |_| true,
+            )
+            .unwrap();
+        calls.begin_critical();
+        assert_eq!(
+            calls.yield_native_thread(&mut cpu, worker.thread_id()),
+            Err(-619)
+        );
+        assert_eq!(cpu.pc, 0x1234);
+        assert_eq!(cpu.gpr[3], 99);
+        assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+        assert!(calls.end_critical());
+        let classic = calls.create_task().unwrap();
+        assert!(calls.set_scheduling_state(classic, ExecutionTaskState::Ready));
+        assert_eq!(
+            calls.yield_native_thread(&mut cpu, classic.thread_id()),
+            Err(-619)
+        );
+        assert_eq!(cpu.pc, 0x1234);
+        assert_eq!(cpu.gpr[3], 99);
+        assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+        assert!(calls
+            .yield_native_thread(&mut cpu, worker.thread_id())
+            .unwrap());
+        assert_eq!(calls.current_task(), worker);
+        cpu.lr = 0x9000;
+        assert!(calls
+            .yield_native_thread(&mut cpu, ExecutionTaskId::APPLICATION.thread_id())
+            .unwrap());
+        assert_eq!(cpu.pc, 0x4560);
+        assert_eq!(cpu.gpr[3], 0);
     }
 
     #[test]
@@ -1430,7 +2460,7 @@ mod tests {
         assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
         assert!(!calls.remove_task(worker));
         assert!(calls
-            .retire_cooperative_context(worker, None, |_| {
+            .retire_cooperative_context(worker, None, false, |_| {
                 panic!("pending continuations must reject retirement before result delivery")
             })
             .is_none());
@@ -1640,6 +2670,81 @@ mod tests {
     }
 
     #[test]
+    fn initial_native_transition_owns_its_classic_caller_and_refuses_duplicate_contexts() {
+        for occupied in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            assert!(calls.begin_m68k_to_powerpc(
+                GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: 0x1000,
+                    rtoc: 0x2000
+                },
+                PowerPcArguments::from_slice(&[]).unwrap(),
+                0x3000,
+                0x4000,
+                None
+            ));
+            let (call, _) = calls.top_frame().unwrap();
+            let bank = calls.m68k_context_bank();
+            if occupied {
+                assert!(calls
+                    .park_context(
+                        &mut bank.borrow_mut(),
+                        ExecutionTaskId::APPLICATION,
+                        call,
+                        M68kCpu::new()
+                    )
+                    .is_ok());
+            }
+            let mut classic = M68kCpu::new();
+            classic.core.set_a(7, 0x9876);
+            classic.core.set_d(6, 0xabcdef);
+            let mut native = PpcCpu::new();
+            native.pc = 0x5000;
+            native.gpr[3] = 99;
+            let activated =
+                calls.activate_powerpc_with_classic_caller(&mut native, &mut classic, RETURN_PC);
+            if occupied {
+                assert!(activated.is_none());
+                assert_eq!(classic.core.a(7), 0x9876);
+                assert_eq!(classic.core.d(6), 0xabcdef);
+                assert_eq!(native.pc, 0x5000);
+                assert_eq!(native.gpr[3], 99);
+                assert!(calls.pending_powerpc_from_m68k().is_some());
+                assert!(calls.0.borrow().powerpc_contexts.is_empty());
+                assert_eq!(bank.borrow().len(), 1);
+                continue;
+            }
+            assert!(activated.is_some());
+            assert!(bank.borrow().contains(ExecutionTaskId::APPLICATION, call));
+            assert!(calls
+                .0
+                .borrow()
+                .powerpc_contexts
+                .contains(ExecutionTaskId::APPLICATION, call));
+            classic.core.set_a(7, 0x1111);
+            assert!(calls
+                .activate_powerpc_with_classic_caller(&mut native, &mut classic, RETURN_PC)
+                .is_none());
+            assert_eq!(classic.core.a(7), 0x1111);
+            native.pc = RETURN_PC;
+            assert!(calls.complete_powerpc_for_m68k(&mut native));
+            let restored = calls
+                .commit_m68k_resume(|_, context| {
+                    let context = context.expect("the initial classic caller must be parked");
+                    assert_eq!(context.core.a(7), 0x9876);
+                    assert_eq!(context.core.d(6), 0xabcdef);
+                    true
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored.core.a(7), 0x9876);
+            assert!(bank.borrow().is_empty());
+            assert!(calls.is_empty());
+        }
+    }
+
+    #[test]
     fn reverse_transition_parks_and_restores_the_native_context_and_elapsed_time() {
         let calls = SharedGuestCallStack::default();
         let arguments = PowerPcArguments::from_slice(&[1, 2, 3]).unwrap();
@@ -1841,6 +2946,88 @@ mod tests {
         assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, None, &mut cpu));
         assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x5000, 0x5000, 0x6000));
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn classic_callback_activation_retains_native_context_until_a_valid_return() {
+        for occupied in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            assert!(calls.begin_powerpc_to_m68k(
+                GuestCallTarget {
+                    isa: GuestIsa::M68k,
+                    entry: 0x2000,
+                    rtoc: 0
+                },
+                0x2000,
+                0x3000,
+                0x4000,
+                0x3004,
+                M68kRegisterState::default(),
+                Some(M68kResultSource::Data(0)),
+                0x5000,
+                0x6000,
+                PpcNativeReturnGpr3::Preserve
+            ));
+            let (call, _) = calls.top_frame().unwrap();
+            let mut native = PpcCpu::new();
+            native.gpr[1] = 0x9000;
+            native.gpr[20] = 0xabcdef;
+            native.fpr[20] = 0x400921fb54442d18;
+            native.cr = 0x12345678;
+            native.set_time_base(7);
+            if occupied {
+                let kernel = calls.0.borrow().kernel.shared_handle();
+                assert!(calls
+                    .0
+                    .borrow_mut()
+                    .powerpc_contexts
+                    .park(
+                        &kernel,
+                        ExecutionTaskId::APPLICATION,
+                        call,
+                        Box::new(native.clone())
+                    )
+                    .is_ok());
+            }
+            let mut classic = M68kCpu::new();
+            classic.core.set_d(6, 0x7777);
+            let activated = calls.activate_m68k_parking(&mut classic, &native);
+            if occupied {
+                assert!(activated.is_none());
+                assert_eq!(classic.core.d(6), 0x7777);
+                assert!(calls.active_m68k().is_none());
+                continue;
+            }
+            assert!(activated.is_some());
+            assert!(calls
+                .0
+                .borrow()
+                .powerpc_contexts
+                .contains(ExecutionTaskId::APPLICATION, call));
+            native.gpr[1] = 0x1111;
+            native.gpr[20] = 0;
+            native.fpr[20] = 0;
+            native.cr = 0;
+            native.set_time_base(44);
+            assert!(!calls.complete_m68k_for_powerpc(0x4000, 0x3000, Some(42), &mut native));
+            assert_eq!(native.gpr[1], 0x1111);
+            assert!(calls
+                .0
+                .borrow()
+                .powerpc_contexts
+                .contains(ExecutionTaskId::APPLICATION, call));
+            assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, Some(42), &mut native));
+            assert_eq!(
+                (native.gpr[1], native.gpr[2], native.gpr[3]),
+                (0x9000, 0x6000, 42)
+            );
+            assert_eq!(native.gpr[20], 0xabcdef);
+            assert_eq!(native.fpr[20], 0x400921fb54442d18);
+            assert_eq!(native.cr, 0x12345678);
+            assert_eq!(native.time_base(), 44);
+            assert!(calls.0.borrow().powerpc_contexts.is_empty());
+            assert!(calls.is_empty());
+        }
     }
 
     #[test]

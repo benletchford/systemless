@@ -285,9 +285,11 @@ const PPC_CLOSED_RESOURCE_REF_NUM: i16 = i16::MIN;
 const PPC_PICT_INFO_SIZE: u32 = 104;
 const PPC_CFM_MAIN_STUB_COUNT: u32 = 256;
 const PPC_IMPORT_CAPACITY: u32 = 4096;
-// The final mapped trap is reserved for process-owned guest-call returns and
+// The final mapped traps are reserved for guest-call and thread returns and
 // does not reduce the 4,096 application/CFM binding capacity.
-const PPC_IMPORT_SLOT_COUNT: u32 = PPC_IMPORT_CAPACITY + 1;
+const PPC_IMPORT_SLOT_COUNT: u32 = PPC_IMPORT_CAPACITY + 2;
+const PPC_THREAD_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY + 1;
+const PPC_THREAD_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_THREAD_RETURN_IMPORT_INDEX * 4;
 const PPC_GUEST_CALL_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY;
 const PPC_FIRST_CFM_CONNECTION_ID: u32 = 1;
 const PPC_CFM_FIND_LIB: u32 = 2;
@@ -1631,7 +1633,20 @@ pub enum PpcImportDispatcherTarget {
     UpperText,
     GetCurrentThread,
     GetThreadState,
+    GetThreadCurrentTaskRef,
+    GetThreadStateGivenTaskRef,
+    SetThreadReadyGivenTaskRef,
+    SetThreadState,
+    SetThreadStateEndCritical,
     ThreadBeginCritical,
+    NewThread,
+    CreateThreadPool,
+    GetFreeThreadCount,
+    GetSpecificFreeThreadCount,
+    GetDefaultThreadStackSize,
+    YieldToThread,
+    YieldToAnyThread,
+    DisposeThread,
     ThreadEndCritical,
     GetCurrentProcess,
     WakeUpProcess,
@@ -4129,7 +4144,10 @@ impl PpcLoadedApp {
     /// Park the current native context and enter a PowerPC routine selected by
     /// a 68k RoutineDescriptor. The new ABI frame protects the parked caller's
     /// linkage and parameter areas while the shared continuation owns return.
-    pub(crate) fn activate_powerpc_from_m68k(&mut self) -> Option<()> {
+    pub(crate) fn activate_powerpc_from_m68k(
+        &mut self,
+        caller: &mut crate::cpu::M68kCpu,
+    ) -> Option<()> {
         let pending = self.guest_calls.pending_powerpc_from_m68k()?;
         let parameter_slots = pending
             .arguments
@@ -4141,7 +4159,14 @@ impl PpcLoadedApp {
         let frame_size = required.max(PPC_INITIAL_STACK_FRAME_SIZE).checked_add(15)? & !15;
         let caller_sp = self.cpu.gpr[1];
         let callback_sp = caller_sp.checked_sub(frame_size)? & !15;
-        if callback_sp < self.stack_base
+        // PowerPC System Software, 1-44–1-49: linkage and parameter areas
+        // belong to the caller's grow-down stack, including worker stacks.
+        let (stack_base, stack_limit) = self.guest_calls.native_stack_bounds(
+            self.stack_base,
+            self.stack_base.checked_add(self.stack_size)?,
+        )?;
+        if callback_sp < stack_base
+            || caller_sp > stack_limit
             || !ppc_memory_can_write_bytes(&mut self.memory, callback_sp, frame_size)
             || !ppc_zero_guest_bytes(&mut self.memory, callback_sp, frame_size)
         {
@@ -4156,9 +4181,11 @@ impl PpcLoadedApp {
         self.memory
             .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, self.cpu.gpr[2])?;
 
-        let pending = self
-            .guest_calls
-            .activate_powerpc_from_m68k(&mut self.cpu, PPC_GUEST_CALL_RETURN_PC)?;
+        let pending = self.guest_calls.activate_powerpc_with_classic_caller(
+            &mut self.cpu,
+            caller,
+            PPC_GUEST_CALL_RETURN_PC,
+        )?;
         self.cpu.gpr[1] = callback_sp;
         self.cpu.pc = pending.target.entry;
         self.cpu.lr = PPC_GUEST_CALL_RETURN_PC;
@@ -7371,6 +7398,24 @@ impl PpcLoadedApp {
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcHleRunProbe {
+        // Wakeup selects and prepares a saved context before any native step.
+        self.guest_calls.resume_ready_task();
+        if !self.guest_calls.current_task_is_running()
+            || self.guest_calls.has_classic_task_handoff()
+            || (self.guest_calls.has_pending_task_handoff()
+                && !self.guest_calls.prepare_native_task(&mut self.cpu))
+        {
+            return PpcHleRunProbe {
+                result: PpcRunResult::CycleLimit { cycles: 0 },
+                handled_import_count: 0,
+                last_import_index: None,
+                unsupported_import_index: None,
+                import_trace: Vec::new(),
+                draw_sprocket_trace: Vec::new(),
+                input_sprocket_trace: Vec::new(),
+                fetch_histogram: None,
+            };
+        }
         let standalone_memory_manager = process_memory_manager
             .is_none()
             .then(|| self.process_memory_manager.0.clone());
@@ -7553,6 +7598,23 @@ impl PpcLoadedApp {
         let result = {
             type Mem = PpcSectionMem;
             let mut handle_import = |elapsed, index, cpu: &mut PpcCpu, memory: &mut Mem| {
+                if index == PPC_THREAD_RETURN_IMPORT_INDEX {
+                    // ThreadEntryProc returns its result in R3. Retire only
+                    // after validating the successor and result destination.
+                    // Inside Macintosh: Thread Manager (1999), pp. 59–60.
+                    let task = guest_calls.current_task();
+                    let result = cpu.gpr[3];
+                    let _ = ppc_retire_native_thread(
+                        &guest_calls,
+                        cpu,
+                        memory,
+                        process_memory_manager,
+                        task,
+                        result,
+                        false,
+                    );
+                    return PpcImportAction::Yield(1);
+                }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
                     if guest_calls.complete_powerpc(cpu) {
                         let native_heap = process_memory_manager
@@ -14991,7 +15053,32 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetCurrentThread" | "MacGetCurrentThread") => {
             PpcImportDispatcherTarget::GetCurrentThread
         }
+        ("InterfaceLib", "GetThreadCurrentTaskRef") => {
+            PpcImportDispatcherTarget::GetThreadCurrentTaskRef
+        }
+        ("InterfaceLib", "GetThreadStateGivenTaskRef") => {
+            PpcImportDispatcherTarget::GetThreadStateGivenTaskRef
+        }
+        ("InterfaceLib", "SetThreadReadyGivenTaskRef") => {
+            PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef
+        }
         ("InterfaceLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
+        ("InterfaceLib", "SetThreadState") => PpcImportDispatcherTarget::SetThreadState,
+        ("InterfaceLib", "SetThreadStateEndCritical") => {
+            PpcImportDispatcherTarget::SetThreadStateEndCritical
+        }
+        ("InterfaceLib", "CreateThreadPool") => PpcImportDispatcherTarget::CreateThreadPool,
+        ("InterfaceLib", "GetFreeThreadCount") => PpcImportDispatcherTarget::GetFreeThreadCount,
+        ("InterfaceLib", "GetSpecificFreeThreadCount") => {
+            PpcImportDispatcherTarget::GetSpecificFreeThreadCount
+        }
+        ("InterfaceLib", "GetDefaultThreadStackSize") => {
+            PpcImportDispatcherTarget::GetDefaultThreadStackSize
+        }
+        ("InterfaceLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
+        ("InterfaceLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
+        ("InterfaceLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
+        ("InterfaceLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
         ("InterfaceLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
         ("InterfaceLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
@@ -24153,6 +24240,311 @@ fn dispatch_supported_import(
                 }
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::GetThreadCurrentTaskRef => {
+            // OSErr GetThreadCurrentTaskRef(ThreadTaskRef *reference);
+            // Inside Macintosh: Thread Manager (1999), p. 73.
+            let reference = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                .task_reference();
+            let result = if cpu.gpr[3] != 0 && memory.write_u32_be(cpu.gpr[3], reference).is_some()
+            {
+                0
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::GetThreadStateGivenTaskRef => {
+            // OSErr GetThreadStateGivenTaskRef(ThreadTaskRef, ThreadID, ThreadState *);
+            // Inside Macintosh: Thread Manager (1999), pp. 74–75.
+            let result = if cpu.gpr[5] == 0 {
+                PPC_PARAM_ERR
+            } else {
+                match crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                    .state_given_task(cpu.gpr[3], cpu.gpr[4])
+                {
+                    Ok(state) if memory.write_u16_be(cpu.gpr[5], state).is_some() => 0,
+                    Ok(_) => PPC_PARAM_ERR,
+                    Err(error) => error,
+                }
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef => {
+            // OSErr SetThreadReadyGivenTaskRef(ThreadTaskRef reference, ThreadID thread);
+            // Inside Macintosh: Thread Manager (1999), pp. 75–76.
+            let result = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                .ready_given_task(cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::SetThreadState
+        | PpcImportDispatcherTarget::SetThreadStateEndCritical => {
+            // SetThreadState / SetThreadStateEndCritical
+            // Set state and optionally exit a critical section atomically.
+            // OSErr (ThreadID thread, ThreadState state, ThreadID suggested);
+            // Inside Macintosh: Thread Manager (1999), pp. 67–72.
+            let thread = cpu.gpr[3];
+            let state = cpu.gpr[4] as u16;
+            let suggested = cpu.gpr[5];
+            let end_critical = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::SetThreadStateEndCritical
+            );
+            Some(
+                match toolbox_startup.guest_calls.set_native_thread_state(
+                    cpu,
+                    thread,
+                    state,
+                    suggested,
+                    end_critical,
+                ) {
+                    Ok(true) => PpcImportAction::Yield(1),
+                    Ok(false) => PpcImportAction::Return(0),
+                    Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
+                },
+            )
+        }
+        PpcImportDispatcherTarget::CreateThreadPool => {
+            // OSErr CreateThreadPool(ThreadStyle, short, Size);
+            // Thread Manager (1999), pp. 50–51: all allocations or none.
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let result = manager.create_pool(
+                GuestIsa::PowerPc,
+                cpu.gpr[3],
+                cpu.gpr[4] as i16,
+                cpu.gpr[5],
+                |size| {
+                    let base = process_memory_manager.new_native_ptr(memory, size, true);
+                    (base != 0).then_some(crate::guest_call::ThreadStorage {
+                        stack_base: base,
+                        stack_limit: base.saturating_add(size),
+                        managed_pointer: true,
+                        ..Default::default()
+                    })
+                },
+            );
+            let error = match result {
+                Ok(()) => 0,
+                Err((error, storage)) => {
+                    for stack in storage {
+                        process_memory_manager.dispose_native_ptr(stack.stack_base);
+                    }
+                    error
+                }
+            };
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
+        PpcImportDispatcherTarget::GetFreeThreadCount
+        | PpcImportDispatcherTarget::GetSpecificFreeThreadCount
+        | PpcImportDispatcherTarget::GetDefaultThreadStackSize => {
+            // OSErr GetFreeThreadCount(ThreadStyle, short *);
+            // OSErr GetSpecificFreeThreadCount(ThreadStyle, Size, short *);
+            // OSErr GetDefaultThreadStackSize(ThreadStyle, Size *);
+            // Thread Manager (1999), pp. 52–55.
+            let specific =
+                binding.dispatcher_target == PpcImportDispatcherTarget::GetSpecificFreeThreadCount;
+            let default_size =
+                binding.dispatcher_target == PpcImportDispatcherTarget::GetDefaultThreadStackSize;
+            let output = if specific { cpu.gpr[5] } else { cpu.gpr[4] };
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let value = if default_size {
+                crate::thread_manager::ThreadManager::stack_size(GuestIsa::PowerPc, cpu.gpr[3], 0)
+            } else {
+                manager
+                    .free_count(
+                        GuestIsa::PowerPc,
+                        cpu.gpr[3],
+                        if specific { cpu.gpr[4] } else { 0 },
+                    )
+                    .map(u32::from)
+            };
+            let result = match value {
+                Err(error) => error,
+                Ok(value) if output != 0 => {
+                    let written = if default_size {
+                        memory.write_u32_be(output, value)
+                    } else {
+                        memory.write_u16_be(output, value as u16)
+                    };
+                    if written.is_some() {
+                        0
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Ok(_) => PPC_PARAM_ERR,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::NewThread => {
+            // OSErr NewThread(ThreadStyle, ThreadEntryUPP, void *, Size,
+            //                 ThreadOptions, void **, ThreadID *);
+            // Inside Macintosh: Thread Manager (1999), pp. 55–58.
+            let style = cpu.gpr[3];
+            let entry = cpu.gpr[4];
+            let param = cpu.gpr[5];
+            let size = if cpu.gpr[6] == 0 {
+                crate::thread_manager::DEFAULT_COOPERATIVE_THREAD_STACK_SIZE
+            } else {
+                cpu.gpr[6]
+            };
+            let options = cpu.gpr[7];
+            let result_destination = cpu.gpr[8];
+            let made = cpu.gpr[9];
+            let target = ppc_resolve_callback_target(memory, entry, cpu.gpr[2], None);
+            if style != 1
+                || size < 256
+                || size > i32::MAX as u32
+                || made == 0
+                || !ppc_memory_can_write_bytes(memory, made, 4)
+                || target.is_none()
+            {
+                if made != 0 {
+                    let _ = memory.write_u32_be(made, 0);
+                }
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let target = target.unwrap();
+            let pooled = match toolbox_startup.guest_calls.request_thread_stack(
+                GuestIsa::PowerPc,
+                size,
+                options,
+            ) {
+                Ok(pooled) => pooled,
+                Err(error) => {
+                    let _ = memory.write_u32_be(made, 0);
+                    return Some(PpcImportAction::Return(ppc_i16_result(error)));
+                }
+            };
+            let stack = pooled.map_or_else(
+                || process_memory_manager.new_native_ptr(memory, size, true),
+                |storage| storage.stack_base,
+            );
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            if stack == 0 {
+                let _ = memory.write_u32_be(made, 0);
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
+            }
+            let Some(top) = pooled
+                .map(|storage| storage.stack_limit)
+                .or_else(|| stack.checked_add(size))
+            else {
+                process_memory_manager.dispose_native_ptr(stack);
+                let _ = memory.write_u32_be(made, 0);
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
+            };
+            let mut thread_cpu = PpcCpu::new();
+            thread_cpu.alignment_policy = cpu.alignment_policy;
+            thread_cpu.msr = cpu.msr;
+            thread_cpu.pc = target.entry;
+            thread_cpu.lr = PPC_THREAD_RETURN_PC;
+            thread_cpu.gpr[1] = (top & !15) - PPC_INITIAL_STACK_FRAME_SIZE;
+            thread_cpu.gpr[2] = target.rtoc;
+            thread_cpu.gpr[3] = param;
+            let created = toolbox_startup.guest_calls.create_native_thread(
+                crate::guest_call::NativeThreadContext {
+                    cpu: Box::new(thread_cpu),
+                },
+                crate::guest_call::ThreadStorage {
+                    result_destination,
+                    stack_base: stack,
+                    stack_limit: top,
+                    managed_pointer: true,
+                },
+                options & 1 != 0,
+                |task| memory.write_u32_be(made, task.thread_id()).is_some(),
+            );
+            if created.is_none() {
+                if let Some(storage) = pooled {
+                    toolbox_startup
+                        .guest_calls
+                        .recycle_thread_stack(GuestIsa::PowerPc, storage);
+                } else {
+                    process_memory_manager.dispose_native_ptr(stack);
+                }
+                let _ = memory.write_u32_be(made, 0);
+            }
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(
+                if created.is_some() {
+                    PPC_NO_ERR
+                } else {
+                    PPC_MEM_FULL_ERR
+                },
+            )))
+        }
+        PpcImportDispatcherTarget::YieldToThread | PpcImportDispatcherTarget::YieldToAnyThread => {
+            // OSErr YieldToThread(ThreadID); OSErr YieldToAnyThread(void);
+            // Inside Macintosh: Thread Manager (1999), pp. 64–66.
+            let suggested = if binding.dispatcher_target == PpcImportDispatcherTarget::YieldToThread
+            {
+                cpu.gpr[3]
+            } else {
+                0
+            };
+            Some(
+                match toolbox_startup
+                    .guest_calls
+                    .yield_native_thread(cpu, suggested)
+                {
+                    Ok(true) => PpcImportAction::Yield(1),
+                    Ok(false) => PpcImportAction::Return(0),
+                    Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
+                },
+            )
+        }
+        PpcImportDispatcherTarget::DisposeThread => {
+            // OSErr DisposeThread(ThreadID, void *, Boolean);
+            // Inside Macintosh: Thread Manager (1999), pp. 59–60.
+            let calls = &toolbox_startup.guest_calls;
+            let task = crate::guest_call::ExecutionTaskId::from_thread_id(
+                crate::thread_manager::ThreadManager::new(calls).resolve_thread(cpu.gpr[3]),
+            );
+            if calls.scheduling_state(task).is_none() {
+                return Some(PpcImportAction::Return(ppc_i16_result(
+                    crate::thread_manager::THREAD_NOT_FOUND_ERR,
+                )));
+            }
+            let current = task == calls.current_task();
+            let result = cpu.gpr[4];
+            let recycle = cpu.gpr[5] as u8 != 0;
+            Some(
+                if ppc_retire_native_thread(
+                    calls,
+                    cpu,
+                    memory,
+                    process_memory_manager,
+                    task,
+                    result,
+                    recycle,
+                ) {
+                    if current {
+                        PpcImportAction::Yield(1)
+                    } else {
+                        PpcImportAction::Return(0)
+                    }
+                } else {
+                    PpcImportAction::Return(ppc_i16_result(
+                        crate::thread_manager::THREAD_PROTOCOL_ERR,
+                    ))
+                },
+            )
         }
         PpcImportDispatcherTarget::ThreadBeginCritical => {
             Some(PpcImportAction::Return(ppc_i16_result(
@@ -90414,6 +90806,33 @@ fn ppc_restore_native_exception(
     frame_is_valid.then_some(())
 }
 
+fn ppc_retire_native_thread(
+    calls: &crate::guest_call::SharedGuestCallStack,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    task: crate::guest_call::ExecutionTaskId,
+    result: u32,
+    recycle: bool,
+) -> bool {
+    let Some(finished) = calls.retire_native_thread(task, cpu, recycle, |context| {
+        context.result_destination == 0
+            || memory
+                .write_u32_be(context.result_destination, result)
+                .is_some()
+    }) else {
+        return false;
+    };
+    if !recycle && finished.stack_base != 0 {
+        if finished.managed_pointer {
+            manager.dispose_native_ptr(finished.stack_base);
+        } else {
+            manager.dispose_classic_ptr_from_native_import(finished.stack_base);
+        }
+    }
+    true
+}
+
 fn ppc_resolve_callback_target(
     memory: &mut PpcSectionMem,
     proc_ptr: u32,
@@ -108454,6 +108873,84 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reverse_mixed_mode_activation_uses_the_native_worker_stack_and_retries_overflow() {
+        use crate::guest_call::{ExecutionTaskId, GuestCallTarget, PowerPcArguments};
+        const MADE: u32 = PPC_DATA_BASE + 0x2000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        loaded.memory.add_region(MADE, vec![0; 4]);
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = PPC_CODE_BASE;
+        loaded.cpu.gpr[5] = 17;
+        loaded.cpu.gpr[6] = 4096;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = MADE;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
+        assert!(loaded
+            .guest_calls
+            .yield_native_thread(&mut loaded.cpu, worker.thread_id())
+            .unwrap());
+        let storage = loaded.guest_calls.thread_storage(worker).unwrap();
+        let worker_sp = loaded.cpu.gpr[1];
+        assert!(worker_sp < loaded.stack_base);
+        assert!(loaded
+            .guest_calls
+            .switch_to_task(ExecutionTaskId::APPLICATION));
+        assert_eq!(
+            loaded
+                .guest_calls
+                .native_stack_bounds(loaded.stack_base, PPC_STACK_TOP),
+            Some((storage.stack_base, storage.stack_limit))
+        );
+        assert!(loaded.guest_calls.switch_to_task(worker));
+        assert!(loaded.guest_calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: PPC_CODE_BASE + 0x1000,
+                rtoc: PPC_DATA_BASE,
+            },
+            PowerPcArguments::from_slice(&[42]).unwrap(),
+            0x0010_0000,
+            0x0010_1000,
+            None,
+        ));
+        let mut classic = crate::cpu::M68kCpu::new();
+        classic.write_reg(crate::cpu::Register::PC, 0x0010_0000);
+        loaded
+            .memory
+            .add_region(storage.stack_base - 64, vec![0; 64]);
+        // Both surrounding addresses are mapped. Mapping
+        // alone must not permit a frame outside this worker's allocation.
+        for invalid_sp in [storage.stack_base + 16, storage.stack_limit + 16] {
+            loaded.cpu.gpr[1] = invalid_sp;
+            let before = loaded.cpu.clone();
+            let sentinel = invalid_sp - 64;
+            loaded.memory.write_u32_be(sentinel, 0xface_cafe).unwrap();
+            assert!(loaded.activate_powerpc_from_m68k(&mut classic).is_none());
+            assert_eq!(loaded.cpu.gpr, before.gpr);
+            assert_eq!(loaded.cpu.pc, before.pc);
+            assert_eq!(loaded.cpu.lr, before.lr);
+            assert_eq!(loaded.cpu.cr, before.cr);
+            assert_eq!(loaded.cpu.fpr, before.fpr);
+            assert_eq!(classic.read_reg(crate::cpu::Register::PC), 0x0010_0000);
+            assert_eq!(loaded.memory.read_u32_be(sentinel), Some(0xface_cafe));
+            assert!(loaded.guest_calls.pending_powerpc_from_m68k().is_some());
+            assert!(!loaded.guest_calls.has_parked_m68k_contexts());
+        }
+        loaded.cpu.gpr[1] = worker_sp;
+        loaded.activate_powerpc_from_m68k(&mut classic).unwrap();
+        let callback_sp = loaded.cpu.gpr[1];
+        assert!(callback_sp >= storage.stack_base && callback_sp < worker_sp);
+        assert_eq!(callback_sp & 15, 0);
+        assert_eq!(loaded.memory.read_u32_be(callback_sp), Some(worker_sp));
+        assert_eq!(loaded.cpu.gpr[3], 42);
+        assert_eq!(loaded.cpu.pc, PPC_CODE_BASE + 0x1000);
+        assert!(loaded.guest_calls.has_parked_m68k_contexts());
+    }
+
+    #[test]
     fn reverse_mixed_mode_activation_builds_a_protected_native_parameter_area() {
         let pef = synthetic_pef();
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -108474,7 +108971,9 @@ pub(crate) mod tests {
             None,
         ));
 
-        loaded.activate_powerpc_from_m68k().unwrap();
+        loaded
+            .activate_powerpc_from_m68k(&mut crate::cpu::M68kCpu::new())
+            .unwrap();
 
         let callback_sp = loaded.cpu.gpr[1];
         assert!(callback_sp < caller.gpr[1]);
@@ -167346,6 +167845,374 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
             Some(vec![b'A', b'Z', 0x83, b'!', b'q'])
         );
+    }
+
+    #[test]
+    fn native_thread_pool_imports_create_query_validate_and_supply_new_threads() {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"CreateThreadPool")).unwrap();
+        let output = PPC_DATA_BASE + 0x5000;
+        loaded.memory.add_region(output, vec![0xaa; 4]);
+        let invoke = |loaded: &mut PpcLoadedApp, name: &str, args: [u32; 3]| {
+            loaded.imports[0].symbol_name = name.into();
+            loaded.imports[0].dispatcher_target =
+                dispatcher_target_for_import("InterfaceLib", name);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3..6].copy_from_slice(&args);
+            let result = loaded.run_with_hle_imports(64);
+            assert_eq!(result.unsupported_import_index, None);
+            assert_eq!(result.handled_import_count, 1);
+            loaded.cpu.gpr[3] as i16
+        };
+        assert_eq!(invoke(&mut loaded, "CreateThreadPool", [1, 3, 1024]), 0);
+        assert_eq!(invoke(&mut loaded, "CreateThreadPool", [1, 1, 2048]), 0);
+        assert_eq!(invoke(&mut loaded, "GetFreeThreadCount", [1, output, 0]), 0);
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0004aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "GetSpecificFreeThreadCount", [1, 1536, output]),
+            0
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0001aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "GetFreeThreadCount", [0, output, 0]),
+            -50
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0001aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "GetFreeThreadCount", [1, output + 3, 0]),
+            -50
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0001aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "CreateThreadPool", [1, 0xffff, 1024]),
+            -50
+        );
+        assert_eq!(
+            invoke(&mut loaded, "CreateThreadPool", [1, 1, u32::MAX]),
+            -50
+        );
+        assert_eq!(
+            invoke(&mut loaded, "GetDefaultThreadStackSize", [1, output, 0]),
+            0
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(32 * 1024));
+        // Pool creation assigns no task IDs; the first premade NewThread does.
+        loaded.cpu.gpr[6] = 1024;
+        loaded.cpu.gpr[7] = 1 | 2 | 16;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = output;
+        let entry = loaded.entry_pc;
+        assert_eq!(invoke(&mut loaded, "NewThread", [1, entry, 0x1234]), 0);
+        assert_eq!(loaded.memory.read_u32_be(output), Some(3));
+        assert_eq!(invoke(&mut loaded, "GetFreeThreadCount", [1, output, 0]), 0);
+        assert_eq!(loaded.memory.read_u16_be(output), Some(3));
+        assert_eq!(loaded.guest_calls.thread_pool_count(GuestIsa::M68k, 0), 0);
+    }
+
+    #[test]
+    fn native_thread_creation_clears_the_output_on_failure_without_publishing_a_task() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        let made = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(made, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = 2;
+        loaded.cpu.gpr[4] = loaded.entry_pc;
+        loaded.cpu.gpr[6] = 1024;
+        loaded.cpu.gpr[9] = made;
+        assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.memory.read_u32_be(made), Some(0));
+        assert!(!loaded.guest_calls.has_live_workers());
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[7] = 2; // kUsePremadeThread, with an empty pool
+        assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-617));
+        assert_eq!(loaded.memory.read_u32_be(made), Some(0));
+        assert!(!loaded.guest_calls.has_live_workers());
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[7] = 2 | 4; // kCreateIfNeeded preserves the unconsumed ID
+        assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u32_be(made), Some(3));
+    }
+
+    #[test]
+    fn native_thread_entry_returns_to_its_creator_and_retries_result_delivery() {
+        use crate::guest_call::ExecutionTaskId;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        const MADE: u32 = PPC_DATA_BASE + 0x2000;
+        const RESULT: u32 = PPC_DATA_BASE + 0x3000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        loaded.memory.add_region(
+            ENTRY,
+            [0x3860_002au32, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        loaded.memory.add_region(MADE, vec![0; 4]);
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = ENTRY;
+        loaded.cpu.gpr[5] = 17;
+        loaded.cpu.gpr[6] = 4096;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = RESULT; // deliberately unmapped until return retry
+        loaded.cpu.gpr[9] = MADE;
+        loaded.cpu.gpr[20] = 0x1234_5678;
+        loaded.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
+        loaded.cpu.cr = 0x1357_2468;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
+        assert_eq!(worker.thread_id(), 3);
+        let mut yielding = loaded.imports[0].clone();
+        yielding.symbol_index = 1;
+        yielding.symbol_name = "YieldToAnyThread".into();
+        yielding.dispatcher_target =
+            dispatcher_target_for_import("InterfaceLib", "YieldToAnyThread");
+        yielding.trap_pc = PPC_IMPORT_TRAP_BASE + 4;
+        loaded.imports.push(yielding);
+        loaded.import_count = 2;
+        loaded.cpu.pc = PPC_IMPORT_TRAP_BASE + 4;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let creator = loaded.cpu.clone();
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.guest_calls.current_task(), worker);
+        assert_eq!(loaded.cpu.pc, ENTRY);
+        assert_eq!(loaded.cpu.gpr[3], 17);
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.guest_calls.current_task(), worker);
+        assert_eq!(loaded.cpu.pc, PPC_THREAD_RETURN_PC);
+        assert_eq!(loaded.cpu.gpr[3], 42);
+        loaded.memory.add_region(RESULT, vec![0; 4]);
+        loaded.run_with_hle_imports(64);
+        assert_eq!(
+            loaded.guest_calls.current_task(),
+            ExecutionTaskId::APPLICATION
+        );
+        assert_eq!(loaded.guest_calls.scheduling_state(worker), None);
+        assert_eq!(loaded.memory.read_u32_be(RESULT), Some(42));
+        assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+        assert_eq!(loaded.cpu.gpr[20], creator.gpr[20]);
+        assert_eq!(loaded.cpu.gpr[1], creator.gpr[1]);
+        assert_eq!(loaded.cpu.gpr[2], creator.gpr[2]);
+        assert_eq!(loaded.cpu.fpr, creator.fpr);
+        assert_eq!(loaded.cpu.cr, creator.cr);
+        assert!(loaded.cpu.time_base() >= creator.time_base());
+    }
+
+    #[test]
+    fn standalone_native_thread_stays_stopped_until_ready() {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"SetThreadStateEndCritical")).unwrap();
+        loaded.guest_calls.begin_critical();
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = 0;
+        assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        assert!(!loaded.guest_calls.current_task_is_running());
+        let pc = loaded.cpu.pc;
+        let time = loaded.cpu.time_base();
+        for _ in 0..3 {
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.result, PpcRunResult::CycleLimit { cycles: 0 });
+            assert_eq!(probe.handled_import_count, 0);
+            assert_eq!(loaded.cpu.pc, pc);
+            assert_eq!(loaded.cpu.time_base(), time);
+        }
+        let manager = crate::thread_manager::ThreadManager::new(&loaded.guest_calls);
+        assert_eq!(manager.ready_given_task(manager.task_reference(), 2), 0);
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+
+    #[test]
+    fn native_thread_task_reference_routes_share_state_and_validate_requests() {
+        use crate::guest_call::ExecutionTaskId;
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"SetThreadReadyGivenTaskRef"))
+                .unwrap();
+        let worker = ExecutionTaskId::from_thread_id(3);
+        assert!(loaded.guest_calls.register_task(worker));
+        for (reference, thread, result) in [
+            (99, 3, -619),
+            (2, 99, -618),
+            (2, 3, 0),
+            (2, 3, -619),
+            (2, 2, -619),
+        ] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = reference;
+            loaded.cpu.gpr[4] = thread;
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(result));
+            assert_eq!(
+                loaded.guest_calls.current_task(),
+                ExecutionTaskId::APPLICATION
+            );
+        }
+        let mut query =
+            load_pef_application(&synthetic_pef_with_import(b"GetThreadStateGivenTaskRef"))
+                .unwrap();
+        query.guest_calls = loaded.guest_calls.shared_handle();
+        let out = PPC_DATA_BASE + 0x1000;
+        query.memory.add_region(out, vec![0xaa; 4]);
+        for (reference, thread, result, state) in
+            [(2, 3, 0, 0), (99, 3, -619, 0xaaaa), (2, 99, -618, 0xaaaa)]
+        {
+            query.cpu.pc = query.entry_pc;
+            query.cpu.lr = PPC_HALT_PC;
+            query.cpu.gpr[3] = reference;
+            query.cpu.gpr[4] = thread;
+            query.cpu.gpr[5] = out;
+            query.memory.write_u32_be(out, 0xaaaaaaaa).unwrap();
+            assert_eq!(query.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(query.cpu.gpr[3], ppc_i16_result(result));
+            assert_eq!(query.memory.read_u16_be(out), Some(state));
+            assert_eq!(query.memory.read_u16_be(out + 2), Some(0xaaaa));
+        }
+        let mut reference =
+            load_pef_application(&synthetic_pef_with_import(b"GetThreadCurrentTaskRef")).unwrap();
+        reference.memory.add_region(out, vec![0; 4]);
+        reference.cpu.gpr[3] = out;
+        assert_eq!(reference.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(reference.memory.read_u32_be(out), Some(2));
+    }
+
+    #[test]
+    fn native_thread_state_stop_wake_and_resume_preserves_the_caller() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::{ExecutionTaskId, NativeThreadContext};
+        for end_critical in [false, true] {
+            let symbol = if end_critical {
+                b"SetThreadStateEndCritical".as_slice()
+            } else {
+                b"SetThreadState".as_slice()
+            };
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(symbol)).unwrap();
+            let code = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(
+                code,
+                [0x3a800055_u32, 0x4e800020]
+                    .into_iter()
+                    .flat_map(u32::to_be_bytes)
+                    .collect(),
+            );
+            let mut worker_cpu = loaded.cpu.clone();
+            worker_cpu.pc = code;
+            worker_cpu.lr = PPC_HALT_PC;
+            worker_cpu.gpr[20] = 0;
+            let worker = loaded
+                .guest_calls
+                .create_native_thread(
+                    NativeThreadContext {
+                        cpu: Box::new(worker_cpu),
+                    },
+                    crate::guest_call::ThreadStorage {
+                        result_destination: 0,
+                        stack_base: 0,
+                        stack_limit: 0,
+                        managed_pointer: true,
+                    },
+                    false,
+                    |_| true,
+                )
+                .unwrap();
+            loaded.cpu.gpr[20] = 0x12345678;
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = worker.thread_id();
+            loaded.cpu.lr = PPC_HALT_PC;
+            if end_critical {
+                loaded.guest_calls.begin_critical();
+            }
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.guest_calls.current_task(), worker);
+            assert_eq!(
+                loaded
+                    .guest_calls
+                    .scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Stopped)
+            );
+            assert_eq!(loaded.guest_calls.critical_depth(), 0);
+            loaded.run_with_hle_imports(64);
+            assert_eq!(loaded.cpu.gpr[20], 0x55);
+            // Wake the creator without switching away from the worker.
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = ExecutionTaskId::APPLICATION.thread_id();
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            if end_critical {
+                loaded.guest_calls.begin_critical();
+            }
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.guest_calls.current_task(), worker);
+            assert_eq!(
+                loaded
+                    .guest_calls
+                    .scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Ready)
+            );
+            // Stopping the worker resumes the creator's successful ABI return.
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = ExecutionTaskId::APPLICATION.thread_id();
+            if end_critical {
+                loaded.guest_calls.begin_critical();
+            }
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(
+                loaded.guest_calls.current_task(),
+                ExecutionTaskId::APPLICATION
+            );
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.cpu.gpr[20], 0x12345678);
+            assert_eq!(loaded.cpu.pc, loaded.entry_pc + 16);
+            loaded.run_with_hle_imports(64);
+            assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+            assert_eq!(
+                loaded.guest_calls.scheduling_state(worker),
+                Some(ExecutionTaskState::Stopped)
+            );
+        }
+    }
+
+    #[test]
+    fn native_thread_state_refusal_preserves_critical_depth_and_contexts() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::ExecutionTaskId;
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"SetThreadStateEndCritical")).unwrap();
+        let worker = ExecutionTaskId::from_thread_id(3);
+        assert!(loaded.guest_calls.register_task(worker));
+        assert!(loaded
+            .guest_calls
+            .set_scheduling_state(worker, ExecutionTaskState::Ready));
+        loaded.guest_calls.begin_critical();
+        // The ready identity has no saved execution context. Do not partially
+        // end critical or stop the caller when successor preparation refuses.
+        for (thread, state, error) in [(1, 1, -619), (99, 0, -618), (1, 99, -619), (3, 2, -619)] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = thread;
+            loaded.cpu.gpr[4] = state;
+            loaded.cpu.gpr[5] = 3;
+            let before = loaded.guest_calls.clone();
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
+            assert_eq!(loaded.guest_calls, before);
+            assert_eq!(loaded.guest_calls.critical_depth(), 1);
+        }
     }
 
     #[test]

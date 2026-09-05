@@ -72,6 +72,7 @@ pub trait CpuOps {
 /// Construction selects the CPU type from
 /// [`crate::machine_profile::REFERENCE_MACHINE_PROFILE`]. Callers with a
 /// specialized embedding may subsequently reconfigure the public core.
+#[derive(Debug)]
 pub struct M68kCpu {
     /// Complete m68k CPU state and execution API.
     ///
