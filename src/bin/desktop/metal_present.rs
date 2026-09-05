@@ -406,6 +406,28 @@ pub struct MetalPresenter {
     async_guest_presenter: AsyncGuestPresenter,
 }
 
+/// The GPU that scans out the main display. Rendering there avoids copying every
+/// presented frame across GPUs on dual-GPU Macs when the window is scanned out
+/// directly (fullscreen); windowed presentation is unaffected either way.
+/// `SYSTEMLESS_METAL_DEVICE=default` keeps the system default device.
+fn display_metal_device() -> Option<Retained<ProtocolObject<dyn MTLDevice>>> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDirectDisplayCopyCurrentMetalDevice(
+            display: u32,
+        ) -> *mut ProtocolObject<dyn MTLDevice>;
+    }
+    if std::env::var("SYSTEMLESS_METAL_DEVICE")
+        .map(|v| v == "default")
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    // Returns a +1 reference (Copy rule); null when the display has no Metal device.
+    unsafe { Retained::from_raw(CGDirectDisplayCopyCurrentMetalDevice(CGMainDisplayID())) }
+}
+
 impl MetalPresenter {
     pub fn new(window: Rc<Window>) -> Result<Self, String> {
         MainThreadMarker::new()
@@ -428,7 +450,8 @@ impl MetalPresenter {
             root_layer.ok_or_else(|| "AppKit did not create a root layer".to_string())?;
 
         // SAFETY: Metal returns a retained Objective-C protocol object or nil.
-        let device = unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) }
+        let device = display_metal_device()
+            .or_else(|| unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) })
             .ok_or_else(|| "this Mac has no Metal device".to_string())?;
         let command_queue = device
             .newCommandQueue()

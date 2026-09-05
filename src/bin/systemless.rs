@@ -161,6 +161,12 @@ struct Cli {
         value_parser = UiThemeId::parse
     )]
     ui_theme: UiThemeId,
+    /// Start in a borderless fullscreen space. On systems where macOS selects
+    /// direct scan-out for the fullscreen surface this measurably reduced
+    /// pointer-to-screen latency in testing; the benefit depends on the
+    /// machine and compositor state.
+    #[arg(long)]
+    fullscreen: bool,
 
     /// Replay input events from a script during a headless run. Events are
     /// scheduled by retired instruction count, so a run replays identically
@@ -628,6 +634,7 @@ struct App {
     /// unchanged, for native expose/resize events that need a fresh drawable.
     #[cfg(target_os = "macos")]
     force_gpu_present: bool,
+    start_fullscreen: bool,
     /// Show the Systemless debug overlay on top of the game framebuffer.
     debug_overlay_visible: bool,
     #[cfg(target_os = "macos")]
@@ -675,6 +682,7 @@ impl App {
             Some(screen_depth),
             1,
             UiThemeId::ClassicSystem7,
+            false,
         )
     }
 
@@ -686,6 +694,7 @@ impl App {
         screen_depth: Option<u16>,
         display_scale: u32,
         ui_theme: UiThemeId,
+        start_fullscreen: bool,
     ) -> Self {
         #[cfg(not(target_os = "macos"))]
         let _ = native_integrations;
@@ -762,6 +771,7 @@ impl App {
             force_next_render: true,
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
+            start_fullscreen,
             debug_overlay_visible: false,
             #[cfg(target_os = "macos")]
             host_cursor: host_cursor::HostCursor::new(),
@@ -2231,6 +2241,9 @@ impl ApplicationHandler for App {
             }
             #[cfg(not(target_os = "macos"))]
             window.set_cursor_visible(false);
+            if self.start_fullscreen {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            }
 
             #[cfg(target_os = "macos")]
             let surface = metal_present::MetalPresenter::new(window.clone())
@@ -2462,6 +2475,7 @@ fn run_gui(
     screen_depth: Option<u16>,
     display_scale: u32,
     ui_theme: UiThemeId,
+    fullscreen: bool,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -2481,6 +2495,7 @@ fn run_gui(
         screen_depth,
         display_scale,
         ui_theme,
+        fullscreen,
     );
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
@@ -2737,6 +2752,7 @@ fn main() {
             cli.screen_depth,
             cli.display_scale,
             cli.ui_theme,
+            cli.fullscreen,
         );
     }
 }
