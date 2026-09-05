@@ -10,8 +10,8 @@ use crate::guest_call::{
     GuestCallTarget, M68kResultTarget, PowerPcArguments, SharedGuestCallStack,
 };
 use crate::guest_procedure::{
-    resolve_guest_procedure, GuestIsa, GuestProcedure, ROUTINE_FLAG_DONT_PASS_SELECTOR,
-    ROUTINE_FLAG_USE_NATIVE_ISA,
+    inspect_guest_procedure, resolve_guest_procedure, GuestIsa, GuestProcedure,
+    GuestProcedureResolution, ROUTINE_FLAG_DONT_PASS_SELECTOR, ROUTINE_FLAG_USE_NATIVE_ISA,
 };
 use crate::memory::{MacMemoryBus, MemoryBus};
 
@@ -260,7 +260,7 @@ fn choose_m68k_entry_target(
 ) -> Option<GuestProcedure> {
     let current =
         resolve_guest_procedure(bus, descriptor, 0, selector, GuestIsa::M68k, GuestIsa::M68k)?;
-    let native = resolve_guest_procedure(
+    let native = inspect_guest_procedure(
         bus,
         descriptor,
         0,
@@ -268,12 +268,19 @@ fn choose_m68k_entry_target(
         GuestIsa::PowerPc,
         GuestIsa::M68k,
     );
-    if let Some(native) = native {
-        if native.isa == GuestIsa::PowerPc
-            && (native.routine_flags & ROUTINE_FLAG_USE_NATIVE_ISA) != 0
+    match native {
+        Some(GuestProcedureResolution::Callable(native))
+            if native.isa == GuestIsa::PowerPc
+                && (native.routine_flags & ROUTINE_FLAG_USE_NATIVE_ISA) != 0 =>
         {
             return Some(native);
         }
+        Some(GuestProcedureResolution::Prepare(request))
+            if (request.routine_flags & ROUTINE_FLAG_USE_NATIVE_ISA) != 0 =>
+        {
+            return None;
+        }
+        _ => {}
     }
     Some(current)
 }
@@ -1052,6 +1059,43 @@ mod tests {
             POWERPC_ENTRY
         );
         assert_eq!(cpu.read_reg(Register::PC), DESCRIPTOR + 2);
+    }
+
+    #[test]
+    fn unprepared_native_preference_never_falls_back_or_parks_a_container_address() {
+        let (_, mut cpu, mut bus) = setup();
+        let calls = SharedGuestCallStack::default();
+        write_header(&mut bus, 1);
+        write_record(
+            &mut bus,
+            0,
+            ROUTINE_RECORD_M68K_ISA,
+            0,
+            proc_info::PASCAL_STACK_BASED,
+            M68K_ENTRY,
+            0,
+        );
+        write_record(
+            &mut bus,
+            1,
+            ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_FLAG_USE_NATIVE_ISA
+                | crate::guest_procedure::ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE
+                | crate::guest_procedure::ROUTINE_FLAG_FRAGMENT_NEEDS_PREPARING,
+            proc_info::PASCAL_STACK_BASED,
+            TVECTOR - DESCRIPTOR,
+            0,
+        );
+        bus.write_long(TVECTOR, u32::from_be_bytes(*b"Joy!"));
+        cpu.write_reg(Register::PC, DESCRIPTOR + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, RETURN_PC);
+        let pc = cpu.read_reg(Register::PC);
+        let sp = cpu.read_reg(Register::A7);
+        assert!(enter_m68k_routine_descriptor(&mut cpu, &mut bus, &calls).is_err());
+        assert_eq!(cpu.read_reg(Register::PC), pc);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(calls.pending_powerpc_from_m68k().is_none());
     }
 
     #[test]
