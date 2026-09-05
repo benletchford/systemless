@@ -7030,11 +7030,16 @@ impl TrapDispatcher {
         call
     }
 
-    /// Whether guest execution is currently inside any routine installed by
-    /// the Trap Manager. The runner keeps these uncommon calls on exact
-    /// instruction boundaries so an ordinary RTS can retire its continuation.
-    pub(crate) fn has_pending_native_trap_call(&self) -> bool {
-        !self.pending_native_trap_calls.is_empty()
+    /// Add every retained native-patch return PC to the current m68k batch's
+    /// watch list. Reaching one stops the batch before the return-site
+    /// instruction executes, so the runner can validate PC and SP and retire
+    /// the exact invocation without single-stepping all intervening code.
+    pub(crate) fn append_pending_native_trap_return_pcs(&self, pcs: &mut Vec<u32>) {
+        for call in self.pending_native_trap_calls.values().flatten() {
+            if !pcs.contains(&call.return_pc) {
+                pcs.push(call.return_pc);
+            }
+        }
     }
 
     /// Whether the canonical OS or Toolbox slot selected by an A-line word
