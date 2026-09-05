@@ -2,7 +2,8 @@
   "profiles": [
     "systemless-68k",
     "systemless-ppc",
-    "systemless-theme-68k"
+    "systemless-classic-68k",
+    "systemless-classic-ppc"
   ],
   "native_emulators": [
     "basilisk",

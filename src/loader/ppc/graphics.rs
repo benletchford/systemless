@@ -24,6 +24,8 @@ pub const PPC_RGB_WHITE: PpcRgbColor = PpcRgbColor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcGWorldRecord {
+    /// Host presentation provider; the main screen record selects native Toolbox chrome.
+    pub ui_theme: crate::ui_theme::UiThemeId,
     pub port: u32,
     pub pixmap_handle: u32,
     pub pixmap: u32,

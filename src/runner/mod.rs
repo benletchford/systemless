@@ -3507,56 +3507,7 @@ impl FixtureRunner {
                 screen_width as i16,
             );
             if let Some(ppc_app) = self.native.application_mut() {
-                if let Some(front_buffer) = ppc_app.presented_front_buffer() {
-                    let pattern: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
-                    if front_buffer.depth == 16 {
-                        let black = [0x00u8, 0x00u8];
-                        let white = [0x7Fu8, 0xFFu8];
-                        let rows: Vec<Vec<u8>> = (0..8)
-                            .map(|py| {
-                                let bits = pattern[py];
-                                (0..front_buffer.width)
-                                    .flat_map(|x| {
-                                        if (bits >> (7 - (x % 8))) & 1 != 0 {
-                                            black
-                                        } else {
-                                            white
-                                        }
-                                    })
-                                    .collect()
-                            })
-                            .collect();
-                        for y in 0..front_buffer.height {
-                            let addr = front_buffer
-                                .base_addr
-                                .saturating_add(y.saturating_mul(front_buffer.row_bytes));
-                            let _ = ppc_app.memory.write_bytes(addr, &rows[(y % 8) as usize]);
-                        }
-                    } else if front_buffer.depth == 8 {
-                        let black = 0xFFu8;
-                        let white = 0x00u8;
-                        let rows: Vec<Vec<u8>> = (0..8)
-                            .map(|py| {
-                                let bits = pattern[py];
-                                (0..front_buffer.width)
-                                    .map(|x| {
-                                        if (bits >> (7 - (x % 8))) & 1 != 0 {
-                                            black
-                                        } else {
-                                            white
-                                        }
-                                    })
-                                    .collect()
-                            })
-                            .collect();
-                        for y in 0..front_buffer.height {
-                            let addr = front_buffer
-                                .base_addr
-                                .saturating_add(y.saturating_mul(front_buffer.row_bytes));
-                            let _ = ppc_app.memory.write_bytes(addr, &rows[(y % 8) as usize]);
-                        }
-                    }
-                }
+                ppc_app.repaint_theme_desktop(true);
             }
             return;
         }
@@ -4368,6 +4319,7 @@ impl FixtureRunner {
             ExecutionTaskId::APPLICATION,
             crate::guest_procedure::GuestIsa::PowerPc
         ));
+        ppc_app.set_ui_theme(self.config.ui_theme);
         self.native
             .install(NativeEngineRole::Application, ppc_app)
             .unwrap_or_else(|_| panic!("native engine slot is occupied"));
@@ -6580,6 +6532,7 @@ impl FixtureRunner {
         };
         let mut ppc_app = native_context.adapter_mut();
 
+        ppc_app.set_ui_theme(self.config.ui_theme);
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let cycles_per_tick = self.instructions_per_tick.max(1);
@@ -14643,6 +14596,8 @@ mod tests {
         let title_h = fixture.title_h;
         let app = LoadedApp::from_ppc(fixture.app);
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        // This fixture pre-renders classic menu pixels before attaching to the runner.
+        runner.set_ui_theme(UiThemeId::ClassicSystem7);
         runner.init_app(&app);
 
         let framebuffer_before = {
@@ -16924,6 +16879,7 @@ mod tests {
         })
         .collect();
         ppc_app.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -18764,6 +18720,7 @@ mod tests {
             aliases: Vec::new(),
             gworlds: vec![
                 PpcGWorldRecord {
+                    ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                     port: PPC_MAIN_GWORLD,
                     pixmap_handle: 0,
                     pixmap: 0,
@@ -18777,6 +18734,7 @@ mod tests {
                     pixels_no_purge: false,
                 },
                 PpcGWorldRecord {
+                    ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                     port: PPC_DSP_BACK_GWORLD,
                     pixmap_handle: 0,
                     pixmap: 0,
@@ -19048,6 +19006,7 @@ mod tests {
             ),
             aliases: Vec::new(),
             gworlds: vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -19328,6 +19287,7 @@ mod tests {
         ppc_app.memory.add_region(PPC_HEAP_BASE, vec![0; 16]);
         ppc_app.set_heap_cursor(PPC_HEAP_BASE + 16);
         ppc_app.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -19444,6 +19404,7 @@ mod tests {
             ppc_app.memory.add_region(PPC_HEAP_BASE, pixels);
             ppc_app.set_heap_cursor(PPC_HEAP_BASE + row_bytes * HEIGHT);
             ppc_app.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,

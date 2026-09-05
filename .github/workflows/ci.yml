@@ -73,10 +73,25 @@ jobs:
           SYSTEMLESS_PREFER_POWERPC: 1
         run: cargo test --test toolbox_showcase
 
-      - name: Run toolbox showcase integration test (Systemless theme)
+      - name: Run toolbox showcase integration test (classic 68k)
         env:
-          SYSTEMLESS_TOOLBOX_THEME: systemless-default
+          SYSTEMLESS_TOOLBOX_THEME: classic-system7
         run: cargo test --locked --test toolbox_showcase
+
+      - name: Run toolbox showcase integration test (classic PowerPC)
+        env:
+          SYSTEMLESS_TOOLBOX_THEME: classic-system7
+          SYSTEMLESS_PREFER_POWERPC: 1
+        run: cargo test --locked --test toolbox_showcase
+
+      - name: Upload failed showcase frames
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: toolbox-showcase-failure
+          path: /tmp/systemless-toolbox-showcase-*.png
+          if-no-files-found: ignore
+          retention-days: 7
 
   checks:
     name: headless & package
