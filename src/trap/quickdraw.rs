@@ -21972,7 +21972,7 @@ impl super::TrapDispatcher {
         true
     }
 
-    fn drawpicture_current_port_pixel_clip(
+    pub(crate) fn drawpicture_current_port_pixel_clip(
         bus: &MacMemoryBus,
         port: u32,
         bounds_top: i16,
