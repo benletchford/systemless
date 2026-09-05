@@ -2203,10 +2203,6 @@ impl SharedGuestCallStack {
         {
             return false;
         }
-        if let Some(operation) = cfm_load {
-            cpu.gpr[3] =
-                resume.expect("CFM return requires its semantic consumer")(operation, cpu.gpr[3]);
-        }
         let _ = tasks
             .kernel
             .retire(task, call_id)
@@ -2215,10 +2211,18 @@ impl SharedGuestCallStack {
             .frames
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
+        // Transfer the finished operation out of execution custody before its
+        // service resumes. The enclosing frame stays live, and no execution
+        // store borrow may span the semantic consumer.
+        drop(tasks);
         if let Some(scratch) = scratch {
             memory_manager
                 .expect("scratch return requires its memory manager")
                 .release_native_scratch(scratch);
+        }
+        if let Some(operation) = cfm_load {
+            cpu.gpr[3] =
+                resume.expect("CFM return requires its semantic consumer")(operation, cpu.gpr[3]);
         }
         Self::apply_powerpc_return(cpu, origin);
         true
@@ -3011,6 +3015,86 @@ mod tests {
             cpu.pc = RETURN_PC;
             assert!(calls.complete_powerpc(&mut cpu));
             assert_eq!(cpu.pc, 0x2000);
+            assert!(calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn cfm_resumption_observes_retired_initializer_and_live_enclosing_call() {
+        for result in [0, 1] {
+            let calls = SharedGuestCallStack::default();
+            let worker = calls.create_task().unwrap();
+            assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+            assert!(calls.switch_to_task(worker));
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(0x8000, vec![0; 128]);
+            let mut manager = ProcessNativeMemoryManager::default();
+            let mut cpu = PpcCpu::new();
+            cpu.gpr[1] = 0x8000;
+            let operation = |id| CfmLoadOperation {
+                id: CfmLoadId(id),
+                main_address: 0,
+                outputs: crate::cfm::CfmLoadOutputs {
+                    connection: 0,
+                    main_address: 0,
+                    error_name: 0,
+                },
+                created_connection: true,
+            };
+            for id in [1, 2] {
+                let request = GuestCallRequest::for_task(
+                    worker,
+                    GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: 0x1000 * id,
+                        rtoc: 0x1100 * id,
+                    },
+                )
+                .with_powerpc_arguments(PowerPcArguments::from_slice(&[]).unwrap());
+                let effect = GuestCallEffect::call_guest(
+                    request,
+                    GuestCallContinuation::to_powerpc(
+                        RETURN_PC,
+                        0x3000 * id,
+                        0x3100 * id,
+                        PpcNativeReturnGpr3::Preserve,
+                    ),
+                );
+                assert!(calls.activate_powerpc_effect_with_scratch(
+                    &mut cpu,
+                    &mut memory,
+                    effect,
+                    None,
+                    Some(operation(id))
+                ));
+            }
+            let inner = calls.top_frame().unwrap().0;
+            let mut consumed = 0;
+            let mut resume = |op: CfmLoadOperation, value| {
+                consumed += 1;
+                assert_eq!(op, operation(2));
+                assert_eq!(value, result);
+                assert_eq!(calls.current_task(), worker);
+                assert!(!calls.is_cfm_load_pending(CfmLoadId(2)));
+                assert!(calls.is_cfm_load_pending(CfmLoadId(1)));
+                assert_ne!(calls.top_frame().unwrap().0, inner);
+                0xABCD
+            };
+            assert!(!calls.complete_powerpc_resuming_load(&mut cpu, &mut manager, &mut resume));
+            cpu.pc = RETURN_PC;
+            cpu.gpr[3] = result;
+            assert!(calls.complete_powerpc_resuming_load(&mut cpu, &mut manager, &mut resume));
+            assert!(!calls.complete_powerpc_resuming_load(&mut cpu, &mut manager, &mut resume));
+            assert_eq!(consumed, 1);
+            assert_eq!((cpu.pc, cpu.gpr[2], cpu.gpr[3]), (0x6000, 0x6200, 0xABCD));
+            cpu.pc = RETURN_PC;
+            assert!(
+                calls.complete_powerpc_resuming_load(&mut cpu, &mut manager, |op, _| {
+                    assert_eq!(op, operation(1));
+                    assert!(calls.is_empty());
+                    0
+                })
+            );
             assert!(calls.is_empty());
         }
     }
