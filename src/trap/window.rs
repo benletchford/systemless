@@ -3538,7 +3538,7 @@ impl super::TrapDispatcher {
             // bar, keep the normal Mac white background.
             Self::fb_fill_rect(
                 bus,
-                screen_base,
+                effective_screen_base,
                 pm_row_bytes,
                 pixel_depth,
                 screen_w as i16,
@@ -6430,6 +6430,58 @@ mod tests {
         let picture = bus.alloc(4);
         bus.write_long(picture, picture_data);
         picture
+    }
+
+    #[test]
+    fn fullscreen_window_erase_uses_resolved_screen_address_and_preserves_low_memory() {
+        for hidden_menu in [false, true] {
+            for missing_address in [false, true] {
+                let (mut disp, mut cpu, mut bus) = setup();
+                let screen = 0x0030_0000;
+                disp.set_screen_mode_for_test(screen, 816, 800, 600, 8);
+                disp.menu_bar_hidden = hidden_menu;
+                bus.fill_bytes(screen, 816 * 600, 0x55);
+                let probes = [
+                    (0x28, 0x1234_5678),
+                    (0x400, 0x2345_6789),
+                    (0xC00, 0x3456_789A),
+                ];
+                for (address, value) in probes {
+                    bus.write_long(address, value);
+                }
+                let window = bus.alloc(256);
+                disp.init_cgraf_window(
+                    &mut bus,
+                    &mut cpu,
+                    window,
+                    if missing_address { 0 } else { screen },
+                    0,
+                    0,
+                    600,
+                    800,
+                    "",
+                    2,
+                    true,
+                    false,
+                    false,
+                    0,
+                );
+                for (address, value) in probes {
+                    assert_eq!(bus.read_long(address), value, "system cell ${address:04X}");
+                }
+                let pixmap = bus.read_long(bus.read_long(window + 2));
+                assert_eq!(bus.read_long(pixmap), screen);
+                let background = if hidden_menu { 0xFF } else { 0 };
+                for offset in [0, 300 * 816 + 400, 599 * 816 + 799] {
+                    assert_eq!(bus.read_byte(screen + offset), background);
+                }
+                assert_eq!(
+                    bus.read_byte(screen + 800),
+                    0x55,
+                    "row padding is outside the window"
+                );
+            }
+        }
     }
 
     #[test]
