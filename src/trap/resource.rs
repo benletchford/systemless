@@ -7203,7 +7203,6 @@ impl super::TrapDispatcher {
                                 self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                             bus.write_word(sp + 6, refnum);
                             cpu.write_reg(Register::D0, refnum as u32);
-                            bus.write_word(0x0A60, 0); // ResErr = noErr
                         } else {
                             // FSpOpenResFile failure semantics:
                             // - If the file exists but has no resource fork, return
@@ -8043,7 +8042,7 @@ impl super::TrapDispatcher {
         decode_mac_roman(&bus.read_pstring(name_ptr))
     }
 
-    fn write_pstring(bus: &mut MacMemoryBus, ptr: u32, value: &str) {
+    pub(crate) fn write_pstring(bus: &mut MacMemoryBus, ptr: u32, value: &str) {
         if ptr == 0 {
             return;
         }
@@ -14043,7 +14042,7 @@ mod tests {
         let new_sp = cpu.read_reg(Register::A7);
         assert_eq!(new_sp, TEST_SP + 6);
         let refnum = bus.read_word(new_sp);
-        assert!(refnum >= 100);
+        assert_eq!(refnum % 94, 2, "resource refnum is an HFS FCB offset");
         assert_eq!(cpu.read_reg(Register::D0), refnum as u32);
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(bus.read_word(0x0A5A), refnum);

@@ -5820,6 +5820,112 @@ impl TrapDispatcher {
         }
     }
 
+    // Inside Macintosh: Files (1992), pp. 2-81–2-83: an HFS file
+    // reference number is 2 + 94*n, an offset into the FCB buffer.
+    // Resource Manager access paths share that namespace with data forks.
+    fn allocate_resource_file_fcb(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        path: &str,
+        writable: bool,
+    ) -> std::result::Result<u16, i16> {
+        use crate::memory::globals::addr;
+        const FCB_SIZE: u16 = 94;
+        const MAX_FCBS: u16 = 342;
+        let old_buffer = bus.read_long(addr::FCB_S_PTR);
+        let old_size = if old_buffer == 0 {
+            0
+        } else {
+            bus.read_word(old_buffer)
+        };
+        let refnum = (0..MAX_FCBS)
+            .map(|index| 2 + FCB_SIZE * index)
+            .find(|refnum| {
+                *refnum != bus.read_word(addr::CUR_APREF_NUM)
+                    && !self.open_files.contains_key(refnum)
+                    && !self.synthetic_drivers.contains_key(refnum)
+                    && !self
+                        .resources
+                        .as_ref()
+                        .is_some_and(|r| r.files.contains_key(refnum))
+                    && (*refnum >= old_size || bus.read_long(old_buffer + *refnum as u32) == 0)
+            })
+            .ok_or(-42i16)?; // tmfoErr
+        let required = refnum + FCB_SIZE;
+        let buffer = if required > old_size {
+            let new_buffer = bus.alloc(required as u32);
+            if new_buffer == 0 {
+                return Err(-108); // memFullErr
+            }
+            bus.fill_bytes(new_buffer, required as u32, 0);
+            if old_buffer != 0 {
+                let previous = bus.read_bytes(old_buffer, old_size as usize);
+                bus.write_bytes(new_buffer, &previous);
+            }
+            bus.write_word(new_buffer, required);
+            bus.write_long(addr::FCB_S_PTR, new_buffer);
+            if old_buffer != 0 {
+                bus.free(old_buffer);
+            }
+            new_buffer
+        } else {
+            old_buffer
+        };
+        bus.write_word(addr::FS_FCB_LEN, FCB_SIZE);
+
+        // Files 1992, pp. 2-79–2-83: fcbVPtr identifies the volume's VCB;
+        // vcbVRefNum is the signed word at byte 78 of that record.
+        let volume_ref = self
+            .vfs_volume_for_path(path)
+            .map(|volume| volume.ref_num)
+            .unwrap_or(BOOT_VOLUME_REF_NUM);
+        let mut vcb = bus.read_long(addr::VCB_Q_HDR + 2);
+        while vcb != 0 && bus.read_word(vcb + 78) != volume_ref as u16 {
+            vcb = bus.read_long(vcb);
+        }
+        if vcb == 0 {
+            vcb = bus.alloc(178);
+            if vcb == 0 {
+                return Err(-108);
+            }
+            bus.fill_bytes(vcb, 178, 0);
+            bus.write_word(vcb + 8, 0x4244);
+            bus.write_word(vcb + 78, volume_ref as u16);
+            let volume_name = self
+                .vfs_volume_for_ref_num(volume_ref)
+                .map(|volume| volume.name.as_str())
+                .unwrap_or(BOOT_VOLUME_NAME);
+            Self::write_pstring(
+                bus,
+                vcb + 44,
+                &volume_name.chars().take(27).collect::<String>(),
+            );
+            let tail = bus.read_long(addr::VCB_Q_HDR + 6);
+            if tail == 0 {
+                bus.write_long(addr::VCB_Q_HDR + 2, vcb);
+            } else {
+                bus.write_long(tail, vcb);
+            }
+            bus.write_long(addr::VCB_Q_HDR + 6, vcb);
+        }
+        let metadata = self
+            .vfs_file_metadata(path)
+            .expect("existing resource file");
+        let len = self.vfs_rsrc.get(path).map_or(0, |data| data.len() as u32);
+        let fcb = buffer + refnum as u32;
+        bus.fill_bytes(fcb, FCB_SIZE as u32, 0);
+        bus.write_long(fcb, metadata.file_id);
+        bus.write_word(fcb + 4, 0x0200 | if writable { 0x0100 } else { 0 });
+        bus.write_long(fcb + 8, len);
+        bus.write_long(fcb + 12, len);
+        bus.write_long(fcb + 20, vcb);
+        bus.write_long(fcb + 50, metadata.file_type);
+        bus.write_long(fcb + 58, metadata.parent_dir_id);
+        let name = Self::hfs_name_from_vfs_component(Self::vfs_basename(path));
+        Self::write_pstring(bus, fcb + 62, &name.chars().take(31).collect::<String>());
+        Ok(refnum)
+    }
+
     /// Allocate a new loaded resource-file slot for the given VFS key.
     ///
     /// The caller is responsible for resolving duplicates before calling
@@ -5833,7 +5939,13 @@ impl TrapDispatcher {
         wants_write: bool,
     ) -> u16 {
         let rsrc_data = self.vfs_rsrc.get(vfs_key).unwrap().clone();
-        let refnum = self.allocate_process_file_refnum();
+        let refnum = match self.allocate_resource_file_fcb(bus, vfs_key, wants_write) {
+            Ok(refnum) => refnum,
+            Err(error) => {
+                bus.write_word(0x0A60, error as u16);
+                return u16::MAX;
+            }
+        };
         if let Some(fork) = ResourceFork::parse(&rsrc_data) {
             self.merge_resources_from_fork(&fork, bus, refnum);
         } else {
@@ -5844,6 +5956,7 @@ impl TrapDispatcher {
             self.write_refnums.insert(refnum);
         }
         self.set_current_resource_refnum(bus, refnum);
+        bus.write_word(0x0A60, 0);
         refnum
     }
 
@@ -5961,6 +6074,10 @@ impl TrapDispatcher {
         }
 
         self.write_refnums.remove(&refnum);
+        let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
+        if fcb_buffer != 0 && refnum % 94 == 2 && refnum + 94 <= bus.read_word(fcb_buffer) {
+            bus.fill_bytes(fcb_buffer + refnum as u32, 94, 0);
+        }
         bus.write_word(0x0A5A, self.current_resource_refnum());
 
         if trace_resfile_enabled() {
