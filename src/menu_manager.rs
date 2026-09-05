@@ -190,6 +190,10 @@ impl<Handle: Copy> MenuBarBuild<Handle> {
 }
 
 impl MenuDefinitionInvocation {
+    /// MyMenuDef is Pascal, has no result, and takes 2/4/4/4/4-byte parameters.
+    /// PowerPC System Software (1994), pp. 2-12--2-16.
+    pub(crate) const PASCAL_PROC_INFO: u32 = 0x0000_ff80;
+
     pub(crate) fn size(menu_handle: u32) -> Self {
         Self {
             message: MenuDefinitionMessage::Size,
@@ -232,19 +236,80 @@ impl MenuDefinitionInvocation {
     }
 }
 
+/// A single-use completion channel for one logical MDEF invocation.
+/// Cloning retains identity; it never duplicates a pending callback.
+#[derive(Clone, Debug)]
+pub(crate) struct MenuDefinitionCompletion(Rc<RefCell<MenuDefinitionCompletionState>>);
+
+#[derive(Debug)]
+enum MenuDefinitionCompletionState {
+    Pending,
+    Ready(Result<MenuDefinitionResult, ()>),
+    Consumed,
+}
+
+impl PartialEq for MenuDefinitionCompletion {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for MenuDefinitionCompletion {}
+
+impl MenuDefinitionCompletion {
+    pub(crate) fn pending() -> Self {
+        Self(Rc::new(RefCell::new(
+            MenuDefinitionCompletionState::Pending,
+        )))
+    }
+    pub(crate) fn take(&self) -> Option<Result<MenuDefinitionResult, ()>> {
+        let mut state = self.0.borrow_mut();
+        match std::mem::replace(&mut *state, MenuDefinitionCompletionState::Consumed) {
+            MenuDefinitionCompletionState::Ready(result) => Some(result),
+            MenuDefinitionCompletionState::Pending => {
+                *state = MenuDefinitionCompletionState::Pending;
+                None
+            }
+            MenuDefinitionCompletionState::Consumed => None,
+        }
+    }
+}
+
+/// Execution owns this operation and its allocation until the exact callback
+/// returns. Copy results before releasing guest storage or running more code.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MenuDefinitionOperation {
+    pub(crate) scratch: u32,
+    pub(crate) completion: MenuDefinitionCompletion,
+}
+
+impl MenuDefinitionOperation {
+    pub(crate) fn complete(self, memory: &mut crate::memory::GuestAddressSpace) {
+        let mut bytes = [0; 10];
+        let result = memory
+            .read_bytes_into(self.scratch, &mut bytes)
+            .map(|()| MenuDefinitionInvocation::decode_result(bytes))
+            .ok_or(());
+        let mut state = self.completion.0.borrow_mut();
+        if matches!(*state, MenuDefinitionCompletionState::Pending) {
+            *state = MenuDefinitionCompletionState::Ready(result);
+        }
+    }
+}
+
 /// Architecture-neutral continuation for an application-defined MDEF.
 ///
 /// The Menu Manager owns the current rectangle, previous item, and callback
 /// ordering. CPU adapters only execute `pending_invocation` and return its
 /// two by-reference results. Macintosh Toolbox Essentials (1992),
 /// pp. 3-87--3-91 and 3-148--3-151.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MenuDefinitionTracking {
     menu_handle: u32,
     menu_rect: (i16, i16, i16, i16),
     which_item: i16,
     last_hit_point: Option<u32>,
     pending_invocation: Option<MenuDefinitionInvocation>,
+    completion: Option<MenuDefinitionCompletion>,
 }
 
 impl MenuDefinitionTracking {
@@ -254,6 +319,7 @@ impl MenuDefinitionTracking {
             menu_rect,
             which_item: 0,
             last_hit_point: None,
+            completion: None,
             pending_invocation: Some(MenuDefinitionInvocation {
                 message: MenuDefinitionMessage::Draw,
                 menu_handle,
@@ -270,6 +336,7 @@ impl MenuDefinitionTracking {
             menu_rect: (0, 0, 0, 0),
             which_item,
             last_hit_point: None,
+            completion: None,
             pending_invocation: Some(MenuDefinitionInvocation {
                 message: MenuDefinitionMessage::PopUp,
                 menu_handle,
@@ -280,8 +347,30 @@ impl MenuDefinitionTracking {
         }
     }
 
-    pub(crate) fn pending_invocation(self) -> Option<MenuDefinitionInvocation> {
+    pub(crate) fn pending_invocation(&self) -> Option<MenuDefinitionInvocation> {
         self.pending_invocation
+    }
+
+    pub(crate) fn bind_completion(
+        &mut self,
+        invocation: MenuDefinitionInvocation,
+        completion: MenuDefinitionCompletion,
+    ) {
+        if self.pending_invocation == Some(invocation) {
+            self.completion = Some(completion);
+        }
+    }
+
+    pub(crate) fn complete_callback(&mut self) -> Result<Option<MenuDefinitionMessage>, ()> {
+        let Some(result) = self
+            .completion
+            .as_ref()
+            .and_then(MenuDefinitionCompletion::take)
+        else {
+            return Ok(None);
+        };
+        self.completion = None;
+        Ok(self.complete_pending(result?))
     }
 
     pub(crate) fn complete_pending(
@@ -289,6 +378,7 @@ impl MenuDefinitionTracking {
         result: MenuDefinitionResult,
     ) -> Option<MenuDefinitionMessage> {
         let completed = self.pending_invocation.take()?;
+        self.completion = None;
         self.menu_rect = result.menu_rect;
         self.which_item = result.which_item;
         Some(completed.message)
@@ -359,15 +449,15 @@ impl MenuDefinitionTracking {
         Some(invocation)
     }
 
-    pub(crate) fn which_item(self) -> i16 {
+    pub(crate) fn which_item(&self) -> i16 {
         self.which_item
     }
 
-    pub(crate) fn menu_handle(self) -> u32 {
+    pub(crate) fn menu_handle(&self) -> u32 {
         self.menu_handle
     }
 
-    pub(crate) fn menu_rect(self) -> (i16, i16, i16, i16) {
+    pub(crate) fn menu_rect(&self) -> (i16, i16, i16, i16) {
         self.menu_rect
     }
 }
@@ -3551,6 +3641,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mdef_completion_is_single_use_even_when_its_operation_is_cloned() {
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let invocation = MenuDefinitionInvocation {
+            message: MenuDefinitionMessage::Choose,
+            menu_handle: 0x100,
+            menu_rect: (1, 2, 3, 4),
+            hit_point: 0,
+            which_item: 2,
+        };
+        memory.add_region(0x1000, invocation.scratch_bytes().to_vec());
+        let completion = MenuDefinitionCompletion::pending();
+        let operation = MenuDefinitionOperation {
+            scratch: 0x1000,
+            completion: completion.clone(),
+        };
+        assert_eq!(completion.take(), None);
+        operation.clone().complete(&mut memory);
+        memory.write_bytes(0x1000, &[0; 10]).unwrap();
+        operation.clone().complete(&mut memory);
+        assert_eq!(
+            completion.take(),
+            Some(Ok(MenuDefinitionInvocation::decode_result(
+                invocation.scratch_bytes()
+            )))
+        );
+        operation.complete(&mut memory);
+        assert_eq!(completion.take(), None);
+    }
+
+    #[test]
+    fn mdef_failed_result_is_delivered_once_without_consuming_another_receipt() {
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let failed = MenuDefinitionCompletion::pending();
+        let other = MenuDefinitionCompletion::pending();
+        assert_ne!(failed, other);
+        assert_eq!(failed, failed.clone());
+        MenuDefinitionOperation {
+            scratch: 0x1000,
+            completion: failed.clone(),
+        }
+        .complete(&mut memory);
+        assert_eq!(failed.take(), Some(Err(())));
+        assert_eq!(failed.take(), None);
+        assert_eq!(other.take(), None);
+        memory.add_region(0x1000, vec![0; 10]);
+        MenuDefinitionOperation {
+            scratch: 0x1000,
+            completion: other.clone(),
+        }
+        .complete(&mut memory);
+        assert_eq!(
+            other.take(),
+            Some(Ok(MenuDefinitionInvocation::decode_result([0; 10])))
+        );
+    }
+
+    #[test]
     fn cloned_menu_tracking_state_is_a_detached_runtime_snapshot() {
         let live = Some(test_process_menu_tracking(0x0012_3456));
 
@@ -5175,7 +5322,7 @@ mod tests {
             menu_rect: (20, 80, 52, 152),
             which_item: 3,
         });
-        classic.submenus[0].definition = Some(classic_definition);
+        classic.submenus[0].definition = Some(classic_definition.clone());
         assert_eq!(classic.selection(|_, _| false), Some((1, 3)));
         let closed = classic.close_submenus_from(0);
         assert!(classic.active_definition().is_none());
@@ -5187,7 +5334,7 @@ mod tests {
             menu_rect: (20, 80, 52, 152),
             which_item: 3,
         });
-        powerpc.submenus[0].definition = Some(powerpc_definition);
+        powerpc.submenus[0].definition = Some(powerpc_definition.clone());
         assert_eq!(powerpc.selection(|_, _| false), Some((0x2000, 3)));
         let closed = powerpc.close_submenus_from(0);
         assert!(powerpc.active_definition().is_none());

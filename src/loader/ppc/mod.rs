@@ -3045,8 +3045,6 @@ pub struct PpcToolboxStartupState {
     /// PowerPC call frame parked while `PopUpMenuSelect` yields.
     /// This is adapter state, not part of the shared Menu Manager session.
     popup_menu_call: Option<PpcPopUpMenuCall>,
-    /// Reused guest storage for the by-reference MDEF rectangle and item.
-    menu_def_scratch: u32,
     /// Process-owned 68k switch marker/gateway and compatibility stack used
     /// whenever native PowerPC enters classic code through Mixed Mode.
     mixed_mode_m68k: SharedProcessMixedModeM68kState,
@@ -3124,7 +3122,6 @@ impl Default for PpcToolboxStartupState {
             menu_select_call: None,
             menu_definition_saved_gworld: None,
             popup_menu_call: None,
-            menu_def_scratch: 0,
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             guest_calls: SharedGuestCallStack::default(),
             go_away_tracking: None,
@@ -7706,18 +7703,22 @@ impl PpcLoadedApp {
                         cpu,
                         process_memory_manager,
                         |operation, result| match operation {
-                            CfmOperation::Load(load) => {
-                                ppc_complete_cfm_load(load, result, memory, &mut cfm_connections)
+                            crate::guest_call::ManagerContinuation::Menu(operation) => {
+                                operation.complete(memory);
+                                result
                             }
-                            CfmOperation::Resource(call) => {
-                                match call.complete(result, &mut cfm_connections, memory) {
-                                    Ok(call) => {
-                                        resource_call = Some(call);
-                                        0
-                                    }
-                                    Err(error) => ppc_i16_result(error.os_error()),
+                            crate::guest_call::ManagerContinuation::Cfm(CfmOperation::Load(
+                                load,
+                            )) => ppc_complete_cfm_load(load, result, memory, &mut cfm_connections),
+                            crate::guest_call::ManagerContinuation::Cfm(
+                                CfmOperation::Resource(call),
+                            ) => match call.complete(result, &mut cfm_connections, memory) {
+                                Ok(call) => {
+                                    resource_call = Some(call);
+                                    0
                                 }
-                            }
+                                Err(error) => ppc_i16_result(error.os_error()),
+                            },
                         },
                     ) {
                         if let Some(call) = resource_call {
@@ -17322,7 +17323,6 @@ fn dispatch_supported_import(
                 );
                 if let Some(invocation) = toolbox_startup
                     .active_menu_definition()
-                    .copied()
                     .and_then(MenuDefinitionTracking::pending_invocation)
                 {
                     toolbox_startup.menu_select_call = Some(PpcMenuSelectCall {
@@ -44979,7 +44979,9 @@ fn ppc_prepare_resource_call(
                     memory,
                     effect,
                     Some(block),
-                    Some(CfmOperation::Resource(operation)),
+                    Some(crate::guest_call::ManagerContinuation::Cfm(
+                        CfmOperation::Resource(operation),
+                    )),
                 )
             });
             if !activated {
@@ -76360,99 +76362,112 @@ fn ppc_dispatch_native_menu_definition_with_return(
     mut process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
+    _heap_limit: u32,
     resources: &[PpcVfsResourceRecord],
     toolbox_startup: &mut PpcToolboxStartupState,
     invocation: MenuDefinitionInvocation,
     final_pc: u32,
     return_gpr3: PpcNativeReturnGpr3,
 ) -> Option<PpcImportAction> {
-    let menu_handle = invocation.menu_handle;
-    let target = ppc_menu_definition_target(cpu, memory, resources, menu_handle)?;
-    if toolbox_startup.menu_def_scratch == 0 {
-        toolbox_startup.menu_def_scratch = if let Some(memory_manager) =
-            process_memory_manager.as_deref_mut()
-        {
-            ppc_process_heap_alloc(memory_manager, memory, heap_cursor, 10, true)
-        } else {
-            ppc_heap_alloc(memory, heap_cursor, heap_limit, 10, true)
-        };
-    }
-    let scratch = toolbox_startup.menu_def_scratch;
+    let target = ppc_menu_definition_target(cpu, memory, resources, invocation.menu_handle)?;
+    let manager = process_memory_manager.as_deref_mut()?;
+    // The emulated callback owns its wrapper and stack as well as its
+    // by-reference arguments. Nested calls must not reuse a live gateway.
+    let workspace_size = match target.isa {
+        GuestIsa::PowerPc => 10,
+        GuestIsa::M68k => PPC_MIXED_MODE_M68K_STACK_SIZE + 80,
+    };
+    let scratch = manager.new_native_scratch(memory, workspace_size);
     if scratch == 0 {
         return None;
     }
-    for (offset, byte) in invocation.scratch_bytes().into_iter().enumerate() {
-        memory.write_u8(scratch + offset as u32, byte)?;
+    if let Some(heap) = manager.native_heap_state() {
+        *heap_cursor = heap.heap_cursor;
     }
-    let call = invocation.call(scratch);
-    match target.isa {
-        GuestIsa::PowerPc => {
-            install_powerpc_call_arguments(cpu, memory, &call.native_arguments())?;
-            Some(
-                GuestCallEffect::call_guest(
-                    GuestCallRequest::new(GuestCallTarget {
-                        isa: GuestIsa::PowerPc,
-                        entry: target.entry,
-                        rtoc: target.rtoc,
-                    }),
+    let completion = crate::menu_manager::MenuDefinitionCompletion::pending();
+    let operation = crate::menu_manager::MenuDefinitionOperation {
+        scratch,
+        completion: completion.clone(),
+    };
+    let prepared = (|| {
+        memory.write_bytes(scratch, &invocation.scratch_bytes())?;
+        let call = invocation.call(scratch);
+        match target.isa {
+            GuestIsa::PowerPc => {
+                let effect = GuestCallEffect::call_guest(
+                    GuestCallRequest::for_task(
+                        toolbox_startup.guest_calls.current_task(),
+                        GuestCallTarget {
+                            isa: target.isa,
+                            entry: target.entry,
+                            rtoc: target.rtoc,
+                        },
+                    )
+                    .with_powerpc_arguments(
+                        crate::guest_call::PowerPcArguments::from_slice(&call.native_arguments())?,
+                    ),
                     GuestCallContinuation::to_powerpc(
                         PPC_GUEST_CALL_RETURN_PC,
                         final_pc,
                         cpu.gpr[2],
                         return_gpr3,
                     ),
-                )
-                .into_ppc_import_action()?,
-            )
+                );
+                toolbox_startup
+                    .guest_calls
+                    .activate_powerpc_effect_with_operation(
+                        cpu,
+                        memory,
+                        effect,
+                        Some(scratch),
+                        Some(crate::guest_call::ManagerContinuation::Menu(operation)),
+                    )
+                    .then_some(PpcImportAction::Continue)
+            }
+            GuestIsa::M68k => ppc_begin_m68k_menu_definition(
+                cpu,
+                memory,
+                toolbox_startup,
+                target,
+                call,
+                final_pc,
+                return_gpr3,
+                operation,
+            ),
         }
-        GuestIsa::M68k => ppc_begin_m68k_menu_definition(
-            cpu,
-            process_memory_manager.as_deref_mut(),
-            memory,
-            heap_cursor,
-            heap_limit,
-            toolbox_startup,
-            target,
-            call,
-            final_pc,
-            return_gpr3,
-        ),
+    })();
+    if prepared.is_none() {
+        manager.release_native_scratch(scratch);
+        return None;
     }
+    if let Some(definition) = toolbox_startup.active_menu_definition_mut() {
+        definition.bind_completion(invocation, completion);
+    }
+    prepared
 }
-
-const MDEF_PASCAL_PROC_INFO: u32 = 0x0000_ff80;
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_begin_m68k_menu_definition(
     cpu: &PpcCpu,
-    process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
     startup: &mut PpcToolboxStartupState,
     target: GuestProcedure,
     call: crate::menu_manager::MenuDefinitionCall,
     final_pc: u32,
     return_gpr3: PpcNativeReturnGpr3,
+    operation: crate::menu_manager::MenuDefinitionOperation,
 ) -> Option<PpcImportAction> {
     // `MyMenuDef` is a no-result Pascal stack routine with parameter sizes
     // 2, 4, 4, 4, and 4 bytes. The Mixed Mode ProcInfo encoding is therefore
     // $0000FF80. Macintosh Toolbox Essentials (1992), pp. 3-148--3-151;
     // Inside Macintosh: PowerPC System Software (1994), pp. 2-12--2-16.
-    if target.proc_info != 0 && target.proc_info != MDEF_PASCAL_PROC_INFO {
+    if target.proc_info != 0 && target.proc_info != MenuDefinitionInvocation::PASCAL_PROC_INFO {
         return None;
     }
-    let (gateway, stack_top) = ppc_mixed_mode_m68k_storage(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        heap_limit,
-        &mut startup.mixed_mode_m68k,
-    )?;
-    if stack_top < 4 {
-        return None;
-    }
+    let gateway = operation.scratch.checked_add(16)?;
+    let stack_top = operation
+        .scratch
+        .checked_add(PPC_MIXED_MODE_M68K_STACK_SIZE + 80)?;
 
     let return_slot = stack_top - 4;
     let saved_register_sp = return_slot - 32;
@@ -76482,25 +76497,30 @@ fn ppc_begin_m68k_menu_definition(
     write_word(memory, 48, 0x4e75)?; // RTS
     memory.write_u32_be(return_slot, return_pc)?;
 
-    if !startup.guest_calls.begin_powerpc_to_m68k(
-        crate::guest_call::GuestCallTarget {
-            isa: target.isa,
-            entry: target.entry,
-            rtoc: target.rtoc,
-        },
-        gateway,
-        return_slot,
-        return_pc,
-        stack_top,
-        {
-            let mut registers = crate::guest_call::M68kRegisterState::default();
-            registers.address[5] = PPC_DATA_BASE;
-            registers
-        },
-        None,
-        final_pc,
-        cpu.gpr[2],
-        return_gpr3,
+    let mut registers = crate::guest_call::M68kRegisterState::default();
+    registers.address[5] = PPC_DATA_BASE;
+    let effect = GuestCallEffect::call_guest(
+        GuestCallRequest::for_task(
+            startup.guest_calls.current_task(),
+            GuestCallTarget {
+                isa: target.isa,
+                entry: target.entry,
+                rtoc: target.rtoc,
+            },
+        )
+        .with_m68k_request(crate::guest_call::M68kCallRequest {
+            entry: gateway,
+            initial_sp: return_slot,
+            final_sp: stack_top,
+            registers,
+            result: None,
+        }),
+        GuestCallContinuation::to_powerpc(return_pc, final_pc, cpu.gpr[2], return_gpr3),
+    );
+    if !startup.guest_calls.begin_m68k_operation(
+        effect,
+        operation.scratch,
+        crate::guest_call::ManagerContinuation::Menu(operation),
     ) {
         return None;
     }
@@ -76693,7 +76713,6 @@ fn ppc_begin_custom_popup_menu_tracking(
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
         .active_menu_definition()
-        .copied()
         .and_then(MenuDefinitionTracking::pending_invocation)?;
     let action = ppc_dispatch_native_menu_definition(
         cpu,
@@ -76735,17 +76754,28 @@ fn ppc_continue_custom_popup_menu_tracking(
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
-    let scratch = startup.menu_def_scratch;
-    let completed = startup.active_menu_definition_mut().and_then(|definition| {
-        (definition.pending_invocation().is_some() && scratch != 0)
-            .then(|| {
-                let bytes = std::array::from_fn(|offset| {
-                    memory.read_u8(scratch + offset as u32).unwrap_or(0)
-                });
-                definition.complete_pending(MenuDefinitionInvocation::decode_result(bytes))
-            })
-            .flatten()
-    });
+    let completed = match startup
+        .active_menu_definition_mut()
+        .map(MenuDefinitionTracking::complete_callback)
+        .transpose()
+    {
+        Ok(completed) => completed.flatten(),
+        Err(()) => {
+            if let Some(state) = startup.menu_tracking.take() {
+                if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+                    .map(MenuTrackingSurface::from)
+                    == state.front_buffer
+                {
+                    ppc_restore_menu_tracking(memory, state.front_buffer, &state);
+                }
+            }
+            startup.clear_active_menu_definition();
+            startup.popup_menu_call = None;
+            ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
+            cpu.lr = call.return_address;
+            return PpcImportAction::Return(0);
+        }
+    };
 
     if startup
         .menu_tracking
@@ -76782,7 +76812,6 @@ fn ppc_continue_custom_popup_menu_tracking(
             .flash(remaining & 1 == 0);
         let invocation = startup
             .active_menu_definition()
-            .copied()
             .and_then(MenuDefinitionTracking::pending_invocation)
             .unwrap();
         if let Some(action) = ppc_dispatch_native_menu_definition(
@@ -76808,7 +76837,7 @@ fn ppc_continue_custom_popup_menu_tracking(
             cpu.lr = call.return_address;
             return PpcImportAction::Return(0);
         };
-        let definition = *startup.active_menu_definition().unwrap();
+        let definition = startup.active_menu_definition().unwrap().clone();
         let (top, left, bottom, right) = definition.menu_rect();
         let Some(mut state) = ppc_begin_tracked_menu_with_appearances(
             memory,
@@ -76851,7 +76880,6 @@ fn ppc_continue_custom_popup_menu_tracking(
         startup.active_menu_definition_mut().unwrap().draw();
         let invocation = startup
             .active_menu_definition()
-            .copied()
             .and_then(MenuDefinitionTracking::pending_invocation)
             .unwrap();
         if let Some(action) = ppc_dispatch_native_menu_definition(
@@ -76888,7 +76916,7 @@ fn ppc_continue_custom_popup_menu_tracking(
             }
         } else if input.mouse_button {
             return PpcImportAction::Yield(u64::MAX);
-        } else if let Some(definition) = startup.active_menu_definition().copied() {
+        } else if let Some(definition) = startup.active_menu_definition().cloned() {
             let item = definition.which_item();
             let menu_id = memory
                 .read_u32_be(definition.menu_handle())
@@ -78440,7 +78468,6 @@ fn ppc_begin_custom_menu_bar_tracking(
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
         .active_menu_definition()
-        .copied()
         .and_then(MenuDefinitionTracking::pending_invocation)?;
     let action = ppc_dispatch_native_menu_definition(
         cpu,
@@ -78496,19 +78523,29 @@ fn ppc_continue_custom_menu_bar_tracking(
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
-    let scratch = startup.menu_def_scratch;
     let Some(definition) = startup.active_menu_definition_mut() else {
         cpu.lr = call.return_address;
         startup.menu_select_call = None;
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
-    let completed = if definition.pending_invocation().is_some() && scratch != 0 {
-        let bytes =
-            std::array::from_fn(|offset| memory.read_u8(scratch + offset as u32).unwrap_or(0));
-        definition.complete_pending(MenuDefinitionInvocation::decode_result(bytes))
-    } else {
-        None
+    let completed = match definition.complete_callback() {
+        Ok(completed) => completed,
+        Err(()) => {
+            if let Some(state) = startup.menu_tracking.take() {
+                if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+                    .map(MenuTrackingSurface::from)
+                    == state.front_buffer
+                {
+                    ppc_restore_menu_tracking(memory, state.front_buffer, &state);
+                }
+            }
+            startup.clear_active_menu_definition();
+            startup.menu_select_call = None;
+            ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
+            cpu.lr = call.return_address;
+            return PpcImportAction::Return(0);
+        }
     };
 
     if completed == Some(MenuDefinitionMessage::Choose) {
@@ -78552,7 +78589,6 @@ fn ppc_continue_custom_menu_bar_tracking(
                 }
                 if let Some(invocation) = startup
                     .active_menu_definition()
-                    .copied()
                     .and_then(MenuDefinitionTracking::pending_invocation)
                 {
                     if let Some(action) = ppc_dispatch_native_menu_definition(
@@ -78619,7 +78655,6 @@ fn ppc_continue_custom_menu_bar_tracking(
             .flash(remaining & 1 == 0);
         let invocation = startup
             .active_menu_definition()
-            .copied()
             .and_then(MenuDefinitionTracking::pending_invocation)
             .unwrap();
         if let Some(action) = ppc_dispatch_native_menu_definition(
@@ -78685,7 +78720,7 @@ fn ppc_continue_custom_menu_bar_tracking(
         return PpcImportAction::Yield(u64::MAX);
     }
 
-    let definition = *startup.active_menu_definition().unwrap();
+    let definition = startup.active_menu_definition().unwrap().clone();
     let item = definition.which_item();
     let menu_handle = definition.menu_handle();
     let menu_id = memory
@@ -91451,11 +91486,13 @@ pub(crate) mod tests {
                     panic!("special-case result selector {selector} requires the shared runner")
                 }
             };
-            assert!(loaded.guest_calls.complete_m68k_for_powerpc(
+            assert!(loaded.guest_calls.complete_m68k_operation_for_powerpc(
                 cpu.pc,
                 cpu.a(7),
                 result,
                 &mut loaded.cpu,
+                &mut loaded.memory,
+                loaded.process_memory_manager.0.borrow_mut().native_mut(),
             ));
 
             if loaded.cpu.pc >= loaded.import_trap_base
@@ -94040,8 +94077,169 @@ pub(crate) mod tests {
 
         assert_eq!(loaded.memory.read_u16_be(menu_ptr + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu_ptr + 4), Some(45));
-        assert_ne!(loaded.toolbox_startup.menu_def_scratch, 0);
+        assert!(loaded
+            .process_memory_manager
+            .0
+            .borrow()
+            .native_ptr_records()
+            .iter()
+            .all(|record| record.ptr != loaded.cpu.gpr[5]));
         assert!(loaded.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn nested_native_mdef_preserves_outer_by_reference_arguments() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CalcMenuSize")).unwrap();
+        let outer = install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 140, b"Outer", b"A");
+        let inner = install_test_menu(&mut loaded, PPC_DATA_BASE + 0x2000, 141, b"Inner", b"B");
+        let marker = PPC_DATA_BASE + 0x7800;
+        loaded.memory.add_region(marker, vec![0; 4]);
+        let outer_code = [
+            0x9421_ffa0, // stwu r1,-96(r1)
+            0x7c08_02a6, // mflr r0
+            0x9001_0064, // stw r0,100(r1)
+            0x90a1_0038, // stw r5,56(r1): retain outer menuRect pointer
+            0x3920_1122, // li r9,0x1122
+            0xb125_0000, // sth r9,0(r5)
+            0x3c60_0000 | (inner >> 16),
+            0x6063_0000 | (inner & 0xffff),
+            0x3d80_0000 | (PPC_IMPORT_TRAP_BASE >> 16),
+            0x618c_0000 | (PPC_IMPORT_TRAP_BASE & 0xffff),
+            0x7d89_03a6, // mtctr r12
+            0x4e80_0421, // bctrl: nested CalcMenuSize
+            0x80a1_0038, // lwz r5,56(r1)
+            0xa125_0000, // lhz r9,0(r5)
+            0x3d40_0000 | (marker >> 16),
+            0x614a_0000 | (marker & 0xffff),
+            0x912a_0000, // stw r9,0(r10)
+            0x8001_0064, // lwz r0,100(r1)
+            0x7c08_03a6, // mtlr r0
+            0x3821_0060, // addi r1,r1,96
+            BLR,
+        ];
+        let inner_code = [0x3920_3344, 0xb125_0000, BLR];
+        for (index, menu, code) in [
+            (0, outer, outer_code.as_slice()),
+            (1, inner, inner_code.as_slice()),
+        ] {
+            let storage = PPC_DATA_BASE + 0x7000 + index * 0x400;
+            loaded.memory.add_region(storage, vec![0; 4]);
+            install_test_powerpc_callback(
+                &mut loaded,
+                storage + 0x100,
+                storage + 0x180,
+                PPC_CODE_BASE + 0x4000 + index * 0x100,
+                0,
+                0x0000_ff80,
+                code,
+            );
+            loaded
+                .memory
+                .write_u32_be(storage, storage + 0x100)
+                .unwrap();
+            let record = loaded.memory.read_u32_be(menu).unwrap();
+            loaded.memory.write_u32_be(record + 6, storage).unwrap();
+        }
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = outer;
+        let probe = loaded.run_with_hle_imports(256);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(probe.handled_import_count, 2);
+        assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+        assert!(loaded.guest_calls.is_empty());
+        assert_eq!(
+            loaded.memory.read_u32_be(marker),
+            Some(0x1122),
+            "nested MDEF scratch must not alias its caller"
+        );
+    }
+
+    #[test]
+    fn nested_classic_mdef_adapters_keep_live_workspaces_disjoint() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CalcMenuSize")).unwrap();
+        let menu = install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 140, b"Custom", b"A");
+        let handle = PPC_DATA_BASE + 0x7000;
+        let descriptor = handle + 0x100;
+        loaded.memory.add_region(handle, vec![0; 4]);
+        install_test_m68k_callback(
+            &mut loaded,
+            descriptor,
+            PPC_CODE_BASE + 0x4000,
+            MenuDefinitionInvocation::PASCAL_PROC_INFO,
+            0,
+            &[0x4e74, 18],
+        );
+        loaded.memory.write_u32_be(handle, descriptor).unwrap();
+        let record = loaded.memory.read_u32_be(menu).unwrap();
+        loaded.memory.write_u32_be(record + 6, handle).unwrap();
+        let manager_handle = loaded.process_memory_manager.0.clone();
+        let mut manager = manager_handle.borrow_mut();
+        let initial_count = manager.native_ptr_records().len();
+        let heap = manager.native_heap_state().unwrap();
+        let mut cursor = heap.heap_cursor;
+        let invocation = MenuDefinitionInvocation {
+            message: crate::menu_manager::MenuDefinitionMessage::Size,
+            menu_handle: menu,
+            menu_rect: (1, 2, 3, 4),
+            hit_point: 0,
+            which_item: 0,
+        };
+        let mut intervals = Vec::new();
+        for index in 0..2 {
+            let action = ppc_dispatch_native_menu_definition(
+                &mut loaded.cpu,
+                Some(manager.native_mut()),
+                &mut loaded.memory,
+                &mut cursor,
+                heap.heap_limit,
+                &loaded.process_file_system.vfs_resources,
+                &mut loaded.toolbox_startup,
+                invocation,
+                PPC_HALT_PC,
+            )
+            .unwrap();
+            assert!(matches!(action, PpcImportAction::Halt));
+            let pending = loaded.toolbox_startup.guest_calls.activate_m68k().unwrap();
+            loaded
+                .memory
+                .write_u32_be(pending.initial_sp - 100, 0x1122 + index)
+                .unwrap();
+            intervals.push(pending);
+        }
+        let outer = intervals[0];
+        let inner = intervals[1];
+        assert_ne!(outer.entry, inner.entry);
+        assert!(outer.final_sp <= inner.entry || inner.final_sp <= outer.entry);
+        assert_eq!(
+            loaded.memory.read_u32_be(outer.initial_sp - 100),
+            Some(0x1122)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(inner.initial_sp - 100),
+            Some(0x1123)
+        );
+        assert_eq!(manager.native_ptr_records().len(), initial_count + 2);
+        for (index, pending) in intervals.into_iter().rev().enumerate() {
+            assert!(loaded
+                .toolbox_startup
+                .guest_calls
+                .complete_m68k_operation_for_powerpc(
+                    pending.return_pc,
+                    pending.final_sp,
+                    None,
+                    &mut loaded.cpu,
+                    &mut loaded.memory,
+                    manager.native_mut(),
+                ));
+            assert_eq!(
+                manager.native_ptr_records().len(),
+                initial_count + 1 - index
+            );
+        }
+        assert!(loaded.toolbox_startup.guest_calls.is_empty());
+        assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
+        assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
     }
 
     #[test]
@@ -94094,12 +94292,16 @@ pub(crate) mod tests {
             which_item: 4,
         };
         let final_pc = 0x1234_5678;
+        let manager_handle = loaded.process_memory_manager.0.clone();
+        let mut manager = manager_handle.borrow_mut();
+        let heap = manager.native_heap_state().unwrap();
+        let mut cursor = heap.heap_cursor;
         let action = ppc_dispatch_native_menu_definition(
             &mut loaded.cpu,
-            None,
+            Some(manager.native_mut()),
             &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
+            &mut cursor,
+            heap.heap_limit,
             &loaded.process_file_system.vfs_resources,
             &mut loaded.toolbox_startup,
             invocation,
@@ -94107,22 +94309,11 @@ pub(crate) mod tests {
         )
         .expect("native custom MDEF should be callable");
 
-        let GuestCallEffect::CallGuest {
-            request,
-            continuation:
-                GuestCallContinuation::ReturnToPowerPc {
-                    final_pc: actual_final_pc,
-                    ..
-                },
-        } = GuestCallEffect::from_ppc_import_action(action)
-            .expect("native custom MDEF should produce a guest-call effect")
-        else {
-            panic!("native custom MDEF returned an unsupported guest-call effect");
-        };
-        assert_eq!(request.target.entry, callback_entry);
-        assert_eq!(request.target.rtoc, callback_rtoc);
-        assert_eq!(actual_final_pc, final_pc);
-        let scratch = loaded.toolbox_startup.menu_def_scratch;
+        assert!(matches!(action, PpcImportAction::Continue));
+        assert_eq!(loaded.cpu.pc, callback_entry);
+        assert_eq!(loaded.cpu.gpr[2], callback_rtoc);
+        assert_eq!(loaded.toolbox_startup.guest_calls.len(), 1);
+        let scratch = loaded.cpu.gpr[5];
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, scratch, 10),
             Some(invocation.scratch_bytes().to_vec())
@@ -94131,6 +94322,26 @@ pub(crate) mod tests {
             &loaded.cpu.gpr[3..8],
             &[1, menu, scratch, invocation.hit_point, scratch + 8,]
         );
+        loaded.cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+        assert!(loaded
+            .toolbox_startup
+            .guest_calls
+            .complete_powerpc_resuming_operation(
+                &mut loaded.cpu,
+                manager.native_mut(),
+                |operation, result| {
+                    let crate::guest_call::ManagerContinuation::Menu(operation) = operation else {
+                        panic!("MDEF continuation");
+                    };
+                    operation.complete(&mut loaded.memory);
+                    result
+                },
+            ));
+        assert_eq!(loaded.cpu.pc, final_pc);
+        assert!(manager
+            .native_ptr_records()
+            .iter()
+            .all(|record| record.ptr != scratch));
     }
 
     #[test]
@@ -101661,7 +101872,13 @@ pub(crate) mod tests {
         let menu = loaded.memory.read_u32_be(menu_handle).unwrap();
         assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
-        assert_ne!(loaded.toolbox_startup.menu_def_scratch, 0);
+        assert!(loaded
+            .process_memory_manager
+            .0
+            .borrow()
+            .native_ptr_records()
+            .iter()
+            .all(|record| record.ptr != loaded.cpu.gpr[5]));
     }
 
     #[test]
@@ -101709,8 +101926,8 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
         assert!(loaded.guest_calls.is_empty());
-        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
-        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
+        assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
+        assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
     }
 
     #[test]

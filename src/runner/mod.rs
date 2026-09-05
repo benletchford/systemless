@@ -7002,9 +7002,10 @@ impl FixtureRunner {
         if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc
             && self.m68k.cpu.read_reg(Register::A7) == pending.final_sp
         {
-            let completed =
+            let completed = self.process_context.with_memory_and_cfm(|manager, _| {
                 self.m68k
-                    .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending);
+                    .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending, manager)
+            });
             return Some((0, completed));
         }
         if max_steps == 0 {
@@ -7016,9 +7017,14 @@ impl FixtureRunner {
         let mut watch_buf = Vec::with_capacity(4);
         while executed < max_steps {
             if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc {
-                running =
-                    self.m68k
-                        .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending);
+                running = self.process_context.with_memory_and_cfm(|manager, _| {
+                    self.m68k.complete_pending(
+                        &mut ppc_app.memory,
+                        &mut ppc_app.cpu,
+                        pending,
+                        manager,
+                    )
+                });
                 break;
             }
             let batch_max = u32::try_from(max_steps - executed).unwrap_or(u32::MAX);
@@ -7038,9 +7044,14 @@ impl FixtureRunner {
             match batch.exit {
                 BatchExit::BudgetExhausted => break,
                 BatchExit::WatchedPc { pc } if pc == pending.return_pc => {
-                    running =
-                        self.m68k
-                            .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending);
+                    running = self.process_context.with_memory_and_cfm(|manager, _| {
+                        self.m68k.complete_pending(
+                            &mut ppc_app.memory,
+                            &mut ppc_app.cpu,
+                            pending,
+                            manager,
+                        )
+                    });
                     break;
                 }
                 BatchExit::AlineTrap { opcode } => {
@@ -15939,6 +15950,213 @@ mod tests {
         assert_eq!(ppc_app.memory.read_u32_be(ppc_app.cpu.gpr[1]), Some(0));
     }
 
+    struct ClassicPowerPcMdefFixture {
+        runner: FixtureRunner,
+        menu: u32,
+        record: u32,
+        marker: u32,
+        entry: u32,
+        stack: u32,
+    }
+
+    fn classic_powerpc_mdef_fixture() -> ClassicPowerPcMdefFixture {
+        use crate::guest_procedure::{
+            ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+            ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_FLAGS_OFFSET,
+            ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+        };
+        const MENU: u32 = 0x0030_0000;
+        const RECORD: u32 = MENU + 0x100;
+        const MDEF: u32 = MENU + 0x200;
+        const DESCRIPTOR: u32 = MENU + 0x300;
+        const TVECTOR: u32 = MENU + 0x400;
+        const MARKER: u32 = MENU + 0x500;
+        const ENTRY: u32 = MENU + 0x600;
+        const STACK: u32 = 0x0070_0000;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        let mut native = halted_ppc_app_with_sound(PpcSoundState::default())
+            .ppc
+            .take()
+            .unwrap();
+        native
+            .memory
+            .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+        native.memory.add_region(
+            CALLBACK,
+            [
+                0x8124_0000u32, // lwz r9,0(r4): live MenuHandle
+                0x3940_01b0,    // li r10,432
+                0xb149_0002,    // sth r10,menuWidth(r9)
+                0x3940_007b,    // li r10,123
+                0xb149_0004,    // sth r10,menuHeight(r9)
+                0x3d20_0000 | (MARKER >> 16),
+                0x6129_0000 | (MARKER & 0xffff),
+                0x8149_0000, // lwz r10,0(r9)
+                0x394a_0001, // addi r10,r10,1
+                0x9149_0000, // stw r10,0(r9)
+                0x3940_0002, // li r10,2
+                0xb147_0000, // sth r10,0(r7): chosen item
+                0x4e80_0020, // blr
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+        let classic = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007f_ffc0,
+            size_resource: None,
+        };
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.stage_ppc_companion(native);
+        runner.init_app(&classic);
+        runner.bus.write_long(MENU, RECORD);
+        runner.bus.write_word(RECORD, 140);
+        runner.bus.write_long(RECORD + 6, MDEF);
+        runner.bus.write_long(RECORD + 10, u32::MAX);
+        runner.bus.write_long(MDEF, DESCRIPTOR);
+        runner
+            .bus
+            .write_word(DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP);
+        runner
+            .bus
+            .write_byte(DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION);
+        runner.bus.write_word(DESCRIPTOR + 10, 0);
+        let routine = DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        runner.bus.write_long(routine, 0x0000_ff80);
+        runner.bus.write_byte(
+            routine + ROUTINE_RECORD_ISA_OFFSET,
+            ROUTINE_RECORD_POWERPC_ISA,
+        );
+        runner.bus.write_word(
+            routine + ROUTINE_RECORD_FLAGS_OFFSET,
+            ROUTINE_FLAG_USE_NATIVE_ISA,
+        );
+        runner
+            .bus
+            .write_long(routine + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, TVECTOR);
+        runner.bus.write_long(TVECTOR, CALLBACK);
+        runner.bus.write_long(TVECTOR + 4, 0);
+        runner.bus.write_word(ENTRY, 0xA948); // CalcMenuSize
+        runner.bus.write_word(ENTRY + 2, 0x60fe); // park after the call
+        runner.bus.write_long(STACK, MENU);
+        runner.m68k.cpu.write_reg(Register::PC, ENTRY);
+        runner.m68k.cpu.write_reg(Register::A7, STACK);
+        ClassicPowerPcMdefFixture {
+            runner,
+            menu: MENU,
+            record: RECORD,
+            marker: MARKER,
+            entry: ENTRY,
+            stack: STACK,
+        }
+    }
+
+    #[test]
+    fn classic_calc_menu_size_executes_powerpc_mdef_and_resumes_once() {
+        let ClassicPowerPcMdefFixture {
+            mut runner,
+            record,
+            marker,
+            entry,
+            stack,
+            ..
+        } = classic_powerpc_mdef_fixture();
+        for _ in 0..8 {
+            let (_, running) = runner.run_steps(128, None);
+            assert!(running);
+        }
+        assert_eq!(
+            runner.bus.read_long(marker),
+            1,
+            "PowerPC MDEF must run exactly once"
+        );
+        assert_eq!(runner.bus.read_word(record + 2), 432);
+        assert_eq!(runner.bus.read_word(record + 4), 123);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), stack + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 2);
+        assert!(runner.dispatcher.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn classic_menu_select_retains_powerpc_mdef_until_mouse_release() {
+        use crate::memory::globals::addr;
+        let ClassicPowerPcMdefFixture {
+            mut runner,
+            menu,
+            record,
+            marker,
+            entry,
+            stack,
+        } = classic_powerpc_mdef_fixture();
+        runner.dispatcher.menu_bar_hidden = false;
+        runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+        runner.bus.write_word(addr::MENU_FLASH, 0);
+        runner.bus.write_word(record + 2, 80);
+        runner.bus.write_word(record + 4, 32);
+        runner.bus.write_bytes(
+            record + 14,
+            b"\x06Custom\x01A\x00\x00\x00\x00\x01B\x00\x00\x00\x00\x00",
+        );
+        runner.bus.write_word(stack, 0);
+        runner.bus.write_long(stack + 2, menu);
+        runner
+            .dispatcher
+            .dispatch_menu(true, 0x135, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        runner.dispatcher.draw_menu_bar_to_fb(&mut runner.bus);
+        let original_port = *runner.dispatcher.current_port;
+        runner.bus.write_word(entry, 0xA93D);
+        runner.bus.write_word(stack, 10);
+        runner.bus.write_word(stack + 2, 16);
+        runner.bus.write_long(stack + 4, 0);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner.push_canonical_mouse_down(10, 16);
+        for _ in 0..8 {
+            assert!(runner.run_steps(128, None).1);
+        }
+        let rect = runner
+            .process_context
+            .menu_tracking()
+            .expect("classic tracking remains active")
+            .dropdown_rect();
+        assert!(
+            runner.bus.read_long(marker) > 0,
+            "PowerPC draw callback ran"
+        );
+        let (v, h) = (rect.0 + 24, rect.1 + 16);
+        runner.dispatcher.set_mouse_position(v, h);
+        for _ in 0..8 {
+            assert!(runner.run_steps(128, None).1);
+        }
+        runner.push_canonical_mouse_up(v, h);
+        for _ in 0..16 {
+            assert!(runner.run_steps(128, None).1);
+            if runner.process_context.menu_tracking().is_none()
+                && runner.dispatcher.guest_calls.is_empty()
+            {
+                break;
+            }
+        }
+        assert!(runner.process_context.menu_tracking().is_none());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        assert_eq!(runner.bus.read_long(stack + 4), (140 << 16) | 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), stack + 4);
+        assert_eq!(*runner.dispatcher.current_port, original_port);
+    }
+
     #[test]
     fn standalone_classic_process_enters_powerpc_routine_descriptor_and_resumes_once() {
         use crate::guest_procedure::{
@@ -17670,8 +17888,13 @@ mod tests {
         runner.m68k.cpu.write_reg(Register::A7, pending.final_sp);
 
         assert!(runner
-            .m68k
-            .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending));
+            .process_context
+            .with_memory_and_cfm(|manager, _| runner.m68k.complete_pending(
+                &mut ppc_app.memory,
+                &mut ppc_app.cpu,
+                pending,
+                manager
+            )));
         assert_eq!(ppc_app.cpu.gpr[3], NATIVE_R3);
         assert!(ppc_app.guest_calls.is_empty());
     }

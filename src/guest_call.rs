@@ -231,12 +231,18 @@ enum GuestCallOrigin {
     PowerPc(PowerPcCallOrigin),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ManagerContinuation {
+    Cfm(CfmOperation),
+    Menu(crate::menu_manager::MenuDefinitionOperation),
+}
+
 #[derive(Clone, Debug)]
 struct GuestCallFrame {
     target: GuestCallTarget,
     origin: GuestCallOrigin,
     native_scratch: Option<u32>,
-    cfm_operation: Option<CfmOperation>,
+    operation: Option<ManagerContinuation>,
     m68k_execution: Option<M68kExecution>,
     powerpc_execution: Option<PowerPcExecution>,
 }
@@ -372,7 +378,7 @@ impl GuestCallEffect {
                     result,
                 }),
                 native_scratch: None,
-                cfm_operation: None,
+                operation: None,
                 m68k_execution: None,
                 powerpc_execution: None,
             }),
@@ -392,7 +398,7 @@ impl GuestCallEffect {
                     result,
                 }),
                 native_scratch: None,
-                cfm_operation: None,
+                operation: None,
                 m68k_execution: None,
                 powerpc_execution: Some(PowerPcExecution {
                     arguments,
@@ -418,7 +424,7 @@ impl GuestCallEffect {
                     return_gpr3,
                 }),
                 native_scratch: None,
-                cfm_operation: None,
+                operation: None,
                 m68k_execution: None,
                 powerpc_execution: None,
             }),
@@ -440,7 +446,7 @@ impl GuestCallEffect {
                     return_gpr3,
                 }),
                 native_scratch: None,
-                cfm_operation: None,
+                operation: None,
                 m68k_execution: Some(M68kExecution {
                     entry: request.entry,
                     initial_sp: request.initial_sp,
@@ -494,7 +500,7 @@ impl PartialEq for GuestCallFrame {
         self.target == other.target
             && self.origin == other.origin
             && self.native_scratch == other.native_scratch
-            && self.cfm_operation == other.cfm_operation
+            && self.operation == other.operation
             && self.m68k_execution == other.m68k_execution
             && match (&self.powerpc_execution, &other.powerpc_execution) {
                 (None, None) => true,
@@ -1696,6 +1702,28 @@ impl SharedGuestCallStack {
         ))
     }
 
+    /// Adopt prepared emulated ABI storage into one exact task-owned call.
+    pub(crate) fn begin_m68k_operation(
+        &self,
+        effect: GuestCallEffect,
+        scratch: u32,
+        operation: ManagerContinuation,
+    ) -> bool {
+        if effect.request().task != self.current_task()
+            || effect.request().target.isa != GuestIsa::M68k
+        {
+            return false;
+        }
+        let Some(id) = self.submit_effect(effect) else {
+            return false;
+        };
+        let mut tasks = self.0.borrow_mut();
+        let frame = tasks.frames.get_mut(&id).expect("new call owns its frame");
+        frame.native_scratch = Some(scratch);
+        frame.operation = Some(operation);
+        true
+    }
+
     pub(crate) fn pending_powerpc_from_m68k(&self) -> Option<PendingPowerPcExecution> {
         let (_, frame) = self.top_frame()?;
         let GuestCallOrigin::M68k(_) = frame.origin else {
@@ -2075,7 +2103,7 @@ impl SharedGuestCallStack {
             memory,
             effect,
             scratch,
-            cfm_load.map(CfmOperation::Load),
+            cfm_load.map(|load| ManagerContinuation::Cfm(CfmOperation::Load(load))),
         )
     }
 
@@ -2085,7 +2113,7 @@ impl SharedGuestCallStack {
         memory: &mut GuestAddressSpace,
         effect: GuestCallEffect,
         scratch: Option<u32>,
-        cfm_operation: Option<CfmOperation>,
+        operation: Option<ManagerContinuation>,
     ) -> bool {
         let GuestCallEffect::CallGuest {
             request,
@@ -2122,7 +2150,7 @@ impl SharedGuestCallStack {
             .frames
             .get_mut(&call_id)
             .expect("submitted call has its manager continuation")
-            .cfm_operation = cfm_operation;
+            .operation = operation;
         // Submission just installed this task's pending top frame. This
         // synchronous transition cannot be displaced by another guest call.
         self.0
@@ -2191,16 +2219,16 @@ impl SharedGuestCallStack {
 
     pub(crate) fn is_cfm_load_pending(&self, id: CfmLoadId) -> bool {
         self.0.borrow().frames.values().any(|frame| {
-            frame
-                .cfm_operation
-                .is_some_and(|operation| operation.id() == id)
+            frame.operation.as_ref().is_some_and(
+                |operation| matches!(operation, ManagerContinuation::Cfm(cfm) if cfm.id() == id),
+            )
         })
     }
 
     pub(crate) fn is_resource_preparation_pending(&self, record: u32) -> bool {
         self.0.borrow().frames.values().any(|frame| {
-            matches!(frame.cfm_operation,
-            Some(CfmOperation::Resource(call)) if call.preparation.record == record)
+            matches!(frame.operation.as_ref(),
+            Some(ManagerContinuation::Cfm(CfmOperation::Resource(call))) if call.preparation.record == record)
         })
     }
 
@@ -2213,8 +2241,8 @@ impl SharedGuestCallStack {
     ) -> bool {
         self.complete_powerpc_resuming_operation(cpu, memory_manager, |operation, result| {
             match operation {
-                CfmOperation::Load(load) => resume(load, result),
-                CfmOperation::Resource(_) => {
+                ManagerContinuation::Cfm(CfmOperation::Load(load)) => resume(load, result),
+                _ => {
                     panic!("load-only fixture received resource operation")
                 }
             }
@@ -2225,7 +2253,7 @@ impl SharedGuestCallStack {
         &self,
         cpu: &mut PpcCpu,
         memory_manager: &mut ProcessNativeMemoryManager,
-        mut resume: impl FnMut(CfmOperation, u32) -> u32,
+        mut resume: impl FnMut(ManagerContinuation, u32) -> u32,
     ) -> bool {
         self.complete_powerpc_inner(cpu, Some(memory_manager), Some(&mut resume))
     }
@@ -2234,9 +2262,9 @@ impl SharedGuestCallStack {
         &self,
         cpu: &mut PpcCpu,
         memory_manager: Option<&mut ProcessNativeMemoryManager>,
-        resume: Option<&mut dyn FnMut(CfmOperation, u32) -> u32>,
+        resume: Option<&mut dyn FnMut(ManagerContinuation, u32) -> u32>,
     ) -> bool {
-        let (task, call_id, origin, scratch, cfm_operation) = {
+        let (task, call_id, origin, scratch, operation) = {
             let tasks = self.0.borrow();
             let task = tasks.kernel.current_task();
             let semantic = match tasks.kernel.peek(task) {
@@ -2263,7 +2291,7 @@ impl SharedGuestCallStack {
                     return false;
                 }
             }
-            if frame.cfm_operation.is_some() && resume.is_none() {
+            if frame.operation.is_some() && resume.is_none() {
                 return false;
             }
             (
@@ -2271,7 +2299,7 @@ impl SharedGuestCallStack {
                 semantic.call_id(),
                 origin,
                 frame.native_scratch,
-                frame.cfm_operation,
+                frame.operation.clone(),
             )
         };
         let mut tasks = self.0.borrow_mut();
@@ -2294,20 +2322,21 @@ impl SharedGuestCallStack {
         // service resumes. The enclosing frame stays live, and no execution
         // store borrow may span the semantic consumer.
         drop(tasks);
+        if let Some(operation) = operation {
+            cpu.gpr[3] =
+                resume.expect("manager return requires its semantic consumer")(operation, cpu.gpr[3]);
+        }
         if let Some(scratch) = scratch {
             memory_manager
                 .expect("scratch return requires its memory manager")
                 .release_native_scratch(scratch);
-        }
-        if let Some(operation) = cfm_operation {
-            cpu.gpr[3] =
-                resume.expect("CFM return requires its semantic consumer")(operation, cpu.gpr[3]);
         }
         Self::apply_powerpc_return(cpu, origin);
         true
     }
 
     /// Complete an emulated 68k interval for its parked native caller.
+    #[cfg(test)]
     pub(crate) fn complete_m68k_for_powerpc(
         &self,
         post_call_pc: u32,
@@ -2315,7 +2344,36 @@ impl SharedGuestCallStack {
         result: Option<u32>,
         cpu: &mut PpcCpu,
     ) -> bool {
-        let (task, call_id, origin) = {
+        self.complete_m68k_for_powerpc_inner(post_call_pc, final_sp, result, cpu, None)
+    }
+
+    pub(crate) fn complete_m68k_operation_for_powerpc(
+        &self,
+        post_call_pc: u32,
+        final_sp: u32,
+        result: Option<u32>,
+        cpu: &mut PpcCpu,
+        memory: &mut GuestAddressSpace,
+        manager: &mut ProcessNativeMemoryManager,
+    ) -> bool {
+        self.complete_m68k_for_powerpc_inner(
+            post_call_pc,
+            final_sp,
+            result,
+            cpu,
+            Some((memory, manager)),
+        )
+    }
+
+    fn complete_m68k_for_powerpc_inner(
+        &self,
+        post_call_pc: u32,
+        final_sp: u32,
+        result: Option<u32>,
+        cpu: &mut PpcCpu,
+        services: Option<(&mut GuestAddressSpace, &mut ProcessNativeMemoryManager)>,
+    ) -> bool {
+        let (task, call_id, origin, scratch, operation) = {
             let tasks = self.0.borrow();
             let task = tasks.kernel.current_task();
             let semantic = match tasks.kernel.peek(task) {
@@ -2355,7 +2413,29 @@ impl SharedGuestCallStack {
             {
                 return false;
             }
-            (task, semantic.call_id(), origin)
+            if (frame.native_scratch.is_some() || frame.operation.is_some()) && services.is_none() {
+                return false;
+            }
+            if let Some(scratch) = frame.native_scratch {
+                if !services.as_ref().is_some_and(|(_, manager)| {
+                    manager
+                        .native_ptr_records()
+                        .iter()
+                        .any(|record| record.ptr == scratch)
+                }) {
+                    return false;
+                }
+            }
+            if matches!(frame.operation, Some(ManagerContinuation::Cfm(_))) {
+                return false;
+            }
+            (
+                task,
+                semantic.call_id(),
+                origin,
+                frame.native_scratch,
+                frame.operation.clone(),
+            )
         };
         let mut tasks = self.0.borrow_mut();
         let native = if tasks.powerpc_contexts.contains(task, call_id) {
@@ -2387,6 +2467,15 @@ impl SharedGuestCallStack {
             .frames
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
+        drop(tasks);
+        if let Some((memory, manager)) = services {
+            if let Some(ManagerContinuation::Menu(operation)) = operation {
+                operation.complete(memory);
+            }
+            if let Some(scratch) = scratch {
+                manager.release_native_scratch(scratch);
+            }
+        }
         if let Some(native) = native {
             restore_powerpc_context(cpu, *native);
         }
