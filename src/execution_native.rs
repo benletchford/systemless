@@ -118,8 +118,12 @@ impl<T> NativeExecution<T> {
     }
 
     pub(crate) fn application_mut(&mut self) -> Option<&mut T> {
-        self.application.reclaim();
-        match &mut self.application {
+        self.adapter_mut(NativeEngineRole::Application)
+    }
+
+    pub(crate) fn adapter_mut(&mut self, role: NativeEngineRole) -> Option<&mut T> {
+        self.slot_mut(role).reclaim();
+        match self.slot_mut(role) {
             NativeSlot::Installed(adapter) => Some(adapter),
             _ => None,
         }

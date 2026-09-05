@@ -195,6 +195,7 @@ pub(crate) enum CfmSymbolError {
     ConnectionNotFound,
     SymbolNotFound,
     InvalidOutputs,
+    NoAddressSpace,
 }
 
 impl CfmSymbolError {
@@ -203,6 +204,7 @@ impl CfmSymbolError {
             Self::ConnectionNotFound => -2801,
             Self::SymbolNotFound => -2802,
             Self::InvalidOutputs => -50,
+            Self::NoAddressSpace => -2810,
         }
     }
 }
@@ -263,6 +265,84 @@ impl CfmSymbolQuery {
         publish(&writes)
             .then_some(())
             .ok_or(CfmSymbolError::InvalidOutputs)
+    }
+}
+
+/// An ABI edge may stage a callable gateway, but may not register it until
+/// the CFM service has published every guest output. Providers are bounded
+/// borrows for one synchronous operation; dropping one discards its staging.
+pub(crate) trait CfmSymbolBindings {
+    fn prepare(&mut self, library: &str, symbol: &str) -> Result<(u32, u8), CfmSymbolError>;
+    fn commit(&mut self);
+}
+
+/// FindSymbol's logical arguments, without caller registers or return slots.
+/// PowerPC System Software (1994), pp. 3-24–3-25.
+pub(crate) struct CfmFindSymbol {
+    pub(crate) connection: u32,
+    pub(crate) name: u32,
+    pub(crate) address: u32,
+    pub(crate) class: u32,
+}
+
+impl CfmFindSymbol {
+    pub(crate) fn complete<M: GuestProcedureMemory>(
+        self,
+        connections: &[CfmConnection],
+        memory: &mut M,
+        mut bindings: Option<&mut dyn CfmSymbolBindings>,
+        mut publish: impl FnMut(&mut M, &[(u32, &[u8])]) -> bool,
+    ) -> Result<(), CfmSymbolError> {
+        let connection = connections
+            .iter()
+            .find(|connection| connection.id == self.connection)
+            .ok_or(CfmSymbolError::ConnectionNotFound)?;
+        if self.name == 0
+            || self.address == 0
+            || self.class == 0
+            || self.address.checked_add(3).is_none()
+        {
+            return Err(CfmSymbolError::InvalidOutputs);
+        }
+        let length = memory
+            .procedure_read_u8(self.name)
+            .ok_or(CfmSymbolError::InvalidOutputs)?;
+        let mut name = Vec::with_capacity(usize::from(length));
+        for offset in 1..=u32::from(length) {
+            let address = self
+                .name
+                .checked_add(offset)
+                .ok_or(CfmSymbolError::InvalidOutputs)?;
+            name.push(
+                memory
+                    .procedure_read_u8(address)
+                    .ok_or(CfmSymbolError::InvalidOutputs)?,
+            );
+        }
+        let name = crate::mac_roman::decode_mac_roman(&name);
+        let (address, class, used_binding) =
+            if let Some(export) = connection.exports.iter().find(|export| export.name == name) {
+                (export.address, export.class, false)
+            } else {
+                let provider = bindings
+                    .as_deref_mut()
+                    .ok_or(CfmSymbolError::SymbolNotFound)?;
+                let (address, class) = provider.prepare(&connection.library_name, &name)?;
+                (address, class, true)
+            };
+        if !publish(
+            memory,
+            &[
+                (self.address, &address.to_be_bytes()),
+                (self.class, &[class]),
+            ],
+        ) {
+            return Err(CfmSymbolError::InvalidOutputs);
+        }
+        if used_binding {
+            bindings.expect("a binding was prepared").commit();
+        }
+        Ok(())
     }
 }
 
@@ -511,6 +591,124 @@ mod tests {
         let mut bytes = vec![0; 20];
         memory.read_bytes_into(OUTPUT, &mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn find_symbol_shares_lookup_and_commits_bindings_only_after_atomic_publication() {
+        #[derive(Default)]
+        struct Bindings {
+            prepared: usize,
+            committed: usize,
+        }
+        impl CfmSymbolBindings for Bindings {
+            fn prepare(
+                &mut self,
+                library: &str,
+                symbol: &str,
+            ) -> Result<(u32, u8), CfmSymbolError> {
+                self.prepared += 1;
+                assert_eq!(library, "library-7");
+                if symbol != "Café™" {
+                    return Err(CfmSymbolError::SymbolNotFound);
+                }
+                Ok((0x1234_5678, 2))
+            }
+            fn commit(&mut self) {
+                self.committed += 1;
+            }
+        }
+        const NAME: u32 = OUTPUT + 0x100;
+        for dynamic in [false, true] {
+            for fault in 0..14 {
+                let mut outcomes = Vec::new();
+                for classic in [false, true] {
+                    let mut connection = connection(7);
+                    if !dynamic {
+                        connection.exports.push(CfmExport {
+                            name: "Café™".into(),
+                            class: 2,
+                            address: 0x1234_5678,
+                        });
+                    }
+                    let mut memory = GuestAddressSpace::new();
+                    memory.add_region(OUTPUT, vec![0xa5; if fault == 8 { 2 } else { 16 }]);
+                    let name = if fault == 2 {
+                        vec![5, b'c', b'a', b'f', 0x8e, 0xaa]
+                    } else {
+                        vec![5, b'C', b'a', b'f', 0x8e, 0xaa]
+                    };
+                    memory.add_region(NAME, if fault == 3 { name[..4].to_vec() } else { name });
+                    if fault == 5 {
+                        memory.add_region(u32::MAX, vec![2]);
+                    }
+                    if fault == 10 {
+                        memory.add_readonly_region(OUTPUT + 1, vec![0xa5]);
+                    }
+                    if fault == 11 {
+                        memory.add_readonly_region(OUTPUT + 8, vec![0xa5]);
+                    }
+                    let mut bus = MacMemoryBus::new(0x10000);
+                    bus.set_addressing_32_bit(true);
+                    bus.attach_guest_address_space(memory.shared_view());
+                    let request = CfmFindSymbol {
+                        connection: if fault == 1 { 99 } else { 7 },
+                        name: match fault {
+                            4 => 0,
+                            5 => u32::MAX,
+                            _ => NAME,
+                        },
+                        address: match fault {
+                            6 => 0,
+                            7 => u32::MAX - 1,
+                            _ => OUTPUT,
+                        },
+                        class: match fault {
+                            9 => 0,
+                            13 => OUTPUT + 0x1000,
+                            _ => OUTPUT + 8,
+                        },
+                    };
+                    let mut bindings = Bindings::default();
+                    let provider = if fault == 12 {
+                        None
+                    } else {
+                        Some(&mut bindings as &mut dyn CfmSymbolBindings)
+                    };
+                    let before: Vec<_> = (0..16)
+                        .map(|i| memory.procedure_read_u8(OUTPUT + i))
+                        .collect();
+                    let result = if classic {
+                        request.complete(&[connection], &mut bus, provider, |memory, writes| {
+                            memory.publish_cfm_outputs(writes)
+                        })
+                    } else {
+                        request.complete(&[connection], &mut memory, provider, |memory, writes| {
+                            memory.publish_cfm_outputs(writes)
+                        })
+                    };
+                    let expected = match fault {
+                        1 => Some(CfmSymbolError::ConnectionNotFound),
+                        2 => Some(CfmSymbolError::SymbolNotFound),
+                        12 if dynamic => Some(CfmSymbolError::SymbolNotFound),
+                        3..=11 | 13 => Some(CfmSymbolError::InvalidOutputs),
+                        _ => None,
+                    };
+                    assert_eq!(result.err(), expected, "dynamic {dynamic}, fault {fault}");
+                    let bytes: Vec<_> = (0..16)
+                        .map(|i| memory.procedure_read_u8(OUTPUT + i))
+                        .collect();
+                    assert_eq!(bindings.committed, usize::from(dynamic && result.is_ok()));
+                    if result.is_err() {
+                        assert_eq!(bytes, before);
+                    } else {
+                        assert_eq!(memory.procedure_read_u32(OUTPUT), Some(0x1234_5678));
+                        assert_eq!(memory.procedure_read_u8(OUTPUT + 8), Some(2));
+                    }
+                    outcomes.push((result, bytes, bindings.prepared, bindings.committed));
+                }
+                assert_eq!(outcomes[0], outcomes[1]);
+            }
+        }
     }
 
     #[test]
