@@ -1402,7 +1402,7 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -2021,7 +2021,7 @@ mod tests {
         assert_eq!(err, PefRelocApplyError::SectionBaseUnavailable { index: 1 });
     }
 
-    fn synthetic_pef(
+    pub(crate) fn synthetic_pef(
         loader: Vec<u8>,
         pattern_section: Vec<u8>,
         pattern_unpacked_size: u32,
@@ -2097,7 +2097,7 @@ mod tests {
         bytes
     }
 
-    fn synthetic_loader_with_reloc_header(chunks: &[u16]) -> Vec<u8> {
+    pub(crate) fn synthetic_loader_with_reloc_header(chunks: &[u16]) -> Vec<u8> {
         let mut strings = Vec::new();
         let library_name_offset = push_c_string(&mut strings, b"InterfaceLib");
         let symbol_name_offset = push_c_string(&mut strings, b"Gestalt");
@@ -2214,7 +2214,7 @@ mod tests {
         bytes
     }
 
-    fn block_copy_section(bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn block_copy_section(bytes: &[u8]) -> Vec<u8> {
         assert!(bytes.len() < 32);
         let mut packed = vec![0x20 | bytes.len() as u8];
         packed.extend_from_slice(bytes);
@@ -2248,7 +2248,7 @@ mod tests {
         (u16::from(skip_count) << 6) | u16::from(reloc_count)
     }
 
-    fn run_reloc(dispatch: u8, run_length: u16) -> u16 {
+    pub(crate) fn run_reloc(dispatch: u8, run_length: u16) -> u16 {
         (u16::from(dispatch) << 9) | ((run_length - 1) & 0x01ff)
     }
 

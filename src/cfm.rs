@@ -1,6 +1,8 @@
 //! Semantic resumption of one CFM load across guest initialization.
 //! Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18, 3-27.
 
+pub(crate) mod fragment;
+
 use crate::execution_kernel::GuestProcedureInvocation;
 use crate::guest_procedure::{
     GuestIsa, GuestProcedure, GuestProcedureMemory, GuestProcedureRepresentation,
@@ -285,6 +287,7 @@ pub(crate) enum CfmLoadError {
     InvalidOutputs,
     DescriptorChanged,
     CorruptFragment,
+    NoAddressSpace,
 }
 
 impl CfmLoadError {
@@ -293,6 +296,7 @@ impl CfmLoadError {
             Self::InitializationFailed => -2821,
             Self::ConnectionNotFound => -2801,
             Self::InvalidOutputs => -50,
+            Self::NoAddressSpace => -2810,
             Self::DescriptorChanged | Self::CorruptFragment => -2820,
         }
     }
