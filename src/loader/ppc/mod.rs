@@ -24302,6 +24302,9 @@ fn dispatch_supported_import(
                 || !ppc_memory_can_write_bytes(memory, made, 4)
                 || target.is_none()
             {
+                if made != 0 {
+                    let _ = memory.write_u32_be(made, 0);
+                }
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
             let target = target.unwrap();
@@ -24313,10 +24316,12 @@ fn dispatch_supported_import(
                 last_mem_error,
             );
             if stack == 0 {
+                let _ = memory.write_u32_be(made, 0);
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
             }
             let Some(top) = stack.checked_add(size) else {
                 process_memory_manager.dispose_native_ptr(stack);
+                let _ = memory.write_u32_be(made, 0);
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
             };
             let mut thread_cpu = PpcCpu::new();
@@ -24342,6 +24347,7 @@ fn dispatch_supported_import(
             );
             if created.is_none() {
                 process_memory_manager.dispose_native_ptr(stack);
+                let _ = memory.write_u32_be(made, 0);
             }
             ppc_apply_process_native_allocator(
                 process_memory_manager,
@@ -167626,6 +167632,27 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
             Some(vec![b'A', b'Z', 0x83, b'!', b'q'])
         );
+    }
+
+    #[test]
+    fn native_thread_creation_clears_the_output_on_failure_without_publishing_a_task() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        let made = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(made, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = 2;
+        loaded.cpu.gpr[4] = loaded.entry_pc;
+        loaded.cpu.gpr[6] = 1024;
+        loaded.cpu.gpr[9] = made;
+        assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.memory.read_u32_be(made), Some(0));
+        assert!(!loaded.guest_calls.has_live_workers());
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 1;
+        assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u32_be(made), Some(3));
     }
 
     #[test]

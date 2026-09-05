@@ -521,6 +521,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
 
     /// Allocate from the same monotonic namespace used by explicit registration.
     /// Exhaustion never wraps into aliases, the application task or retired IDs.
+    #[cfg(test)]
     pub(crate) fn create_task(&self) -> Result<ExecutionTaskId, ContinuationError> {
         self.create_task_with(|_| true)
     }

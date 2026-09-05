@@ -1,7 +1,6 @@
 //! Toolbox Utility trap handlers (events, Random, Sound, misc).
 
 use crate::cpu::{CpuOps, Register};
-use crate::execution_kernel::ExecutionTaskState;
 use crate::guest_call::CooperativeThread;
 use crate::guest_call::ExecutionTaskId;
 use crate::memory::globals::addr;
@@ -1094,9 +1093,6 @@ impl super::TrapDispatcher {
     /// `kApplicationThreadID` from Threads.h — the thread the process
     /// launches on, which owns the process stack rather than a pooled one.
     const APPLICATION_THREAD_ID: u32 = 2;
-    /// `ThreadState` values from Threads.h.
-    const THREAD_STATE_READY: u16 = 0;
-    const THREAD_STATE_STOPPED: u16 = 1;
     /// `threadNotFoundErr` and `threadProtocolErr` from Errors.h.
     const THREAD_NOT_FOUND_ERR: i16 = crate::thread_manager::THREAD_NOT_FOUND_ERR;
     const THREAD_PROTOCOL_ERR: i16 = crate::thread_manager::THREAD_PROTOCOL_ERR;
@@ -1167,10 +1163,14 @@ impl super::TrapDispatcher {
     fn thread_return_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
         if self.thread_return_trampoline == 0 {
             let trampoline = bus.alloc(8);
-            bus.write_word(trampoline, 0x303C); // MOVE.W #$FFFE,D0
-            bus.write_word(trampoline + 2, 0xFFFE);
-            bus.write_word(trampoline + 4, 0xABF2); // _ThreadDispatch
-            bus.write_word(trampoline + 6, 0x4E75); // defensive RTS
+            let code = [0x303Cu16, 0xFFFE, 0xABF2, 0x4E75]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>();
+            if trampoline == 0 || !bus.try_write_ranges_atomic(&[(trampoline, &code)]) {
+                bus.free(trampoline);
+                return 0;
+            }
             self.thread_return_trampoline = trampoline;
         }
         self.thread_return_trampoline
@@ -16238,67 +16238,92 @@ impl super::TrapDispatcher {
                         let thread_entry = bus.read_long(sp + 20);
                         let thread_style = bus.read_long(sp + 24);
 
-                        if thread_made == 0
-                            || thread_entry == 0
-                            || thread_style & K_PREEMPTIVE_THREAD != 0
-                        {
-                            if thread_made != 0 {
-                                bus.write_long(thread_made, 0);
-                            }
-                            -50
-                        } else if let Some(task) = self.guest_calls.create_task() {
-                            let thread_id = task.thread_id();
-
-                            let stack_size = if stack_size == 0 {
+                        // NewThread publishes no identity until its ABI frame and
+                        // output destinations are committed. Thread Manager (1999),
+                        // pp. 56–58: threadMade is kNoThreadID on failure.
+                        let result = (|| -> std::result::Result<(), i16> {
+                            let result_slot = sp.checked_add(28).ok_or(-50_i16)?;
+                            let size = if stack_size == 0 {
                                 self.cooperative_thread_stack_size
                             } else {
                                 stack_size
                             };
-                            let (stack_base, stack_limit) =
-                                self.acquire_cooperative_thread_stack(bus, stack_size);
-
-                            // Seed the private stack as though the entry proc
-                            // had been called by the trampoline: return
-                            // address, then its single Pascal argument.
-                            let return_trampoline = self.thread_return_trampoline(bus);
-                            let entry_sp = stack_limit.wrapping_sub(8);
-                            bus.write_long(entry_sp, return_trampoline);
-                            bus.write_long(entry_sp + 4, thread_param);
-
-                            let state = if options & K_NEW_SUSPEND != 0 {
-                                Self::THREAD_STATE_STOPPED
-                            } else {
-                                Self::THREAD_STATE_READY
-                            };
+                            if thread_made == 0
+                                || thread_entry == 0
+                                || thread_entry & 1 != 0
+                                || thread_style != 1
+                                || size < 8
+                                || size > i32::MAX as u32
+                                || !bus.is_guest_address_mapped(thread_entry, 2)
+                                || !bus.is_guest_address_writable(thread_made, 4)
+                                || !bus.is_guest_address_writable(result_slot, 2)
+                            {
+                                return Err(-50);
+                            }
+                            let trampoline = self.thread_return_trampoline(bus);
+                            if trampoline == 0 {
+                                return Err(-108);
+                            }
+                            let (base, limit) = self.acquire_cooperative_thread_stack(bus, size);
+                            let fail_stack = base == 0 || limit < base || limit - base < 8;
+                            if fail_stack {
+                                if base != 0 {
+                                    self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                }
+                                return Err(-108);
+                            }
+                            let entry_sp = (limit - 8) & !1;
+                            let overlap =
+                                |address: u32, length: u32, other: u32, other_length: u32| {
+                                    u64::from(address) < u64::from(other) + u64::from(other_length)
+                                        && u64::from(other) < u64::from(address) + u64::from(length)
+                                };
+                            if entry_sp < base
+                                || !bus.is_guest_address_writable(entry_sp, 8)
+                                || overlap(thread_made, 4, entry_sp, 8)
+                                || overlap(result_slot, 2, entry_sp, 8)
+                                || overlap(thread_made, 4, result_slot, 2)
+                            {
+                                self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                return Err(-50);
+                            }
                             let mut thread = Self::capture_cooperative_thread(cpu);
                             thread.pc = thread_entry;
                             thread.a_regs[7] = entry_sp;
-                            self.guest_calls.set_thread_storage(
-                                task,
+                            let mut frame = [0u8; 8];
+                            frame[..4].copy_from_slice(&trampoline.to_be_bytes());
+                            frame[4..].copy_from_slice(&thread_param.to_be_bytes());
+                            let made = self.guest_calls.create_classic_thread(
+                                thread,
                                 crate::guest_call::ThreadStorage {
                                     result_destination,
-                                    stack_base,
-                                    stack_limit,
+                                    stack_base: base,
+                                    stack_limit: limit,
                                     managed_pointer: false,
                                 },
-                            );
-                            self.guest_calls.save_cooperative_context(
-                                ExecutionTaskId::from_thread_id(thread_id),
-                                thread,
-                            );
-                            self.guest_calls.set_scheduling_state(
-                                ExecutionTaskId::from_thread_id(thread_id),
-                                if state == Self::THREAD_STATE_READY {
-                                    ExecutionTaskState::Ready
-                                } else {
-                                    ExecutionTaskState::Stopped
+                                options & K_NEW_SUSPEND != 0,
+                                |task| {
+                                    bus.try_write_ranges_atomic(&[
+                                        (entry_sp, &frame),
+                                        (thread_made, &task.thread_id().to_be_bytes()),
+                                        (result_slot, &0u16.to_be_bytes()),
+                                    ])
                                 },
                             );
-                            bus.write_long(thread_made, thread_id);
-                            0
-                        } else {
-                            bus.write_long(thread_made, 0);
-                            -108
+                            if made.is_none() {
+                                self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                return Err(-108);
+                            }
+                            Ok(())
+                        })();
+                        match result {
+                            Ok(()) => 0,
+                            Err(error) => {
+                                if thread_made != 0 {
+                                    let _ = bus.try_write_long(thread_made, 0);
+                                }
+                                error
+                            }
                         }
                     }
                     // CreateThreadPool(threadStyle, numToCreate, stackSize)
@@ -27524,6 +27549,84 @@ mod tests {
                 .is_some());
             // Another creator shares the owner's namespace between classic calls.
             assert_eq!(process.create_task().unwrap().thread_id(), expected + 1);
+        }
+    }
+
+    #[test]
+    fn classic_thread_creation_refuses_bad_outputs_and_stacks_without_consuming_an_id() {
+        for fault in 0..4 {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let made = TEST_SP + 0x100;
+            let stack = bus.alloc(1024);
+            disp.guest_calls
+                .recycle_classic_thread_stack((stack, stack + 1024));
+            bus.write_long(stack + 1016, 0x11223344);
+            bus.write_long(stack + 1020, 0x55667788);
+            let stack_bytes = (bus.read_long(stack + 1016), bus.read_long(stack + 1020));
+            bus.write_long(made, 0xaaaaaaaa);
+            for (offset, value) in [
+                (0, made),
+                (4, 0),
+                (8, 1),
+                (12, if fault == 2 { 4 } else { 1024 }),
+                (16, 0xcafebabe),
+                (20, 0x10000),
+                (24, 1),
+            ] {
+                bus.write_long(TEST_SP + offset, value);
+            }
+            match fault {
+                0 => bus.protect_readonly_code(made + 2, 2),
+                1 => bus.protect_readonly_code(stack + 1022, 2),
+                3 => bus.protect_readonly_code(TEST_SP + 29, 1),
+                _ => {}
+            }
+            cpu.write_reg(Register::D0, 0x0e03);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+            assert_eq!(bus.read_long(made), if fault == 0 { 0xaaaaaaaa } else { 0 });
+            assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 1);
+            assert!(!disp.guest_calls.has_live_workers());
+            assert_eq!(
+                (bus.read_long(stack + 1016), bus.read_long(stack + 1020)),
+                stack_bytes
+            );
+            // Retry with a valid output, return frame, size and stack. If the
+            // pool stack itself is protected, reserve another stack for retry.
+            let retry_sp = TEST_SP + 0x200;
+            let retry_made = TEST_SP + 0x300;
+            if fault == 1 {
+                disp.guest_calls.take_classic_thread_stack(1024);
+            }
+            for (offset, value) in [
+                (0, retry_made),
+                (4, 0),
+                (8, 1),
+                (12, 1024),
+                (16, 0xcafebabe),
+                (20, 0x10000),
+                (24, 1),
+            ] {
+                bus.write_long(retry_sp + offset, value);
+            }
+            cpu.write_reg(Register::A7, retry_sp);
+            cpu.write_reg(Register::D0, 0x0e03);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(bus.read_long(retry_made), 3);
+            let worker = disp
+                .guest_calls
+                .cooperative_context(ExecutionTaskId::from_thread_id(3))
+                .unwrap();
+            assert_eq!(bus.read_long(worker.a_regs[7] + 4), 0xcafebabe);
+            assert_eq!(
+                bus.read_long(worker.a_regs[7]),
+                disp.thread_return_trampoline
+            );
         }
     }
 

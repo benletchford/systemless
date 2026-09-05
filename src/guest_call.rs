@@ -554,6 +554,33 @@ impl ExecutionTaskCalls {
         Ok(successor)
     }
 
+    fn create_thread(
+        &mut self,
+        context: TaskResumeContext,
+        storage: ThreadStorage,
+        suspended: bool,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Option<ExecutionTaskId> {
+        let task = self.kernel.create_task_with(commit).ok()?;
+        self.kernel.bind_task_entry_isa(task, context.isa());
+        match context {
+            TaskResumeContext::Classic(context) => {
+                self.cooperative_contexts.insert(task, context);
+            }
+            TaskResumeContext::Native(cpu) => {
+                self.native_threads
+                    .insert(task, NativeThreadContext { cpu });
+            }
+        }
+        self.thread_storage.insert(task, storage);
+        if !suspended {
+            assert!(self
+                .kernel
+                .set_scheduling_state(task, ExecutionTaskState::Ready));
+        }
+        Some(task)
+    }
+
     fn retire_thread(
         &mut self,
         task: ExecutionTaskId,
@@ -709,6 +736,7 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.switch_to_task(task).is_ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn create_task(&self) -> Option<ExecutionTaskId> {
         self.0.borrow().kernel.create_task().ok()
     }
@@ -813,6 +841,7 @@ impl SharedGuestCallStack {
         Some(tasks.thread_storage.get(task).copied().unwrap_or_default())
     }
 
+    #[cfg(test)]
     pub(crate) fn set_thread_storage(&self, task: ExecutionTaskId, storage: ThreadStorage) -> bool {
         let mut tasks = self.0.borrow_mut();
         if tasks.kernel.scheduling_state(task).is_none() {
@@ -947,6 +976,21 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.has_live_workers()
     }
 
+    pub(crate) fn create_classic_thread(
+        &self,
+        context: CooperativeThread,
+        storage: ThreadStorage,
+        suspended: bool,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Option<ExecutionTaskId> {
+        self.0.borrow_mut().create_thread(
+            TaskResumeContext::Classic(context),
+            storage,
+            suspended,
+            commit,
+        )
+    }
+
     pub(crate) fn create_native_thread(
         &self,
         context: NativeThreadContext,
@@ -954,17 +998,12 @@ impl SharedGuestCallStack {
         suspended: bool,
         commit: impl FnOnce(ExecutionTaskId) -> bool,
     ) -> Option<ExecutionTaskId> {
-        let mut tasks = self.0.borrow_mut();
-        let task = tasks.kernel.create_task_with(commit).ok()?;
-        tasks.kernel.bind_task_entry_isa(task, GuestIsa::PowerPc);
-        tasks.native_threads.insert(task, context);
-        tasks.thread_storage.insert(task, storage);
-        if !suspended {
-            assert!(tasks
-                .kernel
-                .set_scheduling_state(task, ExecutionTaskState::Ready));
-        }
-        Some(task)
+        self.0.borrow_mut().create_thread(
+            TaskResumeContext::Native(context.cpu),
+            storage,
+            suspended,
+            commit,
+        )
     }
 
     /// Scheduling resumes only after a wake operation marks a task ready and
