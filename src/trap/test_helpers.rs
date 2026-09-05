@@ -129,7 +129,9 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
 /// Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-6.
 pub fn setup_with_trap_tables() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
     let (mut dispatcher, cpu, mut bus) = setup();
-    dispatcher.materialize_trap_tables(&mut bus, super::dispatch::TrapTableProfile::M68k68040);
+    dispatcher
+        .materialize_trap_tables(&mut bus, super::dispatch::TrapTableProfile::M68k68040)
+        .expect("trap table construction requires writable cells and system storage");
     (dispatcher, cpu, bus)
 }
 

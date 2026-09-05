@@ -86,12 +86,15 @@ impl TrapTableProfile {
     }
 }
 
-/// Bounded system-code publication supplied by the memory owner. Callers must
-/// preflight allocation and mapping before creating a table. `existing` names
+/// Bounded system-code publication supplied by the memory owner. Profile
+/// construction preflights its total allocation through this contract. Individual
+/// publication requires reserved capacity. `existing` names
 /// code already owned by this service in the same memory lifetime. Publication
 /// writes all words and makes new code read-only to ordinary guest stores.
 /// This interface does not own an allocator or authorize application writes.
 pub(crate) trait TrapCodeMemory {
+    fn trap_code_allocation_bucket(&self, size: u32) -> u32;
+    fn can_allocate_trap_code(&self, size: u32) -> bool;
     fn publish_trap_code(&mut self, existing: Option<u32>, words: &[u16]) -> u32;
 }
 
@@ -150,7 +153,11 @@ impl TrapSystemGateways {
     /// Required new storage using the memory owner's actual allocation bucket.
     /// Cached default identities cost no allocation; each process gets new
     /// protected heads and exception-vector gateways.
-    pub(crate) fn required_bytes(&self, profile: TrapTableProfile, bucket: fn(u32) -> u32) -> u32 {
+    pub(crate) fn required_bytes(
+        &self,
+        profile: TrapTableProfile,
+        bucket: impl Fn(u32) -> u32,
+    ) -> u32 {
         let mut words = HashSet::from([0xAA6E]);
         for word in Self::table_words() {
             let route = profile.route(word);
@@ -180,13 +187,19 @@ impl TrapSystemGateways {
     }
 
     /// Materialize profile defaults without constructing a manager adapter.
-    /// Code ownership and publication preflight belong to `memory`'s caller.
+    /// The memory owner preflights the entire allocation before any code,
+    /// identity or table image is published. Refusal leaves both owners intact.
     /// IM:OSUtils (1994), pp. 8-4--8-9, 8-25--8-31.
     pub(crate) fn create_table(
         &mut self,
         memory: &mut impl TrapCodeMemory,
         profile: TrapTableProfile,
-    ) -> TrapTableImage {
+    ) -> Option<TrapTableImage> {
+        let required =
+            self.required_bytes(profile, |size| memory.trap_code_allocation_bucket(size));
+        if !memory.can_allocate_trap_code(required) {
+            return None;
+        }
         let unimplemented = self.get_or_create(memory, 0xAA6E);
         let mut raw_entries =
             Vec::with_capacity(usize::from(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS));
@@ -209,10 +222,10 @@ impl TrapSystemGateways {
             memory.publish_trap_code(None, &[0x4E73]),
             memory.publish_trap_code(None, &[0x4E73]),
         ];
-        TrapTableImage {
+        Some(TrapTableImage {
             raw_entries,
             exception_vectors,
-        }
+        })
     }
 
     pub(crate) fn create_come_from_head(memory: &mut impl TrapCodeMemory, successor: u32) -> u32 {
@@ -237,11 +250,20 @@ mod tests {
 
     struct CodeMemory {
         next: u32,
+        limit: u32,
         bucket: fn(u32) -> u32,
         code: HashMap<u32, Vec<u16>>,
     }
 
     impl TrapCodeMemory for CodeMemory {
+        fn trap_code_allocation_bucket(&self, size: u32) -> u32 {
+            (self.bucket)(size)
+        }
+        fn can_allocate_trap_code(&self, size: u32) -> bool {
+            self.next
+                .checked_add(size)
+                .is_some_and(|end| end <= self.limit)
+        }
         fn publish_trap_code(&mut self, existing: Option<u32>, words: &[u16]) -> u32 {
             let address = existing.unwrap_or_else(|| {
                 let address = self.next;
@@ -266,6 +288,7 @@ mod tests {
             for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
                 let mut memory = CodeMemory {
                     next: 0x10000,
+                    limit: u32::MAX,
                     bucket,
                     code: HashMap::new(),
                 };
@@ -275,7 +298,7 @@ mod tests {
                 let os = system.get_or_create(&mut memory, 0xA31E);
                 let before = memory.next;
                 let needed = system.required_bytes(profile, bucket);
-                let first = system.create_table(&mut memory, profile);
+                let first = system.create_table(&mut memory, profile).unwrap();
                 assert_eq!(memory.next - before, needed);
                 assert_eq!(first.raw_entries.len(), 1280);
                 assert_eq!(system.get(0xA975), Some(tick));
@@ -318,7 +341,7 @@ mod tests {
                 );
                 let before = memory.next;
                 let needed = system.required_bytes(profile, bucket);
-                let second = system.create_table(&mut memory, profile);
+                let second = system.create_table(&mut memory, profile).unwrap();
                 assert_eq!(memory.next - before, needed);
                 assert_eq!(
                     needed,
@@ -343,9 +366,40 @@ mod tests {
     }
 
     #[test]
+    fn profile_construction_refuses_capacity_before_publication_and_retries() {
+        for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
+            for reused in [false, true] {
+                let mut memory = CodeMemory {
+                    next: 0x10000,
+                    limit: u32::MAX,
+                    bucket: eight,
+                    code: HashMap::new(),
+                };
+                let mut system = TrapSystemGateways::default();
+                if reused {
+                    system.create_table(&mut memory, profile).unwrap();
+                }
+                let before = memory.next;
+                let code = memory.code.clone();
+                let defaults = system.defaults.clone();
+                let required = system.required_bytes(profile, eight);
+                memory.limit = before + required - 1;
+                assert!(system.create_table(&mut memory, profile).is_none());
+                assert_eq!(memory.next, before);
+                assert_eq!(memory.code, code);
+                assert_eq!(system.defaults, defaults);
+                memory.limit += 1;
+                assert!(system.create_table(&mut memory, profile).is_some());
+                assert_eq!(memory.next, before + required);
+            }
+        }
+    }
+
+    #[test]
     fn saved_gateway_republication_uses_canonical_identity_without_allocating() {
         let mut memory = CodeMemory {
             next: 0x10000,
+            limit: u32::MAX,
             bucket: four,
             code: HashMap::new(),
         };

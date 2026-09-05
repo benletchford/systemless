@@ -6509,16 +6509,19 @@ impl TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
-    ) -> TrapTableProcessContext {
-        let image = self.trap_gateways.create_table(bus, profile);
-        TrapTableProcessContext {
+    ) -> Result<TrapTableProcessContext> {
+        let image = self
+            .trap_gateways
+            .create_table(bus, profile)
+            .ok_or(Error::TrapTableInitialization)?;
+        Ok(TrapTableProcessContext {
             profile,
             raw_entries: image.raw_entries,
             raw_exception_vectors: image.exception_vectors,
             default_exception_vectors: image.exception_vectors,
             pending_native_trap_calls: HashMap::new(),
             current_trap_caller: None,
-        }
+        })
     }
 
     /// Save the active application's trap context and restore another one.
@@ -6592,37 +6595,8 @@ impl TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
-    ) {
-        let context = self.create_trap_table_process_context(bus, profile);
-        let _ = self.switch_trap_table_process_context(bus, context);
-    }
-
-    /// Establish the standalone classic Trap Manager environment before any
-    /// direct guest table patches. Ordinary dispatch also calls this on first
-    /// use. Repeated calls preserve the active profile, guest cells, exception
-    /// vectors and in-flight patch calls. Keep the dispatcher paired with the
-    /// same process bus; replacement memory requires a fresh dispatcher.
-    ///
-    /// Initialization requires writable table/vector cells and enough unused
-    /// process RAM for the protected gateways. It refuses unavailable storage
-    /// before allocating or changing guest bytes. Native application runners
-    /// establish their selected profile separately before attaching execution.
-    /// Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-9.
-    pub fn initialize_trap_tables(&mut self, bus: &mut MacMemoryBus) -> Result<()> {
-        if self.trap_table_profile.is_some() {
-            return Ok(());
-        }
-        let profile = TrapTableProfile::M68k68040;
-        let required = self
-            .trap_gateways
-            .required_bytes(profile, MacMemoryBus::allocation_bucket_size);
-        let table_end = TOOLBOX_TRAP_TABLE_BASE + u32::from(TOOLBOX_TRAP_TABLE_SLOTS) * 4;
-        let storage_available = bus
-            .synthetic_code_allocation_start(required)
-            .is_some_and(|start| start >= table_end);
-        if !storage_available
-            || !bus
-                .is_guest_address_writable(OS_TRAP_TABLE_BASE, usize::from(OS_TRAP_TABLE_SLOTS) * 4)
+    ) -> Result<()> {
+        if !bus.is_guest_address_writable(OS_TRAP_TABLE_BASE, usize::from(OS_TRAP_TABLE_SLOTS) * 4)
             || !bus.is_guest_address_writable(
                 TOOLBOX_TRAP_TABLE_BASE,
                 usize::from(TOOLBOX_TRAP_TABLE_SLOTS) * 4,
@@ -6631,8 +6605,20 @@ impl TrapDispatcher {
         {
             return Err(Error::TrapTableInitialization);
         }
-        self.materialize_trap_tables(bus, profile);
+        let context = self.create_trap_table_process_context(bus, profile)?;
+        let _ = self.switch_trap_table_process_context(bus, context);
         Ok(())
+    }
+
+    /// Establish standalone classic trap tables before lookup or patching.
+    /// Repeated initialization preserves active cells and in-flight calls.
+    /// Keep the dispatcher paired with its original code-memory owner.
+    /// Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-9.
+    pub fn initialize_trap_tables(&mut self, bus: &mut MacMemoryBus) -> Result<()> {
+        if self.trap_table_profile.is_some() {
+            return Ok(());
+        }
+        self.materialize_trap_tables(bus, TrapTableProfile::M68k68040)
     }
 
     /// Whether low-memory exception vector 10 still names this process's
@@ -8153,7 +8139,9 @@ mod tests {
     fn generated_profile_routes_cover_all_raw_words_and_live_table_cells() {
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
             let unimplemented = dispatcher.default_trap_gateway(0xAA6E).unwrap();
 
             for low_word in 0u16..0x1000 {
@@ -8326,7 +8314,9 @@ mod tests {
                     0xA000 | slot
                 };
                 let (mut dispatcher, mut cpu, mut bus) = setup();
-                dispatcher.materialize_trap_tables(&mut bus, profile);
+                dispatcher
+                    .materialize_trap_tables(&mut bus, profile)
+                    .expect("trap table construction requires writable cells and system storage");
                 let saved_default = dispatcher.trap_table_address(&bus, canonical_word).unwrap();
                 let profile_route = profile.route(canonical_word);
                 let invoked_word = bus.read_word(saved_default);
@@ -8433,7 +8423,9 @@ mod tests {
 
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, mut cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
 
             for table_index in 0..(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS) {
                 let is_toolbox = table_index >= OS_TRAP_TABLE_SLOTS;
@@ -8749,6 +8741,90 @@ mod tests {
     }
 
     #[test]
+    fn profile_materialization_refuses_before_mutating_active_process() {
+        for failure in 0..6 {
+            let (mut dispatcher, _, mut bus) = setup();
+            dispatcher
+                .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+                .unwrap();
+            let tick_cell = raw_trap_route(0xA975).table_address;
+            bus.write_long(tick_cell, 0x1234_5678);
+            dispatcher.current_trap_caller = Some(0x0020_1000);
+            dispatcher.pending_native_trap_calls.insert(
+                0xA975,
+                vec![NativeTrapCallState {
+                    return_pc: 0x0020_2000,
+                    argument_sp: 0x003f_ff00,
+                    os_dispatch_frame: None,
+                    preserved_d_regs: [1; 5],
+                    preserved_a_regs: [2; 5],
+                }],
+            );
+            match failure {
+                0 => {
+                    while bus.synthetic_code_allocation_start(4).is_some() {
+                        bus.alloc_synthetic(4);
+                    }
+                }
+                1 => bus.protect_readonly_code(OS_TRAP_TABLE_BASE, 4),
+                2 => bus.protect_readonly_code(TOOLBOX_TRAP_TABLE_BASE, 4),
+                3 => bus.protect_readonly_code(0x28, 4),
+                4 | 5 => {
+                    let address = if failure == 4 {
+                        bus.synthetic_code_allocation_start(4).unwrap()
+                    } else {
+                        OS_TRAP_TABLE_BASE
+                    };
+                    let mut foreign = crate::memory::GuestAddressSpace::new();
+                    foreign.add_readonly_region(address, vec![0x55; 4]);
+                    bus.attach_guest_address_space(foreign.shared_view());
+                }
+                _ => unreachable!(),
+            }
+            let low_memory = bus.read_bytes(0, 0x2000);
+            let (base, len) = bus.synthetic_reservation_range().unwrap();
+            let code = bus.read_bytes(base, len as usize);
+            let next = bus.synthetic_code_allocation_start(4);
+            let defaults = dispatcher.trap_exception_vector_defaults;
+            let tick_default = dispatcher.trap_gateways.get(0xA975);
+            assert!(matches!(
+                dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::PowerPc604),
+                Err(Error::TrapTableInitialization)
+            ));
+            assert_eq!(bus.read_bytes(0, 0x2000), low_memory);
+            assert_eq!(bus.read_bytes(base, len as usize), code);
+            assert_eq!(bus.synthetic_code_allocation_start(4), next);
+            assert_eq!(
+                dispatcher.trap_table_profile,
+                Some(TrapTableProfile::M68k68040)
+            );
+            assert_eq!(dispatcher.trap_exception_vector_defaults, defaults);
+            assert_eq!(dispatcher.trap_gateways.get(0xA975), tick_default);
+            assert_eq!(dispatcher.current_trap_caller, Some(0x0020_1000));
+            assert_eq!(bus.read_long(tick_cell), 0x1234_5678);
+            let frames = &dispatcher.pending_native_trap_calls[&0xA975];
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].return_pc, 0x0020_2000);
+            assert_eq!(frames[0].argument_sp, 0x003f_ff00);
+            assert_eq!(frames[0].preserved_d_regs, [1; 5]);
+            assert_eq!(frames[0].preserved_a_regs, [2; 5]);
+            if failure >= 4 {
+                bus.detach_guest_address_space();
+                dispatcher
+                    .materialize_trap_tables(&mut bus, TrapTableProfile::PowerPc604)
+                    .unwrap();
+                assert_eq!(
+                    dispatcher.trap_table_profile,
+                    Some(TrapTableProfile::PowerPc604)
+                );
+                assert_eq!(dispatcher.current_trap_caller, None);
+                assert!(dispatcher.pending_native_trap_calls.is_empty());
+                assert_ne!(bus.read_long(tick_cell), 0x1234_5678);
+            }
+        }
+    }
+
+    #[test]
     fn standalone_trap_initialization_refuses_unavailable_memory_atomically_and_retries() {
         for failure in 0..7 {
             let (mut dispatcher, mut cpu, _) = setup();
@@ -8917,7 +8993,9 @@ mod tests {
     #[test]
     fn materialized_trap_tables_contain_all_callable_profile_entries() {
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
 
         for slot in 0..OS_TRAP_TABLE_SLOTS {
             let trap_word = 0xA000 | slot;
@@ -8959,7 +9037,9 @@ mod tests {
     fn machine_profiles_generate_distinct_protected_exception_vector_defaults() {
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
             let defaults = dispatcher.trap_exception_vector_defaults.unwrap();
 
             assert_ne!(defaults[0], defaults[1]);
@@ -8993,7 +9073,9 @@ mod tests {
             (TrapTableProfile::PowerPc604, POWERPC_604_COME_FROM_TRAPS),
         ] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
             let mut observed = Vec::new();
             for slot in 0..OS_TRAP_TABLE_SLOTS {
                 let word = 0xA000 | slot;
@@ -9025,7 +9107,9 @@ mod tests {
         let second_protected_patch = 0x0022_0000;
         let second_direct_patch = 0x0022_1000;
 
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let first_head = bus.read_long(protected_entry);
         let first_defaults = dispatcher.trap_exception_vector_defaults.unwrap();
         assert_eq!([bus.read_long(0x28), bus.read_long(0x2C)], first_defaults);
@@ -9047,8 +9131,9 @@ mod tests {
         );
         dispatcher.current_trap_caller = Some(0x0023_1000);
 
-        let fresh_second =
-            dispatcher.create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604);
+        let fresh_second = dispatcher
+            .create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604)
+            .unwrap();
         let first_context = dispatcher
             .switch_trap_table_process_context(&mut bus, fresh_second)
             .expect("first process context must be saved");
@@ -9138,7 +9223,9 @@ mod tests {
 
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
             let unimplemented = dispatcher.trap_table_address(&bus, 0xAA6E).unwrap();
             let mut matching_slots = Vec::new();
 
@@ -9185,7 +9272,9 @@ mod tests {
         let aliases = [(0xA87D, 0xAA02), (0xAA08, 0xAA26)];
 
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         for (target, alias) in aliases {
             assert_eq!(
                 dispatcher.trap_table_address(&bus, target),
@@ -9200,8 +9289,9 @@ mod tests {
             );
         }
 
-        let second =
-            dispatcher.create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604);
+        let second = dispatcher
+            .create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604)
+            .unwrap();
         let _first = dispatcher
             .switch_trap_table_process_context(&mut bus, second)
             .expect("68040 context must be saved");
@@ -9223,7 +9313,9 @@ mod tests {
     #[test]
     fn a_profile_default_alias_keeps_independent_patch_and_restore_state() {
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
 
         for (target, alias, patch) in [(0xA87D, 0xAA02, 0x0021_0000), (0xAA08, 0xAA26, 0x0021_1000)]
         {
@@ -9262,7 +9354,9 @@ mod tests {
         // address saved from $AA02 must therefore execute the shared $A87D
         // procedure and retain its one-CGrafPtr Pascal stack contract.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let gateway = dispatcher.trap_table_address(&bus, 0xAA02).unwrap();
         let return_pc = 0x0020_0000;
         let sp = 0x003F_FF00;
@@ -9286,7 +9380,9 @@ mod tests {
     #[test]
     fn trap_manager_mutates_hidden_successor_without_replacing_raw_head() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA078;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let head = bus.read_long(raw_entry);
@@ -9314,7 +9410,9 @@ mod tests {
     #[test]
     fn trap_manager_mutates_the_last_exit_in_a_multi_head_chain() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA078;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let first = bus.read_long(raw_entry);
@@ -9348,7 +9446,9 @@ mod tests {
     #[test]
     fn direct_raw_write_can_bypass_a_permanent_come_from_head() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xAAFB;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let old_head = bus.read_long(raw_entry);
@@ -9377,7 +9477,9 @@ mod tests {
         // Set/NSet installs the supplied address; no guest address range is a
         // host-only restoration token.
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA004;
         let handler = 0x00F0_A004;
 
@@ -9398,7 +9500,9 @@ mod tests {
     #[test]
     fn nset_rejects_a_come_from_head_as_the_new_handler() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA078;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let head = bus.read_long(raw_entry);
@@ -9416,7 +9520,9 @@ mod tests {
     #[test]
     fn direct_raw_table_write_is_authoritative_for_dispatch() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let handler = 0x0021_0000;
         let return_pc = 0x0020_0002;
         let sp = 0x003F_FF00;
@@ -9435,7 +9541,9 @@ mod tests {
     #[test]
     fn trap_manager_apis_and_raw_table_long_stay_coherent() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let entry_address = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
         let default = bus.read_long(entry_address);
         let handler = 0x0021_0000;

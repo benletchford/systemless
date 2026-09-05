@@ -7938,7 +7938,8 @@ mod tests {
     fn get_trap_address_does_not_misclassify_docking_dispatch_as_unimplemented() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         dispatcher
-            .materialize_trap_tables(&mut bus, crate::trap::dispatch::TrapTableProfile::M68k68040);
+            .materialize_trap_tables(&mut bus, crate::trap::dispatch::TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
 
         cpu.write_reg(Register::D0, 0xAA57);
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
@@ -8095,7 +8096,9 @@ mod tests {
     #[test]
     fn initialized_68k_trap_manager_reads_and_writes_guest_table_bytes() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA975;
         let table_entry = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
         let installed = 0x0021_0000;
