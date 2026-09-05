@@ -24,9 +24,25 @@ impl M68kExecution {
         }
     }
 
+    pub(crate) fn apply_task_handoff(&mut self) {
+        if let Some(context) = self.calls.take_classic_task_handoff() {
+            for (index, value) in context.d_regs.into_iter().enumerate() {
+                self.cpu.core.set_d(index, value);
+            }
+            for (index, value) in context.a_regs.into_iter().enumerate() {
+                self.cpu.core.set_a(index, value);
+            }
+            self.cpu.write_reg(Register::PC, context.pc);
+            self.cpu.core.set_ccr(context.ccr);
+        }
+    }
+
     /// A launch cannot discard contexts still associated with live calls.
     pub(crate) fn can_relaunch(&self) -> bool {
-        self.parked.is_empty() && self.calls.is_empty() && !self.calls.has_live_workers()
+        self.parked.is_empty()
+            && self.calls.is_empty()
+            && !self.calls.has_live_workers()
+            && !self.calls.has_pending_task_handoff()
     }
 
     /// Validate and park the outgoing context before installing the callback.

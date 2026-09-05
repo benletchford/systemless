@@ -65,12 +65,6 @@ pub(crate) enum ExecutionRoute {
     Blocked,
 }
 
-/// Task-lifecycle effect emitted by a process service.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ExecutionTaskEffect {
-    SwitchTo(ExecutionTaskId),
-}
-
 /// A request type that identifies the task which owns its continuation.
 ///
 /// The kernel does not know the request's ABI or payload. Each semantic edge
@@ -724,15 +718,6 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         };
         state.critical_depth = depth;
         true
-    }
-
-    pub(crate) fn apply_task_effect(
-        &self,
-        effect: ExecutionTaskEffect,
-    ) -> Result<(), ContinuationError> {
-        match effect {
-            ExecutionTaskEffect::SwitchTo(task) => self.switch_to_task(task),
-        }
     }
 
     /// Submit a continuation to `task` and allocate its explicit call ID.

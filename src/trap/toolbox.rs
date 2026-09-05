@@ -1249,15 +1249,12 @@ impl super::TrapDispatcher {
     /// Validate the saved adapter context before committing the task switch.
     fn switch_to_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, next_id: u32) -> bool {
         let task = ExecutionTaskId::from_thread_id(next_id);
-        let Some(next) = self.guest_calls.cooperative_context(task) else {
+        let Some(next) = self.guest_calls.switch_from_classic(task) else {
             return false;
         };
-        if self.guest_calls.scheduling_state(task) != Some(ExecutionTaskState::Ready)
-            || !self.guest_calls.switch_to_task(task)
-        {
-            return false;
+        if let Some(next) = next {
+            Self::install_cooperative_thread(cpu, &next);
         }
-        Self::install_cooperative_thread(cpu, &next);
         true
     }
 
@@ -1316,7 +1313,7 @@ impl super::TrapDispatcher {
         let Some(next) = self.next_ready_cooperative_thread(0) else {
             return false;
         };
-        let Some((saved, Some(successor))) = self.guest_calls.retire_cooperative_context(
+        let Some((saved, successor)) = self.guest_calls.retire_cooperative_context(
             finished,
             Some(ExecutionTaskId::from_thread_id(next)),
             |saved| {
@@ -1328,7 +1325,9 @@ impl super::TrapDispatcher {
         };
         // The execution owner validated both contexts and committed the result.
         // Installing this owned snapshot cannot yield or fail.
-        Self::install_cooperative_thread(cpu, &successor);
+        if let Some(successor) = successor {
+            Self::install_cooperative_thread(cpu, &successor);
+        }
         if saved.stack_base != 0 {
             self.cooperative_thread_pool
                 .push((saved.stack_base, saved.stack_limit));

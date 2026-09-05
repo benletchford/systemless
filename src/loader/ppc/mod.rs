@@ -7377,6 +7377,23 @@ impl PpcLoadedApp {
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcHleRunProbe {
+        // A standalone native adapter must not advance a suspended native CPU
+        // while its process is handing execution to a classic engine.
+        if self.guest_calls.has_classic_task_handoff()
+            || (self.guest_calls.has_pending_task_handoff()
+                && !self.guest_calls.prepare_native_task(&mut self.cpu))
+        {
+            return PpcHleRunProbe {
+                result: PpcRunResult::CycleLimit { cycles: 0 },
+                handled_import_count: 0,
+                last_import_index: None,
+                unsupported_import_index: None,
+                import_trace: Vec::new(),
+                draw_sprocket_trace: Vec::new(),
+                input_sprocket_trace: Vec::new(),
+                fetch_histogram: None,
+            };
+        }
         let standalone_memory_manager = process_memory_manager
             .is_none()
             .then(|| self.process_memory_manager.0.clone());
