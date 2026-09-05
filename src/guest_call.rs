@@ -1032,6 +1032,25 @@ impl SharedGuestCallStack {
         tasks.native_cpu_task = Some(tasks.kernel.current_task());
     }
 
+    /// Select bounds for the installed native engine, which can still belong
+    /// to a suspended task while a classic task owns the scheduling cursor.
+    pub(crate) fn native_stack_bounds(
+        &self,
+        application_base: u32,
+        application_limit: u32,
+    ) -> Option<(u32, u32)> {
+        let tasks = self.0.borrow();
+        if let Some(task) = tasks.native_cpu_task {
+            if task != ExecutionTaskId::APPLICATION
+                && tasks.kernel.task_entry_isa(task) == Some(GuestIsa::PowerPc)
+            {
+                let storage = tasks.thread_storage.get(task)?;
+                return Some((storage.stack_base, storage.stack_limit));
+            }
+        }
+        Some((application_base, application_limit))
+    }
+
     pub(crate) fn has_classic_task_handoff(&self) -> bool {
         matches!(
             self.0.borrow().handoff,

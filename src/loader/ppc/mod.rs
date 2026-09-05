@@ -4159,7 +4159,14 @@ impl PpcLoadedApp {
         let frame_size = required.max(PPC_INITIAL_STACK_FRAME_SIZE).checked_add(15)? & !15;
         let caller_sp = self.cpu.gpr[1];
         let callback_sp = caller_sp.checked_sub(frame_size)? & !15;
-        if callback_sp < self.stack_base
+        // PowerPC System Software, 1-44–1-49: linkage and parameter areas
+        // belong to the caller's grow-down stack, including worker stacks.
+        let (stack_base, stack_limit) = self.guest_calls.native_stack_bounds(
+            self.stack_base,
+            self.stack_base.checked_add(self.stack_size)?,
+        )?;
+        if callback_sp < stack_base
+            || caller_sp > stack_limit
             || !ppc_memory_can_write_bytes(&mut self.memory, callback_sp, frame_size)
             || !ppc_zero_guest_bytes(&mut self.memory, callback_sp, frame_size)
         {
@@ -108863,6 +108870,84 @@ pub(crate) mod tests {
             Some(callback_rtoc)
         );
         assert!(loaded.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn reverse_mixed_mode_activation_uses_the_native_worker_stack_and_retries_overflow() {
+        use crate::guest_call::{ExecutionTaskId, GuestCallTarget, PowerPcArguments};
+        const MADE: u32 = PPC_DATA_BASE + 0x2000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        loaded.memory.add_region(MADE, vec![0; 4]);
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = PPC_CODE_BASE;
+        loaded.cpu.gpr[5] = 17;
+        loaded.cpu.gpr[6] = 4096;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = MADE;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
+        assert!(loaded
+            .guest_calls
+            .yield_native_thread(&mut loaded.cpu, worker.thread_id())
+            .unwrap());
+        let storage = loaded.guest_calls.thread_storage(worker).unwrap();
+        let worker_sp = loaded.cpu.gpr[1];
+        assert!(worker_sp < loaded.stack_base);
+        assert!(loaded
+            .guest_calls
+            .switch_to_task(ExecutionTaskId::APPLICATION));
+        assert_eq!(
+            loaded
+                .guest_calls
+                .native_stack_bounds(loaded.stack_base, PPC_STACK_TOP),
+            Some((storage.stack_base, storage.stack_limit))
+        );
+        assert!(loaded.guest_calls.switch_to_task(worker));
+        assert!(loaded.guest_calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: PPC_CODE_BASE + 0x1000,
+                rtoc: PPC_DATA_BASE,
+            },
+            PowerPcArguments::from_slice(&[42]).unwrap(),
+            0x0010_0000,
+            0x0010_1000,
+            None,
+        ));
+        let mut classic = crate::cpu::M68kCpu::new();
+        classic.write_reg(crate::cpu::Register::PC, 0x0010_0000);
+        loaded
+            .memory
+            .add_region(storage.stack_base - 64, vec![0; 64]);
+        // Both surrounding addresses are mapped. Mapping
+        // alone must not permit a frame outside this worker's allocation.
+        for invalid_sp in [storage.stack_base + 16, storage.stack_limit + 16] {
+            loaded.cpu.gpr[1] = invalid_sp;
+            let before = loaded.cpu.clone();
+            let sentinel = invalid_sp - 64;
+            loaded.memory.write_u32_be(sentinel, 0xface_cafe).unwrap();
+            assert!(loaded.activate_powerpc_from_m68k(&mut classic).is_none());
+            assert_eq!(loaded.cpu.gpr, before.gpr);
+            assert_eq!(loaded.cpu.pc, before.pc);
+            assert_eq!(loaded.cpu.lr, before.lr);
+            assert_eq!(loaded.cpu.cr, before.cr);
+            assert_eq!(loaded.cpu.fpr, before.fpr);
+            assert_eq!(classic.read_reg(crate::cpu::Register::PC), 0x0010_0000);
+            assert_eq!(loaded.memory.read_u32_be(sentinel), Some(0xface_cafe));
+            assert!(loaded.guest_calls.pending_powerpc_from_m68k().is_some());
+            assert!(!loaded.guest_calls.has_parked_m68k_contexts());
+        }
+        loaded.cpu.gpr[1] = worker_sp;
+        loaded.activate_powerpc_from_m68k(&mut classic).unwrap();
+        let callback_sp = loaded.cpu.gpr[1];
+        assert!(callback_sp >= storage.stack_base && callback_sp < worker_sp);
+        assert_eq!(callback_sp & 15, 0);
+        assert_eq!(loaded.memory.read_u32_be(callback_sp), Some(worker_sp));
+        assert_eq!(loaded.cpu.gpr[3], 42);
+        assert_eq!(loaded.cpu.pc, PPC_CODE_BASE + 0x1000);
+        assert!(loaded.guest_calls.has_parked_m68k_contexts());
     }
 
     #[test]
