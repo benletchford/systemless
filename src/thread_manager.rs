@@ -90,6 +90,42 @@ impl<'a> ThreadManager<'a> {
         self.execution.current_task().thread_id()
     }
 
+    // Thread Manager (1999), pp. 17–18 and 61: workers have private
+    // allocations; the main thread uses the expandable application stack.
+    pub(crate) fn stack_space(
+        &self,
+        thread: u32,
+        live_isa: GuestIsa,
+        live_sp: u32,
+        application_limit: impl FnOnce(GuestIsa) -> u32,
+    ) -> Result<u32, i16> {
+        let task = ExecutionTaskId::from_thread_id(self.resolve_thread(thread));
+        let storage = self
+            .execution
+            .thread_storage(task)
+            .ok_or(THREAD_NOT_FOUND_ERR)?;
+        let (isa, sp) = self
+            .execution
+            .thread_stack_pointer(task, live_isa, live_sp)
+            .ok_or(THREAD_PROTOCOL_ERR)?;
+        let base = if task == ExecutionTaskId::APPLICATION {
+            let application_limit = application_limit(isa);
+            if application_limit == 0 {
+                return Err(THREAD_PROTOCOL_ERR);
+            }
+            application_limit
+        } else {
+            if storage.stack_base == 0
+                || storage.stack_limit < storage.stack_base
+                || sp > storage.stack_limit
+            {
+                return Err(THREAD_PROTOCOL_ERR);
+            }
+            storage.stack_base
+        };
+        Ok(sp.saturating_sub(base))
+    }
+
     pub(crate) fn resolve_thread(&self, thread: u32) -> u32 {
         if thread <= 1 {
             self.current_thread()

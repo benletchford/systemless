@@ -657,7 +657,6 @@ const STANDARD_FILE_GET_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
 const STANDARD_FILE_GET_SEPARATOR_RECT: (i16, i16, i16, i16) = (98, 258, 99, 338);
 const STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110, 258, 131, 338);
 const STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
-use crate::thread_manager::DEFAULT_COOPERATIVE_THREAD_STACK_SIZE;
 
 #[inline]
 fn return_noerr_and_pop<C: CpuOps>(cpu: &mut C, bytes: u32) -> Result<()> {
@@ -16416,40 +16415,35 @@ impl super::TrapDispatcher {
                             Ok(_) => -50,
                         }
                     }
-                    // ThreadCurrentStackSpace(thread, freeStack)
+                    // ThreadCurrentStackSpace ($ABF2, selector $0414)
+                    // Returns available stack bytes for the specified thread.
+                    // FUNCTION ThreadCurrentStackSpace(thread: ThreadID; VAR freeStack: LONGINT): OSErr;
+                    // Thread Manager (1999), pp. 17–18 and 61.
                     0x0414 => {
-                        let free_stack = bus.read_long(sp);
-                        let thread = self.resolve_cooperative_thread_id(bus.read_long(sp + 4));
-                        if free_stack == 0 {
-                            -50
-                        } else {
-                            let running = thread == self.guest_calls.current_task().thread_id();
-                            let current_sp = cpu.read_reg(Register::A7);
-                            match self.cooperative_thread_snapshot(cpu, thread) {
-                                None => Self::THREAD_NOT_FOUND_ERR,
-                                Some(record) => {
-                                    // The application thread keeps the process
-                                    // stack, whose base this record does not
-                                    // track, so report the default size rather
-                                    // than a bogus multi-megabyte figure.
-                                    let storage = self
-                                        .guest_calls
-                                        .thread_storage(ExecutionTaskId::from_thread_id(thread))
-                                        .unwrap_or_default();
-                                    let free = if storage.stack_base == 0 {
-                                        DEFAULT_COOPERATIVE_THREAD_STACK_SIZE
-                                    } else {
-                                        let stack_pointer = if running {
-                                            current_sp
-                                        } else {
-                                            record.a_regs[7]
-                                        };
-                                        stack_pointer.saturating_sub(storage.stack_base)
-                                    };
-                                    bus.write_long(free_stack, free);
-                                    0
-                                }
-                            }
+                        let output = bus.read_long(sp);
+                        let classic_limit = bus.read_long(crate::memory::globals::addr::APPL_LIMIT);
+                        let native_limit = {
+                            let memory_manager = self.process_memory_manager();
+                            let memory_manager = memory_manager.borrow();
+                            memory_manager.application_heap_limit(
+                                memory_manager
+                                    .native_heap_state()
+                                    .map_or(0, |heap| heap.heap_limit),
+                            )
+                        };
+                        let manager = crate::thread_manager::ThreadManager::new(&self.guest_calls);
+                        match manager.stack_space(
+                            bus.read_long(sp + 4),
+                            crate::guest_procedure::GuestIsa::M68k,
+                            cpu.read_reg(Register::A7),
+                            |isa| match isa {
+                                crate::guest_procedure::GuestIsa::M68k => classic_limit,
+                                crate::guest_procedure::GuestIsa::PowerPc => native_limit,
+                            },
+                        ) {
+                            Err(error) => error,
+                            Ok(value) if output != 0 && bus.try_write_long(output, value) => 0,
+                            Ok(_) => -50,
                         }
                     }
                     // DisposeThread(threadToDump, threadResult, recycleThread)
@@ -27383,14 +27377,111 @@ mod tests {
     }
 
     #[test]
+    fn classic_stack_space_query_uses_the_parked_native_application_limit() {
+        use crate::guest_call::{GuestCallTarget, M68kRegisterState};
+        use crate::guest_procedure::GuestIsa;
+        let (mut disp, mut cpu, mut bus) = setup();
+        let output = TEST_SP + 0x400;
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, 0x1000);
+        disp.process_memory_manager()
+            .borrow_mut()
+            .set_application_heap_limit(0x8000);
+        // A detached legacy owner has no entry metadata; the retained
+        // outer native call still identifies its original stack.
+        let mut native = ppc::PpcCpu::new();
+        native.gpr[1] = 0x9000;
+        let mut classic = crate::cpu::M68kCpu::new();
+        assert!(disp.guest_calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x5000,
+                rtoc: 0
+            },
+            0x5000,
+            TEST_SP,
+            0x7000,
+            TEST_SP + 4,
+            M68kRegisterState::default(),
+            None,
+            0x8000,
+            0x2000,
+            crate::guest_call::GuestCallReturnPolicy::Preserve
+        ));
+        disp.guest_calls
+            .activate_m68k_parking(&mut classic, &native)
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0414);
+        bus.write_long(TEST_SP, output);
+        bus.write_long(TEST_SP + 4, 1);
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(output), 0x1000);
+    }
+
+    #[test]
+    fn threaddispatch_stack_space_tracks_application_limit_and_native_workers() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let output = TEST_SP + 0x400;
+        let invoke = |disp: &mut TrapDispatcher,
+                      cpu: &mut MockCpu,
+                      bus: &mut crate::memory::MacMemoryBus,
+                      thread: u32| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0414);
+            bus.write_long(TEST_SP, output);
+            bus.write_long(TEST_SP + 4, thread);
+            disp.dispatch_toolbox(true, 0x3f2, cpu, bus)
+                .unwrap()
+                .unwrap();
+            cpu.read_reg(Register::D0) as i16
+        };
+        for (alias, available) in [(0, 0x1200), (1, 0x800), (2, 0x400)] {
+            bus.write_long(
+                crate::memory::globals::addr::APPL_LIMIT,
+                TEST_SP - available,
+            );
+            assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, alias), 0);
+            assert_eq!(bus.read_long(output), available);
+        }
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, 0);
+        assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, 1), -619);
+        assert_eq!(bus.read_long(output), 0x400);
+        let mut native = ppc::PpcCpu::new();
+        native.gpr[1] = 0x8700;
+        let worker = disp
+            .guest_calls
+            .create_native_thread(
+                crate::guest_call::NativeThreadContext {
+                    cpu: Box::new(native),
+                },
+                crate::guest_call::ThreadStorage {
+                    stack_base: 0x8000,
+                    stack_limit: 0x9000,
+                    ..Default::default()
+                },
+                true,
+                |_| true,
+            )
+            .unwrap();
+        assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, worker.thread_id()), 0);
+        assert_eq!(bus.read_long(output), 0x700);
+        assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, 0xdead), -618);
+        assert_eq!(bus.read_long(output), 0x700);
+    }
+
+    #[test]
     fn threaddispatch_queries_reject_protected_output_without_partial_writes() {
-        for selector in [0x0206, 0x0407] {
+        for selector in [0x0206, 0x0407, 0x0414] {
             let (mut disp, mut cpu, mut bus) = setup();
+            bus.write_long(crate::memory::globals::addr::APPL_LIMIT, TEST_SP - 0x1000);
             let out = TEST_SP + 0x100;
             bus.write_long(out, 0xaabb_ccdd);
             bus.protect_readonly_code(out + 1, 1);
             bus.write_long(TEST_SP, out);
-            if selector == 0x0407 {
+            if selector != 0x0206 {
                 bus.write_long(TEST_SP + 4, 1);
             }
             cpu.write_reg(Register::D0, selector);
