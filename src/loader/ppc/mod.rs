@@ -15,7 +15,7 @@ use super::pef::{
 };
 use super::ApplicationSizeResource;
 use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
-use crate::cfm::{CfmLoadCompletion, CfmLoadId, CfmLoadOperation, CfmLoadOutputs};
+use crate::cfm::{CfmLoadId, CfmLoadOperation, CfmLoadOutputs};
 use crate::event_queue::{
     EventProbeResult, EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
 };
@@ -51072,40 +51072,10 @@ fn ppc_complete_cfm_load(
     memory: &mut PpcSectionMem,
     connections: &mut Vec<PpcCfmConnection>,
 ) -> u32 {
-    let result = match operation.resume(initializer_result) {
-        CfmLoadCompletion::InitializationFailed(_) => PPC_FRAG_USER_INIT_PROC_ERR,
-        CfmLoadCompletion::Ready(operation) => {
-            if !connections
-                .iter()
-                .any(|connection| connection.id == operation.id.0)
-            {
-                PPC_FRAG_CONNECTION_ID_NOT_FOUND
-            } else if !memory.preflight_writable_range(operation.outputs.connection, 4)
-                || !memory.preflight_writable_range(operation.outputs.main_address, 4)
-                || (operation.outputs.error_name != 0
-                    && !memory.preflight_writable_range(operation.outputs.error_name, 1))
-            {
-                PPC_PARAM_ERR
-            } else {
-                memory
-                    .write_u32_be(operation.outputs.connection, operation.id.0)
-                    .expect("preflighted CFM output");
-                memory
-                    .write_u32_be(operation.outputs.main_address, operation.main_address)
-                    .expect("preflighted CFM output");
-                if operation.outputs.error_name != 0 {
-                    memory
-                        .write_u8(operation.outputs.error_name, 0)
-                        .expect("preflighted CFM error name");
-                }
-                PPC_NO_ERR
-            }
-        }
-    };
-    if result != PPC_NO_ERR && operation.created_connection {
-        connections.retain(|connection| connection.id != operation.id.0);
-    }
-    ppc_i16_result(result)
+    let result = operation.complete(initializer_result, connections, |writes| {
+        memory.try_write_ranges_atomic(writes)
+    });
+    ppc_i16_result(result.err().map_or(PPC_NO_ERR, |error| error.os_error()))
 }
 
 fn ppc_activate_cfm_initializer(

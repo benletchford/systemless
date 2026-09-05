@@ -1204,6 +1204,23 @@ impl GuestAddressSpace {
         true
     }
 
+    /// Publish discontiguous semantic outputs only after every byte is writable.
+    /// The exclusive view remains held and no guest code runs during this commit.
+    pub(crate) fn try_write_ranges_atomic(&mut self, writes: &[(u32, &[u8])]) -> bool {
+        if writes.iter().any(|(address, bytes)| {
+            u32::try_from(bytes.len())
+                .ok()
+                .is_none_or(|len| !self.preflight_writable_range(*address, len))
+        }) {
+            return false;
+        }
+        for (address, bytes) in writes {
+            self.write_bytes(*address, bytes)
+                .expect("preflighted semantic output remains writable");
+        }
+        true
+    }
+
     /// Return a cached writable span contained in one mapped region.
     pub fn writable_span(&mut self, addr: u32, len: usize) -> Option<PpcSectionMemSpan> {
         if self.route(addr, len, None) != GuestMemoryRoute::Sparse {

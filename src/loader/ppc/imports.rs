@@ -50,22 +50,7 @@ pub struct PpcHleRunProbe {
     pub fetch_histogram: Option<PpcFetchHistogram>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcCfmConnection {
-    pub id: u32,
-    pub library_name: String,
-    pub main_addr: u32,
-    pub init_addr: u32,
-    pub term_addr: u32,
-    pub exports: Vec<PpcCfmExport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcCfmExport {
-    pub name: String,
-    pub class: u8,
-    pub address: u32,
-}
+pub use crate::cfm::{CfmConnection as PpcCfmConnection, CfmExport as PpcCfmExport};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcCfmLibraryFragment {
