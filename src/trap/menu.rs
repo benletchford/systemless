@@ -490,10 +490,22 @@ impl super::TrapDispatcher {
         else {
             return false;
         };
-        if procedure.isa != GuestIsa::M68k || procedure.entry >= bus.ram_size() {
+        let proc_addr = match (procedure.isa, procedure.representation) {
+            (GuestIsa::M68k, _) => procedure.entry,
+            (
+                GuestIsa::PowerPc,
+                crate::guest_procedure::GuestProcedureRepresentation::RoutineDescriptor {
+                    descriptor,
+                    ..
+                },
+            ) if procedure.proc_info == SharedMenuDefinitionInvocation::PASCAL_PROC_INFO => {
+                descriptor
+            }
+            _ => return false,
+        };
+        if !bus.is_guest_address_mapped(proc_addr, 2) {
             return false;
         }
-        let proc_addr = procedure.entry;
 
         // MDEFs are Pascal procedures with five arguments. The definition
         // procedure owns menuWidth/menuHeight for mSizeMsg, so the HLE only
@@ -537,9 +549,11 @@ impl super::TrapDispatcher {
         if return_pc != cpu.read_reg(Register::PC) {
             self.guest_calls.begin_m68k(
                 GuestCallTarget {
-                    isa: procedure.isa,
-                    entry: procedure.entry,
-                    rtoc: procedure.rtoc,
+                    // The Pascal wrapper runs on 68K; a descriptor then
+                    // submits its actual ISA transition through Mixed Mode.
+                    isa: GuestIsa::M68k,
+                    entry: proc_addr,
+                    rtoc: 0,
                 },
                 return_pc,
                 final_sp,
@@ -558,7 +572,6 @@ impl super::TrapDispatcher {
         let trampoline = self.menu_def_trampoline;
         if self
             .active_menu_definition()
-            .copied()
             .and_then(SharedMenuDefinitionTracking::pending_invocation)
             .is_none()
             || trampoline == 0
@@ -587,7 +600,6 @@ impl super::TrapDispatcher {
     ) -> bool {
         let invocation = self
             .active_menu_definition()
-            .copied()
             .and_then(SharedMenuDefinitionTracking::pending_invocation);
         invocation
             .is_some_and(|invocation| self.arm_menu_definition_to(cpu, bus, invocation, return_pc))
@@ -2253,7 +2265,7 @@ impl super::TrapDispatcher {
                         }
 
                         if !self.menu_tracking_button_down(bus) {
-                            let definition = *self.active_menu_definition().unwrap();
+                            let definition = self.active_menu_definition().unwrap().clone();
                             let item = definition.which_item();
                             let menu_handle = definition.menu_handle();
                             let menu_id = bus.read_long(menu_handle);
@@ -2660,7 +2672,7 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
                         if !self.menu_tracking_button_down(bus) {
-                            let definition = *self.active_menu_definition().unwrap();
+                            let definition = self.active_menu_definition().unwrap().clone();
                             let item = definition.which_item();
                             let menu_ptr = bus.read_long(definition.menu_handle());
                             let result = if item > 0 && menu_ptr != 0 {

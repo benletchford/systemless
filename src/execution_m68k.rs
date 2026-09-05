@@ -246,6 +246,7 @@ impl M68kExecution {
         memory: &mut PpcSectionMem,
         native: &mut ppc::PpcCpu,
         pending: crate::guest_call::PendingM68kExecution,
+        manager: &mut crate::process_context::ProcessNativeMemoryManager,
     ) -> bool {
         use crate::guest_call::M68kResultSource;
 
@@ -281,11 +282,13 @@ impl M68kExecution {
                 value
             }
         };
-        self.calls.complete_m68k_for_powerpc(
+        self.calls.complete_m68k_operation_for_powerpc(
             pending.return_pc,
             self.cpu.read_reg(Register::A7),
             result,
             native,
+            memory,
+            manager,
         )
     }
 
