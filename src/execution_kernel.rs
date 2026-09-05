@@ -46,6 +46,25 @@ pub(crate) enum ExecutionTaskState {
     Running,
 }
 
+/// Available native coordinator contexts, observed without borrowing a CPU.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct NativeAvailability {
+    pub(crate) application: bool,
+    pub(crate) companion: bool,
+    pub(crate) staged_companion: bool,
+}
+
+/// Which execution coordinator can advance the selected task. A native
+/// session can itself advance a classic callback before resuming native code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExecutionRoute {
+    Classic,
+    NativeApplication,
+    NativeCompanion,
+    PrepareCompanion,
+    Blocked,
+}
+
 /// Task-lifecycle effect emitted by a process service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExecutionTaskEffect {
@@ -428,6 +447,7 @@ struct StoreState<R: Copy, C: Copy> {
     attached_contexts: HashMap<CallId, usize>,
     retired_tasks: HashSet<ExecutionTaskId>,
     task_states: HashMap<ExecutionTaskId, ExecutionTaskState>,
+    task_entry_isas: HashMap<ExecutionTaskId, GuestIsa>,
     ready: VecDeque<ExecutionTaskId>,
     critical_depth: u32,
 }
@@ -444,6 +464,7 @@ impl<R: Copy, C: Copy> Default for StoreState<R, C> {
                 ExecutionTaskId::APPLICATION,
                 ExecutionTaskState::Running,
             )]),
+            task_entry_isas: HashMap::new(),
             ready: VecDeque::new(),
             critical_depth: 0,
         }
@@ -494,6 +515,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
                 .is_some_and(Vec::is_empty)
             && state.attached_contexts.is_empty()
             && state.retired_tasks.is_empty()
+            && state.task_entry_isas.is_empty()
             && state.task_states.get(&ExecutionTaskId::APPLICATION)
                 == Some(&ExecutionTaskState::Running)
             && state.ready.is_empty()
@@ -508,6 +530,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         }
         state.stacks.insert(task, Vec::new());
         state.task_states.insert(task, ExecutionTaskState::Stopped);
+        state.task_entry_isas.insert(task, GuestIsa::M68k);
         Ok(())
     }
 
@@ -538,6 +561,36 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         state.task_states.insert(task, ExecutionTaskState::Running);
         state.current_task = task;
         Ok(())
+    }
+
+    /// Initial application binding may accompany adopted pending calls. Once
+    /// bound, an entry architecture changes only when that task has no calls.
+    pub(crate) fn bind_task_entry_isa(&self, task: ExecutionTaskId, isa: GuestIsa) -> bool {
+        let mut state = self.0.borrow_mut();
+        let Some(stack) = state.stacks.get(&task) else {
+            return false;
+        };
+        if state
+            .task_entry_isas
+            .get(&task)
+            .is_some_and(|old| *old != isa)
+            && !stack.is_empty()
+        {
+            return false;
+        }
+        state.task_entry_isas.insert(task, isa);
+        true
+    }
+
+    pub(crate) fn task_entry_isa(&self, task: ExecutionTaskId) -> Option<GuestIsa> {
+        let state = self.0.borrow();
+        state.stacks.contains_key(&task).then(|| {
+            state
+                .task_entry_isas
+                .get(&task)
+                .copied()
+                .unwrap_or(GuestIsa::M68k)
+        })
     }
 
     pub(crate) fn scheduling_state(&self, task: ExecutionTaskId) -> Option<ExecutionTaskState> {
@@ -874,6 +927,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         state.stacks.remove(&task);
         state.retired_tasks.insert(task);
         state.task_states.remove(&task);
+        state.task_entry_isas.remove(&task);
         state.ready.retain(|queued| *queued != task);
         Ok(())
     }
@@ -1378,6 +1432,21 @@ mod tests {
         assert_eq!(store.next_ready_task(None), Some(worker));
         assert!(!store.end_critical());
         assert_eq!(store.critical_depth(), 0);
+    }
+
+    #[test]
+    fn task_entry_architecture_retires_with_its_task() {
+        let store = Store::default();
+        let worker = ExecutionTaskId::from_thread_id(9);
+        assert_eq!(store.task_entry_isa(worker), None);
+        assert!(!store.bind_task_entry_isa(worker, GuestIsa::PowerPc));
+        store.register_task(worker).unwrap();
+        assert_eq!(store.task_entry_isa(worker), Some(GuestIsa::M68k));
+        assert!(store.bind_task_entry_isa(worker, GuestIsa::PowerPc));
+        assert_eq!(store.task_entry_isa(worker), Some(GuestIsa::PowerPc));
+        store.retire_task(worker).unwrap();
+        assert_eq!(store.task_entry_isa(worker), None);
+        assert!(!store.bind_task_entry_isa(worker, GuestIsa::M68k));
     }
 
     #[test]

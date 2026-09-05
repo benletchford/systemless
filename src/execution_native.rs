@@ -65,6 +65,14 @@ impl<T> NativeExecution<T> {
         }
     }
 
+    pub(crate) fn availability(&self) -> crate::execution_kernel::NativeAvailability {
+        crate::execution_kernel::NativeAvailability {
+            application: matches!(self.application, NativeSlot::Installed(_)),
+            companion: matches!(self.companion, NativeSlot::Installed(_)),
+            staged_companion: self.staged.is_some() && matches!(self.companion, NativeSlot::Empty),
+        }
+    }
+
     pub(crate) fn application(&self) -> Option<&T> {
         match &self.application {
             NativeSlot::Installed(adapter) => Some(adapter),
@@ -79,6 +87,7 @@ impl<T> NativeExecution<T> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn companion(&self) -> Option<&T> {
         match &self.companion {
             NativeSlot::Installed(adapter) => Some(adapter),
@@ -147,6 +156,7 @@ impl<T> NativeExecution<T> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn has_staged_companion(&self) -> bool {
         self.staged.is_some()
     }

@@ -17,7 +17,8 @@ pub(crate) use crate::execution_kernel::{
     PendingPowerPcExecution, PowerPcArguments, PowerPcReturnState,
 };
 use crate::execution_kernel::{
-    ExecutionContextBank, ExecutionTaskContextBank, ExecutionTaskEffect, ExecutionTaskState,
+    ExecutionContextBank, ExecutionRoute, ExecutionTaskContextBank, ExecutionTaskEffect,
+    ExecutionTaskState, NativeAvailability,
 };
 use crate::guest_procedure::GuestIsa;
 use ppc::{PpcCpu, PpcImportAction, PpcNativeReturnGpr3};
@@ -479,6 +480,34 @@ impl SharedGuestCallStack {
 
     pub(crate) fn switch_to_task(&self, task: ExecutionTaskId) -> bool {
         self.apply_task_effect(ExecutionTaskEffect::SwitchTo(task))
+    }
+
+    pub(crate) fn bind_task_entry_isa(&self, task: ExecutionTaskId, isa: GuestIsa) -> bool {
+        self.0.borrow().kernel.bind_task_entry_isa(task, isa)
+    }
+
+    /// Select work using task ownership, never the numeric application ID.
+    /// Availability is a current observation; no engine or manager is borrowed.
+    pub(crate) fn execution_route(&self, native: NativeAvailability) -> ExecutionRoute {
+        let task = self.current_task();
+        if self.scheduling_state(task) != Some(ExecutionTaskState::Running) {
+            return ExecutionRoute::Blocked;
+        }
+        let entry = self.0.borrow().kernel.task_entry_isa(task);
+        let native_call = self.has_powerpc_from_m68k();
+        if entry == Some(GuestIsa::PowerPc) || native_call || self.has_m68k_execution() {
+            if native.application {
+                ExecutionRoute::NativeApplication
+            } else if native.companion {
+                ExecutionRoute::NativeCompanion
+            } else if native.staged_companion && native_call {
+                ExecutionRoute::PrepareCompanion
+            } else {
+                ExecutionRoute::Blocked
+            }
+        } else {
+            ExecutionRoute::Classic
+        }
     }
 
     pub(crate) fn scheduling_state(&self, task: ExecutionTaskId) -> Option<ExecutionTaskState> {
@@ -1268,6 +1297,62 @@ mod tests {
         )
         .into_ppc_import_action()
         .expect("native PowerPC request should adapt to CallNative")
+    }
+
+    #[test]
+    fn execution_routes_follow_task_entry_and_pending_work_without_consuming_it() {
+        let calls = SharedGuestCallStack::default();
+        let application = NativeAvailability {
+            application: true,
+            ..Default::default()
+        };
+        assert_eq!(calls.execution_route(application), ExecutionRoute::Classic);
+        assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+        assert_eq!(
+            calls.execution_route(application),
+            ExecutionRoute::NativeApplication
+        );
+        let worker = ExecutionTaskId::from_thread_id(7);
+        assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(worker));
+        assert_eq!(calls.execution_route(application), ExecutionRoute::Classic);
+        assert!(calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: 0x1000,
+                rtoc: 0
+            },
+            PowerPcArguments::from_slice(&[]).unwrap(),
+            0x2000,
+            0x3000,
+            None
+        ));
+        let before = calls.clone();
+        assert!(!calls.bind_task_entry_isa(worker, GuestIsa::PowerPc));
+        for (availability, expected) in [
+            (application, ExecutionRoute::NativeApplication),
+            (
+                NativeAvailability {
+                    companion: true,
+                    ..Default::default()
+                },
+                ExecutionRoute::NativeCompanion,
+            ),
+            (
+                NativeAvailability {
+                    staged_companion: true,
+                    ..Default::default()
+                },
+                ExecutionRoute::PrepareCompanion,
+            ),
+            (NativeAvailability::default(), ExecutionRoute::Blocked),
+        ] {
+            assert_eq!(calls.execution_route(availability), expected);
+            assert_eq!(calls, before);
+        }
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Stopped));
+        assert_eq!(calls.execution_route(application), ExecutionRoute::Blocked);
     }
 
     #[test]
