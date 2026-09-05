@@ -920,21 +920,31 @@ impl App {
             .unwrap_or(winit::dpi::PhysicalSize::new(sw, sh));
 
         #[cfg(target_os = "macos")]
-        let content = presentation_content_rect(
-            self.content_rect.unwrap_or(ContentRect {
+        let content = if self.debug_overlay_visible {
+            ContentRect {
                 left: 0,
                 top: 0,
                 width: sw,
                 height: sh,
-            }),
-            self.runner.as_ref().and_then(|runner| {
-                runner
-                    .dispatcher()
-                    .visible_dialog_structure_bounds(runner.bus())
-            }),
-            sw,
-            sh,
-        );
+            }
+        } else {
+            presentation_content_rect(
+                self.content_rect.unwrap_or(ContentRect {
+                    left: 0,
+                    top: 0,
+                    width: sw,
+                    height: sh,
+                }),
+                self.runner.as_ref().and_then(|runner| {
+                    runner
+                        .dispatcher()
+                        .visible_dialog_structure_bounds(runner.bus())
+                }),
+                sw,
+                sh,
+                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+            )
+        };
         #[cfg(not(target_os = "macos"))]
         let content = ContentRect {
             left: 0,
@@ -1414,6 +1424,13 @@ impl App {
         let game_h = scrn_bottom as u32;
         let mut buf_w = size.width;
         let mut buf_h = size.height;
+        #[cfg(target_os = "macos")]
+        let mut presentation_rect = ContentRect {
+            left: 0,
+            top: 0,
+            width: game_w,
+            height: game_h,
+        };
 
         #[cfg(target_os = "macos")]
         let mut core_animation_transaction: Option<CoreAnimationTransaction> = None;
@@ -1629,6 +1646,13 @@ impl App {
                 self.content_rect_active_margin_frames = 0;
                 self.content_rect_relearn_after_full = invalidated_crop.is_some();
                 persist_content_rect(&self.game_path, screen_mode, rect);
+                let rect = presentation_content_rect(
+                    rect,
+                    None,
+                    game_w,
+                    game_h,
+                    native_menu_bar_height(Some(runner), self.native_integrations),
+                );
                 if let Some(window) = self.window.as_ref() {
                     if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
                         let _ = window.request_inner_size(guest_scaled_physical_size(
@@ -1647,6 +1671,13 @@ impl App {
                 width: game_w,
                 height: game_h,
             });
+            let stable_content = presentation_content_rect(
+                stable_content,
+                None,
+                game_w,
+                game_h,
+                native_menu_bar_height(Some(runner), self.native_integrations),
+            );
             let desired_content = presentation_content_rect(
                 stable_content,
                 runner
@@ -1654,6 +1685,7 @@ impl App {
                     .visible_dialog_structure_bounds(runner.bus()),
                 game_w,
                 game_h,
+                native_menu_bar_height(Some(runner), self.native_integrations),
             );
             let allow_guest_resize = self.window.as_ref().is_some_and(|window| {
                 window_guest_resize_scale(window, self.display_scale).is_some()
@@ -1694,6 +1726,20 @@ impl App {
             } else {
                 self.window_sized_content_rect != Some(desired_content)
             };
+            if !transition_needed && self.window_sized_content_rect != Some(desired_content) {
+                // Guest writes to MBarHeight can change the visible rows even
+                // when the learned gameplay crop and screen mode are unchanged.
+                if let Some(window) = self.window.as_ref() {
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                        let _ = window.request_inner_size(guest_scaled_physical_size(
+                            desired_content.width,
+                            desired_content.height,
+                            scale,
+                        ));
+                    }
+                }
+                self.window_sized_content_rect = Some(desired_content);
+            }
             if transition_needed && allow_guest_resize {
                 let (target_size, target_position) = if desired_content != stable_content {
                     if self.transient_window_restore_geometry.is_none() {
@@ -1773,6 +1819,7 @@ impl App {
                 }
             }
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
+            presentation_rect = content;
             let palette = display::argb_palette_from_clut_with_gamma(&device_clut, &device_gamma);
             if let Some(surface) = self.surface.as_mut() {
                 let presented_directly = surface
@@ -1828,8 +1875,15 @@ impl App {
                 self.frame_argb = frame_argb;
                 return;
             };
+            crop_argb_frame(&mut frame_argb, game_w, presentation_rect);
             surface
-                .present(&frame_argb, game_w, game_h, buf_w, buf_h)
+                .present(
+                    &frame_argb,
+                    presentation_rect.width,
+                    presentation_rect.height,
+                    buf_w,
+                    buf_h,
+                )
                 .expect("Failed to present Metal framebuffer");
         }
 
@@ -1960,12 +2014,69 @@ fn physical_to_mac_in_viewport(
     )
 }
 
+#[cfg(target_os = "macos")]
+fn crop_argb_frame(frame: &mut Vec<u32>, screen_width: u32, content: ContentRect) {
+    let width = content.width as usize;
+    for row in 0..content.height as usize {
+        let source = (content.top as usize + row) * screen_width as usize + content.left as usize;
+        frame.copy_within(source..source + width, row * width);
+    }
+    frame.truncate(width * content.height as usize);
+}
+
+#[cfg(target_os = "macos")]
+fn native_menu_bar_height(runner: Option<&FixtureRunner>, native_integrations: bool) -> u32 {
+    use systemless::memory::MemoryBus;
+    if !native_integrations {
+        return 0;
+    }
+    runner.map_or(0, |runner| {
+        u32::from(
+            runner
+                .bus()
+                .read_word(systemless::memory::globals::addr::MBAR_HEIGHT),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn presentation_content_rect(
+    base: ContentRect,
+    transient_bounds: Option<(i16, i16, i16, i16)>,
+    screen_width: u32,
+    screen_height: u32,
+    hidden_menu_height: u32,
+) -> ContentRect {
+    let content = expanded_content_rect(base, transient_bounds, screen_width, screen_height);
+    // MBarHeight is guest geometry, not a fixed 20-pixel constant. Keep it
+    // intact in guest memory and exclude it only when presenting native menus.
+    // Inside Macintosh Volume V, V-245.
+    if hidden_menu_height == 0 || hidden_menu_height >= screen_height {
+        return content;
+    }
+    let bottom = content.top.saturating_add(content.height);
+    let top = content.top.max(hidden_menu_height);
+    if top >= bottom {
+        return ContentRect {
+            left: 0,
+            top: hidden_menu_height,
+            width: screen_width,
+            height: screen_height - hidden_menu_height,
+        };
+    }
+    ContentRect {
+        top,
+        height: bottom - top,
+        ..content
+    }
+}
+
 /// Extend a stable gameplay crop just enough to include transient system UI.
 /// The learned/cached rectangle remains unchanged, so dismissing a dialog
 /// restores the normal viewport without relearning it or resizing the native
 /// window.
 #[cfg(target_os = "macos")]
-fn presentation_content_rect(
+fn expanded_content_rect(
     base: ContentRect,
     transient_bounds: Option<(i16, i16, i16, i16)>,
     screen_width: u32,
@@ -2298,19 +2409,29 @@ impl App {
         // dialog expansion all change it (issue #1049).
         let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
         let (sw, sh) = (u32::from(sw), u32::from(sh));
-        let content = presentation_content_rect(
-            self.content_rect.unwrap_or(ContentRect {
+        let content = if self.debug_overlay_visible {
+            ContentRect {
                 left: 0,
                 top: 0,
                 width: sw,
                 height: sh,
-            }),
-            runner
-                .dispatcher()
-                .visible_dialog_structure_bounds(runner.bus()),
-            sw,
-            sh,
-        );
+            }
+        } else {
+            presentation_content_rect(
+                self.content_rect.unwrap_or(ContentRect {
+                    left: 0,
+                    top: 0,
+                    width: sw,
+                    height: sh,
+                }),
+                runner
+                    .dispatcher()
+                    .visible_dialog_structure_bounds(runner.bus()),
+                sw,
+                sh,
+                native_menu_bar_height(Some(runner), self.native_integrations),
+            )
+        };
         let size = window.inner_size();
         let scale =
             host_cursor::presentation_scale(content.width, content.height, size.width, size.height);
@@ -2327,10 +2448,21 @@ impl ApplicationHandler for App {
                 native_application::set_application_icon(self.native_app_icon.as_ref());
             }
             #[cfg(target_os = "macos")]
-            let initial_size = self
-                .content_rect
-                .map(|content| (content.width, content.height))
-                .unwrap_or((INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT));
+            let initial_size = {
+                let content = presentation_content_rect(
+                    self.content_rect.unwrap_or(ContentRect {
+                        left: 0,
+                        top: 0,
+                        width: INITIAL_SCREEN_WIDTH,
+                        height: INITIAL_SCREEN_HEIGHT,
+                    }),
+                    None,
+                    INITIAL_SCREEN_WIDTH,
+                    INITIAL_SCREEN_HEIGHT,
+                    native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                );
+                (content.width, content.height)
+            };
             #[cfg(not(target_os = "macos"))]
             let initial_size = (INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT);
             #[cfg(target_os = "macos")]
@@ -4546,6 +4678,96 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn software_presentation_uses_the_same_cropped_pixels() {
+        let mut frame: Vec<u32> = (0..24).collect();
+        crop_argb_frame(
+            &mut frame,
+            6,
+            ContentRect {
+                left: 1,
+                top: 1,
+                width: 4,
+                height: 3,
+            },
+        );
+        assert_eq!(frame, vec![7, 8, 9, 10, 13, 14, 15, 16, 19, 20, 21, 22]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_menu_viewport_excludes_only_reserved_guest_rows() {
+        let full = ContentRect {
+            left: 0,
+            top: 0,
+            width: 800,
+            height: 600,
+        };
+        let visible = ContentRect {
+            top: 20,
+            height: 580,
+            ..full
+        };
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 20), visible);
+        assert_eq!(
+            presentation_content_rect(visible, None, 800, 600, 20),
+            visible
+        );
+        // Guest fullscreen and disabled native integration keep every row.
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 0), full);
+        // Respect non-default fonts, and ignore invalid heights.
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 24).top, 24);
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 600), full);
+        assert_eq!(
+            presentation_content_rect(full, None, 800, 600, u32::MAX),
+            full
+        );
+        assert_eq!(
+            physical_to_mac_in_viewport(0.0, 0.0, visible, 1600, 1160),
+            (20, 0)
+        );
+        assert_eq!(
+            physical_to_mac_in_viewport(1599.0, 1159.0, visible, 1600, 1160),
+            (599, 799)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_menu_dialog_expansion_does_not_restore_hidden_menu_rows() {
+        let game = ContentRect {
+            left: 100,
+            top: 100,
+            width: 600,
+            height: 400,
+        };
+        let expanded = presentation_content_rect(game, Some((0, 40, 550, 760)), 800, 600, 20);
+        assert_eq!(
+            expanded,
+            ContentRect {
+                left: 40,
+                top: 20,
+                width: 720,
+                height: 530
+            }
+        );
+        assert_eq!(presentation_content_rect(game, None, 800, 600, 20), game);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_menu_viewport_reads_guest_height_without_mutating_it() {
+        use systemless::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        runner.bus_mut().write_word(MBAR_HEIGHT, 24);
+        assert_eq!(native_menu_bar_height(Some(&runner), true), 24);
+        assert_eq!(native_menu_bar_height(Some(&runner), false), 0);
+        assert_eq!(runner.bus().read_word(MBAR_HEIGHT), 24);
+        runner.bus_mut().write_word(MBAR_HEIGHT, 0);
+        assert_eq!(native_menu_bar_height(Some(&runner), true), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn visible_dialog_temporarily_extends_cached_gameplay_crop() {
         let gameplay = ContentRect {
             left: 80,
@@ -4554,7 +4776,7 @@ mod tests {
             height: 392,
         };
         assert_eq!(
-            presentation_content_rect(gameplay, Some((85, 228, 233, 572)), 800, 600),
+            presentation_content_rect(gameplay, Some((85, 228, 233, 572)), 800, 600, 0),
             ContentRect {
                 left: 80,
                 top: 85,
@@ -4563,7 +4785,7 @@ mod tests {
             }
         );
         assert_eq!(
-            presentation_content_rect(gameplay, None, 800, 600),
+            presentation_content_rect(gameplay, None, 800, 600, 0),
             gameplay,
             "dismissing the dialog must restore the cached gameplay crop"
         );
