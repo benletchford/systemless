@@ -596,7 +596,7 @@ fn protected_ranges_overlap(ranges: &[(u32, u32)], address: u64, end: u64) -> bo
 /// of the tick.
 pub(crate) const WRITE_PROBE_MAX_ENTRIES: usize = 4096;
 
-/// Stable shared ownership of the runner's flat RAM allocation.
+/// Stable shared ownership of flat RAM or runtime-generated system code.
 ///
 /// `FixtureRunner` serializes access to its 68k bus and native application
 /// behind `&mut self`. A mapped [`SharedRamRegion`] can therefore expose the
@@ -626,7 +626,7 @@ impl SharedRam {
     }
 }
 
-/// A stable subrange of runner RAM mapped into another CPU bus.
+/// A stable subrange of runtime-owned RAM mapped into an address space.
 #[derive(Clone)]
 pub(crate) struct SharedRamRegion {
     ram: SharedRam,
@@ -644,6 +644,17 @@ impl std::fmt::Debug for SharedRamRegion {
 }
 
 impl SharedRamRegion {
+    /// Own a complete fixed allocation without constructing a classic bus.
+    /// Access still follows the same serialized shared-region contract.
+    pub(crate) fn from_owned_bytes(bytes: Vec<u8>) -> Self {
+        let len = bytes.len();
+        Self {
+            ram: SharedRam(Rc::new(UnsafeCell::new(bytes.into_boxed_slice()))),
+            offset: 0,
+            len,
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.len
     }
@@ -705,13 +716,7 @@ impl SharedRamRegion {
     }
 
     pub(crate) fn detached_clone(&self) -> Self {
-        let bytes = self.snapshot();
-        let ram = SharedRam(Rc::new(UnsafeCell::new(bytes.into_boxed_slice())));
-        Self {
-            len: ram.len(),
-            ram,
-            offset: 0,
-        }
+        Self::from_owned_bytes(self.snapshot())
     }
 }
 
