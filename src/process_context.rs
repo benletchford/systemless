@@ -6194,6 +6194,10 @@ impl Default for ProcessContext {
 }
 
 impl ProcessContext {
+    pub(crate) fn cfm(&self) -> &crate::cfm::CfmState {
+        &self.cfm
+    }
+
     #[cfg(test)]
     pub(crate) fn cfm_mut(&mut self) -> &mut crate::cfm::CfmState {
         &mut self.cfm
