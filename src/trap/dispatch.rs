@@ -4,11 +4,14 @@
 //! `impl TrapDispatcher` blocks with `dispatch_*` methods that return
 //! `Option<Result<()>>` — `Some` if the trap was handled, `None` to pass through.
 
+use super::gateways::TrapSystemGateways;
+pub(crate) use super::gateways::TrapTableProfile;
+#[cfg(test)]
+use super::gateways::{M68K_68040_COME_FROM_TRAPS, POWERPC_604_COME_FROM_TRAPS};
 pub(crate) use super::manager::{
-    raw_trap_route, OsRoutineVariant, RawTrapRoute, OS_TRAP_TABLE_BASE, OS_TRAP_TABLE_SLOTS,
+    raw_trap_route, OsRoutineVariant, OS_TRAP_TABLE_BASE, OS_TRAP_TABLE_SLOTS,
     TOOLBOX_TRAP_TABLE_BASE, TOOLBOX_TRAP_TABLE_SLOTS,
 };
-#[cfg(test)]
 #[cfg(test)]
 use super::manager::{resolve_trap_table_target, TrapTableTarget, COME_FROM_PATCH_SIGNATURE};
 use super::manager::{
@@ -1141,22 +1144,6 @@ pub(crate) fn default_trap_route(trap_word: u16) -> &'static DefaultTrapRoute {
     &DEFAULT_TRAP_ROUTES[usize::from(raw_trap_route(trap_word).table_index)]
 }
 
-/// Trap-table topology selected for the emulated Mac OS 8.1 machine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TrapTableProfile {
-    M68k68040,
-    PowerPc604,
-}
-
-/// Profile-specific classification layered over the generated raw-word map.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ProfileTrapRoute {
-    pub(crate) raw: RawTrapRoute,
-    pub(crate) default_is_unimplemented: bool,
-    pub(crate) has_permanent_come_from: bool,
-    pub(crate) default_gateway_word: u16,
-}
-
 /// Application-context portion of the writable Trap Manager topology.
 ///
 /// The Process Manager saves process-specific system globals when it switches
@@ -1172,70 +1159,6 @@ pub(crate) struct TrapTableProcessContext {
     default_exception_vectors: [u32; 2],
     pending_native_trap_calls: HashMap<u16, Vec<NativeTrapCallState>>,
     current_trap_caller: Option<u32>,
-}
-
-// Permanent come-from heads observed in the selected Mac OS 8.1 profiles.
-// Trap Manager APIs expose and replace the successor behind each head, while
-// the raw low-memory table continues to contain the head itself. IM:OSUtils
-// (1994), pp. 8-8--8-9 and 8-25--8-31.
-const M68K_68040_COME_FROM_TRAPS: &[u16] = &[
-    0xA002, 0xA003, 0xA008, 0xA00A, 0xA012, 0xA023, 0xA024, 0xA030, 0xA031, 0xA054, 0xA078, 0xA823,
-    0xA869, 0xA873, 0xA879, 0xA88B, 0xA893, 0xA89C, 0xA8A1, 0xA8B5, 0xA8CF, 0xA8E4, 0xA8E5, 0xA8EA,
-    0xA8EC, 0xA905, 0xA908, 0xA909, 0xA90A, 0xA90C, 0xA90D, 0xA91E, 0xA924, 0xA956, 0xA972, 0xA999,
-    0xA9A0, 0xA9A2, 0xA9C9, 0xA9DC, 0xA9E1, 0xA9ED, 0xA9EF, 0xAA00, 0xAA1F, 0xAA27, 0xAA43, 0xAA4E,
-    0xAAFB,
-];
-
-const POWERPC_604_COME_FROM_TRAPS: &[u16] = &[0xA823, 0xA851, 0xA996, 0xA999, 0xAAFB];
-
-// Reviewed default-address aliases observed repeatedly in the selected 68040
-// profile. Universal Interfaces 3.4 assigns CloseCPort to $AA02 while Inside
-// Macintosh Volume V, V-72/V-291 records its earlier $A87D entry. The same
-// profile also shares the compound-handle disposal routine used by
-// DisposePixPat and DisposeCCursor; IM:V V-55/V-63 shows their common leading
-// map/data/expanded-data/expanded-map layout. The selected 604 profile exposes
-// distinct addresses for all four slots, so these aliases are profile-local.
-const M68K_68040_DEFAULT_GATEWAY_ALIASES: &[(u16, u16)] = &[(0xAA02, 0xA87D), (0xAA26, 0xAA08)];
-
-// Both selected Mac OS 8.1 profiles identify the modern 1,024-entry Toolbox
-// table's `$AA6E` slot as the `Unimplemented` logical identity. All other
-// captured slots have callable defaults. IM:OSUtils (1994), pp. 8-22 and
-// 8-32; IM:Overview (1992), pp. 9-14--9-15.
-const MAC_OS_81_UNIMPLEMENTED_TRAPS: &[u16] = &[0xAA6E];
-
-impl TrapTableProfile {
-    fn come_from_traps(self) -> &'static [u16] {
-        match self {
-            Self::M68k68040 => M68K_68040_COME_FROM_TRAPS,
-            Self::PowerPc604 => POWERPC_604_COME_FROM_TRAPS,
-        }
-    }
-
-    fn unimplemented_traps(self) -> &'static [u16] {
-        match self {
-            Self::M68k68040 | Self::PowerPc604 => MAC_OS_81_UNIMPLEMENTED_TRAPS,
-        }
-    }
-
-    fn default_gateway_word(self, canonical_word: u16) -> u16 {
-        match self {
-            Self::M68k68040 => M68K_68040_DEFAULT_GATEWAY_ALIASES
-                .iter()
-                .find_map(|&(alias, target)| (alias == canonical_word).then_some(target))
-                .unwrap_or(canonical_word),
-            Self::PowerPc604 => canonical_word,
-        }
-    }
-
-    pub(crate) fn route(self, trap_word: u16) -> ProfileTrapRoute {
-        let raw = *raw_trap_route(trap_word);
-        ProfileTrapRoute {
-            raw,
-            default_is_unimplemented: self.unimplemented_traps().contains(&raw.canonical_word),
-            has_permanent_come_from: self.come_from_traps().contains(&raw.canonical_word),
-            default_gateway_word: self.default_gateway_word(raw.canonical_word),
-        }
-    }
 }
 
 /// Trap dispatcher with resource fork access and emulator state.
@@ -1472,22 +1395,9 @@ pub struct TrapDispatcher {
     /// MenuInfo.menuProc remains guest-visible and some applications invoke
     /// the procedure directly.
     pub(crate) system_mdef_cache: HashMap<i16, u32>,
-    /// Cache of allocated OS-trap trampolines for GetTrapAddress.
-    /// Each entry is a 4-byte allocation containing the canonical OS trap
-    /// word followed by RTS. Direct calls preserve the JSR return address on
-    /// the stack while the register-based trap runs. Calls originating at a
-    /// cached trampoline bypass a later patch so saved-old pointers continue
-    /// to reach the original system routine. Inside Macintosh: Operating
-    /// System Utilities (1994), pp. 8-23--8-30.
-    pub(crate) os_trap_trampolines: HashMap<u16, u32>,
-    /// Cache of allocated tool-trap trampolines for GetTrapAddress.
-    /// Each entry is a 2-byte allocation containing the auto-pop
-    /// variant of the canonical tool-trap word. When the guest does
-    /// `JSR (trampoline)` the dispatcher pops the saved return PC,
-    /// runs the trap, and resumes at the JSR caller — see
-    /// [`Self::get_or_create_tool_trap_trampoline`]. Inside Macintosh Volume
-    /// II, II-384 (NGetTrapAddress); IM:V V-577 (auto-pop bit).
-    pub(crate) tool_trap_trampolines: HashMap<u16, u32>,
+    /// System-generated default identities and profile construction. Patch
+    /// values remain exclusively in guest table cells and protected links.
+    pub(crate) trap_gateways: TrapSystemGateways,
     /// Protected callable nonterminal entry returned as the standard `StdPix`
     /// procedure by `SetStdCProcs`. QuickTime (1993), pp. 3-137--3-139 defines
     /// the distinct eight-argument routine; until that operation is complete,
@@ -3372,8 +3282,7 @@ impl TrapDispatcher {
             system_kmap_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
             system_mdef_cache: HashMap::new(),
-            os_trap_trampolines: HashMap::new(),
-            tool_trap_trampolines: HashMap::new(),
+            trap_gateways: TrapSystemGateways::default(),
             std_pix_gateway: 0,
             param_text: SharedProcessDialogText::default(),
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -6569,43 +6478,8 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         trap_word: u16,
     ) -> u32 {
-        let canonical_trap_word = raw_trap_route(0xA800 | (trap_word & 0x03FF)).canonical_word;
-        if let Some(&addr) = self.tool_trap_trampolines.get(&canonical_trap_word) {
-            // The returned address represents a ROM trap entry. Re-seed the
-            // synthetic instruction on every lookup so guest code that
-            // temporarily writes through the saved address cannot corrupt a
-            // later JSR through the same trap pointer.
-            bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
-            return addr;
-        }
-        let addr = bus.alloc_synthetic(2);
-        bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
-        bus.protect_readonly_code(addr, 2);
-        self.tool_trap_trampolines.insert(canonical_trap_word, addr);
-        addr
-    }
-
-    /// Allocate a stable callable gateway for one Operating System trap-table
-    /// slot. OS traps use register conventions, so the JSR return address stays
-    /// at the top of the stack while the canonical A-line executes and the
-    /// following RTS returns to the caller.
-    pub(crate) fn get_or_create_os_trap_trampoline(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        trap_word: u16,
-    ) -> u32 {
-        let canonical_trap_word = raw_trap_route(0xA000 | (trap_word & 0x00FF)).canonical_word;
-        if let Some(&addr) = self.os_trap_trampolines.get(&canonical_trap_word) {
-            bus.write_readonly_code_word(addr, canonical_trap_word);
-            bus.write_readonly_code_word(addr + 2, 0x4E75);
-            return addr;
-        }
-        let addr = bus.alloc_synthetic(4);
-        bus.write_readonly_code_word(addr, canonical_trap_word);
-        bus.write_readonly_code_word(addr + 2, 0x4E75);
-        bus.protect_readonly_code(addr, 4);
-        self.os_trap_trampolines.insert(canonical_trap_word, addr);
-        addr
+        self.trap_gateways
+            .get_or_create(bus, 0xA800 | (trap_word & 0x03FF))
     }
 
     fn canonical_trap_word(trap_word: u16) -> u16 {
@@ -6618,47 +6492,14 @@ impl TrapDispatcher {
     }
 
     fn default_trap_gateway(&self, trap_word: u16) -> Option<u32> {
-        let canonical = Self::canonical_trap_word(trap_word);
-        let gateway_word = self
-            .trap_table_profile?
-            .route(canonical)
-            .default_gateway_word;
-        if (canonical & 0x0800) != 0 {
-            self.tool_trap_trampolines.get(&gateway_word).copied()
-        } else {
-            self.os_trap_trampolines.get(&gateway_word).copied()
-        }
+        self.trap_gateways
+            .default_gateway(self.trap_table_profile?, trap_word)
     }
 
+    #[cfg(test)]
     fn write_readonly_code_long(bus: &mut MacMemoryBus, address: u32, value: u32) {
         bus.write_readonly_code_word(address, (value >> 16) as u16);
         bus.write_readonly_code_word(address + 2, value as u16);
-    }
-
-    /// Allocate the stable system-owned head used by a permanent come-from
-    /// patch. Its first four bytes are the Trap Manager signature
-    /// `$60064EF9`: normal entry branches around the exit JMP to a minimal
-    /// patch body, which then branches back to that same logical successor.
-    fn create_trap_come_from_head(&mut self, bus: &mut MacMemoryBus, successor: u32) -> u32 {
-        let head = bus.alloc_synthetic(10);
-        bus.write_readonly_code_word(head, 0x6006); // BRA.S patch body
-        bus.write_readonly_code_word(head + 2, 0x4EF9); // exit JMP absolute
-        Self::write_readonly_code_long(bus, head + 4, successor);
-        bus.write_readonly_code_word(head + 8, 0x60F8); // patch body: BRA.S exit JMP
-        bus.protect_readonly_code(head, 10);
-        head
-    }
-
-    /// Allocate the protected restart gateway named by a generated exception
-    /// vector. Line-A and line-F faults stack the faulting instruction's PC;
-    /// RTE therefore retries it after the writable vector cell has been
-    /// restored. Ordinary generated-default dispatch is recognized before
-    /// entering this gateway.
-    fn create_exception_vector_gateway(bus: &mut MacMemoryBus) -> u32 {
-        let gateway = bus.alloc_synthetic(2);
-        bus.write_readonly_code_word(gateway, 0x4E73); // RTE
-        bus.protect_readonly_code(gateway, 2);
-        gateway
     }
 
     /// Create an inactive, profile-complete table for a new process.
@@ -6669,50 +6510,12 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
     ) -> TrapTableProcessContext {
-        let mut raw_entries =
-            Vec::with_capacity(usize::from(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS));
-        let unimplemented_gateway = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
-        for slot in 0..OS_TRAP_TABLE_SLOTS {
-            let trap_word = 0xA000 | slot;
-            let route = profile.route(trap_word);
-            let default = if route.default_is_unimplemented {
-                self.os_trap_trampolines
-                    .insert(trap_word, unimplemented_gateway);
-                unimplemented_gateway
-            } else {
-                self.get_or_create_os_trap_trampoline(bus, route.default_gateway_word)
-            };
-            raw_entries.push(if route.has_permanent_come_from {
-                self.create_trap_come_from_head(bus, default)
-            } else {
-                default
-            });
-        }
-        for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
-            let trap_word = 0xA800 | slot;
-            let route = profile.route(trap_word);
-            let default = if route.default_is_unimplemented {
-                self.tool_trap_trampolines
-                    .insert(trap_word, unimplemented_gateway);
-                unimplemented_gateway
-            } else {
-                self.get_or_create_tool_trap_trampoline(bus, route.default_gateway_word)
-            };
-            raw_entries.push(if route.has_permanent_come_from {
-                self.create_trap_come_from_head(bus, default)
-            } else {
-                default
-            });
-        }
-        let default_exception_vectors = [
-            Self::create_exception_vector_gateway(bus),
-            Self::create_exception_vector_gateway(bus),
-        ];
+        let image = self.trap_gateways.create_table(bus, profile);
         TrapTableProcessContext {
             profile,
-            raw_entries,
-            raw_exception_vectors: default_exception_vectors,
-            default_exception_vectors,
+            raw_entries: image.raw_entries,
+            raw_exception_vectors: image.exception_vectors,
+            default_exception_vectors: image.exception_vectors,
             pending_native_trap_calls: HashMap::new(),
             current_trap_caller: None,
         }
@@ -6810,29 +6613,9 @@ impl TrapDispatcher {
             return Ok(());
         }
         let profile = TrapTableProfile::M68k68040;
-        let mut new_os_gateways = HashSet::new();
-        let mut new_tool_gateways = HashSet::from([0xAA6E]);
-        for slot in 0..OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS {
-            let word = if slot < OS_TRAP_TABLE_SLOTS {
-                0xA000 | slot
-            } else {
-                0xA800 | (slot - OS_TRAP_TABLE_SLOTS)
-            };
-            let route = profile.route(word);
-            if !route.default_is_unimplemented {
-                if route.raw.is_toolbox {
-                    new_tool_gateways.insert(route.default_gateway_word);
-                } else {
-                    new_os_gateways.insert(route.default_gateway_word);
-                }
-            }
-        }
-        new_os_gateways.retain(|word| !self.os_trap_trampolines.contains_key(word));
-        new_tool_gateways.retain(|word| !self.tool_trap_trampolines.contains_key(word));
-        let required = new_os_gateways.len() as u32 * MacMemoryBus::allocation_bucket_size(4)
-            + new_tool_gateways.len() as u32 * MacMemoryBus::allocation_bucket_size(2)
-            + profile.come_from_traps().len() as u32 * MacMemoryBus::allocation_bucket_size(10)
-            + 2 * MacMemoryBus::allocation_bucket_size(2);
+        let required = self
+            .trap_gateways
+            .required_bytes(profile, MacMemoryBus::allocation_bucket_size);
         let table_end = TOOLBOX_TRAP_TABLE_BASE + u32::from(TOOLBOX_TRAP_TABLE_SLOTS) * 4;
         let storage_available = bus
             .synthetic_code_allocation_start(required)
@@ -7619,9 +7402,9 @@ impl TrapDispatcher {
         let input_base_trap = input_route.canonical_word;
         let default_os_gateway_call = !input_route.is_toolbox
             && self
-                .os_trap_trampolines
-                .get(&input_base_trap)
-                .is_some_and(|&addr| pc == addr + 2);
+                .trap_gateways
+                .get(input_base_trap)
+                .is_some_and(|addr| pc == addr + 2);
         // A JMP to a saved OS gateway keeps the dispatcher's synthesized
         // return long at the top of the original argument stack. A JSR to the
         // same saved pointer has its own return frame and is an independent
@@ -7756,9 +7539,9 @@ impl TrapDispatcher {
         let default_tool_gateway_call = is_tool
             && auto_pop
             && (self
-                .tool_trap_trampolines
-                .get(&base_trap)
-                .is_some_and(|&addr| pc == addr + 2)
+                .trap_gateways
+                .get(base_trap)
+                .is_some_and(|addr| pc == addr + 2)
                 || saved_tool_daisy_chain_call);
         let os_dispatch_frame = if is_tool {
             None
@@ -9024,8 +8807,7 @@ mod tests {
             assert_eq!(dispatcher.trap_table_profile, None);
             assert!(!dispatcher.aline_vector_is_default(&bus));
             assert!(!dispatcher.fline_vector_is_default(&bus));
-            assert!(dispatcher.os_trap_trampolines.is_empty());
-            assert!(dispatcher.tool_trap_trampolines.is_empty());
+            assert!(dispatcher.trap_gateways.is_empty());
             if failure == 3 {
                 bus.detach_guest_address_space();
             } else {
@@ -9063,7 +8845,7 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let entry = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
         let default = dispatcher.trap_table_address(&bus, 0xA975).unwrap();
-        let head = dispatcher.create_trap_come_from_head(&mut bus, default);
+        let head = TrapSystemGateways::create_come_from_head(&mut bus, default);
         assert!(bus.try_write_protected_code_long(head + 4, head));
         bus.write_long(entry, head);
         let sp = cpu.read_reg(Register::A7);
@@ -9888,7 +9670,7 @@ mod tests {
     #[test]
     fn saved_os_gateway_tail_uses_the_original_variant_dispatch_frame() {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
-        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA01E);
+        let gateway = dispatcher.trap_gateways.get_or_create(&mut bus, 0xA01E);
         let handler = 0x0021_0000u32;
         let return_pc = 0x0020_0002u32;
         let sp = 0x003F_FF00u32;
@@ -9936,7 +9718,7 @@ mod tests {
     #[test]
     fn saved_os_gateway_subroutine_keeps_the_outer_dispatch_frame() {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
-        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
+        let gateway = dispatcher.trap_gateways.get_or_create(&mut bus, 0xA039);
         let handler = 0x0021_0000u32;
         let patch_continuation = 0x0021_0100u32;
         let return_pc = 0x0020_0002u32;
@@ -10115,7 +9897,7 @@ mod tests {
     #[test]
     fn saved_os_trap_gateway_bypasses_a_later_patch() {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
-        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
+        let gateway = dispatcher.trap_gateways.get_or_create(&mut bus, 0xA039);
         let sp = 0x003F_FF00u32;
         let output = 0x0020_0000u32;
         bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);

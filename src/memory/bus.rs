@@ -2834,6 +2834,20 @@ impl MemoryBus for MacMemoryBus {
     }
 }
 
+impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
+    fn publish_trap_code(&mut self, existing: Option<u32>, words: &[u16]) -> u32 {
+        let size = words.len() as u32 * 2;
+        let address = existing.unwrap_or_else(|| self.alloc_synthetic(size));
+        for (index, &word) in words.iter().enumerate() {
+            self.write_readonly_code_word(address + index as u32 * 2, word);
+        }
+        if existing.is_none() {
+            self.protect_readonly_code(address, size);
+        }
+        address
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
