@@ -486,6 +486,64 @@ impl ExecutionTaskCalls {
         }
     }
 
+    fn change_thread_state(
+        &mut self,
+        thread: u32,
+        new_state: u16,
+        suggested: u32,
+        end_critical: bool,
+        commit: impl FnOnce() -> bool,
+    ) -> Result<Option<(ExecutionTaskId, TaskResumeContext)>, i16> {
+        use crate::thread_manager::{THREAD_NOT_FOUND_ERR, THREAD_PROTOCOL_ERR};
+        let task = if thread <= 1 {
+            self.kernel.current_task()
+        } else {
+            ExecutionTaskId::from_thread_id(thread)
+        };
+        if self.kernel.scheduling_state(task).is_none() {
+            return Err(THREAD_NOT_FOUND_ERR);
+        }
+        let requested = match new_state {
+            0 => ExecutionTaskState::Ready,
+            1 => ExecutionTaskState::Stopped,
+            2 => ExecutionTaskState::Running,
+            _ => return Err(THREAD_PROTOCOL_ERR),
+        };
+        if self.handoff.is_some() {
+            return Err(THREAD_PROTOCOL_ERR);
+        }
+        // Capture only the selected candidate before the kernel's atomic commit.
+        let candidate = self
+            .kernel
+            .next_ready_task_after_critical(
+                (suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested)),
+                end_critical,
+            )
+            .and_then(|next| self.saved_context(next).map(|context| (next, context)));
+        let mut successor = None;
+        self.kernel
+            .change_thread_state_with(
+                task,
+                requested,
+                (suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested)),
+                end_critical,
+                |next| {
+                    if let Some(next) = next {
+                        let Some((task, context)) = candidate else {
+                            return false;
+                        };
+                        if task != next {
+                            return false;
+                        }
+                        successor = Some((next, context));
+                    }
+                    commit()
+                },
+            )
+            .ok_or(THREAD_PROTOCOL_ERR)?;
+        Ok(successor)
+    }
+
     fn save_native_cpu(&mut self, task: ExecutionTaskId, cpu: &PpcCpu) {
         if self.kernel.scheduling_state(task).is_none() {
             return;
@@ -649,17 +707,6 @@ impl SharedGuestCallStack {
         state: ExecutionTaskState,
     ) -> bool {
         self.0.borrow().kernel.set_scheduling_state(task, state)
-    }
-
-    pub(crate) fn set_state_ending_critical(
-        &self,
-        task: ExecutionTaskId,
-        state: ExecutionTaskState,
-    ) -> bool {
-        self.0
-            .borrow()
-            .kernel
-            .set_state_ending_critical(task, state)
     }
 
     pub(crate) fn next_ready_task(
@@ -849,6 +896,52 @@ impl SharedGuestCallStack {
                 .set_scheduling_state(task, ExecutionTaskState::Ready));
         }
         Some(task)
+    }
+
+    pub(crate) fn set_native_thread_state(
+        &self,
+        cpu: &mut PpcCpu,
+        thread: u32,
+        new_state: u16,
+        suggested: u32,
+        end_critical: bool,
+    ) -> Result<bool, i16> {
+        let mut tasks = self.0.borrow_mut();
+        let current = tasks.kernel.current_task();
+        let successor =
+            tasks.change_thread_state(thread, new_state, suggested, end_critical, || true)?;
+        let Some((next, context)) = successor else {
+            return Ok(false);
+        };
+        let mut outgoing = cpu.clone();
+        outgoing.pc = outgoing.lr;
+        outgoing.gpr[3] = 0;
+        tasks.save_native_cpu(current, &outgoing);
+        *cpu = outgoing;
+        tasks.native_cpu_task = Some(current);
+        tasks.install_native_successor(next, context, cpu);
+        Ok(true)
+    }
+
+    pub(crate) fn set_classic_thread_state(
+        &self,
+        thread: u32,
+        new_state: u16,
+        suggested: u32,
+        end_critical: bool,
+        outgoing: CooperativeThread,
+        commit: impl FnOnce() -> bool,
+    ) -> Result<bool, i16> {
+        let mut tasks = self.0.borrow_mut();
+        let current = tasks.kernel.current_task();
+        let successor =
+            tasks.change_thread_state(thread, new_state, suggested, end_critical, commit)?;
+        let Some((next, context)) = successor else {
+            return Ok(false);
+        };
+        tasks.cooperative_contexts.insert(current, outgoing);
+        tasks.handoff = Some((next, context));
+        Ok(true)
     }
 
     /// Native ABI edge supplies the live CPU; the owner validates the next

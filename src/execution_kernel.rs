@@ -643,6 +643,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
 
     /// SetThreadStateEndCritical is one state transition, including failures.
     /// Inside Macintosh: Thread Manager (1999), pp. 71--72.
+    #[cfg(test)]
     pub(crate) fn set_state_ending_critical(
         &self,
         task: ExecutionTaskId,
@@ -683,14 +684,94 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         true
     }
 
+    /// Validate state, critical depth and successor before the adapter commits
+    /// its return. The callback is synchronous and must not reenter this store.
+    /// Inside Macintosh: Thread Manager (1999), pp. 67–72.
+    pub(crate) fn change_thread_state_with(
+        &self,
+        task: ExecutionTaskId,
+        requested: ExecutionTaskState,
+        suggested: Option<ExecutionTaskId>,
+        end_critical: bool,
+        commit: impl FnOnce(Option<ExecutionTaskId>) -> bool,
+    ) -> Option<Option<ExecutionTaskId>> {
+        let mut state = self.0.borrow_mut();
+        let depth = if end_critical {
+            state.critical_depth.checked_sub(1)?
+        } else {
+            state.critical_depth
+        };
+        if !state.stacks.contains_key(&task)
+            || (requested == ExecutionTaskState::Running && task != state.current_task)
+        {
+            return None;
+        }
+        let switching = task == state.current_task && requested != ExecutionTaskState::Running;
+        if switching && depth != 0 {
+            return None;
+        }
+        let successor = if switching {
+            let eligible = |candidate: ExecutionTaskId| {
+                candidate != task
+                    && state.task_states.get(&candidate) == Some(&ExecutionTaskState::Ready)
+            };
+            let next = suggested
+                .filter(|candidate| eligible(*candidate))
+                .or_else(|| {
+                    state
+                        .ready
+                        .iter()
+                        .copied()
+                        .find(|candidate| eligible(*candidate))
+                });
+            // A ready caller can resume itself. A stopped caller requires a
+            // runnable successor; do not report a successful stop while running it.
+            if next.is_none() && requested == ExecutionTaskState::Stopped {
+                return None;
+            }
+            next
+        } else {
+            None
+        };
+        if !commit(successor) {
+            return None;
+        }
+        state.critical_depth = depth;
+        state.ready.retain(|queued| *queued != task);
+        let final_state = if switching && successor.is_none() {
+            ExecutionTaskState::Running
+        } else {
+            requested
+        };
+        state.task_states.insert(task, final_state);
+        if final_state == ExecutionTaskState::Ready {
+            state.ready.push_back(task);
+        }
+        if let Some(next) = successor {
+            state.ready.retain(|queued| *queued != next);
+            state.task_states.insert(next, ExecutionTaskState::Running);
+            state.current_task = next;
+        }
+        Some(successor)
+    }
+
     /// Selection is non-destructive: the adapter must first validate that it
     /// can install the successor. Only the committed switch removes it.
     pub(crate) fn next_ready_task(
         &self,
         suggested: Option<ExecutionTaskId>,
     ) -> Option<ExecutionTaskId> {
+        self.next_ready_task_after_critical(suggested, false)
+    }
+
+    pub(crate) fn next_ready_task_after_critical(
+        &self,
+        suggested: Option<ExecutionTaskId>,
+        end_critical: bool,
+    ) -> Option<ExecutionTaskId> {
         let state = self.0.borrow();
-        if state.critical_depth != 0 {
+        let depth = state.critical_depth.checked_sub(u32::from(end_critical))?;
+        if depth != 0 {
             return None;
         }
         let eligible = |task: ExecutionTaskId| {

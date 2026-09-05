@@ -1633,6 +1633,8 @@ pub enum PpcImportDispatcherTarget {
     UpperText,
     GetCurrentThread,
     GetThreadState,
+    SetThreadState,
+    SetThreadStateEndCritical,
     ThreadBeginCritical,
     NewThread,
     YieldToThread,
@@ -15031,6 +15033,10 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::GetCurrentThread
         }
         ("InterfaceLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
+        ("InterfaceLib", "SetThreadState") => PpcImportDispatcherTarget::SetThreadState,
+        ("InterfaceLib", "SetThreadStateEndCritical") => {
+            PpcImportDispatcherTarget::SetThreadStateEndCritical
+        }
         ("InterfaceLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
         ("InterfaceLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
         ("InterfaceLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
@@ -24196,6 +24202,33 @@ fn dispatch_supported_import(
                 }
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::SetThreadState
+        | PpcImportDispatcherTarget::SetThreadStateEndCritical => {
+            // SetThreadState / SetThreadStateEndCritical
+            // Set state and optionally exit a critical section atomically.
+            // OSErr (ThreadID thread, ThreadState state, ThreadID suggested);
+            // Inside Macintosh: Thread Manager (1999), pp. 67–72.
+            let thread = cpu.gpr[3];
+            let state = cpu.gpr[4] as u16;
+            let suggested = cpu.gpr[5];
+            let end_critical = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::SetThreadStateEndCritical
+            );
+            Some(
+                match toolbox_startup.guest_calls.set_native_thread_state(
+                    cpu,
+                    thread,
+                    state,
+                    suggested,
+                    end_critical,
+                ) {
+                    Ok(true) => PpcImportAction::Yield(1),
+                    Ok(false) => PpcImportAction::Return(0),
+                    Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
+                },
+            )
         }
         PpcImportDispatcherTarget::NewThread => {
             // OSErr NewThread(ThreadStyle, ThreadEntryUPP, void *, Size,
@@ -167606,6 +167639,131 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.fpr, creator.fpr);
         assert_eq!(loaded.cpu.cr, creator.cr);
         assert!(loaded.cpu.time_base() >= creator.time_base());
+    }
+
+    #[test]
+    fn native_thread_state_stop_wake_and_resume_preserves_the_caller() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::{ExecutionTaskId, NativeThreadContext};
+        for end_critical in [false, true] {
+            let symbol = if end_critical {
+                b"SetThreadStateEndCritical".as_slice()
+            } else {
+                b"SetThreadState".as_slice()
+            };
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(symbol)).unwrap();
+            let code = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(
+                code,
+                [0x3a800055_u32, 0x4e800020]
+                    .into_iter()
+                    .flat_map(u32::to_be_bytes)
+                    .collect(),
+            );
+            let mut worker_cpu = loaded.cpu.clone();
+            worker_cpu.pc = code;
+            worker_cpu.lr = PPC_HALT_PC;
+            worker_cpu.gpr[20] = 0;
+            let worker = loaded
+                .guest_calls
+                .create_native_thread(
+                    NativeThreadContext {
+                        cpu: Box::new(worker_cpu),
+                        result_destination: 0,
+                        stack_base: 0,
+                    },
+                    false,
+                    |_| true,
+                )
+                .unwrap();
+            loaded.cpu.gpr[20] = 0x12345678;
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = worker.thread_id();
+            loaded.cpu.lr = PPC_HALT_PC;
+            if end_critical {
+                loaded.guest_calls.begin_critical();
+            }
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.guest_calls.current_task(), worker);
+            assert_eq!(
+                loaded
+                    .guest_calls
+                    .scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Stopped)
+            );
+            assert_eq!(loaded.guest_calls.critical_depth(), 0);
+            loaded.run_with_hle_imports(64);
+            assert_eq!(loaded.cpu.gpr[20], 0x55);
+            // Wake the creator without switching away from the worker.
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = ExecutionTaskId::APPLICATION.thread_id();
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            if end_critical {
+                loaded.guest_calls.begin_critical();
+            }
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.guest_calls.current_task(), worker);
+            assert_eq!(
+                loaded
+                    .guest_calls
+                    .scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Ready)
+            );
+            // Stopping the worker resumes the creator's successful ABI return.
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = ExecutionTaskId::APPLICATION.thread_id();
+            if end_critical {
+                loaded.guest_calls.begin_critical();
+            }
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(
+                loaded.guest_calls.current_task(),
+                ExecutionTaskId::APPLICATION
+            );
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.cpu.gpr[20], 0x12345678);
+            assert_eq!(loaded.cpu.pc, loaded.entry_pc + 16);
+            loaded.run_with_hle_imports(64);
+            assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+            assert_eq!(
+                loaded.guest_calls.scheduling_state(worker),
+                Some(ExecutionTaskState::Stopped)
+            );
+        }
+    }
+
+    #[test]
+    fn native_thread_state_refusal_preserves_critical_depth_and_contexts() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::ExecutionTaskId;
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"SetThreadStateEndCritical")).unwrap();
+        let worker = ExecutionTaskId::from_thread_id(3);
+        assert!(loaded.guest_calls.register_task(worker));
+        assert!(loaded
+            .guest_calls
+            .set_scheduling_state(worker, ExecutionTaskState::Ready));
+        loaded.guest_calls.begin_critical();
+        // The ready identity has no saved execution context. Do not partially
+        // end critical or stop the caller when successor preparation refuses.
+        for (thread, state, error) in [(1, 1, -619), (99, 0, -618), (1, 99, -619), (3, 2, -619)] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = thread;
+            loaded.cpu.gpr[4] = state;
+            loaded.cpu.gpr[5] = 3;
+            let before = loaded.guest_calls.clone();
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
+            assert_eq!(loaded.guest_calls, before);
+            assert_eq!(loaded.guest_calls.critical_depth(), 1);
+        }
     }
 
     #[test]

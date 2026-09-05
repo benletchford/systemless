@@ -1097,7 +1097,6 @@ impl super::TrapDispatcher {
     /// `ThreadState` values from Threads.h.
     const THREAD_STATE_READY: u16 = 0;
     const THREAD_STATE_STOPPED: u16 = 1;
-    const THREAD_STATE_RUNNING: u16 = 2;
     /// `threadNotFoundErr` and `threadProtocolErr` from Errors.h.
     const THREAD_NOT_FOUND_ERR: i16 = crate::thread_manager::THREAD_NOT_FOUND_ERR;
     const THREAD_PROTOCOL_ERR: i16 = crate::thread_manager::THREAD_PROTOCOL_ERR;
@@ -16439,51 +16438,46 @@ impl super::TrapDispatcher {
                             }
                         }
                     }
-                    // SetThreadState(threadToSet, newState, suggestedThread),
-                    // and SetThreadStateEndCritical, which additionally
-                    // performs the ThreadEndCritical the caller owes.
+                    // SetThreadState / SetThreadStateEndCritical (0xA3F2)
+                    // Set state and optionally exit a critical section atomically.
+                    // OSErr (ThreadID thread, ThreadState state, ThreadID suggested);
+                    // Inside Macintosh: Thread Manager (1999), pp. 67–72.
                     0x0508 | 0x0512 => {
-                        let suggested_thread = bus.read_long(sp);
-                        let new_state = bus.read_word(sp + 4);
-                        let thread_to_set =
-                            self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
-                        let task = ExecutionTaskId::from_thread_id(thread_to_set);
-                        let requested = match new_state {
-                            Self::THREAD_STATE_READY => Some(ExecutionTaskState::Ready),
-                            Self::THREAD_STATE_STOPPED => Some(ExecutionTaskState::Stopped),
-                            Self::THREAD_STATE_RUNNING => Some(ExecutionTaskState::Running),
-                            _ => None,
-                        };
-                        if self.guest_calls.scheduling_state(task).is_none() {
-                            Self::THREAD_NOT_FOUND_ERR
-                        } else if !requested.is_some_and(|state| {
-                            if selector == 0x0512 {
-                                self.guest_calls.set_state_ending_critical(task, state)
-                            } else {
-                                self.guest_calls.set_scheduling_state(task, state)
-                            }
-                        }) {
-                            Self::THREAD_PROTOCOL_ERR
-                        } else if task == self.guest_calls.current_task()
-                            && new_state != Self::THREAD_STATE_RUNNING
-                        {
-                            // Save the ABI return before installing a different engine context.
-                            bus.write_word(sp + 10, 0);
-                            cpu.write_reg(Register::A7, sp + 10);
-                            cpu.write_reg(Register::D0, 0);
-                            self.save_current_cooperative_thread(cpu);
-                            if let Some(next_id) =
-                                self.next_ready_cooperative_thread(suggested_thread)
-                            {
-                                if self.switch_to_cooperative_thread(cpu, next_id) {
-                                    return Some(Ok(()));
+                        let suggested = bus.read_long(sp);
+                        let state = bus.read_word(sp + 4);
+                        let thread = bus.read_long(sp + 6);
+                        let current = self.guest_calls.current_task();
+                        let saved = Self::capture_cooperative_thread(cpu, 0);
+                        let mut outgoing = self
+                            .guest_calls
+                            .cooperative_context(current)
+                            .unwrap_or_else(|| saved.clone());
+                        outgoing.d_regs = saved.d_regs;
+                        outgoing.a_regs = saved.a_regs;
+                        outgoing.pc = saved.pc;
+                        outgoing.ccr = saved.ccr;
+                        outgoing.d_regs[0] = 0;
+                        outgoing.a_regs[7] = sp + 10;
+                        match self.guest_calls.set_classic_thread_state(
+                            thread,
+                            state,
+                            suggested,
+                            selector == 0x0512,
+                            outgoing,
+                            || bus.try_write_word(sp + 10, 0),
+                        ) {
+                            Ok(switched) => {
+                                cpu.write_reg(Register::A7, sp + 10);
+                                cpu.write_reg(Register::D0, 0);
+                                if switched {
+                                    if let Some(next) = self.guest_calls.take_classic_task_handoff()
+                                    {
+                                        Self::install_cooperative_thread(cpu, &next);
+                                    }
                                 }
+                                return Some(Ok(()));
                             }
-                            self.guest_calls
-                                .set_scheduling_state(task, ExecutionTaskState::Running);
-                            return Some(Ok(()));
-                        } else {
-                            0
+                            Err(error) => error,
                         }
                     }
                     // SetThreadReadyGivenTaskRef(threadTRef, threadToSet)
@@ -27285,6 +27279,39 @@ mod tests {
                 .scheduling_state(ExecutionTaskId::APPLICATION),
             Some(ExecutionTaskState::Running)
         );
+    }
+
+    #[test]
+    fn thread_state_preflights_successor_and_return_write_before_ending_critical() {
+        for missing_context in [true, false] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let worker = ExecutionTaskId::from_thread_id(3);
+            assert!(disp.guest_calls.register_task(worker));
+            assert!(disp
+                .guest_calls
+                .set_scheduling_state(worker, ExecutionTaskState::Ready));
+            if !missing_context {
+                assert!(disp
+                    .guest_calls
+                    .save_cooperative_context(worker, super::CooperativeThread::default()));
+            }
+            disp.guest_calls.begin_critical();
+            bus.write_long(TEST_SP, 3);
+            bus.write_word(TEST_SP + 4, 1);
+            bus.write_long(TEST_SP + 6, 1);
+            bus.write_word(TEST_SP + 10, 0x1234);
+            if !missing_context {
+                bus.protect_readonly_code(TEST_SP + 11, 1);
+            }
+            cpu.write_reg(Register::D0, 0x0512);
+            let before = disp.guest_calls.clone();
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -619);
+            assert_eq!(disp.guest_calls, before);
+            assert_eq!(disp.guest_calls.critical_depth(), 1);
+        }
     }
 
     #[test]
