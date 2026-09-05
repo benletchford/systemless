@@ -118,6 +118,9 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+mod theme;
+use theme::*;
+
 pub mod graphics;
 pub mod imports;
 pub mod qd3d;
@@ -51052,6 +51055,7 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         PPC_MAIN_SCREEN_WIDTH as i16,
     );
     let record = PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port: PPC_MAIN_GWORLD,
         pixmap_handle: PPC_MAIN_PIXMAP_HANDLE,
         pixmap: PPC_MAIN_PIXMAP,
@@ -51242,6 +51246,7 @@ fn ppc_seed_dsp_back_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         i16::MAX,
     );
     PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port: PPC_DSP_BACK_GWORLD,
         pixmap_handle: PPC_DSP_BACK_PIXMAP_HANDLE,
         pixmap: PPC_DSP_BACK_PIXMAP,
@@ -51375,6 +51380,7 @@ fn ppc_open_port(
 
     gworlds.retain(|gworld| gworld.port != port);
     gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port,
         pixmap_handle,
         pixmap: memory.read_u32_be(pixmap_handle).unwrap_or(PPC_MAIN_PIXMAP),
@@ -51517,6 +51523,7 @@ fn ppc_open_cport(
     let (width, height) = ppc_rect_dimensions(bits.top, bits.left, bits.bottom, bits.right);
     gworlds.retain(|gworld| gworld.port != port);
     gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port,
         pixmap_handle,
         pixmap,
@@ -51940,6 +51947,7 @@ fn ppc_new_cwindow(
     *last_mem_error = PPC_NO_ERR;
     gworlds.retain(|gworld| gworld.port != port);
     gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port,
         pixmap_handle,
         pixmap,
@@ -52031,16 +52039,37 @@ fn ppc_draw_standard_window_frame(
         go_away,
         matches!(proc_id, 8 | 12),
     );
+    let palette = ppc_ui_theme(gworlds).provider().palette();
     let _ = ppc_paint_rect_bounds(
         memory,
         gworlds,
         PPC_MAIN_GWORLD,
         chrome.background,
-        PPC_RGB_WHITE,
+        ppc_theme_rgb(palette.frame_light),
         None,
     );
-    for rect in chrome.ink {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
+    for rect in chrome.ink.iter().copied() {
+        let _ = ppc_paint_rect_bounds(
+            memory,
+            gworlds,
+            PPC_MAIN_GWORLD,
+            rect,
+            ppc_theme_rgb(palette.frame_dark),
+            None,
+        );
+    }
+
+    if active && ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 {
+        for rect in chrome.stripe_ink.iter().copied() {
+            let _ = ppc_paint_rect_bounds(
+                memory,
+                gworlds,
+                PPC_MAIN_GWORLD,
+                rect,
+                ppc_theme_rgb(palette.selection),
+                None,
+            );
+        }
     }
 
     if !title.is_empty() {
@@ -52052,7 +52081,7 @@ fn ppc_draw_standard_window_frame(
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
             PPC_QD_TEXT_MODE_SRC_OR,
-            PPC_RGB_BLACK,
+            ppc_theme_rgb(palette.frame_dark),
             None,
             &title,
         );
@@ -52351,15 +52380,15 @@ fn ppc_validate_window_local_rect(
     }
 }
 
-fn ppc_standard_desktop_color(h: i32, v: i32) -> PpcRgbColor {
-    // Host menu-bar suppression changes only presentation and clipping; it
-    // does not replace the guest Window Manager's GrayRgn pattern with black.
-    // Macintosh Toolbox Essentials (1992), pp. 4-113--4-119.
-    if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
-        PPC_RGB_BLACK
-    } else {
-        PPC_RGB_WHITE
-    }
+fn ppc_standard_desktop_color(gworlds: &[PpcGWorldRecord], h: i32, v: i32) -> PpcRgbColor {
+    let palette = ppc_ui_theme(gworlds).provider().palette();
+    ppc_theme_rgb(
+        if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+            palette.desktop_dark
+        } else {
+            palette.desktop_light
+        },
+    )
 }
 
 fn ppc_repaint_window_geometry_transition(
@@ -52432,7 +52461,7 @@ fn ppc_restore_window_removal_exposure(
     if paint.0 < paint.2 && paint.1 < paint.3 {
         for v in i32::from(paint.0)..i32::from(paint.2) {
             for h in i32::from(paint.1)..i32::from(paint.3) {
-                let color = ppc_standard_desktop_color(h, v);
+                let color = ppc_standard_desktop_color(gworlds, h, v);
                 let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
             }
         }
@@ -52594,6 +52623,7 @@ fn ppc_draw_dialog_box_frame(
     height: i16,
     width: i16,
 ) {
+    let palette = ppc_ui_theme(gworlds).provider().palette();
     // Macintosh Toolbox Essentials (1992), pp. 4-24--4-26: dBoxProc owns a
     // gray dialog surface and a structure region outside the content rectangle.
     // Initialize both before the application draws its dialog items.
@@ -52602,7 +52632,7 @@ fn ppc_draw_dialog_box_frame(
         gworlds,
         window,
         (0, 0, height, width),
-        PPC_RGB_WHITE,
+        ppc_theme_rgb(palette.window_background),
         None,
     );
     let Some((top, left, bottom, right)) = memory
@@ -52615,12 +52645,21 @@ fn ppc_draw_dialog_box_frame(
     let outer_left = left.saturating_sub(8);
     let outer_bottom = bottom.saturating_add(8);
     let outer_right = right.saturating_add(8);
+    if ppc_draw_themed_dialog_frame(
+        memory,
+        gworlds,
+        (top, left, bottom, right),
+        (outer_top, outer_left, outer_bottom, outer_right),
+        1,
+    ) {
+        return;
+    }
     let _ = ppc_paint_rect_bounds(
         memory,
         gworlds,
         PPC_MAIN_GWORLD,
         (outer_top, outer_left, outer_bottom, outer_right),
-        PPC_RGB_WHITE,
+        ppc_theme_rgb(palette.window_background),
         None,
     );
     for rect in [
@@ -52635,7 +52674,14 @@ fn ppc_draw_dialog_box_frame(
         (top - 5, right + 3, bottom + 4, right + 4),
         (bottom + 3, left - 5, bottom + 4, right + 4),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
+        let _ = ppc_paint_rect_bounds(
+            memory,
+            gworlds,
+            PPC_MAIN_GWORLD,
+            rect,
+            ppc_theme_rgb(palette.frame_dark),
+            None,
+        );
     }
 }
 
@@ -53209,7 +53255,7 @@ fn ppc_paint_behind(
             if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
                 for v in i32::from(paint.0)..i32::from(paint.2) {
                     for h in i32::from(paint.1)..i32::from(paint.3) {
-                        let color = ppc_standard_desktop_color(h, v);
+                        let color = ppc_standard_desktop_color(gworlds, h, v);
                         let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
                     }
                 }
@@ -53526,6 +53572,7 @@ fn ppc_new_gworld(
     process_memory_manager.set_native_mem_error(PPC_NO_ERR);
     *last_mem_error = PPC_NO_ERR;
     gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port,
         pixmap_handle,
         pixmap,
@@ -54214,6 +54261,7 @@ fn ppc_update_gworld(
     }
 
     gworlds[record_index] = PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         base_addr: new_base,
         gdevice: new_gdevice,
         width,
@@ -67844,11 +67892,18 @@ fn ppc_draw_dialog(
     // must not erase that application-owned surface with standard white
     // chrome. This mirrors the mature 68K path's classification and preserves
     // Escape Velocity's landing interface beneath its custom item callbacks.
+    let palette = ppc_ui_theme(gworlds).provider().palette();
     let game_managed = ppc_dialog_is_game_managed(bounds, &items);
     if !game_managed {
-        let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
+        let _ = ppc_fill_front_rect(
+            memory,
+            front,
+            bounds,
+            ppc_theme_rgb(palette.window_background),
+        );
         if ppc_window_proc_id(memory, dialog) != 1 {
-            let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+            let _ =
+                ppc_frame_front_rect(memory, front, bounds, ppc_theme_rgb(palette.frame_dark), 2);
         }
     }
     let default_item = memory
@@ -67875,6 +67930,7 @@ fn ppc_draw_dialog(
                 );
                 if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_BUTTON
                     && index + 1 == default_item
+                    && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7
                 {
                     let outer = (
                         rect.0.saturating_sub(4),
@@ -67889,7 +67945,7 @@ fn ppc_draw_dialog(
                         outer,
                         oval,
                         3,
-                        PPC_RGB_BLACK,
+                        ppc_theme_rgb(palette.frame_dark),
                     );
                 }
             }
@@ -67902,7 +67958,13 @@ fn ppc_draw_dialog(
                         rect.2.saturating_add(3),
                         rect.3.saturating_add(3),
                     );
-                    let _ = ppc_frame_front_rect(memory, front, outer, PPC_RGB_BLACK, 1);
+                    let _ = ppc_frame_front_rect(
+                        memory,
+                        front,
+                        outer,
+                        ppc_theme_rgb(palette.frame_dark),
+                        1,
+                    );
                 }
                 let selected = if (item.item_type & !PPC_DIALOG_ITEM_DISABLED)
                     == PPC_DIALOG_ITEM_EDIT_TEXT
@@ -67935,13 +67997,19 @@ fn ppc_draw_dialog(
                         rect.0.saturating_add(16).min(rect.2),
                         rect.3,
                     );
-                    let _ = ppc_fill_front_rect(memory, front, interior, PPC_RGB_BLACK);
+                    if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, interior) {
+                        let _ = ppc_fill_front_rect(
+                            memory,
+                            front,
+                            interior,
+                            ppc_theme_rgb(palette.frame_dark),
+                        );
+                    }
                 }
                 let text_rect = if matches!(
                     item.item_type & !PPC_DIALOG_ITEM_DISABLED,
                     PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT
-                )
-                {
+                ) {
                     (rect.0, rect.1.saturating_add(1), rect.2, rect.3)
                 } else {
                     rect
@@ -67951,7 +68019,11 @@ fn ppc_draw_dialog(
                     gworlds,
                     text_rect,
                     &text,
-                    if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
+                    if selected && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
+                        ppc_theme_rgb(palette.window_background)
+                    } else {
+                        ppc_theme_rgb(palette.frame_dark)
+                    },
                 );
             }
             PPC_DIALOG_ITEM_PICTURE => {
@@ -67968,7 +68040,8 @@ fn ppc_draw_dialog(
                 }
             }
             PPC_DIALOG_ITEM_ICON => {
-                let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
+                let _ =
+                    ppc_frame_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_dark), 1);
             }
             PPC_DIALOG_ITEM_RESOURCE_CONTROL => {
                 let _ = ppc_draw_control_inner(
@@ -69410,6 +69483,18 @@ fn ppc_blit_theme_bitmap(
     left: i16,
     bitmap: &ThemeBitmap,
 ) -> bool {
+    ppc_blit_theme_bitmap_masked(memory, gworlds, port, top, left, bitmap, None)
+}
+
+fn ppc_blit_theme_bitmap_masked(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    top: i16,
+    left: i16,
+    bitmap: &ThemeBitmap,
+    transparent: Option<Rgb8>,
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
         return false;
     };
@@ -69430,6 +69515,9 @@ fn ppc_blit_theme_bitmap(
                 g: rgba[offset + 1],
                 b: rgba[offset + 2],
             };
+            if transparent == Some(rgb) {
+                continue;
+            }
             let pixel = *pixels.entry((rgb.r, rgb.g, rgb.b)).or_insert_with(|| {
                 ppc_quickdraw_surface_color_pixel(
                     memory,
@@ -69486,306 +69574,379 @@ fn ppc_draw_control_inner(
     else {
         return false;
     };
+    let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
-    let framed = match proc_id {
-        0 => {
-            frame_cpu.gpr[4] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
-            frame_cpu.gpr[5] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
-            let _ = ppc_paint_round_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_WHITE, None);
-            ppc_frame_round_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK, None)
-        }
-        1 => {
-            // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the
-            // standard checkbox CDEF draws a compact indicator at the left
-            // of the control title and marks it when contrlValue is nonzero.
-            let layout =
-                crate::control_manager::standard_checkbox_layout((top, left, bottom, right));
-            let (box_top, box_left, box_bottom, box_right) = layout.indicator;
-            let indicator_size = box_bottom.saturating_sub(box_top);
-            let mut wrote = ppc_paint_rect_bounds(
-                memory,
-                gworlds,
-                owner,
-                layout.indicator,
-                PPC_RGB_WHITE,
-                None,
-            );
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (box_left, box_top),
-                (box_right.saturating_sub(1), box_top),
-                PPC_RGB_BLACK,
-                None,
-            );
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (box_right.saturating_sub(1), box_top),
-                (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                PPC_RGB_BLACK,
-                None,
-            );
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                (box_left, box_bottom.saturating_sub(1)),
-                PPC_RGB_BLACK,
-                None,
-            );
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (box_left, box_bottom.saturating_sub(1)),
-                (box_left, box_top),
-                PPC_RGB_BLACK,
-                None,
-            );
-            if memory
-                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                .unwrap_or(0)
-                != 0
-            {
-                crate::control_manager::for_each_standard_checkbox_mark_pixel(
-                    indicator_size,
-                    |x, y| {
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            owner,
-                            (box_left.saturating_add(x), box_top.saturating_add(y)),
-                            (box_left.saturating_add(x), box_top.saturating_add(y)),
-                            PPC_RGB_BLACK,
-                            None,
-                        );
-                    },
+    let is_default = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7
+        && proc_id == 0
+        && memory.read_u16_be(owner + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
+        && ppc_dialog_items_for_dialog(memory, _handles, owner).is_some_and(|items| {
+            let index = memory
+                .read_u16_be(owner + PPC_DIALOG_DEFAULT_ITEM_OFFSET)
+                .unwrap_or(1);
+            items
+                .get(usize::from(index.saturating_sub(1)))
+                .is_some_and(|item| memory.read_u32_be(item.handle) == Some(control))
+        });
+    let themed = ppc_draw_themed_control(
+        memory,
+        gworlds,
+        owner,
+        control,
+        proc_id,
+        is_default,
+        (top, left, bottom, right),
+    );
+    let framed = if let Some(drawn) = themed {
+        drawn
+    } else {
+        match proc_id {
+            0 => {
+                frame_cpu.gpr[4] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
+                frame_cpu.gpr[5] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
+                let _ = ppc_paint_round_rect(
+                    &frame_cpu,
+                    memory,
+                    gworlds,
+                    owner,
+                    ppc_theme_rgb(palette.window_background),
+                    None,
                 );
+                ppc_frame_round_rect(
+                    &frame_cpu,
+                    memory,
+                    gworlds,
+                    owner,
+                    ppc_theme_rgb(palette.frame_dark),
+                    None,
+                )
             }
-            wrote
-        }
-        2 => {
-            // Inside Macintosh Volume I (1985), p. I-322: radioButProc is a
-            // round indicator whose on state is a small filled black circle.
-            let layout =
-                crate::control_manager::standard_radio_button_layout((top, left, bottom, right));
-            let indicator = layout.indicator;
-            let mut wrote = ppc_draw_oval_bounds(
-                memory,
-                gworlds,
-                owner,
-                indicator,
-                PPC_RGB_WHITE,
-                None,
-                false,
-            );
-            wrote |= ppc_draw_oval_bounds(
-                memory,
-                gworlds,
-                owner,
-                indicator,
-                PPC_RGB_BLACK,
-                None,
-                true,
-            );
-            if memory
-                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                .unwrap_or(0)
-                != 0
-            {
-                let (dot_top, dot_left, dot_bottom, dot_right) = indicator;
+            1 => {
+                // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the
+                // standard checkbox CDEF draws a compact indicator at the left
+                // of the control title and marks it when contrlValue is nonzero.
+                let layout =
+                    crate::control_manager::standard_checkbox_layout((top, left, bottom, right));
+                let (box_top, box_left, box_bottom, box_right) = layout.indicator;
+                let indicator_size = box_bottom.saturating_sub(box_top);
+                let mut wrote = ppc_paint_rect_bounds(
+                    memory,
+                    gworlds,
+                    owner,
+                    layout.indicator,
+                    ppc_theme_rgb(palette.window_background),
+                    None,
+                );
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    owner,
+                    (box_left, box_top),
+                    (box_right.saturating_sub(1), box_top),
+                    ppc_theme_rgb(palette.frame_dark),
+                    None,
+                );
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    owner,
+                    (box_right.saturating_sub(1), box_top),
+                    (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
+                    ppc_theme_rgb(palette.frame_dark),
+                    None,
+                );
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    owner,
+                    (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
+                    (box_left, box_bottom.saturating_sub(1)),
+                    ppc_theme_rgb(palette.frame_dark),
+                    None,
+                );
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    owner,
+                    (box_left, box_bottom.saturating_sub(1)),
+                    (box_left, box_top),
+                    ppc_theme_rgb(palette.frame_dark),
+                    None,
+                );
+                if memory
+                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                    .unwrap_or(0)
+                    != 0
+                {
+                    crate::control_manager::for_each_standard_checkbox_mark_pixel(
+                        indicator_size,
+                        |x, y| {
+                            wrote |= ppc_line_to(
+                                memory,
+                                gworlds,
+                                owner,
+                                (box_left.saturating_add(x), box_top.saturating_add(y)),
+                                (box_left.saturating_add(x), box_top.saturating_add(y)),
+                                ppc_theme_rgb(palette.frame_dark),
+                                None,
+                            );
+                        },
+                    );
+                }
+                wrote
+            }
+            2 => {
+                // Inside Macintosh Volume I (1985), p. I-322: radioButProc is a
+                // round indicator whose on state is a small filled black circle.
+                let layout = crate::control_manager::standard_radio_button_layout((
+                    top, left, bottom, right,
+                ));
+                let indicator = layout.indicator;
+                let mut wrote = ppc_draw_oval_bounds(
+                    memory,
+                    gworlds,
+                    owner,
+                    indicator,
+                    ppc_theme_rgb(palette.window_background),
+                    None,
+                    false,
+                );
                 wrote |= ppc_draw_oval_bounds(
                     memory,
                     gworlds,
                     owner,
-                    (
-                        dot_top.saturating_add(3),
-                        dot_left.saturating_add(3),
-                        dot_bottom.saturating_sub(3),
-                        dot_right.saturating_sub(3),
-                    ),
-                    PPC_RGB_BLACK,
+                    indicator,
+                    ppc_theme_rgb(palette.frame_dark),
                     None,
+                    true,
+                );
+                if memory
+                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                    .unwrap_or(0)
+                    != 0
+                {
+                    let (dot_top, dot_left, dot_bottom, dot_right) = indicator;
+                    wrote |= ppc_draw_oval_bounds(
+                        memory,
+                        gworlds,
+                        owner,
+                        (
+                            dot_top.saturating_add(3),
+                            dot_left.saturating_add(3),
+                            dot_bottom.saturating_sub(3),
+                            dot_right.saturating_sub(3),
+                        ),
+                        ppc_theme_rgb(palette.frame_dark),
+                        None,
+                        false,
+                    );
+                }
+                wrote
+            }
+            16 => {
+                // Both CPU adapters submit the same ControlRecord state to the
+                // architecture-neutral presentation provider. Only this final
+                // guest-framebuffer blit remains adapter-specific.
+                let value = memory
+                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                    .unwrap_or(0) as i16;
+                let min = memory
+                    .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
+                    .unwrap_or(0) as i16;
+                let max = memory
+                    .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
+                    .unwrap_or(0) as i16;
+                let hilite = memory
+                    .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
+                    .unwrap_or(0);
+                let bitmap = render_scrollbar_bitmap(
+                    ppc_ui_theme(gworlds),
+                    right.saturating_sub(left),
+                    bottom.saturating_sub(top),
+                    value,
+                    min,
+                    max,
+                    hilite,
+                );
+                ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
+            }
+            1008..=1023 => {
+                // The standard pop-up CDEF is resource ID 63, whose proc IDs
+                // occupy 63 << 4 through 63 << 4 | 15. Its contrlMin field is
+                // the MENU resource ID and contrlValue is the one-based item.
+                let dialog_bounds = memory
+                    .read_u16_be(owner + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+                    .filter(|kind| *kind == 2)
+                    .and_then(|_| ppc_dialog_global_bounds(memory, gworlds, owner));
+                if dialog_bounds.is_some() && !draw_dialog_popup {
+                    return true;
+                }
+                let (draw_owner, (draw_top, draw_left, draw_bottom, draw_right)) = dialog_bounds
+                    .map(|bounds| {
+                        (
+                            PPC_MAIN_GWORLD,
+                            ppc_dialog_rect_to_global(bounds, (top, left, bottom, right)),
+                        )
+                    })
+                    .unwrap_or((owner, (top, left, bottom, right)));
+                // popupMenuProc reserves `contrlMax` pixels for the label before
+                // the button. A fixed-width popup uses the rest of the control
+                // rect as its stable button width; omitting this offset makes
+                // the PPC renderer paint the button over its label and gives its
+                // selected title an incorrectly large content area. Macintosh
+                // Toolbox Essentials (1992), pp. 5-25--5-27.
+                let title_width = record
+                    .and_then(|record| record.popup_title_width)
+                    .unwrap_or(0)
+                    .max(0);
+                let draw_left = draw_left.saturating_add(title_width);
+                let draw_top = draw_top.saturating_add(1);
+                let draw_bottom = draw_bottom.saturating_sub(2);
+                let draw_right = draw_right.saturating_sub(1);
+                let mut wrote;
+                let enabled = memory
+                    .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
+                    .unwrap_or(0)
+                    != 255;
+                if ppc_draw_themed_control_rect(
+                    memory,
+                    gworlds,
+                    draw_owner,
+                    (draw_top, draw_left, draw_bottom, draw_right),
+                    crate::ui_theme::ControlKind::PopupButton,
+                    enabled,
                     false,
-                );
-            }
-            wrote
-        }
-        16 => {
-            // Both CPU adapters submit the same ControlRecord state to the
-            // architecture-neutral presentation provider. Only this final
-            // guest-framebuffer blit remains adapter-specific.
-            let value = memory
-                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                .unwrap_or(0) as i16;
-            let min = memory
-                .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
-                .unwrap_or(0) as i16;
-            let max = memory
-                .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
-                .unwrap_or(0) as i16;
-            let hilite = memory
-                .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
-                .unwrap_or(0);
-            let bitmap = render_scrollbar_bitmap(
-                UiThemeId::ClassicSystem7,
-                right.saturating_sub(left),
-                bottom.saturating_sub(top),
-                value,
-                min,
-                max,
-                hilite,
-            );
-            ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
-        }
-        1008..=1023 => {
-            // The standard pop-up CDEF is resource ID 63, whose proc IDs
-            // occupy 63 << 4 through 63 << 4 | 15. Its contrlMin field is
-            // the MENU resource ID and contrlValue is the one-based item.
-            let dialog_bounds = memory
-                .read_u16_be(owner + PPC_CWINDOW_WINDOW_KIND_OFFSET)
-                .filter(|kind| *kind == 2)
-                .and_then(|_| ppc_dialog_global_bounds(memory, gworlds, owner));
-            if dialog_bounds.is_some() && !draw_dialog_popup {
-                return true;
-            }
-            let (draw_owner, (draw_top, draw_left, draw_bottom, draw_right)) = dialog_bounds
-                .map(|bounds| {
-                    (
-                        PPC_MAIN_GWORLD,
-                        ppc_dialog_rect_to_global(bounds, (top, left, bottom, right)),
-                    )
-                })
-                .unwrap_or((owner, (top, left, bottom, right)));
-            // popupMenuProc reserves `contrlMax` pixels for the label before
-            // the button. A fixed-width popup uses the rest of the control
-            // rect as its stable button width; omitting this offset makes
-            // the PPC renderer paint the button over its label and gives its
-            // selected title an incorrectly large content area. Macintosh
-            // Toolbox Essentials (1992), pp. 5-25--5-27.
-            let title_width = record
-                .and_then(|record| record.popup_title_width)
-                .unwrap_or(0)
-                .max(0);
-            let draw_left = draw_left.saturating_add(title_width);
-            let draw_top = draw_top.saturating_add(1);
-            let draw_bottom = draw_bottom.saturating_sub(2);
-            let draw_right = draw_right.saturating_sub(1);
-            let mut wrote = ppc_paint_rect_bounds(
-                memory,
-                gworlds,
-                draw_owner,
-                (draw_top, draw_left, draw_bottom, draw_right),
-                PPC_RGB_WHITE,
-                None,
-            );
-            for (start, end) in [
-                (
-                    (draw_left, draw_top),
-                    (draw_right.saturating_sub(1), draw_top),
-                ),
-                (
-                    (draw_right.saturating_sub(1), draw_top),
-                    (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
-                ),
-                (
-                    (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
-                    (draw_left, draw_bottom.saturating_sub(1)),
-                ),
-                (
-                    (draw_left, draw_bottom.saturating_sub(1)),
-                    (draw_left, draw_top),
-                ),
-            ] {
-                wrote |= ppc_line_to(memory, gworlds, draw_owner, start, end, PPC_RGB_BLACK, None);
-            }
-            let arrow_left = draw_right.saturating_sub(18).max(draw_left);
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                draw_owner,
-                (arrow_left, draw_top),
-                (arrow_left, draw_bottom.saturating_sub(1)),
-                PPC_RGB_BLACK,
-                None,
-            );
-            let arrow_h = draw_right.saturating_sub(9);
-            let center_v = draw_top.saturating_add(draw_bottom.saturating_sub(draw_top) / 2);
-            for offset in 0..3i16 {
-                wrote |= ppc_line_to(
+                ) {
+                    wrote = true;
+                } else {
+                    wrote = ppc_paint_rect_bounds(
+                        memory,
+                        gworlds,
+                        draw_owner,
+                        (draw_top, draw_left, draw_bottom, draw_right),
+                        ppc_theme_rgb(palette.window_background),
+                        None,
+                    );
+                    for (start, end) in [
+                        (
+                            (draw_left, draw_top),
+                            (draw_right.saturating_sub(1), draw_top),
+                        ),
+                        (
+                            (draw_right.saturating_sub(1), draw_top),
+                            (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
+                        ),
+                        (
+                            (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
+                            (draw_left, draw_bottom.saturating_sub(1)),
+                        ),
+                        (
+                            (draw_left, draw_bottom.saturating_sub(1)),
+                            (draw_left, draw_top),
+                        ),
+                    ] {
+                        wrote |= ppc_line_to(
+                            memory,
+                            gworlds,
+                            draw_owner,
+                            start,
+                            end,
+                            ppc_theme_rgb(palette.frame_dark),
+                            None,
+                        );
+                    }
+                    let arrow_left = draw_right.saturating_sub(18).max(draw_left);
+                    wrote |= ppc_line_to(
+                        memory,
+                        gworlds,
+                        draw_owner,
+                        (arrow_left, draw_top),
+                        (arrow_left, draw_bottom.saturating_sub(1)),
+                        ppc_theme_rgb(palette.frame_dark),
+                        None,
+                    );
+                    let arrow_h = draw_right.saturating_sub(9);
+                    let center_v =
+                        draw_top.saturating_add(draw_bottom.saturating_sub(draw_top) / 2);
+                    for offset in 0..3i16 {
+                        wrote |= ppc_line_to(
+                            memory,
+                            gworlds,
+                            draw_owner,
+                            (
+                                arrow_h.saturating_sub(offset),
+                                center_v.saturating_sub(3 - offset),
+                            ),
+                            (
+                                arrow_h.saturating_add(offset),
+                                center_v.saturating_sub(3 - offset),
+                            ),
+                            ppc_theme_rgb(palette.frame_dark),
+                            None,
+                        );
+                        wrote |= ppc_line_to(
+                            memory,
+                            gworlds,
+                            draw_owner,
+                            (
+                                arrow_h.saturating_sub(offset),
+                                center_v.saturating_add(3 - offset),
+                            ),
+                            (
+                                arrow_h.saturating_add(offset),
+                                center_v.saturating_add(3 - offset),
+                            ),
+                            ppc_theme_rgb(palette.frame_dark),
+                            None,
+                        );
+                    }
+                }
+                let selected = memory
+                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                    .unwrap_or(0) as usize;
+                let menu_id = record.map_or(0, |record| record.popup_menu_id);
+                let selected_text = ppc_popup_control_selected_text(
                     memory,
-                    gworlds,
-                    draw_owner,
-                    (
-                        arrow_h.saturating_sub(offset),
-                        center_v.saturating_sub(3 - offset),
-                    ),
-                    (
-                        arrow_h.saturating_add(offset),
-                        center_v.saturating_sub(3 - offset),
-                    ),
-                    PPC_RGB_BLACK,
-                    None,
+                    vfs_resources,
+                    current_resource_refnum,
+                    menu_id,
+                    selected,
                 );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    draw_owner,
-                    (
-                        arrow_h.saturating_sub(offset),
-                        center_v.saturating_add(3 - offset),
-                    ),
-                    (
-                        arrow_h.saturating_add(offset),
-                        center_v.saturating_add(3 - offset),
-                    ),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-            }
-            let selected = memory
-                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                .unwrap_or(0) as usize;
-            let menu_id = record.map_or(0, |record| record.popup_menu_id);
-            let selected_text = ppc_popup_control_selected_text(
-                memory,
-                vfs_resources,
-                current_resource_refnum,
-                menu_id,
-                selected,
-            );
-            let text_left = draw_left.saturating_add(5);
-            let text_right = draw_right.saturating_sub(19).max(text_left);
-            let display_title = ppc_popup_control_display_title(
-                &selected_text,
-                text_right.saturating_sub(text_left),
-                PPC_QD_TEXT_FONT_DEFAULT,
-                PPC_QD_TEXT_SIZE_SYSTEM,
-            );
-            if !display_title.is_empty() {
-                let _ = ppc_draw_text_bytes(
-                    memory,
-                    gworlds,
-                    draw_owner,
-                    (text_left, draw_top.saturating_add(14)),
+                let text_left = draw_left.saturating_add(5);
+                let text_right = draw_right.saturating_sub(19).max(text_left);
+                let display_title = ppc_popup_control_display_title(
+                    &selected_text,
+                    text_right.saturating_sub(text_left),
                     PPC_QD_TEXT_FONT_DEFAULT,
                     PPC_QD_TEXT_SIZE_SYSTEM,
-                    PPC_QD_TEXT_MODE_SRC_OR,
-                    PPC_RGB_BLACK,
-                    None,
-                    &display_title,
                 );
+                if !display_title.is_empty() {
+                    let _ = ppc_draw_text_bytes(
+                        memory,
+                        gworlds,
+                        draw_owner,
+                        (text_left, draw_top.saturating_add(14)),
+                        PPC_QD_TEXT_FONT_DEFAULT,
+                        PPC_QD_TEXT_SIZE_SYSTEM,
+                        PPC_QD_TEXT_MODE_SRC_OR,
+                        ppc_theme_rgb(palette.frame_dark),
+                        None,
+                        &display_title,
+                    );
+                }
+                wrote
             }
-            wrote
+            _ => ppc_frame_rect(
+                &frame_cpu,
+                memory,
+                gworlds,
+                owner,
+                ppc_theme_rgb(palette.frame_dark),
+                None,
+            ),
         }
-        _ => ppc_frame_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK, None),
     };
     let title =
         ppc_read_pstring_bytes(memory, control + PPC_CONTROL_TITLE_OFFSET).unwrap_or_default();
@@ -69858,7 +70019,7 @@ fn ppc_draw_control_inner(
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
             PPC_QD_TEXT_MODE_SRC_OR,
-            PPC_RGB_BLACK,
+            ppc_theme_rgb(palette.frame_dark),
             None,
             &title,
         );
@@ -74550,17 +74711,15 @@ fn ppc_te_draw(
                 };
                 let selection_right = line_left.saturating_add(measure(selected_end));
                 let line_top = baseline.saturating_sub(ascent);
-                ppc_invert_rect_bounds(
-                    memory,
-                    gworlds,
-                    port,
-                    (
-                        line_top.max(view.0),
-                        selection_left.max(view.1),
-                        line_top.saturating_add(line_height).min(view.2),
-                        selection_right.min(view.3),
-                    ),
+                let selection = (
+                    line_top.max(view.0),
+                    selection_left.max(view.1),
+                    line_top.saturating_add(line_height).min(view.2),
+                    selection_right.min(view.3),
                 );
+                if !ppc_draw_themed_selection(memory, gworlds, port, selection) {
+                    ppc_invert_rect_bounds(memory, gworlds, port, selection);
+                }
             }
         }
     }
@@ -74638,7 +74797,9 @@ fn ppc_te_draw(
                     gworlds,
                     port,
                     (line_top, caret_x, line_bottom, caret_x.saturating_add(1)),
-                    if styled {
+                    if ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 {
+                        ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().selection)
+                    } else if styled {
                         ppc_te_style_at_offset(&style_runs, caret_offset).color
                     } else {
                         fallback_color
@@ -76800,7 +76961,12 @@ fn ppc_draw_tracked_menu_chrome(
         .filter(|ptr| *ptr != 0)
         .and_then(|menu| memory.read_u16_be(menu))
         .unwrap_or(0) as i16;
-    let background_rgb = ppc_menu_rgb(menu_colors.dropdown_background(menu_id));
+    let theme = ppc_ui_theme(gworlds);
+    let background_rgb = if theme == UiThemeId::ClassicSystem7 {
+        ppc_menu_rgb(menu_colors.dropdown_background(menu_id))
+    } else {
+        ppc_theme_rgb(theme.provider().palette().window_background)
+    };
     let (Some(background), Some(black)) = (
         ppc_physical_screen_color_pixel(front, background_rgb, screen_clut),
         ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, screen_clut),
@@ -76853,6 +77019,8 @@ fn ppc_draw_tracked_menu(
     else {
         return;
     };
+    let theme = ppc_ui_theme(gworlds);
+    let palette = theme.provider().palette();
     let rect = state.dropdown_rect();
     let rows = ppc_menu_tracking_rows(memory, state);
     let (scroll_up, scroll_down) = rows.scroll_indicators(rect, state.content_top());
@@ -76919,7 +77087,15 @@ fn ppc_draw_tracked_menu(
         let highlighted = item == selected && !dimmed;
         let dimmed_color = MenuColorTable::dimmed(item_colors.name, item_colors.background);
         let component = |foreground: [u16; 3]| {
-            let rgb = if highlighted {
+            let rgb = if theme != UiThemeId::ClassicSystem7 {
+                ppc_theme_components(if highlighted {
+                    palette.frame_light
+                } else if dimmed {
+                    palette.accent
+                } else {
+                    palette.frame_dark
+                })
+            } else if highlighted {
                 item_colors.background
             } else if dimmed && front.depth != 1 {
                 dimmed_color
@@ -76936,9 +77112,16 @@ fn ppc_draw_tracked_menu(
         let (name_color, name_pixel, name_index) = component(item_colors.name);
         let (command_color, command_pixel, command_index) = component(item_colors.command);
         if highlighted {
-            let selected_background =
-                ppc_physical_screen_color_pixel(front, ppc_menu_rgb(item_colors.name), screen_clut)
-                    .unwrap_or(black);
+            let selected_background = ppc_physical_screen_color_pixel(
+                front,
+                if theme == UiThemeId::ClassicSystem7 {
+                    ppc_menu_rgb(item_colors.name)
+                } else {
+                    ppc_theme_rgb(palette.selection)
+                },
+                screen_clut,
+            )
+            .unwrap_or(black);
             for y in row_top..row_bottom {
                 for x in state.popup_left().saturating_add(1)
                     ..state
@@ -79302,6 +79485,7 @@ fn ppc_reverse_menu_title_cell(
     menu_bar_height: i16,
     background: u16,
     foreground: u16,
+    themed: Option<(u16, u16)>,
 ) {
     if menu_bar_height <= 1 {
         return;
@@ -79322,7 +79506,17 @@ fn ppc_reverse_menu_title_cell(
             else {
                 continue;
             };
-            let reversed = standard_menu_highlighted_value(pixel, background, foreground);
+            let reversed = if let Some((selected_background, selected_foreground)) = themed {
+                if pixel == background {
+                    selected_background
+                } else if pixel == foreground {
+                    selected_foreground
+                } else {
+                    pixel
+                }
+            } else {
+                standard_menu_highlighted_value(pixel, background, foreground)
+            };
             let _ = ppc_quickdraw_write_raw_pixel(
                 memory,
                 front_buffer,
@@ -79387,6 +79581,8 @@ fn ppc_draw_menu_bar_with_colors(
     screen_clut: &[[u16; 3]; 256],
     menu_colors: MenuColorTable<'_>,
 ) -> bool {
+    let theme = ppc_ui_theme(gworlds);
+    let palette = theme.provider().palette();
     let Some(front_buffer) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
     else {
         return false;
@@ -79401,7 +79597,11 @@ fn ppc_draw_menu_bar_with_colors(
     let (Some(bar_background), Some(black)) = (
         ppc_physical_screen_color_pixel(
             front_buffer,
-            ppc_menu_rgb(menu_colors.menu_bar_background()),
+            if theme == UiThemeId::ClassicSystem7 {
+                ppc_menu_rgb(menu_colors.menu_bar_background())
+            } else {
+                ppc_theme_rgb(palette.window_background)
+            },
             screen_clut,
         ),
         ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_BLACK, screen_clut),
@@ -79472,8 +79672,16 @@ fn ppc_draw_menu_bar_with_colors(
             continue;
         };
         let menu_id = memory.read_u16_be(menu).unwrap_or(0) as i16;
-        let title_foreground = ppc_menu_rgb(menu_colors.title_foreground(menu_id));
-        let title_background = ppc_menu_rgb(menu_colors.title_background(menu_id));
+        let title_foreground = if theme == UiThemeId::ClassicSystem7 {
+            ppc_menu_rgb(menu_colors.title_foreground(menu_id))
+        } else {
+            ppc_theme_rgb(palette.frame_dark)
+        };
+        let title_background = if theme == UiThemeId::ClassicSystem7 {
+            ppc_menu_rgb(menu_colors.title_background(menu_id))
+        } else {
+            ppc_theme_rgb(palette.window_background)
+        };
         let dimmed_title = ppc_menu_rgb(MenuColorTable::dimmed(
             menu_colors.title_foreground(menu_id),
             menu_colors.title_background(menu_id),
@@ -79598,6 +79806,24 @@ fn ppc_draw_menu_bar_with_colors(
             menu_bar_height,
             highlight.background,
             highlight.foreground,
+            if theme == UiThemeId::ClassicSystem7 {
+                None
+            } else {
+                Some((
+                    ppc_physical_screen_color_pixel(
+                        front_buffer,
+                        ppc_theme_rgb(palette.selection),
+                        screen_clut,
+                    )
+                    .unwrap_or(highlight.foreground),
+                    ppc_physical_screen_color_pixel(
+                        front_buffer,
+                        ppc_theme_rgb(palette.frame_light),
+                        screen_clut,
+                    )
+                    .unwrap_or(highlight.background),
+                ))
+            },
         );
         if highlight.system_menu_mark && front_buffer.depth != 1 {
             ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, highlight.title_h);
@@ -84036,6 +84262,7 @@ fn ppc_standard_file_draw_button(
     bounds: (i16, i16, i16, i16),
     rect: (i16, i16, i16, i16),
     label: &[u8],
+    is_default: bool,
 ) {
     let global = (
         bounds.0.saturating_add(rect.0),
@@ -84043,8 +84270,18 @@ fn ppc_standard_file_draw_button(
         bounds.0.saturating_add(rect.2),
         bounds.1.saturating_add(rect.3),
     );
-    let _ = ppc_fill_front_rect(memory, front, global, PPC_RGB_WHITE);
-    let _ = ppc_frame_front_rect(memory, front, global, PPC_RGB_BLACK, 1);
+    if !ppc_draw_themed_control_rect(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        global,
+        crate::ui_theme::ControlKind::PushButton,
+        true,
+        is_default,
+    ) {
+        let _ = ppc_fill_front_rect(memory, front, global, PPC_RGB_WHITE);
+        let _ = ppc_frame_front_rect(memory, front, global, PPC_RGB_BLACK, 1);
+    }
     ppc_draw_dialog_text(memory, gworlds, global, label, PPC_RGB_BLACK);
 }
 
@@ -84054,34 +84291,35 @@ fn ppc_standard_file_draw_scrollbar(
     gworlds: &[PpcGWorldRecord],
     bounds: (i16, i16, i16, i16),
 ) {
+    let palette = ppc_ui_theme(gworlds).provider().palette();
     let rect = (
         bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.0),
         bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.1),
         bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.2),
         bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.3),
     );
-    let _ = ppc_fill_front_rect(memory, front, rect, PPC_RGB_WHITE);
-    let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
+    let _ = ppc_fill_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_light));
+    let _ = ppc_frame_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_dark), 1);
     let middle = rect.0.saturating_add((rect.2 - rect.0) / 2);
     let _ = ppc_fill_front_rect(
         memory,
         front,
         (middle, rect.1, middle.saturating_add(1), rect.3),
-        PPC_RGB_BLACK,
+        ppc_theme_rgb(palette.frame_dark),
     );
     ppc_draw_dialog_text(
         memory,
         gworlds,
         (rect.0, rect.1, middle, rect.3),
         b"^",
-        PPC_RGB_BLACK,
+        ppc_theme_rgb(palette.frame_dark),
     );
     ppc_draw_dialog_text(
         memory,
         gworlds,
         (middle, rect.1, rect.2, rect.3),
         b"v",
-        PPC_RGB_BLACK,
+        ppc_theme_rgb(palette.frame_dark),
     );
 }
 
@@ -84092,8 +84330,10 @@ fn ppc_standard_file_draw_get_dialog(
 ) {
     let front = tracking.front_buffer;
     let bounds = tracking.bounds;
-    let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
-    let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+    if !ppc_draw_themed_dialog_frame(memory, gworlds, bounds, bounds, 2) {
+        let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
+        let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+    }
     ppc_draw_dialog_text(
         memory,
         gworlds,
@@ -84153,7 +84393,11 @@ fn ppc_standard_file_draw_get_dialog(
                 list.3.saturating_sub(3),
             ),
             &text,
-            if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
+            if selected {
+                PPC_RGB_WHITE
+            } else {
+                PPC_RGB_BLACK
+            },
         );
     }
     let filter = tracking
@@ -84184,6 +84428,7 @@ fn ppc_standard_file_draw_get_dialog(
         bounds,
         PPC_STANDARD_FILE_GET_DESKTOP_RECT,
         b"Desktop",
+        false,
     );
     ppc_standard_file_draw_button(
         memory,
@@ -84192,6 +84437,7 @@ fn ppc_standard_file_draw_get_dialog(
         bounds,
         PPC_STANDARD_FILE_GET_CANCEL_RECT,
         b"Cancel",
+        false,
     );
     ppc_standard_file_draw_button(
         memory,
@@ -84200,6 +84446,7 @@ fn ppc_standard_file_draw_get_dialog(
         bounds,
         PPC_STANDARD_FILE_GET_OPEN_RECT,
         b"Open",
+        true,
     );
 }
 
@@ -84210,8 +84457,10 @@ fn ppc_standard_file_draw_put_dialog(
 ) {
     let front = tracking.front_buffer;
     let bounds = tracking.bounds;
-    let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
-    let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+    if !ppc_draw_themed_dialog_frame(memory, gworlds, bounds, bounds, 2) {
+        let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
+        let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+    }
     ppc_draw_dialog_text(
         memory,
         gworlds,
@@ -84245,7 +84494,8 @@ fn ppc_standard_file_draw_put_dialog(
     let _ = ppc_fill_front_rect(memory, front, name, PPC_RGB_WHITE);
     let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
     let selected = tracking.sel_start < tracking.sel_end;
-    if selected {
+    let themed = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7;
+    if selected && !themed {
         let _ = ppc_fill_front_rect(
             memory,
             front,
@@ -84263,8 +84513,15 @@ fn ppc_standard_file_draw_put_dialog(
         gworlds,
         (name.0.saturating_add(2), name.1, name.2, name.3),
         &tracking.name,
-        if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
+        if selected && !themed {
+            PPC_RGB_WHITE
+        } else {
+            PPC_RGB_BLACK
+        },
     );
+    if selected && themed {
+        ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, name);
+    }
     ppc_standard_file_draw_button(
         memory,
         front,
@@ -84272,6 +84529,7 @@ fn ppc_standard_file_draw_put_dialog(
         bounds,
         PPC_STANDARD_FILE_PUT_CANCEL_RECT,
         b"Cancel",
+        false,
     );
     ppc_standard_file_draw_button(
         memory,
@@ -84280,6 +84538,7 @@ fn ppc_standard_file_draw_put_dialog(
         bounds,
         PPC_STANDARD_FILE_PUT_SAVE_RECT,
         b"Save",
+        true,
     );
 }
 
@@ -92234,6 +92493,7 @@ pub(crate) mod tests {
                 .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 1)
                 .unwrap();
             loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: window,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -113375,6 +113635,7 @@ pub(crate) mod tests {
         let window_port = PPC_HEAP_BASE + 0x2000;
         let window_base = PPC_HEAP_BASE + 0x4000;
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window_port,
             pixmap_handle: 0,
             pixmap: 0,
@@ -120534,6 +120795,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(back_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![
             PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -120547,6 +120809,7 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
             PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_DSP_BACK_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -126552,6 +126815,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -126715,6 +126979,7 @@ pub(crate) mod tests {
             .memory
             .add_region(front_base, vec![0; 8 * 8 * 2]);
         replay_loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -126868,6 +127133,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.memory.add_region(pixmap_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -127038,6 +127304,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(window_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![
             PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -127051,6 +127318,7 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
             PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: window_port,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -127194,6 +127462,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(back_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![
             PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -127207,6 +127476,7 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
             PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_DSP_BACK_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -127390,6 +127660,7 @@ pub(crate) mod tests {
             loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
             loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
             loaded.gworlds = vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -127535,6 +127806,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x600]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -127767,6 +128039,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x600]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -128027,6 +128300,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -128231,6 +128505,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -128437,6 +128712,7 @@ pub(crate) mod tests {
             loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
             loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
             loaded.gworlds = vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -128640,6 +128916,7 @@ pub(crate) mod tests {
             loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
             loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
             loaded.gworlds = vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -128865,6 +129142,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(near_trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -129021,6 +129299,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(near_trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -129221,6 +129500,7 @@ pub(crate) mod tests {
             loaded.memory.add_region(near_trimesh_data, vec![0; 0x400]);
             loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
             loaded.gworlds = vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -129381,6 +129661,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -129567,6 +129848,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -129741,6 +130023,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x500]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -129934,6 +130217,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -130084,6 +130368,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -130335,6 +130620,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -130502,6 +130788,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -130908,6 +131195,7 @@ pub(crate) mod tests {
 
     fn q3_software_test_front_gworld(front_base: u32) -> PpcGWorldRecord {
         PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -131835,6 +132123,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -132024,6 +132313,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x500]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -132231,6 +132521,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x500]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -132505,6 +132796,7 @@ pub(crate) mod tests {
             .add_region(PPC_DATA_BASE + 0x1000, vec![0; 0x800]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -132760,6 +133052,7 @@ pub(crate) mod tests {
             .add_region(PPC_DATA_BASE + 0x1000, vec![0; 0x800]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -132976,6 +133269,7 @@ pub(crate) mod tests {
             loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
             loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
             loaded.gworlds = vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -133189,6 +133483,7 @@ pub(crate) mod tests {
             loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
             loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
             loaded.gworlds = vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -133388,6 +133683,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -133595,6 +133891,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -133757,6 +134054,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -133906,6 +134204,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -134082,6 +134381,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -134300,6 +134600,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x800]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -134497,6 +134798,7 @@ pub(crate) mod tests {
             loaded.memory.add_region(trimesh_data, vec![0; 0x800]);
             loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
             loaded.gworlds = vec![PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -134687,6 +134989,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x800]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -134864,6 +135167,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -135035,6 +135339,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(far_trimesh_data, vec![0; 0x400]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -135422,6 +135727,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -135539,6 +135845,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x200]);
         loaded.memory.add_region(front_base, vec![0; 8 * 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
             pixmap: 0,
@@ -137934,6 +138241,7 @@ pub(crate) mod tests {
         movie_file_data.extend_from_slice(&sample);
         loaded.memory.add_region(base, vec![0xee; 4 * 4 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: gworld,
             pixmap_handle: 0,
             pixmap: 0,
@@ -138609,6 +138917,7 @@ pub(crate) mod tests {
         let base = PPC_HEAP_BASE + 0x6000;
         loaded.memory.add_region(base, vec![0; 4 * 3 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: gworld,
             pixmap_handle: 0,
             pixmap: 0,
@@ -138855,6 +139164,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(scratch, vec![0; 128]);
         loaded.memory.add_region(base, vec![0xff; 8 * 2]);
         loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: gworld,
             pixmap_handle: 0,
             pixmap: 0,
@@ -139577,6 +139887,7 @@ pub(crate) mod tests {
         let pix_base = PPC_HEAP_BASE + 0x2000;
         loaded.memory.add_region(pix_base, vec![42; 8 * 8]);
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: gworld,
             pixmap_handle: 0,
             pixmap: 0,
@@ -139623,6 +139934,7 @@ pub(crate) mod tests {
         let pix_base = PPC_HEAP_BASE + 0x2000;
         loaded.memory.add_region(pix_base, vec![0; 4 * 8]);
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: gworld,
             pixmap_handle: 0,
             pixmap: 0,
@@ -139666,6 +139978,7 @@ pub(crate) mod tests {
         ppc_write_rect(&mut loaded.memory, port + 8, 0, 0, 480, 640).unwrap();
         ppc_write_rect(&mut loaded.memory, port + 16, 0, 0, 8, 8).unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle: 0,
             pixmap: 0,
@@ -139756,6 +140069,7 @@ pub(crate) mod tests {
         let pix_base = PPC_HEAP_BASE + 0x2000;
         loaded.memory.add_region(pix_base, vec![42; 8 * 8]);
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: gworld,
             pixmap_handle: 0,
             pixmap: 0,
@@ -140139,6 +140453,103 @@ pub(crate) mod tests {
                 depth: record.depth,
             })
         );
+    }
+
+    #[test]
+    fn native_toolbox_theme_changes_chrome_without_changing_guest_geometry() {
+        for depth in [1, 8, 16] {
+            let pef = synthetic_pef_with_import(b"NewCWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+            loaded.set_ui_theme(UiThemeId::SystemlessDefault);
+            let front =
+                ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                    .unwrap();
+            let palette = if depth == 1 {
+                UiThemeId::ClassicSystem7
+            } else {
+                UiThemeId::SystemlessDefault
+            }
+            .provider()
+            .palette();
+            for (point, color) in [
+                ((700, 400), palette.desktop_dark),
+                ((701, 400), palette.desktop_light),
+            ] {
+                let expected =
+                    ppc_physical_screen_color_pixel(front, ppc_theme_rgb(color), &loaded.screen_clut)
+                        .unwrap();
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
+                    Some(expected)
+                );
+            }
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(
+                &mut loaded,
+                bounds_ptr,
+                (100, 100, 260, 300),
+                0,
+                true,
+                u32::MAX,
+            );
+            let content = loaded
+                .memory
+                .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+                .unwrap();
+            let geometry = ppc_read_rgn_bbox(&mut loaded.memory, content);
+            let expected = ppc_physical_screen_color_pixel(
+                front,
+                ppc_theme_rgb(palette.frame_light),
+                &loaded.screen_clut,
+            )
+            .unwrap();
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 84)),
+                Some(expected)
+            );
+            assert_eq!(geometry, Some((100, 100, 260, 300)));
+            ppc_standard_file_draw_button(
+                &mut loaded.memory,
+                front,
+                &loaded.gworlds,
+                (0, 0, 600, 800),
+                (320, 100, 340, 180),
+                b"Open",
+                true,
+            );
+            let expected_button = ppc_physical_screen_color_pixel(
+                front,
+                ppc_theme_rgb(palette.frame_light),
+                &loaded.screen_clut,
+            )
+            .unwrap();
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 325)),
+                Some(expected_button)
+            );
+            let marker =
+                ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (150, 150), marker);
+            loaded.set_ui_theme(UiThemeId::ClassicSystem7);
+            ppc_draw_existing_window_frame(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &loaded.window_list,
+                window,
+                false,
+            );
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, content), geometry);
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 150)),
+                Some(marker)
+            );
+        }
     }
 
     #[test]
@@ -141993,6 +142404,7 @@ pub(crate) mod tests {
         ppc_write_rect(&mut loaded.memory, window_ptr + 16, 0, 0, 240, 320).unwrap();
         ppc_write_rect(&mut loaded.memory, pixmap + 6, -20, -10, 460, 630).unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window_ptr,
             pixmap_handle,
             pixmap,
@@ -142054,6 +142466,7 @@ pub(crate) mod tests {
         ppc_write_rect(&mut loaded.memory, window_ptr + 16, 0, 0, 384, 512).unwrap();
         ppc_write_rect(&mut loaded.memory, pixmap + 6, -20, -10, 460, 630).unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window_ptr,
             pixmap_handle,
             pixmap,
@@ -142151,6 +142564,7 @@ pub(crate) mod tests {
             .write_u8(window_ptr + PPC_CWINDOW_VISIBLE_OFFSET, 1)
             .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window_ptr,
             pixmap_handle: PPC_DATA_BASE + 0x1100,
             pixmap: PPC_DATA_BASE + 0x1200,
@@ -142207,6 +142621,7 @@ pub(crate) mod tests {
             .write_u8(window_ptr + PPC_CWINDOW_VISIBLE_OFFSET, 1)
             .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: underlying_window,
             pixmap_handle: PPC_DATA_BASE + 0x0900,
             pixmap: PPC_DATA_BASE + 0x0a00,
@@ -142220,6 +142635,7 @@ pub(crate) mod tests {
             pixels_no_purge: false,
         });
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window_ptr,
             pixmap_handle: PPC_DATA_BASE + 0x1100,
             pixmap: PPC_DATA_BASE + 0x1200,
@@ -142665,6 +143081,7 @@ pub(crate) mod tests {
             .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 1)
             .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window,
             pixmap_handle: 0,
             pixmap: 0,
@@ -142745,6 +143162,7 @@ pub(crate) mod tests {
                 .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, u8::from(visible))
                 .unwrap();
             loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: window,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -142890,6 +143308,7 @@ pub(crate) mod tests {
                 .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, u8::from(visible))
                 .unwrap();
             loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: window,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -143053,6 +143472,7 @@ pub(crate) mod tests {
             .write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, handle)
             .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window,
             pixmap_handle: 0,
             pixmap: 0,
@@ -143561,6 +143981,7 @@ pub(crate) mod tests {
             .write_u8(window_ptr + PPC_CWINDOW_VISIBLE_OFFSET, 1)
             .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window_ptr,
             pixmap_handle: 0,
             pixmap: 0,
@@ -143612,6 +144033,7 @@ pub(crate) mod tests {
                 .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 1)
                 .unwrap();
             loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: window,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -145212,6 +145634,7 @@ pub(crate) mod tests {
             .memory
             .add_region(window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window,
             pixmap_handle: 0,
             pixmap: 0,
@@ -145270,6 +145693,7 @@ pub(crate) mod tests {
                 .write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, palette)
                 .unwrap();
             loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: window,
                 pixmap_handle: 0,
                 pixmap: 0,
@@ -147483,6 +147907,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let record = PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle: 0,
             pixmap: 0,
@@ -163876,6 +164301,7 @@ pub(crate) mod tests {
         ppc_write_rect(&mut loaded.memory, port + 8, 0, 0, 1, 8).unwrap();
         ppc_write_rect(&mut loaded.memory, port + 16, 0, 0, 1, 8).unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle: 0,
             pixmap: 0,
@@ -164009,6 +164435,7 @@ pub(crate) mod tests {
         loaded.memory.write_u16_be(ctable + 6, 0).unwrap();
         loaded.memory.write_u16_be(ctable + 8, 77).unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle,
             pixmap,
@@ -164103,6 +164530,7 @@ pub(crate) mod tests {
             .write_u16_be(private_ctable + 14, 0x6666)
             .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle,
             pixmap,
@@ -164140,6 +164568,7 @@ pub(crate) mod tests {
         let pixels = scratch + 0x200;
         loaded.memory.add_region(scratch, vec![0; 0x400]);
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle: 0,
             pixmap: 0,
@@ -164273,6 +164702,7 @@ pub(crate) mod tests {
         ppc_write_pixmap(&mut loaded.memory, pixmap, pixels, 1, 0, 0, 2, 8, 2).unwrap();
         loaded.memory.write_bytes(pixels, &[0x55, 0xa5]).unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle,
             pixmap,
@@ -164316,6 +164746,7 @@ pub(crate) mod tests {
             .write_bytes(pixels, &vec![0x55; (ROW_BYTES * HEIGHT) as usize])
             .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle: 0,
             pixmap: 0,
@@ -167821,6 +168252,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle,
             pixmap,
@@ -167913,6 +168345,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle,
             pixmap,
@@ -168060,6 +168493,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port,
             pixmap_handle,
             pixmap,
@@ -168949,6 +169383,7 @@ pub(crate) mod tests {
             ppc_write_gworld_port(&mut loaded.memory, port, owned_handle, 0, 0, 16, 16).unwrap();
             ppc_set_port_bits(&mut loaded.memory, port, live_pixmap_handle, true);
             loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port,
                 pixmap_handle: owned_handle,
                 pixmap: owned_pixmap,

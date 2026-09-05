@@ -105,7 +105,7 @@ fn prefer_powerpc() -> bool {
 }
 
 fn showcase_theme() -> UiThemeId {
-    std::env::var(SHOWCASE_THEME_ENV).map_or(UiThemeId::ClassicSystem7, |theme| {
+    std::env::var(SHOWCASE_THEME_ENV).map_or(UiThemeId::SystemlessDefault, |theme| {
         UiThemeId::parse(&theme)
             .unwrap_or_else(|error| panic!("invalid {SHOWCASE_THEME_ENV}: {error}"))
     })
@@ -340,19 +340,15 @@ fn is_dark_chrome(rgb: [u8; 3]) -> bool {
 
 fn reference_path(powerpc: bool, filename: &str) -> PathBuf {
     let theme = showcase_theme();
-    assert!(
-        theme == UiThemeId::ClassicSystem7 || !powerpc,
-        "the Systemless theme reference set currently targets the 68K HLE adapter"
-    );
+    let profile = match (theme, powerpc) {
+        (UiThemeId::SystemlessDefault, false) => "systemless-68k",
+        (UiThemeId::SystemlessDefault, true) => "systemless-ppc",
+        (UiThemeId::ClassicSystem7, false) => "systemless-classic-68k",
+        (UiThemeId::ClassicSystem7, true) => "systemless-classic-ppc",
+    };
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/toolbox-showcase/reference")
-        .join(if theme == UiThemeId::SystemlessDefault {
-            "systemless-theme-68k"
-        } else if powerpc {
-            "systemless-ppc"
-        } else {
-            "systemless-68k"
-        })
+        .join(profile)
         .join(filename)
 }
 
@@ -494,6 +490,17 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         width * height,
         actual_path.display()
     );
+}
+
+fn wait_for_page_event_loop(runner: &mut FixtureRunner, label: &str) {
+    let previous = runner.event_manager_snapshot().last_record;
+    // Sprite presentation precedes the validation text and DrawControls.
+    // A fresh null event proves the guest finished that entire draw and
+    // returned to its top-level WaitNextEvent loop on either CPU adapter.
+    step_until(runner, label, |runner| {
+        let current = runner.event_manager_snapshot().last_record;
+        current != previous && current.is_some_and(|event| event.what == 0)
+    });
 }
 
 fn run_ticks(runner: &mut FixtureRunner, label: &str, ticks: u32) {
@@ -1238,6 +1245,13 @@ fn test_toolbox_showcase() {
     );
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
+    if showcase_theme() == UiThemeId::SystemlessDefault {
+        let [red, green, blue] = screen_rgb(&mut runner, 400, 700);
+        assert!(
+            blue > red.saturating_add(80) && green > red,
+            "the selected Systemless theme must render its blue desktop, got {red},{green},{blue}"
+        );
+    }
     assert_reference_frame(&mut runner, "01-graphics.png");
 
     // 2. Switch to Controls and exercise every control.
@@ -2658,6 +2672,7 @@ fn test_toolbox_showcase() {
             && initial_second_body[0] > initial_second_body[2].saturating_add(80),
         "initial CopyDeepMask sprite must preserve its red source color: rgb={initial_second_body:?}"
     );
+    wait_for_page_event_loop(&mut runner, "initial sprite page redraw");
     let initial_frame = rendered_rgb(&mut runner).2;
     assert_reference_frame(&mut runner, "26-sprites.png");
 
@@ -2686,6 +2701,7 @@ fn test_toolbox_showcase() {
         initial_second_body, animated_second_body,
         "Animate Sprite must change the CopyDeepMask sprite frame"
     );
+    wait_for_page_event_loop(&mut runner, "animated sprite page redraw");
     let animated_frame = rendered_rgb(&mut runner).2;
     assert_ne!(
         initial_frame, animated_frame,
@@ -2741,6 +2757,7 @@ fn test_toolbox_showcase() {
         "ScrollRect must vacate the sprite's former center"
     );
     runner.set_mouse_position(550, 760);
+    wait_for_page_event_loop(&mut runner, "scrolled sprite page redraw");
     assert_reference_frame(&mut runner, "28-sprites-scrolled.png");
 
     // Rebuild the original source after animation and scrolling. The native
@@ -2754,6 +2771,7 @@ fn test_toolbox_showcase() {
         (initial_first_body, initial_second_body),
         "reset must restore both masked sprite colors"
     );
+    wait_for_page_event_loop(&mut runner, "reset sprite page redraw");
     let (reset_width, _, reset_frame) = rendered_rgb(&mut runner);
     for v in (win_top + 80)..(win_top + 260) {
         let start = (v as usize * reset_width as usize + (win_left + 24) as usize) * 3;

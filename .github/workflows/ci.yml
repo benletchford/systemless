@@ -65,18 +65,38 @@ jobs:
       - name: Run desktop tests
         run: cargo test --locked --bin systemless
 
+      # All four runtime configurations use this exact optimized executable.
+      # Keep ordinary library/desktop tests in the checked debug profile above.
+      - name: Compile optimized toolbox showcase tests
+        run: cargo test --locked --profile ci-test --test toolbox_showcase --no-run
+
       - name: Run toolbox showcase integration test (68k)
-        run: cargo test --test toolbox_showcase
+        run: cargo test --locked --profile ci-test --test toolbox_showcase
 
       - name: Run toolbox showcase integration test (PowerPC)
         env:
           SYSTEMLESS_PREFER_POWERPC: 1
-        run: cargo test --test toolbox_showcase
+        run: cargo test --locked --profile ci-test --test toolbox_showcase
 
-      - name: Run toolbox showcase integration test (Systemless theme)
+      - name: Run toolbox showcase integration test (classic 68k)
         env:
-          SYSTEMLESS_TOOLBOX_THEME: systemless-default
-        run: cargo test --locked --test toolbox_showcase
+          SYSTEMLESS_TOOLBOX_THEME: classic-system7
+        run: cargo test --locked --profile ci-test --test toolbox_showcase
+
+      - name: Run toolbox showcase integration test (classic PowerPC)
+        env:
+          SYSTEMLESS_TOOLBOX_THEME: classic-system7
+          SYSTEMLESS_PREFER_POWERPC: 1
+        run: cargo test --locked --profile ci-test --test toolbox_showcase
+
+      - name: Upload failed showcase frames
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: toolbox-showcase-failure
+          path: /tmp/systemless-toolbox-showcase-*.png
+          if-no-files-found: ignore
+          retention-days: 7
 
   checks:
     name: headless & package

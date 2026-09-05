@@ -423,13 +423,17 @@ screenshots are the expected device-depth quantization of the same logical
 colors. The Systemless 68K and BasiliskII captures exercise the actual 8-bit
 indexed paths.
 
-### Systemless theme experiment
+### Systemless theme
 
-The complete 58-frame 68K theme audit lives in
-[`reference/systemless-theme-68k`](reference/systemless-theme-68k). It follows
-the same deterministic interaction sequence as the classic Systemless baseline,
-including window activation, move, resize, z-order, dialog, scrollbar,
-palette, scrolling, and popup-menu checkpoint.
+Both main galleries use the Systemless theme by default, with 58 checkpoints
+for each architecture. Explicit Classic System 7 regression baselines remain in
+[`reference/systemless-classic-68k`](reference/systemless-classic-68k) and
+[`reference/systemless-classic-ppc`](reference/systemless-classic-ppc).
+All four profiles run the same deterministic interaction sequence in CI.
+BasiliskII and SheepShaver retain their native Mac OS presentation. PowerPC's
+native desktop, window frames, controls, dialogs, menus and TextEdit overlays now
+use the same theme provider as the 68K presentation. Monochrome native displays
+retain classic rendering; guest geometry and hit testing remain unchanged.
 
 ### 68K
 
@@ -556,7 +560,7 @@ palette, scrolling, and popup-menu checkpoint.
 | 37. Popup selections | <img src="reference/systemless-ppc/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/37-popup-lists-selected.png" alt="Classic emulator popup checkpoint" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all forty-three rendered
+state rather than relying on fixed delays, and compares all 58 rendered
 frames. The six additional Windows frames are deterministic Systemless
 checkpoints; classic-Mac review also covers activation and movement, while the
 remaining repaint lifecycle is asserted semantically because window chrome and
@@ -567,5 +571,6 @@ diff before committing it:
 ```sh
 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 SYSTEMLESS_PREFER_POWERPC=1 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
-SYSTEMLESS_TOOLBOX_THEME=systemless-default SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
+SYSTEMLESS_TOOLBOX_THEME=classic-system7 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
+SYSTEMLESS_TOOLBOX_THEME=classic-system7 SYSTEMLESS_PREFER_POWERPC=1 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 ```

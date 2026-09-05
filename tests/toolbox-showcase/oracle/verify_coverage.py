@@ -9,7 +9,7 @@ import verify_captures
 def main():
     fixture = Path(__file__).resolve().parents[1]
     coverage = json.loads((fixture / 'oracle/coverage.json').read_text())
-    assert set(coverage['profiles']) == {'systemless-68k', 'systemless-ppc', 'systemless-theme-68k'}
+    assert set(coverage['profiles']) == {'systemless-68k', 'systemless-ppc', 'systemless-classic-68k', 'systemless-classic-ppc'}
     assert set(coverage['native_emulators']) == {'basilisk', 'sheepshaver'}
     source = (fixture / 'showcase.r').read_text()
     menu = source.split("resource 'MENU' (mPages, preload)", 1)[1].split('};', 1)[0]
@@ -38,7 +38,7 @@ def main():
         for profile in coverage['profiles']:
             for checkpoint in page['systemless_checkpoints']:
                 assert (fixture / 'reference' / profile / checkpoint).is_file(), f'{profile}: {checkpoint}'
-    print(f'{len(pages)} pages, {len(manifests)} native scenarios, both emulators and all three Systemless profiles have current evidence')
+    print(f'{len(pages)} pages, {len(manifests)} native scenarios, both emulators and all four Systemless profiles have current evidence')
     print('This verifies coverage and artifact identities; fresh native behavior requires the replay outcome verifiers.')
 
 
