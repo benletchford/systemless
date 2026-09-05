@@ -120,6 +120,19 @@ jobs:
       - name: Package dry-run
         run: cargo publish --locked --dry-run
 
+      - name: Check crates.io upload size
+        run: |
+          python3 - <<'PYTHON'
+          import pathlib, tomllib
+          with open("Cargo.toml", "rb") as manifest:
+              package = tomllib.load(manifest)["package"]
+          archive = pathlib.Path("target/package") / f"{package['name']}-{package['version']}.crate"
+          size = archive.stat().st_size
+          limit = 10 * 1024 * 1024
+          print(f"Crate upload: {size:,} bytes (limit {limit:,})")
+          assert size <= limit, "Crate exceeds the crates.io upload limit"
+          PYTHON
+
   lint:
     name: fmt & clippy (non-blocking)
     runs-on: ubuntu-latest
