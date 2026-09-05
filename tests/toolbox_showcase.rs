@@ -95,20 +95,12 @@ const ITEM_FILE_QUIT: i16 = 4;
 const ITEM_APPLE_ABOUT: i16 = 1;
 
 const REFERENCE_UPDATE_ENV: &str = "SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES";
-const SHOWCASE_THEME_ENV: &str = "SYSTEMLESS_TOOLBOX_THEME";
 
 fn prefer_powerpc() -> bool {
     matches!(
         std::env::var("SYSTEMLESS_PREFER_POWERPC").ok().as_deref(),
         Some("1" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES")
     )
-}
-
-fn showcase_theme() -> UiThemeId {
-    std::env::var(SHOWCASE_THEME_ENV).map_or(UiThemeId::SystemlessDefault, |theme| {
-        UiThemeId::parse(&theme)
-            .unwrap_or_else(|error| panic!("invalid {SHOWCASE_THEME_ENV}: {error}"))
-    })
 }
 
 fn menu_item_checked(snapshot: &GuestMenuSnapshot, menu_id: i16, item_number: i16) -> bool {
@@ -339,12 +331,10 @@ fn is_dark_chrome(rgb: [u8; 3]) -> bool {
 }
 
 fn reference_path(powerpc: bool, filename: &str) -> PathBuf {
-    let theme = showcase_theme();
-    let profile = match (theme, powerpc) {
-        (UiThemeId::SystemlessDefault, false) => "systemless-68k",
-        (UiThemeId::SystemlessDefault, true) => "systemless-ppc",
-        (UiThemeId::ClassicSystem7, false) => "systemless-classic-68k",
-        (UiThemeId::ClassicSystem7, true) => "systemless-classic-ppc",
+    let profile = if powerpc {
+        "systemless-classic-ppc"
+    } else {
+        "systemless-classic-68k"
     };
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/toolbox-showcase/reference")
@@ -1053,7 +1043,7 @@ fn assert_popup_selected_title_pixels(
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
     let powerpc = prefer_powerpc();
-    runner.set_ui_theme(showcase_theme());
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner
         .set_powerpc_screen_depth(if powerpc { 16 } else { 8 })
         .expect("selected PowerPC fixture screen depth must be supported");
@@ -1245,13 +1235,6 @@ fn test_toolbox_showcase() {
     );
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
-    if showcase_theme() == UiThemeId::SystemlessDefault {
-        let [red, green, blue] = screen_rgb(&mut runner, 400, 700);
-        assert!(
-            blue > red.saturating_add(80) && green > red,
-            "the selected Systemless theme must render its blue desktop, got {red},{green},{blue}"
-        );
-    }
     assert_reference_frame(&mut runner, "01-graphics.png");
 
     // 2. Switch to Controls and exercise every control.

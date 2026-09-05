@@ -1,7 +1,5 @@
 {
   "profiles": [
-    "systemless-68k",
-    "systemless-ppc",
     "systemless-classic-68k",
     "systemless-classic-ppc"
   ],

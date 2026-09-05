@@ -1644,10 +1644,8 @@ pub struct FixtureRunnerConfig {
     /// Host presentation policy for the classic Mac menu bar. The default
     /// honors guest `MBarHeight` and fullscreen transitions.
     pub menu_bar_policy: MenuBarPolicy,
-    /// Selected UI rendering provider. The default `systemless-default`
-    /// provider changes presentation while preserving guest-visible Toolbox
-    /// behavior in classic metrics mode. Use `classic-system7` for the original
-    /// renderer.
+    /// Selected UI rendering provider. The default `classic-system7`
+    /// provider uses the original renderer and classic guest metrics.
     pub ui_theme: UiThemeId,
     /// Declares whether theme rendering preserves classic guest metrics or opts
     /// into future themed hit/measurement behavior.
@@ -1669,7 +1667,7 @@ impl Default for FixtureRunnerConfig {
             load_address: DEFAULT_LOAD_ADDRESS,
             arrows_as_numpad: false,
             menu_bar_policy: MenuBarPolicy::GuestControlled,
-            ui_theme: UiThemeId::SystemlessDefault,
+            ui_theme: UiThemeId::ClassicSystem7,
             theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
             addressing_32_bit: true,
             screen_depth: 8,
@@ -2286,9 +2284,8 @@ impl FixtureRunner {
         }
     }
 
-    /// Returns the selected UI theme provider. `systemless-default` is the
-    /// standard presentation; `classic-system7` maps to the original renderer
-    /// path for compatibility and reference snapshots.
+    /// Returns the selected UI theme provider. `classic-system7` is the
+    /// standard presentation; `systemless-default` remains optional.
     pub fn ui_theme(&self) -> &'static dyn UiTheme {
         self.config.ui_theme.provider()
     }
@@ -13946,15 +13943,15 @@ mod tests {
     }
 
     #[test]
-    fn fixture_runner_defaults_to_systemless_theme() {
+    fn fixture_runner_defaults_to_classic_theme() {
         let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        assert_eq!(runner.ui_theme_id(), UiThemeId::SystemlessDefault);
+        assert_eq!(runner.ui_theme_id(), UiThemeId::ClassicSystem7);
         assert_eq!(
             runner.dispatcher().ui_theme_id(),
-            UiThemeId::SystemlessDefault
+            UiThemeId::ClassicSystem7
         );
-        assert_eq!(runner.ui_theme().id(), UiThemeId::SystemlessDefault);
+        assert_eq!(runner.ui_theme().id(), UiThemeId::ClassicSystem7);
         assert_eq!(
             runner.theme_metrics_mode(),
             ThemeMetricsMode::ClassicGuestMetrics
