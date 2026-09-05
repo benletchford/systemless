@@ -16558,6 +16558,23 @@ mod tests {
         assert!(calls.complete_m68k(0x2002, 0x3000));
         runner.init_app(&app);
         assert!(runner.m68k.can_relaunch());
+        let worker = calls
+            .create_native_thread(
+                crate::guest_call::NativeThreadContext {
+                    cpu: Box::new(PpcCpu::new()),
+                    result_destination: 0,
+                    stack_base: 0,
+                },
+                true,
+                |_| true,
+            )
+            .unwrap();
+        let native_pc = runner.native.application().unwrap().cpu.pc;
+        let rejected =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runner.init_app(&app)));
+        assert!(rejected.is_err());
+        assert_eq!(runner.native.application().unwrap().cpu.pc, native_pc);
+        assert!(calls.scheduling_state(worker).is_some());
     }
 
     #[test]

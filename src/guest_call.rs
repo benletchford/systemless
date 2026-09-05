@@ -359,6 +359,15 @@ impl PartialEq for GuestCallFrame {
 
 impl Eq for GuestCallFrame {}
 
+/// Full native engine state is retained, including the CPU's private import
+/// continuations. The active CPU remains with its engine between task switches.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeThreadContext {
+    pub(crate) cpu: Box<PpcCpu>,
+    pub(crate) result_destination: u32,
+    pub(crate) stack_base: u32,
+}
+
 #[derive(Debug)]
 struct ExecutionTaskCalls {
     /// Authoritative task/order/phase state. The frame map below is only the
@@ -367,6 +376,7 @@ struct ExecutionTaskCalls {
     frames: HashMap<CallId, GuestCallFrame>,
     powerpc_contexts: ExecutionContextBank<Box<PpcCpu>>,
     cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
+    native_threads: ExecutionTaskContextBank<NativeThreadContext>,
 }
 
 impl Clone for ExecutionTaskCalls {
@@ -376,6 +386,7 @@ impl Clone for ExecutionTaskCalls {
             frames: self.frames.clone(),
             powerpc_contexts: self.powerpc_contexts.clone(),
             cooperative_contexts: self.cooperative_contexts.clone(),
+            native_threads: self.native_threads.clone(),
         }
     }
 }
@@ -386,6 +397,7 @@ impl PartialEq for ExecutionTaskCalls {
             && self.frames == other.frames
             && self.powerpc_contexts.same_slots(&other.powerpc_contexts)
             && self.cooperative_contexts == other.cooperative_contexts
+            && self.native_threads.same_tasks(&other.native_threads)
     }
 }
 
@@ -398,13 +410,16 @@ impl Default for ExecutionTaskCalls {
             frames: HashMap::new(),
             powerpc_contexts: ExecutionContextBank::default(),
             cooperative_contexts: ExecutionTaskContextBank::default(),
+            native_threads: ExecutionTaskContextBank::default(),
         }
     }
 }
 
 impl ExecutionTaskCalls {
     fn is_pristine(&self) -> bool {
-        self.kernel.is_pristine() && self.cooperative_contexts.is_empty()
+        self.kernel.is_pristine()
+            && self.cooperative_contexts.is_empty()
+            && self.native_threads.is_empty()
     }
 }
 
@@ -570,6 +585,7 @@ impl SharedGuestCallStack {
             return false;
         }
         tasks.cooperative_contexts.remove(task);
+        tasks.native_threads.remove(task);
         true
     }
 
@@ -582,6 +598,11 @@ impl SharedGuestCallStack {
         commit: impl FnOnce(&CooperativeThread) -> bool,
     ) -> Option<(CooperativeThread, Option<CooperativeThread>)> {
         let mut tasks = self.0.borrow_mut();
+        // Native stack/result ownership cannot be retired through the classic
+        // projection. Mixed-ISA disposal must use the owning task record.
+        if tasks.native_threads.get(task).is_some() {
+            return None;
+        }
         let finished = tasks.cooperative_contexts.get(task)?.clone();
         let next = match successor {
             Some(next) => Some(tasks.cooperative_contexts.get(next)?.clone()),
@@ -592,7 +613,109 @@ impl SharedGuestCallStack {
             .retire_task_with(task, successor, || commit(&finished))
             .ok()?;
         tasks.cooperative_contexts.remove(task);
+        tasks.native_threads.remove(task);
         Some((finished, next))
+    }
+
+    pub(crate) fn has_live_workers(&self) -> bool {
+        self.0.borrow().kernel.has_live_workers()
+    }
+
+    pub(crate) fn create_native_thread(
+        &self,
+        context: NativeThreadContext,
+        suspended: bool,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Option<ExecutionTaskId> {
+        let mut tasks = self.0.borrow_mut();
+        let task = tasks.kernel.create_task_with(commit).ok()?;
+        tasks.kernel.bind_task_entry_isa(task, GuestIsa::PowerPc);
+        tasks.native_threads.insert(task, context);
+        if !suspended {
+            assert!(tasks
+                .kernel
+                .set_scheduling_state(task, ExecutionTaskState::Ready));
+        }
+        Some(task)
+    }
+
+    /// Native ABI edge supplies the live CPU; the owner validates the next
+    /// snapshot before saving the return and committing the selected task.
+    pub(crate) fn yield_native_thread(
+        &self,
+        cpu: &mut PpcCpu,
+        suggested: u32,
+    ) -> Result<bool, i16> {
+        use crate::thread_manager::THREAD_PROTOCOL_ERR;
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.critical_depth() != 0 {
+            return Err(THREAD_PROTOCOL_ERR);
+        }
+        let current = tasks.kernel.current_task();
+        let Some(next) = tasks
+            .kernel
+            .next_ready_task((suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested)))
+        else {
+            return Ok(false);
+        };
+        let next_cpu = tasks
+            .native_threads
+            .get(next)
+            .ok_or(THREAD_PROTOCOL_ERR)?
+            .cpu
+            .clone();
+        let mut outgoing = cpu.clone();
+        outgoing.pc = outgoing.lr;
+        outgoing.gpr[3] = 0;
+        let mut saved = tasks
+            .native_threads
+            .get(current)
+            .cloned()
+            .unwrap_or(NativeThreadContext {
+                cpu: Box::new(outgoing.clone()),
+                result_destination: 0,
+                stack_base: 0,
+            });
+        saved.cpu = Box::new(outgoing);
+        tasks
+            .kernel
+            .switch_to_task(next)
+            .map_err(|_| THREAD_PROTOCOL_ERR)?;
+        tasks.native_threads.insert(current, saved);
+        let time_base = cpu.time_base().max(next_cpu.time_base());
+        *cpu = *next_cpu;
+        cpu.set_time_base(time_base);
+        Ok(true)
+    }
+
+    pub(crate) fn retire_native_thread(
+        &self,
+        task: ExecutionTaskId,
+        cpu: &mut PpcCpu,
+        commit: impl FnOnce(&NativeThreadContext) -> bool,
+    ) -> Option<NativeThreadContext> {
+        let mut tasks = self.0.borrow_mut();
+        let finished = tasks.native_threads.get(task)?.clone();
+        let successor = if task == tasks.kernel.current_task() {
+            let next = tasks.kernel.next_ready_task(None)?;
+            Some((next, tasks.native_threads.get(next)?.cpu.clone()))
+        } else {
+            None
+        };
+        tasks
+            .kernel
+            .retire_task_with(task, successor.as_ref().map(|(task, _)| *task), || {
+                commit(&finished)
+            })
+            .ok()?;
+        tasks.native_threads.remove(task);
+        tasks.cooperative_contexts.remove(task);
+        if let Some((_, next_cpu)) = successor {
+            let time_base = cpu.time_base().max(next_cpu.time_base());
+            *cpu = *next_cpu;
+            cpu.set_time_base(time_base);
+        }
+        Some(finished)
     }
 
     pub(crate) fn cooperative_context(&self, task: ExecutionTaskId) -> Option<CooperativeThread> {
@@ -1302,6 +1425,54 @@ mod tests {
         )
         .into_ppc_import_action()
         .expect("native PowerPC request should adapt to CallNative")
+    }
+
+    #[test]
+    fn native_yield_preflights_context_and_critical_state_before_saving_return() {
+        let calls = SharedGuestCallStack::default();
+        let mut cpu = PpcCpu::new();
+        cpu.pc = 0x1234;
+        cpu.lr = 0x4560;
+        cpu.gpr[3] = 99;
+        let worker = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    cpu: Box::new(PpcCpu::new()),
+                    result_destination: 0,
+                    stack_base: 0,
+                },
+                false,
+                |_| true,
+            )
+            .unwrap();
+        calls.begin_critical();
+        assert_eq!(
+            calls.yield_native_thread(&mut cpu, worker.thread_id()),
+            Err(-619)
+        );
+        assert_eq!(cpu.pc, 0x1234);
+        assert_eq!(cpu.gpr[3], 99);
+        assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+        assert!(calls.end_critical());
+        let classic = calls.create_task().unwrap();
+        assert!(calls.set_scheduling_state(classic, ExecutionTaskState::Ready));
+        assert_eq!(
+            calls.yield_native_thread(&mut cpu, classic.thread_id()),
+            Err(-619)
+        );
+        assert_eq!(cpu.pc, 0x1234);
+        assert_eq!(cpu.gpr[3], 99);
+        assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+        assert!(calls
+            .yield_native_thread(&mut cpu, worker.thread_id())
+            .unwrap());
+        assert_eq!(calls.current_task(), worker);
+        cpu.lr = 0x9000;
+        assert!(calls
+            .yield_native_thread(&mut cpu, ExecutionTaskId::APPLICATION.thread_id())
+            .unwrap());
+        assert_eq!(cpu.pc, 0x4560);
+        assert_eq!(cpu.gpr[3], 0);
     }
 
     #[test]

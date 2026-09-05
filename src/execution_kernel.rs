@@ -528,12 +528,24 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
     /// Allocate from the same monotonic namespace used by explicit registration.
     /// Exhaustion never wraps into aliases, the application task or retired IDs.
     pub(crate) fn create_task(&self) -> Result<ExecutionTaskId, ContinuationError> {
+        self.create_task_with(|_| true)
+    }
+
+    /// The synchronous commit must not reenter this owner or change state on
+    /// failure. Publish guest output only after preparation, before registration.
+    pub(crate) fn create_task_with(
+        &self,
+        commit: impl FnOnce(ExecutionTaskId) -> bool,
+    ) -> Result<ExecutionTaskId, ContinuationError> {
         let id = self
             .0
             .borrow()
             .next_task_id
             .ok_or(ContinuationError::TaskIdsExhausted)?;
         let task = ExecutionTaskId::from_thread_id(id);
+        if !commit(task) {
+            return Err(ContinuationError::TaskCommitRefused { task });
+        }
         self.register_task(task)?;
         Ok(task)
     }
@@ -615,6 +627,14 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         })
     }
 
+    pub(crate) fn has_live_workers(&self) -> bool {
+        self.0
+            .borrow()
+            .task_states
+            .keys()
+            .any(|task| *task != ExecutionTaskId::APPLICATION)
+    }
+
     pub(crate) fn scheduling_state(&self, task: ExecutionTaskId) -> Option<ExecutionTaskState> {
         self.0.borrow().task_states.get(&task).copied()
     }
@@ -688,7 +708,6 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
             .or_else(|| state.ready.iter().copied().find(|task| eligible(*task)))
     }
 
-    #[cfg(test)]
     pub(crate) fn critical_depth(&self) -> u32 {
         self.0.borrow().critical_depth
     }
@@ -1146,6 +1165,14 @@ impl<T> Default for ExecutionTaskContextBank<T> {
 }
 
 impl<T> ExecutionTaskContextBank<T> {
+    pub(crate) fn same_tasks<U>(&self, other: &ExecutionTaskContextBank<U>) -> bool {
+        self.by_task.len() == other.by_task.len()
+            && self
+                .by_task
+                .keys()
+                .all(|task| other.by_task.contains_key(task))
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.by_task.is_empty()
     }
@@ -1453,6 +1480,15 @@ mod tests {
         assert_eq!(store.next_ready_task(None), Some(worker));
         assert!(!store.end_critical());
         assert_eq!(store.critical_depth(), 0);
+    }
+
+    #[test]
+    fn refused_task_creation_does_not_consume_identity_or_publish_state() {
+        let store = Store::default();
+        let before = store.clone();
+        assert!(store.create_task_with(|_| false).is_err());
+        assert_eq!(store, before);
+        assert_eq!(store.create_task().unwrap().thread_id(), 3);
     }
 
     #[test]

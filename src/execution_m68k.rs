@@ -26,7 +26,7 @@ impl M68kExecution {
 
     /// A launch cannot discard contexts still associated with live calls.
     pub(crate) fn can_relaunch(&self) -> bool {
-        self.parked.is_empty() && self.calls.is_empty()
+        self.parked.is_empty() && self.calls.is_empty() && !self.calls.has_live_workers()
     }
 
     /// Validate and park the outgoing context before installing the callback.

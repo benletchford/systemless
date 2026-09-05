@@ -934,7 +934,7 @@ pub(crate) struct OsTrapDispatchFrame {
 /// and the size reported by `GetDefaultThreadStackSize`. The 68K Thread
 /// Manager's own default is a small multiple of a page; 32K comfortably
 /// covers the Toolbox call depth Systemless threads reach.
-pub(crate) const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
+pub(crate) use crate::thread_manager::DEFAULT_COOPERATIVE_THREAD_STACK_SIZE;
 
 /// In-flight AppleEvent handler call. Built by Pack8 routine 27
 /// (`AEProcessAppleEvent`) when it dispatches a registered handler;

@@ -6,6 +6,8 @@
 use crate::execution_kernel::ExecutionTaskState;
 use crate::guest_call::{ExecutionTaskId, SharedGuestCallStack};
 
+pub(crate) const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
+
 // Inside Macintosh: Thread Manager (1999), p. 101.
 pub(crate) const THREAD_NOT_FOUND_ERR: i16 = -618;
 pub(crate) const THREAD_PROTOCOL_ERR: i16 = -619;
