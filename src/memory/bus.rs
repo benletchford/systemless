@@ -1316,16 +1316,27 @@ impl MacMemoryBus {
     /// range as `Flat` and retains its write probes, protection checks, and
     /// direct slice paths. A shared mapping that is outside this bus's RAM is
     /// left as `Shared` and is serviced through the attached view.
+    ///
+    /// Every bus read and write starts here, so the common case, no foreign
+    /// address space attached, is decided inline from the translated address
+    /// and the RAM size; only an attached space pays the out-of-line router.
     #[inline]
     fn route(&self, address: u32, len: usize) -> GuestMemoryRoute {
         // The neutral router receives the translated start plus a length, but
         // 24-bit mode wraps at $0100_0000.  A range crossing that boundary is
         // necessarily mixed and must use the byte-wise bus path even when
         // the backing RAM itself is larger than 16 MiB.
-        if self.range_translates_contiguously(address, len).is_none() {
+        let Some(translated) = self.range_translates_contiguously(address, len) else {
             return GuestMemoryRoute::Mixed;
+        };
+        if self.foreign_address_space.is_none() {
+            return flat_memory_route(translated, len, self.ram_size);
         }
-        let translated = self.translate_guest_address(address);
+        self.route_through_foreign_space(translated, len)
+    }
+
+    #[inline(never)]
+    fn route_through_foreign_space(&self, translated: u32, len: usize) -> GuestMemoryRoute {
         let Some(memory) = self.foreign_address_space.as_ref() else {
             return flat_memory_route(translated, len, self.ram_size);
         };
