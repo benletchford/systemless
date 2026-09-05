@@ -32,12 +32,79 @@ fn no_visrgn_auto_expand_enabled() -> bool {
 }
 
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
-/// Device indices of the menu mark's colours, valid while the colour
-/// environment they were resolved in (see `color_environment_digest`) is
-/// unchanged.
+/// A host-side copy of the main device's colour table, refreshed whenever the
+/// colour environment (see `color_environment_digest`) changes. Screen chrome
+/// resolves its colours against it with exactly the semantics of the bus scan
+/// (`fb_pixel_index_for_rgb_in_ctab_with_entry_count` with 256 entries): the
+/// black and white shortcuts, the first exact match in table order, else the
+/// nearest entry with the lowest index. Rebuilding it costs one bulk read of
+/// the table; without it every chrome colour cost a full scan through the bus.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ColorTableMirror {
+    pub(crate) digest: u64,
+    pub(crate) present: bool,
+    device_table: bool,
+    /// (value, rgb) per entry in table order.
+    entries: Vec<(u16, [u16; 3])>,
+    depth: u16,
+}
+
+impl ColorTableMirror {
+    fn luma_of_value(&self, wanted: u8) -> Option<u32> {
+        let ordinal = usize::from(wanted);
+        if let Some(&(value, rgb)) = self.entries.get(ordinal) {
+            if self.device_table || value == u16::from(wanted) {
+                return Some(u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]));
+            }
+        }
+        self.entries
+            .iter()
+            .find(|(value, _)| *value == u16::from(wanted))
+            .map(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
+    }
+
+    /// The device index for `rgb`, as the bus scan would answer it.
+    pub(crate) fn pixel_index_for_rgb(&self, rgb: [u16; 3]) -> Option<u8> {
+        if !self.present {
+            return None;
+        }
+        if rgb == [0, 0, 0] && self.luma_of_value(255) == Some(0) {
+            return Some(255);
+        }
+        if rgb == [0xFFFF, 0xFFFF, 0xFFFF] && self.luma_of_value(0) == Some(0xFFFF * 3) {
+            return Some(0);
+        }
+        let mut best_index = None;
+        let mut best_distance = u64::MAX;
+        for (ordinal, &(value, entry_rgb)) in self.entries.iter().enumerate() {
+            let value = if self.device_table { ordinal as u16 } else { value };
+            if usize::from(value) >= 256 {
+                continue;
+            }
+            let index = value as u8;
+            if entry_rgb == rgb {
+                return Some(index);
+            }
+            let dr = i64::from(entry_rgb[0]) - i64::from(rgb[0]);
+            let dg = i64::from(entry_rgb[1]) - i64::from(rgb[1]);
+            let db = i64::from(entry_rgb[2]) - i64::from(rgb[2]);
+            let distance = (dr * dr + dg * dg + db * db) as u64;
+            if distance < best_distance
+                || (distance == best_distance && best_index.map_or(true, |best| index < best))
+            {
+                best_distance = distance;
+                best_index = Some(index);
+            }
+        }
+        best_index
+    }
+}
+
+/// Device indices of the menu mark's colours together with the colours they
+/// were resolved from; valid while each colour still resolves to the same
+/// index through the mirror.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MenuMarkIndexCache {
-    pub(crate) digest: u64,
     pub(crate) indices: [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()],
 }
 
@@ -2805,7 +2872,9 @@ impl super::TrapDispatcher {
     /// the depth, so a colour-to-grayscale change at the same depth keeps it.
     /// One bulk read of the table per digest is far cheaper than the scans
     /// the caches avoid.
-    pub(super) fn color_environment_digest(&self, bus: &MacMemoryBus) -> u64 {
+    /// The digest together with the table's header and entry bytes, so a
+    /// mirror refresh does not read the table twice.
+    fn color_environment(&self, bus: &MacMemoryBus) -> (u64, Option<(u32, [u8; 8], Vec<u8>)>) {
         const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
         let mut digest = FNV_OFFSET;
@@ -2817,21 +2886,77 @@ impl super::TrapDispatcher {
         };
         let (_, _, _, _, depth) = self.screen_mode;
         mix(&depth.to_le_bytes());
-        if let Some(ctab) = Self::main_gdevice_ctab(bus) {
-            let entries = usize::from(bus.read_word(ctab + 6)).saturating_add(1).min(256);
+        let table = if let Some(ctab) = Self::main_gdevice_ctab(bus) {
+            let mut header = [0u8; 8];
+            bus.read_bytes_into(ctab, &mut header);
+            let entries = usize::from(u16::from_be_bytes([header[6], header[7]]))
+                .saturating_add(1)
+                .min(256);
             let mut bytes = vec![0u8; entries * 8];
             bus.read_bytes_into(ctab + 8, &mut bytes);
             mix(&ctab.to_le_bytes());
+            mix(&header[4..8]);
             mix(&bytes);
+            Some((ctab, header, bytes))
         } else {
             mix(&[0xFF]);
-        }
+            None
+        };
         for rgb in self.device_clut.iter() {
             for channel in rgb {
                 mix(&channel.to_le_bytes());
             }
         }
-        digest
+        (digest, table)
+    }
+
+    /// Bring the colour-table mirror up to date and run `f` against it.
+    pub(super) fn with_color_mirror<R>(
+        &self,
+        bus: &MacMemoryBus,
+        f: impl FnOnce(&ColorTableMirror) -> R,
+    ) -> R {
+        if self.color_mirror_fresh.get() {
+            // Inside a chrome pass the table cannot change: reuse the mirror
+            // refreshed at the start of the pass.
+            return f(&self.color_mirror.borrow());
+        }
+        self.refresh_color_mirror(bus);
+        f(&self.color_mirror.borrow())
+    }
+
+    /// Bring the mirror up to date with the colour environment now.
+    pub(super) fn refresh_color_mirror(&self, bus: &MacMemoryBus) {
+        let (digest, table) = self.color_environment(bus);
+        let mut mirror = self.color_mirror.borrow_mut();
+        if mirror.digest != digest || mirror.entries.is_empty() && table.is_some() {
+            mirror.digest = digest;
+            mirror.depth = self.screen_mode.4;
+            match table {
+                Some((_, header, bytes)) => {
+                    mirror.present = true;
+                    mirror.device_table = (u16::from_be_bytes([header[4], header[5]]) & 0x8000) != 0;
+                    mirror.entries = bytes
+                        .chunks_exact(8)
+                        .map(|e| {
+                            (
+                                u16::from_be_bytes([e[0], e[1]]),
+                                [
+                                    u16::from_be_bytes([e[2], e[3]]),
+                                    u16::from_be_bytes([e[4], e[5]]),
+                                    u16::from_be_bytes([e[6], e[7]]),
+                                ],
+                            )
+                        })
+                        .collect();
+                }
+                None => {
+                    mirror.present = false;
+                    mirror.device_table = false;
+                    mirror.entries.clear();
+                }
+            }
+        }
     }
 
     /// The menu mark's colours resolved through the main device's colour
@@ -2842,19 +2967,14 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
     ) -> [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()] {
-        let digest = self.color_environment_digest(bus);
-        if let Some(cached) = self.menu_mark_indices.get() {
-            if cached.digest == digest {
-                return cached.indices;
-            }
-        }
-        let indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
-            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
-                super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+        let indices = self.with_color_mirror(bus, |mirror| {
+            crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+                mirror.pixel_index_for_rgb(rgb).unwrap_or_else(|| {
+                    super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+                })
             })
         });
-        self.menu_mark_indices
-            .set(Some(MenuMarkIndexCache { digest, indices }));
+        self.menu_mark_indices.set(Some(MenuMarkIndexCache { indices }));
         indices
     }
 
@@ -5001,6 +5121,15 @@ impl super::TrapDispatcher {
     /// the chrome and should be called after each frame of emulation.
     pub fn redraw_chrome(&mut self, bus: &mut MacMemoryBus) {
         self.refresh_menu_bar_policy_from_guest(bus);
+        // One colour-table read per chrome pass serves every colour lookup
+        // in it; nothing in the pass writes the table.
+        self.refresh_color_mirror(bus);
+        self.color_mirror_fresh.set(true);
+        self.redraw_chrome_inner(bus);
+        self.color_mirror_fresh.set(false);
+    }
+
+    fn redraw_chrome_inner(&mut self, bus: &mut MacMemoryBus) {
 
         // Blit front window's port pixels to screen framebuffer if they differ.
         // On real Mac OS the Window Manager composites windows to the screen.
@@ -5754,31 +5883,78 @@ mod redraw_chrome_tests {
         bus.write_long(0x08A4, main); // MainDevice
         let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
 
+        let scan = |bus: &crate::memory::MacMemoryBus| {
+            crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+                TrapDispatcher::fb_main_screen_pixel_index_for_rgb(bus, rgb).expect("resolves")
+            })
+        };
         let first = disp.menu_mark_palette_indices(&bus);
-        let cached = disp
-            .menu_mark_indices
-            .get()
-            .expect("resolved indices are cached");
-        assert_eq!(cached.indices, first);
+        assert_eq!(first, scan(&bus), "the mirror answers like the bus scan");
+        assert_eq!(disp.menu_mark_indices.get().map(|cache| cache.indices), Some(first));
 
-        // Same environment: served from the cache. Poison the cached indices
-        // to prove no lookup happens.
-        disp.menu_mark_indices.set(Some(super::MenuMarkIndexCache {
-            indices: [9; 4],
-            ..cached
-        }));
-        assert_eq!(disp.menu_mark_palette_indices(&bus), [9; 4]);
-
-        // An entry rewritten in place, seed untouched: resolved again.
-        let entry = ctab + 8 + 8 * 200;
-        bus.write_word(entry + 2, bus.read_word(entry + 2) ^ 0x0F0F);
+        // An entry the mark uses, rewritten in place with the seed untouched:
+        // the next resolution follows the table, exactly as a scan would.
+        let entry = ctab + 8 + 8 * u32::from(first[0]);
+        bus.write_word(entry + 2, 0xFFFF);
+        bus.write_word(entry + 4, 0x0000);
+        bus.write_word(entry + 6, 0xFFFF);
         let fresh = disp.menu_mark_palette_indices(&bus);
-        assert_ne!(fresh, [9; 4], "a changed table is not served from the cache");
-        assert_ne!(
-            disp.menu_mark_indices.get().map(|cache| cache.digest),
-            Some(cached.digest)
-        );
-        assert_eq!(fresh, first, "the mark's colours were not the entry that changed");
+        assert_eq!(fresh, scan(&bus));
+        assert_ne!(fresh, first, "the moved colour resolves elsewhere now");
+    }
+
+    #[test]
+    fn color_mirror_answers_exactly_like_the_bus_scan() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut disp = TrapDispatcher::new();
+        let base = bus.alloc(16 * 16);
+        disp.set_screen_mode_for_test(base, 16, 16, 16, 8);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main); // MainDevice
+        let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
+        // A non-device table with out-of-order values, a duplicate colour and
+        // a value above the index range, plus black/white at the ends.
+        let entries: [(u16, [u16; 3]); 8] = [
+            (0, [0xFFFF, 0xFFFF, 0xFFFF]),
+            (5, [0x1111, 0x2222, 0x3333]),
+            (3, [0x1111, 0x2222, 0x3333]),
+            (300, [0x4444, 0x4444, 0x4444]),
+            (9, [0x8888, 0x0000, 0x0000]),
+            (2, [0x8000, 0x0000, 0x0000]),
+            (7, [0x1234, 0x5678, 0x9ABC]),
+            (255, [0, 0, 0]),
+        ];
+        bus.write_word(ctab + 4, 0); // not a device table: values map indices
+        bus.write_word(ctab + 6, entries.len() as u16 - 1);
+        for (ordinal, (value, rgb)) in entries.iter().enumerate() {
+            let entry = ctab + 8 + ordinal as u32 * 8;
+            bus.write_word(entry, *value);
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
+        let probes: [[u16; 3]; 8] = [
+            [0, 0, 0],
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            [0x1111, 0x2222, 0x3333],
+            [0x4444, 0x4444, 0x4444],
+            [0x8100, 0, 0],
+            [0x8700, 0, 0],
+            [0x1234, 0x5678, 0x9ABC],
+            [0x7000, 0x7000, 0x7000],
+        ];
+        for rgb in probes {
+            let scanned = TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, rgb);
+            let mirrored = disp.with_color_mirror(&bus, |mirror| mirror.pixel_index_for_rgb(rgb));
+            assert_eq!(mirrored, scanned, "probe {rgb:04X?}");
+        }
+        // Device-table flag: values are ordinals.
+        bus.write_word(ctab + 4, 0x8000);
+        for rgb in probes {
+            let scanned = TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, rgb);
+            let mirrored = disp.with_color_mirror(&bus, |mirror| mirror.pixel_index_for_rgb(rgb));
+            assert_eq!(mirrored, scanned, "device-table probe {rgb:04X?}");
+        }
     }
 
     #[test]
