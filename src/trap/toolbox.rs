@@ -1039,6 +1039,69 @@ fn force_button_true_at_pc() -> Option<u32> {
     })
 }
 
+/// Classic ABI edge for the migrated CFM enumeration selectors.
+fn dispatch_cfm_symbols<C: CpuOps>(
+    cpu: &mut C,
+    bus: &mut MacMemoryBus,
+    cfm: Option<&crate::cfm::CfmState>,
+) -> Result<()> {
+    use crate::cfm::CfmSymbolQuery;
+    let sp = cpu.read_reg(Register::A7);
+    if sp.checked_add(1).is_none() || !bus.is_guest_address_mapped(sp, 2) {
+        cpu.write_reg(Register::D0, (-50i32) as u32);
+        return Ok(());
+    }
+    let selector = bus.read_word(sp);
+    let argument_bytes = match selector {
+        6 => 8,
+        7 => 20,
+        // Unmigrated selectors retain the legacy compatibility stub.
+        _ => return return_noerr(cpu),
+    };
+    let Some(cfm) = cfm else {
+        return Err(Error::UnimplementedTrap(0xAA5A));
+    };
+    let Some(result_slot) = sp.checked_add(2 + argument_bytes) else {
+        cpu.write_reg(Register::D0, (-50i32) as u32);
+        return Ok(());
+    };
+    if result_slot.checked_add(1).is_none()
+        || !bus.is_guest_address_mapped(sp, (2 + argument_bytes) as usize)
+        || !bus.is_guest_address_writable(result_slot, 2)
+    {
+        cpu.write_reg(Register::D0, (-50i32) as u32);
+        return Ok(());
+    }
+    let query = if selector == 6 {
+        CfmSymbolQuery::Count {
+            connection: bus.read_long(sp + 6),
+            count: bus.read_long(sp + 2),
+        }
+    } else {
+        CfmSymbolQuery::Indexed {
+            connection: bus.read_long(sp + 18),
+            index: bus.read_long(sp + 14),
+            name: bus.read_long(sp + 10),
+            address: bus.read_long(sp + 6),
+            class: bus.read_long(sp + 2),
+        }
+    };
+    let result = query.complete(&cfm.connections, |writes| {
+        let success = 0u16.to_be_bytes();
+        let mut writes = writes.to_vec();
+        writes.push((result_slot, &success));
+        bus.try_write_ranges_atomic(&writes)
+    });
+    let error = result.err().map_or(0, |error| error.os_error());
+    if error != 0 {
+        // All semantic outputs remain unchanged when their transaction fails.
+        let _ = bus.try_write_word(result_slot, error as u16);
+    }
+    cpu.write_reg(Register::A7, result_slot);
+    cpu.write_reg(Register::D0, error as i32 as u32);
+    Ok(())
+}
+
 impl super::TrapDispatcher {
     /// Whether `SystemTask` currently has periodic Desk Manager work to do.
     ///
@@ -4934,12 +4997,24 @@ impl super::TrapDispatcher {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn dispatch_toolbox<C: CpuOps>(
         &mut self,
         is_tool: bool,
         trap_num: u16,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
+        self.dispatch_toolbox_with_process_services(is_tool, trap_num, cpu, bus, None)
+    }
+
+    pub(crate) fn dispatch_toolbox_with_process_services<C: CpuOps>(
+        &mut self,
+        is_tool: bool,
+        trap_num: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        cfm: Option<&crate::cfm::CfmState>,
     ) -> Option<Result<()>> {
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
@@ -11787,7 +11862,7 @@ impl super::TrapDispatcher {
                         | 0x0060
                         | 0x0064
                 ) {
-                    return self.dispatch_toolbox(true, 0x1E7, cpu, bus);
+                    return self.dispatch_toolbox_with_process_services(true, 0x1E7, cpu, bus, cfm);
                 }
                 match selector {
                     // PROCEDURE LActivate(act: BOOLEAN;
@@ -15970,34 +16045,15 @@ impl super::TrapDispatcher {
                 crate::mixed_mode::enter_m68k_routine_descriptor(cpu, bus, &self.guest_calls)
             }
 
-            // CodeFragmentDispatch ($AA5A) — Code Fragment Manager
-            // Inside Macintosh: PowerPC System Software 1994
-            // (PPC SS 1994 ch.6, Gestalt cite line 1770: "if you
-            // need to know whether the Code Fragment Manager is
-            // available, you can call the Gestalt function with the
-            // selector gestaltCFMAttr"; constant cite line 4736:
-            // `#define gestaltCFMAttr 'cfrg'`).
-            // The CFM resolves and connects PowerPC code fragments
-            // ('cfrg' resources) — the loader for PowerPC native
-            // executables and shared libraries (PEF format).
-            // Selector convention: D0 = routine number; routines
-            // include GetSharedLibrary, GetDiskFragment, FindSymbol,
-            // CountSymbols, GetIndSymbol, CloseConnection, etc.
-            // Gestalt: `gestaltCFMAttr = 'cfrg'`,
-            // `gestaltCFMPresent = 0` (response bit 0).
-            //
-            // HLE behaviour: D0=0 (noErr), all other registers
-            // preserved, stack untouched. Systemless is a 68K-only HLE
-            // — apps that probe Gestalt see 'cfrg' undefined and
-            // either fall back to the 68K code path or refuse to
-            // launch. PPC fat binaries with 68K-fork still execute
-            // because the loader picks the 68K fork when CFM is
-            // absent.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::codefragmentdispatch_*
-            // CodeFragmentDispatch (CFM) ($AA5A): PPC SS 1994 ch.6 1770. D0 selector. Gestalt 'cfrg' → gestaltCFMPresent=0. HLE: D0=0, registers + stack preserved (68K-only — fat binaries fall back to 68K fork).
-            (true, 0x25A) => return_noerr(cpu),
+            // CodeFragmentDispatch ($AA5A)
+            // Enumerates exports in a process CFM connection.
+            // OSErr CountSymbols(ConnectionID connID, long *symCount);
+            // OSErr GetIndSymbol(ConnectionID connID, long symIndex,
+            //                    Str255 symName, Ptr *symAddr, SymClass *symClass);
+            // PowerPC System Software (1994), pp. 3-25–3-26. Universal
+            // Interfaces 3.4, CodeFragments.h: $3F3C,$0006/$0007,$AA5A
+            // pushes a word selector before the Pascal argument frame.
+            (true, 0x25A) => dispatch_cfm_symbols(cpu, bus, cfm),
 
             // IconDispatch ($ABC9)
             // Dispatches Icon Utilities routines selected by the low word of D0.
@@ -16994,6 +17050,114 @@ mod tests {
             sp_before,
             "MethodDispatch should preserve the caller stack pointer"
         );
+    }
+
+    #[test]
+    fn cfm_symbol_enumeration_uses_stack_selectors_and_atomic_pascal_results() {
+        use crate::cfm::{CfmConnection, CfmExport, CfmState};
+        use crate::memory::GuestAddressSpace;
+        const STACK: u32 = 0x0100_0000;
+        const OUTPUT: u32 = STACK + 0x100;
+        let cfm = CfmState {
+            connections: vec![CfmConnection {
+                id: 7,
+                library_name: "fragment".into(),
+                main_addr: 0,
+                init_addr: 0,
+                term_addr: 0,
+                exports: vec![CfmExport {
+                    name: "Café™".into(),
+                    class: 1,
+                    address: 0x1234_5678,
+                }],
+            }],
+            ..Default::default()
+        };
+        for selector in [6, 7] {
+            for fault in 0..7 {
+                let (mut disp, mut cpu, mut bus) = setup();
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(STACK, vec![0xa5; 0x200]);
+                bus.set_addressing_32_bit(true);
+                bus.attach_guest_address_space(memory.shared_view());
+                let result_slot = STACK + if selector == 6 { 10 } else { 22 };
+                bus.write_word(STACK, selector);
+                if selector == 6 {
+                    bus.write_long(STACK + 2, OUTPUT);
+                    bus.write_long(STACK + 6, if fault == 1 { 99 } else { 7 });
+                } else {
+                    bus.write_long(STACK + 2, OUTPUT + 40);
+                    bus.write_long(STACK + 6, OUTPUT + 32);
+                    bus.write_long(STACK + 10, OUTPUT);
+                    bus.write_long(STACK + 14, if fault == 2 { 0 } else { 1 });
+                    bus.write_long(STACK + 18, if fault == 1 { 99 } else { 7 });
+                }
+                if fault == 3 {
+                    memory.add_readonly_region(OUTPUT, vec![0xa5]);
+                }
+                if fault == 4 {
+                    memory.add_readonly_region(result_slot, vec![0xa5; 2]);
+                }
+                let initial_sp = if fault == 5 { u32::MAX - 7 } else { STACK };
+                cpu.write_reg(Register::A7, initial_sp);
+                cpu.write_reg(Register::D0, 0xdead_beef); // D0 is not the selector.
+                cpu.write_reg(Register::D1, 0x1122_3344);
+                cpu.write_reg(Register::A0, 0x5566_7788);
+                let before: Vec<_> = (0..64).map(|i| bus.read_byte(OUTPUT + i)).collect();
+                let result = if fault == 6 {
+                    disp.dispatch(0xAA5A, &mut cpu, &mut bus)
+                } else {
+                    disp.dispatch_with_process_services(0xAA5A, &mut cpu, &mut bus, &cfm)
+                };
+                if fault == 6 {
+                    assert!(matches!(
+                        result,
+                        Err(crate::Error::UnimplementedTrap(0xAA5A))
+                    ));
+                    assert_eq!(cpu.read_reg(Register::A7), initial_sp);
+                    assert_eq!(cpu.read_reg(Register::D0), 0xdead_beef);
+                } else {
+                    assert!(result.is_ok());
+                    let error: i16 = match fault {
+                        1 => -2801,
+                        2 if selector == 7 => -2802,
+                        3..=5 => -50,
+                        _ => 0,
+                    };
+                    assert_eq!(cpu.read_reg(Register::D0), error as i32 as u32);
+                    assert_eq!(
+                        cpu.read_reg(Register::A7),
+                        if matches!(fault, 4 | 5) {
+                            initial_sp
+                        } else {
+                            result_slot
+                        }
+                    );
+                    if !matches!(fault, 4 | 5) {
+                        assert_eq!(bus.read_word(result_slot), error as u16);
+                    }
+                    if error == 0 {
+                        if selector == 6 {
+                            assert_eq!(bus.read_long(OUTPUT), 1);
+                        } else {
+                            assert_eq!(bus.read_byte(OUTPUT), 5);
+                            assert_eq!(bus.read_long(OUTPUT + 32), 0x1234_5678);
+                            assert_eq!(bus.read_byte(OUTPUT + 40), 1);
+                        }
+                    }
+                }
+                if matches!(fault, 1 | 3..=6) || (fault == 2 && selector == 7) {
+                    assert_eq!(
+                        (0..64)
+                            .map(|i| bus.read_byte(OUTPUT + i))
+                            .collect::<Vec<_>>(),
+                        before
+                    );
+                }
+                assert_eq!(cpu.read_reg(Register::D1), 0x1122_3344);
+                assert_eq!(cpu.read_reg(Register::A0), 0x5566_7788);
+            }
+        }
     }
 
     #[test]

@@ -1088,6 +1088,8 @@ pub enum PpcImportDispatcherTarget {
     Gestalt,
     GetSharedLibrary,
     FindSymbol,
+    CountSymbols,
+    GetIndSymbol,
     CloseConnection,
     GetMemFragment,
     InitCursor,
@@ -14494,6 +14496,14 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::FindSymbol,
         (
             "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
+            "CountSymbols",
+        ) => PpcImportDispatcherTarget::CountSymbols,
+        (
+            "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
+            "GetIndSymbol",
+        ) => PpcImportDispatcherTarget::GetIndSymbol,
+        (
+            "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
             "CloseConnection",
         ) => PpcImportDispatcherTarget::CloseConnection,
         ("InterfaceLib", "GetMemFragment") => PpcImportDispatcherTarget::GetMemFragment,
@@ -21013,6 +21023,30 @@ fn dispatch_supported_import(
             import_count,
             import_binding_indices,
         )),
+        PpcImportDispatcherTarget::CountSymbols | PpcImportDispatcherTarget::GetIndSymbol => {
+            // PowerPC System Software (1994), pp. 3-25–3-26. Only the ABI
+            // registers and return encoding belong in this adapter.
+            use crate::cfm::{CfmMemory, CfmSymbolQuery};
+            let query = if binding.dispatcher_target == PpcImportDispatcherTarget::CountSymbols {
+                CfmSymbolQuery::Count {
+                    connection: cpu.gpr[3],
+                    count: cpu.gpr[4],
+                }
+            } else {
+                CfmSymbolQuery::Indexed {
+                    connection: cpu.gpr[3],
+                    index: cpu.gpr[4],
+                    name: cpu.gpr[5],
+                    address: cpu.gpr[6],
+                    class: cpu.gpr[7],
+                }
+            };
+            let result =
+                query.complete(cfm_connections, |writes| memory.publish_cfm_outputs(writes));
+            Some(PpcImportAction::Return(ppc_i16_result(
+                result.err().map_or(0, |error| error.os_error()),
+            )))
+        }
         PpcImportDispatcherTarget::CloseConnection => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_close_connection(cpu, memory, cfm_connections)),
         )),
@@ -113139,6 +113173,106 @@ pub(crate) mod tests {
             Some(PPC_CFM_MAIN_STUB_BASE)
         );
         assert_eq!(loaded.cfm.as_ref().unwrap().connections.len(), 1);
+    }
+
+    #[test]
+    fn cfm_symbol_enumeration_imports_route_aliases_and_preserve_failed_outputs() {
+        for library in [
+            "InterfaceLib",
+            "CodeFragmentMgr",
+            "CarbonCore.vlib",
+            "CFMPriv_CarbonCore",
+        ] {
+            for count in [false, true] {
+                let name = if count {
+                    "CountSymbols"
+                } else {
+                    "GetIndSymbol"
+                };
+                for fault in 0..4 {
+                    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+                        library.as_bytes(),
+                        name.as_bytes(),
+                    ))
+                    .unwrap();
+                    const OUTPUT: u32 = PPC_HEAP_BASE + 0x100;
+                    loaded.memory.add_region(OUTPUT, vec![0xa5; 64]);
+                    loaded
+                        .cfm
+                        .as_mut()
+                        .unwrap()
+                        .connections
+                        .push(PpcCfmConnection {
+                            id: 7,
+                            library_name: "fixture".into(),
+                            main_addr: 0,
+                            init_addr: 0,
+                            term_addr: 0,
+                            exports: vec![PpcCfmExport {
+                                name: "Café™".into(),
+                                class: 2,
+                                address: 0x1234_5678,
+                            }],
+                        });
+                    loaded.cpu.gpr[3] = if fault == 1 { 99 } else { 7 };
+                    loaded.cpu.gpr[4] = if count {
+                        OUTPUT
+                    } else if fault == 2 {
+                        2
+                    } else {
+                        1
+                    };
+                    loaded.cpu.gpr[5] = OUTPUT;
+                    loaded.cpu.gpr[6] = OUTPUT + 32;
+                    loaded.cpu.gpr[7] = OUTPUT + 40;
+                    if fault == 3 {
+                        loaded
+                            .memory
+                            .add_readonly_region(OUTPUT + if count { 1 } else { 40 }, vec![0xa5]);
+                    }
+                    let probe = loaded.run_with_hle_imports(128);
+                    assert_eq!(probe.handled_import_count, 1, "{library} {name}");
+                    assert_eq!(probe.unsupported_import_index, None);
+                    let error: i16 = match fault {
+                        1 => -2801,
+                        2 if !count => -2802,
+                        3 => -50,
+                        _ => 0,
+                    };
+                    assert_eq!(loaded.cpu.gpr[3], error as i32 as u32);
+                    if error != 0 {
+                        assert!((0..64).all(|i| loaded.memory.read_u8(OUTPUT + i) == Some(0xa5)));
+                    } else if count {
+                        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(1));
+                    } else {
+                        assert_eq!(loaded.memory.read_u32_be(OUTPUT + 32), Some(0x1234_5678));
+                        assert_eq!(loaded.memory.read_u8(OUTPUT + 40), Some(2));
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn synthetic_pef_with_enumerable_exports() -> Vec<u8> {
+        let name = b"Caf\x8e\xaa";
+        let strings_offset = 56usize;
+        let hash_offset = strings_offset + name.len() + 1;
+        let key_offset = hash_offset + 4;
+        let symbol_offset = key_offset + 4;
+        let mut loader = vec![0; symbol_offset + 10];
+        write_i32(&mut loader, 0, -1);
+        write_i32(&mut loader, 8, -1);
+        write_i32(&mut loader, 16, -1);
+        write_u32(&mut loader, 40, strings_offset as u32);
+        write_u32(&mut loader, 44, hash_offset as u32);
+        write_u32(&mut loader, 52, 1);
+        loader[strings_offset..strings_offset + name.len()].copy_from_slice(name);
+        write_u32(&mut loader, hash_offset, 1 << 18);
+        write_u32(&mut loader, key_offset, (name.len() as u32) << 16);
+        write_u32(&mut loader, symbol_offset, 1 << 24); // data, string offset zero
+        write_u32(&mut loader, symbol_offset + 4, 0x1234_5678);
+        write_u16(&mut loader, symbol_offset + 8, (-2i16) as u16); // absolute export
+        synthetic_pef_with_loader_and_data(loader, &[0; 8])
     }
 
     #[test]

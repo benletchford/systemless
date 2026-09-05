@@ -7529,6 +7529,26 @@ impl TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Result<()> {
+        self.dispatch_inner(trap, cpu, bus, None)
+    }
+
+    pub(crate) fn dispatch_with_process_services<C: CpuOps>(
+        &mut self,
+        trap: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        cfm: &crate::cfm::CfmState,
+    ) -> Result<()> {
+        self.dispatch_inner(trap, cpu, bus, Some(cfm))
+    }
+
+    fn dispatch_inner<C: CpuOps>(
+        &mut self,
+        trap: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        cfm: Option<&crate::cfm::CfmState>,
+    ) -> Result<()> {
         // Low-memory Ticks is guest-owned writable state. Import it at the
         // ABI boundary before any manager, trace, or diagnostic path observes
         // the process clock so a direct guest store cannot be shadowed by a
@@ -7970,7 +7990,7 @@ impl TrapDispatcher {
                     })
             })
             .or_else(|| {
-                self.dispatch_toolbox(is_tool, trap_num, cpu, bus)
+                self.dispatch_toolbox_with_process_services(is_tool, trap_num, cpu, bus, cfm)
                     .map(|result| {
                         selected_adapter = TrapAdapterId::Toolbox;
                         result

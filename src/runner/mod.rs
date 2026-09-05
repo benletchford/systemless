@@ -6238,7 +6238,12 @@ impl FixtureRunner {
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
                     let dispatch_result = self.dispatcher.with_process_state(|dispatcher| {
-                        dispatcher.dispatch(opcode, &mut self.m68k.cpu, &mut self.bus)
+                        dispatcher.dispatch_with_process_services(
+                            opcode,
+                            &mut self.m68k.cpu,
+                            &mut self.bus,
+                            self.process_context.cfm(),
+                        )
                     });
                     match dispatch_result {
                         Ok(()) => {
@@ -7018,7 +7023,12 @@ impl FixtureRunner {
                     }
                     let dispatch_err = self.dispatcher.with_process_state(|dispatcher| {
                         dispatcher
-                            .dispatch(opcode, &mut self.m68k.cpu, &mut self.bus)
+                            .dispatch_with_process_services(
+                                opcode,
+                                &mut self.m68k.cpu,
+                                &mut self.bus,
+                                self.process_context.cfm(),
+                            )
                             .is_err()
                     });
                     if dispatch_err {
@@ -10804,7 +10814,12 @@ impl FixtureRunner {
                         continue;
                     }
                     let dispatch_result = self.dispatcher.with_process_state(|dispatcher| {
-                        dispatcher.dispatch(opcode, &mut self.m68k.cpu, &mut self.bus)
+                        dispatcher.dispatch_with_process_services(
+                            opcode,
+                            &mut self.m68k.cpu,
+                            &mut self.bus,
+                            self.process_context.cfm(),
+                        )
                     });
                     match dispatch_result {
                         Ok(()) => {
@@ -11497,6 +11512,100 @@ mod tests {
             term_addr: 0,
             exports: vec![],
         }
+    }
+
+    #[test]
+    fn cfm_symbol_enumeration_observes_native_load_and_close_from_classic_execution() {
+        use crate::loader::ppc::tests::{
+            synthetic_pef_with_enumerable_exports, synthetic_pef_with_import,
+        };
+        const OUTPUT: u32 = PPC_HEAP_BASE + 0x1000;
+        const FRAGMENT: u32 = PPC_HEAP_BASE + 0x2000;
+        const CODE: u32 = 0x18000;
+        const STACK: u32 = 0x19000;
+        let fragment = synthetic_pef_with_enumerable_exports();
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"GetMemFragment")).unwrap();
+        native.memory.add_region(OUTPUT, vec![0xa5; 256]);
+        native.memory.add_region(FRAGMENT, fragment.clone());
+        native.cpu.gpr[3] = FRAGMENT;
+        native.cpu.gpr[4] = fragment.len() as u32;
+        native.cpu.gpr[5] = 0;
+        native.cpu.gpr[6] = 1;
+        native.cpu.gpr[7] = OUTPUT;
+        native.cpu.gpr[8] = OUTPUT + 4;
+        native.cpu.gpr[9] = OUTPUT + 8;
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_ppc_companion(native);
+        let mut context = runner.native.take(NativeEngineRole::Companion).unwrap();
+        let native = context.adapter_mut();
+        let probe = runner.process_context.with_memory_and_cfm(|mm, cfm| {
+            native.run_with_process_services(128, false, false, mm, cfm)
+        });
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(native.cpu.gpr[3], 0);
+        let id = native.memory.read_u32_be(OUTPUT).unwrap();
+        assert_ne!(id, 0xa5a5_a5a5);
+        assert_eq!(
+            runner.process_context.cfm().connections[0].exports[0].name,
+            "Café™"
+        );
+        assert!(runner.native.restore(context).is_ok());
+        for selector in [6u16, 7] {
+            runner.bus.write_word(CODE, 0x3f3c); // MOVE.W #selector,-(SP), Apple inline glue.
+            runner.bus.write_word(CODE + 2, selector);
+            runner.bus.write_word(CODE + 4, 0xaa5a);
+            runner.bus.write_word(CODE + 6, 0x60fe);
+            runner.m68k.cpu.write_reg(Register::PC, CODE);
+            runner.m68k.cpu.write_reg(Register::A7, STACK + 2);
+            runner.m68k.cpu.write_reg(Register::D0, 0xdead_beef);
+            if selector == 6 {
+                runner.bus.write_long(STACK + 2, OUTPUT + 16);
+                runner.bus.write_long(STACK + 6, id);
+            } else {
+                runner.bus.write_long(STACK + 2, OUTPUT + 64);
+                runner.bus.write_long(STACK + 6, OUTPUT + 60);
+                runner.bus.write_long(STACK + 10, OUTPUT + 32);
+                runner.bus.write_long(STACK + 14, 1);
+                runner.bus.write_long(STACK + 18, id);
+            }
+            let (steps, running) = runner.run_steps(8, None);
+            assert!(running && steps > 0);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0);
+            assert_eq!(
+                runner.m68k.cpu.read_reg(Register::A7),
+                STACK + if selector == 6 { 10 } else { 22 }
+            );
+        }
+        let mut context = runner.native.take(NativeEngineRole::Companion).unwrap();
+        let native = context.adapter_mut();
+        assert_eq!(native.memory.read_u32_be(OUTPUT + 16), Some(1));
+        assert_eq!(native.memory.read_u32_be(OUTPUT + 60), Some(0x1234_5678));
+        assert_eq!(native.memory.read_u8(OUTPUT + 64), Some(1));
+        assert_eq!(native.memory.read_u8(OUTPUT + 36), Some(0x8e));
+        native.imports[0].dispatcher_target = PpcImportDispatcherTarget::CloseConnection;
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.cpu.gpr[3] = OUTPUT;
+        let probe = runner.process_context.with_memory_and_cfm(|mm, cfm| {
+            native.run_with_process_services(128, false, false, mm, cfm)
+        });
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert!(runner.process_context.cfm().connections.is_empty());
+        assert!(runner.native.restore(context).is_ok());
+        runner.bus.write_word(CODE + 2, 6);
+        runner.m68k.cpu.write_reg(Register::PC, CODE);
+        runner.m68k.cpu.write_reg(Register::A7, STACK + 2);
+        runner.bus.write_long(STACK + 2, OUTPUT + 16);
+        runner.bus.write_long(STACK + 6, id);
+        let _ = runner.run_steps(8, None);
+        assert_eq!(runner.bus.read_word(STACK + 10) as i16, -2801);
+        assert_eq!(
+            runner.bus.read_long(OUTPUT + 16),
+            1,
+            "refused query preserves its previous output"
+        );
     }
 
     #[test]

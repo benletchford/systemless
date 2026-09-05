@@ -1,4 +1,4 @@
-//! Semantic resumption of one CFM load across guest initialization.
+//! Process CFM records, export queries and resumable fragment operations.
 //! Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18, 3-27.
 
 pub(crate) mod fragment;
@@ -170,6 +170,100 @@ pub struct CfmExport {
     pub name: String,
     pub class: u8,
     pub address: u32,
+}
+
+/// Export enumeration has no CPU or architectural return context.
+/// PowerPC System Software (1994), pp. 3-25–3-26: indices are one-based;
+/// symbol names are Pascal strings and symbol classes occupy one byte.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CfmSymbolQuery {
+    Count {
+        connection: u32,
+        count: u32,
+    },
+    Indexed {
+        connection: u32,
+        index: u32,
+        name: u32,
+        address: u32,
+        class: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CfmSymbolError {
+    ConnectionNotFound,
+    SymbolNotFound,
+    InvalidOutputs,
+}
+
+impl CfmSymbolError {
+    pub(crate) fn os_error(self) -> i16 {
+        match self {
+            Self::ConnectionNotFound => -2801,
+            Self::SymbolNotFound => -2802,
+            Self::InvalidOutputs => -50,
+        }
+    }
+}
+
+impl CfmSymbolQuery {
+    /// Publish all query outputs in one transaction. The ABI edge may include
+    /// its own result slot in that transaction without exposing it here.
+    pub(crate) fn complete(
+        self,
+        connections: &[CfmConnection],
+        mut publish: impl FnMut(&[(u32, &[u8])]) -> bool,
+    ) -> Result<(), CfmSymbolError> {
+        let id = match self {
+            Self::Count { connection, .. } | Self::Indexed { connection, .. } => connection,
+        };
+        let connection = connections
+            .iter()
+            .find(|connection| connection.id == id)
+            .ok_or(CfmSymbolError::ConnectionNotFound)?;
+        let writes: Vec<(u32, Vec<u8>)> = match self {
+            Self::Count { count, .. } => {
+                let size = i32::try_from(connection.exports.len())
+                    .map_err(|_| CfmSymbolError::InvalidOutputs)?;
+                vec![(count, size.to_be_bytes().to_vec())]
+            }
+            Self::Indexed {
+                index,
+                name,
+                address,
+                class,
+                ..
+            } => {
+                let export = index
+                    .checked_sub(1)
+                    .and_then(|index| connection.exports.get(index as usize))
+                    .ok_or(CfmSymbolError::SymbolNotFound)?;
+                let encoded = crate::mac_roman::encode_mac_roman_lossy(&export.name);
+                let encoded = &encoded[..encoded.len().min(255)];
+                let mut pascal = Vec::with_capacity(encoded.len() + 1);
+                pascal.push(encoded.len() as u8);
+                pascal.extend_from_slice(encoded);
+                vec![
+                    (name, pascal),
+                    (address, export.address.to_be_bytes().to_vec()),
+                    (class, vec![export.class]),
+                ]
+            }
+        };
+        if writes.iter().any(|(address, bytes)| {
+            *address == 0 || u64::from(*address) + bytes.len() as u64 > 1u64 << 32
+        }) {
+            return Err(CfmSymbolError::InvalidOutputs);
+        }
+        let writes: Vec<_> = writes
+            .iter()
+            .map(|(address, bytes)| (*address, bytes.as_slice()))
+            .collect();
+        publish(&writes)
+            .then_some(())
+            .ok_or(CfmSymbolError::InvalidOutputs)
+    }
 }
 
 /// One owned CFM registry. A standalone loader carries this as a seed;
@@ -417,6 +511,96 @@ mod tests {
         let mut bytes = vec![0; 20];
         memory.read_bytes_into(OUTPUT, &mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn symbol_enumeration_is_atomic_and_equivalent_through_both_memory_views() {
+        for count in [false, true] {
+            for fault in 0..11 {
+                let mut outcomes = Vec::new();
+                for classic in [false, true] {
+                    let mut connection = connection(7);
+                    connection.exports = vec![CfmExport {
+                        name: "Café™".into(),
+                        class: 2,
+                        address: 0x1234_5678,
+                    }];
+                    if fault == 10 {
+                        connection.exports.clear();
+                    }
+                    let mut memory = GuestAddressSpace::new();
+                    memory.add_region(OUTPUT, vec![0xa5; 64]);
+                    if matches!(fault, 3..=5) {
+                        let protected = [OUTPUT, OUTPUT + 32, OUTPUT + 40][fault - 3];
+                        memory.add_readonly_region(protected, vec![0xa5]);
+                    }
+                    let pointer = match fault {
+                        6 => 0,
+                        7 => u32::MAX - 1,
+                        8 => OUTPUT + 62,
+                        _ => OUTPUT,
+                    };
+                    let id = if fault == 1 { 99 } else { 7 };
+                    let index = if fault == 2 {
+                        0
+                    } else if fault == 9 {
+                        u32::MAX
+                    } else {
+                        1
+                    };
+                    let query = if count {
+                        CfmSymbolQuery::Count {
+                            connection: id,
+                            count: pointer,
+                        }
+                    } else {
+                        CfmSymbolQuery::Indexed {
+                            connection: id,
+                            index,
+                            name: pointer,
+                            address: OUTPUT + 32,
+                            class: OUTPUT + 40,
+                        }
+                    };
+                    let mut bus = MacMemoryBus::new(0x10000);
+                    bus.set_addressing_32_bit(true);
+                    bus.attach_guest_address_space(memory.shared_view());
+                    let result = query.complete(&[connection], |writes| {
+                        if classic {
+                            bus.publish_cfm_outputs(writes)
+                        } else {
+                            memory.publish_cfm_outputs(writes)
+                        }
+                    });
+                    let bytes: Vec<_> = (0..64)
+                        .map(|offset| memory.procedure_read_u8(OUTPUT + offset).unwrap())
+                        .collect();
+                    let expected_error = match fault {
+                        1 => Some(CfmSymbolError::ConnectionNotFound),
+                        2 | 9 | 10 if !count => Some(CfmSymbolError::SymbolNotFound),
+                        3 | 6..=8 => Some(CfmSymbolError::InvalidOutputs),
+                        4 | 5 if !count => Some(CfmSymbolError::InvalidOutputs),
+                        _ => None,
+                    };
+                    assert_eq!(result.err(), expected_error, "count {count}, fault {fault}");
+                    let mut expected = vec![0xa5; 64];
+                    if expected_error.is_none() {
+                        if count {
+                            expected[..4].copy_from_slice(
+                                &(if fault == 10 { 0u32 } else { 1u32 }).to_be_bytes(),
+                            );
+                        } else {
+                            expected[..6].copy_from_slice(&[5, b'C', b'a', b'f', 0x8e, 0xaa]);
+                            expected[32..36].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+                            expected[40] = 2;
+                        }
+                    }
+                    assert_eq!(bytes, expected);
+                    outcomes.push((result, bytes));
+                }
+                assert_eq!(outcomes[0], outcomes[1]);
+            }
+        }
     }
 
     #[test]
