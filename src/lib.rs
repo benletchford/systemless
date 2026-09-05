@@ -63,6 +63,7 @@ pub use event_queue::{
 };
 mod execution_kernel;
 mod execution_m68k;
+mod execution_native;
 pub mod game;
 mod guest_call;
 mod guest_procedure;
