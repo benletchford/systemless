@@ -68,7 +68,6 @@ pub(crate) enum ExecutionRoute {
 /// Task-lifecycle effect emitted by a process service.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExecutionTaskEffect {
-    Register(ExecutionTaskId),
     SwitchTo(ExecutionTaskId),
 }
 
@@ -376,6 +375,7 @@ impl<R: Copy, C: Copy> ContinuationState<R, C> {
 /// Why a transactional continuation operation was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ContinuationError {
+    TaskIdsExhausted,
     TaskUnavailable {
         task: ExecutionTaskId,
     },
@@ -443,6 +443,7 @@ pub(crate) struct ContinuationStore<R: Copy, C: Copy>(Rc<RefCell<StoreState<R, C
 struct StoreState<R: Copy, C: Copy> {
     current_task: ExecutionTaskId,
     next_call_id: u64,
+    next_task_id: Option<u32>,
     stacks: HashMap<ExecutionTaskId, Vec<ContinuationState<R, C>>>,
     attached_contexts: HashMap<CallId, usize>,
     retired_tasks: HashSet<ExecutionTaskId>,
@@ -457,6 +458,7 @@ impl<R: Copy, C: Copy> Default for StoreState<R, C> {
         Self {
             current_task: ExecutionTaskId::APPLICATION,
             next_call_id: 1,
+            next_task_id: Some(3),
             stacks: HashMap::from([(ExecutionTaskId::APPLICATION, Vec::new())]),
             attached_contexts: HashMap::new(),
             retired_tasks: HashSet::new(),
@@ -508,6 +510,7 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         let state = self.0.borrow();
         state.current_task == ExecutionTaskId::APPLICATION
             && state.next_call_id == 1
+            && state.next_task_id == Some(3)
             && state.stacks.len() == 1
             && state
                 .stacks
@@ -522,6 +525,19 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
             && state.critical_depth == 0
     }
 
+    /// Allocate from the same monotonic namespace used by explicit registration.
+    /// Exhaustion never wraps into aliases, the application task or retired IDs.
+    pub(crate) fn create_task(&self) -> Result<ExecutionTaskId, ContinuationError> {
+        let id = self
+            .0
+            .borrow()
+            .next_task_id
+            .ok_or(ContinuationError::TaskIdsExhausted)?;
+        let task = ExecutionTaskId::from_thread_id(id);
+        self.register_task(task)?;
+        Ok(task)
+    }
+
     /// Register a new task exactly once for this process lifetime.
     pub(crate) fn register_task(&self, task: ExecutionTaskId) -> Result<(), ContinuationError> {
         let mut state = self.0.borrow_mut();
@@ -531,6 +547,12 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         state.stacks.insert(task, Vec::new());
         state.task_states.insert(task, ExecutionTaskState::Stopped);
         state.task_entry_isas.insert(task, GuestIsa::M68k);
+        if state
+            .next_task_id
+            .is_some_and(|next| task.thread_id() >= next)
+        {
+            state.next_task_id = task.thread_id().checked_add(1);
+        }
         Ok(())
     }
 
@@ -690,7 +712,6 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         effect: ExecutionTaskEffect,
     ) -> Result<(), ContinuationError> {
         match effect {
-            ExecutionTaskEffect::Register(task) => self.register_task(task),
             ExecutionTaskEffect::SwitchTo(task) => self.switch_to_task(task),
         }
     }
@@ -1432,6 +1453,47 @@ mod tests {
         assert_eq!(store.next_ready_task(None), Some(worker));
         assert!(!store.end_critical());
         assert_eq!(store.critical_depth(), 0);
+    }
+
+    #[test]
+    fn task_allocation_shares_registration_and_never_reuses_retired_ids() {
+        let store = Store::default();
+        let first = store.create_task().unwrap();
+        assert_eq!(first.thread_id(), 3);
+        let imported = ExecutionTaskId::from_thread_id(40);
+        store.register_task(imported).unwrap();
+        store.retire_task(imported).unwrap();
+        store.retire_task(first).unwrap();
+        let next = store.create_task().unwrap();
+        assert_eq!(next.thread_id(), 41);
+        assert_eq!(
+            store.scheduling_state(next),
+            Some(ExecutionTaskState::Stopped)
+        );
+        assert_eq!(store.task_entry_isa(next), Some(GuestIsa::M68k));
+        assert!(!store.is_pristine());
+    }
+
+    #[test]
+    fn exhausted_task_namespace_is_unchanged_and_does_not_wrap() {
+        let store = Store::default();
+        store
+            .register_task(ExecutionTaskId::from_thread_id(u32::MAX - 1))
+            .unwrap();
+        assert_eq!(store.create_task().unwrap().thread_id(), u32::MAX);
+        let before = store.clone();
+        assert_eq!(
+            store.create_task(),
+            Err(ContinuationError::TaskIdsExhausted)
+        );
+        assert_eq!(store, before);
+        store
+            .retire_task(ExecutionTaskId::from_thread_id(u32::MAX))
+            .unwrap();
+        assert_eq!(
+            store.create_task(),
+            Err(ContinuationError::TaskIdsExhausted)
+        );
     }
 
     #[test]

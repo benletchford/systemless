@@ -473,13 +473,18 @@ impl SharedGuestCallStack {
         self.0.borrow().kernel.current_task()
     }
 
-    /// Select the continuation owner for subsequent guest execution.
+    /// Fixtures may import an explicit identity into the owner's namespace.
+    #[cfg(test)]
     pub(crate) fn register_task(&self, task: ExecutionTaskId) -> bool {
-        self.apply_task_effect(ExecutionTaskEffect::Register(task))
+        self.0.borrow().kernel.register_task(task).is_ok()
     }
 
     pub(crate) fn switch_to_task(&self, task: ExecutionTaskId) -> bool {
         self.apply_task_effect(ExecutionTaskEffect::SwitchTo(task))
+    }
+
+    pub(crate) fn create_task(&self) -> Option<ExecutionTaskId> {
+        self.0.borrow().kernel.create_task().ok()
     }
 
     pub(crate) fn bind_task_entry_isa(&self, task: ExecutionTaskId, isa: GuestIsa) -> bool {
