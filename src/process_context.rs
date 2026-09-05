@@ -4216,16 +4216,25 @@ impl ProcessNativeMemoryManager {
             .unwrap_or(0)
     }
 
-    /// Commit a validated CFM mapping layout to the process-owned native heap.
-    ///
-    /// Dynamic PEF sections choose their individual alignment before they are
-    /// installed, so the loader validates the complete sparse layout first and
-    /// advances the canonical cursor only after every section has been mapped.
-    pub(crate) fn commit_native_heap_cursor(&mut self, heap_cursor: u32) -> bool {
+    /// Validate the CFM cursor before publishing its prepared memory layout.
+    /// The synchronous commit must not reenter the allocator and must preserve
+    /// external state on failure. No guest code may execute inside it.
+    pub(crate) fn commit_native_heap_cursor_with(
+        &mut self,
+        expected_cursor: u32,
+        heap_cursor: u32,
+        commit: impl FnOnce() -> bool,
+    ) -> bool {
         let Some(allocator) = self.native_allocator.as_mut() else {
             return false;
         };
-        if heap_cursor < allocator.heap.heap_cursor || heap_cursor >= allocator.heap.heap_limit {
+        if expected_cursor != allocator.heap.heap_cursor
+            || heap_cursor < expected_cursor
+            || heap_cursor >= allocator.heap.heap_limit
+        {
+            return false;
+        }
+        if !commit() {
             return false;
         }
         allocator.heap.heap_cursor = heap_cursor;
