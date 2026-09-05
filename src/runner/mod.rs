@@ -3788,7 +3788,12 @@ impl FixtureRunner {
             self.m68k.can_relaunch() && self.native.can_relaunch(),
             "cannot relaunch with parked execution contexts"
         );
+        assert!(
+            app.ppc.as_ref().is_none_or(|native| native.cfm.is_some()),
+            "native relaunch requires an uninstalled CFM seed"
+        );
         assert!(self.native.reset_for_launch(app.ppc.is_some()));
+        self.process_context.reset_cfm_for_launch();
         if let Some(ppc_app) = app.ppc.clone() {
             self.init_ppc_app(ppc_app);
             return;
@@ -4202,8 +4207,16 @@ impl FixtureRunner {
     }
 
     fn init_ppc_companion(&mut self, mut ppc_companion: PpcLoadedApp) {
+        assert!(
+            self.process_context
+                .can_install_cfm_seed(&ppc_companion.cfm),
+            "CFM seed conflicts with the process registry"
+        );
         self.share_ppc_process_memory(&mut ppc_companion);
         ppc_companion.attach_process_context(&mut self.process_context);
+        assert!(self
+            .process_context
+            .install_cfm_seed(&mut ppc_companion.cfm));
         self.bus
             .attach_guest_address_space(ppc_companion.memory.shared_view());
         self.native
@@ -4212,6 +4225,10 @@ impl FixtureRunner {
     }
 
     fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
+        assert!(
+            self.process_context.can_install_cfm_seed(&ppc_app.cfm),
+            "CFM seed conflicts with the process registry"
+        );
         use crate::memory::globals::addr;
 
         // A native application carries its parsed SIZE capability before it
@@ -4268,6 +4285,7 @@ impl FixtureRunner {
             .event_queue_mut()
             .merge(detached_events);
         ppc_app.attach_process_context(&mut self.process_context);
+        assert!(self.process_context.install_cfm_seed(&mut ppc_app.cfm));
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
         }
@@ -6579,18 +6597,20 @@ impl FixtureRunner {
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
             let (vbl_probes, timer_probes) = if native_callbacks_allowed {
-                ppc_app.with_process_memory_manager(|app, memory_manager| {
-                    Self::fire_ppc_tick_callbacks(
-                        app,
-                        memory_manager,
-                        tick_advance.baseline_tick,
-                        ppc_start_time,
-                        tick_advance.elapsed_ticks,
-                        u64::from(cycles_per_tick),
-                        false,
-                        false,
-                    )
-                })
+                self.process_context
+                    .with_memory_and_cfm(|memory_manager, cfm| {
+                        Self::fire_ppc_tick_callbacks(
+                            &mut ppc_app,
+                            memory_manager,
+                            cfm,
+                            tick_advance.baseline_tick,
+                            ppc_start_time,
+                            tick_advance.elapsed_ticks,
+                            u64::from(cycles_per_tick),
+                            false,
+                            false,
+                        )
+                    })
             } else {
                 (Vec::new(), Vec::new())
             };
@@ -6639,14 +6659,17 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let probe = ppc_app.with_process_memory_manager(|app, memory_manager| {
-            app.run_with_process_memory_manager(
-                ppc_max_steps as u64,
-                trace_ppc_imports,
-                trace_ppc_fetches,
-                memory_manager,
-            )
-        });
+        let probe = self
+            .process_context
+            .with_memory_and_cfm(|memory_manager, cfm| {
+                ppc_app.run_with_process_services(
+                    ppc_max_steps as u64,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                    memory_manager,
+                    cfm,
+                )
+            });
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
         let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
@@ -6690,18 +6713,20 @@ impl FixtureRunner {
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
             if native_callbacks_allowed {
-                ppc_app.with_process_memory_manager(|app, memory_manager| {
-                    Self::fire_ppc_tick_callbacks(
-                        app,
-                        memory_manager,
-                        tick_advance.baseline_tick,
-                        ppc_start_time,
-                        tick_advance.elapsed_ticks,
-                        u64::from(cycles_per_tick),
-                        trace_ppc_imports,
-                        trace_ppc_fetches,
-                    )
-                })
+                self.process_context
+                    .with_memory_and_cfm(|memory_manager, cfm| {
+                        Self::fire_ppc_tick_callbacks(
+                            &mut ppc_app,
+                            memory_manager,
+                            cfm,
+                            tick_advance.baseline_tick,
+                            ppc_start_time,
+                            tick_advance.elapsed_ticks,
+                            u64::from(cycles_per_tick),
+                            trace_ppc_imports,
+                            trace_ppc_fetches,
+                        )
+                    })
             } else {
                 (Vec::new(), Vec::new())
             }
@@ -7055,6 +7080,7 @@ impl FixtureRunner {
     fn fire_ppc_tick_callbacks(
         ppc_app: &mut PpcLoadedApp,
         memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut crate::cfm::CfmState,
         baseline_tick: u32,
         start_time: u32,
         elapsed_ticks: u32,
@@ -7078,28 +7104,26 @@ impl FixtureRunner {
             }
             let _ = ppc_app.memory.write_u32_be(addr::TICKS, callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TIME, callback_time);
-            vbl_probes.extend(
-                ppc_app.fire_vbl_tasks_for_ticks_with_process_memory_manager(
-                    callback_tick.wrapping_sub(1),
-                    1,
-                    usize::MAX,
-                    max_cycles,
-                    trace_imports,
-                    trace_fetches,
-                    memory_manager,
-                ),
-            );
-            timer_probes.extend(
-                ppc_app.fire_timer_tasks_for_ticks_with_process_memory_manager(
-                    callback_tick.wrapping_sub(1),
-                    1,
-                    usize::MAX,
-                    max_cycles,
-                    trace_imports,
-                    trace_fetches,
-                    memory_manager,
-                ),
-            );
+            vbl_probes.extend(ppc_app.fire_vbl_tasks_for_ticks_with_process_services(
+                callback_tick.wrapping_sub(1),
+                1,
+                usize::MAX,
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                memory_manager,
+                cfm,
+            ));
+            timer_probes.extend(ppc_app.fire_timer_tasks_for_ticks_with_process_services(
+                callback_tick.wrapping_sub(1),
+                1,
+                usize::MAX,
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                memory_manager,
+                cfm,
+            ));
         }
         (vbl_probes, timer_probes)
     }
@@ -7800,15 +7824,18 @@ impl FixtureRunner {
                 .pending_process_doublebacks
                 .remove(index);
             let resume_pc = ppc_app.cpu.pc;
-            let probe = ppc_app.with_process_memory_manager(|app, memory_manager| {
-                app.run_sound_doubleback_callback_with_process_memory_manager(
-                    doubleback,
-                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                    memory_manager,
-                )
-            });
+            let probe = self
+                .process_context
+                .with_memory_and_cfm(|memory_manager, cfm| {
+                    ppc_app.run_sound_doubleback_callback_with_process_services(
+                        doubleback,
+                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                        memory_manager,
+                        cfm,
+                    )
+                });
             let invocation = probe.invocation;
             if trace_sound_runner_enabled() {
                 eprintln!(
@@ -8006,15 +8033,18 @@ impl FixtureRunner {
                 scheduled_tick: self.guest_tick(),
                 scheduled_instruction_count: self.total_instructions,
             };
-            let probe = ppc_app.with_process_memory_manager(|app, memory_manager| {
-                app.run_sound_completion_callback_with_process_memory_manager(
-                    completion,
-                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                    memory_manager,
-                )
-            });
+            let probe = self
+                .process_context
+                .with_memory_and_cfm(|memory_manager, cfm| {
+                    ppc_app.run_sound_completion_callback_with_process_services(
+                        completion,
+                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                        memory_manager,
+                        cfm,
+                    )
+                });
             let invocation = probe.invocation;
             if record_ppc_imports {
                 self.record_ppc_import_trace(&probe.import_trace);
@@ -11458,6 +11488,229 @@ mod tests {
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
 
+    fn cfm_test_connection(id: u32) -> crate::cfm::CfmConnection {
+        crate::cfm::CfmConnection {
+            id,
+            library_name: format!("existing-{id}"),
+            main_addr: 0,
+            init_addr: 0,
+            term_addr: 0,
+            exports: vec![],
+        }
+    }
+
+    #[test]
+    fn runner_cfm_owns_native_connections_ids_and_library_seeds() {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut native = load_pef_application(
+            &crate::loader::ppc::tests::synthetic_pef_with_import(b"GetSharedLibrary"),
+        )
+        .unwrap();
+        const OUTPUT: u32 = PPC_HEAP_BASE + 0x200;
+        native.memory.add_region(OUTPUT, vec![0; 128]);
+        native
+            .memory
+            .write_bytes(OUTPUT, b"\x0cInterfaceLib")
+            .unwrap();
+        native.cpu.gpr[3] = OUTPUT;
+        native.cpu.gpr[4] = u32::from_be_bytes(*b"pwpc");
+        native.cpu.gpr[5] = 1;
+        native.cpu.gpr[6] = OUTPUT + 64;
+        native.cpu.gpr[7] = OUTPUT + 68;
+        native.cpu.gpr[8] = OUTPUT + 72;
+        native
+            .cfm
+            .as_mut()
+            .unwrap()
+            .connections
+            .push(cfm_test_connection(3));
+        native.cfm.as_mut().unwrap().next_connection_id = 7;
+        native.seed_cfm_library_fragments(vec![PpcCfmLibraryFragment {
+            name: "seeded library".into(),
+            bytes: vec![1, 2, 3],
+        }]);
+        app.ppc = Some(native);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        assert!(runner.native.application().unwrap().cfm.is_none());
+        assert_eq!(runner.process_context.cfm_mut().next_connection_id, 7);
+        runner.run_steps(128, None);
+        assert_eq!(runner.bus.read_long(OUTPUT + 64), 7);
+        assert_eq!(runner.process_context.cfm_mut().next_connection_id, 8);
+        assert_eq!(
+            runner
+                .process_context
+                .cfm_mut()
+                .connections
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>(),
+            vec![3, 7]
+        );
+        assert_eq!(
+            runner.process_context.cfm_mut().library_fragments[0].bytes,
+            vec![1, 2, 3]
+        );
+        let registry = runner.process_context.cfm_mut().clone();
+        let native = runner.native.application_mut().unwrap();
+        assert!(native.cfm.is_none());
+        let before_cpu = native.cpu.clone();
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            native.run_with_hle_imports(64)
+        }));
+        assert!(refused.is_err());
+        assert_eq!(native.cpu.gpr, before_cpu.gpr);
+        assert_eq!(native.cpu.pc, before_cpu.pc);
+        assert_eq!(*runner.process_context.cfm_mut(), registry);
+        // The caller's launch blueprint remains an independent, unchanged seed.
+        assert_eq!(
+            app.ppc
+                .as_ref()
+                .unwrap()
+                .cfm
+                .as_ref()
+                .unwrap()
+                .next_connection_id,
+            7
+        );
+        runner.init_app(&app);
+        assert_eq!(runner.process_context.cfm_mut().next_connection_id, 7);
+        assert_eq!(runner.process_context.cfm_mut().connections.len(), 1);
+    }
+
+    #[test]
+    fn runner_cfm_is_used_by_timer_vbl_and_sound_callback_entries() {
+        use crate::callback_manager::{CallbackTaskArchitecture, ProcessTimerTask, ProcessVblTask};
+        const OUTPUT: u32 = PPC_HEAP_BASE + 0x200;
+        for callback_kind in 0..4 {
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let mut native = load_pef_application(
+                &crate::loader::ppc::tests::synthetic_pef_with_import(b"CloseConnection"),
+            )
+            .unwrap();
+            native.memory.add_region(OUTPUT, vec![0; 64]);
+            native.memory.write_u32_be(OUTPUT, 3).unwrap();
+            let callback = native.imports[0].address;
+            native.cfm.as_mut().unwrap().connections =
+                vec![cfm_test_connection(3), cfm_test_connection(9)];
+            native.cfm.as_mut().unwrap().next_connection_id = 10;
+            app.ppc = Some(native);
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.init_app(&app);
+            let native = runner.native.application_mut().unwrap();
+            let saved_cpu = native.cpu.clone();
+            runner
+                .process_context
+                .with_memory_and_cfm(|memory_manager, cfm| match callback_kind {
+                    0 => {
+                        native.timer_tasks.push(ProcessTimerTask {
+                            task_ptr: OUTPUT,
+                            architecture: CallbackTaskArchitecture::PowerPc,
+                            extended: false,
+                            callback,
+                            active: true,
+                            fire_at_tick: 1,
+                            fire_at_subtick: 0,
+                            last_fired_tick: None,
+                        });
+                        let probes = native.fire_timer_tasks_for_ticks_with_process_services(
+                            0,
+                            1,
+                            1,
+                            64,
+                            false,
+                            false,
+                            memory_manager,
+                            cfm,
+                        );
+                        assert_eq!(probes.len(), 1);
+                        assert_eq!(probes[0].invocation.unsupported_import_index, None);
+                    }
+                    1 => {
+                        native.memory.write_u32_be(OUTPUT + 6, callback).unwrap();
+                        native.memory.write_u16_be(OUTPUT + 10, 1).unwrap();
+                        native.vbl_tasks.push(ProcessVblTask {
+                            task_ptr: OUTPUT,
+                            architecture: CallbackTaskArchitecture::PowerPc,
+                            slot: None,
+                            pending: false,
+                        });
+                        let probes = native.fire_vbl_tasks_for_ticks_with_process_services(
+                            0,
+                            1,
+                            1,
+                            64,
+                            false,
+                            false,
+                            memory_manager,
+                            cfm,
+                        );
+                        assert_eq!(probes.len(), 1);
+                        assert_eq!(probes[0].invocation.unsupported_import_index, None);
+                    }
+                    2 => {
+                        let probe = native.run_sound_completion_callback_with_process_services(
+                            PpcSoundCompletionRecord {
+                                file_playback_index: 0,
+                                channel: OUTPUT,
+                                completion: callback,
+                                command: None,
+                                tick: 0,
+                                instruction_count: 0,
+                                scheduled_tick: 0,
+                                scheduled_instruction_count: 0,
+                            },
+                            64,
+                            false,
+                            false,
+                            memory_manager,
+                            cfm,
+                        );
+                        assert_eq!(probe.invocation.unsupported_import_index, None);
+                    }
+                    _ => {
+                        let probe = native.run_sound_doubleback_callback_with_process_services(
+                            PpcSoundDoubleBackRecord {
+                                architecture: CallbackTaskArchitecture::PowerPc,
+                                channel: OUTPUT,
+                                header: 0,
+                                exhausted_buffer: 0,
+                                exhausted_buffer_index: 0,
+                                callback,
+                                tick: 0,
+                                instruction_count: 0,
+                            },
+                            64,
+                            false,
+                            false,
+                            memory_manager,
+                            cfm,
+                        );
+                        assert_eq!(probe.invocation.unsupported_import_index, None);
+                    }
+                });
+            assert!(native.cfm.is_none());
+            assert_eq!(native.cpu.gpr, saved_cpu.gpr);
+            assert_eq!(native.cpu.pc, saved_cpu.pc);
+            assert_eq!(
+                runner.bus.read_long(OUTPUT),
+                0,
+                "callback kind {callback_kind}"
+            );
+            assert_eq!(
+                runner
+                    .process_context
+                    .cfm_mut()
+                    .connections
+                    .iter()
+                    .map(|c| c.id)
+                    .collect::<Vec<_>>(),
+                vec![9]
+            );
+            assert_eq!(runner.process_context.cfm_mut().next_connection_id, 10);
+        }
+    }
+
     #[test]
     fn os_trap_address_gateway_executes_and_returns_through_the_68k_cpu() {
         use crate::memory::globals::addr;
@@ -12778,8 +13031,11 @@ mod tests {
         runner.bus.write_long(addr::TICKS, third);
         ppc_app.cpu.pc = PPC_IMPORT_TRAP_BASE;
         ppc_app.cpu.lr = PPC_HALT_PC;
-        let mut memory_manager = runner.process_context.memory_manager_mut();
-        let probe = ppc_app.run_with_process_memory_manager(64, false, false, &mut memory_manager);
+        let probe = runner
+            .process_context
+            .with_memory_and_cfm(|memory_manager, cfm| {
+                ppc_app.run_with_process_services(64, false, false, memory_manager, cfm)
+            });
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(ppc_app.cpu.gpr[3], third);
@@ -12933,17 +13189,21 @@ mod tests {
             });
         }
 
-        let mut memory_manager = runner.process_context.memory_manager_mut();
-        let (vbl, timer) = FixtureRunner::fire_ppc_tick_callbacks(
-            &mut ppc_app,
-            &mut memory_manager,
-            41,
-            0x1020_3040,
-            2,
-            64,
-            false,
-            false,
-        );
+        let (vbl, timer) = runner
+            .process_context
+            .with_memory_and_cfm(|memory_manager, cfm| {
+                FixtureRunner::fire_ppc_tick_callbacks(
+                    &mut ppc_app,
+                    memory_manager,
+                    cfm,
+                    41,
+                    0x1020_3040,
+                    2,
+                    64,
+                    false,
+                    false,
+                )
+            });
 
         assert_eq!(vbl.len(), 2);
         assert!(timer.is_empty());
@@ -14304,9 +14564,7 @@ mod tests {
             stdc_qsort_stack: Vec::new(),
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
-            cfm_connections: Vec::new(),
-            cfm_library_fragments: Vec::new(),
-            next_cfm_connection_id: 1,
+            cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -14768,7 +15026,11 @@ mod tests {
         native.cpu.pc = native.entry_pc;
         native.cpu.lr = PPC_HALT_PC;
         native.imports[0].dispatcher_target = PpcImportDispatcherTarget::MenuChoice;
-        let probe = native.run_with_hle_imports(64);
+        let probe = runner
+            .process_context
+            .with_memory_and_cfm(|memory_manager, cfm| {
+                native.run_with_process_services(64, false, false, memory_manager, cfm)
+            });
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(native.cpu.gpr[3], raw_choice);
@@ -17846,9 +18108,7 @@ mod tests {
             stdc_qsort_stack: Vec::new(),
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
-            cfm_connections: Vec::new(),
-            cfm_library_fragments: Vec::new(),
-            next_cfm_connection_id: 1,
+            cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -18707,9 +18967,7 @@ mod tests {
             stdc_qsort_stack: Vec::new(),
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
-            cfm_connections: Vec::new(),
-            cfm_library_fragments: Vec::new(),
-            next_cfm_connection_id: 1,
+            cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -18862,9 +19120,7 @@ mod tests {
             stdc_qsort_stack: Vec::new(),
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
-            cfm_connections: Vec::new(),
-            cfm_library_fragments: Vec::new(),
-            next_cfm_connection_id: 1,
+            cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -19246,9 +19502,7 @@ mod tests {
             stdc_qsort_stack: Vec::new(),
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
-            cfm_connections: Vec::new(),
-            cfm_library_fragments: Vec::new(),
-            next_cfm_connection_id: 1,
+            cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -19533,9 +19787,7 @@ mod tests {
             stdc_qsort_stack: Vec::new(),
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
-            cfm_connections: Vec::new(),
-            cfm_library_fragments: Vec::new(),
-            next_cfm_connection_id: 1,
+            cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),

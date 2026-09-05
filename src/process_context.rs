@@ -6116,6 +6116,7 @@ impl ProcessNativeMemoryManager {
 /// its mutable borrow.
 #[derive(Debug)]
 pub(crate) struct ProcessContext {
+    cfm: crate::cfm::CfmState,
     memory: Vec<ProcessMemoryRegion>,
     memory_manager: SharedProcessMemoryManager,
     tick_state: SharedProcessTickState,
@@ -6154,6 +6155,7 @@ pub(crate) struct ProcessContext {
 impl Default for ProcessContext {
     fn default() -> Self {
         Self {
+            cfm: crate::cfm::CfmState::default(),
             memory: Vec::new(),
             memory_manager: SharedProcessMemoryManager::default(),
             tick_state: SharedProcessTickState::default(),
@@ -6192,6 +6194,39 @@ impl Default for ProcessContext {
 }
 
 impl ProcessContext {
+    #[cfg(test)]
+    pub(crate) fn cfm_mut(&mut self) -> &mut crate::cfm::CfmState {
+        &mut self.cfm
+    }
+
+    pub(crate) fn can_install_cfm_seed(&self, seed: &Option<crate::cfm::CfmState>) -> bool {
+        seed.as_ref()
+            .is_some_and(|seed| self.cfm.is_pristine() || seed.is_pristine())
+    }
+
+    pub(crate) fn install_cfm_seed(&mut self, seed: &mut Option<crate::cfm::CfmState>) -> bool {
+        if !self.can_install_cfm_seed(seed) {
+            return false;
+        }
+        let seed = seed.take().expect("CFM installation was preflighted");
+        if self.cfm.is_pristine() {
+            self.cfm = seed;
+        }
+        true
+    }
+
+    pub(crate) fn reset_cfm_for_launch(&mut self) {
+        self.cfm = crate::cfm::CfmState::default();
+    }
+
+    pub(crate) fn with_memory_and_cfm<R>(
+        &mut self,
+        f: impl FnOnce(&mut ProcessMemoryManager, &mut crate::cfm::CfmState) -> R,
+    ) -> R {
+        let mut memory = self.memory_manager.borrow_mut();
+        f(&mut memory, &mut self.cfm)
+    }
+
     pub(crate) fn with_file_system(file_system: SharedProcessFileSystem) -> Self {
         Self {
             file_system,
@@ -6618,6 +6653,44 @@ mod tests {
     use crate::guest_procedure::GuestIsa;
     use crate::memory::{MacMemoryBus, MemoryBus};
     use ppc::PpcMemory;
+
+    #[test]
+    fn cfm_seed_installation_moves_one_owner_and_refuses_conflicts() {
+        let mut context = ProcessContext::default();
+        let mut seed = Some(crate::cfm::CfmState {
+            connections: vec![crate::cfm::CfmConnection {
+                id: 7,
+                library_name: "seed".into(),
+                main_addr: 0x2000,
+                init_addr: 0,
+                term_addr: 0,
+                exports: vec![],
+            }],
+            library_fragments: vec![crate::cfm::CfmLibraryFragment {
+                name: "library".into(),
+                bytes: vec![1, 2],
+            }],
+            next_connection_id: 8,
+        });
+        let expected = seed.clone().unwrap();
+        assert!(context.install_cfm_seed(&mut seed));
+        assert!(seed.is_none());
+        assert_eq!(context.cfm, expected);
+        assert!(!context.install_cfm_seed(&mut seed));
+        assert_eq!(context.cfm, expected);
+        let mut conflict = Some(expected.clone());
+        assert!(!context.install_cfm_seed(&mut conflict));
+        assert_eq!(conflict, Some(expected.clone()));
+        assert_eq!(context.cfm, expected);
+        let mut empty = Some(crate::cfm::CfmState::default());
+        assert!(context.install_cfm_seed(&mut empty));
+        assert!(empty.is_none());
+        assert_eq!(context.cfm, expected);
+        context.with_memory_and_cfm(|_, cfm| cfm.next_connection_id = 9);
+        assert_eq!(context.cfm.next_connection_id, 9);
+        context.reset_cfm_for_launch();
+        assert!(context.cfm.is_pristine());
+    }
 
     fn native_heap_state(heap_cursor: u32, heap_limit: u32) -> ProcessNativeHeapState {
         ProcessNativeHeapState {

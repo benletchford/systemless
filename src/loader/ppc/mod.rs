@@ -3493,9 +3493,9 @@ pub struct PpcLoadedApp {
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) apple_events: PpcAppleEventState,
-    pub cfm_connections: Vec<PpcCfmConnection>,
-    pub cfm_library_fragments: Vec<PpcCfmLibraryFragment>,
-    pub next_cfm_connection_id: u32,
+    /// Standalone CFM seed; None after a runner moves it into its process.
+    /// Installed execution must receive the process service explicitly.
+    pub cfm: Option<PpcCfmState>,
     pub(crate) controls: SharedProcessControlManager,
     pub aliases: Vec<PpcAliasRecord>,
     pub gworlds: Vec<PpcGWorldRecord>,
@@ -4134,12 +4134,14 @@ impl PpcLoadedApp {
     }
 
     /// Run one native operation with every process manager continuously attached.
+    #[cfg(test)]
     pub(crate) fn with_process_state<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         f(self)
     }
 
     /// Run one native operation with the continuously attached process Memory
     /// Manager as its sole allocator owner.
+    #[cfg(test)]
     pub(crate) fn with_process_memory_manager<R>(
         &mut self,
         f: impl FnOnce(&mut Self, &mut ProcessMemoryManager) -> R,
@@ -6726,25 +6728,143 @@ impl PpcLoadedApp {
         Some(alphas)
     }
 
+    fn assert_cfm_execution_owner(&self, process_cfm: Option<&PpcCfmState>) {
+        assert!(
+            process_cfm.is_some() || self.cfm.is_some(),
+            "installed native execution requires process CFM services"
+        );
+        assert!(
+            process_cfm.is_none() || self.cfm.is_none(),
+            "move the standalone CFM seed before using process services"
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_with_process_services(
+        &mut self,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> PpcHleRunProbe {
+        self.run_with_hle_imports_with_trace(
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+            Some(cfm),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_sound_completion_callback_with_process_services(
+        &mut self,
+        completion: PpcSoundCompletionRecord,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> PpcSoundCompletionCallProbe {
+        self.run_sound_completion_callback_inner(
+            completion,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+            Some(cfm),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fire_timer_tasks_for_ticks_with_process_services(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> Vec<PpcTimerCallbackProbe> {
+        self.fire_timer_tasks_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+            Some(cfm),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fire_vbl_tasks_for_ticks_with_process_services(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> Vec<PpcVblCallbackProbe> {
+        self.fire_vbl_tasks_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+            Some(cfm),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_sound_doubleback_callback_with_process_services(
+        &mut self,
+        doubleback: PpcSoundDoubleBackRecord,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> PpcSoundCompletionCallProbe {
+        self.run_sound_doubleback_callback_inner(
+            doubleback,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+            Some(cfm),
+        )
+    }
+
     pub fn run_with_hle_imports(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, false, false, None)
+        self.run_with_hle_imports_with_trace(max_cycles, false, false, None, None)
     }
 
     pub fn run_with_hle_import_trace(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, true, false, None)
+        self.run_with_hle_imports_with_trace(max_cycles, true, false, None, None)
     }
 
     pub fn run_with_hle_import_fetch_histogram(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, false, true, None)
+        self.run_with_hle_imports_with_trace(max_cycles, false, true, None, None)
     }
 
     pub fn run_with_hle_import_trace_and_fetch_histogram(
         &mut self,
         max_cycles: u64,
     ) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, true, true, None)
+        self.run_with_hle_imports_with_trace(max_cycles, true, true, None, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn run_with_process_memory_manager(
         &mut self,
         max_cycles: u64,
@@ -6757,6 +6877,7 @@ impl PpcLoadedApp {
             trace_imports,
             trace_fetches,
             Some(memory_manager),
+            None,
         )
     }
 
@@ -6773,23 +6894,7 @@ impl PpcLoadedApp {
             trace_imports,
             trace_fetches,
             None,
-        )
-    }
-
-    pub(crate) fn run_sound_completion_callback_with_process_memory_manager(
-        &mut self,
-        completion: PpcSoundCompletionRecord,
-        max_cycles: u64,
-        trace_imports: bool,
-        trace_fetches: bool,
-        memory_manager: &mut ProcessMemoryManager,
-    ) -> PpcSoundCompletionCallProbe {
-        self.run_sound_completion_callback_inner(
-            completion,
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            Some(memory_manager),
+            None,
         )
     }
 
@@ -6852,7 +6957,9 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcSoundCompletionCallProbe {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
         let saved_cpu = self.cpu.clone();
         let default_rtoc = if saved_cpu.gpr[2] != 0 {
             saved_cpu.gpr[2]
@@ -6902,6 +7009,7 @@ impl PpcLoadedApp {
                 trace_imports,
                 trace_fetches,
                 process_memory_manager,
+                process_cfm.as_deref_mut(),
             )
         } else {
             self.interrupt_callback_stack_fault()
@@ -6952,28 +7060,7 @@ impl PpcLoadedApp {
             trace_imports,
             trace_fetches,
             None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn fire_timer_tasks_for_ticks_with_process_memory_manager(
-        &mut self,
-        start_tick: u32,
-        elapsed_ticks: u32,
-        max_callbacks: usize,
-        max_cycles: u64,
-        trace_imports: bool,
-        trace_fetches: bool,
-        memory_manager: &mut ProcessMemoryManager,
-    ) -> Vec<PpcTimerCallbackProbe> {
-        self.fire_timer_tasks_for_ticks_inner(
-            start_tick,
-            elapsed_ticks,
-            max_callbacks,
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            Some(memory_manager),
+            None,
         )
     }
 
@@ -6987,7 +7074,9 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
         mut process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
     ) -> Vec<PpcTimerCallbackProbe> {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
         let mut probes = Vec::new();
         if elapsed_ticks == 0 || self.timer_tasks.is_empty() || max_callbacks == 0 {
             return probes;
@@ -7032,6 +7121,7 @@ impl PpcLoadedApp {
                         trace_imports,
                         trace_fetches,
                         process_memory_manager.as_deref_mut(),
+                        process_cfm.as_deref_mut(),
                     ));
                 }
             }
@@ -7047,7 +7137,9 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcTimerCallbackProbe {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
         let saved_cpu = self.cpu.clone();
         let saved_current_resource_refnum = self.current_resource_refnum();
         let default_rtoc = if saved_cpu.gpr[2] != 0 {
@@ -7076,6 +7168,7 @@ impl PpcLoadedApp {
                 trace_imports,
                 trace_fetches,
                 process_memory_manager,
+                process_cfm.as_deref_mut(),
             )
         } else {
             self.interrupt_callback_stack_fault()
@@ -7123,30 +7216,10 @@ impl PpcLoadedApp {
             trace_imports,
             trace_fetches,
             None,
+            None,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn fire_vbl_tasks_for_ticks_with_process_memory_manager(
-        &mut self,
-        start_tick: u32,
-        elapsed_ticks: u32,
-        max_callbacks: usize,
-        max_cycles: u64,
-        trace_imports: bool,
-        trace_fetches: bool,
-        memory_manager: &mut ProcessMemoryManager,
-    ) -> Vec<PpcVblCallbackProbe> {
-        self.fire_vbl_tasks_for_ticks_inner(
-            start_tick,
-            elapsed_ticks,
-            max_callbacks,
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            Some(memory_manager),
-        )
-    }
 
     #[allow(clippy::too_many_arguments)]
     fn fire_vbl_tasks_for_ticks_inner(
@@ -7158,7 +7231,9 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
         mut process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
     ) -> Vec<PpcVblCallbackProbe> {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
         let mut probes = Vec::new();
         if elapsed_ticks == 0 || self.vbl_tasks.is_empty() || max_callbacks == 0 {
             return probes;
@@ -7198,6 +7273,7 @@ impl PpcLoadedApp {
                     trace_imports,
                     trace_fetches,
                     process_memory_manager.as_deref_mut(),
+                    process_cfm.as_deref_mut(),
                 ));
                 // Inside Macintosh: Processes (1994), pp. 4-7–4-8: a VBL
                 // task must reset vblCount from its callback or the Vertical
@@ -7220,7 +7296,9 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcVblCallbackProbe {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
         let saved_cpu = self.cpu.clone();
         let saved_current_resource_refnum = self.current_resource_refnum();
         let default_rtoc = if saved_cpu.gpr[2] != 0 {
@@ -7251,6 +7329,7 @@ impl PpcLoadedApp {
                 trace_imports,
                 trace_fetches,
                 process_memory_manager,
+                process_cfm.as_deref_mut(),
             )
         } else {
             self.interrupt_callback_stack_fault()
@@ -7294,23 +7373,7 @@ impl PpcLoadedApp {
             trace_imports,
             trace_fetches,
             None,
-        )
-    }
-
-    pub(crate) fn run_sound_doubleback_callback_with_process_memory_manager(
-        &mut self,
-        doubleback: PpcSoundDoubleBackRecord,
-        max_cycles: u64,
-        trace_imports: bool,
-        trace_fetches: bool,
-        memory_manager: &mut ProcessMemoryManager,
-    ) -> PpcSoundCompletionCallProbe {
-        self.run_sound_doubleback_callback_inner(
-            doubleback,
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            Some(memory_manager),
+            None,
         )
     }
 
@@ -7321,7 +7384,9 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcSoundCompletionCallProbe {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
         let saved_cpu = self.cpu.clone();
         let default_rtoc = if saved_cpu.gpr[2] != 0 {
             saved_cpu.gpr[2]
@@ -7352,6 +7417,7 @@ impl PpcLoadedApp {
                 trace_imports,
                 trace_fetches,
                 process_memory_manager,
+                process_cfm.as_deref_mut(),
             )
         } else {
             self.interrupt_callback_stack_fault()
@@ -7391,7 +7457,9 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcHleRunProbe {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
         // Wakeup selects and prepares a saved context before any native step.
         self.guest_calls.resume_ready_task();
         if !self.guest_calls.current_task_is_running()
@@ -7463,9 +7531,21 @@ impl PpcLoadedApp {
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
         let mut apple_events = std::mem::take(&mut self.apple_events);
-        let mut cfm_connections = std::mem::take(&mut self.cfm_connections);
-        let mut cfm_library_fragments = std::mem::take(&mut self.cfm_library_fragments);
-        let mut next_cfm_connection_id = self.next_cfm_connection_id;
+        let mut standalone_cfm = if process_cfm.is_none() {
+            self.cfm.take()
+        } else {
+            None
+        };
+        let cfm = if let Some(cfm) = process_cfm.as_deref_mut() {
+            cfm
+        } else {
+            standalone_cfm.as_mut().expect("standalone CFM seed exists")
+        };
+        let (mut cfm_connections, mut cfm_library_fragments, mut next_cfm_connection_id) = (
+            &mut cfm.connections,
+            &mut cfm.library_fragments,
+            &mut cfm.next_connection_id,
+        );
         let mut controls = std::mem::take(&mut self.controls);
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
@@ -8505,9 +8585,7 @@ impl PpcLoadedApp {
         self.stdc_qsort_stack = stdc_qsort_stack;
         self.dialog_callback_stack = dialog_callback_stack;
         self.apple_events = apple_events;
-        self.cfm_connections = cfm_connections;
-        self.cfm_library_fragments = cfm_library_fragments;
-        self.next_cfm_connection_id = next_cfm_connection_id;
+        self.cfm = standalone_cfm;
         self.imports = imports;
         self.import_count = import_count;
         self.controls = controls;
@@ -8637,7 +8715,10 @@ impl PpcLoadedApp {
     }
 
     pub fn seed_cfm_library_fragments(&mut self, fragments: Vec<PpcCfmLibraryFragment>) {
-        self.cfm_library_fragments = fragments;
+        self.cfm
+            .as_mut()
+            .expect("seed CFM libraries before process installation")
+            .library_fragments = fragments;
     }
 
     pub fn seed_vfs_files_and_resources(
@@ -13210,9 +13291,11 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         apple_events: PpcAppleEventState::default(),
-        cfm_connections,
-        cfm_library_fragments: Vec::new(),
-        next_cfm_connection_id,
+        cfm: Some(PpcCfmState {
+            connections: cfm_connections,
+            library_fragments: Vec::new(),
+            next_connection_id: next_cfm_connection_id,
+        }),
         controls: SharedProcessControlManager::default(),
         aliases: Vec::new(),
         gworlds,
@@ -103549,8 +103632,11 @@ pub(crate) mod tests {
         assert_eq!(loaded.last_mem_error(), 0);
         assert_eq!(*loaded.process_file_system.current_resource_file, 0);
         assert_eq!(loaded.test_resource_error(), 0);
-        assert_eq!(loaded.cfm_connections.len(), 0);
-        assert_eq!(loaded.next_cfm_connection_id, PPC_FIRST_CFM_CONNECTION_ID);
+        assert_eq!(loaded.cfm.as_ref().unwrap().connections.len(), 0);
+        assert_eq!(
+            loaded.cfm.as_ref().unwrap().next_connection_id,
+            PPC_FIRST_CFM_CONNECTION_ID
+        );
         assert_eq!(test_handle_records!(loaded).len(), 0);
         assert_eq!(loaded.gworlds.len(), 2);
         assert_eq!(loaded.gworlds[0].port, PPC_MAIN_GWORLD);
@@ -113026,7 +113112,7 @@ pub(crate) mod tests {
             Some(PPC_CFM_MAIN_STUB_BASE)
         );
         assert_eq!(loaded.memory.read_u8(err_name_ptr), Some(0));
-        assert_eq!(loaded.cfm_connections.len(), 1);
+        assert_eq!(loaded.cfm.as_ref().unwrap().connections.len(), 1);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -113052,7 +113138,7 @@ pub(crate) mod tests {
             loaded.memory.read_u32_be(main_addr_ptr),
             Some(PPC_CFM_MAIN_STUB_BASE)
         );
-        assert_eq!(loaded.cfm_connections.len(), 1);
+        assert_eq!(loaded.cfm.as_ref().unwrap().connections.len(), 1);
     }
 
     #[test]
@@ -113114,7 +113200,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FRAG_LIB_NOT_FOUND));
-        assert!(loaded.cfm_connections.is_empty());
+        assert!(loaded.cfm.as_ref().unwrap().connections.is_empty());
     }
 
     #[test]
@@ -113135,7 +113221,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FRAG_ARCH_ERR));
-        assert!(loaded.cfm_connections.is_empty());
+        assert!(loaded.cfm.as_ref().unwrap().connections.is_empty());
     }
 
     #[test]
@@ -113161,7 +113247,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FRAG_LIB_NOT_FOUND));
-        assert!(loaded.cfm_connections.is_empty());
+        assert!(loaded.cfm.as_ref().unwrap().connections.is_empty());
         assert_eq!(loaded.heap_cursor(), heap_before);
     }
 
@@ -113175,18 +113261,23 @@ pub(crate) mod tests {
         let address_ptr = scratch + 32;
         let class_ptr = scratch + 36;
         write_ppc_pstring(&mut loaded.memory, symbol_ptr, b"RealExport");
-        loaded.cfm_connections.push(PpcCfmConnection {
-            id: 77,
-            library_name: "RealLibrary".to_string(),
-            main_addr: 0,
-            init_addr: 0,
-            term_addr: 0,
-            exports: vec![PpcCfmExport {
-                name: "RealExport".to_string(),
-                class: 1,
-                address: 0x0312_3456,
-            }],
-        });
+        loaded
+            .cfm
+            .as_mut()
+            .unwrap()
+            .connections
+            .push(PpcCfmConnection {
+                id: 77,
+                library_name: "RealLibrary".to_string(),
+                main_addr: 0,
+                init_addr: 0,
+                term_addr: 0,
+                exports: vec![PpcCfmExport {
+                    name: "RealExport".to_string(),
+                    class: 1,
+                    address: 0x0312_3456,
+                }],
+            });
         loaded.cpu.gpr[3] = 77;
         loaded.cpu.gpr[4] = symbol_ptr;
         loaded.cpu.gpr[5] = address_ptr;
@@ -113198,7 +113289,7 @@ pub(crate) mod tests {
         let action = ppc_find_symbol(
             &loaded.cpu,
             &mut loaded.memory,
-            &loaded.cfm_connections,
+            &loaded.cfm.as_ref().unwrap().connections,
             &mut loaded.imports,
             &mut loaded.import_count,
             &mut import_binding_indices,
@@ -113219,14 +113310,19 @@ pub(crate) mod tests {
         let symbol_ptr = scratch;
         let address_ptr = scratch + 32;
         let class_ptr = scratch + 36;
-        loaded.cfm_connections.push(PpcCfmConnection {
-            id: 78,
-            library_name: "StdCLib".to_string(),
-            main_addr: 0,
-            init_addr: 0,
-            term_addr: 0,
-            exports: Vec::new(),
-        });
+        loaded
+            .cfm
+            .as_mut()
+            .unwrap()
+            .connections
+            .push(PpcCfmConnection {
+                id: 78,
+                library_name: "StdCLib".to_string(),
+                main_addr: 0,
+                init_addr: 0,
+                term_addr: 0,
+                exports: Vec::new(),
+            });
         loaded.cpu.gpr[3] = 78;
         loaded.cpu.gpr[4] = symbol_ptr;
         loaded.cpu.gpr[5] = address_ptr;
@@ -113244,7 +113340,7 @@ pub(crate) mod tests {
             let action = ppc_find_symbol(
                 &loaded.cpu,
                 &mut loaded.memory,
-                &loaded.cfm_connections,
+                &loaded.cfm.as_ref().unwrap().connections,
                 &mut loaded.imports,
                 &mut loaded.import_count,
                 &mut import_binding_indices,
@@ -175763,13 +175859,13 @@ pub(crate) mod tests {
         match kind {
             0 => {
                 loaded
-                    .run_timer_callback(OUTPUT, VECTOR, 64, false, false, None)
+                    .run_timer_callback(OUTPUT, VECTOR, 64, false, false, None, None)
                     .invocation
                     .result
             }
             1 => {
                 loaded
-                    .run_vbl_callback(OUTPUT, VECTOR, 64, false, false, None)
+                    .run_vbl_callback(OUTPUT, VECTOR, 64, false, false, None, None)
                     .invocation
                     .result
             }
@@ -177279,7 +177375,7 @@ pub(crate) mod tests {
             loaded.cpu.gpr[1] -= PPC_INITIAL_STACK_FRAME_SIZE;
             let sp = loaded.cpu.gpr[1];
             let caller_rtoc = loaded.cpu.gpr[2];
-            let first_id = loaded.next_cfm_connection_id;
+            let first_id = loaded.cfm.as_ref().unwrap().next_connection_id;
             let prepare_call = |loaded: &mut PpcLoadedApp| {
                 loaded.cpu.pc = loaded.entry_pc;
                 loaded.cpu.lr = PPC_HALT_PC;
@@ -177331,6 +177427,7 @@ pub(crate) mod tests {
                     ppc_import_binding_indices(&loaded.imports, loaded.import_count);
                 let mut manager = loaded.process_memory_manager.0.borrow_mut();
                 let limit = manager.native_heap_state().unwrap().heap_limit;
+                let cfm = loaded.cfm.as_mut().unwrap();
                 assert_eq!(
                     ppc_prepare_resource_call(
                         &mut recursive_cpu,
@@ -177339,8 +177436,8 @@ pub(crate) mod tests {
                         &loaded.guest_calls,
                         &mut cursor,
                         limit,
-                        &mut loaded.cfm_connections,
-                        &mut loaded.next_cfm_connection_id,
+                        &mut cfm.connections,
+                        &mut cfm.next_connection_id,
                         &mut loaded.imports,
                         &mut loaded.import_count,
                         &mut binding_indices,
@@ -177373,7 +177470,10 @@ pub(crate) mod tests {
                 assert_eq!(loaded.memory.read_u16_be(record + 6), Some(3));
                 assert_eq!(loaded.memory.read_u32_be(record + 8), Some(0x100));
                 assert!(!loaded
-                    .cfm_connections
+                    .cfm
+                    .as_ref()
+                    .unwrap()
+                    .connections
                     .iter()
                     .any(|connection| connection.id == first_id));
                 loaded
@@ -177386,19 +177486,19 @@ pub(crate) mod tests {
                 prepare_call(&mut loaded);
                 let retry = loaded.run_with_hle_imports(128);
                 assert_eq!(retry.unsupported_import_index, None);
-                assert!(loaded.next_cfm_connection_id > first_id + 1);
+                assert!(loaded.cfm.as_ref().unwrap().next_connection_id > first_id + 1);
             }
             assert_eq!(loaded.cpu.gpr[3], 0xA0);
             assert_eq!(loaded.memory.read_u16_be(record + 6), Some(0));
             let prepared_target = loaded.memory.read_u32_be(record + 8).unwrap();
             assert_ne!(prepared_target, 0x100);
             let cursor = loaded.heap_cursor();
-            let next = loaded.next_cfm_connection_id;
+            let next = loaded.cfm.as_ref().unwrap().next_connection_id;
             prepare_call(&mut loaded);
             let again = loaded.run_with_hle_imports(128);
             assert_eq!(again.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], 0xA0);
-            assert_eq!(loaded.next_cfm_connection_id, next);
+            assert_eq!(loaded.cfm.as_ref().unwrap().next_connection_id, next);
             assert_eq!(loaded.heap_cursor(), cursor);
         }
     }
@@ -178303,7 +178403,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn synthetic_pef_with_import(symbol_name: &[u8]) -> Vec<u8> {
+    pub(crate) fn synthetic_pef_with_import(symbol_name: &[u8]) -> Vec<u8> {
         synthetic_pef_with_library_import(b"InterfaceLib", symbol_name)
     }
 

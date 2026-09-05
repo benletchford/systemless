@@ -172,6 +172,39 @@ pub struct CfmExport {
     pub address: u32,
 }
 
+/// One owned CFM registry. A standalone loader carries this as a seed;
+/// process installation moves it, rather than cloning an adapter projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfmState {
+    pub connections: Vec<CfmConnection>,
+    pub library_fragments: Vec<CfmLibraryFragment>,
+    pub next_connection_id: u32,
+}
+
+impl Default for CfmState {
+    fn default() -> Self {
+        Self {
+            connections: Vec::new(),
+            library_fragments: Vec::new(),
+            next_connection_id: 1,
+        }
+    }
+}
+
+impl CfmState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.connections.is_empty()
+            && self.library_fragments.is_empty()
+            && self.next_connection_id == 1
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfmLibraryFragment {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
 impl CfmResourceCall {
     pub(crate) fn complete(
         self,

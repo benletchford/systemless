@@ -50,13 +50,10 @@ pub struct PpcHleRunProbe {
     pub fetch_histogram: Option<PpcFetchHistogram>,
 }
 
-pub use crate::cfm::{CfmConnection as PpcCfmConnection, CfmExport as PpcCfmExport};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcCfmLibraryFragment {
-    pub name: String,
-    pub bytes: Vec<u8>,
-}
+pub use crate::cfm::{
+    CfmConnection as PpcCfmConnection, CfmExport as PpcCfmExport,
+    CfmLibraryFragment as PpcCfmLibraryFragment, CfmState as PpcCfmState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PpcInputSnapshot {
