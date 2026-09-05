@@ -3644,6 +3644,15 @@ fn ppc_set_current_resource_refnum(
 }
 
 impl PpcLoadedApp {
+    pub(crate) fn cfm_symbol_bindings(&mut self) -> PpcCfmSymbolBindings<'_> {
+        PpcCfmSymbolBindings {
+            imports: &mut self.imports,
+            import_count: &mut self.import_count,
+            indices: None,
+            pending: None,
+        }
+    }
+
     #[cfg(test)]
     fn set_test_resource_error(&mut self, error: i16) {
         let _ = self
@@ -51159,6 +51168,78 @@ fn ppc_close_connection(
     PPC_NO_ERR
 }
 
+/// Borrowed native gateway staging; the process CFM service owns lookup policy.
+pub(crate) struct PpcCfmSymbolBindings<'a> {
+    imports: &'a mut Vec<PpcImportBinding>,
+    import_count: &'a mut u32,
+    indices: Option<&'a mut Vec<Option<usize>>>,
+    pending: Option<PpcImportBinding>,
+}
+
+impl crate::cfm::CfmSymbolBindings for PpcCfmSymbolBindings<'_> {
+    fn prepare(
+        &mut self,
+        library: &str,
+        symbol: &str,
+    ) -> Result<(u32, u8), crate::cfm::CfmSymbolError> {
+        use crate::cfm::CfmSymbolError;
+        self.pending = None;
+        if !ppc_is_explicit_hle_cfm_library(library) {
+            return Err(CfmSymbolError::SymbolNotFound);
+        }
+        if let Some(address) = import_data_address_for(library, symbol) {
+            return Ok((address, 1));
+        }
+        if let Some(binding) = self.imports.iter().find(|binding| {
+            binding.library_name == library
+                && binding.symbol_name == symbol
+                && binding.class == 2
+                && binding.dispatcher_target != PpcImportDispatcherTarget::Unsupported
+        }) {
+            return Ok((binding.address, binding.class));
+        }
+        let target = dispatcher_target_for_import(library, symbol);
+        if target == PpcImportDispatcherTarget::Unsupported
+            || *self.import_count >= PPC_IMPORT_CAPACITY
+        {
+            return Err(CfmSymbolError::SymbolNotFound);
+        }
+        let symbol_index = *self.import_count;
+        let address =
+            import_address_for(symbol_index, 2).map_err(|_| CfmSymbolError::NoAddressSpace)?;
+        let trap_pc = import_trap_pc(symbol_index).map_err(|_| CfmSymbolError::NoAddressSpace)?;
+        self.pending = Some(PpcImportBinding {
+            library_index: u32::MAX,
+            symbol_index,
+            library_name: library.into(),
+            symbol_name: symbol.into(),
+            class: 2,
+            weak: false,
+            address,
+            tvector_address: Some(address),
+            trap_pc,
+            dispatcher_target: target,
+        });
+        Ok((address, 2))
+    }
+
+    fn commit(&mut self) {
+        let Some(binding) = self.pending.take() else {
+            return;
+        };
+        let symbol_index = binding.symbol_index as usize;
+        let binding_index = self.imports.len();
+        self.imports.push(binding);
+        if let Some(indices) = self.indices.as_deref_mut() {
+            if indices.len() <= symbol_index {
+                indices.resize(symbol_index + 1, None);
+            }
+            indices[symbol_index] = Some(binding_index);
+        }
+        *self.import_count += 1;
+    }
+}
+
 fn ppc_find_symbol(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -51167,86 +51248,30 @@ fn ppc_find_symbol(
     import_count: &mut u32,
     import_binding_indices: &mut Vec<Option<usize>>,
 ) -> PpcImportAction {
-    // Inside Macintosh: PowerPC System Software (1994), pp. 3-24--3-25.
-    let connection_id = cpu.gpr[3];
-    let symbol_name_ptr = cpu.gpr[4];
-    let symbol_addr_ptr = cpu.gpr[5];
-    let symbol_class_ptr = cpu.gpr[6];
-    let Some(connection) = cfm_connections
-        .iter()
-        .find(|connection| connection.id == connection_id)
-    else {
-        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CONNECTION_ID_NOT_FOUND));
+    use crate::cfm::{CfmFindSymbol, CfmMemory};
+    // PowerPC System Software (1994), pp. 3-24–3-25: decode the native ABI
+    // here; shared CFM owns validation, export selection and publication.
+    let request = CfmFindSymbol {
+        connection: cpu.gpr[3],
+        name: cpu.gpr[4],
+        address: cpu.gpr[5],
+        class: cpu.gpr[6],
     };
-    let Some(symbol_name) =
-        ppc_read_pstring_bytes(memory, symbol_name_ptr).map(|name| decode_mac_roman(&name))
-    else {
-        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    let mut bindings = PpcCfmSymbolBindings {
+        imports,
+        import_count,
+        indices: Some(import_binding_indices),
+        pending: None,
     };
-    if let Some(export) = connection
-        .exports
-        .iter()
-        .find(|export| export.name == symbol_name)
-    {
-        if memory
-            .write_u32_be(symbol_addr_ptr, export.address)
-            .is_none()
-            || memory.write_u8(symbol_class_ptr, export.class).is_none()
-        {
-            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
-        }
-        return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
-    }
-    if !ppc_is_explicit_hle_cfm_library(&connection.library_name) {
-        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_SYMBOL_NOT_FOUND));
-    }
-    if let Some(address) = import_data_address_for(&connection.library_name, &symbol_name) {
-        if memory.write_u32_be(symbol_addr_ptr, address).is_none()
-            || memory.write_u8(symbol_class_ptr, 1).is_none()
-        {
-            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
-        }
-        return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
-    }
-    let target = dispatcher_target_for_import(&connection.library_name, &symbol_name);
-    if target == PpcImportDispatcherTarget::Unsupported || *import_count >= PPC_IMPORT_CAPACITY {
-        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_SYMBOL_NOT_FOUND));
-    }
-
-    let symbol_index = *import_count;
-    let address = match import_address_for(symbol_index, 2) {
-        Ok(address) => address,
-        Err(_) => return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_ADDR_SPACE)),
-    };
-    let trap_pc = match import_trap_pc(symbol_index) {
-        Ok(address) => address,
-        Err(_) => return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_ADDR_SPACE)),
-    };
-    let binding_index = imports.len();
-    imports.push(PpcImportBinding {
-        library_index: u32::MAX,
-        symbol_index,
-        library_name: connection.library_name.clone(),
-        symbol_name,
-        class: 2,
-        weak: false,
-        address,
-        tvector_address: Some(address),
-        trap_pc,
-        dispatcher_target: target,
-    });
-    if import_binding_indices.len() <= symbol_index as usize {
-        import_binding_indices.resize(symbol_index as usize + 1, None);
-    }
-    import_binding_indices[symbol_index as usize] = Some(binding_index);
-    *import_count += 1;
-
-    if memory.write_u32_be(symbol_addr_ptr, address).is_none()
-        || memory.write_u8(symbol_class_ptr, 2).is_none()
-    {
-        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
-    }
-    PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+    let result = request.complete(
+        cfm_connections,
+        memory,
+        Some(&mut bindings),
+        |memory, writes| memory.publish_cfm_outputs(writes),
+    );
+    PpcImportAction::Return(ppc_i16_result(
+        result.err().map_or(0, |error| error.os_error()),
+    ))
 }
 
 fn ppc_get_mem_fragment(
@@ -113433,6 +113458,105 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u32_be(address_ptr), Some(0x0312_3456));
         assert_eq!(loaded.memory.read_u8(class_ptr), Some(1));
         assert_eq!(loaded.imports.len(), import_len_before);
+    }
+
+    #[test]
+    fn find_symbol_import_refuses_partial_outputs_retries_and_reuses_callable_bindings() {
+        const OUTPUT: u32 = PPC_HEAP_BASE + 0x100;
+        for dynamic in [false, true] {
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(b"FindSymbol")).unwrap();
+            loaded.memory.add_region(OUTPUT, vec![0xa5; 128]);
+            loaded.memory.add_readonly_region(OUTPUT + 8, vec![0xa5]);
+            let symbol = if dynamic {
+                b"TickCount".as_slice()
+            } else {
+                b"RealExport".as_slice()
+            };
+            write_ppc_pstring(&mut loaded.memory, OUTPUT + 32, symbol);
+            loaded
+                .cfm
+                .as_mut()
+                .unwrap()
+                .connections
+                .push(PpcCfmConnection {
+                    id: 7,
+                    library_name: if dynamic {
+                        "InterfaceLib"
+                    } else {
+                        "RealLibrary"
+                    }
+                    .into(),
+                    main_addr: 0,
+                    init_addr: 0,
+                    term_addr: 0,
+                    exports: if dynamic {
+                        vec![]
+                    } else {
+                        vec![PpcCfmExport {
+                            name: "RealExport".into(),
+                            class: 1,
+                            address: 0x1234_5678,
+                        }]
+                    },
+                });
+            let original_count = loaded.import_count;
+            let original_len = loaded.imports.len();
+            let mut returned = None;
+            for attempt in 0..3 {
+                loaded.cpu.pc = loaded.entry_pc;
+                loaded.cpu.lr = PPC_HALT_PC;
+                loaded.cpu.gpr[3] = 7;
+                loaded.cpu.gpr[4] = OUTPUT + 32;
+                loaded.cpu.gpr[5] = OUTPUT;
+                loaded.cpu.gpr[6] = OUTPUT + if attempt == 0 { 8 } else { 9 };
+                let probe = loaded.run_with_hle_imports(128);
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(probe.unsupported_import_index, None);
+                if attempt == 0 {
+                    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+                    assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0xa5a5_a5a5));
+                    assert_eq!(loaded.import_count, original_count);
+                    assert_eq!(loaded.imports.len(), original_len);
+                } else {
+                    assert_eq!(loaded.cpu.gpr[3], 0);
+                    let address = loaded.memory.read_u32_be(OUTPUT).unwrap();
+                    if let Some(previous) = returned {
+                        assert_eq!(address, previous);
+                    }
+                    returned = Some(address);
+                    assert_eq!(loaded.import_count, original_count + u32::from(dynamic));
+                    assert_eq!(loaded.imports.len(), original_len + usize::from(dynamic));
+                }
+            }
+            if dynamic {
+                let vector = returned.unwrap();
+                loaded
+                    .memory
+                    .write_u32_be(crate::memory::globals::addr::TICKS, 0x1234)
+                    .unwrap();
+                loaded.cpu.pc = loaded.memory.read_u32_be(vector).unwrap();
+                loaded.cpu.gpr[2] = loaded.memory.read_u32_be(vector + 4).unwrap();
+                loaded.cpu.lr = PPC_HALT_PC;
+                let probe = loaded.run_with_hle_imports(64);
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(loaded.cpu.gpr[3], 0x1234);
+                // An existing symbol remains available when the gateway pool is full.
+                loaded.import_count = PPC_IMPORT_CAPACITY;
+                let mut bindings = loaded.cfm_symbol_bindings();
+                assert_eq!(
+                    crate::cfm::CfmSymbolBindings::prepare(
+                        &mut bindings,
+                        "InterfaceLib",
+                        "TickCount"
+                    ),
+                    Ok((vector, 2))
+                );
+                crate::cfm::CfmSymbolBindings::commit(&mut bindings);
+                assert_eq!(loaded.import_count, PPC_IMPORT_CAPACITY);
+                assert_eq!(loaded.imports.len(), original_len + 1);
+            }
+        }
     }
 
     #[test]

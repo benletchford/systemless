@@ -1039,11 +1039,12 @@ fn force_button_true_at_pc() -> Option<u32> {
     })
 }
 
-/// Classic ABI edge for the migrated CFM enumeration selectors.
+/// Classic ABI edge for the migrated CFM symbol-query selectors.
 fn dispatch_cfm_symbols<C: CpuOps>(
     cpu: &mut C,
     bus: &mut MacMemoryBus,
     cfm: Option<&crate::cfm::CfmState>,
+    bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
 ) -> Result<()> {
     use crate::cfm::CfmSymbolQuery;
     let sp = cpu.read_reg(Register::A7);
@@ -1053,6 +1054,7 @@ fn dispatch_cfm_symbols<C: CpuOps>(
     }
     let selector = bus.read_word(sp);
     let argument_bytes = match selector {
+        5 => 16,
         6 => 8,
         7 => 20,
         // Unmigrated selectors retain the legacy compatibility stub.
@@ -1072,26 +1074,37 @@ fn dispatch_cfm_symbols<C: CpuOps>(
         cpu.write_reg(Register::D0, (-50i32) as u32);
         return Ok(());
     }
-    let query = if selector == 6 {
-        CfmSymbolQuery::Count {
-            connection: bus.read_long(sp + 6),
-            count: bus.read_long(sp + 2),
-        }
-    } else {
-        CfmSymbolQuery::Indexed {
-            connection: bus.read_long(sp + 18),
-            index: bus.read_long(sp + 14),
-            name: bus.read_long(sp + 10),
-            address: bus.read_long(sp + 6),
-            class: bus.read_long(sp + 2),
-        }
-    };
-    let result = query.complete(&cfm.connections, |writes| {
+    let publish = |bus: &mut MacMemoryBus, writes: &[(u32, &[u8])]| {
         let success = 0u16.to_be_bytes();
         let mut writes = writes.to_vec();
         writes.push((result_slot, &success));
         bus.try_write_ranges_atomic(&writes)
-    });
+    };
+    let result = if selector == 5 {
+        crate::cfm::CfmFindSymbol {
+            connection: bus.read_long(sp + 14),
+            name: bus.read_long(sp + 10),
+            address: bus.read_long(sp + 6),
+            class: bus.read_long(sp + 2),
+        }
+        .complete(&cfm.connections, bus, bindings, publish)
+    } else {
+        let query = if selector == 6 {
+            CfmSymbolQuery::Count {
+                connection: bus.read_long(sp + 6),
+                count: bus.read_long(sp + 2),
+            }
+        } else {
+            CfmSymbolQuery::Indexed {
+                connection: bus.read_long(sp + 18),
+                index: bus.read_long(sp + 14),
+                name: bus.read_long(sp + 10),
+                address: bus.read_long(sp + 6),
+                class: bus.read_long(sp + 2),
+            }
+        };
+        query.complete(&cfm.connections, |writes| publish(bus, writes))
+    };
     let error = result.err().map_or(0, |error| error.os_error());
     if error != 0 {
         // All semantic outputs remain unchanged when their transaction fails.
@@ -5005,7 +5018,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
-        self.dispatch_toolbox_with_process_services(is_tool, trap_num, cpu, bus, None)
+        self.dispatch_toolbox_with_process_services(is_tool, trap_num, cpu, bus, None, None)
     }
 
     pub(crate) fn dispatch_toolbox_with_process_services<C: CpuOps>(
@@ -5015,6 +5028,7 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         cfm: Option<&crate::cfm::CfmState>,
+        bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
     ) -> Option<Result<()>> {
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
@@ -11862,7 +11876,9 @@ impl super::TrapDispatcher {
                         | 0x0060
                         | 0x0064
                 ) {
-                    return self.dispatch_toolbox_with_process_services(true, 0x1E7, cpu, bus, cfm);
+                    return self.dispatch_toolbox_with_process_services(
+                        true, 0x1E7, cpu, bus, cfm, bindings,
+                    );
                 }
                 match selector {
                     // PROCEDURE LActivate(act: BOOLEAN;
@@ -16046,14 +16062,16 @@ impl super::TrapDispatcher {
             }
 
             // CodeFragmentDispatch ($AA5A)
-            // Enumerates exports in a process CFM connection.
+            // Finds and enumerates exports in a process CFM connection.
+            // OSErr FindSymbol(ConnectionID connID, Str255 symName,
+            //                  Ptr *symAddr, SymClass *symClass);
             // OSErr CountSymbols(ConnectionID connID, long *symCount);
             // OSErr GetIndSymbol(ConnectionID connID, long symIndex,
             //                    Str255 symName, Ptr *symAddr, SymClass *symClass);
-            // PowerPC System Software (1994), pp. 3-25–3-26. Universal
-            // Interfaces 3.4, CodeFragments.h: $3F3C,$0006/$0007,$AA5A
+            // PowerPC System Software (1994), pp. 3-24–3-26. Universal
+            // Interfaces 3.4, CodeFragments.h: $3F3C,$0005/$0006/$0007,$AA5A
             // pushes a word selector before the Pascal argument frame.
-            (true, 0x25A) => dispatch_cfm_symbols(cpu, bus, cfm),
+            (true, 0x25A) => dispatch_cfm_symbols(cpu, bus, cfm, bindings),
 
             // IconDispatch ($ABC9)
             // Dispatches Icon Utilities routines selected by the low word of D0.
@@ -17073,16 +17091,34 @@ mod tests {
             }],
             ..Default::default()
         };
-        for selector in [6, 7] {
+        for selector in [5, 6, 7] {
             for fault in 0..7 {
                 let (mut disp, mut cpu, mut bus) = setup();
                 let mut memory = GuestAddressSpace::new();
                 memory.add_region(STACK, vec![0xa5; 0x200]);
                 bus.set_addressing_32_bit(true);
                 bus.attach_guest_address_space(memory.shared_view());
-                let result_slot = STACK + if selector == 6 { 10 } else { 22 };
+                let result_slot = STACK
+                    + match selector {
+                        5 => 18,
+                        6 => 10,
+                        _ => 22,
+                    };
                 bus.write_word(STACK, selector);
-                if selector == 6 {
+                if selector == 5 {
+                    let name = if fault == 2 {
+                        b"\x01x".as_slice()
+                    } else {
+                        b"\x05Caf\x8e\xaa".as_slice()
+                    };
+                    for (i, byte) in name.iter().enumerate() {
+                        bus.write_byte(OUTPUT + 48 + i as u32, *byte);
+                    }
+                    bus.write_long(STACK + 2, OUTPUT + 40);
+                    bus.write_long(STACK + 6, OUTPUT + 32);
+                    bus.write_long(STACK + 10, OUTPUT + 48);
+                    bus.write_long(STACK + 14, if fault == 1 { 99 } else { 7 });
+                } else if selector == 6 {
                     bus.write_long(STACK + 2, OUTPUT);
                     bus.write_long(STACK + 6, if fault == 1 { 99 } else { 7 });
                 } else {
@@ -17093,7 +17129,10 @@ mod tests {
                     bus.write_long(STACK + 18, if fault == 1 { 99 } else { 7 });
                 }
                 if fault == 3 {
-                    memory.add_readonly_region(OUTPUT, vec![0xa5]);
+                    memory.add_readonly_region(
+                        OUTPUT + if selector == 5 { 32 } else { 0 },
+                        vec![0xa5],
+                    );
                 }
                 if fault == 4 {
                     memory.add_readonly_region(result_slot, vec![0xa5; 2]);
@@ -17107,7 +17146,7 @@ mod tests {
                 let result = if fault == 6 {
                     disp.dispatch(0xAA5A, &mut cpu, &mut bus)
                 } else {
-                    disp.dispatch_with_process_services(0xAA5A, &mut cpu, &mut bus, &cfm)
+                    disp.dispatch_with_process_services(0xAA5A, &mut cpu, &mut bus, &cfm, None)
                 };
                 if fault == 6 {
                     assert!(matches!(
@@ -17120,7 +17159,7 @@ mod tests {
                     assert!(result.is_ok());
                     let error: i16 = match fault {
                         1 => -2801,
-                        2 if selector == 7 => -2802,
+                        2 if selector != 6 => -2802,
                         3..=5 => -50,
                         _ => 0,
                     };
@@ -17140,13 +17179,15 @@ mod tests {
                         if selector == 6 {
                             assert_eq!(bus.read_long(OUTPUT), 1);
                         } else {
-                            assert_eq!(bus.read_byte(OUTPUT), 5);
+                            if selector == 7 {
+                                assert_eq!(bus.read_byte(OUTPUT), 5);
+                            }
                             assert_eq!(bus.read_long(OUTPUT + 32), 0x1234_5678);
                             assert_eq!(bus.read_byte(OUTPUT + 40), 1);
                         }
                     }
                 }
-                if matches!(fault, 1 | 3..=6) || (fault == 2 && selector == 7) {
+                if matches!(fault, 1 | 3..=6) || (fault == 2 && selector != 6) {
                     assert_eq!(
                         (0..64)
                             .map(|i| bus.read_byte(OUTPUT + i))
