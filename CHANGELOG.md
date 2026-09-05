@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.37.0](https://github.com/benletchford/systemless/compare/v0.36.0...v0.37.0) (2026-09-05)
+
+
+### Features
+
+* prepare accelerated resources for native universal calls ([bc64125](https://github.com/benletchford/systemless/commit/bc6412561e0f5360789852905b59f34cdbaffa9c))
+
+
+### Bug Fixes
+
+* default to classic theme and compare classic showcase profiles ([627009a](https://github.com/benletchford/systemless/commit/627009a1fc88e8df7d4403edd3dfcac3575bca57))
+* distinguish unprepared fragments from callable procedures ([3f43990](https://github.com/benletchford/systemless/commit/3f43990c396507689c018af54c069678d864b52f))
+* own dynamic CFM initializer storage through guest return ([1660068](https://github.com/benletchford/systemless/commit/166006895b39689b99a3a68ede9a1cb478cd57eb))
+* preserve classic thread status and floating-point state ([0f98bb0](https://github.com/benletchford/systemless/commit/0f98bb01a67d7a94647bb757bcef54dac28d9592))
+* preserve window activation across toolbox calls ([482439b](https://github.com/benletchford/systemless/commit/482439b5c08c09b5fdfc6408bd31cea2a75f5fdb))
+* publish prepared fragments with their allocator commit ([71dfe98](https://github.com/benletchford/systemless/commit/71dfe98fca46052848ce7492ade6b51768e8bc3c))
+* repaint newly exposed content when reordering windows ([0f39805](https://github.com/benletchford/systemless/commit/0f39805a0083535a7684703524125370f142d4c2))
+* resolve sparse color icon tables and reuse pixel mappings ([d4a4075](https://github.com/benletchford/systemless/commit/d4a4075c78ff73a54fa4e085d0551bcc3ab9225d))
+* resume CFM loads after initializer completion ([363d861](https://github.com/benletchford/systemless/commit/363d861c94747bbb8596e023d57cf1a3f96d451d))
+* validate guest procedure mappings across CPU views ([0c8bf3a](https://github.com/benletchford/systemless/commit/0c8bf3a3057387378966bc4fe32e5adf687b6c0b))
+
+
+### Code Refactoring
+
+* activate CFM initializers through task-owned effects ([3ced57f](https://github.com/benletchford/systemless/commit/3ced57fda34b838f478276ffab829f39f5633af1))
+* complete CFM loads through the shared service ([68a5356](https://github.com/benletchford/systemless/commit/68a53561d319da7ccde63c106f2b7b6f6cda09d4))
+* transfer completed CFM operations before resumption ([7d5e1a9](https://github.com/benletchford/systemless/commit/7d5e1a90f81641a9752b2baae8d211da157c2169))
+
 ## [0.36.0](https://github.com/benletchford/systemless/compare/v0.35.0...v0.36.0) (2026-09-05)
 
 
