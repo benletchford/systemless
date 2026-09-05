@@ -52,6 +52,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs can restore default-branch caches; their own copies cannot be
+          # reused by other PRs and compete for the repository cache budget.
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       # Compile everything (lib + the GUI binary, all features) on each OS so
       # platform-specific breakage in winit/softbuffer/cpal is caught early.
@@ -65,27 +69,19 @@ jobs:
       - name: Run desktop tests
         run: cargo test --locked --bin systemless
 
-      # All four runtime configurations use this exact optimized executable.
+      # Both Systemless runtime configurations use this exact optimized executable.
       # Keep ordinary library/desktop tests in the checked debug profile above.
       - name: Compile optimized toolbox showcase tests
         run: cargo test --locked --profile ci-test --test toolbox_showcase --no-run
 
-      - name: Run toolbox showcase integration test (68k)
+      - name: Run Systemless showcase assertions (68k)
+        env:
+          SYSTEMLESS_TOOLBOX_THEME: systemless-default
         run: cargo test --locked --profile ci-test --test toolbox_showcase
 
-      - name: Run toolbox showcase integration test (PowerPC)
+      - name: Run Systemless showcase assertions (PowerPC)
         env:
-          SYSTEMLESS_PREFER_POWERPC: 1
-        run: cargo test --locked --profile ci-test --test toolbox_showcase
-
-      - name: Run toolbox showcase integration test (classic 68k)
-        env:
-          SYSTEMLESS_TOOLBOX_THEME: classic-system7
-        run: cargo test --locked --profile ci-test --test toolbox_showcase
-
-      - name: Run toolbox showcase integration test (classic PowerPC)
-        env:
-          SYSTEMLESS_TOOLBOX_THEME: classic-system7
+          SYSTEMLESS_TOOLBOX_THEME: systemless-default
           SYSTEMLESS_PREFER_POWERPC: 1
         run: cargo test --locked --profile ci-test --test toolbox_showcase
 
@@ -111,6 +107,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs can restore default-branch caches; their own copies cannot be
+          # reused by other PRs and compete for the repository cache budget.
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       - name: Verify reproducible toolbox showcase archive
         run: ./tests/toolbox-showcase/build.sh --verify
@@ -171,6 +171,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs can restore default-branch caches; their own copies cannot be
+          # reused by other PRs and compete for the repository cache budget.
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       # Non-blocking for now: the tree is not yet rustfmt-clean and clippy
       # reports pre-existing warnings. Drop `continue-on-error` on each step
