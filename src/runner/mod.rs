@@ -14285,6 +14285,7 @@ mod tests {
     fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         let mut memory = PpcSectionMem::new();
         memory.add_region(PPC_CODE_BASE, 0x4e80_0020u32.to_be_bytes().to_vec());
+        memory.add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
         let mut cpu = PpcCpu::new();
         cpu.pc = PPC_CODE_BASE;
         cpu.lr = PPC_HALT_PC;
