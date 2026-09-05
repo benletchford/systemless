@@ -529,32 +529,40 @@ pub(crate) struct ProtectedCodeOwnership {
 impl ProtectedCodeOwnership {
     #[inline]
     pub(crate) fn contains(&self, address: u32) -> bool {
-        let translated = if self.addressing_32_bit {
-            address
-        } else {
-            address & 0x00FF_FFFF
-        };
-        let end = (u64::from(translated) + 4).min(1u64 << 32);
-        if end != u64::from(translated) + 4 {
+        protected_code_covers_long(self.addressing_32_bit, &self.ranges, address)
+    }
+}
+
+/// Whether the longword at `address` lies entirely inside protected code
+/// (`ranges` are half-open `(start, stop)` translated addresses). Shared by
+/// the ownership snapshot and the bus's borrowed check so both answer alike.
+#[inline]
+fn protected_code_covers_long(addressing_32_bit: bool, ranges: &[(u32, u32)], address: u32) -> bool {
+    let translated = if addressing_32_bit {
+        address
+    } else {
+        address & 0x00FF_FFFF
+    };
+    let end = (u64::from(translated) + 4).min(1u64 << 32);
+    if end != u64::from(translated) + 4 {
+        return false;
+    }
+    let mut cursor = u64::from(translated);
+    while cursor < end {
+        let mut covered_end = cursor;
+        for &(start, stop) in ranges {
+            let start = u64::from(start);
+            let stop = u64::from(stop);
+            if start <= cursor && cursor < stop {
+                covered_end = covered_end.max(stop.min(end));
+            }
+        }
+        if covered_end == cursor {
             return false;
         }
-        let mut cursor = u64::from(translated);
-        while cursor < end {
-            let mut covered_end = cursor;
-            for &(start, stop) in &self.ranges {
-                let start = u64::from(start);
-                let stop = u64::from(stop);
-                if start <= cursor && cursor < stop {
-                    covered_end = covered_end.max(stop.min(end));
-                }
-            }
-            if covered_end == cursor {
-                return false;
-            }
-            cursor = covered_end;
-        }
-        true
+        cursor = covered_end;
     }
+    true
 }
 
 /// An exact-state probe journals the words an idle cycle writes: a spilled
@@ -1771,6 +1779,14 @@ impl MacMemoryBus {
             addressing_32_bit: self.addressing_32_bit,
             ranges: self.readonly_code_ranges.clone(),
         }
+    }
+
+    /// The snapshot's `contains`, answered from the live ranges without
+    /// copying them. For callers that hold the bus immutably for the whole
+    /// Trap Manager call, such as every trap dispatch's table lookup.
+    #[inline]
+    pub(crate) fn protected_code_contains(&self, address: u32) -> bool {
+        protected_code_covers_long(self.addressing_32_bit, &self.readonly_code_ranges, address)
     }
 
     /// Privileged, status-bearing longword write for a known system-owned
