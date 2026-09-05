@@ -22,7 +22,8 @@ use crate::execution_kernel::{
     NativeAvailability,
 };
 use crate::guest_procedure::GuestIsa;
-use ppc::{PpcCpu, PpcImportAction, PpcNativeReturnGpr3};
+use crate::memory::GuestAddressSpace;
+use ppc::{PpcCpu, PpcImportAction, PpcMemory, PpcNativeReturnGpr3};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -340,7 +341,7 @@ impl GuestCallEffect {
             }),
             (
                 GuestIsa::PowerPc,
-                GuestCallArguments::None,
+                GuestCallArguments::None | GuestCallArguments::PowerPc(_),
                 GuestCallContinuation::ReturnToPowerPc {
                     return_pc,
                     final_pc,
@@ -1979,6 +1980,68 @@ impl SharedGuestCallStack {
             .is_some_and(|(_, frame)| frame.m68k_execution.is_some())
     }
 
+    /// Activate a native call without discarding its task or logical arguments.
+    /// The entire parameter area must be writable before any call state or
+    /// architectural state changes. No guest execution intervenes in commit.
+    pub(crate) fn activate_powerpc_effect(
+        &self,
+        cpu: &mut PpcCpu,
+        memory: &mut GuestAddressSpace,
+        effect: GuestCallEffect,
+    ) -> bool {
+        let GuestCallEffect::CallGuest {
+            request,
+            continuation,
+        } = effect;
+        let GuestCallContinuation::ReturnToPowerPc { return_pc, .. } = continuation else {
+            return false;
+        };
+        let GuestCallArguments::PowerPc(arguments) = request.arguments else {
+            return false;
+        };
+        if request.task != self.current_task()
+            || request.target.isa != GuestIsa::PowerPc
+            || request.target.entry == 0
+        {
+            return false;
+        }
+        // Inside Macintosh: PowerPC System Software (1994), pp. 1-45--1-50:
+        // the parameter area follows the 24-byte linkage area and reserves
+        // at least eight words, corresponding to r3 through r10.
+        let Some(parameter_start) = cpu.gpr[1].checked_add(24) else {
+            return false;
+        };
+        let values = arguments.as_slice();
+        let parameter_len = values.len().max(8) as u32 * 4;
+        if !memory.preflight_writable_range(parameter_start, parameter_len) {
+            return false;
+        }
+        let Some(call_id) = self.submit_effect(effect) else {
+            return false;
+        };
+        // Submission just installed this task's pending top frame. This
+        // synchronous transition cannot be displaced by another guest call.
+        self.0
+            .borrow()
+            .kernel
+            .activate(request.task, call_id)
+            .expect("newly submitted native call remains pending");
+        cpu.gpr[3..11].fill(0);
+        for slot in 0..values.len().max(8) {
+            let value = values.get(slot).copied().unwrap_or(0);
+            memory
+                .write_u32_be(parameter_start + slot as u32 * 4, value)
+                .expect("preflighted native parameter area remains writable");
+            if slot < 8 {
+                cpu.gpr[3 + slot] = value;
+            }
+        }
+        cpu.pc = request.target.entry;
+        cpu.gpr[2] = request.target.rtoc;
+        cpu.lr = return_pc;
+        true
+    }
+
     /// Move the continuation embedded in a CPU action into the process stack
     /// and arrange the next native PowerPC context directly.
     pub(crate) fn externalize_powerpc_action(
@@ -2760,6 +2823,92 @@ mod tests {
         assert_eq!(process_calls.len(), 1);
         assert!(adapter_calls.complete_m68k(0x2002, 0x3000));
         assert!(process_calls.is_empty());
+    }
+
+    #[test]
+    fn native_effect_preflights_all_arguments_and_preserves_nested_calls_on_refusal() {
+        for failure in 0..5 {
+            let calls = SharedGuestCallStack::default();
+            let worker = calls.create_task().unwrap();
+            assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+            assert!(calls.switch_to_task(worker));
+            let mut cpu = PpcCpu::new();
+            calls.externalize_powerpc_action(
+                &mut cpu,
+                native_action(0x1000, 0x2000, PpcNativeReturnGpr3::Preserve),
+            );
+            cpu.gpr[1] = if failure == 3 { u32::MAX - 8 } else { 0x8000 };
+            cpu.gpr[3..11].fill(0xfeed);
+            let arguments = PowerPcArguments::from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
+            let mut request = GuestCallRequest::for_task(
+                worker,
+                GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: 0x3000,
+                    rtoc: 0x3100,
+                },
+            )
+            .with_powerpc_arguments(arguments);
+            if failure == 2 {
+                request.task = ExecutionTaskId::APPLICATION;
+            }
+            if failure == 4 {
+                request.target.entry = 0;
+            }
+            let continuation = GuestCallContinuation::to_powerpc(
+                RETURN_PC,
+                cpu.pc,
+                cpu.gpr[2],
+                PpcNativeReturnGpr3::Mask(0xff),
+            );
+            let effect = GuestCallEffect::call_guest(request, continuation);
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(0x8018, vec![0xa5; 32]);
+            if failure == 1 {
+                memory.add_readonly_region(0x8038, vec![0xa5; 4]);
+            } else if failure != 0 {
+                memory.add_region(0x8038, vec![0xa5; 4]);
+            }
+            let before = calls.clone();
+            let registers = cpu.gpr;
+            let control = (cpu.pc, cpu.lr);
+            assert!(
+                !calls.activate_powerpc_effect(&mut cpu, &mut memory, effect),
+                "case {failure}"
+            );
+            assert_eq!(calls, before);
+            assert_eq!(cpu.gpr, registers);
+            assert_eq!((cpu.pc, cpu.lr), control);
+            for offset in 0..32 {
+                assert_eq!(memory.read_u8(0x8018 + offset), Some(0xa5));
+            }
+
+            // Retry under the same worker, retaining the outer continuation.
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(0x8000, vec![0xa5; 128]);
+            cpu.gpr[1] = 0x8000;
+            request.task = worker;
+            request.target.entry = 0x3000;
+            assert!(calls.activate_powerpc_effect(
+                &mut cpu,
+                &mut memory,
+                GuestCallEffect::call_guest(request, continuation)
+            ));
+            assert_eq!(&cpu.gpr[3..11], &[1, 2, 3, 4, 5, 6, 7, 8]);
+            assert_eq!(memory.read_u32_be(0x8038), Some(9));
+            assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x3000, RETURN_PC, 0x3100));
+            assert_eq!(calls.task_depth(worker), 2);
+            assert_eq!(calls.task_depth(ExecutionTaskId::APPLICATION), 0);
+            cpu.pc = RETURN_PC;
+            cpu.gpr[3] = 0x1234;
+            assert!(calls.complete_powerpc(&mut cpu));
+            assert_eq!((cpu.pc, cpu.gpr[2], cpu.gpr[3]), (0x1000, 0x1100, 0x34));
+            assert_eq!(calls.task_depth(worker), 1);
+            cpu.pc = RETURN_PC;
+            assert!(calls.complete_powerpc(&mut cpu));
+            assert_eq!(cpu.pc, 0x2000);
+            assert!(calls.is_empty());
+        }
     }
 
     #[test]
