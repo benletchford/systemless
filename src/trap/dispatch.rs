@@ -6912,7 +6912,9 @@ impl TrapDispatcher {
         } else {
             TrapTableKind::OperatingSystem
         };
-        let protected_code = bus.protected_code_ownership();
+        // The bus is borrowed immutably for the whole lookup, so the
+        // protected-code check reads the live ranges; snapshotting them here
+        // copied a Vec on every trap dispatch.
         TrapManager::get_address_with_provenance(
             canonical,
             kind,
@@ -6923,7 +6925,7 @@ impl TrapDispatcher {
                 TrapManagerMemoryOp::WriteLong { .. }
                 | TrapManagerMemoryOp::WriteProtectedLong { .. } => None,
             },
-            move |address| protected_code.contains(address),
+            |address| bus.protected_code_contains(address),
         )
     }
 

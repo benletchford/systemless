@@ -529,32 +529,61 @@ pub(crate) struct ProtectedCodeOwnership {
 impl ProtectedCodeOwnership {
     #[inline]
     pub(crate) fn contains(&self, address: u32) -> bool {
-        let translated = if self.addressing_32_bit {
-            address
-        } else {
-            address & 0x00FF_FFFF
-        };
-        let end = (u64::from(translated) + 4).min(1u64 << 32);
-        if end != u64::from(translated) + 4 {
-            return false;
-        }
-        let mut cursor = u64::from(translated);
-        while cursor < end {
-            let mut covered_end = cursor;
-            for &(start, stop) in &self.ranges {
-                let start = u64::from(start);
-                let stop = u64::from(stop);
-                if start <= cursor && cursor < stop {
-                    covered_end = covered_end.max(stop.min(end));
-                }
-            }
-            if covered_end == cursor {
-                return false;
-            }
-            cursor = covered_end;
-        }
-        true
+        protected_code_covers_long(self.addressing_32_bit, &self.ranges, address)
     }
+}
+
+/// Whether the longword at `address` lies entirely inside protected code
+/// (`ranges` are half-open `(start, stop)` translated addresses). Shared by
+/// the ownership snapshot and the bus's borrowed check so both answer alike.
+#[inline]
+fn protected_code_covers_long(addressing_32_bit: bool, ranges: &[(u32, u32)], address: u32) -> bool {
+    let translated = if addressing_32_bit {
+        address
+    } else {
+        address & 0x00FF_FFFF
+    };
+    let end = u64::from(translated) + 4;
+    end <= (1u64 << 32) && protected_ranges_cover(ranges, u64::from(translated), end)
+}
+
+/// Insert `[start, end)` into a list kept sorted by start with no overlapping
+/// or touching entries, merging as needed. Every materialized trap slot
+/// registers a range (trampoline, gateway, come-from head), so the list
+/// grows to about a thousand entries and every trap dispatch queries it.
+fn insert_protected_range(ranges: &mut Vec<(u32, u32)>, start: u32, end: u32) {
+    let mut lo = ranges.partition_point(|&(s, _)| s < start);
+    if lo > 0 && ranges[lo - 1].1 >= start {
+        lo -= 1;
+    }
+    let mut merged = (start, end);
+    let mut hi = lo;
+    while hi < ranges.len() && ranges[hi].0 <= merged.1 {
+        merged.0 = merged.0.min(ranges[hi].0);
+        merged.1 = merged.1.max(ranges[hi].1);
+        hi += 1;
+    }
+    ranges.splice(lo..hi, [merged]);
+}
+
+/// Whether `[address, end)` lies entirely inside the protected ranges. With
+/// sorted, merged ranges that is true exactly when the last range starting
+/// at or before `address` reaches `end`.
+#[inline]
+fn protected_ranges_cover(ranges: &[(u32, u32)], address: u64, end: u64) -> bool {
+    if end <= address {
+        return true;
+    }
+    let i = ranges.partition_point(|&(s, _)| u64::from(s) <= address);
+    i > 0 && u64::from(ranges[i - 1].1) >= end
+}
+
+/// Whether any byte of `[address, end)` is protected: among the ranges that
+/// start before `end`, the last one has the largest stop.
+#[inline]
+fn protected_ranges_overlap(ranges: &[(u32, u32)], address: u64, end: u64) -> bool {
+    let i = ranges.partition_point(|&(s, _)| u64::from(s) < end);
+    i > 0 && u64::from(ranges[i - 1].1) > address
 }
 
 /// An exact-state probe journals the words an idle cycle writes: a spilled
@@ -1717,7 +1746,7 @@ impl MacMemoryBus {
             let Some(end) = address.checked_add(len) else {
                 return;
             };
-            self.readonly_code_ranges.push((address, end));
+            insert_protected_range(&mut self.readonly_code_ranges, address, end);
             self.readonly_code_span = Some(match self.readonly_code_span {
                 Some((lo, hi)) => (lo.min(address), hi.max(end)),
                 None => (address, end),
@@ -1745,20 +1774,8 @@ impl MacMemoryBus {
         let Some(end) = end else {
             return false;
         };
-        let mut cursor = u64::from(address);
-        while cursor < end {
-            let mut covered_end = cursor;
-            for &(start, stop) in &self.readonly_code_ranges {
-                let start = u64::from(start);
-                let stop = u64::from(stop);
-                if start <= cursor && cursor < stop {
-                    covered_end = covered_end.max(stop.min(end));
-                }
-            }
-            if covered_end == cursor {
-                return false;
-            }
-            cursor = covered_end;
+        if !protected_ranges_cover(&self.readonly_code_ranges, u64::from(address), end) {
+            return false;
         }
         true
     }
@@ -1771,6 +1788,14 @@ impl MacMemoryBus {
             addressing_32_bit: self.addressing_32_bit,
             ranges: self.readonly_code_ranges.clone(),
         }
+    }
+
+    /// The snapshot's `contains`, answered from the live ranges without
+    /// copying them. For callers that hold the bus immutably for the whole
+    /// Trap Manager call, such as every trap dispatch's table lookup.
+    #[inline]
+    pub(crate) fn protected_code_contains(&self, address: u32) -> bool {
+        protected_code_covers_long(self.addressing_32_bit, &self.readonly_code_ranges, address)
     }
 
     /// Privileged, status-bearing longword write for a known system-owned
@@ -1802,9 +1827,7 @@ impl MacMemoryBus {
         if end <= span_start as u64 || address as u64 >= span_end as u64 {
             return false;
         }
-        self.readonly_code_ranges
-            .iter()
-            .any(|&(start, stop)| (start as u64) < end && (stop as u64) > address as u64)
+        protected_ranges_overlap(&self.readonly_code_ranges, address as u64, end)
     }
 
     /// Allocate memory from the heap with a stronger start-address alignment.
@@ -3430,6 +3453,53 @@ mod tests {
             "byte before write_bytes window"
         );
         assert_eq!(bus.read_byte(0x13E8), 0xCC, "byte after write_bytes window");
+    }
+
+    #[test]
+    fn protected_ranges_merge_on_insert_and_answer_like_the_union() {
+        let mut ranges = Vec::new();
+        for &(start, end) in &[
+            (0x2000u32, 0x2002u32),
+            (0x1000, 0x1004),
+            (0x2002, 0x2010), // touches the first: merged
+            (0x1002, 0x1003), // inside the second: absorbed
+            (0x0FF0, 0x1001), // overlaps the second from below: merged
+            (0x3000, 0x3004),
+        ] {
+            insert_protected_range(&mut ranges, start, end);
+        }
+        assert_eq!(ranges, vec![(0x0FF0, 0x1004), (0x2000, 0x2010), (0x3000, 0x3004)]);
+
+        let union = |address: u64, end: u64| -> bool {
+            (address..end).all(|byte| {
+                ranges
+                    .iter()
+                    .any(|&(s, e)| u64::from(s) <= byte && byte < u64::from(e))
+            })
+        };
+        let any = |address: u64, end: u64| -> bool {
+            (address..end).any(|byte| {
+                ranges
+                    .iter()
+                    .any(|&(s, e)| u64::from(s) <= byte && byte < u64::from(e))
+            })
+        };
+        for start in (0x0FE0u64..0x3010).step_by(1) {
+            for len in [1u64, 2, 3, 4, 8, 17] {
+                let end = start + len;
+                assert_eq!(
+                    protected_ranges_cover(&ranges, start, end),
+                    union(start, end),
+                    "cover [{start:#x}, {end:#x})"
+                );
+                assert_eq!(
+                    protected_ranges_overlap(&ranges, start, end),
+                    any(start, end),
+                    "overlap [{start:#x}, {end:#x})"
+                );
+            }
+        }
+        assert!(protected_ranges_cover(&ranges, 0x2004, 0x2004), "an empty range is covered");
     }
 
     #[test]
