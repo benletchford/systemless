@@ -657,7 +657,7 @@ const STANDARD_FILE_GET_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
 const STANDARD_FILE_GET_SEPARATOR_RECT: (i16, i16, i16, i16) = (98, 258, 99, 338);
 const STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110, 258, 131, 338);
 const STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
-const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
+use crate::thread_manager::DEFAULT_COOPERATIVE_THREAD_STACK_SIZE;
 
 #[inline]
 fn return_noerr_and_pop<C: CpuOps>(cpu: &mut C, bytes: u32) -> Result<()> {
@@ -16190,7 +16190,6 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 // Threads.h option and style bits.
                 const K_NEW_SUSPEND: u32 = 1 << 0;
-                const K_PREEMPTIVE_THREAD: u32 = 1 << 1;
 
                 let result = match selector {
                     0xFFFE => {
@@ -16239,11 +16238,11 @@ impl super::TrapDispatcher {
                         // pp. 56–58: threadMade is kNoThreadID on failure.
                         let result = (|| -> std::result::Result<(), i16> {
                             let result_slot = sp.checked_add(28).ok_or(-50_i16)?;
-                            let size = if stack_size == 0 {
-                                self.cooperative_thread_stack_size
-                            } else {
-                                stack_size
-                            };
+                            let size = ThreadManager::stack_size(
+                                crate::guest_procedure::GuestIsa::M68k,
+                                thread_style,
+                                stack_size,
+                            )?;
                             if thread_made == 0
                                 || thread_entry == 0
                                 || thread_entry & 1 != 0
@@ -16342,65 +16341,79 @@ impl super::TrapDispatcher {
                         }
                     }
                     // CreateThreadPool(threadStyle, numToCreate, stackSize)
+                    // Thread Manager (1999), pp. 50–51: publish all or none.
                     0x0501 => {
                         let stack_size = bus.read_long(sp);
                         let count = bus.read_word(sp + 4) as i16;
-                        let thread_style = bus.read_long(sp + 6);
-                        if thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
+                        let style = bus.read_long(sp + 6);
+                        let result = if !sp
+                            .checked_add(10)
+                            .is_some_and(|slot| bus.is_guest_address_writable(slot, 2))
+                        {
+                            Err((-50, Vec::new()))
                         } else {
-                            let stack_size = if stack_size == 0 {
-                                self.cooperative_thread_stack_size
-                            } else {
-                                stack_size
-                            };
-                            for _ in 0..count.max(0) {
-                                let base = bus.alloc(stack_size);
-                                self.guest_calls.recycle_classic_thread_stack((
-                                    base,
-                                    base.wrapping_add(stack_size),
-                                ));
+                            ThreadManager::new(&self.guest_calls).create_pool(
+                                crate::guest_procedure::GuestIsa::M68k,
+                                style,
+                                count,
+                                stack_size,
+                                |size| {
+                                    let base = bus.alloc(size);
+                                    (base != 0).then_some(crate::guest_call::ThreadStorage {
+                                        stack_base: base,
+                                        stack_limit: base.saturating_add(size),
+                                        ..Default::default()
+                                    })
+                                },
+                            )
+                        };
+                        match result {
+                            Ok(()) => 0,
+                            Err((error, storage)) => {
+                                for stack in storage {
+                                    bus.free(stack.stack_base);
+                                }
+                                error
                             }
-                            0
                         }
                     }
-                    // GetFreeThreadCount(threadStyle, freeCount)
-                    0x0402 => {
-                        let free_count = bus.read_long(sp);
-                        let thread_style = bus.read_long(sp + 4);
-                        if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
+                    // GetFreeThreadCount / GetSpecificFreeThreadCount /
+                    // GetDefaultThreadStackSize. Thread Manager (1999), pp. 52–55.
+                    0x0402 | 0x0615 | 0x0413 => {
+                        let output = bus.read_long(sp);
+                        let specific = selector == 0x0615;
+                        let style = bus.read_long(sp + if specific { 8 } else { 4 });
+                        let manager = ThreadManager::new(&self.guest_calls);
+                        let value = if selector == 0x0413 {
+                            ThreadManager::stack_size(
+                                crate::guest_procedure::GuestIsa::M68k,
+                                style,
+                                0,
+                            )
                         } else {
-                            bus.write_word(
-                                free_count,
-                                self.guest_calls.classic_thread_pool_count(0) as u16,
-                            );
-                            0
-                        }
-                    }
-                    // GetSpecificFreeThreadCount(threadStyle, stackSize,
-                    //                            freeCount)
-                    0x0615 => {
-                        let free_count = bus.read_long(sp);
-                        let stack_size = bus.read_long(sp + 4);
-                        let thread_style = bus.read_long(sp + 8);
-                        if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
-                        } else {
-                            let matching = self.guest_calls.classic_thread_pool_count(stack_size);
-                            bus.write_word(free_count, matching as u16);
-                            0
-                        }
-                    }
-                    // GetDefaultThreadStackSize(threadStyle, stackSize)
-                    0x0413 => {
-                        let stack_size = bus.read_long(sp);
-                        let thread_style = bus.read_long(sp + 4);
-                        if stack_size == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
-                        } else {
-                            bus.write_long(stack_size, self.cooperative_thread_stack_size);
-                            0
+                            manager
+                                .free_count(
+                                    crate::guest_procedure::GuestIsa::M68k,
+                                    style,
+                                    if specific { bus.read_long(sp + 4) } else { 0 },
+                                )
+                                .map(u32::from)
+                        };
+                        match value {
+                            Err(error) => error,
+                            Ok(value) if output != 0 => {
+                                let written = if selector == 0x0413 {
+                                    bus.try_write_long(output, value)
+                                } else {
+                                    bus.try_write_word(output, value as u16)
+                                };
+                                if written {
+                                    0
+                                } else {
+                                    -50
+                                }
+                            }
+                            Ok(_) => -50,
                         }
                     }
                     // ThreadCurrentStackSpace(thread, freeStack)
@@ -27272,6 +27285,50 @@ mod tests {
 
     /// `GetDefaultThreadStackSize` reports the size `NewThread` uses when
     /// passed 0, and refuses the preemptive style.
+    #[test]
+    fn thread_pool_creation_refuses_a_protected_pascal_result_before_allocating() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let before = bus.heap_bump_ptr();
+        bus.write_long(TEST_SP, 1024);
+        bus.write_word(TEST_SP + 4, 2);
+        bus.write_long(TEST_SP + 6, 1);
+        bus.protect_readonly_code(TEST_SP + 11, 1);
+        cpu.write_reg(Register::D0, 0x0501);
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 0);
+        assert_eq!(bus.heap_bump_ptr(), before);
+    }
+
+    #[test]
+    fn thread_pool_allocation_failure_rolls_back_and_retries_without_publishing_entries() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let base = bus.classic_heap_limit() - 1028;
+        bus.reserve_heap_until(base);
+        for (count, expected) in [(2, -108_i16), (1, 0)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0501);
+            bus.write_long(TEST_SP, 1024);
+            bus.write_word(TEST_SP + 4, count);
+            bus.write_long(TEST_SP + 6, 1);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, expected);
+            assert_eq!(
+                disp.guest_calls.classic_thread_pool_count(0),
+                usize::from(expected == 0)
+            );
+            assert_eq!(
+                bus.get_alloc_size(base),
+                if expected == 0 { Some(1024) } else { None }
+            );
+        }
+        assert_eq!(disp.guest_calls.create_task().unwrap().thread_id(), 3);
+    }
+
     #[test]
     fn thread_pool_creation_adds_distinct_stacks_to_the_execution_owner() {
         let (mut disp, mut cpu, mut bus) = setup();

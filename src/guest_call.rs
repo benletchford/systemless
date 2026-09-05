@@ -936,16 +936,28 @@ impl SharedGuestCallStack {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn classic_thread_pool_count(&self, minimum_size: u32) -> usize {
+        self.thread_pool_count(GuestIsa::M68k, minimum_size)
+    }
+
+    pub(crate) fn thread_pool_count(&self, isa: GuestIsa, minimum_size: u32) -> usize {
         self.0
             .borrow()
             .thread_pool
             .iter()
-            .filter(|(isa, storage)| {
-                *isa == GuestIsa::M68k
+            .filter(|(entry_isa, storage)| {
+                *entry_isa == isa
                     && storage.stack_limit.saturating_sub(storage.stack_base) >= minimum_size
             })
             .count()
+    }
+
+    pub(crate) fn publish_thread_pool(&self, isa: GuestIsa, storage: Vec<ThreadStorage>) {
+        self.0
+            .borrow_mut()
+            .thread_pool
+            .extend(storage.into_iter().map(|storage| (isa, storage)));
     }
 
     pub(crate) fn switch_from_classic(

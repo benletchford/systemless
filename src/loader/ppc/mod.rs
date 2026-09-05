@@ -1640,6 +1640,10 @@ pub enum PpcImportDispatcherTarget {
     SetThreadStateEndCritical,
     ThreadBeginCritical,
     NewThread,
+    CreateThreadPool,
+    GetFreeThreadCount,
+    GetSpecificFreeThreadCount,
+    GetDefaultThreadStackSize,
     YieldToThread,
     YieldToAnyThread,
     DisposeThread,
@@ -15051,6 +15055,14 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetThreadStateEndCritical") => {
             PpcImportDispatcherTarget::SetThreadStateEndCritical
         }
+        ("InterfaceLib", "CreateThreadPool") => PpcImportDispatcherTarget::CreateThreadPool,
+        ("InterfaceLib", "GetFreeThreadCount") => PpcImportDispatcherTarget::GetFreeThreadCount,
+        ("InterfaceLib", "GetSpecificFreeThreadCount") => {
+            PpcImportDispatcherTarget::GetSpecificFreeThreadCount
+        }
+        ("InterfaceLib", "GetDefaultThreadStackSize") => {
+            PpcImportDispatcherTarget::GetDefaultThreadStackSize
+        }
         ("InterfaceLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
         ("InterfaceLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
         ("InterfaceLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
@@ -24279,6 +24291,84 @@ fn dispatch_supported_import(
                     Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
                 },
             )
+        }
+        PpcImportDispatcherTarget::CreateThreadPool => {
+            // OSErr CreateThreadPool(ThreadStyle, short, Size);
+            // Thread Manager (1999), pp. 50–51: all allocations or none.
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let result = manager.create_pool(
+                GuestIsa::PowerPc,
+                cpu.gpr[3],
+                cpu.gpr[4] as i16,
+                cpu.gpr[5],
+                |size| {
+                    let base = process_memory_manager.new_native_ptr(memory, size, true);
+                    (base != 0).then_some(crate::guest_call::ThreadStorage {
+                        stack_base: base,
+                        stack_limit: base.saturating_add(size),
+                        managed_pointer: true,
+                        ..Default::default()
+                    })
+                },
+            );
+            let error = match result {
+                Ok(()) => 0,
+                Err((error, storage)) => {
+                    for stack in storage {
+                        process_memory_manager.dispose_native_ptr(stack.stack_base);
+                    }
+                    error
+                }
+            };
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
+        PpcImportDispatcherTarget::GetFreeThreadCount
+        | PpcImportDispatcherTarget::GetSpecificFreeThreadCount
+        | PpcImportDispatcherTarget::GetDefaultThreadStackSize => {
+            // OSErr GetFreeThreadCount(ThreadStyle, short *);
+            // OSErr GetSpecificFreeThreadCount(ThreadStyle, Size, short *);
+            // OSErr GetDefaultThreadStackSize(ThreadStyle, Size *);
+            // Thread Manager (1999), pp. 52–55.
+            let specific =
+                binding.dispatcher_target == PpcImportDispatcherTarget::GetSpecificFreeThreadCount;
+            let default_size =
+                binding.dispatcher_target == PpcImportDispatcherTarget::GetDefaultThreadStackSize;
+            let output = if specific { cpu.gpr[5] } else { cpu.gpr[4] };
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let value = if default_size {
+                crate::thread_manager::ThreadManager::stack_size(GuestIsa::PowerPc, cpu.gpr[3], 0)
+            } else {
+                manager
+                    .free_count(
+                        GuestIsa::PowerPc,
+                        cpu.gpr[3],
+                        if specific { cpu.gpr[4] } else { 0 },
+                    )
+                    .map(u32::from)
+            };
+            let result = match value {
+                Err(error) => error,
+                Ok(value) if output != 0 => {
+                    let written = if default_size {
+                        memory.write_u32_be(output, value)
+                    } else {
+                        memory.write_u16_be(output, value as u16)
+                    };
+                    if written.is_some() {
+                        0
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Ok(_) => PPC_PARAM_ERR,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::NewThread => {
             // OSErr NewThread(ThreadStyle, ThreadEntryUPP, void *, Size,
@@ -167663,6 +167753,69 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
             Some(vec![b'A', b'Z', 0x83, b'!', b'q'])
         );
+    }
+
+    #[test]
+    fn native_thread_pool_imports_create_query_validate_and_supply_new_threads() {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"CreateThreadPool")).unwrap();
+        let output = PPC_DATA_BASE + 0x5000;
+        loaded.memory.add_region(output, vec![0xaa; 4]);
+        let invoke = |loaded: &mut PpcLoadedApp, name: &str, args: [u32; 3]| {
+            loaded.imports[0].symbol_name = name.into();
+            loaded.imports[0].dispatcher_target =
+                dispatcher_target_for_import("InterfaceLib", name);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3..6].copy_from_slice(&args);
+            let result = loaded.run_with_hle_imports(64);
+            assert_eq!(result.unsupported_import_index, None);
+            assert_eq!(result.handled_import_count, 1);
+            loaded.cpu.gpr[3] as i16
+        };
+        assert_eq!(invoke(&mut loaded, "CreateThreadPool", [1, 3, 1024]), 0);
+        assert_eq!(invoke(&mut loaded, "CreateThreadPool", [1, 1, 2048]), 0);
+        assert_eq!(invoke(&mut loaded, "GetFreeThreadCount", [1, output, 0]), 0);
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0004aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "GetSpecificFreeThreadCount", [1, 1536, output]),
+            0
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0001aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "GetFreeThreadCount", [0, output, 0]),
+            -50
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0001aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "GetFreeThreadCount", [1, output + 3, 0]),
+            -50
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x0001aaaa));
+        assert_eq!(
+            invoke(&mut loaded, "CreateThreadPool", [1, 0xffff, 1024]),
+            -50
+        );
+        assert_eq!(
+            invoke(&mut loaded, "CreateThreadPool", [1, 1, u32::MAX]),
+            -50
+        );
+        assert_eq!(
+            invoke(&mut loaded, "GetDefaultThreadStackSize", [1, output, 0]),
+            0
+        );
+        assert_eq!(loaded.memory.read_u32_be(output), Some(32 * 1024));
+        // Pool creation assigns no task IDs; the first premade NewThread does.
+        loaded.cpu.gpr[6] = 1024;
+        loaded.cpu.gpr[7] = 1 | 2 | 16;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = output;
+        let entry = loaded.entry_pc;
+        assert_eq!(invoke(&mut loaded, "NewThread", [1, entry, 0x1234]), 0);
+        assert_eq!(loaded.memory.read_u32_be(output), Some(3));
+        assert_eq!(invoke(&mut loaded, "GetFreeThreadCount", [1, output, 0]), 0);
+        assert_eq!(loaded.memory.read_u16_be(output), Some(3));
+        assert_eq!(loaded.guest_calls.thread_pool_count(GuestIsa::M68k, 0), 0);
     }
 
     #[test]
