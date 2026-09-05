@@ -2161,25 +2161,15 @@ pub struct TrapDispatcher {
     pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
     /// Complete bitmap PICT captured by CopyBits during OpenPicture.
     pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
-    /// Pre-initialization compatibility mapping from a canonical trap word to
-    /// a native 68K handler. SetTrapAddress keeps it available for focused
-    /// standalone tests and early startup before a process table exists. It
-    /// is cleared when a process table is activated and is ignored whenever
-    /// `trap_tables_materialized` is true; initialized runners dispatch
-    /// exclusively from writable guest cells. Native handlers execute as
-    /// simulated JSR targets, allowing CRT-installed LoadSeg, UnloadSeg, and
-    /// ExitToShell patches to relocate code normally.
-    //
-    // Deletion gate: migrate the remaining direct pre-initialization writers
-    // in runner/loader fixtures to an explicit process-table setup, then
-    // remove this field and the unmaterialized fallback together. Keeping the
-    // field until those callers move is intentional compatibility debt, not a
-    // second active-process authority.
+    /// Pre-initialization compatibility mapping for standalone dispatcher
+    /// callers that install handlers before a process table exists. Activation
+    /// clears it; initialized execution reads writable guest table cells.
+    /// Patch fixtures now initialize those cells and use the guest service.
+    // Deletion gate: establish the standalone process construction boundary,
+    // then remove this map and the unmaterialized fallback together.
     pub(crate) native_trap_table: TrapWordMap,
-    /// Whether the selected profile's two raw trap tables have been written
-    /// into guest low memory. Before application initialization, focused trap
-    /// unit tests retain the host-map fallback; afterwards the guest longs are
-    /// authoritative, including writes performed directly by native code.
+    /// Whether the selected profile's raw trap tables exist in guest memory.
+    /// Standalone dispatcher construction can still precede table activation.
     pub(crate) trap_tables_materialized: bool,
     /// Machine profile belonging to the currently installed process table.
     /// `None` means no application trap context is active.
@@ -8107,7 +8097,7 @@ mod tests {
     use super::*;
     use crate::cpu::{CpuOps, Register};
     use crate::trap::menu::test_tracked_menu_state;
-    use crate::trap::test_helpers::setup;
+    use crate::trap::test_helpers::{setup, setup_with_trap_tables};
     use std::collections::VecDeque;
 
     #[test]
@@ -9737,11 +9727,13 @@ mod tests {
 
     #[test]
     fn native_trap_dispatch_returns_past_the_a_line_opcode() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let trap_pc = 0x0020_0000u32;
         let handler_addr = 0x0021_0000u32;
         let sp = 0x003F_FF00u32;
-        dispatcher.native_trap_table.insert(0xA9F0, handler_addr);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA9F0, handler_addr)
+            .unwrap();
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, sp);
 
@@ -9800,14 +9792,16 @@ mod tests {
         let return_pc = 0x0020_0002u32;
         let sp = 0x003F_FF00u32;
         for variant in 0u16..8 {
-            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
             let trap_word = 0xA039 | (variant << 8); // ReadDateTime variants
             let original_d1 = 0xD1D1_BEEF;
             let original_d2 = 0xD2D2_BEEF;
             let original_a0 = 0xA0A0_BEEF;
             let original_a1 = 0xA1A1_BEEF;
             let original_a2 = 0xA2A2_BEEF;
-            dispatcher.native_trap_table.insert(0xA039, handler_addr);
+            dispatcher
+                .install_trap_address(&mut bus, 0xA039, handler_addr)
+                .unwrap();
             cpu.write_reg(Register::PC, return_pc);
             cpu.write_reg(Register::A7, sp);
             cpu.write_reg(Register::D1, original_d1);
@@ -9866,7 +9860,7 @@ mod tests {
 
     #[test]
     fn saved_os_gateway_tail_uses_the_original_variant_dispatch_frame() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA01E);
         let handler = 0x0021_0000u32;
         let return_pc = 0x0020_0002u32;
@@ -9876,7 +9870,9 @@ mod tests {
         let original_d2 = 0xD2D2_BEEF;
         let original_a1 = 0xA1A1_BEEF;
         let original_a2 = 0xA2A2_BEEF;
-        dispatcher.native_trap_table.insert(0xA01E, handler);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA01E, handler)
+            .unwrap();
         cpu.write_reg(Register::PC, return_pc);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 4);
@@ -9912,7 +9908,7 @@ mod tests {
 
     #[test]
     fn saved_os_gateway_subroutine_keeps_the_outer_dispatch_frame() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
         let handler = 0x0021_0000u32;
         let patch_continuation = 0x0021_0100u32;
@@ -9924,7 +9920,9 @@ mod tests {
         let original_a0 = 0xA0A0_BEEF;
         let original_a1 = 0xA1A1_BEEF;
         let original_a2 = 0xA2A2_BEEF;
-        dispatcher.native_trap_table.insert(0xA039, handler);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA039, handler)
+            .unwrap();
         bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);
         cpu.write_reg(Register::PC, return_pc);
         cpu.write_reg(Register::A7, sp);
@@ -9987,12 +9985,14 @@ mod tests {
 
     #[test]
     fn native_auto_pop_trap_enters_patch_with_the_glue_callers_return_frame() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let trap_pc = 0x0020_0000u32;
         let handler_addr = 0x0021_0000u32;
         let caller_pc = 0x0022_0000u32;
         let sp = 0x003F_FF00u32;
-        dispatcher.native_trap_table.insert(0xA975, handler_addr);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA975, handler_addr)
+            .unwrap();
         bus.write_long(sp, caller_pc);
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, sp);
@@ -10010,13 +10010,15 @@ mod tests {
 
     #[test]
     fn nested_same_native_trap_calls_retain_lifo_call_state() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let handler_addr = 0x0021_0000u32;
         let outer_return = 0x0020_0002u32;
         let inner_return = 0x0021_0102u32;
         let outer_sp = 0x003F_FF00u32;
         let inner_sp = 0x003F_FE00u32;
-        dispatcher.native_trap_table.insert(0xA9F0, handler_addr);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA9F0, handler_addr)
+            .unwrap();
 
         cpu.write_reg(Register::PC, outer_return);
         cpu.write_reg(Register::A7, outer_sp);
@@ -10051,12 +10053,14 @@ mod tests {
 
     #[test]
     fn saved_tool_trap_gateway_bypasses_a_later_patch() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let gateway = dispatcher.get_or_create_tool_trap_trampoline(&mut bus, 0xA975);
         let caller_pc = 0x0021_0000u32;
         let sp = 0x003F_FF00u32;
         dispatcher.set_tick_count_for_test(&mut bus, 0x1234_5678);
-        dispatcher.native_trap_table.insert(0xA975, 0x0030_0000);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA975, 0x0030_0000)
+            .unwrap();
         bus.write_long(sp, caller_pc);
         cpu.write_reg(Register::PC, 0x0020_0002);
         cpu.write_reg(Register::A7, sp);
@@ -10083,13 +10087,15 @@ mod tests {
 
     #[test]
     fn saved_os_trap_gateway_bypasses_a_later_patch() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
         let sp = 0x003F_FF00u32;
         let output = 0x0020_0000u32;
         bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);
         bus.write_long(sp, 0x0021_0000);
-        dispatcher.native_trap_table.insert(0xA039, 0x0030_0000);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA039, 0x0030_0000)
+            .unwrap();
         cpu.write_reg(Register::PC, gateway + 2);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::A0, output);

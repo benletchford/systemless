@@ -124,6 +124,15 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
     (dispatcher, cpu, bus)
 }
 
+/// Create a classic process environment with live writable trap tables.
+/// Patch fixtures use the same topology and setter as initialized runners.
+/// Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-6.
+pub fn setup_with_trap_tables() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
+    let (mut dispatcher, cpu, mut bus) = setup();
+    dispatcher.materialize_trap_tables(&mut bus, super::dispatch::TrapTableProfile::M68k68040);
+    (dispatcher, cpu, bus)
+}
+
 /// Create a test environment and set up a basic GrafPort so drawing/port traps work.
 ///
 /// Returns (TrapDispatcher, MockCpu, MacMemoryBus) with a port at 0x181000

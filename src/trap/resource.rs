@@ -8784,7 +8784,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::super::dispatch::{LoadedResources, ResourceFileMap};
-    use super::super::test_helpers::{setup, TEST_SP};
+    use super::super::test_helpers::{setup, setup_with_trap_tables, TEST_SP};
     use super::QUICKTIME_NUM_VERSION_6_0_FINAL;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
@@ -12530,13 +12530,14 @@ mod tests {
 
     #[test]
     fn loadseg_auto_pop_old_trap_uses_original_mpw_caller_entry() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
 
         let seg_addr = 0x220000u32;
         bus.write_word(seg_addr, 0x0000);
         bus.write_word(seg_addr + 2, 0x0000);
         disp.register_segments(HashMap::from([(2i16, seg_addr)]));
-        disp.native_trap_table.insert(0xA9A0, 0x310000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x310000)
+            .unwrap();
 
         let entry_addr = 0x240000u32;
         bus.write_word(entry_addr, 0x0010);
@@ -12581,7 +12582,7 @@ mod tests {
 
     #[test]
     fn loadseg_native_old_trap_recovers_the_recorded_original_call() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         let preserved_d_regs = [
             0xD300_0003,
             0xD400_0004,
@@ -12636,7 +12637,8 @@ mod tests {
         // to recovery of the original A-line call.
         let handler = 0x300000u32;
         bus.write_word(handler, 0x4E71); // NOP
-        disp.native_trap_table.insert(0xA9F0, handler);
+        disp.install_trap_address(&mut bus, 0xA9F0, handler)
+            .unwrap();
         cpu.write_reg(Register::PC, entry_addr + 8);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 2);
@@ -12707,7 +12709,7 @@ mod tests {
 
     #[test]
     fn loadseg_native_old_trap_restores_the_recorded_think_stack() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         let seg_addr = 0x220000u32;
         bus.write_word(seg_addr, 0x0000);
         bus.write_word(seg_addr + 2, 0x0000);
@@ -12721,7 +12723,8 @@ mod tests {
 
         let handler = 0x300000u32;
         bus.write_word(handler, 0x4E71); // NOP
-        disp.native_trap_table.insert(0xA9F0, handler);
+        disp.install_trap_address(&mut bus, 0xA9F0, handler)
+            .unwrap();
         cpu.write_reg(Register::PC, entry_addr + 2);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 0xBEEF);
@@ -12843,13 +12846,14 @@ mod tests {
 
     #[test]
     fn loadseg_defers_to_native_getresource_hook_when_installed() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
 
         let seg_addr = 0x230000u32;
         bus.write_word(seg_addr, 0x0000);
         bus.write_word(seg_addr + 2, 0x0000);
         disp.register_segments(HashMap::from([(1i16, seg_addr)]));
-        disp.native_trap_table.insert(0xA9A0, 0x300000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x300000)
+            .unwrap();
 
         let island_addr = 0x240000u32;
         bus.write_word(island_addr, 0x0000);
@@ -13040,11 +13044,12 @@ mod tests {
 
     #[test]
     fn tool_trampoline_bypasses_later_native_trap_handler() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         setup_resources(&mut disp, &mut bus, b"TEST", 7, &[0xAA, 0xBB]);
 
         let trampoline = disp.get_or_create_tool_trap_trampoline(&mut bus, 0xA9A0);
-        disp.native_trap_table.insert(0xA9A0, 0x300000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x300000)
+            .unwrap();
 
         let return_pc = 0x12345678;
         bus.write_long(TEST_SP, return_pc);
@@ -13069,9 +13074,10 @@ mod tests {
 
     #[test]
     fn guest_auto_pop_old_trap_stub_bypasses_native_trap_handler() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         setup_resources(&mut disp, &mut bus, b"TEST", 7, &[0xAA, 0xBB]);
-        disp.native_trap_table.insert(0xA9A0, 0x300000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x300000)
+            .unwrap();
 
         let return_pc = 0x12345678;
         bus.write_word(TEST_SP, 7);

@@ -4557,7 +4557,7 @@ pub(crate) fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_helpers::{setup, MockCpu, TEST_SP};
+    use super::super::test_helpers::{setup, setup_with_trap_tables, MockCpu, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
     use crate::memory::{GuestAddressSpace, MemoryBus};
@@ -7761,7 +7761,7 @@ mod tests {
 
     #[test]
     fn test_get_trap_address() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         cpu.write_reg(Register::D0, 0x0044);
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
         assert!(result.is_some(), "GetTrapAddress should be handled");
@@ -7784,7 +7784,7 @@ mod tests {
 
     #[test]
     fn restoring_an_os_trap_gateway_removes_the_installed_patch() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         dispatcher.current_trap_word = 0xA346;
         cpu.write_reg(Register::D0, 0x39);
         dispatcher
@@ -7801,8 +7801,8 @@ mod tests {
             .expect("SetOSTrapAddress should be handled")
             .expect("SetOSTrapAddress should install a patch");
         assert_eq!(
-            dispatcher.native_trap_table.get(&0xA039),
-            Some(&0x0030_0000)
+            dispatcher.native_trap_handler(&bus, 0xA039),
+            Some(0x0030_0000)
         );
 
         cpu.write_reg(Register::A0, original);
@@ -7810,14 +7810,16 @@ mod tests {
             .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
             .expect("SetOSTrapAddress should be handled")
             .expect("SetOSTrapAddress should restore the original");
-        assert!(dispatcher.native_trap_table.get(&0xA039).is_none());
+        assert!(dispatcher.native_trap_handler(&bus, 0xA039).is_none());
     }
 
     #[test]
     fn changing_a_trap_head_does_not_cancel_an_active_native_invocation() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let sp = 0x003F_FF00u32;
-        dispatcher.native_trap_table.insert(0xA039, 0x0030_0000);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA039, 0x0030_0000)
+            .unwrap();
         cpu.write_reg(Register::PC, 0x0020_0002);
         cpu.write_reg(Register::A7, sp);
         dispatcher.dispatch(0xA039, &mut cpu, &mut bus).unwrap();
@@ -7839,8 +7841,8 @@ mod tests {
             .expect("SetOSTrapAddress should replace the table head");
 
         assert_eq!(
-            dispatcher.native_trap_table.get(&0xA039),
-            Some(&0x0031_0000)
+            dispatcher.native_trap_handler(&bus, 0xA039),
+            Some(0x0031_0000)
         );
         assert_eq!(
             dispatcher
@@ -7855,9 +7857,11 @@ mod tests {
 
     #[test]
     fn legacy_gettrapaddress_classifies_toolbox_trap_words_by_number() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         dispatcher.current_trap_word = 0xA146;
-        dispatcher.native_trap_table.insert(0xA0A0, 0x0000_ADF2);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA0A0, 0x0000_ADF2)
+            .unwrap();
         cpu.write_reg(Register::D0, 0xA9A0);
 
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
@@ -7878,9 +7882,11 @@ mod tests {
 
     #[test]
     fn getostrapaddress_explicitly_uses_the_os_table() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         dispatcher.current_trap_word = 0xA346;
-        dispatcher.native_trap_table.insert(0xA0A0, 0x0000_ADF2);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA0A0, 0x0000_ADF2)
+            .unwrap();
         cpu.write_reg(Register::D0, 0xA9A0);
 
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
@@ -7899,12 +7905,16 @@ mod tests {
         // bit 9 selects the new typed form, bit 10 then selects Toolbox, and
         // bit 8 independently controls A0 return handling. UI 3.4 Patches.h
         // lines 126--231 declares the new-OS and new-Tool entry points.
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let supplied_trap = 0xA9A0;
         let os_key = 0xA0A0;
         let tool_key = 0xA9A0;
-        dispatcher.native_trap_table.insert(os_key, 0x0030_0000);
-        dispatcher.native_trap_table.insert(tool_key, 0x0031_0000);
+        dispatcher
+            .install_trap_address(&mut bus, os_key, 0x0030_0000)
+            .unwrap();
+        dispatcher
+            .install_trap_address(&mut bus, tool_key, 0x0031_0000)
+            .unwrap();
 
         // Clear bit 8 from the declared getter words. The central route must
         // retain their table type even though the dispatcher later restores
@@ -7937,8 +7947,8 @@ mod tests {
                 .expect("typed trap setter should be handled")
                 .expect("typed trap setter should succeed");
             assert_eq!(
-                dispatcher.native_trap_table.get(&key),
-                Some(&handler),
+                dispatcher.native_trap_handler(&bus, key),
+                Some(handler),
                 "trap ${trap_word:04X}"
             );
         }
@@ -8065,7 +8075,7 @@ mod tests {
 
     #[test]
     fn test_set_trap_address() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         // Set a native trap handler
         cpu.write_reg(Register::D0, 0x01FF);
         cpu.write_reg(Register::A0, 0x00400000); // handler address
@@ -8085,7 +8095,7 @@ mod tests {
 
     #[test]
     fn set_trap_address_does_not_promote_a_writable_signature_to_protected_code() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let handler = bus.alloc(4);
         bus.write_long(handler, COME_FROM_PATCH_SIGNATURE);
         bus.write_word(addr::DS_ERR_CODE, 0xBEEF);
@@ -8099,7 +8109,7 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(bus.read_word(addr::DS_ERR_CODE), 0xBEEF);
-        assert_eq!(dispatcher.native_trap_table.get(&0xA975), Some(&handler));
+        assert_eq!(dispatcher.native_trap_handler(&bus, 0xA975), Some(handler));
     }
 
     #[test]
@@ -8111,8 +8121,7 @@ mod tests {
         let installed = 0x0021_0000;
         let direct_guest_write = 0x0021_1000;
 
-        assert!(dispatcher.trap_tables_materialized);
-        assert_eq!(dispatcher.native_trap_table.get(&trap_word), None);
+        assert_eq!(dispatcher.native_trap_handler(&bus, trap_word), None);
 
         dispatcher.current_trap_word = 0xA047;
         cpu.write_reg(Register::D0, 0x0175);
@@ -8122,11 +8131,13 @@ mod tests {
             .expect("SetTrapAddress should be handled")
             .expect("SetTrapAddress should write the initialized table");
         assert_eq!(bus.read_long(table_entry), installed);
-        assert_eq!(dispatcher.native_trap_table.get(&trap_word), None);
+        assert_eq!(
+            dispatcher.native_trap_handler(&bus, trap_word),
+            Some(installed)
+        );
 
         // A guest/native store bypasses the setter and is immediately visible
-        // through the same 68K Trap Manager getter. This is the active
-        // guest-byte authority proof; the compatibility mirror is untouched.
+        // through the same 68K Trap Manager getter and dispatch lookup.
         bus.write_long(table_entry, direct_guest_write);
         dispatcher.current_trap_word = 0xA146;
         cpu.write_reg(Register::D0, 0x0175);
@@ -8135,13 +8146,18 @@ mod tests {
             .expect("GetTrapAddress should be handled")
             .expect("GetTrapAddress should read the guest table");
         assert_eq!(cpu.read_reg(Register::A0), direct_guest_write);
-        assert_eq!(dispatcher.native_trap_table.get(&trap_word), None);
+        assert_eq!(
+            dispatcher.native_trap_handler(&bus, trap_word),
+            Some(direct_guest_write)
+        );
     }
 
     #[test]
     fn nsettrapaddress_newtool_bare_trap_number_installs_canonical_tool_handler() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let handler_addr = 0x0040_0000;
+        let os_entry = super::super::dispatch::OS_TRAP_TABLE_BASE + 0xF4 * 4;
+        let original_os_entry = bus.read_long(os_entry);
 
         // `_SetTrapAddress newTool` accepts either an A-line instruction
         // or a bare trap number in D0. In either case the Toolbox table
@@ -8155,13 +8171,14 @@ mod tests {
         assert!(result.unwrap().is_ok(), "NSetTrapAddress should succeed");
 
         assert_eq!(
-            dispatcher.native_trap_table.get(&0xA9F4).copied(),
+            dispatcher.native_trap_handler(&bus, 0xA9F4),
             Some(handler_addr),
             "bare Toolbox trap numbers must install under their canonical A-line word"
         );
-        assert!(
-            dispatcher.native_trap_table.get(&0x01F4).is_none(),
-            "the raw bare trap number is not a dispatchable trap-table key"
+        assert_eq!(
+            bus.read_long(os_entry),
+            original_os_entry,
+            "a typed Toolbox setter must leave the corresponding OS slot untouched"
         );
     }
 
@@ -13513,7 +13530,7 @@ mod tests {
 
     #[test]
     fn gettooltrapaddress_trap_word_variant_returns_callable_trampoline() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0x1234_5678);
 
