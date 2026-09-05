@@ -6047,6 +6047,47 @@ mod tests {
     }
 
     #[test]
+    fn attached_window_list_preserves_activation_across_traps() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.process_window_list_attached = true;
+        let active = bus.alloc(256);
+        let raised = bus.alloc(256);
+        *disp.window_list = vec![active, raised];
+        disp.front_window = active;
+        bus.write_byte(active + 110, 255);
+        bus.write_byte(active + 111, 255);
+        bus.write_byte(raised + 110, 255);
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, raised);
+        disp.dispatch(0xA920, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.window_list[0], raised);
+
+        // Even an unrelated trap must not silently activate the raised window.
+        cpu.write_reg(Register::A7, sp);
+        disp.dispatch(0xA975, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.front_window, active);
+        assert_eq!(bus.read_byte(raised + 111), 0);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, raised);
+        disp.dispatch(0xA91F, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.front_window, raised);
+        assert_eq!(bus.read_byte(active + 111), 0);
+        assert_eq!(bus.read_byte(raised + 111), 255);
+        assert!(disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 8 && event.message == active && event.modifiers & 1 == 0));
+
+        // Invisible frontmost windows can be active too (NewWindow's ABI).
+        bus.write_byte(raised + 110, 0);
+        cpu.write_reg(Register::A7, sp);
+        disp.dispatch(0xA975, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.front_window, raised);
+    }
+
+    #[test]
     fn layer_dispatch_is_layer_returns_false_and_consumes_its_pointer() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP - 6;
