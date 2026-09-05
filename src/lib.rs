@@ -62,6 +62,7 @@ pub use event_queue::{
     EventManagerSnapshot, EventProbeResult, EventQueueProbeSnapshot, EventRecordSnapshot,
 };
 mod cfm;
+mod copy_bits;
 mod execution_kernel;
 mod execution_m68k;
 mod execution_native;

@@ -3597,46 +3597,14 @@ impl super::TrapDispatcher {
                 ));
                 let (copy_fg_rgb, copy_bg_rgb) = self.copy_bits_port_draw_colors(bus, port);
 
-                // Identity-blit fast path: when nothing in the inner loop
-                // transforms the pixel, replace per-pixel read+write with
-                // one bus.read_bytes + bus.write_bytes per row.
-                //
-                // Conditions (all must hold):
-                //   - mode_base == 0 (plain srcCopy, no transparency,
-                //     colorization, or hilite mode)
-                //   - no_scaling (src and dst dimensions match)
-                //   - palette_translation is None (no CTab remap)
-                //   - matching byte-aligned pixel sizes (8/16/24/32)
-                //   - src and dst rects fully inside their bitmap bounds
-                //   - src.base != dst.base (in-place may need direction-
-                //     aware copy; defer to per-pixel path for safety)
-                //   - no probe/trace flag wants per-pixel observability
-                //
-                // Region clipping is handled by the precomputed clip_t/l/b/r
-                // (intersection with the port's visRgn, clipRgn, and
-                // mask_rgn bboxes plus dst bitmap bounds). Regions are
-                // modeled as bounding rectangles, so within the clip rect
-                // there are no holes — bulk-copying clip_t..clip_b ×
-                // clip_l..clip_r is correct even when handles are non-zero.
-                //
-                // Imaging With QuickDraw 1994, p. 7-25 (CopyBits modes).
-                let src_inside_bounds = src_top >= src_info.bounds_top
-                    && src_bottom <= src_info.bounds_bottom
-                    && src_left >= src_info.bounds_left
-                    && src_right <= src_info.bounds_right;
-                let dst_inside_bounds = dst_top >= dst_info.bounds_top
-                    && dst_bottom <= dst_info.bounds_bottom
-                    && dst_left >= dst_info.bounds_left
-                    && dst_right <= dst_info.bounds_right;
+                // Rectangular, byte-aligned srcCopy uses the common transfer
+                // operation. It snapshots the source before any destination
+                // write, including overlapping or differently mapped aliases.
+                // Port/region resolution and picture/screen effects remain here.
                 let pixel_size_ok = src_info.pixel_size == dst_info.pixel_size
-                    && src_info.pixel_size >= 8
-                    && src_info.pixel_size.is_multiple_of(8);
+                    && matches!(src_info.pixel_size, 8 | 16 | 24 | 32);
                 let identity_blit = mode_base == 0
                     && no_scaling
-                    && palette_translation.is_none()
-                    && src_inside_bounds
-                    && dst_inside_bounds
-                    && src_info.base != dst_info.base
                     && pixel_size_ok
                     && !Self::region_is_complex(bus, vis_rgn_handle)
                     && !Self::region_is_complex(bus, clip_rgn_handle)
@@ -3647,28 +3615,38 @@ impl super::TrapDispatcher {
                     && !trace_menu_redraw_enabled()
                     && trace_probes.is_empty();
                 if identity_blit {
-                    let bytes_per_pixel = src_info.pixel_size / 8;
-                    let row_byte_count = ((clip_r as i32 - clip_l as i32) as u32) * bytes_per_pixel;
-                    let src_x_offset_bytes = ((i32::from(src_left) + i32::from(clip_l)
-                        - i32::from(dst_left)
-                        - i32::from(src_info.bounds_left))
-                        as u32)
-                        * bytes_per_pixel;
-                    let dst_x_offset_bytes = ((i32::from(clip_l) - i32::from(dst_info.bounds_left))
-                        as u32)
-                        * bytes_per_pixel;
-                    for dy in clip_t..clip_b {
-                        let rel_y = i32::from(dy) - i32::from(dst_top);
-                        let src_y_off =
-                            ((i32::from(src_top) + rel_y) - i32::from(src_info.bounds_top)) as u32;
-                        let dst_y_off = (i32::from(dy) - i32::from(dst_info.bounds_top)) as u32;
-                        let src_addr =
-                            src_info.base + src_y_off * src_info.row_bytes + src_x_offset_bytes;
-                        let dst_addr =
-                            dst_info.base + dst_y_off * dst_info.row_bytes + dst_x_offset_bytes;
-                        let src_row = bus.read_bytes(src_addr, row_byte_count as usize);
-                        bus.write_bytes(dst_addr, &src_row);
+                    use crate::copy_bits::{BytePixmap, RowCopy};
+                    let _ = RowCopy {
+                        source: BytePixmap {
+                            base: src_info.base,
+                            row_bytes: src_info.row_bytes,
+                            depth: src_info.pixel_size,
+                            bounds: [
+                                src_info.bounds_top,
+                                src_info.bounds_left,
+                                src_info.bounds_bottom,
+                                src_info.bounds_right,
+                            ]
+                            .map(i32::from),
+                        },
+                        destination: BytePixmap {
+                            base: dst_info.base,
+                            row_bytes: dst_info.row_bytes,
+                            depth: dst_info.pixel_size,
+                            bounds: [
+                                dst_info.bounds_top,
+                                dst_info.bounds_left,
+                                dst_info.bounds_bottom,
+                                dst_info.bounds_right,
+                            ]
+                            .map(i32::from),
+                        },
+                        source_rect: [src_top, src_left, src_bottom, src_right].map(i32::from),
+                        destination_rect: [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
+                        clip: [clip_t, clip_l, clip_b, clip_r].map(i32::from),
+                        palette: palette_translation,
                     }
+                    .execute(bus);
                     if let Some(rect) = screen_copybits_rect {
                         self.fill_kiosk_letterbox_for_copybits(bus, rect);
                         self.refresh_dialog_saved_pixels_after_screen_draw(
@@ -35899,6 +35877,39 @@ mod tests {
                 assert_eq!(bus.read_byte(dst_base), expected, "{pixel_size}bpp srcXor");
             }
         }
+    }
+
+    #[test]
+    fn copy_bits_overlapping_different_bases_preserves_source_rows() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x300100;
+        let dst_pixmap = 0x300200;
+        let pixels = 0x301000;
+        let src_rect = 0x302000;
+        let dst_rect = 0x302010;
+        write_pixmap_8(&mut bus, src_pixmap, pixels, 4, 3, 0);
+        write_pixmap_8(&mut bus, dst_pixmap, pixels + 4, 4, 3, 0);
+        bus.write_bytes(
+            pixels,
+            &[1, 2, 3, 90, 4, 5, 6, 91, 7, 8, 9, 92, 10, 11, 12, 93],
+        );
+        write_rect(&mut bus, src_rect, 0, 0, 3, 3);
+        write_rect(&mut bus, dst_rect, 0, 0, 3, 3);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(
+            bus.read_bytes(pixels, 16),
+            vec![1, 2, 3, 90, 1, 2, 3, 91, 4, 5, 6, 92, 7, 8, 9, 93]
+        );
     }
 
     fn write_pixmap_8(

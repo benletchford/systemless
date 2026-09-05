@@ -57611,33 +57611,6 @@ fn ppc_resolve_pixmap_bits(
         .or_else(|| ppc_read_pixmap_handle_bits(memory, pixmap_or_handle))
 }
 
-fn ppc_pixmap_pixel_addr(bits: PpcPixMapBits, x: i32, y: i32) -> Option<u32> {
-    let bytes_per_pixel = match bits.depth {
-        8 => 1,
-        16 => 2,
-        _ => return None,
-    };
-    if x < i32::from(bits.left)
-        || x >= i32::from(bits.right)
-        || y < i32::from(bits.top)
-        || y >= i32::from(bits.bottom)
-    {
-        return None;
-    }
-    let x_offset = u32::try_from(x - i32::from(bits.left)).ok()?;
-    let y_offset = u32::try_from(y - i32::from(bits.top)).ok()?;
-    if x_offset >= bits.width || y_offset >= bits.height {
-        return None;
-    }
-    let pixel_offset = x_offset.checked_mul(bytes_per_pixel)?;
-    if pixel_offset.checked_add(bytes_per_pixel)? > bits.row_bytes {
-        return None;
-    }
-    bits.base_addr
-        .checked_add(y_offset.checked_mul(bits.row_bytes)?)?
-        .checked_add(pixel_offset)
-}
-
 fn ppc_read_pixmap_raw_pixel(
     memory: &mut PpcSectionMem,
     bits: PpcPixMapBits,
@@ -58396,38 +58369,28 @@ fn ppc_copy_bits(
             && src_width == dst_width
             && src_height == dst_height
         {
-            let x_delta = i32::from(src_left) - i32::from(dst_left);
-            let y_delta = i32::from(src_top) - i32::from(dst_top);
-            let copy_left = copy_left.max(i32::from(src_bits.left) - x_delta);
-            let copy_top = copy_top.max(i32::from(src_bits.top) - y_delta);
-            let copy_right = copy_right.min(i32::from(src_bits.right) - x_delta);
-            let copy_bottom = copy_bottom.min(i32::from(src_bits.bottom) - y_delta);
-            if copy_left >= copy_right || copy_top >= copy_bottom {
-                reason = "clipped-empty";
-                return None;
+            use crate::copy_bits::{BytePixmap, RowCopy};
+            return RowCopy {
+                source: BytePixmap {
+                    base: src_bits.base_addr,
+                    row_bytes: src_bits.row_bytes,
+                    depth: src_bits.depth,
+                    bounds: [src_bits.top, src_bits.left, src_bits.bottom, src_bits.right]
+                        .map(i32::from),
+                },
+                destination: BytePixmap {
+                    base: dst_bits.base_addr,
+                    row_bytes: dst_bits.row_bytes,
+                    depth: dst_bits.depth,
+                    bounds: [dst_bits.top, dst_bits.left, dst_bits.bottom, dst_bits.right]
+                        .map(i32::from),
+                },
+                source_rect: [src_top, src_left, src_bottom, src_right].map(i32::from),
+                destination_rect: [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
+                clip: [copy_top, copy_left, copy_bottom, copy_right],
+                palette: palette_map.as_ref(),
             }
-            let bytes_per_pixel = src_bits.depth / 8;
-            let copy_width = u32::try_from(copy_right - copy_left).ok()?;
-            let row_len = usize::try_from(copy_width.checked_mul(bytes_per_pixel)?).ok()?;
-            let mut rows = Vec::with_capacity(usize::try_from(copy_bottom - copy_top).ok()?);
-            for dst_y in copy_top..copy_bottom {
-                let src_y = i32::from(src_top) + (dst_y - i32::from(dst_top));
-                let src_x = i32::from(src_left) + (copy_left - i32::from(dst_left));
-                let src_addr = ppc_pixmap_pixel_addr(src_bits, src_x, src_y)?;
-                let dst_addr = ppc_pixmap_pixel_addr(dst_bits, copy_left, dst_y)?;
-                let mut row = vec![0; row_len];
-                memory.read_bytes_into(src_addr, &mut row)?;
-                if let Some(palette_map) = palette_map.as_ref() {
-                    for pixel in &mut row {
-                        *pixel = palette_map[usize::from(*pixel)];
-                    }
-                }
-                rows.push((dst_addr, row));
-            }
-            for (dst_addr, row) in rows {
-                memory.write_bytes(dst_addr, &row)?;
-            }
-            return Some(());
+            .execute(memory);
         }
 
         let transparent_back_pixel = match src_bits.depth {
@@ -150176,6 +150139,38 @@ pub(crate) mod tests {
             .gworlds
             .iter()
             .any(|record| record.port == second_port && record.pixmap_handle == second_pmh));
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_overlapping_rows_preserve_padding() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let pixels = PPC_HEAP_BASE + 0x10000;
+        let src_pixmap = pixels + 0x100;
+        let dst_pixmap = pixels + 0x200;
+        let rect = pixels + 0x300;
+        loaded.memory.add_region(pixels, vec![0; 0x400]);
+        loaded
+            .memory
+            .write_bytes(
+                pixels,
+                &[1, 2, 3, 90, 4, 5, 6, 91, 7, 8, 9, 92, 10, 11, 12, 93],
+            )
+            .unwrap();
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, pixels, 4, 0, 0, 3, 4, 8).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, pixels + 4, 4, 0, 0, 3, 4, 8).unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 3, 3).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 16];
+        loaded.memory.read_bytes_into(pixels, &mut actual).unwrap();
+        assert_eq!(actual, [1, 2, 3, 90, 1, 2, 3, 91, 4, 5, 6, 92, 7, 8, 9, 93]);
     }
 
     #[test]
