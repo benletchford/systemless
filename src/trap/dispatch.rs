@@ -1087,90 +1087,6 @@ pub(crate) struct InverseTableCacheEntry {
     pub bytes: Vec<u8>,
 }
 
-/// Pre-initialization compatibility mirror of native trap installations.
-///
-/// Focused dispatcher tests and early startup consult this before the raw
-/// guest tables exist. It is never an authority for an active process: once
-/// the raw guest tables are materialized, their longs are authoritative and
-/// direct guest stores must be visible without synchronization.
-/// The default `HashMap` paid
-/// SipHash plus a SwissTable probe per lookup, and a linear scan is
-/// unbounded: `SetTrapAddress`/`NSetTrapAddress` can populate arbitrarily
-/// many slots, so an application that patches many traps would make the
-/// hottest dispatch path O(n).
-///
-/// Every key producer normalizes into two bands — the Operating System
-/// table `0xA000..=0xA0FF` (`trap_address_table_key`, and dispatch's
-/// `0xA000 | (trap & 0x00FF)`) and the Toolbox table `0xA800..=0xABFF`
-/// (`0xA800 | (trap & 0x03FF)`) — 1,280 possible keys in total, so the
-/// table direct-indexes them: O(1) for any occupancy, no hashing, no
-/// probe, ~10 KB once. Keys outside the two bands (which no production
-/// caller generates) go to a spill list so the `HashMap`-shaped contract
-/// stays total; the dispatch path never touches it because its keys are
-/// in-band by construction.
-#[derive(Debug, Clone)]
-pub(crate) struct TrapWordMap {
-    bands: Box<[Option<u32>; Self::SLOTS]>,
-    spill: Vec<(u16, u32)>,
-}
-
-impl Default for TrapWordMap {
-    fn default() -> Self {
-        Self {
-            bands: Box::new([None; Self::SLOTS]),
-            spill: Vec::new(),
-        }
-    }
-}
-
-impl TrapWordMap {
-    const OS_SLOTS: usize = 0x100;
-    const TOOL_SLOTS: usize = 0x400;
-    const SLOTS: usize = Self::OS_SLOTS + Self::TOOL_SLOTS;
-
-    fn slot(trap: u16) -> Option<usize> {
-        match trap {
-            0xA000..=0xA0FF => Some(usize::from(trap - 0xA000)),
-            0xA800..=0xABFF => Some(Self::OS_SLOTS + usize::from(trap - 0xA800)),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn get(&self, trap: &u16) -> Option<&u32> {
-        match Self::slot(*trap) {
-            Some(index) => self.bands[index].as_ref(),
-            None => self
-                .spill
-                .iter()
-                .find(|(word, _)| word == trap)
-                .map(|(_, handler)| handler),
-        }
-    }
-
-    pub(crate) fn insert(&mut self, trap: u16, handler: u32) -> Option<u32> {
-        match Self::slot(trap) {
-            Some(index) => self.bands[index].replace(handler),
-            None => match self.spill.iter_mut().find(|(word, _)| *word == trap) {
-                Some(slot) => Some(std::mem::replace(&mut slot.1, handler)),
-                None => {
-                    self.spill.push((trap, handler));
-                    None
-                }
-            },
-        }
-    }
-
-    pub(crate) fn remove(&mut self, trap: &u16) -> Option<u32> {
-        match Self::slot(*trap) {
-            Some(index) => self.bands[index].take(),
-            None => {
-                let index = self.spill.iter().position(|(word, _)| word == trap)?;
-                Some(self.spill.swap_remove(index).1)
-            }
-        }
-    }
-}
-
 /// Rust adapter identities allowed for one canonical A-line operation row.
 /// `Nonterminal` is a declared registry state, distinct from an accidental
 /// omission: its gateway remains callable and reports the exact raw word until
@@ -2161,16 +2077,6 @@ pub struct TrapDispatcher {
     pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
     /// Complete bitmap PICT captured by CopyBits during OpenPicture.
     pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
-    /// Pre-initialization compatibility mapping for standalone dispatcher
-    /// callers that install handlers before a process table exists. Activation
-    /// clears it; initialized execution reads writable guest table cells.
-    /// Patch fixtures now initialize those cells and use the guest service.
-    // Deletion gate: establish the standalone process construction boundary,
-    // then remove this map and the unmaterialized fallback together.
-    pub(crate) native_trap_table: TrapWordMap,
-    /// Whether the selected profile's raw trap tables exist in guest memory.
-    /// Standalone dispatcher construction can still precede table activation.
-    pub(crate) trap_tables_materialized: bool,
     /// Machine profile belonging to the currently installed process table.
     /// `None` means no application trap context is active.
     pub(crate) trap_table_profile: Option<TrapTableProfile>,
@@ -3680,8 +3586,6 @@ impl TrapDispatcher {
             fill_black_override: None,
             recording_picture: None,
             recording_picture_bitmap: None,
-            native_trap_table: TrapWordMap::default(),
-            trap_tables_materialized: false,
             trap_table_profile: None,
             trap_exception_vector_defaults: None,
             pending_native_trap_calls: HashMap::new(),
@@ -6715,9 +6619,10 @@ impl TrapDispatcher {
 
     fn default_trap_gateway(&self, trap_word: u16) -> Option<u32> {
         let canonical = Self::canonical_trap_word(trap_word);
-        let gateway_word = self.trap_table_profile.map_or(canonical, |profile| {
-            profile.route(canonical).default_gateway_word
-        });
+        let gateway_word = self
+            .trap_table_profile?
+            .route(canonical)
+            .default_gateway_word;
         if (canonical & 0x0800) != 0 {
             self.tool_trap_trampolines.get(&gateway_word).copied()
         } else {
@@ -6777,9 +6682,6 @@ impl TrapDispatcher {
             } else {
                 self.get_or_create_os_trap_trampoline(bus, route.default_gateway_word)
             };
-            let default = self
-                .pre_materialization_trap_handler(trap_word)
-                .unwrap_or(default);
             raw_entries.push(if route.has_permanent_come_from {
                 self.create_trap_come_from_head(bus, default)
             } else {
@@ -6796,9 +6698,6 @@ impl TrapDispatcher {
             } else {
                 self.get_or_create_tool_trap_trampoline(bus, route.default_gateway_word)
             };
-            let default = self
-                .pre_materialization_trap_handler(trap_word)
-                .unwrap_or(default);
             raw_entries.push(if route.has_permanent_come_from {
                 self.create_trap_come_from_head(bus, default)
             } else {
@@ -6871,19 +6770,15 @@ impl TrapDispatcher {
         self.current_trap_caller = incoming.current_trap_caller;
         self.trap_table_profile = Some(incoming.profile);
         self.trap_exception_vector_defaults = Some(incoming.default_exception_vectors);
-        self.trap_tables_materialized = true;
-        self.native_trap_table = TrapWordMap::default();
         outgoing
     }
 
     /// Discard the active application's trap context during process teardown.
     pub(crate) fn teardown_trap_table_process_context(&mut self) {
-        self.native_trap_table = TrapWordMap::default();
         self.pending_native_trap_calls.clear();
         self.current_trap_caller = None;
         self.trap_table_profile = None;
         self.trap_exception_vector_defaults = None;
-        self.trap_tables_materialized = false;
     }
 
     /// Materialize the selected machine profile's complete raw Trap Manager
@@ -6899,20 +6794,77 @@ impl TrapDispatcher {
         let _ = self.switch_trap_table_process_context(bus, context);
     }
 
+    /// Establish the standalone classic Trap Manager environment before any
+    /// direct guest table patches. Ordinary dispatch also calls this on first
+    /// use. Repeated calls preserve the active profile, guest cells, exception
+    /// vectors and in-flight patch calls. Keep the dispatcher paired with the
+    /// same process bus; replacement memory requires a fresh dispatcher.
+    ///
+    /// Initialization requires writable table/vector cells and enough unused
+    /// process RAM for the protected gateways. It refuses unavailable storage
+    /// before allocating or changing guest bytes. Native application runners
+    /// establish their selected profile separately before attaching execution.
+    /// Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-9.
+    pub fn initialize_trap_tables(&mut self, bus: &mut MacMemoryBus) -> Result<()> {
+        if self.trap_table_profile.is_some() {
+            return Ok(());
+        }
+        let profile = TrapTableProfile::M68k68040;
+        let mut new_os_gateways = HashSet::new();
+        let mut new_tool_gateways = HashSet::from([0xAA6E]);
+        for slot in 0..OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS {
+            let word = if slot < OS_TRAP_TABLE_SLOTS {
+                0xA000 | slot
+            } else {
+                0xA800 | (slot - OS_TRAP_TABLE_SLOTS)
+            };
+            let route = profile.route(word);
+            if !route.default_is_unimplemented {
+                if route.raw.is_toolbox {
+                    new_tool_gateways.insert(route.default_gateway_word);
+                } else {
+                    new_os_gateways.insert(route.default_gateway_word);
+                }
+            }
+        }
+        new_os_gateways.retain(|word| !self.os_trap_trampolines.contains_key(word));
+        new_tool_gateways.retain(|word| !self.tool_trap_trampolines.contains_key(word));
+        let required = new_os_gateways.len() as u32 * MacMemoryBus::allocation_bucket_size(4)
+            + new_tool_gateways.len() as u32 * MacMemoryBus::allocation_bucket_size(2)
+            + profile.come_from_traps().len() as u32 * MacMemoryBus::allocation_bucket_size(10)
+            + 2 * MacMemoryBus::allocation_bucket_size(2);
+        let table_end = TOOLBOX_TRAP_TABLE_BASE + u32::from(TOOLBOX_TRAP_TABLE_SLOTS) * 4;
+        let storage_available = bus
+            .synthetic_code_allocation_start(required)
+            .is_some_and(|start| start >= table_end);
+        if !storage_available
+            || !bus
+                .is_guest_address_writable(OS_TRAP_TABLE_BASE, usize::from(OS_TRAP_TABLE_SLOTS) * 4)
+            || !bus.is_guest_address_writable(
+                TOOLBOX_TRAP_TABLE_BASE,
+                usize::from(TOOLBOX_TRAP_TABLE_SLOTS) * 4,
+            )
+            || !bus.is_guest_address_writable(0x28, 8)
+        {
+            return Err(Error::TrapTableInitialization);
+        }
+        self.materialize_trap_tables(bus, profile);
+        Ok(())
+    }
+
     /// Whether low-memory exception vector 10 still names this process's
-    /// generated A-line dispatcher identity. Before a process topology is
-    /// materialized, retain the historical direct-HLE behavior used by
-    /// focused manager tests.
+    /// generated A-line dispatcher identity. An inactive context has no
+    /// default vector identity.
     pub(crate) fn aline_vector_is_default(&self, bus: &MacMemoryBus) -> bool {
         self.trap_exception_vector_defaults
-            .is_none_or(|defaults| bus.read_long(0x28) == defaults[0])
+            .is_some_and(|defaults| bus.read_long(0x28) == defaults[0])
     }
 
     /// Whether low-memory exception vector 11 still names this process's
     /// generated line-F handler identity.
     pub(crate) fn fline_vector_is_default(&self, bus: &MacMemoryBus) -> bool {
         self.trap_exception_vector_defaults
-            .is_none_or(|defaults| bus.read_long(0x2C) == defaults[1])
+            .is_some_and(|defaults| bus.read_long(0x2C) == defaults[1])
     }
 
     /// Return the logical address currently selected by a materialized raw
@@ -6920,9 +6872,7 @@ impl TrapDispatcher {
     /// is the default gateway; dispatch uses [`Self::native_trap_handler`] to
     /// distinguish that default from an installed patch.
     pub(crate) fn trap_table_address(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
-        if !self.trap_tables_materialized {
-            return None;
-        }
+        self.trap_table_profile?;
         let canonical = Self::canonical_trap_word(trap_word);
         let kind = if raw_trap_route(canonical).is_toolbox {
             TrapTableKind::Toolbox
@@ -6951,26 +6901,8 @@ impl TrapDispatcher {
     /// guest can patch a trap with an ordinary longword store.
     pub(crate) fn native_trap_handler(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
         let canonical = Self::canonical_trap_word(trap_word);
-        if self.trap_tables_materialized {
-            let logical = self.trap_table_address(bus, canonical)?;
-            if self.default_trap_gateway(canonical) == Some(logical) {
-                None
-            } else {
-                Some(logical)
-            }
-        } else {
-            self.pre_materialization_trap_handler(canonical)
-        }
-    }
-
-    /// Read the compatibility projection only while no guest trap table is
-    /// active. This guard is deliberately separate from the active lookup so
-    /// a later refactor cannot accidentally let the mirror win over guest
-    /// table bytes.
-    fn pre_materialization_trap_handler(&self, canonical: u16) -> Option<u32> {
-        (!self.trap_tables_materialized)
-            .then(|| self.native_trap_table.get(&canonical).copied())
-            .flatten()
+        let logical = self.trap_table_address(bus, canonical)?;
+        (self.default_trap_gateway(canonical) != Some(logical)).then_some(logical)
     }
 
     pub(crate) fn install_trap_address(
@@ -6979,27 +6911,9 @@ impl TrapDispatcher {
         trap_word: u16,
         handler: u32,
     ) -> std::result::Result<(), TrapManagerSetError> {
+        self.initialize_trap_tables(bus)
+            .map_err(|_| TrapManagerSetError::UnreadableTable)?;
         let canonical = Self::canonical_trap_word(trap_word);
-        if !self.trap_tables_materialized {
-            let protected_code = bus.protected_code_ownership();
-            TrapManager::validate_handler_with_provenance(
-                handler,
-                |address| bus.try_read_long(address),
-                move |address| protected_code.contains(address),
-            )?;
-            if self.default_trap_gateway(canonical) == Some(handler) {
-                self.native_trap_table.remove(&canonical);
-            } else {
-                self.native_trap_table.insert(canonical, handler);
-            }
-            return Ok(());
-        }
-
-        let entry = if self.default_trap_gateway(canonical) == Some(handler) {
-            self.default_trap_gateway(canonical).unwrap_or(handler)
-        } else {
-            handler
-        };
         let kind = if raw_trap_route(canonical).is_toolbox {
             TrapTableKind::Toolbox
         } else {
@@ -7009,7 +6923,7 @@ impl TrapDispatcher {
         TrapManager::set_address_with_provenance(
             canonical,
             kind,
-            entry,
+            handler,
             |operation| match operation {
                 TrapManagerMemoryOp::ReadLong(address) => bus
                     .try_read_long(address)
@@ -7541,6 +7455,7 @@ impl TrapDispatcher {
         cfm: Option<&crate::cfm::CfmState>,
         bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
     ) -> Result<()> {
+        self.initialize_trap_tables(bus)?;
         // Low-memory Ticks is guest-owned writable state. Import it at the
         // ABI boundary before any manager, trace, or diagnostic path observes
         // the process clock so a direct guest store cannot be shadowed by a
@@ -7861,7 +7776,10 @@ impl TrapDispatcher {
             deliver_os_trap_word(cpu, effective_trap);
         }
         if !default_os_gateway_call && !default_tool_gateway_call {
-            if let Some(handler_addr) = self.native_trap_handler(bus, base_trap) {
+            let handler_addr = self
+                .trap_table_address(bus, base_trap)
+                .ok_or(Error::TrapTableLookup(base_trap))?;
+            if self.default_trap_gateway(base_trap) != Some(handler_addr) {
                 // Simulate JSR to native handler: push return PC, jump to
                 // handler. For an auto-pop trap, the dispatcher's documented
                 // return target is the caller address removed from the glue
@@ -9003,69 +8921,179 @@ mod tests {
     }
 
     #[test]
-    fn trap_word_map_preserves_the_hashmap_contract() {
-        let mut map = super::TrapWordMap::default();
-        // First insert returns None; lookup sees it.
-        assert_eq!(map.insert(0xA9F0, 0x1000), None);
-        assert_eq!(map.get(&0xA9F0), Some(&0x1000));
-        assert_eq!(map.get(&0xA9F1), None, "absent key misses");
-        // Replacement returns the previous handler and keeps one entry.
-        assert_eq!(map.insert(0xA9F0, 0x2000), Some(0x1000));
-        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
-        // A second key coexists.
-        assert_eq!(map.insert(0xA146, 0x3000), None);
-        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
-        assert_eq!(map.get(&0xA146), Some(&0x3000));
-        // Removal returns the value exactly once and clears lookup.
-        assert_eq!(map.remove(&0xA9F0), Some(0x2000));
-        assert_eq!(map.remove(&0xA9F0), None, "second remove is a miss");
-        assert_eq!(map.get(&0xA9F0), None);
-        // The untouched key survives its neighbor's removal.
-        assert_eq!(map.get(&0xA146), Some(&0x3000));
-        // Replace-then-remove on the survivor behaves like HashMap too.
-        assert_eq!(map.insert(0xA146, 0x4000), Some(0x3000));
-        assert_eq!(map.remove(&0xA146), Some(0x4000));
-        assert_eq!(map.get(&0xA146), None);
+    fn standalone_trap_initialization_preserves_live_patches_and_restarts_after_teardown() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let word = 0xA078; // SwapMMUMode has a permanent head on the classic profile.
+        let entry = OS_TRAP_TABLE_BASE + 0x78 * 4;
+        cpu.write_reg(Register::D0, 0x78);
+        dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+        let default = cpu.read_reg(Register::A0);
+        let initial_head = bus.read_long(entry);
+        assert_ne!(default, 0);
+        assert_ne!(initial_head, default);
+        assert_eq!(
+            bus.read_long(initial_head),
+            super::super::manager::COME_FROM_PATCH_SIGNATURE
+        );
+        assert_eq!(
+            dispatcher.trap_table_profile,
+            Some(TrapTableProfile::M68k68040)
+        );
+
+        let patch = 0x0021_0000;
+        bus.write_long(entry, patch);
+        let vectors = [bus.read_long(0x28), bus.read_long(0x2C)];
+        bus.write_long(0x2C, patch);
+        dispatcher.initialize_trap_tables(&mut bus).unwrap();
+        assert_eq!(bus.read_long(entry), patch);
+        assert_eq!(bus.read_long(0x2C), patch);
+        cpu.write_reg(Register::PC, 0x0020_0002);
+        dispatcher.dispatch(word, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), patch);
+        let sp = cpu.read_reg(Register::A7);
+        dispatcher.initialize_trap_tables(&mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(dispatcher.pending_native_trap_calls[&word].len(), 1);
+
+        dispatcher.teardown_trap_table_process_context();
+        dispatcher.initialize_trap_tables(&mut bus).unwrap();
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+        assert_ne!(bus.read_long(entry), initial_head);
+        assert_eq!(dispatcher.trap_table_address(&bus, word), Some(default));
+        assert_ne!([bus.read_long(0x28), bus.read_long(0x2C)], vectors);
+        assert!(dispatcher.aline_vector_is_default(&bus));
+        assert!(dispatcher.fline_vector_is_default(&bus));
     }
 
     #[test]
-    fn trap_word_map_stays_exact_at_full_occupancy_and_off_band() {
-        // SetTrapAddress can populate every slot of both trap tables, so
-        // fill them completely: 256 OS words and 1,024 Toolbox words.
-        let mut map = super::TrapWordMap::default();
-        for os in 0xA000u16..=0xA0FF {
-            assert_eq!(map.insert(os, u32::from(os) | 0x10_0000), None);
+    fn standalone_trap_initialization_refuses_unavailable_memory_atomically_and_retries() {
+        for failure in 0..7 {
+            let (mut dispatcher, mut cpu, _) = setup();
+            let mut bus = MacMemoryBus::new(match failure {
+                0 => 0x1000,
+                4 => 32 * 1024 * 1024,
+                _ => 4 * 1024 * 1024,
+            });
+            match failure {
+                1 => {
+                    assert_ne!(bus.alloc_synthetic(64 * 1024), 0);
+                }
+                2 => bus.protect_readonly_code(TOOLBOX_TRAP_TABLE_BASE, 4),
+                4 => bus.set_addressing_32_bit(false),
+                5 => bus.protect_readonly_code(0x28, 4),
+                6 => bus.protect_readonly_code(OS_TRAP_TABLE_BASE, 4),
+                3 => {
+                    let address = bus.synthetic_code_allocation_start(4).unwrap();
+                    let mut foreign = crate::memory::GuestAddressSpace::new();
+                    foreign.add_readonly_region(address, vec![0x55; 4]);
+                    bus.attach_guest_address_space(foreign.shared_view());
+                }
+                _ => {}
+            }
+            let low_memory = bus.read_bytes(0, 0x2000.min(bus.ram_size() as usize));
+            let synthetic = bus
+                .synthetic_reservation_range()
+                .map(|(base, len)| (base, bus.read_bytes(base, len as usize)));
+            cpu.write_reg(Register::D0, 0x78);
+            cpu.write_reg(Register::A0, 0x1234_5678);
+            cpu.write_reg(Register::PC, 0x0020_0002);
+            let sp = cpu.read_reg(Register::A7);
+            assert!(matches!(
+                dispatcher.initialize_trap_tables(&mut bus),
+                Err(Error::TrapTableInitialization)
+            ));
+            assert!(matches!(
+                dispatcher.dispatch(0xA346, &mut cpu, &mut bus),
+                Err(Error::TrapTableInitialization)
+            ));
+            for number in [0x46, 0x47] {
+                assert!(matches!(
+                    dispatcher.dispatch_memory(false, number, &mut cpu, &mut bus),
+                    Some(Err(Error::TrapTableInitialization))
+                ));
+            }
+            assert_eq!(bus.read_bytes(0, low_memory.len()), low_memory);
+            if let Some((base, bytes)) = synthetic {
+                assert_eq!(bus.read_bytes(base, bytes.len()), bytes);
+            }
+            assert_eq!(cpu.read_reg(Register::D0), 0x78);
+            assert_eq!(cpu.read_reg(Register::A0), 0x1234_5678);
+            assert_eq!(cpu.read_reg(Register::PC), 0x0020_0002);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert_eq!(dispatcher.trap_count, 0);
+            assert_eq!(dispatcher.trap_table_profile, None);
+            assert!(!dispatcher.aline_vector_is_default(&bus));
+            assert!(!dispatcher.fline_vector_is_default(&bus));
+            assert!(dispatcher.os_trap_trampolines.is_empty());
+            assert!(dispatcher.tool_trap_trampolines.is_empty());
+            if failure == 3 {
+                bus.detach_guest_address_space();
+            } else {
+                bus = MacMemoryBus::new(4 * 1024 * 1024);
+            }
+            dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+            assert_ne!(cpu.read_reg(Register::A0), 0);
+            assert_eq!(
+                dispatcher.trap_table_profile,
+                Some(TrapTableProfile::M68k68040)
+            );
         }
-        for tool in 0xA800u16..=0xABFF {
-            assert_eq!(map.insert(tool, u32::from(tool) | 0x20_0000), None);
-        }
-        // Every lookup is exact at full occupancy — the boundary the
-        // linear-scan design regressed on.
-        for os in 0xA000u16..=0xA0FF {
-            assert_eq!(map.get(&os), Some(&(u32::from(os) | 0x10_0000)));
-        }
-        for tool in 0xA800u16..=0xABFF {
-            assert_eq!(map.get(&tool), Some(&(u32::from(tool) | 0x20_0000)));
-        }
-        // Replacement and removal stay exact with every slot occupied.
-        assert_eq!(map.insert(0xA9F0, 0xDEAD), Some(0xA9F0 | 0x20_0000));
-        assert_eq!(map.remove(&0xA9F0), Some(0xDEAD));
-        assert_eq!(map.get(&0xA9F0), None);
+    }
+
+    #[test]
+    fn classic_getter_does_not_reconstruct_a_default_for_a_cyclic_guest_chain() {
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
+        let entry = OS_TRAP_TABLE_BASE + 0x78 * 4;
+        let head = bus.read_long(entry);
+        let default = dispatcher.trap_table_address(&bus, 0xA078).unwrap();
+        assert!(bus.try_write_protected_code_long(head + 4, head));
+        cpu.write_reg(Register::D0, 0x78);
+        dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(bus.read_long(entry), head);
+        assert_eq!(bus.read_long(head + 4), head);
+        assert!(bus.try_write_protected_code_long(head + 4, default));
+        cpu.write_reg(Register::D0, 0x78);
+        dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), default);
+    }
+
+    #[test]
+    fn malformed_trap_entry_refuses_dispatch_but_preserves_saved_default_gateway_calls() {
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
+        let entry = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
+        let default = dispatcher.trap_table_address(&bus, 0xA975).unwrap();
+        let head = dispatcher.create_trap_come_from_head(&mut bus, default);
+        assert!(bus.try_write_protected_code_long(head + 4, head));
+        bus.write_long(entry, head);
+        let sp = cpu.read_reg(Register::A7);
+        let sentinel = 0xABCD_EF01;
+        bus.write_long(sp, sentinel);
+        cpu.write_reg(Register::PC, 0x0020_0002);
+        assert!(matches!(
+            dispatcher.dispatch(0xA975, &mut cpu, &mut bus),
+            Err(Error::TrapTableLookup(0xA975))
+        ));
         assert_eq!(
-            map.get(&0xA9F1),
-            Some(&(0xA9F1 | 0x20_0000)),
-            "neighbors survive"
+            bus.read_long(sp),
+            sentinel,
+            "no TickCount result was delivered"
         );
-        // The band boundaries themselves: words between the OS and
-        // Toolbox tables, and past the Toolbox table, are storable and
-        // retrievable (spill), and absent ones stay absent.
-        for off_band in [0x01F4u16, 0xA100, 0xA7FF, 0xAC00, 0xFFFF] {
-            assert_eq!(map.get(&off_band), None);
-            assert_eq!(map.insert(off_band, 0xBEEF), None);
-            assert_eq!(map.get(&off_band), Some(&0xBEEF));
-            assert_eq!(map.remove(&off_band), Some(0xBEEF));
-            assert_eq!(map.get(&off_band), None);
-        }
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+
+        // A saved system address deliberately bypasses the current patch
+        // head, even if the application has since corrupted that head.
+        // Inside Macintosh: Operating System Utilities (1994), pp. 8-23--8-30.
+        let return_pc = 0x0020_0100;
+        bus.write_long(sp, return_pc);
+        bus.write_long(sp + 4, sentinel);
+        bus.write_long(crate::memory::globals::addr::TICKS, 1234);
+        cpu.write_reg(Register::PC, default + 2);
+        dispatcher.dispatch(0xAD75, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_long(sp + 4), 1234);
+        assert_eq!(bus.read_long(head + 4), head);
     }
 
     #[test]
@@ -9314,7 +9342,6 @@ mod tests {
         assert_eq!(dispatcher.current_trap_caller, Some(0x0024_1000));
 
         dispatcher.teardown_trap_table_process_context();
-        assert!(!dispatcher.trap_tables_materialized);
         assert_eq!(dispatcher.trap_table_profile, None);
         assert_eq!(dispatcher.trap_exception_vector_defaults, None);
         assert!(dispatcher.pending_native_trap_calls.is_empty());

@@ -13,6 +13,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///   for diagnosis. Adding a `(is_tool, trap_num) =>` arm in the
 ///   appropriate `src/trap/*.rs` file is how you fix this.
 ///
+/// * [`Error::TrapTableInitialization`] — guest memory cannot hold a complete
+///   classic trap topology; initialization leaves it unchanged.
+///
+/// * [`Error::TrapTableLookup`] — a live trap table entry cannot be resolved.
+///
 /// * [`Error::Halted`] — the guest application called `ExitToShell`
 ///   (or otherwise reached a halt state). Not a failure per se;
 ///   callers that loop on `run_steps` use `still_running == false`
@@ -32,6 +37,14 @@ pub enum Error {
     /// handler. The trap word is included for diagnosis.
     #[error("Unimplemented trap ${0:04X}")]
     UnimplementedTrap(u16),
+
+    /// The supplied guest memory cannot hold a complete classic trap topology.
+    #[error("Trap tables cannot be initialized in the supplied guest memory")]
+    TrapTableInitialization,
+
+    /// A live trap table entry cannot be resolved through its protected chain.
+    #[error("Cannot resolve trap table entry for ${0:04X}")]
+    TrapTableLookup(u16),
 
     /// The guest application reached a halt state (typically via
     /// `ExitToShell`).
