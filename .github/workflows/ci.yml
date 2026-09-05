@@ -117,8 +117,8 @@ jobs:
           rm metadata.json
 
       # Catch packaging/metadata problems before a release ever runs.
-      - name: Package dry-run
-        run: cargo publish --locked --dry-run
+      - name: Package and verify crate
+        run: cargo package --locked
 
       - name: Check crates.io upload size
         run: |
