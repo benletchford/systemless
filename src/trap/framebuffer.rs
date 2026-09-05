@@ -3985,9 +3985,37 @@ impl super::TrapDispatcher {
         true
     }
 
+    // ClipAbove restricts the WDEF to the desktop, whose GrayRgn excludes
+    // the menu bar. Raw framebuffer WDEF drawing bypasses QuickDraw's clip,
+    // so preserve the excluded rows, as we do for occluding front windows.
+    // Macintosh Toolbox Essentials (1992), pp. 4-116–4-117;
+    // Inside Macintosh Volume I (1985), p. I-282.
+    fn draw_window_below_menu_bar(
+        &self,
+        bus: &mut MacMemoryBus,
+        draw: impl FnOnce(&Self, &mut MacMemoryBus),
+    ) {
+        let (base, row_bytes, _, height, _) = self.get_screen_params();
+        let menu_height = (bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16)
+            .clamp(0, height.max(0));
+        let saved = (menu_height > 0 && self.window_bounds.0.saturating_sub(23) < menu_height)
+            .then(|| bus.read_bytes(base, row_bytes as usize * menu_height as usize));
+        draw(self, bus);
+        if let Some(saved) = saved {
+            bus.write_bytes(base, &saved);
+        }
+    }
+
     /// Draw window chrome (title bar, close box, border) into the framebuffer
     /// WIND bounds are the CONTENT RECT; title bar is drawn ABOVE it.
     pub(crate) fn draw_window_chrome(&self, bus: &mut MacMemoryBus, active: bool) {
+        self.draw_window_below_menu_bar(bus, |dispatcher, bus| {
+            dispatcher.draw_window_chrome_unclipped(bus, active);
+        });
+        self.capture_gui_frame(bus, "draw_window_chrome");
+    }
+
+    fn draw_window_chrome_unclipped(&self, bus: &mut MacMemoryBus, active: bool) {
         if self.windows_placed_offscreen.contains(&self.front_window) {
             return;
         }
@@ -4066,7 +4094,6 @@ impl super::TrapDispatcher {
                     chrome.title_clip,
                 );
             }
-            self.capture_gui_frame(bus, "draw_window_chrome");
             return;
         }
 
@@ -4381,7 +4408,6 @@ impl super::TrapDispatcher {
             wind_right + 2,
             true,
         );
-        self.capture_gui_frame(bus, "draw_window_chrome");
     }
 
     /// Draw the grow icon (size box) in the bottom-right corner of a window.
@@ -4695,6 +4721,11 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn draw_window_frame(&self, bus: &mut MacMemoryBus) {
+        self.draw_window_below_menu_bar(bus, Self::draw_window_frame_unclipped);
+        self.capture_gui_frame(bus, "draw_window_frame");
+    }
+
+    fn draw_window_frame_unclipped(&self, bus: &mut MacMemoryBus) {
         if self.windows_placed_offscreen.contains(&self.front_window) {
             return;
         }
@@ -4720,7 +4751,6 @@ impl super::TrapDispatcher {
                 true,
                 false,
             ) {
-                self.capture_gui_frame(bus, "draw_window_frame");
                 return;
             }
         }
@@ -4839,7 +4869,7 @@ impl super::TrapDispatcher {
                     wind_bottom + 2,
                     wind_right + 2,
                 );
-                self.draw_window_chrome(bus, true);
+                self.draw_window_chrome_unclipped(bus, true);
             }
             _ => {
                 // Unknown procID: at least draw a single border
@@ -4852,7 +4882,6 @@ impl super::TrapDispatcher {
                 );
             }
         }
-        self.capture_gui_frame(bus, "draw_window_frame");
     }
 
     pub(crate) fn restore_visible_dialog_snapshots(&mut self, bus: &mut MacMemoryBus) {
@@ -5537,6 +5566,62 @@ mod redraw_chrome_tests {
         assert!(!screen_pixel_is_black(&disp, &bus, 200, 85));
         assert!(!screen_pixel_is_black(&disp, &bus, 160, 88));
         assert!(!screen_pixel_is_black(&disp, &bus, 628, 88));
+    }
+
+    #[test]
+    fn window_frames_preserve_menu_bar_pixels_when_their_bounds_overlap_it() {
+        use crate::ui_theme::UiThemeId;
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            for proc_id in [0, 1, 2, 3, 5, 8, 16] {
+                let (mut disp, _cpu, mut bus) = setup_with_port();
+                let base = bus.alloc(800 * 600);
+                disp.screen_mode = (base, 800, 800, 600, 8);
+                bus.write_long(crate::memory::globals::addr::SCRN_BASE, base);
+                bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+                disp.set_ui_theme_id(theme);
+                disp.front_window = PORT_PTR;
+                disp.window_bounds = (10, 30, 300, 770);
+                disp.window_proc_id = proc_id;
+                disp.window_title = "Overlapping window".to_string();
+                disp.go_away_flag = true;
+                let menu: Vec<u8> = (0..800 * 20).map(|i| (i % 251) as u8).collect();
+                bus.write_bytes(base, &menu);
+                disp.draw_window_frame(&mut bus);
+                assert_eq!(
+                    bus.read_bytes(base, menu.len()),
+                    menu,
+                    "frame {proc_id}, {theme:?}"
+                );
+                if TrapDispatcher::window_is_document_proc(proc_id) {
+                    disp.draw_window_chrome(&mut bus, false);
+                    assert_eq!(
+                        bus.read_bytes(base, menu.len()),
+                        menu,
+                        "inactive frame {proc_id}"
+                    );
+                }
+                assert!(
+                    bus.read_bytes(base + 20 * 800, 800 * 300)
+                        .iter()
+                        .any(|&b| b != 0),
+                    "the visible part of the frame must still draw"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn window_frame_can_draw_above_the_desktop_when_menu_bar_height_is_zero() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let base = bus.alloc(800 * 600);
+        disp.screen_mode = (base, 800, 800, 600, 8);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        disp.window_bounds = (10, 30, 300, 770);
+        disp.window_proc_id = 2;
+        bus.fill_bytes(base, 800 * 20, 0x7B);
+        disp.draw_window_frame(&mut bus);
+        assert_ne!(bus.read_byte(base + 9 * 800 + 100), 0x7B);
     }
 
     #[test]
