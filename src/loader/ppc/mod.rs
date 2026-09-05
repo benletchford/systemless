@@ -15,7 +15,10 @@ use super::pef::{
 };
 use super::ApplicationSizeResource;
 use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
-use crate::cfm::{CfmLoadId, CfmLoadOperation, CfmLoadOutputs};
+use crate::cfm::{
+    CfmLoadId, CfmLoadOperation, CfmLoadOutputs, CfmOperation, CfmResourceCall,
+    CfmResourcePreparation,
+};
 use crate::event_queue::{
     EventProbeResult, EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
 };
@@ -7603,13 +7606,40 @@ impl PpcLoadedApp {
                     return PpcImportAction::Yield(1);
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
-                    if guest_calls.complete_powerpc_resuming_load(
+                    let mut resource_call = None;
+                    if guest_calls.complete_powerpc_resuming_operation(
                         cpu,
                         process_memory_manager,
-                        |operation, result| {
-                            ppc_complete_cfm_load(operation, result, memory, &mut cfm_connections)
+                        |operation, result| match operation {
+                            CfmOperation::Load(load) => {
+                                ppc_complete_cfm_load(load, result, memory, &mut cfm_connections)
+                            }
+                            CfmOperation::Resource(call) => match ppc_finish_resource_call(
+                                call,
+                                result,
+                                memory,
+                                &mut cfm_connections,
+                            ) {
+                                Ok(call) => {
+                                    resource_call = Some(call);
+                                    0
+                                }
+                                Err(error) => ppc_i16_result(error),
+                            },
                         },
                     ) {
+                        if let Some(call) = resource_call {
+                            if let Err(error) = ppc_invoke_prepared_resource(
+                                cpu,
+                                memory,
+                                &guest_calls,
+                                call,
+                                cpu.pc,
+                            ) {
+                                cpu.gpr[3] = ppc_i16_result(error);
+                            }
+                            return PpcImportAction::Continue;
+                        }
                         let native_heap = process_memory_manager
                             .native_heap_state()
                             .expect("native allocator registered during execution");
@@ -27344,15 +27374,44 @@ fn dispatch_supported_import(
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::CallUniversalProc => ppc_call_universal_proc(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            toolbox_startup,
-            GuestIsa::PowerPc,
-        ),
+        PpcImportDispatcherTarget::CallUniversalProc => {
+            let selector = ppc_call_universal_proc_selector(cpu, memory, cpu.gpr[4]).ok()?;
+            if let Some(crate::guest_procedure::GuestProcedureResolution::Prepare(request)) =
+                crate::guest_procedure::inspect_guest_procedure(
+                    memory,
+                    cpu.gpr[3],
+                    cpu.gpr[2],
+                    selector,
+                    GuestIsa::PowerPc,
+                    GuestIsa::PowerPc,
+                )
+            {
+                return Some(ppc_prepare_resource_call(
+                    cpu,
+                    memory,
+                    process_memory_manager,
+                    &toolbox_startup.guest_calls,
+                    heap_cursor,
+                    heap_limit,
+                    cfm_connections,
+                    next_cfm_connection_id,
+                    imports,
+                    import_count,
+                    import_binding_indices,
+                    request,
+                    selector,
+                ));
+            }
+            ppc_call_universal_proc(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                toolbox_startup,
+                GuestIsa::PowerPc,
+            )
+        }
         PpcImportDispatcherTarget::CallOSTrapUniversalProc => ppc_call_os_trap_universal_proc(
             cpu,
             process_memory_manager,
@@ -44643,6 +44702,294 @@ fn ppc_install_native_call_arguments(
 fn ppc_install_legacy_call_universal_proc_arguments(cpu: &mut PpcCpu) {
     for index in 0..PPC_CALL_UNIVERSAL_PROC_REGISTER_VARARGS {
         cpu.gpr[3 + index] = cpu.gpr[5 + index];
+    }
+}
+
+fn ppc_resource_fragment_bytes(
+    memory: &mut PpcSectionMem,
+    address: u32,
+    available: Option<u32>,
+) -> Option<Vec<u8>> {
+    if available.is_some_and(|size| size < 40) {
+        return None;
+    }
+    let header_bytes = ppc_memory_read_bytes(memory, address, 40)?;
+    let header = parse_pef_header(&header_bytes)?;
+    if header.architecture != *b"pwpc" || header.format_version != 1 {
+        return None;
+    }
+    let table_len = 40u32.checked_add(u32::from(header.section_count).checked_mul(28)?)?;
+    if available.is_some_and(|size| size < table_len) {
+        return None;
+    }
+    let table = ppc_memory_read_bytes(memory, address, table_len)?;
+    let mut length = table_len;
+    for section in parse_pef_sections(&table)? {
+        length = length.max(section.container_offset.checked_add(section.packed_size)?);
+    }
+    if available.is_some_and(|size| size < length) {
+        return None;
+    }
+    address.checked_add(length.checked_sub(1)?)?;
+    if !ppc_memory_can_read_bytes(memory, address, length) {
+        return None;
+    }
+    ppc_memory_read_bytes(memory, address, length)
+}
+
+fn ppc_finish_resource_call(
+    operation: CfmResourceCall,
+    result: u32,
+    memory: &mut PpcSectionMem,
+    connections: &mut Vec<PpcCfmConnection>,
+) -> Result<CfmResourceCall, i16> {
+    if result == 0
+        && !operation.main_address.checked_add(7).is_some_and(|_| {
+            memory
+                .read_u32_be(operation.main_address)
+                .is_some_and(|entry| entry != 0 && memory.read_u32_be(entry).is_some())
+                && memory.read_u32_be(operation.main_address + 4).is_some()
+        })
+    {
+        connections.retain(|connection| connection.id != operation.id.0);
+        return Err(PPC_FRAG_CORRUPT_ERR);
+    }
+    let request = operation.preparation;
+    let mut header = [0; 12];
+    let record = if memory
+        .read_bytes_into(request.descriptor, &mut header)
+        .is_some()
+        && header == operation.descriptor_header
+    {
+        let mut bytes = [0; 20];
+        memory
+            .read_bytes_into(request.record, &mut bytes)
+            .map(|_| bytes)
+    } else {
+        None
+    };
+    operation
+        .complete(result, connections, record, |writes| {
+            memory.try_write_ranges_atomic(writes)
+        })
+        .map_err(|error| error.os_error())
+}
+
+fn ppc_invoke_prepared_resource(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    calls: &SharedGuestCallStack,
+    operation: CfmResourceCall,
+    final_pc: u32,
+) -> Result<(), i16> {
+    let entry = memory
+        .read_u32_be(operation.main_address)
+        .ok_or(PPC_FRAG_CORRUPT_ERR)?;
+    let rtoc = memory
+        .read_u32_be(
+            operation
+                .main_address
+                .checked_add(4)
+                .ok_or(PPC_FRAG_CORRUPT_ERR)?,
+        )
+        .ok_or(PPC_FRAG_CORRUPT_ERR)?;
+    if entry == 0 || memory.read_u32_be(entry).is_none() {
+        return Err(PPC_FRAG_CORRUPT_ERR);
+    }
+    let effect = GuestCallEffect::call_guest(
+        GuestCallRequest::for_task(
+            operation.task,
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry,
+                rtoc,
+            },
+        )
+        .with_powerpc_arguments(operation.arguments),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            final_pc,
+            cpu.gpr[2],
+            ppc_call_universal_proc_return_gpr3(operation.caller_proc_info),
+        ),
+    );
+    if !calls.activate_powerpc_effect_with_operation(cpu, memory, effect, None, None) {
+        return Err(PPC_PARAM_ERR);
+    }
+    cpu.gpr[12] = operation.main_address;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_prepare_resource_call(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    calls: &SharedGuestCallStack,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    connections: &mut Vec<PpcCfmConnection>,
+    next_id: &mut u32,
+    imports: &mut Vec<PpcImportBinding>,
+    import_count: &mut u32,
+    import_indices: &mut Vec<Option<usize>>,
+    request: CfmResourcePreparation,
+    selector: Option<u32>,
+) -> PpcImportAction {
+    let result = (|| {
+        if calls.is_resource_preparation_pending(request.record) {
+            return Err(PPC_FRAG_INIT_LOOP);
+        }
+        let mut descriptor_header = [0; 12];
+        let mut original_record = [0; 20];
+        memory
+            .read_bytes_into(request.descriptor, &mut descriptor_header)
+            .ok_or(PPC_FRAG_CORRUPT_ERR)?;
+        memory
+            .read_bytes_into(request.record, &mut original_record)
+            .ok_or(PPC_FRAG_CORRUPT_ERR)?;
+        let caller_proc_info = cpu.gpr[4];
+        let mut arguments = ppc_call_universal_proc_arguments(cpu, memory, caller_proc_info)
+            .map_err(|_| PPC_PARAM_ERR)?
+            .ok_or(PPC_PARAM_ERR)?;
+        if selector.is_some()
+            && request.routine_flags & PPC_ROUTINE_FLAG_DONT_PASS_SELECTOR != 0
+            && !arguments.is_empty()
+        {
+            arguments.remove(0);
+        }
+        let arguments = crate::execution_kernel::GuestArgumentValues::from_slice(&arguments)
+            .ok_or(PPC_PARAM_ERR)?;
+        let parameter_start = cpu.gpr[1].checked_add(24).ok_or(PPC_PARAM_ERR)?;
+        if !memory.preflight_writable_range(
+            parameter_start,
+            arguments.as_slice().len().max(8) as u32 * 4,
+        ) || !memory.preflight_writable_range(request.record + 6, 2)
+            || !memory.preflight_writable_range(request.record + 8, 4)
+        {
+            return Err(PPC_PARAM_ERR);
+        }
+        let available = if let Some(handle) = manager.handle_for_ptr(request.descriptor) {
+            let saved_error = manager
+                .native_heap_state()
+                .map(|heap| heap.last_mem_error)
+                .unwrap_or(0);
+            let size = manager.process_handle_size_from_master_pointer(handle, request.descriptor);
+            manager.set_native_mem_error(saved_error);
+            Some(
+                size.ok_or(PPC_FRAG_CORRUPT_ERR)?
+                    .checked_sub(
+                        request
+                            .fragment_address
+                            .checked_sub(request.descriptor)
+                            .ok_or(PPC_FRAG_CORRUPT_ERR)?,
+                    )
+                    .ok_or(PPC_FRAG_CORRUPT_ERR)?,
+            )
+        } else {
+            None
+        };
+        let fragment = ppc_resource_fragment_bytes(memory, request.fragment_address, available)
+            .ok_or(PPC_FRAG_CORRUPT_ERR)?;
+        let id = *next_id;
+        if id == 0 || id > PPC_CFM_MAIN_STUB_COUNT {
+            return Err(PPC_FRAG_LIB_CONN_ERR);
+        }
+        let prepared = ppc_prepare_mem_fragment(
+            &fragment,
+            manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            imports,
+            import_count,
+            import_indices,
+        )?;
+        if prepared.main_addr == 0 {
+            return Err(PPC_FRAG_CORRUPT_ERR);
+        }
+        *next_id = id + 1;
+        let name = format!("resource routine ${:08X}", request.record);
+        connections.push(PpcCfmConnection {
+            id,
+            library_name: name.clone(),
+            main_addr: prepared.main_addr,
+            init_addr: prepared.init_addr,
+            term_addr: prepared.term_addr,
+            exports: prepared.exports,
+        });
+        let operation = CfmResourceCall {
+            task: calls.current_task(),
+            id: CfmLoadId(id),
+            preparation: request,
+            descriptor_header,
+            original_record,
+            main_address: prepared.main_addr,
+            arguments,
+            caller_proc_info,
+        };
+        let activate = (|| {
+            if prepared.init_addr == 0 {
+                let operation = ppc_finish_resource_call(operation, 0, memory, connections)?;
+                return ppc_invoke_prepared_resource(cpu, memory, calls, operation, cpu.lr);
+            }
+            let block = ppc_create_mem_fragment_init_block(
+                Some(manager),
+                memory,
+                heap_cursor,
+                heap_limit,
+                id,
+                request.fragment_address,
+                fragment.len() as u32,
+                &name,
+            )?;
+            let target = prepared.init_addr.checked_add(7).and_then(|_| {
+                Some(GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: memory.read_u32_be(prepared.init_addr)?,
+                    rtoc: memory.read_u32_be(prepared.init_addr + 4)?,
+                })
+            });
+            let activated = target.is_some_and(|target| {
+                if memory.read_u32_be(target.entry).is_none() {
+                    return false;
+                }
+                let effect = GuestCallEffect::call_guest(
+                    GuestCallRequest::for_task(calls.current_task(), target)
+                        .with_powerpc_arguments(
+                            crate::execution_kernel::GuestArgumentValues::from_slice(&[block])
+                                .unwrap(),
+                        ),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        cpu.lr,
+                        cpu.gpr[2],
+                        PpcNativeReturnGpr3::Preserve,
+                    ),
+                );
+                calls.activate_powerpc_effect_with_operation(
+                    cpu,
+                    memory,
+                    effect,
+                    Some(block),
+                    Some(CfmOperation::Resource(operation)),
+                )
+            });
+            if !activated {
+                manager.release_native_scratch(block);
+                return Err(PPC_FRAG_CORRUPT_ERR);
+            }
+            cpu.gpr[12] = prepared.init_addr;
+            Ok(())
+        })();
+        if activate.is_err() {
+            connections.retain(|connection| connection.id != id);
+        }
+        activate
+    })();
+    match result {
+        Ok(()) => PpcImportAction::Continue,
+        Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
     }
 }
 
@@ -177120,6 +177467,205 @@ pub(crate) mod tests {
 
     pub(crate) fn synthetic_pef() -> Vec<u8> {
         synthetic_pef_with_import(b"TestImport")
+    }
+
+    #[test]
+    fn native_universal_proc_prepares_resources_runs_initializers_and_retries_failures() {
+        for initialization in [None, Some(0u16), Some(1u16)] {
+            let mut loader =
+                synthetic_loader_with_chunks(b"InterfaceLib", b"TestImport", &[run_reloc(0x23, 2)]);
+            if initialization.is_some() {
+                write_i32(&mut loader, 8, 1);
+                write_u32(&mut loader, 12, 8);
+            }
+            let mut data = vec![0; 16];
+            write_u32(&mut data, 8, 12);
+            let mut fragment = synthetic_pef_with_loader_and_data(loader, &data);
+            let code_offset = parse_pef_sections(&fragment).unwrap()[0].container_offset as usize;
+            for (index, word) in [
+                d_form_u(32, 11, 1, 56), // ninth argument
+                0x7c63_5a14,             // add r3,r3,r11
+                BLR,
+                d_form_u(14, 3, 0, initialization.unwrap_or(0)),
+                d_form_u(14, 4, 0, 0xBAD), // initializer clobbers argument registers
+                BLR,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                write_u32(&mut fragment, code_offset + index * 4, word);
+            }
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(b"CallUniversalProc")).unwrap();
+            let descriptor = PPC_HEAP_BASE + 0x1000;
+            let fragment_address = descriptor + 0x100;
+            loaded
+                .memory
+                .add_region(descriptor, vec![0; 0x100 + fragment.len()]);
+            loaded
+                .memory
+                .write_bytes(fragment_address, &fragment)
+                .unwrap();
+            assert!(ppc_resource_fragment_bytes(
+                &mut loaded.memory,
+                fragment_address,
+                Some(fragment.len() as u32 - 1)
+            )
+            .is_none());
+            assert_eq!(
+                ppc_resource_fragment_bytes(
+                    &mut loaded.memory,
+                    fragment_address,
+                    Some(fragment.len() as u32)
+                ),
+                Some(fragment.clone())
+            );
+            loaded.set_heap_cursor(descriptor + 0x100 + fragment.len() as u32 + 0x100);
+            loaded
+                .memory
+                .write_u16_be(descriptor, PPC_MIXED_MODE_TRAP)
+                .unwrap();
+            loaded
+                .memory
+                .write_u8(descriptor + 2, PPC_ROUTINE_DESCRIPTOR_VERSION)
+                .unwrap();
+            loaded.memory.write_u16_be(descriptor + 10, 0).unwrap();
+            let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+            let proc_info =
+                test_stack_proc_info(PPC_PROCINFO_SIZE_FOUR, &[PPC_PROCINFO_SIZE_FOUR; 9]);
+            assert!(ppc_write_routine_record(
+                &mut loaded.memory,
+                record,
+                proc_info,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                3,
+                0x100
+            ));
+            loaded.cpu.gpr[1] -= PPC_INITIAL_STACK_FRAME_SIZE;
+            let sp = loaded.cpu.gpr[1];
+            let caller_rtoc = loaded.cpu.gpr[2];
+            let first_id = loaded.next_cfm_connection_id;
+            let prepare_call = |loaded: &mut PpcLoadedApp| {
+                loaded.cpu.pc = loaded.entry_pc;
+                loaded.cpu.lr = PPC_HALT_PC;
+                loaded.cpu.gpr[2] = caller_rtoc;
+                loaded.cpu.gpr[3] = descriptor;
+                loaded.cpu.gpr[4] = proc_info;
+                for index in 0..9 {
+                    let value = (index as u32 + 1) * 0x10;
+                    if index < 6 {
+                        loaded.cpu.gpr[5 + index] = value;
+                    } else {
+                        let slot = ppc_parameter_area_slot_addr(
+                            sp,
+                            PPC_CALL_UNIVERSAL_PROC_FIXED_WORD_PARAMETERS + index,
+                        )
+                        .unwrap();
+                        loaded.memory.write_u32_be(slot, value).unwrap();
+                    }
+                }
+            };
+            prepare_call(&mut loaded);
+            if initialization.is_some() {
+                for _ in 0..16 {
+                    if loaded.guest_calls.is_resource_preparation_pending(record) {
+                        break;
+                    }
+                    let slice = loaded.run_with_hle_imports(1);
+                    assert_eq!(slice.unsupported_import_index, None);
+                }
+                assert!(loaded.guest_calls.is_resource_preparation_pending(record));
+                assert_eq!(loaded.memory.read_u16_be(record + 6), Some(3));
+                let request = match crate::guest_procedure::inspect_guest_procedure(
+                    &mut loaded.memory,
+                    descriptor,
+                    caller_rtoc,
+                    None,
+                    GuestIsa::PowerPc,
+                    GuestIsa::PowerPc,
+                )
+                .unwrap()
+                {
+                    crate::guest_procedure::GuestProcedureResolution::Prepare(request) => request,
+                    _ => panic!("initializing resource became callable"),
+                };
+                let mut recursive_cpu = loaded.cpu.clone();
+                let before_cpu = recursive_cpu.clone();
+                let mut cursor = loaded.heap_cursor();
+                let mut binding_indices =
+                    ppc_import_binding_indices(&loaded.imports, loaded.import_count);
+                let mut manager = loaded.process_memory_manager.0.borrow_mut();
+                let limit = manager.native_heap_state().unwrap().heap_limit;
+                assert_eq!(
+                    ppc_prepare_resource_call(
+                        &mut recursive_cpu,
+                        &mut loaded.memory,
+                        &mut manager,
+                        &loaded.guest_calls,
+                        &mut cursor,
+                        limit,
+                        &mut loaded.cfm_connections,
+                        &mut loaded.next_cfm_connection_id,
+                        &mut loaded.imports,
+                        &mut loaded.import_count,
+                        &mut binding_indices,
+                        request,
+                        None
+                    ),
+                    PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP))
+                );
+                assert_eq!(recursive_cpu.gpr, before_cpu.gpr);
+                assert_eq!(recursive_cpu.pc, before_cpu.pc);
+                assert!(loaded.guest_calls.is_resource_preparation_pending(record));
+            }
+            let result = loaded.run_with_hle_imports(128);
+            assert_eq!(result.unsupported_import_index, None);
+            assert!(matches!(
+                result.result,
+                PpcRunResult::Halted {
+                    pc: PPC_HALT_PC,
+                    ..
+                }
+            ));
+            assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
+            assert_eq!(loaded.cpu.gpr[1], sp);
+            assert!(loaded.guest_calls.is_empty());
+            if initialization == Some(1) {
+                assert_eq!(
+                    loaded.cpu.gpr[3],
+                    ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR)
+                );
+                assert_eq!(loaded.memory.read_u16_be(record + 6), Some(3));
+                assert_eq!(loaded.memory.read_u32_be(record + 8), Some(0x100));
+                assert!(!loaded
+                    .cfm_connections
+                    .iter()
+                    .any(|connection| connection.id == first_id));
+                loaded
+                    .memory
+                    .write_u32_be(
+                        fragment_address + code_offset as u32 + 12,
+                        d_form_u(14, 3, 0, 0),
+                    )
+                    .unwrap();
+                prepare_call(&mut loaded);
+                let retry = loaded.run_with_hle_imports(128);
+                assert_eq!(retry.unsupported_import_index, None);
+                assert!(loaded.next_cfm_connection_id > first_id + 1);
+            }
+            assert_eq!(loaded.cpu.gpr[3], 0xA0);
+            assert_eq!(loaded.memory.read_u16_be(record + 6), Some(0));
+            let prepared_target = loaded.memory.read_u32_be(record + 8).unwrap();
+            assert_ne!(prepared_target, 0x100);
+            let cursor = loaded.heap_cursor();
+            let next = loaded.next_cfm_connection_id;
+            prepare_call(&mut loaded);
+            let again = loaded.run_with_hle_imports(128);
+            assert_eq!(again.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0xA0);
+            assert_eq!(loaded.next_cfm_connection_id, next);
+            assert_eq!(loaded.heap_cursor(), cursor);
+        }
     }
 
     fn synthetic_pef_with_initializer() -> Vec<u8> {

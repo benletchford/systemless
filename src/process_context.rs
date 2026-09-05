@@ -5958,7 +5958,6 @@ impl ProcessNativeMemoryManager {
         self.native_allocator_dirty = true;
     }
 
-    #[cfg(test)]
     pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
         self.ptr_to_handle.get(&ptr)
     }

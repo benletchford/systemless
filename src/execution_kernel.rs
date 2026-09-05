@@ -103,16 +103,18 @@ pub(crate) enum M68kResultSource {
     },
 }
 
+pub(crate) type PowerPcArguments = GuestArgumentValues;
+
 pub(crate) const MAX_POWERPC_GUEST_ARGUMENTS: usize = 13;
 
 /// Bounded, copyable native argument list carried by a semantic call request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PowerPcArguments {
+pub(crate) struct GuestArgumentValues {
     values: [u32; MAX_POWERPC_GUEST_ARGUMENTS],
     len: u8,
 }
 
-impl PowerPcArguments {
+impl GuestArgumentValues {
     pub(crate) fn from_slice(values: &[u32]) -> Option<Self> {
         if values.len() > MAX_POWERPC_GUEST_ARGUMENTS {
             return None;
