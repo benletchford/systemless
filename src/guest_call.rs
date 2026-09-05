@@ -39,6 +39,59 @@ pub(crate) fn restore_powerpc_context(cpu: &mut PpcCpu, context: PpcCpu) {
     cpu.set_time_base(time_base);
 }
 
+/// Exclusive, synchronous preparation of the PowerPC word-argument ABI.
+/// No guest execution or mapping change may intervene before installation.
+struct PreparedPowerPcCallArguments<'a> {
+    cpu: &'a mut PpcCpu,
+    memory: &'a mut GuestAddressSpace,
+    values: &'a [u32],
+    parameter_start: u32,
+}
+
+impl<'a> PreparedPowerPcCallArguments<'a> {
+    fn prepare(
+        cpu: &'a mut PpcCpu,
+        memory: &'a mut GuestAddressSpace,
+        values: &'a [u32],
+    ) -> Option<Self> {
+        // Inside Macintosh: PowerPC System Software (1994), pp. 1-45--1-50:
+        // parameter words follow the 24-byte linkage area. Keep the existing
+        // eight-word minimum so native variable-argument callees can spill r3--r10.
+        let parameter_start = cpu.gpr[1].checked_add(24)?;
+        let parameter_len = u32::try_from(values.len().max(8)).ok()?.checked_mul(4)?;
+        if !memory.preflight_writable_range(parameter_start, parameter_len) {
+            return None;
+        }
+        Some(Self {
+            cpu,
+            memory,
+            values,
+            parameter_start,
+        })
+    }
+
+    fn install(self) {
+        for slot in 0..self.values.len().max(8) {
+            let value = self.values.get(slot).copied().unwrap_or(0);
+            self.memory
+                .write_u32_be(self.parameter_start + slot as u32 * 4, value)
+                .expect("preflighted native parameter area remains writable");
+            if slot < 8 {
+                self.cpu.gpr[3 + slot] = value;
+            }
+        }
+    }
+}
+
+pub(crate) fn install_powerpc_call_arguments(
+    cpu: &mut PpcCpu,
+    memory: &mut GuestAddressSpace,
+    values: &[u32],
+) -> Option<()> {
+    PreparedPowerPcCallArguments::prepare(cpu, memory, values)?.install();
+    Some(())
+}
+
 /// Saved 68K state for one cooperative Thread Manager thread.
 ///
 /// The execution owner preserves the caller-visible register file across
@@ -2050,17 +2103,11 @@ impl SharedGuestCallStack {
         {
             return false;
         }
-        // Inside Macintosh: PowerPC System Software (1994), pp. 1-45--1-50:
-        // the parameter area follows the 24-byte linkage area and reserves
-        // at least eight words, corresponding to r3 through r10.
-        let Some(parameter_start) = cpu.gpr[1].checked_add(24) else {
+        let Some(prepared) =
+            PreparedPowerPcCallArguments::prepare(cpu, memory, arguments.as_slice())
+        else {
             return false;
         };
-        let values = arguments.as_slice();
-        let parameter_len = values.len().max(8) as u32 * 4;
-        if !memory.preflight_writable_range(parameter_start, parameter_len) {
-            return false;
-        }
         let Some(call_id) = self.submit_effect(effect) else {
             return false;
         };
@@ -2083,16 +2130,7 @@ impl SharedGuestCallStack {
             .kernel
             .activate(request.task, call_id)
             .expect("newly submitted native call remains pending");
-        cpu.gpr[3..11].fill(0);
-        for slot in 0..values.len().max(8) {
-            let value = values.get(slot).copied().unwrap_or(0);
-            memory
-                .write_u32_be(parameter_start + slot as u32 * 4, value)
-                .expect("preflighted native parameter area remains writable");
-            if slot < 8 {
-                cpu.gpr[3 + slot] = value;
-            }
-        }
+        prepared.install();
         cpu.pc = request.target.entry;
         cpu.gpr[2] = request.target.rtoc;
         cpu.lr = return_pc;
@@ -2972,6 +3010,34 @@ mod tests {
         assert_eq!(process_calls.len(), 1);
         assert!(adapter_calls.complete_m68k(0x2002, 0x3000));
         assert!(process_calls.is_empty());
+    }
+
+    #[test]
+    fn native_arguments_preserve_word_layout_for_empty_short_and_spilled_calls() {
+        for count in [0usize, 1, 8, 9, 16] {
+            let mut cpu = PpcCpu::new();
+            cpu.gpr.fill(0xfeed_beef);
+            cpu.gpr[1] = 0x8000;
+            let before = cpu.gpr;
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(0x8000, vec![0xa5; 128]);
+            let values: Vec<_> = (0..count as u32).map(|i| 0x1234_0000 + i).collect();
+            assert!(install_powerpc_call_arguments(&mut cpu, &mut memory, &values).is_some());
+            assert_eq!(&cpu.gpr[..3], &before[..3]);
+            assert_eq!(&cpu.gpr[11..], &before[11..]);
+            for slot in 0..count.max(8) {
+                let expected = values.get(slot).copied().unwrap_or(0);
+                assert_eq!(memory.read_u32_be(0x8018 + slot as u32 * 4), Some(expected));
+                if slot < 8 {
+                    assert_eq!(cpu.gpr[3 + slot], expected);
+                }
+            }
+            assert_eq!(memory.read_u32_be(0x8014), Some(0xa5a5_a5a5));
+            assert_eq!(
+                memory.read_u32_be(0x8018 + count.max(8) as u32 * 4),
+                Some(0xa5a5_a5a5)
+            );
+        }
     }
 
     #[test]
