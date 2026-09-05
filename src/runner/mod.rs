@@ -1908,8 +1908,9 @@ pub struct FixtureRunner {
 
 impl FixtureRunner {
     /// Construct a fresh runner with `ram_size` bytes of guest RAM and
-    /// the given [`FixtureRunnerConfig`]. The CPU begins at PC = 0 with reset
-    /// vectors not yet loaded, and guest RAM is zero-initialized. Call
+    /// the given [`FixtureRunnerConfig`]. The CPU begins at PC = 0 with
+    /// reset vectors not yet loaded. Guest RAM contains the process trap tables,
+    /// exception gateways and other system defaults. Call
     /// [`load_app`](Self::load_app) (or the higher-level
     /// `systemless::game::load_game`) to populate guest memory and seed the
     /// run state, then drive the guest with [`run_steps`](Self::run_steps).
@@ -1983,6 +1984,12 @@ impl FixtureRunner {
             .adb
             .install_standard_service_routine(standard_adb_service);
         let dialog_callback_scratch_base = bus.alloc_synthetic(DIALOG_CALLBACK_SCRATCH_SIZE);
+        // Embedders can execute immediately after construction, including
+        // before loading an application or installing a native companion.
+        // Establish the writable tables and vector identities before any
+        // guest patch or instruction can observe the process environment.
+        // Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-6.
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
         Self {
             m68k: M68kExecution::new(&dispatcher.guest_calls),
             native: NativeExecution::default(),
@@ -12040,7 +12047,10 @@ mod tests {
         runner.bus.write_word(caller + 6, 0x4E71); // NOP after return
         runner.bus.write_word(glue, 0xAD75); // auto-pop TickCount
         runner.bus.write_word(handler, 0x4E75); // RTS
-        runner.dispatcher.native_trap_table.insert(0xA975, handler);
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, 0xA975, handler)
+            .unwrap();
         runner.m68k.cpu.write_reg(Register::PC, caller);
         runner.m68k.cpu.write_reg(Register::A7, sp);
 
@@ -12064,7 +12074,10 @@ mod tests {
         runner.bus.write_word(trap + 2, 0x4E71);
         runner.bus.write_word(handler, 0x4E75);
         runner.bus.write_long(sp, result_sentinel);
-        runner.dispatcher.native_trap_table.insert(0xA975, handler);
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, 0xA975, handler)
+            .unwrap();
         runner.m68k.cpu.write_reg(Register::PC, trap);
         runner.m68k.cpu.write_reg(Register::A7, sp);
 
@@ -12112,7 +12125,10 @@ mod tests {
         runner.bus.write_word(HANDLER + 36, 0x247C); // MOVEA.L #imm,A2
         runner.bus.write_long(HANDLER + 38, 0x2222_AAAA);
         runner.bus.write_word(HANDLER + 42, 0x4E75); // RTS
-        runner.dispatcher.native_trap_table.insert(0xA039, HANDLER);
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, 0xA039, HANDLER)
+            .unwrap();
         runner.m68k.cpu.write_reg(Register::PC, TRAP_PC);
         runner.m68k.cpu.write_reg(Register::A7, SP);
         runner.m68k.cpu.write_reg(Register::D1, original_d1);
@@ -12153,9 +12169,6 @@ mod tests {
         const PRESERVED_D2: u32 = 0xD2D2_BEEF;
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner
-            .dispatcher
-            .materialize_trap_tables(&mut runner.bus, TrapTableProfile::M68k68040);
         runner
             .m68k
             .cpu
@@ -12709,7 +12722,16 @@ mod tests {
             .memory
             .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
 
+        let tick_entry = crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
+        runner.bus.write_long(tick_entry, 0x0021_1000);
+        runner.bus.write_long(0x28, 0x0021_2000);
         runner.init_app(&app);
+        assert_eq!(
+            runner.dispatcher.trap_table_profile,
+            Some(TrapTableProfile::PowerPc604)
+        );
+        assert_ne!(runner.bus.read_long(tick_entry), 0x0021_1000);
+        assert!(runner.dispatcher.aline_vector_is_default(&runner.bus));
 
         assert_eq!(runner.bus.read_long(addr::TICKS), 4321);
         assert_eq!(runner.guest_tick(), 4321);
@@ -21241,7 +21263,24 @@ mod tests {
             initial_sp: 0x007F_FFC0,
             size_resource: None,
         };
+        let entry = crate::trap::dispatch::OS_TRAP_TABLE_BASE + 0x78 * 4;
+        let previous_head = runner.bus.read_long(entry);
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, 0xA078, 0x0021_1000)
+            .unwrap();
+        runner.bus.write_long(0x28, 0x0021_2000);
         runner.init_app(&app);
+        assert_eq!(
+            runner.dispatcher.trap_table_profile,
+            Some(TrapTableProfile::M68k68040)
+        );
+        assert_ne!(runner.bus.read_long(entry), previous_head);
+        assert_ne!(
+            runner.dispatcher.trap_table_address(&runner.bus, 0xA078),
+            Some(0x0021_1000)
+        );
+        assert!(runner.dispatcher.aline_vector_is_default(&runner.bus));
 
         let head = runner
             .bus
@@ -27231,6 +27270,82 @@ mod tests {
         }
     }
 
+    #[test]
+    fn constructed_trap_tables_survive_companion_installation_and_observe_native_stores() {
+        use crate::trap::dispatch::{OS_TRAP_TABLE_BASE, TOOLBOX_TRAP_TABLE_BASE};
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let mut cells = Vec::new();
+        for (base, count) in [(OS_TRAP_TABLE_BASE, 256), (TOOLBOX_TRAP_TABLE_BASE, 1024)] {
+            for slot in 0..count {
+                let cell = base + slot * 4;
+                let handler = runner.bus.read_long(cell);
+                assert_ne!(handler, 0);
+                let instruction = runner.bus.read_word(handler);
+                assert!(!runner.bus.try_write_word(handler, instruction ^ 0xFFFF));
+                assert_eq!(runner.bus.read_word(handler), instruction);
+                cells.push((cell, handler));
+            }
+        }
+        let vectors = runner.dispatcher.trap_exception_vector_defaults.unwrap();
+        let entry = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4; // TickCount
+        let default = runner.bus.read_long(entry);
+        let patch = 0x0010_1000;
+        let program = 0x0010_0000;
+        runner.bus.write_word(patch, 0x4E75); // RTS
+        runner.bus.write_word(program, 0xA975); // TickCount
+        runner.bus.write_word(program + 2, 0x4E71); // NOP
+
+        // The companion joins an existing process; it must not replace its
+        // guest-written table cells or exception vectors with launch defaults.
+        runner.bus.write_long(entry, patch);
+        runner.bus.write_long(0x2C, patch);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        runner.init_ppc_companion(app.ppc.take().unwrap());
+        assert_eq!(
+            runner.dispatcher.trap_table_profile,
+            Some(TrapTableProfile::M68k68040)
+        );
+        {
+            let companion = runner
+                .native
+                .adapter_mut(NativeEngineRole::Companion)
+                .unwrap();
+            for (cell, handler) in cells {
+                assert_eq!(
+                    companion.memory.read_u32_be(cell),
+                    Some(if cell == entry { patch } else { handler })
+                );
+            }
+            assert_eq!(companion.memory.read_u32_be(0x28), Some(vectors[0]));
+            assert_eq!(companion.memory.read_u32_be(0x2C), Some(patch));
+            companion.memory.write_u32_be(entry, default).unwrap();
+        }
+        assert_eq!(
+            runner.dispatcher.trap_table_address(&runner.bus, 0xA975),
+            Some(default)
+        );
+        runner
+            .native
+            .adapter_mut(NativeEngineRole::Companion)
+            .unwrap()
+            .memory
+            .write_u32_be(entry, patch)
+            .unwrap();
+        runner.m68k.cpu.write_reg(Register::D0, 0xA975);
+        runner
+            .dispatcher
+            .dispatch(0xA746, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), patch);
+        runner.m68k.cpu.write_reg(Register::PC, program);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        assert_eq!(runner.run_steps(1, None), (1, true));
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), patch);
+        assert_eq!(runner.run_steps(1, None), (1, true));
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), program + 2);
+    }
+
     /// A-line execution reaches the Trap Dispatcher through vector 10 at
     /// `$28`; line-F reaches the Line 1111 emulator through vector 11 at
     /// `$2C`. Both cells are writable system globals, so replacing either one
@@ -27240,9 +27355,6 @@ mod tests {
     #[test]
     fn guest_line_vectors_receive_architectural_frames_and_restore_defaults() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner
-            .dispatcher
-            .materialize_trap_tables(&mut runner.bus, TrapTableProfile::M68k68040);
         let defaults = runner.dispatcher.trap_exception_vector_defaults.unwrap();
         let original_sp = 0x007F_FFC0;
 
@@ -27315,9 +27427,6 @@ mod tests {
     #[test]
     fn valid_68040_fpu_opcode_does_not_enter_guest_vector_11() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner
-            .dispatcher
-            .materialize_trap_tables(&mut runner.bus, TrapTableProfile::M68k68040);
         let fline_handler = 0x0010_1100;
         runner.bus.write_word(fline_handler, 0x2E3C); // MOVE.L #sentinel,D7
         runner.bus.write_long(fline_handler + 2, 0xBADF_11E0);
