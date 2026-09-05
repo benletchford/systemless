@@ -1146,7 +1146,11 @@ static WS_RESUMED: AtomicU64 = AtomicU64::new(0);
 static WS_RESUME_FAIL_MEM: AtomicU64 = AtomicU64::new(0);
 static WS_RESUME_FAIL_HOST: AtomicU64 = AtomicU64::new(0);
 static WS_RESUME_FAIL_OTHER: AtomicU64 = AtomicU64::new(0);
+static WS_CANCEL_BACKOFFS: AtomicU64 = AtomicU64::new(0);
+static WS_BACKOFF_SKIPS: AtomicU64 = AtomicU64::new(0);
 static WS_CANCEL_TRAP_WORDS: std::sync::Mutex<Option<std::collections::BTreeMap<u16, u64>>> =
+    std::sync::Mutex::new(None);
+static WS_CANCEL_AB1D_SELECTORS: std::sync::Mutex<Option<std::collections::BTreeMap<u32, u64>>> =
     std::sync::Mutex::new(None);
 
 fn ws_note_cancel_trap(opcode: u16) {
@@ -1158,6 +1162,21 @@ fn ws_note_cancel_trap(opcode: u16) {
         *guard
             .get_or_insert_with(Default::default)
             .entry(opcode)
+            .or_insert(0) += 1;
+    }
+}
+
+/// QDExtensions multiplexes many routines through one trap word; a
+/// cancel count against $AB1D alone cannot name the selector that needs
+/// vetting. Record live D0 at the pre-dispatch cancel site.
+fn ws_note_cancel_ab1d_selector(selector: u32) {
+    if !wait_stats_enabled() {
+        return;
+    }
+    if let Ok(mut guard) = WS_CANCEL_AB1D_SELECTORS.lock() {
+        *guard
+            .get_or_insert_with(Default::default)
+            .entry(selector)
             .or_insert(0) += 1;
     }
 }
@@ -1187,12 +1206,26 @@ pub fn dump_wait_stats() {
         WS_RESUME_FAIL_HOST.load(AtomicOrdering::Relaxed),
         WS_RESUME_FAIL_OTHER.load(AtomicOrdering::Relaxed),
     );
+    eprintln!(
+        "[WAIT-STATS] cancel_backoffs={} backoff_skips={}",
+        WS_CANCEL_BACKOFFS.load(AtomicOrdering::Relaxed),
+        WS_BACKOFF_SKIPS.load(AtomicOrdering::Relaxed),
+    );
     if let Ok(guard) = WS_CANCEL_TRAP_WORDS.lock() {
         if let Some(map) = guard.as_ref() {
             let mut rows: Vec<_> = map.iter().collect();
             rows.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
             for (word, n) in rows.iter().take(12) {
                 eprintln!("[WAIT-STATS]   cancel trap {word:04X}: {n}");
+            }
+        }
+    }
+    if let Ok(guard) = WS_CANCEL_AB1D_SELECTORS.lock() {
+        if let Some(map) = guard.as_ref() {
+            let mut rows: Vec<_> = map.iter().collect();
+            rows.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+            for (sel, n) in rows.iter().take(12) {
+                eprintln!("[WAIT-STATS]   cancel AB1D selector {sel:08X}: {n}");
             }
         }
     }
@@ -1316,7 +1349,9 @@ fn canonical_trap_number(opcode: u16) -> (bool, u16) {
 ///
 /// Event polls only qualify when they returned a null event; SystemTask
 /// only without periodic host work -- callers pass those runtime facts
-/// in. ONE definition, consulted from both the inline pre-dispatch check
+/// in. `selector` carries live D0, consulted only for the
+/// selector-multiplexed QDExtensions trap.
+/// ONE definition, consulted from both the inline pre-dispatch check
 /// and the post-dispatch quiescence classification (they were once two
 /// hand-synced copies and drifted). The membership test
 /// `journal_complete_traps_do_not_cancel_an_idle_probe` covers both the
@@ -1325,11 +1360,29 @@ fn idle_cycle_trap_is_journal_complete(
     opcode: u16,
     null_event: bool,
     system_task_idle: bool,
+    selector: u32,
 ) -> bool {
     match canonical_trap_number(opcode) {
         (true, 0x0170) | (true, 0x0171) => null_event,
         // Pure transforms of a Point on the stack (quickdraw.rs).
         (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
+        // PtInRect: reads pt+rect from the stack/RAM, writes a Boolean at
+        // sp+8 (journaled) and pops A7 (CPU state the proof compares).
+        (true, 0x00AD) => true, // PtInRect
+        // QDExtensions ($AB1D) multiplexes on the D0 selector; admit only
+        // the GetGWorld/SetGWorld save/restore pair (quickdraw.rs) games
+        // bracket their poll-loop hit-testing with. GetGWorld writes its
+        // two VAR results through the bus (journaled) and pops A7;
+        // SetGWorld's writes (the THE_PORT low global and the A5 world's
+        // thePort mirror) are journaled, and the dispatcher
+        // port/draw-state mirrors it rewrites are pure functions of its
+        // stack arguments and guest RAM, so they sit at a fixed point
+        // across two proven-identical cycles. A cold-start
+        // `ensure_main_gdevice` allocation writes fresh heap bytes the
+        // byte-identity proof rejects by itself. Every other selector
+        // (NewGWorld, LockPixels, UpdateGWorld, ...) allocates, locks or
+        // frees host-mirrored state and must cancel.
+        (true, 0x031D) => matches!(selector, 0x0008_0005 | 0x0008_0006),
         // TEIdle (dialog.rs `textedit_idle`) reads the TERec and the tick and
         // either returns having written nothing, or stamps caretState and
         // caretTime into guest RAM *before* it paints -- that ordering is
@@ -1406,6 +1459,32 @@ fn event_manager_yield_trap(opcode: u16) -> bool {
 // Cap how many ticks the fast-forward will advance in one shot,
 // to protect against pathological target values (e.g. overflowed
 // unsigned register values being misinterpreted as huge-future
+/// A site whose probes repeatedly die to a non-admitted trap is backed
+/// off exponentially (2^streak ticks, capped here: ~2 s at 60 Hz)
+/// instead of re-arming a doomed journal on every poll pass.
+const IDLE_CYCLE_CANCEL_BACKOFF_CAP_TICKS: u32 = 120;
+
+/// Per-site probe accounting slots. The busiest poll loop measured so
+/// far interleaves about six distinct anchor sites per pass.
+const IDLE_CYCLE_SITE_SLOTS: usize = 8;
+
+/// Probe accounting for one exact-idle-cycle anchor site.
+#[derive(Clone, Copy, Default)]
+struct IdleCycleSiteRecord {
+    site: u32,
+    /// Tick the per-tick probe counter belongs to.
+    tick: u32,
+    /// Probes begun at (site, tick); one past
+    /// [`IDLE_CYCLE_MAX_PROBES_PER_TICK`] means the site was refused a
+    /// probe (or overflowed a journal) and is not re-probed this tick.
+    probes: u8,
+    /// Consecutive probes here killed by a non-admitted trap.
+    cancel_streak: u8,
+    /// No probing at this site before this tick (see
+    /// [`IDLE_CYCLE_CANCEL_BACKOFF_CAP_TICKS`]).
+    resume_tick: u32,
+}
+
 // Layout for dialog callback scratch region.
 const DIALOG_DRAW_TRAMPOLINE_OFFSET: u32 = 0x00;
 const DIALOG_FILTER_TRAMPOLINE_OFFSET: u32 = 0x40;
@@ -1696,12 +1775,14 @@ pub struct FixtureRunner {
     /// direct fast-memory stores until this call site repeats or the proof is
     /// canceled by a non-quiescent trap.
     idle_cycle_probe: Option<IdleCycleProbe>,
-    /// Probes started at (site, tick) so far; one past
-    /// [`IDLE_CYCLE_MAX_PROBES_PER_TICK`] means the site was refused a probe
-    /// (or overflowed a journal): it is polling while it works (EV
-    /// Override's boot and speed calibration poll TickCount between bursts
-    /// of computation) and is not re-probed until the tick moves on.
-    idle_cycle_site_probes: Option<(u32, u32, u8)>,
+    /// Per-site probe budgets and trap-cancel backoff. A fixed table
+    /// rather than a single slot: a play-mode poll loop can interleave
+    /// probes from several anchor sites, and a single slot forgets each
+    /// site's spent budget the moment another site probes, unbounding
+    /// the per-tick armed-journal count. (Boot and speed-calibration
+    /// code polls TickCount between bursts of computation; the per-tick
+    /// budget keeps those sites unprobed until the tick moves on.)
+    idle_cycle_sites: [IdleCycleSiteRecord; IDLE_CYCLE_SITE_SLOTS],
     /// Proven null-event cycle parked at its post-trap boundary. Unlike an
     /// in-progress proof, this may cross frontend slices: a second write
     /// journal plus CPU/input/event checks revoke it before any reuse.
@@ -1928,7 +2009,7 @@ impl FixtureRunner {
             tick_budget: INSTRUCTIONS_PER_TICK as i32,
             idle_cycle_last_seen: None,
             idle_cycle_probe: None,
-            idle_cycle_site_probes: None,
+            idle_cycle_sites: [IdleCycleSiteRecord::default(); IDLE_CYCLE_SITE_SLOTS],
             idle_cycle_sleep: None,
             frozen_ticks: None,
             timer_trampoline: 0,
@@ -4743,33 +4824,112 @@ impl FixtureRunner {
     }
 
     /// True once (site, tick) has been refused a probe -- or overflowed a
-    /// journal -- this tick: the count sits one past the budget.
+    /// journal -- this tick (the count sits one past the budget), or
+    /// while the site is backed off after its probes died to
+    /// non-admitted traps.
     fn idle_cycle_site_is_busy(&self, trap_pc: u32, tick: u32) -> bool {
-        matches!(
-            self.idle_cycle_site_probes,
-            Some((site, site_tick, probes))
-                if site == trap_pc && site_tick == tick && probes > IDLE_CYCLE_MAX_PROBES_PER_TICK
-        )
+        self.idle_cycle_sites.iter().any(|rec| {
+            rec.site == trap_pc
+                && ((rec.tick == tick && rec.probes > IDLE_CYCLE_MAX_PROBES_PER_TICK)
+                    || (rec.cancel_streak >= 2 && (rec.resume_tick.wrapping_sub(tick) as i32) > 0))
+        })
+    }
+
+    /// Find the accounting slot for `trap_pc`, evicting the stalest
+    /// record when the site is new. A backed-off site looks stale by
+    /// `tick` but is doing its job by sitting there; rank staleness by
+    /// the larger of the two tick stamps so it is evicted last.
+    fn idle_cycle_site_slot(&mut self, trap_pc: u32) -> usize {
+        if let Some(i) = self
+            .idle_cycle_sites
+            .iter()
+            .position(|rec| rec.site == trap_pc)
+        {
+            return i;
+        }
+        let i = self
+            .idle_cycle_sites
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, rec)| rec.tick.max(rec.resume_tick))
+            .map_or(0, |(i, _)| i);
+        self.idle_cycle_sites[i] = IdleCycleSiteRecord {
+            site: trap_pc,
+            ..IdleCycleSiteRecord::default()
+        };
+        i
     }
 
     /// Mark (site, tick) busy for the rest of the tick: it works between polls.
     fn mark_idle_cycle_site_busy(&mut self, trap_pc: u32, tick: u32) {
-        self.idle_cycle_site_probes = Some((trap_pc, tick, IDLE_CYCLE_MAX_PROBES_PER_TICK + 1));
+        let i = self.idle_cycle_site_slot(trap_pc);
+        let rec = &mut self.idle_cycle_sites[i];
+        rec.tick = tick;
+        rec.probes = IDLE_CYCLE_MAX_PROBES_PER_TICK + 1;
         self.idle_cycle_last_seen = None;
     }
 
-    fn begin_idle_cycle_probe(&mut self, trap_pc: u32, tick: u32, cpu: CpuArchitecturalSnapshot) {
-        let probes = match self.idle_cycle_site_probes {
-            Some((site, site_tick, probes)) if site == trap_pc && site_tick == tick => probes,
-            _ => 0,
+    /// A probe died to a non-admitted trap. One cancel is routine (a
+    /// menu command, a real redraw); a streak means this site's cycle
+    /// funnels through a trap the admission list does not cover, so no
+    /// proof can ever close here and every probe is a pure
+    /// de-optimized-execution tax (the armed journal withdraws the bus
+    /// fast paths). Back the site off for exponentially longer, capped;
+    /// a probe that closes on its origin site -- whatever the verdict --
+    /// resets the streak. Probing less often is always sound: the
+    /// backoff schedules proofs, it never fabricates one.
+    fn note_idle_cycle_trap_cancel_site(&mut self) {
+        let Some(probe) = self.idle_cycle_probe.as_ref() else {
+            return;
         };
+        let (trap_pc, tick) = (probe.trap_pc, probe.tick);
+        let i = self.idle_cycle_site_slot(trap_pc);
+        let rec = &mut self.idle_cycle_sites[i];
+        rec.cancel_streak = rec.cancel_streak.saturating_add(1);
+        if rec.cancel_streak >= 2 {
+            let backoff = (1u32 << rec.cancel_streak.min(7))
+                .min(IDLE_CYCLE_CANCEL_BACKOFF_CAP_TICKS);
+            rec.resume_tick = tick.wrapping_add(backoff);
+            if wait_stats_enabled() {
+                WS_CANCEL_BACKOFFS.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+        }
+    }
+
+    fn reset_idle_cycle_cancel_streak(&mut self, trap_pc: u32) {
+        if let Some(rec) = self
+            .idle_cycle_sites
+            .iter_mut()
+            .find(|rec| rec.site == trap_pc)
+        {
+            rec.cancel_streak = 0;
+            rec.resume_tick = 0;
+        }
+    }
+
+    fn begin_idle_cycle_probe(&mut self, trap_pc: u32, tick: u32, cpu: CpuArchitecturalSnapshot) {
+        let slot = self.idle_cycle_site_slot(trap_pc);
+        let rec = self.idle_cycle_sites[slot];
+        if rec.cancel_streak >= 2 && (rec.resume_tick.wrapping_sub(tick) as i32) > 0 {
+            // Backed off after repeated trap cancels; see
+            // `note_idle_cycle_trap_cancel_site`.
+            if wait_stats_enabled() {
+                WS_BACKOFF_SKIPS.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            return;
+        }
+        let probes = if rec.tick == tick { rec.probes } else { 0 };
         if probes >= IDLE_CYCLE_MAX_PROBES_PER_TICK {
             // Budget spent: this site keeps failing to prove within the
             // tick, so it is working, not waiting. No journal.
             self.mark_idle_cycle_site_busy(trap_pc, tick);
             return;
         }
-        self.idle_cycle_site_probes = Some((trap_pc, tick, probes + 1));
+        {
+            let rec = &mut self.idle_cycle_sites[slot];
+            rec.tick = tick;
+            rec.probes = probes + 1;
+        }
         if wait_stats_enabled() {
             WS_PROBE_STARTS.fetch_add(1, AtomicOrdering::Relaxed);
         }
@@ -4889,13 +5049,20 @@ impl FixtureRunner {
         if self.idle_cycle_probe.is_none() {
             return null_event;
         }
+        // Live D0 still holds the QDExtensions selector here for any
+        // admitted selector (GetGWorld/SetGWorld write no registers but
+        // A7); a non-admitted selector never reaches this classification
+        // -- the pre-dispatch check cancelled the probe before the
+        // handler ran.
         let quiescent = idle_cycle_trap_is_journal_complete(
             opcode,
             null_event,
             !self.dispatcher.system_task_has_periodic_work(),
+            self.m68k.cpu.read_reg(Register::D0),
         );
         if !quiescent {
             ws_note_cancel_trap(opcode);
+            self.note_idle_cycle_trap_cancel_site();
             self.cancel_idle_cycle_detector();
         }
         null_event
@@ -4938,6 +5105,11 @@ impl FixtureRunner {
                 return false;
             }
             let same_site_tick = probe.trap_pc == trap_pc && probe.tick == tick;
+            if same_site_tick {
+                // The probe closed on its origin without dying to a
+                // foreign trap: cycles here are provable-shaped.
+                self.reset_idle_cycle_cancel_streak(trap_pc);
+            }
             if same_site_tick && probe.cpu == cpu {
                 // A cycle of whatever small period closed on its origin
                 // state; the journal -- held open across every arrival
@@ -6079,9 +6251,18 @@ impl FixtureRunner {
                     // are not yet known, so they pass here optimistically
                     // and are classified for real after dispatch.
                     if self.idle_cycle_probe.is_some()
-                        && !idle_cycle_trap_is_journal_complete(opcode, true, true)
+                        && !idle_cycle_trap_is_journal_complete(
+                            opcode,
+                            true,
+                            true,
+                            self.m68k.cpu.read_reg(Register::D0),
+                        )
                     {
+                        if opcode == 0xAB1D {
+                            ws_note_cancel_ab1d_selector(self.m68k.cpu.read_reg(Register::D0));
+                        }
                         ws_note_cancel_trap(opcode);
+                        self.note_idle_cycle_trap_cancel_site();
                         self.cancel_idle_cycle_detector();
                     }
 
@@ -22284,7 +22465,8 @@ mod tests {
 
         for opcode in [
             0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917,
-            0xA924, 0xA92C, 0xA9DA, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA,
+            0xA924, 0xA92C, 0xA9DA, 0xA8AD, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA,
+            0xACAD,
         ] {
             runner.note_idle_cycle_trap_result(opcode);
             assert!(
@@ -22292,10 +22474,85 @@ mod tests {
                 "journal-complete trap {opcode:04X} must not cancel the probe"
             );
         }
+        // QDExtensions multiplexes on the D0 selector: the
+        // GetGWorld/SetGWorld save/restore pair a poll loop brackets
+        // its hit-testing with survives in both encodings.
+        for selector in [0x0008_0005u32, 0x0008_0006] {
+            runner.m68k.cpu.write_reg(Register::D0, selector);
+            for opcode in [0xAB1Du16, 0xAF1D] {
+                runner.note_idle_cycle_trap_result(opcode);
+                assert!(
+                    runner.idle_cycle_probe.is_some(),
+                    "admitted QDExtensions selector {selector:08X} must not cancel the probe"
+                );
+            }
+        }
         // MoveTo mirrors pnLoc into dispatcher state the journal cannot
         // see; anything with host-cached consequences must cancel.
         runner.note_idle_cycle_trap_result(0xA893);
         assert!(runner.idle_cycle_probe.is_none());
+    }
+
+    #[test]
+    fn idle_cycle_backoff_expires_across_tick_wrap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.idle_cycle_sites[0] = IdleCycleSiteRecord {
+            site: 0x20000,
+            tick: u32::MAX - 1,
+            probes: 0,
+            cancel_streak: 2,
+            resume_tick: (u32::MAX - 1).wrapping_add(4),
+        };
+        assert!(runner.idle_cycle_site_is_busy(0x20000, u32::MAX));
+        assert!(runner.idle_cycle_site_is_busy(0x20000, 0));
+        assert!(runner.idle_cycle_site_is_busy(0x20000, 1));
+        assert!(!runner.idle_cycle_site_is_busy(0x20000, 2));
+    }
+
+    #[test]
+    fn repeated_trap_cancels_back_a_site_off_and_a_closed_proof_resets_it() {
+        // A poll loop can die to a foreign trap on every pass at
+        // several sites. One cancel is routine; a streak engages an
+        // exponential backoff so a doomed site stops paying the
+        // armed-journal tax on every poll, and a probe that later
+        // closes on its origin site clears the backoff again.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA975;
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+
+        for _ in 0..2 {
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_some());
+            runner.note_idle_cycle_trap_result(0xA893); // MoveTo cancels
+            assert!(runner.idle_cycle_probe.is_none());
+        }
+
+        // Two consecutive trap cancels back the site off: no probe can
+        // begin here while the backoff runs.
+        for _ in 0..4 {
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        }
+        assert!(runner.idle_cycle_probe.is_none());
+
+        // Backoff expired (streak 2 = 4 ticks): probing resumes, and a
+        // proof that closes on its origin resets the streak entirely.
+        runner.bus.write_long(0x016A, 104);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+        assert!(runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        let rec = runner
+            .idle_cycle_sites
+            .iter()
+            .find(|rec| rec.site == trap_pc)
+            .expect("site record");
+        assert_eq!(rec.cancel_streak, 0);
+        assert_eq!(rec.resume_tick, 0);
     }
 
     #[test]
@@ -22845,7 +23102,8 @@ mod tests {
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert_eq!(runner.guest_tick(), 100);
 
-        runner.note_idle_cycle_trap_result(0xA8AD); // PtInRect has host-side HLE semantics
+        runner.m68k.cpu.write_reg(Register::D0, 0x0004_0001); // LockPixels
+        runner.note_idle_cycle_trap_result(0xAB1D); // non-admitted QDExtensions selector
         assert!(runner.idle_cycle_probe.is_none());
         assert!(runner.idle_cycle_last_seen.is_none());
         assert!(runner.bus.fast_mem_window().is_some());
