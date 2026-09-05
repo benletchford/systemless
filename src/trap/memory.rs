@@ -910,6 +910,11 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        if !is_tool && matches!(trap_num, 0x46 | 0x47) {
+            if let Err(error) = self.initialize_trap_tables(bus) {
+                return Some(Err(error));
+            }
+        }
         self.read_tick_count(bus);
         let result = match (is_tool, trap_num) {
             // ========== Memory Manager ==========
@@ -1264,35 +1269,13 @@ impl super::TrapDispatcher {
             // two `get_or_create_*_trap_trampoline` helpers.
             (false, 0x46) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
-                let trap_variant = raw_trap_route(self.current_trap_word).os_routine_variant;
-                // Once initialized, return the logical view of the selected
-                // raw table entry, including an unchanged default. This keeps
-                // profile availability probes tied to the materialized table
-                // rather than reconstructing them from host assumptions.
                 let trap_table_key = self.trap_address_table_key(trap_word);
-                if let Some(addr) = self.trap_table_address(bus, trap_table_key) {
-                    cpu.write_reg(Register::A0, addr);
-                } else if let Some(addr) = self.native_trap_handler(bus, trap_table_key) {
-                    cpu.write_reg(Register::A0, addr);
-                } else if trap_variant == OsRoutineVariant::TrapAddressNewTool {
-                    // Real GetToolTrapAddress/GetToolBoxTrapAddress
-                    // (trap word $A746) passes a bare tool-trap number
-                    // in D0. Return a callable tool-trap trampoline so
-                    // guests can JSR/JMP through the result.
-                    //
-                    let trap_num = trap_word & 0x03FF;
-                    let canonical_tool_trap = 0xA800 | trap_num;
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, canonical_tool_trap);
-                    cpu.write_reg(Register::A0, addr);
-                } else if (trap_table_key & 0x0800) != 0 {
-                    // Tool trap (bit 11 set in the word): return the
-                    // callable gateway for the selected table row.
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, trap_table_key);
-                    cpu.write_reg(Register::A0, addr);
-                } else {
-                    let addr = self.get_or_create_os_trap_trampoline(bus, trap_table_key);
-                    cpu.write_reg(Register::A0, addr);
-                }
+                // Match the native getter: a malformed logical chain does
+                // not turn into a reconstructed default system gateway.
+                cpu.write_reg(
+                    Register::A0,
+                    self.trap_table_address(bus, trap_table_key).unwrap_or(0),
+                );
                 Ok(())
             }
 
@@ -1336,11 +1319,8 @@ impl super::TrapDispatcher {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_table_key = self.trap_address_table_key(trap_word);
                 let handler_addr = cpu.read_reg(Register::A0);
-                // The shared service updates the writable guest table once it
-                // is initialized, or the explicitly transitional mirror for
-                // focused pre-materialization fixtures. It also validates
-                // permanent come-from heads before either representation is
-                // mutated.
+                // The shared service validates protected heads before
+                // updating the selected guest table cell or chain link.
                 match self.install_trap_address(bus, trap_table_key, handler_addr) {
                     Ok(()) => Ok(()),
                     Err(error) => handle_trap_manager_set_error(bus, error),

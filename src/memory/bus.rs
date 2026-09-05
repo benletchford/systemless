@@ -1762,6 +1762,19 @@ impl MacMemoryBus {
         self.heap_allocator.allocate(size, 4, self.synthetic_floor)
     }
 
+    /// Preflight a synthetic code allocation without consuming storage.
+    /// Generated code writes target this bus's own RAM, so an unrelated
+    /// foreign overlay cannot stand in for its backing allocation.
+    pub(crate) fn synthetic_code_allocation_start(&self, size: u32) -> Option<u32> {
+        let aligned = Self::allocation_bucket_size(size);
+        let start = self.synthetic_ptr.checked_sub(aligned)?;
+        (start >= self.synthetic_floor
+            && self.translate_guest_address(start) == start
+            && self.route(start, aligned as usize) == GuestMemoryRoute::Flat
+            && self.is_guest_address_writable(start, aligned as usize))
+        .then_some(start)
+    }
+
     /// Allocate Systemless-owned memory without consuming or perturbing the
     /// guest Memory Manager heap. Synthetic callbacks and queue anchors live
     /// here because classic applications can depend on consecutive NewPtr
