@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "4c00ad4e6a3ff0a38e972f6fed76a66804572844a27425fff9c7645891bf74a2",
+  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
   "scenario": "oracle/windows.json",
   "scenario_sha256": "0e574d9865fff550b2ff5103ecc4dd499f81bf8fa2cba534852e1c71504c4189",
   "capture_date": "2026-09-05",
@@ -78,23 +78,23 @@
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/03-windows.png",
-          "sha256": "8c5fafcc569dfd0742207e3767dfcfd493f40c12eef1d798222fd92b366fb3c8"
+          "sha256": "21d309a31c2aaa911c5e6c90eaa3758c534e780dbf47e24fbf197ae93f45b5a3"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-aux-activated.png",
-          "sha256": "47ba666e88ac4dfb4f6453b8ba3097ae01fbf3565291ab2097447d764113fcb6"
+          "sha256": "a1bb9ef7f663be4bd39ac3168151758109be75562f78ec8941d02c33b81ccc91"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-moved.png",
-          "sha256": "be8e9f4b53a8d2f222a35036202a913e56ec835b50e7ef6ed7d79ec732979a60"
+          "sha256": "98c067a4062d4d31b019e7a916cfad83265f2bb817faac36211835a3be481ec9"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-resized.png",
-          "sha256": "df9fc2440adb3db050199da2970d96452d4bc2c2ae9a5dd7d62869b706b08ba5"
+          "sha256": "0dc98a6ca1413fb677d51447f0a612498621242eb31f8ba6899c4ccd8995a186"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-hit-test.png",
-          "sha256": "514e4c8795a4717baaada4bc0367f067d96e4fed3fd50c71e4462af24b46fa92"
+          "sha256": "cca864cf5835254ab893493e6f9aaa66ebc3d899f8c8d8c857d823f0edc0ca00"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-promoted.png",

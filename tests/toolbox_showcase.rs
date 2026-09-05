@@ -556,6 +556,47 @@ fn run_audio(runner: &mut FixtureRunner, label: &str, samples: usize) {
     );
 }
 
+fn save_audio_evidence(audio: &[u8], checkpoint: &str) {
+    let Some(directory) = std::env::var_os("SYSTEMLESS_TOOLBOX_AUDIO_OUTPUT") else {
+        return;
+    };
+    let directory = Path::new(&directory).join(if prefer_powerpc() { "ppc" } else { "m68k" });
+    std::fs::create_dir_all(&directory).expect("create audio evidence directory");
+    std::fs::write(directory.join(format!("{checkpoint}.u8")), audio)
+        .expect("save unsigned 8-bit mono PCM at 22050 Hz");
+}
+
+fn assert_native_sample_audio(audio: &[u8], checkpoint: &str) {
+    let native = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "tests/toolbox-showcase/reference/native-audio/sndplay-{checkpoint}-44100.u8"
+    )))
+    .expect("native sampled-sound evidence must exist");
+    // Both native devices produced identical mono waveforms at 44100 Hz.
+    // Systemless outputs 22050 Hz. Compare every second native sample;
+    // allow one final sample of duration rounding and three 8-bit levels for
+    // differences in interpolation phase/rounding, without shifting the audio.
+    let expected: Vec<u8> = native.into_iter().step_by(2).collect();
+    assert!(
+        audio.len().abs_diff(expected.len()) <= 1,
+        "{checkpoint} duration differs: {} Systemless samples, {} native samples at 22050 Hz",
+        audio.len(),
+        expected.len()
+    );
+    let mut total_error = 0usize;
+    for (index, (&actual, &native)) in audio.iter().zip(&expected).enumerate() {
+        let difference = actual.abs_diff(native);
+        assert!(
+            difference <= 3,
+            "{checkpoint} waveform differs at sample {index}: Systemless {actual}, native {native}"
+        );
+        total_error += usize::from(difference);
+    }
+    assert!(
+        total_error <= expected.len(),
+        "{checkpoint} average PCM error exceeds one level"
+    );
+}
+
 fn assert_non_silent_audio(audio: &[u8], label: &str) {
     let minimum = *audio
         .iter()
@@ -2218,6 +2259,7 @@ fn test_toolbox_showcase() {
     click_point(&mut runner, win_top + 267, win_left + 62);
     run_audio(&mut runner, "SysBeep output", 4096);
     let beep_audio = runner.drain_audio();
+    save_audio_evidence(&beep_audio, "beep");
     assert_non_silent_audio(&beep_audio, "SysBeep output");
     assert_eq!(
         runner.dispatcher().sound_manager().channels.len(),
@@ -2233,6 +2275,7 @@ fn test_toolbox_showcase() {
     click_point(&mut runner, win_top + 267, win_left + 157);
     run_audio(&mut runner, "SndPlay output", 16);
     let play_audio = runner.drain_audio();
+    save_audio_evidence(&play_audio, "play");
     assert_non_silent_audio(&play_audio, "SndPlay output");
     assert!(
         runner.dispatcher().sound_manager().debug_buffer_cmd_count >= 1,
@@ -2241,10 +2284,42 @@ fn test_toolbox_showcase() {
 
     click_point(&mut runner, win_top + 267, win_left + 262);
     run_audio(&mut runner, "queued Sound Manager commands", 16);
+    assert!(
+        runner.dispatcher().sound_manager().channels[0].has_active_playback(),
+        "queued commands must wait behind the sustained sample"
+    );
+    let queued_audio = runner.drain_audio();
+    assert!(
+        queued_audio.iter().any(|&sample| sample > 220)
+            && queued_audio.iter().any(|&sample| sample < 36),
+        "queued half-volume command must not reduce the currently playing sample"
+    );
     click_point(&mut runner, win_top + 267, win_left + 352);
     run_audio(&mut runner, "immediate flush", 4);
+    assert!(
+        runner.dispatcher().sound_manager().channels[0].has_active_playback(),
+        "flush must preserve current playback while removing queued commands"
+    );
     click_point(&mut runner, win_top + 267, win_left + 422);
     run_audio(&mut runner, "immediate quiet", 4);
+    assert!(
+        !runner.dispatcher().sound_manager().channels[0].has_active_playback(),
+        "quiet must stop the active sample"
+    );
+    runner.drain_audio();
+    run_audio(&mut runner, "silence after quiet", 512);
+    assert!(
+        runner.drain_audio().iter().all(|&sample| sample == 128),
+        "quiet must leave no audible output"
+    );
+    assert!(
+        !menu_item_checked(
+            &runner.guest_menu_snapshot(),
+            MENU_STATE,
+            ITEM_STATE_SOUND_COMPLETE
+        ),
+        "flush must cancel the queued completion callback"
+    );
     let sound_manager = runner.dispatcher().sound_manager();
     assert!(
         sound_manager.debug_cmd_codes_seen.contains(&46),
@@ -2262,15 +2337,21 @@ fn test_toolbox_showcase() {
     // State menu. The audio assertion covers the host PCM boundary; the menu
     // assertion covers guest-visible completion semantics.
     click_point(&mut runner, win_top + 302, win_left + 82);
-    step_until_with_audio(&mut runner, "Sound Manager callback completion", 512, |r| {
-        menu_item_checked(
-            &r.guest_menu_snapshot(),
-            MENU_STATE,
-            ITEM_STATE_SOUND_COMPLETE,
-        )
-    });
+    step_until_with_audio(
+        &mut runner,
+        "Sound Manager callback completion",
+        1024,
+        |r| {
+            menu_item_checked(
+                &r.guest_menu_snapshot(),
+                MENU_STATE,
+                ITEM_STATE_SOUND_COMPLETE,
+            )
+        },
+    );
     let completion_audio = runner.drain_audio();
-    assert_non_silent_audio(&completion_audio, "completed SndPlay output");
+    save_audio_evidence(&completion_audio, "completion");
+    assert_native_sample_audio(&completion_audio, "full");
     let sound_manager = runner.dispatcher().sound_manager();
     assert!(
         sound_manager.debug_buffer_cmd_count >= 2,
@@ -2297,6 +2378,37 @@ fn test_toolbox_showcase() {
         MENU_STATE,
         ITEM_STATE_SOUND_COMPLETE
     ));
+
+    // The first completion applied its queued 75% volume only after playback.
+    // Replay at that volume, then queue 50% while idle and prove that gain too.
+    for (checkpoint, half_volume) in [("volume75", false), ("volume50", true)] {
+        run_ticks(&mut runner, "finish completion redraw before replay", 4);
+        if half_volume {
+            let previous_commands = runner.dispatcher().sound_manager().debug_cmd_count;
+            click_point(&mut runner, win_top + 267, win_left + 262);
+            step_until(&mut runner, "queue idle volume and callback", |r| {
+                r.dispatcher().sound_manager().debug_cmd_count >= previous_commands + 2
+            });
+            // The headless fixture pumps audio explicitly, including idle
+            // channels whose queued volume/callback commands need servicing.
+            run_audio(&mut runner, "apply idle half-volume command", 512);
+            run_ticks(&mut runner, "finish idle callback redraw", 4);
+        }
+        runner.drain_audio();
+        let previous_buffers = runner.dispatcher().sound_manager().debug_buffer_cmd_count;
+        click_point(&mut runner, win_top + 302, win_left + 82);
+        step_until_with_audio(&mut runner, checkpoint, 1024, |r| {
+            r.dispatcher().sound_manager().debug_buffer_cmd_count > previous_buffers
+                && menu_item_checked(
+                    &r.guest_menu_snapshot(),
+                    MENU_STATE,
+                    ITEM_STATE_SOUND_COMPLETE,
+                )
+        });
+        let audio = runner.drain_audio();
+        save_audio_evidence(&audio, checkpoint);
+        assert_native_sample_audio(&audio, checkpoint);
+    }
 
     // Hold State open so the callback checkmark is part of the exact frame,
     // then dispose the explicitly allocated channel through its button.

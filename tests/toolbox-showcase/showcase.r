@@ -161,31 +161,31 @@ resource 'pltt' (rShowcasePalette, "Showcase Palette") {
 
 /*
  * A deterministic format-1 sampled sound: one bufferCmd points at a standard
- * sound header followed by 256 unsigned 8-bit mono samples. The repeating
- * sixteen-sample waveform is intentionally small but long enough to expose
- * active playback in the fixture's audio mixer. Sound (1994), pp. 2-76--2-77.
+ * sound header followed by 131072 unsigned 8-bit mono samples (~5.89 seconds).
+ * A repeated sixteen-sample waveform makes volume changes easy to compare,
+ * while sustained playback leaves time to exercise queued and immediate
+ * commands through real mouse input. Sound (1994), pp. 2-76--2-77.
  */
+#define ShowcaseWave16 $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+#define ShowcaseWave256 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16 ShowcaseWave16
+#define ShowcaseWave4096 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256 ShowcaseWave256
+
 data 'snd ' (rShowcaseSound, preload) {
     $"0001 0000 0001 8051 0000 0000 000E"
-    $"0000 0000 0000 0100 56EE 8BA3 0000 0000"
+    $"0000 0000 0002 0000 56EE 8BA3 0000 0000"
     $"0000 0000 003C"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
-    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
+    ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096 ShowcaseWave4096
 };
+#undef ShowcaseWave4096
+#undef ShowcaseWave256
+#undef ShowcaseWave16
 
 resource 'MENU' (mState, preload) {
     mState, textMenuProc, allEnabled, enabled, "State",
