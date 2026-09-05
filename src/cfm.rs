@@ -1,6 +1,17 @@
 //! Semantic resumption of one CFM load across guest initialization.
 //! Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18, 3-27.
 
+/// A selected resource routine whose fragment must be prepared before it is callable.
+/// PowerPC System Software (1994), pp. 2-27–2-28 and 2-36.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CfmResourcePreparation {
+    pub(crate) descriptor: u32,
+    pub(crate) record: u32,
+    pub(crate) fragment_address: u32,
+    pub(crate) proc_info: u32,
+    pub(crate) routine_flags: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfmConnection {
     pub id: u32,

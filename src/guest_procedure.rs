@@ -7,6 +7,7 @@
 //! distinguish a same-ISA call from a required Mixed Mode transition before it
 //! constructs an ABI frame.
 
+use crate::cfm::CfmResourcePreparation;
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use ppc::PpcMemory;
 
@@ -74,6 +75,13 @@ impl GuestProcedure {
     }
 }
 
+/// Container addresses are never interchangeable with executable entry points.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestProcedureResolution {
+    Callable(GuestProcedure),
+    Prepare(CfmResourcePreparation),
+}
+
 pub(crate) trait GuestProcedureMemory {
     fn procedure_read_u8(&mut self, address: u32) -> Option<u8>;
     fn procedure_read_u16(&mut self, address: u32) -> Option<u16>;
@@ -130,13 +138,13 @@ fn read_procedure_structure<const N: usize>(
 
 #[derive(Default)]
 struct RoutineCandidates {
-    first: Option<GuestProcedure>,
-    selected: Option<GuestProcedure>,
-    default: Option<GuestProcedure>,
+    first: Option<GuestProcedureResolution>,
+    selected: Option<GuestProcedureResolution>,
+    default: Option<GuestProcedureResolution>,
 }
 
 impl RoutineCandidates {
-    fn finish(self, has_selector: bool) -> Option<GuestProcedure> {
+    fn finish(self, has_selector: bool) -> Option<GuestProcedureResolution> {
         if has_selector {
             self.selected.or(self.default).or(self.first)
         } else {
@@ -159,6 +167,30 @@ pub(crate) fn resolve_guest_procedure(
     preferred_isa: GuestIsa,
     raw_isa: GuestIsa,
 ) -> Option<GuestProcedure> {
+    match inspect_guest_procedure(
+        memory,
+        pointer,
+        default_powerpc_rtoc,
+        selector,
+        preferred_isa,
+        raw_isa,
+    )? {
+        GuestProcedureResolution::Callable(procedure) => Some(procedure),
+        GuestProcedureResolution::Prepare(_) => None,
+    }
+}
+
+/// Inspect a procedure without executing or preparing its code. Callers that
+/// can run CFM retain the preparation request and resume resolution afterwards.
+/// Callable-only consumers must not execute an unprepared fragment container.
+pub(crate) fn inspect_guest_procedure(
+    memory: &mut impl GuestProcedureMemory,
+    pointer: u32,
+    default_powerpc_rtoc: u32,
+    selector: Option<u32>,
+    preferred_isa: GuestIsa,
+    raw_isa: GuestIsa,
+) -> Option<GuestProcedureResolution> {
     if pointer == 0 {
         return None;
     }
@@ -173,10 +205,10 @@ pub(crate) fn resolve_guest_procedure(
             preferred_isa,
         );
     }
-    Some(match raw_isa {
+    Some(GuestProcedureResolution::Callable(match raw_isa {
         GuestIsa::M68k => GuestProcedure::raw_m68k(pointer),
         GuestIsa::PowerPc => resolve_powerpc_pointer(memory, pointer, default_powerpc_rtoc, false),
-    })
+    }))
 }
 
 fn resolve_routine_descriptor(
@@ -185,7 +217,7 @@ fn resolve_routine_descriptor(
     default_powerpc_rtoc: u32,
     selector: Option<u32>,
     preferred_isa: GuestIsa,
-) -> Option<GuestProcedure> {
+) -> Option<GuestProcedureResolution> {
     let header = read_procedure_structure::<12>(memory, descriptor)?;
     if header[2] != ROUTINE_DESCRIPTOR_VERSION {
         return None;
@@ -213,32 +245,57 @@ fn resolve_routine_descriptor(
         let proc_offset = ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET as usize;
         let mut proc_descriptor =
             u32::from_be_bytes(bytes[proc_offset..proc_offset + 4].try_into().ok()?);
+        let needs_preparing = (routine_flags & ROUTINE_FLAG_FRAGMENT_NEEDS_PREPARING) != 0;
+        if needs_preparing
+            && (isa != GuestIsa::PowerPc
+                || (routine_flags & ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE) == 0)
+        {
+            return None;
+        }
         if proc_descriptor == 0 {
+            if needs_preparing {
+                return None;
+            }
             continue;
         }
         if (routine_flags & ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE) != 0 {
             let Some(relative_proc_descriptor) = descriptor.checked_add(proc_descriptor) else {
+                if needs_preparing {
+                    return None;
+                }
                 continue;
             };
             proc_descriptor = relative_proc_descriptor;
         }
-        let mut procedure = match isa {
-            GuestIsa::M68k => GuestProcedure::raw_m68k(proc_descriptor),
-            GuestIsa::PowerPc => resolve_powerpc_pointer(
-                memory,
-                proc_descriptor,
-                default_powerpc_rtoc,
-                (routine_flags
-                    & (ROUTINE_FLAG_FRAGMENT_NEEDS_PREPARING
-                        | ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE))
-                    == 0,
-            ),
+        let procedure = if needs_preparing {
+            GuestProcedureResolution::Prepare(CfmResourcePreparation {
+                descriptor,
+                record,
+                fragment_address: proc_descriptor,
+                proc_info,
+                routine_flags,
+            })
+        } else {
+            let mut procedure = match isa {
+                GuestIsa::M68k => GuestProcedure::raw_m68k(proc_descriptor),
+                GuestIsa::PowerPc => resolve_powerpc_pointer(
+                    memory,
+                    proc_descriptor,
+                    default_powerpc_rtoc,
+                    (routine_flags
+                        & (ROUTINE_FLAG_FRAGMENT_NEEDS_PREPARING
+                            | ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE))
+                        == 0,
+                ),
+            };
+            procedure.original_pointer = descriptor;
+            procedure.representation =
+                GuestProcedureRepresentation::RoutineDescriptor { descriptor, record };
+            procedure.proc_info = proc_info;
+            procedure.routine_flags = routine_flags;
+
+            GuestProcedureResolution::Callable(procedure)
         };
-        procedure.original_pointer = descriptor;
-        procedure.representation =
-            GuestProcedureRepresentation::RoutineDescriptor { descriptor, record };
-        procedure.proc_info = proc_info;
-        procedure.routine_flags = routine_flags;
 
         let candidates = if isa == preferred_isa {
             &mut preferred
@@ -769,6 +826,139 @@ mod tests {
 
         assert_eq!(procedure.entry, BASE + 0x180);
         assert_eq!(procedure.proc_info, 0x1111);
+    }
+
+    fn inspect_both_views(
+        memory: &mut GuestAddressSpace,
+        selector: Option<u32>,
+        isa: GuestIsa,
+    ) -> [Option<GuestProcedureResolution>; 2] {
+        let mut classic = MacMemoryBus::new(0x10000);
+        classic.set_addressing_32_bit(true);
+        classic.attach_guest_address_space(memory.shared_view());
+        [
+            inspect_guest_procedure(memory, BASE, 0, selector, isa, isa),
+            inspect_guest_procedure(&mut classic, BASE, 0, selector, isa, isa),
+        ]
+    }
+
+    #[test]
+    fn accelerated_resources_produce_selected_preparation_requests_in_both_views() {
+        let mut memory = descriptor_memory();
+        write_descriptor_header(&mut memory, 2);
+        write_record(
+            &mut memory,
+            0,
+            ROUTINE_RECORD_M68K_ISA,
+            ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE,
+            0x1111,
+            0x180,
+            0,
+        );
+        let flags = ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE | ROUTINE_FLAG_FRAGMENT_NEEDS_PREPARING;
+        write_record(
+            &mut memory,
+            1,
+            ROUTINE_RECORD_POWERPC_ISA,
+            flags | ROUTINE_FLAG_DISPATCHED_DEFAULT,
+            0x2222,
+            0x200,
+            10,
+        );
+        write_record(
+            &mut memory,
+            2,
+            ROUTINE_RECORD_POWERPC_ISA,
+            flags | ROUTINE_FLAG_DONT_PASS_SELECTOR,
+            0x3333,
+            0x300,
+            20,
+        );
+        // Container signatures must not be probed as transition vectors or instructions.
+        memory.write_bytes(BASE + 0x200, b"Joy!peff").unwrap();
+        memory.write_bytes(BASE + 0x300, b"Joy!peff").unwrap();
+        let mut before = vec![0; 0x400];
+        memory.read_bytes_into(BASE, &mut before).unwrap();
+        for (selector, index, fragment, proc_info, selected_flags) in [
+            (
+                None,
+                1,
+                0x200,
+                0x2222,
+                flags | ROUTINE_FLAG_DISPATCHED_DEFAULT,
+            ),
+            (
+                Some(99),
+                1,
+                0x200,
+                0x2222,
+                flags | ROUTINE_FLAG_DISPATCHED_DEFAULT,
+            ),
+            (
+                Some(20),
+                2,
+                0x300,
+                0x3333,
+                flags | ROUTINE_FLAG_DONT_PASS_SELECTOR,
+            ),
+        ] {
+            let expected = Some(GuestProcedureResolution::Prepare(CfmResourcePreparation {
+                descriptor: BASE,
+                record: BASE + ROUTINE_DESCRIPTOR_HEADER_SIZE + index * ROUTINE_RECORD_SIZE,
+                fragment_address: BASE + fragment,
+                proc_info,
+                routine_flags: selected_flags,
+            }));
+            assert_eq!(
+                inspect_both_views(&mut memory, selector, GuestIsa::PowerPc),
+                [expected; 2]
+            );
+            assert_eq!(
+                resolve_both_views(&mut memory, BASE, selector, GuestIsa::PowerPc),
+                [None; 2]
+            );
+        }
+        let classic = inspect_both_views(&mut memory, None, GuestIsa::M68k);
+        assert!(
+            matches!(classic[0], Some(GuestProcedureResolution::Callable(procedure)) if procedure.entry == BASE + 0x180)
+        );
+        assert_eq!(classic[0], classic[1]);
+        let mut after = vec![0; 0x400];
+        memory.read_bytes_into(BASE, &mut after).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn malformed_preparation_records_never_become_callable_or_partial_requests() {
+        for (isa, flags, pointer) in [
+            (ROUTINE_RECORD_M68K_ISA, 3, 0x200),
+            (ROUTINE_RECORD_POWERPC_ISA, 2, BASE + 0x200),
+            (ROUTINE_RECORD_POWERPC_ISA, 3, u32::MAX),
+            (ROUTINE_RECORD_POWERPC_ISA, 3, 0),
+        ] {
+            let mut memory = descriptor_memory();
+            write_descriptor_header(&mut memory, 0);
+            write_record(&mut memory, 0, isa, flags, 0, pointer, 0);
+            assert_eq!(
+                inspect_both_views(&mut memory, None, GuestIsa::PowerPc),
+                [None; 2]
+            );
+            assert_eq!(
+                resolve_both_views(&mut memory, BASE, None, GuestIsa::PowerPc),
+                [None; 2]
+            );
+        }
+        let mut complete = descriptor_memory();
+        write_descriptor_header(&mut complete, 1);
+        write_record(&mut complete, 0, ROUTINE_RECORD_POWERPC_ISA, 3, 0, 0x200, 0);
+        let mut bytes = vec![0; 51]; // final reserved/selector byte missing
+        complete.read_bytes_into(BASE, &mut bytes).unwrap();
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(BASE, bytes);
+        assert_eq!(
+            inspect_both_views(&mut memory, None, GuestIsa::PowerPc),
+            [None; 2]
+        );
     }
 
     #[test]
