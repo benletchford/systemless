@@ -20911,6 +20911,7 @@ fn dispatch_supported_import(
         ))),
         PpcImportDispatcherTarget::GetSharedLibrary => Some(ppc_get_shared_library(
             cpu,
+            &toolbox_startup.guest_calls,
             process_memory_manager,
             memory,
             heap_cursor,
@@ -20935,6 +20936,7 @@ fn dispatch_supported_import(
         )),
         PpcImportDispatcherTarget::GetMemFragment => Some(ppc_get_mem_fragment(
             cpu,
+            &toolbox_startup.guest_calls,
             process_memory_manager,
             memory,
             heap_cursor,
@@ -50595,6 +50597,7 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
 
 fn ppc_get_shared_library(
     cpu: &mut PpcCpu,
+    guest_calls: &SharedGuestCallStack,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -50746,38 +50749,9 @@ fn ppc_get_shared_library(
         return return_error(PPC_PARAM_ERR);
     }
     let Some((init_addr, init_block)) = initialization else {
-        return return_error(PPC_NO_ERR);
+        return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
     };
-    let (Some(entry), Some(rtoc)) = (
-        memory.read_u32_be(init_addr),
-        memory.read_u32_be(init_addr.wrapping_add(4)),
-    ) else {
-        return return_error(PPC_FRAG_CORRUPT_ERR);
-    };
-    if entry == 0 || ppc_install_native_call_arguments(cpu, memory, &[init_block]).is_none() {
-        return return_error(PPC_FRAG_CORRUPT_ERR);
-    }
-    let final_pc = cpu.lr;
-    let restore_rtoc = cpu.gpr[2];
-    cpu.gpr[12] = init_addr;
-    GuestCallEffect::call_guest(
-        GuestCallRequest::new(GuestCallTarget {
-            isa: GuestIsa::PowerPc,
-            entry,
-            rtoc,
-        }),
-        GuestCallContinuation::to_powerpc(
-            PPC_GUEST_CALL_RETURN_PC,
-            final_pc,
-            restore_rtoc,
-            PpcNativeReturnGpr3::ZeroOrSet {
-                zero: ppc_i16_result(PPC_NO_ERR),
-                nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
-            },
-        ),
-    )
-    .into_ppc_import_action()
-    .expect("validated CFM initialization target must be native PowerPC")
+    ppc_activate_cfm_initializer(cpu, memory, guest_calls, init_addr, init_block)
 }
 
 fn ppc_close_connection(
@@ -50896,6 +50870,7 @@ fn ppc_find_symbol(
 
 fn ppc_get_mem_fragment(
     cpu: &mut PpcCpu,
+    guest_calls: &SharedGuestCallStack,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -51042,36 +51017,46 @@ fn ppc_get_mem_fragment(
     let Some((init_addr, init_block)) = initialization else {
         return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
     };
-    let Some(entry) = memory.read_u32_be(init_addr) else {
-        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
-    };
-    let Some(rtoc) = memory.read_u32_be(init_addr.wrapping_add(4)) else {
-        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
-    };
-    if entry == 0 || ppc_install_native_call_arguments(cpu, memory, &[init_block]).is_none() {
-        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
-    }
-    let final_pc = cpu.lr;
-    let restore_rtoc = cpu.gpr[2];
-    cpu.gpr[12] = init_addr;
-    GuestCallEffect::call_guest(
-        GuestCallRequest::new(GuestCallTarget {
+    ppc_activate_cfm_initializer(cpu, memory, guest_calls, init_addr, init_block)
+}
+
+fn ppc_activate_cfm_initializer(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    guest_calls: &SharedGuestCallStack,
+    init_addr: u32,
+    init_block: u32,
+) -> PpcImportAction {
+    let target = init_addr.checked_add(7).and_then(|_| {
+        Some(GuestCallTarget {
             isa: GuestIsa::PowerPc,
-            entry,
-            rtoc,
-        }),
+            entry: memory.read_u32_be(init_addr)?,
+            rtoc: memory.read_u32_be(init_addr + 4)?,
+        })
+    });
+    let Some(target) = target else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
+    };
+    let effect = GuestCallEffect::call_guest(
+        GuestCallRequest::for_task(guest_calls.current_task(), target).with_powerpc_arguments(
+            crate::guest_call::PowerPcArguments::from_slice(&[init_block])
+                .expect("one initializer argument fits the native ABI"),
+        ),
         GuestCallContinuation::to_powerpc(
             PPC_GUEST_CALL_RETURN_PC,
-            final_pc,
-            restore_rtoc,
+            cpu.lr,
+            cpu.gpr[2],
             PpcNativeReturnGpr3::ZeroOrSet {
                 zero: ppc_i16_result(PPC_NO_ERR),
                 nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
             },
         ),
-    )
-    .into_ppc_import_action()
-    .expect("validated CFM initialization target must be native PowerPC")
+    );
+    if !guest_calls.activate_powerpc_effect(cpu, memory, effect) {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
+    }
+    cpu.gpr[12] = init_addr;
+    PpcImportAction::Continue
 }
 
 fn ppc_create_mem_fragment_init_block(
@@ -112363,6 +112348,62 @@ pub(crate) mod tests {
         let unchanged = loaded.run_with_hle_imports(64);
         assert_eq!(unchanged.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], first_handler);
+    }
+
+    #[test]
+    fn cfm_initializer_effect_executes_and_returns_to_its_worker() {
+        use crate::execution_kernel::ExecutionTaskState;
+        for result in [0u16, 0xffff] {
+            let calls = SharedGuestCallStack::default();
+            let worker = calls.create_task().unwrap();
+            assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+            assert!(calls.switch_to_task(worker));
+            let mut memory = PpcSectionMem::new();
+            memory.add_region(
+                0x1000,
+                [0x3860_0000 | u32::from(result), 0x4e80_0020]
+                    .into_iter()
+                    .flat_map(u32::to_be_bytes)
+                    .collect(),
+            );
+            memory.add_region(
+                0x2000,
+                [0x1000u32, 0x2100]
+                    .into_iter()
+                    .flat_map(u32::to_be_bytes)
+                    .collect(),
+            );
+            memory.add_region(0x8000, vec![0xa5; 128]);
+            let mut cpu = PpcCpu::new();
+            cpu.gpr[1] = 0x8000;
+            cpu.gpr[2] = 0x2200;
+            cpu.lr = 0x4000;
+            assert_eq!(
+                ppc_activate_cfm_initializer(&mut cpu, &mut memory, &calls, 0x2000, 0x5000,),
+                PpcImportAction::Continue
+            );
+            assert_eq!((cpu.gpr[3], cpu.gpr[12]), (0x5000, 0x2000));
+            assert_eq!(calls.current_task(), worker);
+            assert_eq!(calls.task_depth(worker), 1);
+            assert_eq!(
+                cpu.run_with_imports(&mut memory, 2, 0, 0xff00_0000, 0, |_, _, _| {
+                    PpcImportAction::Halt
+                }),
+                PpcRunResult::CycleLimit { cycles: 2 }
+            );
+            assert_eq!(cpu.pc, PPC_GUEST_CALL_RETURN_PC);
+            assert!(calls.complete_powerpc(&mut cpu));
+            assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x4000, 0x4000, 0x2200));
+            assert_eq!(
+                cpu.gpr[3],
+                ppc_i16_result(if result == 0 {
+                    PPC_NO_ERR
+                } else {
+                    PPC_FRAG_USER_INIT_PROC_ERR
+                })
+            );
+            assert!(calls.is_empty());
+        }
     }
 
     #[test]
