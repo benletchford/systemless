@@ -21179,7 +21179,7 @@ impl super::TrapDispatcher {
             return None;
         }
         let bits_proc = bus.read_long(graf_procs + 32);
-        if bits_proc == 0 || self.trap_gateways.get(0xA8EB) == Some(bits_proc) {
+        if bits_proc == 0 || bus.system_trap_gateway(0xA8EB) == Some(bits_proc) {
             return None;
         }
         if let Some((active_proc, active_sp)) = self.bits_proc_reentry {
@@ -30859,11 +30859,11 @@ mod tests {
         ];
         for (i, trap) in TRAPS.into_iter().enumerate() {
             let gateway = bus.read_long(cprocs_ptr + (i as u32) * 4);
-            assert_eq!(d.trap_gateways.get(trap), Some(gateway));
+            assert_eq!(bus.system_trap_gateway(trap), Some(gateway));
             assert_eq!(bus.read_word(gateway), trap | 0x0400);
         }
         let std_pix = bus.read_long(cprocs_ptr + 14 * 4);
-        let unimplemented = d.trap_gateways.get(0xAA6E).unwrap();
+        let unimplemented = bus.system_trap_gateway(0xAA6E).unwrap();
         assert_eq!(std_pix, d.std_pix_gateway);
         assert_ne!(std_pix, unimplemented);
         assert_eq!(bus.read_word(std_pix), 0x4EF9);

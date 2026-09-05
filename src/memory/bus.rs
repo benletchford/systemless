@@ -479,6 +479,8 @@ pub struct MacMemoryBus {
     synthetic_ptr: u32,
     /// Lower bound of the fixed reservation for future synthetic allocations.
     synthetic_floor: u32,
+    /// Stable trap defaults share the lifetime of their allocated system code.
+    trap_gateways: crate::trap::gateways::TrapSystemGateways,
     /// Guest writes cannot modify synthesized ROM-like instruction stubs.
     readonly_code_ranges: Vec<(u32, u32)>,
     /// Half-open bounding box over `readonly_code_ranges`, maintained on
@@ -1230,6 +1232,7 @@ impl MacMemoryBus {
             heap_allocator: SharedClassicHeapAllocator::default(),
             synthetic_ptr: screen_buffer_start,
             synthetic_floor,
+            trap_gateways: crate::trap::gateways::TrapSystemGateways::default(),
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
@@ -1323,6 +1326,7 @@ impl MacMemoryBus {
             heap_allocator: SharedClassicHeapAllocator::default(),
             synthetic_ptr: screen_buffer_start,
             synthetic_floor,
+            trap_gateways: crate::trap::gateways::TrapSystemGateways::default(),
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
@@ -1765,6 +1769,46 @@ impl MacMemoryBus {
 
     pub fn alloc(&mut self, size: u32) -> u32 {
         self.heap_allocator.allocate(size, 4, self.synthetic_floor)
+    }
+
+    pub(crate) fn system_trap_gateway(&self, word: u16) -> Option<u32> {
+        self.trap_gateways.get(word)
+    }
+
+    pub(crate) fn default_system_trap_gateway(
+        &self,
+        profile: crate::trap::gateways::TrapTableProfile,
+        word: u16,
+    ) -> Option<u32> {
+        self.trap_gateways.default_gateway(profile, word)
+    }
+
+    /// Publish through one synchronous owner operation. Publication only writes
+    /// owned storage and cannot execute guest code or reenter a manager; no
+    /// reference to the temporarily moved registry escapes this operation.
+    pub(crate) fn get_or_create_system_trap_gateway(&mut self, word: u16) -> u32 {
+        let mut gateways = std::mem::take(&mut self.trap_gateways);
+        let address = gateways.get_or_create(self, word);
+        self.trap_gateways = gateways;
+        address
+    }
+
+    /// Build an inactive process image using this allocation's system identities.
+    /// The shared constructor checks capacity before publication. Restore the
+    /// same registry on either success or refusal, without an attachment alias.
+    pub(crate) fn create_system_trap_table(
+        &mut self,
+        profile: crate::trap::gateways::TrapTableProfile,
+    ) -> Option<crate::trap::gateways::TrapTableImage> {
+        let mut gateways = std::mem::take(&mut self.trap_gateways);
+        let image = gateways.create_table(self, profile);
+        self.trap_gateways = gateways;
+        image
+    }
+
+    #[cfg(test)]
+    pub(crate) fn system_trap_gateways_are_empty(&self) -> bool {
+        self.trap_gateways.is_empty()
     }
 
     /// Preflight a synthetic code allocation without consuming storage.
@@ -2867,6 +2911,30 @@ impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_trap_code_lifetime_is_independent_between_memory_owners() {
+        let mut first = MacMemoryBus::new(4 * 1024 * 1024);
+        let mut second = MacMemoryBus::new(4 * 1024 * 1024);
+        second.alloc_synthetic(32);
+        let first_gateway = first.get_or_create_system_trap_gateway(0xA975);
+        let second_gateway = second.get_or_create_system_trap_gateway(0xA975);
+        assert_ne!(first_gateway, second_gateway);
+        first.write_readonly_code_word(first_gateway, 0);
+        assert_eq!(second.read_word(second_gateway), 0xAD75);
+        assert_eq!(
+            first.get_or_create_system_trap_gateway(0xAD75),
+            first_gateway
+        );
+        assert_eq!(first.read_word(first_gateway), 0xAD75);
+        drop(first);
+        assert_eq!(second.system_trap_gateway(0xA975), Some(second_gateway));
+        assert_eq!(
+            second.get_or_create_system_trap_gateway(0xAD75),
+            second_gateway
+        );
+        assert_eq!(second.read_word(second_gateway), 0xAD75);
+    }
 
     #[test]
     fn twenty_four_bit_mode_translates_scalar_and_bulk_accesses() {

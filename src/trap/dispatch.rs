@@ -4,7 +4,6 @@
 //! `impl TrapDispatcher` blocks with `dispatch_*` methods that return
 //! `Option<Result<()>>` — `Some` if the trap was handled, `None` to pass through.
 
-use super::gateways::TrapSystemGateways;
 pub(crate) use super::gateways::TrapTableProfile;
 #[cfg(test)]
 use super::gateways::{M68K_68040_COME_FROM_TRAPS, POWERPC_604_COME_FROM_TRAPS};
@@ -1395,9 +1394,6 @@ pub struct TrapDispatcher {
     /// MenuInfo.menuProc remains guest-visible and some applications invoke
     /// the procedure directly.
     pub(crate) system_mdef_cache: HashMap<i16, u32>,
-    /// System-generated default identities and profile construction. Patch
-    /// values remain exclusively in guest table cells and protected links.
-    pub(crate) trap_gateways: TrapSystemGateways,
     /// Protected callable nonterminal entry returned as the standard `StdPix`
     /// procedure by `SetStdCProcs`. QuickTime (1993), pp. 3-137--3-139 defines
     /// the distinct eight-argument routine; until that operation is complete,
@@ -3282,7 +3278,6 @@ impl TrapDispatcher {
             system_kmap_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
             system_mdef_cache: HashMap::new(),
-            trap_gateways: TrapSystemGateways::default(),
             std_pix_gateway: 0,
             param_text: SharedProcessDialogText::default(),
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -6478,8 +6473,7 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         trap_word: u16,
     ) -> u32 {
-        self.trap_gateways
-            .get_or_create(bus, 0xA800 | (trap_word & 0x03FF))
+        bus.get_or_create_system_trap_gateway(0xA800 | (trap_word & 0x03FF))
     }
 
     fn canonical_trap_word(trap_word: u16) -> u16 {
@@ -6491,9 +6485,8 @@ impl TrapDispatcher {
         raw_trap_route(trap_word).table_address
     }
 
-    fn default_trap_gateway(&self, trap_word: u16) -> Option<u32> {
-        self.trap_gateways
-            .default_gateway(self.trap_table_profile?, trap_word)
+    fn default_trap_gateway(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
+        bus.default_system_trap_gateway(self.trap_table_profile?, trap_word)
     }
 
     #[cfg(test)]
@@ -6510,9 +6503,8 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
     ) -> Result<TrapTableProcessContext> {
-        let image = self
-            .trap_gateways
-            .create_table(bus, profile)
+        let image = bus
+            .create_system_trap_table(profile)
             .ok_or(Error::TrapTableInitialization)?;
         Ok(TrapTableProcessContext {
             profile,
@@ -6671,7 +6663,7 @@ impl TrapDispatcher {
     pub(crate) fn native_trap_handler(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
         let canonical = Self::canonical_trap_word(trap_word);
         let logical = self.trap_table_address(bus, canonical)?;
-        (self.default_trap_gateway(canonical) != Some(logical)).then_some(logical)
+        (self.default_trap_gateway(bus, canonical) != Some(logical)).then_some(logical)
     }
 
     pub(crate) fn install_trap_address(
@@ -7387,9 +7379,8 @@ impl TrapDispatcher {
         let input_route = raw_trap_route(trap);
         let input_base_trap = input_route.canonical_word;
         let default_os_gateway_call = !input_route.is_toolbox
-            && self
-                .trap_gateways
-                .get(input_base_trap)
+            && bus
+                .system_trap_gateway(input_base_trap)
                 .is_some_and(|addr| pc == addr + 2);
         // A JMP to a saved OS gateway keeps the dispatcher's synthesized
         // return long at the top of the original argument stack. A JSR to the
@@ -7524,9 +7515,8 @@ impl TrapDispatcher {
             });
         let default_tool_gateway_call = is_tool
             && auto_pop
-            && (self
-                .trap_gateways
-                .get(base_trap)
+            && (bus
+                .system_trap_gateway(base_trap)
                 .is_some_and(|addr| pc == addr + 2)
                 || saved_tool_daisy_chain_call);
         let os_dispatch_frame = if is_tool {
@@ -7548,7 +7538,7 @@ impl TrapDispatcher {
             let handler_addr = self
                 .trap_table_address(bus, base_trap)
                 .ok_or(Error::TrapTableLookup(base_trap))?;
-            if self.default_trap_gateway(base_trap) != Some(handler_addr) {
+            if self.default_trap_gateway(bus, base_trap) != Some(handler_addr) {
                 // Simulate JSR to native handler: push return PC, jump to
                 // handler. For an auto-pop trap, the dispatcher's documented
                 // return target is the caller address removed from the glue
@@ -8142,7 +8132,7 @@ mod tests {
             dispatcher
                 .materialize_trap_tables(&mut bus, profile)
                 .expect("trap table construction requires writable cells and system storage");
-            let unimplemented = dispatcher.default_trap_gateway(0xAA6E).unwrap();
+            let unimplemented = dispatcher.default_trap_gateway(&bus, 0xAA6E).unwrap();
 
             for low_word in 0u16..0x1000 {
                 let word = 0xA000 | low_word;
@@ -8380,7 +8370,7 @@ mod tests {
     ) -> u32 {
         cpu.write_reg(Register::D0, 0xFFFF_0000 | u32::from(trap_word));
         let saved_gateway = dispatcher
-            .default_trap_gateway(getter)
+            .default_trap_gateway(bus, getter)
             .expect("materialized Trap Manager getter gateway");
         cpu.write_reg(Register::PC, saved_gateway + 2);
         dispatcher
@@ -8400,7 +8390,7 @@ mod tests {
         cpu.write_reg(Register::D0, 0xFFFF_0000 | u32::from(trap_word));
         cpu.write_reg(Register::A0, handler);
         let saved_gateway = dispatcher
-            .default_trap_gateway(setter)
+            .default_trap_gateway(bus, setter)
             .expect("materialized Trap Manager setter gateway");
         cpu.write_reg(Register::PC, saved_gateway + 2);
         dispatcher
@@ -8741,6 +8731,28 @@ mod tests {
     }
 
     #[test]
+    fn replacement_dispatcher_reuses_memory_owned_defaults_with_fresh_process_heads() {
+        let (mut first, _, mut bus) = setup();
+        first
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .unwrap();
+        let tick = first.trap_table_address(&bus, 0xA975).unwrap();
+        let protected_cell = raw_trap_route(0xA823).table_address;
+        let head = bus.read_long(protected_cell);
+        let vectors = [bus.read_long(0x28), bus.read_long(0x2c)];
+        let mut second = TrapDispatcher::new();
+        second
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .unwrap();
+        assert_eq!(second.trap_table_address(&bus, 0xA975), Some(tick));
+        assert_eq!(bus.read_word(tick), 0xAD75);
+        assert_ne!(bus.read_long(protected_cell), head);
+        assert_ne!([bus.read_long(0x28), bus.read_long(0x2c)], vectors);
+        bus.write_word(tick, 0xffff);
+        assert_eq!(bus.read_word(tick), 0xAD75);
+    }
+
+    #[test]
     fn profile_materialization_refuses_before_mutating_active_process() {
         for failure in 0..6 {
             let (mut dispatcher, _, mut bus) = setup();
@@ -8786,7 +8798,7 @@ mod tests {
             let code = bus.read_bytes(base, len as usize);
             let next = bus.synthetic_code_allocation_start(4);
             let defaults = dispatcher.trap_exception_vector_defaults;
-            let tick_default = dispatcher.trap_gateways.get(0xA975);
+            let tick_default = bus.system_trap_gateway(0xA975);
             assert!(matches!(
                 dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::PowerPc604),
                 Err(Error::TrapTableInitialization)
@@ -8799,7 +8811,7 @@ mod tests {
                 Some(TrapTableProfile::M68k68040)
             );
             assert_eq!(dispatcher.trap_exception_vector_defaults, defaults);
-            assert_eq!(dispatcher.trap_gateways.get(0xA975), tick_default);
+            assert_eq!(bus.system_trap_gateway(0xA975), tick_default);
             assert_eq!(dispatcher.current_trap_caller, Some(0x0020_1000));
             assert_eq!(bus.read_long(tick_cell), 0x1234_5678);
             let frames = &dispatcher.pending_native_trap_calls[&0xA975];
@@ -8883,7 +8895,7 @@ mod tests {
             assert_eq!(dispatcher.trap_table_profile, None);
             assert!(!dispatcher.aline_vector_is_default(&bus));
             assert!(!dispatcher.fline_vector_is_default(&bus));
-            assert!(dispatcher.trap_gateways.is_empty());
+            assert!(bus.system_trap_gateways_are_empty());
             if failure == 3 {
                 bus.detach_guest_address_space();
             } else {
@@ -8921,7 +8933,8 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let entry = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
         let default = dispatcher.trap_table_address(&bus, 0xA975).unwrap();
-        let head = TrapSystemGateways::create_come_from_head(&mut bus, default);
+        let head =
+            crate::trap::gateways::TrapSystemGateways::create_come_from_head(&mut bus, default);
         assert!(bus.try_write_protected_code_long(head + 4, head));
         bus.write_long(entry, head);
         let sp = cpu.read_reg(Register::A7);
@@ -9467,7 +9480,7 @@ mod tests {
         assert_eq!(bus.read_long(raw_entry), replacement);
         assert_eq!(
             bus.read_long(old_head + 4),
-            dispatcher.default_trap_gateway(trap_word).unwrap()
+            dispatcher.default_trap_gateway(&bus, trap_word).unwrap()
         );
     }
 
@@ -9778,7 +9791,7 @@ mod tests {
     #[test]
     fn saved_os_gateway_tail_uses_the_original_variant_dispatch_frame() {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
-        let gateway = dispatcher.trap_gateways.get_or_create(&mut bus, 0xA01E);
+        let gateway = bus.get_or_create_system_trap_gateway(0xA01E);
         let handler = 0x0021_0000u32;
         let return_pc = 0x0020_0002u32;
         let sp = 0x003F_FF00u32;
@@ -9826,7 +9839,7 @@ mod tests {
     #[test]
     fn saved_os_gateway_subroutine_keeps_the_outer_dispatch_frame() {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
-        let gateway = dispatcher.trap_gateways.get_or_create(&mut bus, 0xA039);
+        let gateway = bus.get_or_create_system_trap_gateway(0xA039);
         let handler = 0x0021_0000u32;
         let patch_continuation = 0x0021_0100u32;
         let return_pc = 0x0020_0002u32;
@@ -10005,7 +10018,7 @@ mod tests {
     #[test]
     fn saved_os_trap_gateway_bypasses_a_later_patch() {
         let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
-        let gateway = dispatcher.trap_gateways.get_or_create(&mut bus, 0xA039);
+        let gateway = bus.get_or_create_system_trap_gateway(0xA039);
         let sp = 0x003F_FF00u32;
         let output = 0x0020_0000u32;
         bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);
