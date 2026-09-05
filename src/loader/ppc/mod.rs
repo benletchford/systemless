@@ -21068,9 +21068,17 @@ fn dispatch_supported_import(
                 result.err().map_or(0, |error| error.os_error()),
             )))
         }
-        PpcImportDispatcherTarget::CloseConnection => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_close_connection(cpu, memory, cfm_connections)),
-        )),
+        PpcImportDispatcherTarget::CloseConnection => {
+            let result = crate::cfm::close_connection(
+                cfm_connections,
+                memory,
+                cpu.gpr[3],
+                crate::cfm::CfmMemory::publish_cfm_outputs,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(
+                result.err().map_or(0, |error| error.os_error()),
+            )))
+        }
         PpcImportDispatcherTarget::GetMemFragment => Some(ppc_get_mem_fragment(
             cpu,
             &toolbox_startup.guest_calls,
@@ -51125,30 +51133,6 @@ fn ppc_get_shared_library(
         return action;
     }
     PpcImportAction::Return(ppc_complete_cfm_load(operation, 0, memory, cfm_connections))
-}
-
-fn ppc_close_connection(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    cfm_connections: &mut Vec<PpcCfmConnection>,
-) -> i16 {
-    // Inside Macintosh: PowerPC System Software (1994), p. 3-23:
-    // CloseConnection receives a pointer to a ConnectionID, invalidates that
-    // connection, and reports fragConnectionIDNotFound for an unknown ID.
-    let connection_id_ptr = cpu.gpr[3];
-    let Some(connection_id) = memory.read_u32_be(connection_id_ptr) else {
-        return PPC_PARAM_ERR;
-    };
-    let Some(index) = cfm_connections
-        .iter()
-        .position(|connection| connection.id == connection_id)
-    else {
-        return PPC_FRAG_CONNECTION_ID_NOT_FOUND;
-    };
-
-    cfm_connections.remove(index);
-    let _ = memory.write_u32_be(connection_id_ptr, 0);
-    PPC_NO_ERR
 }
 
 /// Borrowed native gateway staging; the process CFM service owns lookup policy.
@@ -113529,6 +113513,64 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FRAG_LIB_NOT_FOUND));
         assert!(loaded.cfm.as_ref().unwrap().connections.is_empty());
         assert_eq!(loaded.heap_cursor(), heap_before);
+    }
+
+    #[test]
+    fn close_connection_import_preserves_live_registry_on_protected_output_and_retries() {
+        for partial in [false, true] {
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(b"CloseConnection")).unwrap();
+            let pointer = PPC_HEAP_BASE + 0x1000;
+            loaded.memory.write_u32_be(pointer, 77).unwrap();
+            let connection = PpcCfmConnection {
+                id: 77,
+                library_name: "Library".to_string(),
+                main_addr: 0x1234,
+                init_addr: 0,
+                term_addr: 0,
+                exports: Vec::new(),
+            };
+            loaded.cfm.as_mut().unwrap().connections.push(connection);
+            loaded
+                .cfm
+                .as_mut()
+                .unwrap()
+                .connections
+                .push(PpcCfmConnection {
+                    id: 78,
+                    library_name: "Other".to_string(),
+                    main_addr: 0x5678,
+                    init_addr: 0,
+                    term_addr: 0,
+                    exports: Vec::new(),
+                });
+            if partial {
+                loaded.memory.add_readonly_region(pointer + 3, vec![77]);
+            } else {
+                loaded
+                    .memory
+                    .add_readonly_region(pointer, 77u32.to_be_bytes().to_vec());
+            }
+            let before = loaded.cfm.clone();
+            let entry = loaded.cpu.pc;
+            loaded.cpu.gpr[3] = pointer;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+            assert_eq!(loaded.cfm, before);
+            assert_eq!(loaded.memory.read_u32_be(pointer), Some(77));
+
+            loaded.memory.write_u32_be(pointer + 8, 77).unwrap();
+            loaded.cpu.pc = entry;
+            loaded.cpu.gpr[3] = pointer + 8;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u32_be(pointer + 8), Some(0));
+            let mut expected = before.unwrap();
+            expected.connections.remove(0);
+            assert_eq!(loaded.cfm.as_ref(), Some(&expected));
+        }
     }
 
     #[test]

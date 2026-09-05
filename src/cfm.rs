@@ -172,6 +172,50 @@ pub struct CfmExport {
     pub address: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CfmCloseError {
+    InvalidIdPointer,
+    ConnectionNotFound,
+}
+
+impl CfmCloseError {
+    pub(crate) fn os_error(self) -> i16 {
+        match self {
+            Self::InvalidIdPointer => -50,
+            Self::ConnectionNotFound => -2801,
+        }
+    }
+}
+
+/// Commit the synchronous registry/output part of closing a connection.
+/// PowerPC System Software (1994), p. 3-23: CloseConnection takes a pointer
+/// to a ConnectionID. Retire the record only after publishing its invalidation.
+/// No guest execution may occur in `publish`; it must commit all outputs or none.
+/// Termination, fragment reference counting and storage release remain separate
+/// lifecycle work and are not implemented by this registry transaction.
+pub(crate) fn close_connection<M: CfmMemory>(
+    connections: &mut Vec<CfmConnection>,
+    memory: &mut M,
+    connection_id_address: u32,
+    publish: impl FnOnce(&mut M, &[(u32, &[u8])]) -> bool,
+) -> Result<(), CfmCloseError> {
+    if connection_id_address == 0 {
+        return Err(CfmCloseError::InvalidIdPointer);
+    }
+    let id = u32::from_be_bytes(
+        cfm_bytes(memory, connection_id_address).ok_or(CfmCloseError::InvalidIdPointer)?,
+    );
+    let index = connections
+        .iter()
+        .position(|connection| connection.id == id)
+        .ok_or(CfmCloseError::ConnectionNotFound)?;
+    if !publish(memory, &[(connection_id_address, &0u32.to_be_bytes())]) {
+        return Err(CfmCloseError::InvalidIdPointer);
+    }
+    connections.remove(index);
+    Ok(())
+}
+
 /// Export enumeration has no CPU or architectural return context.
 /// PowerPC System Software (1994), pp. 3-25–3-26: indices are one-based;
 /// symbol names are Pascal strings and symbol classes occupy one byte.
@@ -591,6 +635,95 @@ mod tests {
         let mut bytes = vec![0; 20];
         memory.read_bytes_into(OUTPUT, &mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn close_publication_is_atomic_across_memory_views_and_retries() {
+        for classic in [false, true] {
+            for failure in 0..7 {
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(OUTPUT, vec![0xa5; 32]);
+                memory.write_bytes(OUTPUT, &7u32.to_be_bytes()).unwrap();
+                let pointer = match failure {
+                    0 => {
+                        memory.add_readonly_region(OUTPUT, 7u32.to_be_bytes().to_vec());
+                        OUTPUT
+                    }
+                    1 => {
+                        memory.add_readonly_region(OUTPUT + 3, vec![7]);
+                        OUTPUT
+                    }
+                    2 => OUTPUT + 30,
+                    3 => u32::MAX - 1,
+                    4 => 0,
+                    5 => {
+                        memory.write_bytes(OUTPUT, &99u32.to_be_bytes()).unwrap();
+                        OUTPUT
+                    }
+                    _ => OUTPUT,
+                };
+                let before = snapshot(&mut memory);
+                let mut connections = vec![connection(7), connection(8)];
+                let original = connections.clone();
+                let mut publish_called = false;
+                let result = if classic {
+                    let mut bus = MacMemoryBus::new(0x10000);
+                    bus.set_addressing_32_bit(true);
+                    bus.attach_guest_address_space(memory.shared_view());
+                    close_connection(&mut connections, &mut bus, pointer, |bus, writes| {
+                        publish_called = true;
+                        failure != 6 && bus.publish_cfm_outputs(writes)
+                    })
+                } else {
+                    close_connection(&mut connections, &mut memory, pointer, |memory, writes| {
+                        publish_called = true;
+                        failure != 6 && memory.publish_cfm_outputs(writes)
+                    })
+                };
+                assert_eq!(
+                    result,
+                    Err(if failure == 5 {
+                        CfmCloseError::ConnectionNotFound
+                    } else {
+                        CfmCloseError::InvalidIdPointer
+                    }),
+                    "classic={classic}, failure={failure}"
+                );
+                assert_eq!(publish_called, matches!(failure, 0 | 1 | 6));
+                assert_eq!(connections, original);
+                assert_eq!(snapshot(&mut memory), before);
+
+                memory.write_bytes(OUTPUT + 8, &7u32.to_be_bytes()).unwrap();
+                let result = if classic {
+                    let mut bus = MacMemoryBus::new(0x10000);
+                    bus.set_addressing_32_bit(true);
+                    bus.attach_guest_address_space(memory.shared_view());
+                    close_connection(
+                        &mut connections,
+                        &mut bus,
+                        OUTPUT + 8,
+                        CfmMemory::publish_cfm_outputs,
+                    )
+                } else {
+                    close_connection(
+                        &mut connections,
+                        &mut memory,
+                        OUTPUT + 8,
+                        CfmMemory::publish_cfm_outputs,
+                    )
+                };
+                assert_eq!(result, Ok(()));
+                assert_eq!(connections, vec![connection(8)]);
+                assert_eq!(
+                    cfm_bytes::<4>(&mut memory, OUTPUT + 8).map(u32::from_be_bytes),
+                    Some(0)
+                );
+                assert_eq!(
+                    cfm_bytes::<4>(&mut memory, OUTPUT + 12).map(u32::from_be_bytes),
+                    Some(0xa5a5_a5a5)
+                );
+            }
+        }
     }
 
     #[test]
