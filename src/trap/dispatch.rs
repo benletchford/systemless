@@ -4074,23 +4074,16 @@ impl TrapDispatcher {
         Self::standard_mac_4bpp_gworld_itable()[cell]
     }
 
-    /// 4-bit-per-channel inverse table (16x16x16 = 4096 cells) precomputed
-    /// from `standard_mac_8bpp_clut`. Each cell holds the CLUT index
-    /// whose entry is closest (by Euclidean distance in 16-bit RGB) to
-    /// the centre of that cube cell.
+    /// 4-bit-per-channel inverse table (16x16x16 = 4096 cells) for the
+    /// standard 8-bit ColorTable. Each cell holds the CLUT index whose entry
+    /// is closest (by Euclidean distance in 16-bit RGB) to the centre of that
+    /// cube cell.
     ///
-    /// This is the cached form the Mac ROM uses via MakeITable: built
-    /// once per GDevice from the GDevice's CTab, then consulted by
-    /// CopyBits/DrawPicture for every pixel mapping. CRITICALLY, the
-    /// ITable is NOT rebuilt when SetEntries modifies the active CLUT —
-    /// the active CLUT controls how stored framebuffer indices DISPLAY
-    /// (palette lookup at scan-out), but the ITable controls which
-    /// dst index gets WRITTEN to the framebuffer (during DrawPicture).
-    ///
-    /// Systemless's prior `closest_clut_index` re-runs full-precision
-    /// closest-match against `device_clut` per pixel, which produces
-    /// different dst indices than the ROM whenever device_clut has
-    /// drifted from the System palette via SetEntries fades.
+    /// QuickDraw associates an inverse table with a GDevice ColorTable. The
+    /// table remains stable across hardware-only palette animation, but a
+    /// logical ColorTable replacement requires a corresponding inverse table.
+    /// This standard-palette table is therefore only an oracle for GDevices
+    /// that still have the canonical System ColorTable.
     /// Imaging With QuickDraw 1994, p. 4-82 (MakeITable, default 4 bits)
     pub(crate) fn standard_mac_8bpp_itable() -> [u8; 4096] {
         let clut = Self::standard_mac_8bpp_clut();
@@ -4139,17 +4132,60 @@ impl TrapDispatcher {
         })
     }
 
-    /// Resolve an RGB color through the main 8-bit screen GDevice's cached
-    /// inverse table. Exact endpoints retain QuickDraw's conventional white
-    /// and black pixels; all other colors use the four-bit device lookup.
-    pub(crate) fn standard_screen_itable_index(rgb: [u16; 3]) -> u8 {
-        if rgb == [0xFFFF; 3] {
-            0
-        } else if rgb == [0; 3] {
-            255
-        } else {
-            Self::standard_itable_lookup(rgb[0], rgb[1], rgb[2])
+    /// Resolve an RGB color through the main 8-bit screen GDevice's logical
+    /// inverse table.
+    ///
+    /// The logical ColorTable is deliberately distinct from the live video
+    /// DAC palette: low-level fades change how existing pixels are displayed
+    /// without changing which pixel value QuickDraw selects. A genuine
+    /// ColorTable replacement, however, must change the inverse lookup. This
+    /// mirrors the `ctSeed`/`iTabSeed` relationship described by Inside
+    /// Macintosh: Advanced Color Imaging, "Inverse Tables".
+    pub(crate) fn screen_itable_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {
+        // Preserve the conventional endpoint pixels even when the ColorTable
+        // contains duplicate white or black entries.
+        if rgb == [0xFFFF; 3] && clut[0] == rgb {
+            return 0;
         }
+        if rgb == [0; 3] && clut[255] == rgb {
+            return 255;
+        }
+
+        // Keep the exact System 7.5.3 oracle, including its propagation and
+        // tie-breaking, while the logical GDevice table is canonical.
+        static STANDARD_CLUT: OnceLock<[[u16; 3]; 256]> = OnceLock::new();
+        let standard_clut = STANDARD_CLUT.get_or_init(Self::standard_mac_8bpp_clut);
+        if clut == standard_clut {
+            return Self::standard_itable_lookup(rgb[0], rgb[1], rgb[2]);
+        }
+
+        // Color2Index returns an exact ColorTable entry before consulting
+        // the quantized inverse-table cell.
+        if let Some(index) = clut.iter().position(|entry| *entry == rgb) {
+            return index as u8;
+        }
+
+        // A custom table uses the same four-bit cell-centre rule as
+        // `build_inverse_table_bytes`, but computing the one requested cell
+        // avoids constructing a 4096-byte table for infrequent RGBForeColor
+        // and RGBBackColor calls.
+        let centre = |component: u16| i64::from((component & 0xF000) | 0x0800);
+        let cr = centre(rgb[0]);
+        let cg = centre(rgb[1]);
+        let cb = centre(rgb[2]);
+        let mut best_index = 0u8;
+        let mut best_distance = i64::MAX;
+        for (index, entry) in clut.iter().enumerate() {
+            let dr = cr - i64::from(entry[0]);
+            let dg = cg - i64::from(entry[1]);
+            let db = cb - i64::from(entry[2]);
+            let distance = dr * dr + dg * dg + db * db;
+            if distance < best_distance {
+                best_index = index as u8;
+                best_distance = distance;
+            }
+        }
+        best_index
     }
 
     /// Register loaded segments for LoadSeg trap.
