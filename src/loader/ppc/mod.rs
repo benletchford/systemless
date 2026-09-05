@@ -7601,7 +7601,7 @@ impl PpcLoadedApp {
                     return PpcImportAction::Yield(1);
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
-                    if guest_calls.complete_powerpc(cpu) {
+                    if guest_calls.complete_powerpc_releasing_scratch(cpu, process_memory_manager) {
                         let native_heap = process_memory_manager
                             .native_heap_state()
                             .expect("native allocator registered during execution");
@@ -50743,15 +50743,28 @@ fn ppc_get_shared_library(
             .write_u32_be(main_addr_ptr, connection.main_addr)
             .is_none()
     {
+        if let Some((_, init_block)) = initialization {
+            process_memory_manager.release_native_scratch(init_block);
+        }
         return return_error(PPC_PARAM_ERR);
     }
     if err_name_ptr != 0 && memory.write_u8(err_name_ptr, 0).is_none() {
+        if let Some((_, init_block)) = initialization {
+            process_memory_manager.release_native_scratch(init_block);
+        }
         return return_error(PPC_PARAM_ERR);
     }
     let Some((init_addr, init_block)) = initialization else {
         return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
     };
-    ppc_activate_cfm_initializer(cpu, memory, guest_calls, init_addr, init_block)
+    ppc_activate_cfm_initializer(
+        cpu,
+        memory,
+        guest_calls,
+        process_memory_manager,
+        init_addr,
+        init_block,
+    )
 }
 
 fn ppc_close_connection(
@@ -51009,21 +51022,35 @@ fn ppc_get_mem_fragment(
             .write_u32_be(main_addr_ptr, connection.main_addr)
             .is_none()
     {
+        if let Some((_, init_block)) = initialization {
+            process_memory_manager.release_native_scratch(init_block);
+        }
         return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
     }
     if err_name_ptr != 0 && memory.write_u8(err_name_ptr, 0).is_none() {
+        if let Some((_, init_block)) = initialization {
+            process_memory_manager.release_native_scratch(init_block);
+        }
         return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
     }
     let Some((init_addr, init_block)) = initialization else {
         return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
     };
-    ppc_activate_cfm_initializer(cpu, memory, guest_calls, init_addr, init_block)
+    ppc_activate_cfm_initializer(
+        cpu,
+        memory,
+        guest_calls,
+        process_memory_manager,
+        init_addr,
+        init_block,
+    )
 }
 
 fn ppc_activate_cfm_initializer(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     guest_calls: &SharedGuestCallStack,
+    memory_manager: &mut ProcessNativeMemoryManager,
     init_addr: u32,
     init_block: u32,
 ) -> PpcImportAction {
@@ -51035,6 +51062,7 @@ fn ppc_activate_cfm_initializer(
         })
     });
     let Some(target) = target else {
+        memory_manager.release_native_scratch(init_block);
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
     };
     let effect = GuestCallEffect::call_guest(
@@ -51052,7 +51080,8 @@ fn ppc_activate_cfm_initializer(
             },
         ),
     );
-    if !guest_calls.activate_powerpc_effect(cpu, memory, effect) {
+    if !guest_calls.activate_powerpc_effect_with_scratch(cpu, memory, effect, Some(init_block)) {
+        memory_manager.release_native_scratch(init_block);
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
     }
     cpu.gpr[12] = init_addr;
@@ -51075,62 +51104,41 @@ fn ppc_create_mem_fragment_init_block(
     // sole argument before making any fragment entry point available.
     let name = encode_mac_roman_lossy(fragment_name);
     let name_len = name.len().min(255);
-    let name_size = u32::try_from(name_len + 1).map_err(|_| PPC_FRAG_NO_MEM)?;
-    let init_block = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
-        ppc_process_heap_alloc(
-            memory_manager,
-            memory,
-            heap_cursor,
-            PPC_CFM_INIT_BLOCK_SIZE,
-            true,
-        )
+    let size = PPC_CFM_INIT_BLOCK_SIZE + name_len as u32 + 1;
+    let mut bytes = vec![0; size as usize];
+    bytes[8..12].copy_from_slice(&connection_id.to_be_bytes());
+    bytes[12..16].copy_from_slice(&PPC_CFM_LOCATOR_IN_MEMORY.to_be_bytes());
+    bytes[16..20].copy_from_slice(&mem_addr.to_be_bytes());
+    bytes[20..24].copy_from_slice(&length.to_be_bytes());
+    bytes[PPC_CFM_INIT_BLOCK_SIZE as usize] = name_len as u8;
+    bytes[PPC_CFM_INIT_BLOCK_SIZE as usize + 1..].copy_from_slice(&name[..name_len]);
+    let init_block = if let Some(manager) = process_memory_manager.as_deref_mut() {
+        let ptr = manager.new_native_scratch(memory, size);
+        if let Some(heap) = manager.native_heap_state() {
+            *heap_cursor = heap.heap_cursor;
+            ppc_update_zone_free_bytes(
+                memory,
+                heap.heap_cursor,
+                manager.native_allocation_limit(heap.heap_limit),
+            );
+        }
+        ptr
     } else {
-        ppc_heap_alloc(
-            memory,
-            heap_cursor,
-            heap_limit,
-            PPC_CFM_INIT_BLOCK_SIZE,
-            true,
-        )
+        // Startup has not attached a process allocator yet; its loader-owned
+        // storage remains part of the application image's lifetime.
+        ppc_heap_alloc(memory, heap_cursor, heap_limit, size, true)
     };
-    let name_ptr = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
-        ppc_process_heap_alloc(memory_manager, memory, heap_cursor, name_size, true)
-    } else {
-        ppc_heap_alloc(memory, heap_cursor, heap_limit, name_size, true)
-    };
-    if init_block == 0 || name_ptr == 0 {
+    if init_block == 0 {
         return Err(PPC_FRAG_NO_MEM);
     }
-    memory
-        .write_u8(name_ptr, name_len as u8)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-    memory
-        .write_bytes(name_ptr + 1, &name[..name_len])
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-    memory
-        .write_u32_be(init_block, 0)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?; // contextID
-    memory
-        .write_u32_be(init_block + 4, 0)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?; // closureID
-    memory
-        .write_u32_be(init_block + 8, connection_id)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-    memory
-        .write_u32_be(init_block + 12, PPC_CFM_LOCATOR_IN_MEMORY)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-    memory
-        .write_u32_be(init_block + 16, mem_addr)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-    memory
-        .write_u32_be(init_block + 20, length)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-    memory
-        .write_u8(init_block + 24, 0)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?; // data instantiated out of place
-    memory
-        .write_u32_be(init_block + 28, name_ptr)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
+    let name_ptr = init_block + PPC_CFM_INIT_BLOCK_SIZE;
+    bytes[28..32].copy_from_slice(&name_ptr.to_be_bytes());
+    if memory.write_bytes(init_block, &bytes).is_none() {
+        if let Some(manager) = process_memory_manager {
+            manager.release_native_scratch(init_block);
+        }
+        return Err(PPC_FRAG_NO_ADDR_SPACE);
+    }
     Ok(init_block)
 }
 
@@ -112351,6 +112359,208 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn cfm_initializer_storage_reuses_only_completed_or_refused_allocations() {
+        let calls = SharedGuestCallStack::default();
+        let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x1000);
+        let mut manager = owner.0.borrow_mut();
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(
+            0x2000,
+            [0x1000u32, 0x2100]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        memory.add_region(0x8000, vec![0; 128]);
+        let mut cursor = PPC_HEAP_BASE;
+        let mut allocate = |manager: &mut ProcessNativeMemoryManager,
+                            memory: &mut PpcSectionMem| {
+            ppc_create_mem_fragment_init_block(
+                Some(manager),
+                memory,
+                &mut cursor,
+                PPC_HEAP_BASE + 0x1000,
+                1,
+                0x6000,
+                123,
+                "nested",
+            )
+            .unwrap()
+        };
+        let first = allocate(&mut manager, &mut memory);
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[1] = 0x8000;
+        cpu.lr = 0x4000;
+        assert_eq!(
+            ppc_activate_cfm_initializer(
+                &mut cpu,
+                &mut memory,
+                &calls,
+                &mut manager,
+                0x2000,
+                first
+            ),
+            PpcImportAction::Continue
+        );
+        let second = allocate(&mut manager, &mut memory);
+        assert_ne!(first, second);
+        cpu.lr = 0x1000;
+        assert_eq!(
+            ppc_activate_cfm_initializer(
+                &mut cpu,
+                &mut memory,
+                &calls,
+                &mut manager,
+                0x2000,
+                second
+            ),
+            PpcImportAction::Continue
+        );
+        cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+        assert!(calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
+        assert_eq!(
+            manager
+                .native_ptr_records()
+                .iter()
+                .map(|p| p.ptr)
+                .collect::<Vec<_>>(),
+            vec![first]
+        );
+        let third = allocate(&mut manager, &mut memory);
+        assert_eq!(third, second, "the live outer block must not be reused");
+        let outer_name = first + PPC_CFM_INIT_BLOCK_SIZE;
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut memory, outer_name),
+            Some(b"nested".to_vec())
+        );
+        cpu.gpr[1] = u32::MAX;
+        let before = calls.clone();
+        assert_eq!(
+            ppc_activate_cfm_initializer(
+                &mut cpu,
+                &mut memory,
+                &calls,
+                &mut manager,
+                0x2000,
+                third
+            ),
+            PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR))
+        );
+        assert_eq!(calls, before);
+        assert_eq!(
+            manager
+                .native_ptr_records()
+                .iter()
+                .map(|p| p.ptr)
+                .collect::<Vec<_>>(),
+            vec![first]
+        );
+        let fourth = allocate(&mut manager, &mut memory);
+        assert_eq!(fourth, second);
+        assert_eq!(
+            ppc_activate_cfm_initializer(
+                &mut cpu,
+                &mut memory,
+                &calls,
+                &mut manager,
+                u32::MAX - 3,
+                fourth
+            ),
+            PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR))
+        );
+        cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+        assert!(calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
+        assert_eq!(cpu.pc, 0x4000);
+        assert!(manager.native_ptr_records().is_empty());
+        assert_eq!(manager.native_free_ptr_blocks().len(), 2);
+    }
+
+    #[test]
+    fn cfm_initializer_storage_is_released_when_fragment_outputs_are_unmapped() {
+        for invalid_register in [6, 7, 8] {
+            let calls = SharedGuestCallStack::default();
+            let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x10000);
+            let mut manager = owner.0.borrow_mut();
+            let mut memory = PpcSectionMem::new();
+            memory.add_region(PPC_HEAP_BASE, vec![0; 0x10000]);
+            let fragment = synthetic_pef_with_initializer();
+            let mut cpu = PpcCpu::new();
+            cpu.gpr[3] = 0x5000;
+            cpu.gpr[4] = PPC_CFM_POWERPC_ARCH;
+            cpu.gpr[5] = PPC_CFM_LOAD_LIB;
+            cpu.gpr[6] = 0x6000;
+            cpu.gpr[7] = 0x6004;
+            cpu.gpr[8] = 0x6008;
+            cpu.gpr[invalid_register] = 0x7000;
+            memory.add_region(0x5000, b"\x06nested".to_vec());
+            let mut libraries = vec![PpcCfmLibraryFragment {
+                name: "nested".to_string(),
+                bytes: fragment,
+            }];
+            memory.add_region(0x6000, vec![0; 64]);
+            let mut cursor = PPC_HEAP_BASE;
+            let mut connections = Vec::new();
+            let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+            assert_eq!(
+                ppc_get_shared_library(
+                    &mut cpu,
+                    &calls,
+                    &mut manager,
+                    &mut memory,
+                    &mut cursor,
+                    PPC_HEAP_BASE + 0x10000,
+                    &mut connections,
+                    &mut libraries,
+                    &mut next_connection,
+                    &mut Vec::new(),
+                    &mut 0,
+                    &mut Vec::new()
+                ),
+                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+            );
+            assert_eq!(
+                connections.len(),
+                1,
+                "reached output publication after preparing the initializer"
+            );
+            assert!(manager.native_ptr_records().is_empty());
+            assert_eq!(manager.native_free_ptr_blocks().len(), 1);
+            assert!(calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn cfm_initializer_storage_allocation_failure_leaves_no_partial_block() {
+        let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 64);
+        let mut manager = owner.0.borrow_mut();
+        manager.set_native_mem_error(-42);
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_HEAP_BASE, vec![0xa5; 64]);
+        let mut cursor = PPC_HEAP_BASE;
+        assert_eq!(
+            ppc_create_mem_fragment_init_block(
+                Some(&mut manager),
+                &mut memory,
+                &mut cursor,
+                PPC_HEAP_BASE + 64,
+                1,
+                0x6000,
+                123,
+                &"x".repeat(40)
+            ),
+            Err(PPC_FRAG_NO_MEM)
+        );
+        assert_eq!(cursor, PPC_HEAP_BASE);
+        assert_eq!(manager.native_heap_state().unwrap().last_mem_error, -42);
+        assert_eq!(
+            manager.native_heap_state().unwrap().heap_cursor,
+            PPC_HEAP_BASE
+        );
+        assert!(manager.native_ptr_records().is_empty());
+        assert!((0..64).all(|offset| memory.read_u8(PPC_HEAP_BASE + offset) == Some(0xa5)));
+    }
+
+    #[test]
     fn cfm_initializer_effect_executes_and_returns_to_its_worker() {
         use crate::execution_kernel::ExecutionTaskState;
         for result in [0u16, 0xffff] {
@@ -112374,15 +112584,42 @@ pub(crate) mod tests {
                     .collect(),
             );
             memory.add_region(0x8000, vec![0xa5; 128]);
+            let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x1000);
+            let mut manager = owner.0.borrow_mut();
+            let mut cursor = PPC_HEAP_BASE;
+            let init_block = ppc_create_mem_fragment_init_block(
+                Some(&mut manager),
+                &mut memory,
+                &mut cursor,
+                PPC_HEAP_BASE + 0x1000,
+                17,
+                0x6000,
+                123,
+                "worker initializer",
+            )
+            .unwrap();
+            assert_eq!(manager.native_ptr_records().len(), 1);
+            assert_eq!(
+                memory.read_u32_be(init_block + 28),
+                Some(init_block + PPC_CFM_INIT_BLOCK_SIZE)
+            );
+            assert_eq!(memory.read_u32_be(init_block + 8), Some(17));
             let mut cpu = PpcCpu::new();
             cpu.gpr[1] = 0x8000;
             cpu.gpr[2] = 0x2200;
             cpu.lr = 0x4000;
             assert_eq!(
-                ppc_activate_cfm_initializer(&mut cpu, &mut memory, &calls, 0x2000, 0x5000,),
+                ppc_activate_cfm_initializer(
+                    &mut cpu,
+                    &mut memory,
+                    &calls,
+                    &mut manager,
+                    0x2000,
+                    init_block,
+                ),
                 PpcImportAction::Continue
             );
-            assert_eq!((cpu.gpr[3], cpu.gpr[12]), (0x5000, 0x2000));
+            assert_eq!((cpu.gpr[3], cpu.gpr[12]), (init_block, 0x2000));
             assert_eq!(calls.current_task(), worker);
             assert_eq!(calls.task_depth(worker), 1);
             assert_eq!(
@@ -112392,7 +112629,19 @@ pub(crate) mod tests {
                 PpcRunResult::CycleLimit { cycles: 2 }
             );
             assert_eq!(cpu.pc, PPC_GUEST_CALL_RETURN_PC);
-            assert!(calls.complete_powerpc(&mut cpu));
+            let before = calls.clone();
+            assert!(!calls.complete_powerpc(&mut cpu));
+            assert_eq!(
+                calls, before,
+                "a return without the allocator must retain its storage"
+            );
+            manager.set_native_mem_error(-108);
+            assert!(calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
+            assert!(manager.native_ptr_records().is_empty());
+            assert_eq!(manager.native_free_ptr_blocks().len(), 1);
+            assert_eq!(manager.native_heap_state().unwrap().last_mem_error, -108);
+            assert!(!calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
+            assert_eq!(manager.native_free_ptr_blocks().len(), 1);
             assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x4000, 0x4000, 0x2200));
             assert_eq!(
                 cpu.gpr[3],
