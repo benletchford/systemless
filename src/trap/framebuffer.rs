@@ -32,6 +32,15 @@ fn no_visrgn_auto_expand_enabled() -> bool {
 }
 
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+/// Device indices of the menu mark's colours, valid while the main device's
+/// colour table keeps the pointer and seed they were resolved against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MenuMarkIndexCache {
+    pub(crate) ctab: u32,
+    pub(crate) seed: u32,
+    pub(crate) indices: [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()],
+}
+
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
     /// Returns (screen_base, row_bytes, width, height, pixel_size).
@@ -2786,6 +2795,38 @@ impl super::TrapDispatcher {
         standard_menu_bar_title_baseline(menu_bar_height, metrics.ascent, metrics.descent)
     }
 
+    /// The menu mark's colours resolved through the main device's colour
+    /// table, cached against that table's pointer and seed. Every write to
+    /// the device table also writes a fresh `ctSeed` (Inside Macintosh
+    /// Volume V (1986), V-143), so an unchanged seed means unchanged entries;
+    /// without the cache every menu-bar redraw scans the table once per
+    /// colour through the bus.
+    pub(super) fn menu_mark_palette_indices(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()] {
+        let identity = Self::main_gdevice_ctab(bus).map(|ctab| (ctab, bus.read_long(ctab)));
+        if let (Some((ctab, seed)), Some(cached)) = (identity, self.menu_mark_indices.get()) {
+            if cached.ctab == ctab && cached.seed == seed {
+                return cached.indices;
+            }
+        }
+        let mut resolved_all = true;
+        let indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
+                resolved_all = false;
+                super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+            })
+        });
+        if let Some((ctab, seed)) = identity {
+            if resolved_all {
+                self.menu_mark_indices
+                    .set(Some(MenuMarkIndexCache { ctab, seed, indices }));
+            }
+        }
+        indices
+    }
+
     pub(super) fn fb_draw_retro_computer_menu_mark(
         &self,
         bus: &mut MacMemoryBus,
@@ -2799,11 +2840,7 @@ impl super::TrapDispatcher {
         // appleMark ($14) identifies the system menu title. Preserve its
         // measured advance while substituting original Systemless artwork.
         // Inside Macintosh Volume I, I-354
-        let palette_indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
-            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
-                super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
-            })
-        });
+        let palette_indices = self.menu_mark_palette_indices(bus);
 
         let left = x;
         let metrics = get_font_metrics(0, 12);
@@ -5674,6 +5711,40 @@ mod redraw_chrome_tests {
 
         assert_eq!(bus.read_byte(screen_base), 0b01_11_11_01);
         assert_eq!(bus.read_byte(screen_base + 1), 0x00);
+    }
+
+    #[test]
+    fn menu_mark_indices_are_cached_until_the_device_table_seed_changes() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut disp = TrapDispatcher::new();
+        let base = bus.alloc(16 * 16);
+        disp.set_screen_mode_for_test(base, 16, 16, 16, 8);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main); // MainDevice
+        let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
+
+        let first = disp.menu_mark_palette_indices(&bus);
+        let cached = disp
+            .menu_mark_indices
+            .get()
+            .expect("resolved indices are cached");
+        assert_eq!((cached.ctab, cached.indices), (ctab, first));
+
+        // Same table, same seed: served from the cache. Poison the cached
+        // indices to prove no lookup happens.
+        disp.menu_mark_indices.set(Some(super::MenuMarkIndexCache {
+            indices: [9; 4],
+            ..cached
+        }));
+        assert_eq!(disp.menu_mark_palette_indices(&bus), [9; 4]);
+
+        // A new seed means the entries may differ: resolved again.
+        bus.write_long(ctab, cached.seed.wrapping_add(1));
+        assert_eq!(disp.menu_mark_palette_indices(&bus), first);
+        assert_eq!(
+            disp.menu_mark_indices.get().map(|cache| cache.seed),
+            Some(cached.seed.wrapping_add(1))
+        );
     }
 
     #[test]
