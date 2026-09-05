@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.35.0](https://github.com/benletchford/systemless/compare/v0.34.1...v0.35.0) (2026-09-05)
+
+
+### Features
+
+* **desktop:** support fullscreen and use the display GPU ([027af8e](https://github.com/benletchford/systemless/commit/027af8e24189041c9499bbe9bf3cf808b9f89251))
+* **theme:** use Systemless presentation in both showcase architectures ([#1427](https://github.com/benletchford/systemless/issues/1427)) ([9bb2c1a](https://github.com/benletchford/systemless/commit/9bb2c1abf3383af615a761f92d8082db348a66da))
+
+
+### Bug Fixes
+
+* **desktop:** size game windows for the display automatically ([#1433](https://github.com/benletchford/systemless/issues/1433)) ([74fd9f7](https://github.com/benletchford/systemless/commit/74fd9f74e7e0d94f0232aaa4c945324609b35766))
+* **quickdraw:** resolve screen colors against the logical palette ([5f21681](https://github.com/benletchford/systemless/commit/5f21681e53605665214c38876008946b6688acfa))
+
+
+### Performance Improvements
+
+* **bus:** inline flat guest memory routing ([7cf6212](https://github.com/benletchford/systemless/commit/7cf6212e6450b1376444cd7019e3518eaa3c8cd4))
+* **runner:** admit safe poll traps and bound idle probes ([cc7063c](https://github.com/benletchford/systemless/commit/cc7063cd398a77f15c90a8120ff4ce4cb8afcd55))
+* **runner:** batch execution through native trap handlers ([055eb7d](https://github.com/benletchford/systemless/commit/055eb7d90da27b3e228a5097ccf676528fc1056a))
+* **trap:** avoid copying protected code ranges during lookup ([eabcd5a](https://github.com/benletchford/systemless/commit/eabcd5ad8b552425ca48bebda38289c0a3056517))
+
 ## [0.34.1](https://github.com/benletchford/systemless/compare/v0.34.0...v0.34.1) (2026-09-05)
 
 
