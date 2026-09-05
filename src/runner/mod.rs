@@ -4831,7 +4831,7 @@ impl FixtureRunner {
         self.idle_cycle_sites.iter().any(|rec| {
             rec.site == trap_pc
                 && ((rec.tick == tick && rec.probes > IDLE_CYCLE_MAX_PROBES_PER_TICK)
-                    || tick < rec.resume_tick)
+                    || (rec.cancel_streak >= 2 && (rec.resume_tick.wrapping_sub(tick) as i32) > 0))
         })
     }
 
@@ -4889,7 +4889,7 @@ impl FixtureRunner {
         if rec.cancel_streak >= 2 {
             let backoff = (1u32 << rec.cancel_streak.min(7))
                 .min(IDLE_CYCLE_CANCEL_BACKOFF_CAP_TICKS);
-            rec.resume_tick = tick.saturating_add(backoff);
+            rec.resume_tick = tick.wrapping_add(backoff);
             if wait_stats_enabled() {
                 WS_CANCEL_BACKOFFS.fetch_add(1, AtomicOrdering::Relaxed);
             }
@@ -4910,7 +4910,7 @@ impl FixtureRunner {
     fn begin_idle_cycle_probe(&mut self, trap_pc: u32, tick: u32, cpu: CpuArchitecturalSnapshot) {
         let slot = self.idle_cycle_site_slot(trap_pc);
         let rec = self.idle_cycle_sites[slot];
-        if tick < rec.resume_tick {
+        if rec.cancel_streak >= 2 && (rec.resume_tick.wrapping_sub(tick) as i32) > 0 {
             // Backed off after repeated trap cancels; see
             // `note_idle_cycle_trap_cancel_site`.
             if wait_stats_enabled() {
@@ -22497,6 +22497,22 @@ mod tests {
     }
 
     #[test]
+    fn idle_cycle_backoff_expires_across_tick_wrap() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.idle_cycle_sites[0] = IdleCycleSiteRecord {
+            site: 0x20000,
+            tick: u32::MAX - 1,
+            probes: 0,
+            cancel_streak: 2,
+            resume_tick: (u32::MAX - 1).wrapping_add(4),
+        };
+        assert!(runner.idle_cycle_site_is_busy(0x20000, u32::MAX));
+        assert!(runner.idle_cycle_site_is_busy(0x20000, 0));
+        assert!(runner.idle_cycle_site_is_busy(0x20000, 1));
+        assert!(!runner.idle_cycle_site_is_busy(0x20000, 2));
+    }
+
+    #[test]
     fn repeated_trap_cancels_back_a_site_off_and_a_closed_proof_resets_it() {
         // A poll loop can die to a foreign trap on every pass at
         // several sites. One cancel is routine; a streak engages an
@@ -22510,7 +22526,6 @@ mod tests {
         runner.m68k.cpu.core.ir = 0xA975;
         runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 100);
-        runner.dispatcher.tick_count = 100;
 
         for _ in 0..2 {
             assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
@@ -22529,7 +22544,6 @@ mod tests {
 
         // Backoff expired (streak 2 = 4 ticks): probing resumes, and a
         // proof that closes on its origin resets the streak entirely.
-        runner.dispatcher.tick_count = 104;
         runner.bus.write_long(0x016A, 104);
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
