@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.34.0](https://github.com/benletchford/systemless/compare/v0.33.1...v0.34.0) (2026-09-05)
+
+
+### Features
+
+* share thread queries and critical sections across native imports ([#1390](https://github.com/benletchford/systemless/issues/1390)) ([b8de271](https://github.com/benletchford/systemless/commit/b8de271392c115cf5ff1bc261e5926721c987c2d))
+
+
+### Bug Fixes
+
+* commit thread results before retiring execution tasks ([#1387](https://github.com/benletchford/systemless/issues/1387)) ([3fd7fbe](https://github.com/benletchford/systemless/commit/3fd7fbe0288785d79bcd679b8011c67ece561263))
+* **list:** match classic scrolling and scrollbar lifecycle ([384bf5a](https://github.com/benletchford/systemless/commit/384bf5a3bd18034e8d7d2d0a5ff7f54e04e31133))
+* **qd3d:** light unannotated meshes with native material defaults ([8cf2920](https://github.com/benletchford/systemless/commit/8cf29209afe143dd94e28ffa877d6aee0450eaed))
+* retain cooperative contexts through task retirement ([#1383](https://github.com/benletchford/systemless/issues/1383)) ([6eb680d](https://github.com/benletchford/systemless/commit/6eb680db0550440063e96600e41ec0bd3f5f3d7e))
+* return abandoned native contexts to their execution owner ([fd4b5e7](https://github.com/benletchford/systemless/commit/fd4b5e7ace8809025d6e360bfc1d21be4a7d3dce))
+* route guest execution by task and pending call ownership ([af4d086](https://github.com/benletchford/systemless/commit/af4d086e7747db4f4310c8de2687cb4c8affdb7d))
+* **sound:** match native conversion and prove showcase PCM ([c29abb3](https://github.com/benletchford/systemless/commit/c29abb3044d4590f65f1f7a14953e2a8f93d26aa))
+* **textedit:** track mouse selections and prove showcase editing ([120d5c3](https://github.com/benletchford/systemless/commit/120d5c39e3e96f5d08576de678d4826cfa149579))
+* **toolbox:** lock sprite pixels and verify the full native showcase ([4ca1c6a](https://github.com/benletchford/systemless/commit/4ca1c6ad421d1659c059306b4c5a96e3df49657e))
+* **window:** preserve the pointer offset while growing windows ([9d8c9b0](https://github.com/benletchford/systemless/commit/9d8c9b0ad49c00228c4fbe71ec90aa0a26cd4c83))
+
+
+### Code Refactoring
+
+* allocate thread identities in the execution owner ([d30234c](https://github.com/benletchford/systemless/commit/d30234ceaeeec3e284560df14fd5897f9913509b))
+* own classic engine contexts and transitions in execution ([#1392](https://github.com/benletchford/systemless/issues/1392)) ([83af901](https://github.com/benletchford/systemless/commit/83af901af2ecbae1af72632d863ae51a144c4d7f))
+* retain native engine identity through execution checkout ([90936ec](https://github.com/benletchford/systemless/commit/90936ec5ea9f0e1093486c01150a1526259b5d37))
+
 ## [0.33.1](https://github.com/benletchford/systemless/compare/v0.33.0...v0.33.1) (2026-09-04)
 
 
