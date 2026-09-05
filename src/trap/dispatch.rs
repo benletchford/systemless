@@ -1728,6 +1728,9 @@ pub struct TrapDispatcher {
     /// Total guest instructions retired so far.
     pub(crate) instruction_count: u64,
     /// Front window pointer
+    /// Keep activation independent of the shared WindowList's stacking order:
+    /// BringToFront does not activate, and an invisible frontmost NewWindow
+    /// can be active. Macintosh Toolbox Essentials (1992), pp. 4-76 and 4-90.
     pub(crate) front_window: u32,
     /// Pointer to the Window Manager port (`WMgrPort` low-memory global).
     /// Inside Macintosh Volume I, I-282.
@@ -1793,8 +1796,8 @@ pub struct TrapDispatcher {
     /// (`runner::idle_cycle_trap_is_journal_complete`).
     pub(crate) window_list: crate::process_context::SharedProcessWindowList,
     /// Whether `window_list` is the process-owned registry rather than a
-    /// standalone dispatcher fixture. Attached dispatchers derive the cached
-    /// front window even when the process list becomes empty.
+    /// standalone dispatcher fixture. The classic frame renderer leaves
+    /// native-owned windows in this shared list to the native renderer.
     pub(crate) process_window_list_attached: bool,
     /// Set once the game has entered fullscreen (window covers entire screen
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
@@ -7531,14 +7534,6 @@ impl TrapDispatcher {
         // the process clock so a direct guest store cannot be shadowed by a
         // stale host pacing snapshot.
         self.read_tick_count(bus);
-        if self.process_window_list_attached {
-            self.front_window = self
-                .window_list
-                .iter()
-                .copied()
-                .find(|window| bus.read_byte(window.wrapping_add(110)) != 0)
-                .unwrap_or(0);
-        }
         // Opt-in per-trap wall-clock timing.
         let timing_start = if trap_timing_enabled() {
             Some(std::time::Instant::now())
