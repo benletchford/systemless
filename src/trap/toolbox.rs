@@ -1332,20 +1332,6 @@ impl super::TrapDispatcher {
         true
     }
 
-    /// Claim a pooled stack of at least `stack_size` bytes, or allocate a
-    /// fresh one. Returns `(base, limit)`.
-    fn acquire_cooperative_thread_stack(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        stack_size: u32,
-    ) -> (u32, u32) {
-        if let Some(stack) = self.guest_calls.take_classic_thread_stack(stack_size) {
-            return stack;
-        }
-        let base = bus.alloc(stack_size);
-        (base, base.wrapping_add(stack_size))
-    }
-
     fn apple_event_handler_for(
         &self,
         event_class: u32,
@@ -16264,11 +16250,22 @@ impl super::TrapDispatcher {
                             if trampoline == 0 {
                                 return Err(-108);
                             }
-                            let (base, limit) = self.acquire_cooperative_thread_stack(bus, size);
+                            let pooled = self
+                                .guest_calls
+                                .request_classic_thread_stack(size, options)?;
+                            let (base, limit) = pooled.unwrap_or_else(|| {
+                                let base = bus.alloc(size);
+                                (base, base.saturating_add(size))
+                            });
                             let fail_stack = base == 0 || limit < base || limit - base < 8;
                             if fail_stack {
                                 if base != 0 {
-                                    self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                    if pooled.is_some() {
+                                        self.guest_calls
+                                            .recycle_classic_thread_stack((base, limit));
+                                    } else {
+                                        bus.free(base);
+                                    }
                                 }
                                 return Err(-108);
                             }
@@ -16284,7 +16281,11 @@ impl super::TrapDispatcher {
                                 || overlap(result_slot, 2, entry_sp, 8)
                                 || overlap(thread_made, 4, result_slot, 2)
                             {
-                                self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                if pooled.is_some() {
+                                    self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                } else {
+                                    bus.free(base);
+                                }
                                 return Err(-50);
                             }
                             let mut thread = Self::capture_cooperative_thread(cpu);
@@ -16311,7 +16312,11 @@ impl super::TrapDispatcher {
                                 },
                             );
                             if made.is_none() {
-                                self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                if pooled.is_some() {
+                                    self.guest_calls.recycle_classic_thread_stack((base, limit));
+                                } else {
+                                    bus.free(base);
+                                }
                                 return Err(-108);
                             }
                             Ok(())
@@ -27553,6 +27558,80 @@ mod tests {
     }
 
     #[test]
+    fn classic_newthread_obeys_pool_options_without_consuming_ids_on_refusal() {
+        // Thread Manager (1999), pp. 48, 57–58.
+        for (options, requested, expected_size, expected_error) in [
+            (0, 1024, 1024, 0),
+            (2, 1024, 1024, 0),
+            (2, 1200, 2048, 0),
+            (2 | 16, 1200, 0, -617),
+            (2 | 16 | 4, 1200, 1200, 0),
+            (2, 8192, 0, -617),
+            (2 | 4, 8192, 8192, 0),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let made = TEST_SP + 0x100;
+            let mut pooled = Vec::new();
+            // Deliberately put larger stacks first to distinguish best fit
+            // from first fit, including an exact match at the end.
+            for size in [4096, 2048, 1024] {
+                let base = bus.alloc(size);
+                pooled.push((base, size));
+                disp.guest_calls
+                    .recycle_classic_thread_stack((base, base + size));
+            }
+            for (offset, value) in [
+                (0, made),
+                (4, 0),
+                (8, options | 1),
+                (12, requested),
+                (16, 0xcafebabe),
+                (20, 0x10000),
+                (24, 1),
+            ] {
+                bus.write_long(TEST_SP + offset, value);
+            }
+            bus.write_long(made, u32::MAX);
+            cpu.write_reg(Register::D0, 0x0e03);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, expected_error);
+            if expected_error != 0 {
+                assert_eq!(bus.read_long(made), 0);
+                assert!(!disp.guest_calls.has_live_workers());
+                assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 3);
+                // A fresh request retries successfully using the unconsumed ID.
+                cpu.write_reg(Register::A7, TEST_SP);
+                cpu.write_reg(Register::D0, 0x0e03);
+                bus.write_long(TEST_SP + 8, 1);
+                disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(cpu.read_reg(Register::D0), 0);
+                assert_eq!(bus.read_long(made), 3);
+                continue;
+            }
+            let task = ExecutionTaskId::from_thread_id(bus.read_long(made));
+            let storage = disp.guest_calls.thread_storage(task).unwrap();
+            assert_eq!(storage.stack_limit - storage.stack_base, expected_size);
+            let selected = pooled.iter().find(|&&(base, _)| base == storage.stack_base);
+            let should_reuse = options & 2 != 0 && expected_size != 1200 && expected_size != 8192;
+            assert_eq!(selected.is_some(), should_reuse);
+            assert_eq!(
+                disp.guest_calls.classic_thread_pool_count(0),
+                if should_reuse { 2 } else { 3 }
+            );
+            assert_eq!(
+                disp.guest_calls.scheduling_state(task),
+                Some(ExecutionTaskState::Stopped)
+            );
+            let context = disp.guest_calls.cooperative_context(task).unwrap();
+            assert_eq!(bus.read_long(context.a_regs[7] + 4), 0xcafebabe);
+        }
+    }
+
+    #[test]
     fn classic_thread_creation_refuses_bad_outputs_and_stacks_without_consuming_an_id() {
         for fault in 0..4 {
             let (mut disp, mut cpu, mut bus) = setup();
@@ -27567,7 +27646,7 @@ mod tests {
             for (offset, value) in [
                 (0, made),
                 (4, 0),
-                (8, 1),
+                (8, 1 | 2 | 4),
                 (12, if fault == 2 { 4 } else { 1024 }),
                 (16, 0xcafebabe),
                 (20, 0x10000),
@@ -27603,7 +27682,7 @@ mod tests {
             for (offset, value) in [
                 (0, retry_made),
                 (4, 0),
-                (8, 1),
+                (8, 1 | 2 | 4),
                 (12, 1024),
                 (16, 0xcafebabe),
                 (20, 0x10000),

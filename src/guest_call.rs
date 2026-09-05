@@ -851,13 +851,38 @@ impl SharedGuestCallStack {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn take_classic_thread_stack(&self, size: u32) -> Option<(u32, u32)> {
+        self.request_classic_thread_stack(size, 2).ok().flatten()
+    }
+
+    /// Select storage without publishing a task. Thread Manager (1999),
+    /// pp. 48, 57–58: opt-in pool use, best fit, exact match and -617 refusal.
+    pub(crate) fn request_classic_thread_stack(
+        &self,
+        size: u32,
+        options: u32,
+    ) -> Result<Option<(u32, u32)>, i16> {
+        if options & 2 == 0 {
+            return Ok(None);
+        }
         let mut tasks = self.0.borrow_mut();
         let index = tasks
             .classic_thread_pool
             .iter()
-            .position(|(base, limit)| limit.saturating_sub(*base) >= size)?;
-        Some(tasks.classic_thread_pool.swap_remove(index))
+            .enumerate()
+            .filter_map(|(index, &(base, limit))| {
+                let available = limit.checked_sub(base)?;
+                (base != 0 && available >= size && (options & 16 == 0 || available == size))
+                    .then_some((index, available))
+            })
+            .min_by_key(|&(_, available)| available)
+            .map(|(index, _)| index);
+        match index {
+            Some(index) => Ok(Some(tasks.classic_thread_pool.swap_remove(index))),
+            None if options & 4 != 0 => Ok(None),
+            None => Err(-617),
+        }
     }
 
     pub(crate) fn recycle_classic_thread_stack(&self, stack: (u32, u32)) {
