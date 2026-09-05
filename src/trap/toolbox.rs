@@ -4730,6 +4730,52 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn mix_movie_music(&mut self, output: &mut Vec<u8>, frames: usize) {
+        for state in self.movie_states.values_mut() {
+            if super::dispatch::trace_quicktime_enabled() {
+                static MIX_TRACE: std::sync::atomic::AtomicU32 =
+                    std::sync::atomic::AtomicU32::new(0);
+                if MIX_TRACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
+                    eprintln!("[QUICKTIME] music mix active={} rate={} time={} audio={} duration={} notes={}", state.active, state.rate, state.current_time, state.audio_time, state.duration, state.music.as_ref().map_or(0, Vec::len));
+                }
+            }
+            if !state.active || state.rate <= 0 {
+                continue;
+            }
+            let Some(notes) = state.music.as_ref() else {
+                continue;
+            };
+            output.resize(frames * 2, 128);
+            let rate = state.rate as f64 / 65536.0;
+            let duration = state.duration as f64 / state.time_scale as f64;
+            let mut rendered = 0;
+            while rendered < frames {
+                if state.audio_time >= duration {
+                    if state.time_base_flags & 1 == 0 {
+                        break;
+                    }
+                    state.audio_time %= duration;
+                }
+                let until_end = ((duration - state.audio_time) * crate::sound::OUTPUT_RATE as f64
+                    / rate)
+                    .ceil() as usize;
+                let count = until_end.max(1).min(frames - rendered);
+                super::movie_media::mix_music_notes(
+                    notes,
+                    state.audio_time,
+                    rate,
+                    state.volume.max(0) as f64 / 256.0,
+                    &mut output[rendered * 2..(rendered + count) * 2],
+                );
+                state.audio_time += count as f64 * rate / crate::sound::OUTPUT_RATE as f64;
+                rendered += count;
+            }
+            if state.time_base_flags & 1 != 0 {
+                state.audio_time %= duration;
+            }
+        }
+    }
+
     /// Advance the clock of every active, playing movie by the real guest
     /// time elapsed since it was last serviced, then decode and blit the frame
     /// due at the new movie time. Called from MoviesTask and the movie
@@ -4759,8 +4805,12 @@ impl super::TrapDispatcher {
                 let mut new_time = state.current_time as i64 + advance;
                 let mut finished = false;
                 if new_time >= state.duration as i64 {
-                    new_time = state.duration as i64;
-                    finished = true;
+                    if state.time_base_flags & 1 != 0 {
+                        new_time %= state.duration.max(1) as i64;
+                    } else {
+                        new_time = state.duration as i64;
+                        finished = true;
+                    }
                 }
                 state.current_time = new_time.clamp(0, state.duration as i64) as i32;
                 let has_video = state.media.as_ref().is_some_and(|m| {
@@ -13987,6 +14037,8 @@ impl super::TrapDispatcher {
                             duration,
                             time_scale,
                         );
+                        movie_state.music =
+                            super::movie_media::parse_music_track(&movie_data, &data_fork);
                         movie_state.media = media;
                         movie_state.data_fork = data_fork;
                         self.movie_states.insert(movie, movie_state);
@@ -14019,6 +14071,99 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 20);
                         cpu.write_reg(Register::D0, 0);
                         record_movie_error(self, 0);
+                        Ok(())
+                    }
+                    0x0012 => {
+                        // GetMovieTimeBase ($AAAA selector $0012)
+                        // Returns the movie-owned time base.
+                        // pascal TimeBase GetMovieTimeBase(Movie movie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-190.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let valid = self.movie_states.contains_key(&movie);
+                        bus.write_long(sp + 4, if valid { movie } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 4);
+                        record_movie_error(self, if valid { 0 } else { QUICKTIME_INVALID_MOVIE });
+                        Ok(())
+                    }
+                    0x00B2 => {
+                        // SetTimeBaseFlags ($AAAA selector $00B2)
+                        // Sets playback control flags, including loopTimeBase.
+                        // pascal void SetTimeBaseFlags(TimeBase tb, long flags);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-331–2-332.
+                        let sp = cpu.read_reg(Register::A7);
+                        let flags = bus.read_long(sp);
+                        let time_base = bus.read_long(sp + 4);
+                        if let Some(state) = self.movie_states.get_mut(&time_base) {
+                            state.time_base_flags = flags;
+                        }
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
+                    0x01B3 => {
+                        // NewMovieFromDataFork ($AAAA selector $01B3)
+                        // Loads a movie atom at an offset in an open data fork.
+                        // pascal OSErr NewMovieFromDataFork(Movie *movie, short refNum,
+                        //   long offset, short flags, Boolean *changed);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-109–2-110.
+                        let sp = cpu.read_reg(Register::A7);
+                        let changed = bus.read_long(sp);
+                        let flags = bus.read_word(sp + 4);
+                        let offset = bus.read_long(sp + 6) as usize;
+                        let refnum = bus.read_word(sp + 10);
+                        let out = bus.read_long(sp + 12);
+                        let data = self
+                            .open_files
+                            .get(&refnum)
+                            .and_then(|name| self.vfs_data_fork_bytes(name));
+                        let mut error: i16 = -51;
+                        if out != 0 {
+                            bus.write_long(out, 0);
+                        }
+                        if let Some(data) = data {
+                            error = -2002;
+                            let atom = data.get(offset..).and_then(|rest| {
+                                let size = rest
+                                    .get(..4)
+                                    .map(|n| u32::from_be_bytes(n.try_into().unwrap()) as usize)?;
+                                if size < 8 || rest.get(4..8) != Some(b"moov") {
+                                    return None;
+                                }
+                                rest.get(..size)
+                            });
+                            if let Some(atom) = atom {
+                                let (rect, duration, scale) = quicktime_movie_metadata(atom);
+                                let mut state =
+                                    MovieState::new(refnum, -1, flags, rect, duration, scale);
+                                state.media = super::movie_media::parse_video_track(atom);
+                                state.music = super::movie_media::parse_music_track(atom, &data);
+                                state.active = flags & 1 != 0;
+                                if super::dispatch::trace_quicktime_enabled() {
+                                    eprintln!("[QUICKTIME] NewMovieFromDataFork offset={} duration={} scale={} notes={}",
+                                                    offset, duration, scale, state.music.as_ref().map_or(0, Vec::len));
+                                }
+                                state.data_fork = data;
+                                let movie = bus.alloc(16);
+                                if movie == 0 {
+                                    error = -108;
+                                } else if out == 0 {
+                                    bus.free(movie);
+                                    error = -50;
+                                } else {
+                                    bus.write_long(movie, u32::from_be_bytes(*b"MooV"));
+                                    self.movie_states.insert(movie, state);
+                                    bus.write_long(out, movie);
+                                    if changed != 0 {
+                                        bus.write_byte(changed, 0);
+                                    }
+                                    error = 0;
+                                }
+                            }
+                        }
+                        bus.write_word(sp + 16, error as u16);
+                        cpu.write_reg(Register::A7, sp + 16);
+                        cpu.write_reg(Register::D0, error as u32);
+                        record_movie_error(self, error);
                         Ok(())
                     }
                     0x0187 => {
@@ -14106,6 +14251,7 @@ impl super::TrapDispatcher {
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.preferred_rate = rate;
                             state.current_time = time.clamp(0, state.duration);
+                            state.audio_time = state.current_time as f64 / state.time_scale as f64;
                             0
                         } else {
                             QUICKTIME_INVALID_MOVIE
@@ -14169,6 +14315,7 @@ impl super::TrapDispatcher {
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.active = true;
                             state.rate = state.preferred_rate;
+                            state.audio_time = state.current_time as f64 / state.time_scale as f64;
                             // Begin the playback clock now so MoviesTask advances
                             // by real elapsed time from this point.
                             state.last_service_tick = Some(now);
@@ -14209,6 +14356,7 @@ impl super::TrapDispatcher {
                         let movie = bus.read_long(sp);
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.current_time = 0;
+                            state.audio_time = 0.0;
                             0
                         } else {
                             QUICKTIME_INVALID_MOVIE
@@ -15758,8 +15906,9 @@ impl super::TrapDispatcher {
             // version (>=3 supports automatic version control,
             // unregister, icon families).
             //
-            // HLE behaviour: provides one synthetic QuickTime movie
-            // controller component (`'play'`) and opaque instances for
+            // HLE behaviour: provides a synthetic QuickTime movie controller
+            // (`'play'`) plus software-instrument discovery for music media,
+            // and opaque movie-controller instances for
             // FindNextComponent/OpenComponent/CloseComponent. Component
             // calls consume selector + instance + arguments and return a
             // zero ComponentResult in the caller's four-byte result slot.
@@ -15767,6 +15916,7 @@ impl super::TrapDispatcher {
             (true, 0x02A) => {
                 const MOVIE_CONTROLLER_COMPONENT: u32 = u32::from_be_bytes(*b"play");
                 const SYNTHETIC_MOVIE_CONTROLLER: u32 = 0x00C0_0001;
+                const SOFTWARE_INSTRUMENT: u32 = 0x00C0_0002;
 
                 let d0 = cpu.read_reg(Register::D0);
                 let operation = component_dispatch_operation_route(self.current_trap_word, d0);
@@ -15864,9 +16014,16 @@ impl super::TrapDispatcher {
                         } else {
                             bus.read_long(description)
                         };
+                        let instrument_matches = (component_type == 0
+                            || component_type == u32::from_be_bytes(*b"inst"))
+                            && (description == 0
+                                || ([0, u32::from_be_bytes(*b"ss  ")]
+                                    .contains(&bus.read_long(description + 4))
+                                    && [0, u32::from_be_bytes(*b"appl")]
+                                        .contains(&bus.read_long(description + 8))));
                         let count = u32::from(
                             component_type == 0 || component_type == MOVIE_CONTROLLER_COMPONENT,
-                        );
+                        ) + u32::from(instrument_matches);
                         bus.write_long(sp + 4, count);
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, count);
@@ -15884,6 +16041,18 @@ impl super::TrapDispatcher {
                             && (component_type == 0 || component_type == MOVIE_CONTROLLER_COMPONENT)
                         {
                             SYNTHETIC_MOVIE_CONTROLLER
+                        } else if (previous == 0 || previous == SYNTHETIC_MOVIE_CONTROLLER)
+                            && (component_type == 0
+                                || component_type == u32::from_be_bytes(*b"inst"))
+                            && (description == 0
+                                || ([0, u32::from_be_bytes(*b"ss  ")]
+                                    .contains(&bus.read_long(description + 4))
+                                    && [0, u32::from_be_bytes(*b"appl")]
+                                        .contains(&bus.read_long(description + 8))))
+                        {
+                            // QuickTime Music Architecture: the instrument
+                            // component advertises the Movie Toolbox's synth.
+                            SOFTWARE_INSTRUMENT
                         } else {
                             0
                         };
@@ -26303,7 +26472,7 @@ mod tests {
             disp.current_selector_operation,
             Some("selector-operation:_ComponentDispatch:0x0003:d0-moveq-immediate:8")
         );
-        assert_eq!(bus.read_long(sp + 4), 1);
+        assert_eq!(bus.read_long(sp + 4), 2);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         disp.current_trap_word = 0xA92A;
@@ -26314,7 +26483,7 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus);
         assert!(result.expect("ComponentDispatch arm").is_ok());
         assert_eq!(disp.current_selector_operation, None);
-        assert_eq!(bus.read_long(sp + 4), 1);
+        assert_eq!(bus.read_long(sp + 4), 2);
     }
 
     #[test]
@@ -34483,6 +34652,95 @@ mod tests {
         );
         assert_eq!(bus.read_word(sp), (-43i16) as u16);
         assert_eq!(cpu.read_reg(Register::D0), (-43i16) as u32);
+    }
+
+    #[test]
+    fn movie_data_fork_loader_checks_offsets_and_pascal_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let mut mvhd = vec![0; 100];
+        mvhd[12..16].copy_from_slice(&600u32.to_be_bytes());
+        mvhd[16..20].copy_from_slice(&1200u32.to_be_bytes());
+        let mut file = vec![0x77; 32];
+        file.extend(quicktime_atom(*b"moov", &quicktime_atom(*b"mvhd", &mvhd)));
+        disp.vfs.insert("score".to_string(), file);
+        disp.open_files.insert(128, "score".to_string());
+        for (offset, expected) in [(32, 0i16), (0, -2002), (u32::MAX, -2002)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x01B3);
+            bus.write_long(TEST_SP, 0x300010);
+            bus.write_word(TEST_SP + 4, 1);
+            bus.write_long(TEST_SP + 6, offset);
+            bus.write_word(TEST_SP + 10, 128);
+            bus.write_long(TEST_SP + 12, 0x300000);
+            bus.write_long(TEST_SP + 18, 0xCAFE_BABE);
+            disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+            assert_eq!(bus.read_word(TEST_SP + 16) as i16, expected);
+            assert_eq!(bus.read_long(TEST_SP + 18), 0xCAFE_BABE);
+            if expected == 0 {
+                let movie = bus.read_long(0x300000);
+                assert_eq!(disp.movie_states[&movie].duration, 1200);
+                assert_eq!(disp.movie_states[&movie].time_scale, 600);
+                assert_eq!(bus.read_byte(0x300010), 0);
+            } else {
+                assert_eq!(bus.read_long(0x300000), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn movie_music_controls_stop_mute_seek_and_loop() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let movie = 0x300100;
+        let mut state = super::MovieState::new(0, -1, 1, (0, 0, 0, 0), 600, 600);
+        state.music = Some(vec![super::super::movie_media::MusicNote {
+            start: 0.0,
+            duration: 0.8,
+            pitch: 60.0,
+            velocity: 1.0,
+            part: 0,
+        }]);
+        disp.movie_states.insert(movie, state);
+        let call = |disp: &mut TrapDispatcher,
+                    cpu: &mut MockCpu,
+                    bus: &mut MacMemoryBus,
+                    selector: u32| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            disp.dispatch_toolbox(true, 0x2AA, cpu, bus)
+                .unwrap()
+                .unwrap();
+        };
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x0012);
+        assert_eq!(bus.read_long(TEST_SP + 4), movie);
+        bus.write_long(TEST_SP, 1);
+        bus.write_long(TEST_SP + 4, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x00B2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x000B);
+        let mut output = Vec::new();
+        disp.mix_movie_music(&mut output, 2205);
+        assert!(output.iter().any(|&b| b != 128));
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x002F);
+        output.clear();
+        disp.mix_movie_music(&mut output, 2205);
+        assert!(output.iter().all(|&b| b == 128));
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x000D);
+        assert_eq!(disp.movie_states[&movie].audio_time, 0.0);
+        disp.mix_movie_music(&mut Vec::new(), 22050 + 2205);
+        assert!((disp.movie_states[&movie].audio_time - 0.1).abs() < 1e-9);
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x000C);
+        output.clear();
+        disp.mix_movie_music(&mut output, 2205);
+        assert!(output.is_empty());
     }
 
     #[test]
