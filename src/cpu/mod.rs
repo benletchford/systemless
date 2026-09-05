@@ -49,6 +49,27 @@ pub enum StepResult {
     Fline(u16),
 }
 
+/// Classic task state beyond the integer registers exposed by [`CpuOps`].
+///
+/// Inside Macintosh: Thread Manager (1999), p. 15, Table 1-1 requires the
+/// full SR, floating-point registers and FPU frame. Raw extended-precision
+/// values preserve NaN payloads and values that cannot round-trip through f64.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct M68kExtendedContext {
+    /// Full status register, including CCR and stack-bank selection.
+    pub sr: u16,
+    /// FP0 through FP7 in the backend's exact 80-bit representation.
+    pub fpr: [m68k::fpu::FloatX80; 8],
+    /// Floating-point control register.
+    pub fpcr: u32,
+    /// Floating-point status register.
+    pub fpsr: u32,
+    /// Floating-point instruction address register.
+    pub fpiar: u32,
+    /// Distinguishes the backend's null and idle FSAVE frames.
+    pub fpu_just_reset: bool,
+}
+
 /// Register interface used by the trap dispatcher.
 ///
 /// Keeping handlers generic over this subset lets them operate on both the
@@ -65,6 +86,17 @@ pub trait CpuOps {
     ///
     /// The low five bits are X(4), N(3), Z(2), V(1), and C(0).
     fn set_ccr(&mut self, ccr: u8);
+
+    /// Capture additional architectural task state when this adapter has it.
+    /// Register-only adapters retain their existing integer/CCR behavior.
+    fn capture_extended_context(&self) -> Option<M68kExtendedContext> {
+        None
+    }
+
+    /// Restore state captured by this adapter before installing A7: restoring
+    /// SR can change the selected stack bank. Register-only adapters have no
+    /// additional state; backends returning `Some` must implement this method.
+    fn restore_extended_context(&mut self, _context: &M68kExtendedContext) {}
 }
 
 /// Systemless wrapper around [`m68k::CpuCore`].
@@ -224,6 +256,26 @@ impl CpuOps for M68kCpu {
     #[inline]
     fn set_ccr(&mut self, ccr: u8) {
         self.core.set_ccr(ccr);
+    }
+
+    fn capture_extended_context(&self) -> Option<M68kExtendedContext> {
+        Some(M68kExtendedContext {
+            sr: self.core.get_sr(),
+            fpr: self.core.fpr,
+            fpcr: self.core.fpcr,
+            fpsr: self.core.fpsr,
+            fpiar: self.core.fpiar,
+            fpu_just_reset: self.core.fpu_just_reset,
+        })
+    }
+
+    fn restore_extended_context(&mut self, context: &M68kExtendedContext) {
+        self.core.set_sr(context.sr);
+        self.core.fpr = context.fpr;
+        self.core.fpcr = context.fpcr;
+        self.core.fpsr = context.fpsr;
+        self.core.fpiar = context.fpiar;
+        self.core.fpu_just_reset = context.fpu_just_reset;
     }
 }
 

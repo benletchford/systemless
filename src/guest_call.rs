@@ -8,7 +8,7 @@
 //! while each adapter remains responsible for its architectural registers and
 //! ABI frame.
 
-use crate::cpu::M68kCpu;
+use crate::cpu::{CpuOps, M68kCpu, M68kExtendedContext, Register};
 #[cfg(test)]
 pub(crate) use crate::execution_kernel::MAX_POWERPC_GUEST_ARGUMENTS;
 pub(crate) use crate::execution_kernel::{
@@ -38,22 +38,102 @@ pub(crate) fn restore_powerpc_context(cpu: &mut PpcCpu, context: PpcCpu) {
 
 /// Saved 68K state for one cooperative Thread Manager thread.
 ///
-/// Cooperative switches occur only inside `_ThreadDispatch`, so the HLE can
-/// preserve the complete caller-visible register file without involving a
-/// host thread. New threads inherit the creator's register world (notably A5)
-/// and receive a private guest stack.
+/// The execution owner preserves the caller-visible register file across
+/// classic switches and native task handoffs without involving a host thread.
+/// New threads inherit the creator's register world (notably A5) and receive
+/// a private guest stack.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CooperativeThread {
     pub(crate) d_regs: [u32; 8],
     pub(crate) a_regs: [u32; 8],
     pub(crate) pc: u32,
     pub(crate) ccr: u8,
+    pub(crate) extended: Option<M68kExtendedContext>,
     /// `SetThreadSwitcher` switch-in proc and its `switchProcParam`.
     pub(crate) switch_in: (u32, u32),
     /// `SetThreadSwitcher` switch-out proc and its `switchProcParam`.
     pub(crate) switch_out: (u32, u32),
     /// `SetThreadTerminator` proc and its `terminationProcParam`.
     pub(crate) terminator: (u32, u32),
+}
+
+impl CooperativeThread {
+    pub(crate) fn capture<C: CpuOps>(cpu: &C) -> CooperativeThread {
+        let d_regs = [
+            cpu.read_reg(Register::D0),
+            cpu.read_reg(Register::D1),
+            cpu.read_reg(Register::D2),
+            cpu.read_reg(Register::D3),
+            cpu.read_reg(Register::D4),
+            cpu.read_reg(Register::D5),
+            cpu.read_reg(Register::D6),
+            cpu.read_reg(Register::D7),
+        ];
+        let a_regs = [
+            cpu.read_reg(Register::A0),
+            cpu.read_reg(Register::A1),
+            cpu.read_reg(Register::A2),
+            cpu.read_reg(Register::A3),
+            cpu.read_reg(Register::A4),
+            cpu.read_reg(Register::A5),
+            cpu.read_reg(Register::A6),
+            cpu.read_reg(Register::A7),
+        ];
+        CooperativeThread {
+            d_regs,
+            a_regs,
+            pc: cpu.read_reg(Register::PC),
+            ccr: cpu.get_ccr(),
+            extended: cpu.capture_extended_context(),
+            switch_in: (0, 0),
+            switch_out: (0, 0),
+            terminator: (0, 0),
+        }
+    }
+
+    pub(crate) fn save_registers<C: CpuOps>(&mut self, cpu: &C) {
+        *self = Self {
+            switch_in: self.switch_in,
+            switch_out: self.switch_out,
+            terminator: self.terminator,
+            ..Self::capture(cpu)
+        };
+    }
+
+    pub(crate) fn install<C: CpuOps>(&self, cpu: &mut C) {
+        if let Some(context) = &self.extended {
+            cpu.restore_extended_context(context);
+        }
+        let d_registers = [
+            Register::D0,
+            Register::D1,
+            Register::D2,
+            Register::D3,
+            Register::D4,
+            Register::D5,
+            Register::D6,
+            Register::D7,
+        ];
+        let a_registers = [
+            Register::A0,
+            Register::A1,
+            Register::A2,
+            Register::A3,
+            Register::A4,
+            Register::A5,
+            Register::A6,
+            Register::A7,
+        ];
+        for (register, value) in d_registers.into_iter().zip(self.d_regs) {
+            cpu.write_reg(register, value);
+        }
+        for (register, value) in a_registers.into_iter().zip(self.a_regs) {
+            cpu.write_reg(register, value);
+        }
+        cpu.write_reg(Register::PC, self.pc);
+        // ABI results may update CCR after the extended snapshot was captured.
+        cpu.set_ccr(self.ccr);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
