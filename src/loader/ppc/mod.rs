@@ -6783,6 +6783,58 @@ impl PpcLoadedApp {
         )
     }
 
+    /// PowerPC System Software (1994), pp. 1-44–1-49: asynchronous
+    /// callbacks need a private frame below the interrupted 224-byte Red Zone.
+    /// Validate the engine owner's allocation and the complete writable frame
+    /// before touching linkage, parameters or the interrupted registers.
+    fn prepare_interrupt_callback_frame(&mut self, rtoc: u32) -> Option<u32> {
+        let interrupted_sp = self.cpu.gpr[1];
+        let frame_sp = interrupted_sp
+            .checked_sub(PPC_INTERRUPT_RED_ZONE_SIZE)?
+            .checked_sub(PPC_INITIAL_STACK_FRAME_SIZE)?
+            & !15;
+        let (base, limit) = self.guest_calls.native_stack_bounds(
+            self.stack_base,
+            self.stack_base.checked_add(self.stack_size)?,
+        )?;
+        if frame_sp < base
+            || interrupted_sp > limit
+            || !ppc_memory_can_write_bytes(&mut self.memory, frame_sp, PPC_INITIAL_STACK_FRAME_SIZE)
+        {
+            return None;
+        }
+        if !ppc_zero_guest_bytes(&mut self.memory, frame_sp, PPC_INITIAL_STACK_FRAME_SIZE) {
+            return None;
+        }
+        self.memory
+            .write_u32_be(frame_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET, interrupted_sp)?;
+        self.memory
+            .write_u32_be(frame_sp + PPC_LINKAGE_SAVED_CR_OFFSET, self.cpu.cr)?;
+        self.memory
+            .write_u32_be(frame_sp + PPC_LINKAGE_SAVED_LR_OFFSET, self.cpu.lr)?;
+        self.memory
+            .write_u32_be(frame_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, rtoc)?;
+        Some(frame_sp)
+    }
+
+    fn interrupt_callback_stack_fault(&self) -> PpcHleRunProbe {
+        PpcHleRunProbe {
+            result: PpcRunResult::MemoryFault {
+                pc: self.cpu.pc,
+                addr: ppc_interrupt_callback_stack_pointer(self.cpu.gpr[1]),
+                was_write: true,
+                cycles: 0,
+            },
+            handled_import_count: 0,
+            last_import_index: None,
+            unsupported_import_index: None,
+            import_trace: Vec::new(),
+            draw_sprocket_trace: Vec::new(),
+            input_sprocket_trace: Vec::new(),
+            fetch_histogram: None,
+        }
+    }
+
     fn run_sound_completion_callback_inner(
         &mut self,
         completion: PpcSoundCompletionRecord,
@@ -6809,58 +6861,41 @@ impl PpcLoadedApp {
             proc_info: 0,
             routine_flags: 0,
         });
-        let callback_sp = ppc_interrupt_callback_stack_pointer(saved_cpu.gpr[1]);
-        if callback_sp >= self.stack_base {
-            let _ = self.memory.write_u32_be(
-                callback_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET,
-                saved_cpu.gpr[1],
+        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            let command_ptr = completion.command.and_then(|command| {
+                // The PowerPC SndCallBackProcPtr signature is
+                // (SndChannelPtr, SndCommand *). Keep the copied command in the
+                // final eight bytes of the 64-byte callback frame, after its
+                // linkage and eight-word parameter areas and before the
+                // interrupted routine's protected Red Zone.
+                let command_ptr = self.cpu.gpr[1].checked_add(
+                    PPC_PARAMETER_AREA_OFFSET + PPC_NATIVE_PARAMETER_GPR_COUNT as u32 * 4,
+                )?;
+                self.memory.write_u16_be(command_ptr, command.command)?;
+                self.memory
+                    .write_u16_be(command_ptr + 2, command.param1 as u16)?;
+                self.memory.write_u32_be(command_ptr + 4, command.param2)?;
+                Some(command_ptr)
+            });
+            let _ = ppc_install_native_call_arguments(
+                &mut self.cpu,
+                &mut self.memory,
+                &[completion.channel, command_ptr.unwrap_or(0)],
             );
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_CR_OFFSET, saved_cpu.cr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_LR_OFFSET, saved_cpu.lr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, default_rtoc);
-        }
 
-        self.cpu.pc = target.entry;
-        self.cpu.lr = self.halt_pc;
-        self.cpu.gpr[1] = if callback_sp >= self.stack_base {
-            callback_sp
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                process_memory_manager,
+            )
         } else {
-            saved_cpu.gpr[1]
+            self.interrupt_callback_stack_fault()
         };
-        self.cpu.gpr[2] = target.rtoc;
-        let command_ptr = completion.command.and_then(|command| {
-            // The PowerPC SndCallBackProcPtr signature is
-            // (SndChannelPtr, SndCommand *). Keep the copied command in the
-            // final eight bytes of the 64-byte callback frame, after its
-            // linkage and eight-word parameter areas and before the
-            // interrupted routine's protected Red Zone.
-            let command_ptr = self.cpu.gpr[1].checked_add(
-                PPC_PARAMETER_AREA_OFFSET + PPC_NATIVE_PARAMETER_GPR_COUNT as u32 * 4,
-            )?;
-            self.memory.write_u16_be(command_ptr, command.command)?;
-            self.memory
-                .write_u16_be(command_ptr + 2, command.param1 as u16)?;
-            self.memory.write_u32_be(command_ptr + 4, command.param2)?;
-            Some(command_ptr)
-        });
-        let _ = ppc_install_native_call_arguments(
-            &mut self.cpu,
-            &mut self.memory,
-            &[completion.channel, command_ptr.unwrap_or(0)],
-        );
-
-        let probe = self.run_with_hle_imports_with_trace(
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            process_memory_manager,
-        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -7017,41 +7052,24 @@ impl PpcLoadedApp {
                 proc_info: 0,
                 routine_flags: 0,
             });
-        let callback_sp = ppc_interrupt_callback_stack_pointer(saved_cpu.gpr[1]);
-        if callback_sp >= self.stack_base {
-            let _ = self.memory.write_u32_be(
-                callback_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET,
-                saved_cpu.gpr[1],
-            );
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_CR_OFFSET, saved_cpu.cr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_LR_OFFSET, saved_cpu.lr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, default_rtoc);
-        }
-
-        self.cpu.pc = target.entry;
-        self.cpu.lr = self.halt_pc;
-        self.cpu.gpr[1] = if callback_sp >= self.stack_base {
-            callback_sp
+        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            // Inside Macintosh: Processes (1994), pp. 3-21--3-22: the Time
+            // Manager passes the expired TMTask record to its callback. Mixed
+            // Mode marshals that pointer into the native PowerPC argument area.
+            let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                process_memory_manager,
+            )
         } else {
-            saved_cpu.gpr[1]
+            self.interrupt_callback_stack_fault()
         };
-        self.cpu.gpr[2] = target.rtoc;
-        // Inside Macintosh: Processes (1994), pp. 3-21--3-22: the Time
-        // Manager passes the expired TMTask record to its callback. Mixed
-        // Mode marshals that pointer into the native PowerPC argument area.
-        let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
-        let probe = self.run_with_hle_imports_with_trace(
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            process_memory_manager,
-        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -7207,43 +7225,26 @@ impl PpcLoadedApp {
                 proc_info: 0,
                 routine_flags: 0,
             });
-        let callback_sp = ppc_interrupt_callback_stack_pointer(saved_cpu.gpr[1]);
-        if callback_sp >= self.stack_base {
-            let _ = self.memory.write_u32_be(
-                callback_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET,
-                saved_cpu.gpr[1],
-            );
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_CR_OFFSET, saved_cpu.cr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_LR_OFFSET, saved_cpu.lr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, default_rtoc);
-        }
-
-        self.cpu.pc = target.entry;
-        self.cpu.lr = self.halt_pc;
-        self.cpu.gpr[1] = if callback_sp >= self.stack_base {
-            callback_sp
+        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            // Inside Macintosh: Processes (1994), p. 4-12: the Vertical Retrace
+            // Manager passes the VBL task record in A0 so a repetitive task can
+            // reset vblCount. Inside Macintosh: PowerPC System Software (1994),
+            // pp. 2-32–2-33 documents the register-based routine convention that
+            // Mixed Mode uses to marshal that four-byte A0 parameter to native PPC.
+            let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                process_memory_manager,
+            )
         } else {
-            saved_cpu.gpr[1]
+            self.interrupt_callback_stack_fault()
         };
-        self.cpu.gpr[2] = target.rtoc;
-        // Inside Macintosh: Processes (1994), p. 4-12: the Vertical Retrace
-        // Manager passes the VBL task record in A0 so a repetitive task can
-        // reset vblCount. Inside Macintosh: PowerPC System Software (1994),
-        // pp. 2-32–2-33 documents the register-based routine convention that
-        // Mixed Mode uses to marshal that four-byte A0 parameter to native PPC.
-        let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
-        let probe = self.run_with_hle_imports_with_trace(
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            process_memory_manager,
-        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -7325,43 +7326,26 @@ impl PpcLoadedApp {
                     proc_info: 0,
                     routine_flags: 0,
                 });
-        let callback_sp = ppc_interrupt_callback_stack_pointer(saved_cpu.gpr[1]);
-        if callback_sp >= self.stack_base {
-            let _ = self.memory.write_u32_be(
-                callback_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET,
-                saved_cpu.gpr[1],
+        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            let _ = ppc_install_native_call_arguments(
+                &mut self.cpu,
+                &mut self.memory,
+                &[doubleback.channel, doubleback.exhausted_buffer],
             );
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_CR_OFFSET, saved_cpu.cr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_LR_OFFSET, saved_cpu.lr);
-            let _ = self
-                .memory
-                .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, default_rtoc);
-        }
 
-        self.cpu.pc = target.entry;
-        self.cpu.lr = self.halt_pc;
-        self.cpu.gpr[1] = if callback_sp >= self.stack_base {
-            callback_sp
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                process_memory_manager,
+            )
         } else {
-            saved_cpu.gpr[1]
+            self.interrupt_callback_stack_fault()
         };
-        self.cpu.gpr[2] = target.rtoc;
-        let _ = ppc_install_native_call_arguments(
-            &mut self.cpu,
-            &mut self.memory,
-            &[doubleback.channel, doubleback.exhausted_buffer],
-        );
-
-        let probe = self.run_with_hle_imports_with_trace(
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            process_memory_manager,
-        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -174841,6 +174825,195 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.sound.stop_count, 1);
         assert_eq!(loaded.sound.manager.file_playback_paused(channel), None);
+    }
+
+    fn invoke_worker_interrupt_for_test(loaded: &mut PpcLoadedApp, kind: u8) -> PpcRunResult {
+        const OUTPUT: u32 = PPC_DATA_BASE + 0x3000;
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        match kind {
+            0 => {
+                loaded
+                    .run_timer_callback(OUTPUT, VECTOR, 64, false, false, None)
+                    .invocation
+                    .result
+            }
+            1 => {
+                loaded
+                    .run_vbl_callback(OUTPUT, VECTOR, 64, false, false, None)
+                    .invocation
+                    .result
+            }
+            2 => {
+                loaded
+                    .run_sound_completion_callback(
+                        PpcSoundCompletionRecord {
+                            file_playback_index: 0,
+                            channel: OUTPUT,
+                            completion: VECTOR,
+                            command: Some(PpcSndCommandRecord {
+                                channel: OUTPUT,
+                                command: 13,
+                                param1: 7,
+                                param2: 42,
+                            }),
+                            tick: 0,
+                            instruction_count: 0,
+                            scheduled_tick: 0,
+                            scheduled_instruction_count: 0,
+                        },
+                        64,
+                        false,
+                        false,
+                    )
+                    .invocation
+                    .result
+            }
+            3 => {
+                loaded
+                    .run_sound_doubleback_callback(
+                        PpcSoundDoubleBackRecord {
+                            architecture: CallbackTaskArchitecture::PowerPc,
+                            channel: OUTPUT,
+                            header: 0,
+                            exhausted_buffer: 0,
+                            exhausted_buffer_index: 0,
+                            callback: VECTOR,
+                            tick: 0,
+                            instruction_count: 0,
+                        },
+                        64,
+                        false,
+                        false,
+                    )
+                    .invocation
+                    .result
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn interrupt_callbacks_protect_worker_frames_and_refuse_exhausted_stacks() {
+        use crate::guest_call::ExecutionTaskId;
+        const MADE: u32 = PPC_DATA_BASE + 0x2000;
+        const OUTPUT: u32 = PPC_DATA_BASE + 0x3000;
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        for kind in 0..4 {
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+            loaded.memory.add_region(MADE, vec![0; 4]);
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = PPC_CODE_BASE;
+            loaded.cpu.gpr[5] = 17;
+            loaded.cpu.gpr[6] = 4096;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            loaded.cpu.gpr[9] = MADE;
+            loaded.run_with_hle_imports(64);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
+            assert!(loaded
+                .guest_calls
+                .yield_native_thread(&mut loaded.cpu, worker.thread_id())
+                .unwrap());
+            let storage = loaded.guest_calls.thread_storage(worker).unwrap();
+            let worker_sp = loaded.cpu.gpr[1];
+            assert!(worker_sp < loaded.stack_base);
+            loaded.memory.add_region(OUTPUT, vec![0; 4]);
+            loaded.memory.add_region(VECTOR, vec![0; 8]);
+            loaded.memory.write_u32_be(VECTOR, ENTRY).unwrap();
+            loaded
+                .memory
+                .write_u32_be(VECTOR + 4, PPC_DATA_BASE)
+                .unwrap();
+            // Store the callback SP for observation, then overwrite a parameter
+            // slot. This must never touch the interrupted frame or Red Zone.
+            loaded.memory.add_region(
+                ENTRY,
+                [
+                    d_form_u(36, 1, 3, 0),
+                    d_form_u(36, 3, 1, PPC_PARAMETER_AREA_OFFSET as u16),
+                    BLR,
+                ]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+            );
+            loaded
+                .memory
+                .add_region(storage.stack_base - 512, vec![0x5a; 512]);
+            loaded
+                .memory
+                .add_region(storage.stack_limit, vec![0x5a; 128]);
+            for invalid_sp in [storage.stack_base + 128, storage.stack_limit + 16, 16] {
+                loaded.cpu.gpr[1] = invalid_sp;
+                let saved = loaded.cpu.clone();
+                let frame = ppc_interrupt_callback_stack_pointer(invalid_sp);
+                let before = ppc_memory_read_bytes(&mut loaded.memory, frame, 64);
+                let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+                assert_eq!(
+                    result,
+                    PpcRunResult::MemoryFault {
+                        pc: saved.pc,
+                        addr: frame,
+                        was_write: true,
+                        cycles: 0,
+                    },
+                    "callback family {kind}"
+                );
+                assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, frame, 64), before);
+                assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0));
+                assert_eq!(loaded.cpu.gpr, saved.gpr);
+                assert_eq!(loaded.cpu.fpr, saved.fpr);
+                assert_eq!(loaded.cpu.pc, saved.pc);
+                assert_eq!(loaded.cpu.lr, saved.lr);
+                assert_eq!(loaded.cpu.cr, saved.cr);
+                assert_eq!(loaded.cpu.time_base(), saved.time_base());
+                assert_eq!(loaded.guest_calls.current_task(), worker);
+            }
+            loaded.cpu.gpr[1] = worker_sp;
+            // A valid SP is insufficient when only part of the frame is
+            // writable. Refusal must not clear even the accessible prefix.
+            let frame = ppc_interrupt_callback_stack_pointer(worker_sp);
+            let memory = std::mem::replace(&mut loaded.memory, PpcSectionMem::new());
+            loaded.memory.add_region(frame, vec![0x5a; 32]);
+            let saved = loaded.cpu.clone();
+            let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+            assert!(matches!(
+                result,
+                PpcRunResult::MemoryFault { cycles: 0, .. }
+            ));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, frame, 32),
+                Some(vec![0x5a; 32])
+            );
+            assert_eq!(loaded.cpu.gpr, saved.gpr);
+            assert_eq!(loaded.cpu.pc, saved.pc);
+            loaded.memory = memory;
+            let protected_base = worker_sp - PPC_INTERRUPT_RED_ZONE_SIZE;
+            let protected = vec![0xa5; (PPC_INTERRUPT_RED_ZONE_SIZE + 64) as usize];
+            loaded
+                .memory
+                .write_bytes(protected_base, &protected)
+                .unwrap();
+            let saved = loaded.cpu.clone();
+            let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+            assert!(
+                matches!(result, PpcRunResult::Halted { .. }),
+                "callback family {kind}: {result:?}"
+            );
+            let frame = ppc_interrupt_callback_stack_pointer(worker_sp);
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(frame));
+            assert_eq!(loaded.memory.read_u32_be(frame), Some(worker_sp));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, protected_base, protected.len() as u32),
+                Some(protected)
+            );
+            assert_eq!(loaded.cpu.gpr, saved.gpr);
+            assert_eq!(loaded.cpu.pc, saved.pc);
+            assert_eq!(loaded.guest_calls.current_task(), worker);
+        }
     }
 
     #[test]
