@@ -6901,7 +6901,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        self.cpu = saved_cpu;
+        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
 
         PpcSoundCompletionCallProbe {
             invocation: PpcSoundCompletionInvocationRecord {
@@ -7075,7 +7075,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        self.cpu = saved_cpu;
+        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
         self.set_current_resource_refnum(saved_current_resource_refnum);
 
         PpcTimerCallbackProbe {
@@ -7250,7 +7250,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        self.cpu = saved_cpu;
+        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
         self.set_current_resource_refnum(saved_current_resource_refnum);
 
         PpcVblCallbackProbe {
@@ -7351,7 +7351,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        self.cpu = saved_cpu;
+        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
 
         PpcSoundCompletionCallProbe {
             invocation: PpcSoundCompletionInvocationRecord {
@@ -175061,6 +175061,82 @@ pub(crate) mod tests {
                     .result
             }
             _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn interrupt_callbacks_preserve_time_base_on_return_fault_and_cycle_limit() {
+        const OUTPUT: u32 = PPC_DATA_BASE + 0x3000;
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        const START: u64 = 0xffff_fffc;
+        for kind in 0..4 {
+            for outcome in 0..3 {
+                let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+                loaded.memory.add_region(OUTPUT, vec![0; 8]);
+                loaded.memory.add_region(VECTOR, vec![0; 8]);
+                loaded.memory.write_u32_be(VECTOR, ENTRY).unwrap();
+                loaded
+                    .memory
+                    .write_u32_be(VECTOR + 4, PPC_DATA_BASE)
+                    .unwrap();
+                // Cross the lower-word carry boundary, then let the callback
+                // publish both time-base halves before returning or stopping.
+                let mut code = vec![0x6000_0000; 4];
+                code.extend([
+                    xfx_form(31, 5, 268, 371), // mftb r5
+                    d_form_u(36, 5, 3, 0),
+                    xfx_form(31, 6, 269, 371), // mftbu r6
+                    d_form_u(36, 6, 3, 4),
+                    match outcome {
+                        0 => BLR,
+                        1 => d_form_u(32, 8, 20, 0), // unmapped load
+                        _ => 0x4800_0000,            // b .
+                    },
+                ]);
+                loaded
+                    .memory
+                    .add_region(ENTRY, code.into_iter().flat_map(u32::to_be_bytes).collect());
+                loaded.cpu.gpr[20] = 0xdead_0000;
+                loaded.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
+                loaded.cpu.cr = 0x1357_2468;
+                loaded.cpu.set_time_base(START);
+                let saved = loaded.cpu.clone();
+                let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+                match outcome {
+                    0 => assert!(matches!(result, PpcRunResult::Halted { .. })),
+                    1 => assert!(matches!(
+                        result,
+                        PpcRunResult::MemoryFault {
+                            addr: 0xdead_0000,
+                            ..
+                        }
+                    )),
+                    _ => assert!(matches!(result, PpcRunResult::CycleLimit { .. })),
+                }
+                let observed = (u64::from(loaded.memory.read_u32_be(OUTPUT + 4).unwrap()) << 32)
+                    | u64::from(loaded.memory.read_u32_be(OUTPUT).unwrap());
+                assert!(observed > START);
+                let elapsed = loaded.cpu.time_base();
+                assert!(
+                    elapsed >= observed,
+                    "callback family {kind}, outcome {outcome} rewound time"
+                );
+                assert!(elapsed >= START + ppc_run_result_cycles(result));
+                assert_eq!(loaded.cpu.pc, saved.pc);
+                assert_eq!(loaded.cpu.gpr, saved.gpr);
+                assert_eq!(loaded.cpu.fpr, saved.fpr);
+                assert_eq!(loaded.cpu.cr, saved.cr);
+                assert_eq!(loaded.cpu.lr, saved.lr);
+                assert_eq!(loaded.cpu.ctr, saved.ctr);
+                assert_eq!(loaded.cpu.xer, saved.xer);
+                // The resumed caller observes that same elapsed time through
+                // guest instructions, rather than only a host-side accessor.
+                loaded.cpu.step_instruction(xfx_form(31, 11, 268, 371));
+                assert_eq!(loaded.cpu.gpr[11], elapsed as u32);
+                loaded.cpu.step_instruction(xfx_form(31, 12, 269, 371));
+                assert_eq!(loaded.cpu.gpr[12], ((elapsed + 1) >> 32) as u32);
+            }
         }
     }
 
