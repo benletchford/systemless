@@ -1,6 +1,6 @@
 # Toolbox Showcase coverage
 
-The committed fat archive is exercised by four Systemless profiles (68K and PPC, each with the Systemless theme and Classic System 7), a 59-checkpoint native overview on both BasiliskII and SheepShaver, and six focused native scenarios. This report covers the fixture’s 16 pages and its specified interactions; it does not assert general compatibility with every Toolbox routine or operating-system configuration.
+The committed fat archive is exercised by two Classic System 7 profiles (68K and PPC), a 59-checkpoint native overview on both BasiliskII and SheepShaver, and six focused native scenarios. This report covers the fixture’s 16 pages and its specified interactions; it does not assert general compatibility with every Toolbox routine or operating-system configuration.
 
 The current native evidence contains 210 scenario-bound screenshots and three PCM reference files, each proven on both emulators. The Systemless integration sequence has 58 framebuffer checkpoints plus semantic assertions. Native runs use Mac OS 8.1 at 800 × 600, with an indexed 8-bit BasiliskII display and a direct-color 32-bit SheepShaver display. Both native first-visit sprite scenes now pass their pixel/region checks and match Reset.
 
@@ -36,7 +36,7 @@ Native fonts, chrome, device-depth quantization and the configured SysBeep alert
 
 ## Reproduce and verify
 
-Build and verify the fat archive with `./tests/toolbox-showcase/build.sh --verify`. Run `cargo test --locked --test toolbox_showcase`, then repeat with `SYSTEMLESS_PREFER_POWERPC=1`. Both use the Systemless theme by default. Repeat both architecture runs with `SYSTEMLESS_TOOLBOX_THEME=classic-system7` for the classic baselines. Do not set the reference-update environment variable during verification.
+Build and verify the fat archive with `./tests/toolbox-showcase/build.sh --verify`. Run `cargo test --locked --test toolbox_showcase`, then repeat with `SYSTEMLESS_PREFER_POWERPC=1`. Both compare only the Classic System 7 baselines. Do not set the reference-update environment variable during verification.
 
 Replay `oracle/overview.json` and the six focused JSON scenarios against the same archive in both native emulators. The scripts use mouse/key input, tick delays, screenshots, and (for resource audio) displayed-state pixel gates. The audio-capable runner records raw 44,100 Hz signed 16-bit big-endian stereo plus per-checkpoint written-frame positions. Emulator ROMs, system software and machine-specific setup remain outside this repository.
 

@@ -74,14 +74,11 @@ jobs:
       - name: Compile optimized toolbox showcase tests
         run: cargo test --locked --profile ci-test --test toolbox_showcase --no-run
 
-      - name: Run Systemless showcase assertions (68k)
-        env:
-          SYSTEMLESS_TOOLBOX_THEME: systemless-default
+      - name: Run classic showcase assertions (68k)
         run: cargo test --locked --profile ci-test --test toolbox_showcase
 
-      - name: Run Systemless showcase assertions (PowerPC)
+      - name: Run classic showcase assertions (PowerPC)
         env:
-          SYSTEMLESS_TOOLBOX_THEME: systemless-default
           SYSTEMLESS_PREFER_POWERPC: 1
         run: cargo test --locked --profile ci-test --test toolbox_showcase
 

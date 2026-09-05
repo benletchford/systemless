@@ -9,8 +9,6 @@
     "coordinates": "[left, top, right, bottom], right/bottom exclusive",
     "exclusions": "desktop and clock; the last scripted native pointer position per checkpoint; blinking insertion caret in editable text; event timestamps and accumulated event counters; initial idle pointer outside the Graphics content",
     "systemless_profiles": [
-      "systemless-68k",
-      "systemless-ppc",
       "systemless-classic-68k",
       "systemless-classic-ppc"
     ]
