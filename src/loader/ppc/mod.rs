@@ -50679,7 +50679,7 @@ fn ppc_get_shared_library(
                 }
                 let prepared = match ppc_prepare_mem_fragment(
                     &fragment.bytes,
-                    Some(process_memory_manager),
+                    process_memory_manager,
                     memory,
                     heap_cursor,
                     heap_limit,
@@ -50977,7 +50977,7 @@ fn ppc_get_mem_fragment(
             };
             let prepared = match ppc_prepare_mem_fragment(
                 &fragment,
-                Some(process_memory_manager),
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -51151,7 +51151,7 @@ fn ppc_create_mem_fragment_init_block(
 
 fn ppc_prepare_mem_fragment(
     fragment: &[u8],
-    process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -51234,15 +51234,32 @@ fn ppc_prepare_mem_fragment(
         ppc_fragment_special_tvector(&mapped_sections, loader.term_section, loader.term_offset)?;
     let exports = ppc_resolve_fragment_exports(fragment, &mapped_sections, &import_addrs)?;
 
-    for section in &mapped_sections {
-        if memory.write_bytes(section.base, &section.bytes).is_none() {
-            return Err(PPC_FRAG_NO_ADDR_SPACE);
+    // Publish the complete relocated layout only after its process allocator
+    // and every destination accept it. No guest code or mapping changes occur
+    // between preflight and writes. PowerPC System Software, pp. 3-21–3-22.
+    let publish_sections = || {
+        for section in &mapped_sections {
+            let Ok(size) = u32::try_from(section.bytes.len()) else {
+                return false;
+            };
+            if !memory.preflight_writable_range(section.base, size) {
+                return false;
+            }
         }
-    }
-    if let Some(memory_manager) = process_memory_manager {
-        if !memory_manager.commit_native_heap_cursor(next_heap_cursor) {
-            return Err(PPC_FRAG_NO_ADDR_SPACE);
+        for section in &mapped_sections {
+            memory
+                .write_bytes(section.base, &section.bytes)
+                .expect("preflighted CFM section remains mapped and writable");
         }
+        true
+    };
+    let committed = process_memory_manager.commit_native_heap_cursor_with(
+        *heap_cursor,
+        next_heap_cursor,
+        publish_sections,
+    );
+    if !committed {
+        return Err(PPC_FRAG_NO_ADDR_SPACE);
     }
     *heap_cursor = next_heap_cursor;
     imports.extend(new_bindings);
@@ -112607,6 +112624,113 @@ pub(crate) mod tests {
             assert_eq!(loaded.memory.read_u8(class_ptr), Some(1));
             assert_eq!(loaded.imports.len(), import_len_before);
             assert_eq!(loaded.import_count, import_count_before);
+        }
+    }
+
+    #[test]
+    fn memory_fragment_preparation_rejects_without_publication_and_retries() {
+        use crate::memory::{MacMemoryBus, MemoryBus};
+        use crate::process_context::{ProcessNativeHeapState, ProcessNativeMemoryManager};
+
+        const HEAP: u32 = 0x0300_0000;
+        const LIMIT: u32 = HEAP + 0x1000;
+        let loader = synthetic_loader_with_chunks(
+            b"InterfaceLib",
+            b"TickCount",
+            &[run_reloc(0x23, 1), run_reloc(0x25, 1)],
+        );
+        let fragment = synthetic_pef_with_loader_and_data(loader, &[0; 12]);
+        let heap_state = |cursor, limit| ProcessNativeHeapState {
+            heap_base: HEAP,
+            heap_cursor: cursor,
+            heap_limit: limit,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+        };
+        for refusal in 0..5 {
+            let mut memory = PpcSectionMem::new();
+            let mapped = if refusal == 0 {
+                synthetic_code().len()
+            } else {
+                0x1000
+            };
+            memory.add_region(HEAP, vec![0xa5; mapped]);
+            let mut classic = MacMemoryBus::new(0x10000);
+            classic.set_addressing_32_bit(true);
+            classic.attach_guest_address_space(memory.shared_view());
+            let mut manager = ProcessNativeMemoryManager::default();
+            if refusal != 1 {
+                let state = match refusal {
+                    2 => heap_state(HEAP + 0x800, LIMIT),
+                    3 => heap_state(HEAP, HEAP + 0x20),
+                    // The planned end is ahead of the canonical cursor, but
+                    // the first section would overwrite an existing allocation.
+                    4 => heap_state(HEAP + 0x10, LIMIT),
+                    _ => heap_state(HEAP, LIMIT),
+                };
+                manager.publish_native_allocator(state, &[], &[], &[]);
+            }
+            let before_allocator = manager.native_allocator_snapshot();
+            let before_update = manager.native_allocator_update();
+            let mut cursor = HEAP;
+            let mut imports = Vec::new();
+            let mut import_count = 0;
+            let mut indices = Vec::new();
+            assert_eq!(
+                ppc_prepare_mem_fragment(
+                    &fragment,
+                    &mut manager,
+                    &mut memory,
+                    &mut cursor,
+                    LIMIT,
+                    &mut imports,
+                    &mut import_count,
+                    &mut indices
+                ),
+                Err(PPC_FRAG_NO_ADDR_SPACE),
+                "refusal {refusal}"
+            );
+            let mut bytes = vec![0; mapped];
+            memory.read_bytes_into(HEAP, &mut bytes).unwrap();
+            assert_eq!(
+                bytes,
+                vec![0xa5; mapped],
+                "refusal {refusal} changed section bytes"
+            );
+            assert_eq!(classic.read_long(HEAP), 0xa5a5_a5a5);
+            assert_eq!(manager.native_allocator_snapshot(), before_allocator);
+            assert_eq!(manager.native_allocator_update(), before_update);
+            assert_eq!(cursor, HEAP);
+            assert!(imports.is_empty());
+            assert_eq!(import_count, 0);
+            assert!(indices.is_empty());
+
+            memory.add_region(HEAP, vec![0xa5; 0x1000]);
+            manager.publish_native_allocator(heap_state(HEAP, LIMIT), &[], &[], &[]);
+            let prepared = ppc_prepare_mem_fragment(
+                &fragment,
+                &mut manager,
+                &mut memory,
+                &mut cursor,
+                LIMIT,
+                &mut imports,
+                &mut import_count,
+                &mut indices,
+            )
+            .unwrap();
+            assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor);
+            assert!(cursor > HEAP);
+            assert_eq!(import_count, 1);
+            assert_eq!(imports.len(), 1);
+            assert_eq!(indices, vec![Some(0)]);
+            assert_eq!(imports[0].symbol_name, "TickCount");
+            assert_eq!(memory.read_u32_be(prepared.main_addr), Some(HEAP));
+            assert_eq!(classic.read_long(prepared.main_addr), HEAP);
+            assert_eq!(
+                memory.read_u32_be(prepared.main_addr + 8),
+                Some(PPC_IMPORT_TVECTOR_BASE)
+            );
         }
     }
 
