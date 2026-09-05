@@ -6,12 +6,12 @@ use crate::guest_procedure::{
     GuestIsa, GuestProcedure, GuestProcedureMemory, GuestProcedureRepresentation,
 };
 
-/// Mapping-aware reads and one atomic publication boundary for a resource call.
-pub(crate) trait CfmResourceMemory: GuestProcedureMemory {
-    fn publish_resource_record(&mut self, writes: &[(u32, &[u8])]) -> bool;
+/// Mapping-aware reads and atomic publication for CFM records.
+pub(crate) trait CfmMemory: GuestProcedureMemory {
+    fn publish_cfm_outputs(&mut self, writes: &[(u32, &[u8])]) -> bool;
 }
 
-fn resource_bytes<const N: usize>(
+fn cfm_bytes<const N: usize>(
     memory: &mut impl GuestProcedureMemory,
     address: u32,
 ) -> Option<[u8; N]> {
@@ -20,6 +20,99 @@ fn resource_bytes<const N: usize>(
         *byte = memory.procedure_read_u8(address.checked_add(u32::try_from(offset).ok()?)?)?;
     }
     Some(bytes)
+}
+
+pub(crate) const CFM_INIT_BLOCK_SIZE: u32 = 48;
+
+/// Call-owned in-memory fragment metadata, independent of its caller's ABI.
+/// PowerPC System Software (1994), pp. 3-15–3-16: InitBlock uses 680x0
+/// alignment and points to a Pascal fragment name; kInMem has selector zero.
+pub(crate) struct CfmInitBlock {
+    bytes: Vec<u8>,
+}
+
+impl CfmInitBlock {
+    pub(crate) fn in_memory(connection: CfmLoadId, address: u32, length: u32, name: &str) -> Self {
+        let name = crate::mac_roman::encode_mac_roman_lossy(name);
+        let name = &name[..name.len().min(255)];
+        let mut bytes = vec![0; CFM_INIT_BLOCK_SIZE as usize + 1 + name.len()];
+        bytes[8..12].copy_from_slice(&connection.0.to_be_bytes());
+        bytes[16..20].copy_from_slice(&address.to_be_bytes());
+        bytes[20..24].copy_from_slice(&length.to_be_bytes());
+        bytes[CFM_INIT_BLOCK_SIZE as usize] = name.len() as u8;
+        bytes[CFM_INIT_BLOCK_SIZE as usize + 1..].copy_from_slice(name);
+        Self { bytes }
+    }
+
+    pub(crate) fn size(&self) -> u32 {
+        self.bytes.len() as u32
+    }
+
+    pub(crate) fn publish(
+        mut self,
+        memory: &mut impl CfmMemory,
+        address: u32,
+    ) -> Result<(), CfmLoadError> {
+        if address == 0 || address.checked_add(self.size() - 1).is_none() {
+            return Err(CfmLoadError::InvalidOutputs);
+        }
+        let name = address
+            .checked_add(CFM_INIT_BLOCK_SIZE)
+            .ok_or(CfmLoadError::InvalidOutputs)?;
+        self.bytes[28..32].copy_from_slice(&name.to_be_bytes());
+        if !memory.publish_cfm_outputs(&[(address, &self.bytes)]) {
+            return Err(CfmLoadError::InvalidOutputs);
+        }
+        Ok(())
+    }
+}
+
+fn fragment_procedure(
+    memory: &mut impl GuestProcedureMemory,
+    vector: u32,
+    proc_info: u32,
+    routine_flags: u16,
+) -> Result<GuestProcedure, CfmLoadError> {
+    if vector == 0 {
+        return Err(CfmLoadError::CorruptFragment);
+    }
+    let bytes = cfm_bytes::<8>(memory, vector).ok_or(CfmLoadError::CorruptFragment)?;
+    let entry = u32::from_be_bytes(bytes[..4].try_into().unwrap());
+    let rtoc = u32::from_be_bytes(bytes[4..].try_into().unwrap());
+    if entry == 0 || cfm_bytes::<4>(memory, entry).is_none() {
+        return Err(CfmLoadError::CorruptFragment);
+    }
+    Ok(GuestProcedure {
+        original_pointer: vector,
+        representation: GuestProcedureRepresentation::PowerPcTransitionVector { address: vector },
+        isa: GuestIsa::PowerPc,
+        entry,
+        rtoc,
+        proc_info,
+        routine_flags,
+    })
+}
+
+/// The initializer receives one InitBlockPtr and returns OSErr. Its caller's
+/// register/stack return context is deliberately absent from this request.
+/// PowerPC System Software (1994), p. 3-27; ProcInfo encoding, pp. 2-18–2-21.
+pub(crate) fn initialization_invocation(
+    memory: &mut impl GuestProcedureMemory,
+    task: crate::execution_kernel::ExecutionTaskId,
+    vector: u32,
+    block: u32,
+) -> Result<GuestProcedureInvocation, CfmLoadError> {
+    const PROC_INFO: u32 = 0xE1; // C stack, two-byte result, one four-byte pointer.
+    let procedure = fragment_procedure(memory, vector, PROC_INFO, 0)?;
+    if block == 0 || cfm_bytes::<48>(memory, block).is_none() {
+        return Err(CfmLoadError::InvalidOutputs);
+    }
+    Ok(GuestProcedureInvocation {
+        task,
+        procedure,
+        arguments: crate::execution_kernel::GuestArgumentValues::from_slice(&[block]).unwrap(),
+        caller_proc_info: PROC_INFO,
+    })
 }
 
 /// A selected resource routine whose fragment must be prepared before it is callable.
@@ -82,7 +175,7 @@ impl CfmResourceCall {
         self,
         initializer_result: u32,
         connections: &mut Vec<CfmConnection>,
-        memory: &mut impl CfmResourceMemory,
+        memory: &mut impl CfmMemory,
     ) -> Result<GuestProcedureInvocation, CfmLoadError> {
         let request = self.preparation;
         let result = (|| {
@@ -91,32 +184,25 @@ impl CfmResourceCall {
             }
             // Resource code becomes callable only after successful preparation.
             // PowerPC System Software (1994), pp. 2-27–2-28 and 2-36.
-            self.main_address
-                .checked_add(7)
-                .ok_or(CfmLoadError::CorruptFragment)?;
-            let entry = memory
-                .procedure_read_u32(self.main_address)
-                .filter(|entry| *entry != 0)
-                .ok_or(CfmLoadError::CorruptFragment)?;
-            let rtoc = memory
-                .procedure_read_u32(self.main_address + 4)
-                .ok_or(CfmLoadError::CorruptFragment)?;
-            memory
-                .procedure_read_u32(entry)
-                .ok_or(CfmLoadError::CorruptFragment)?;
+            let procedure = fragment_procedure(
+                memory,
+                self.main_address,
+                request.proc_info,
+                request.routine_flags & !3,
+            )?;
             if !connections
                 .iter()
                 .any(|connection| connection.id == self.id.0)
             {
                 return Err(CfmLoadError::ConnectionNotFound);
             }
-            let header = resource_bytes::<12>(memory, request.descriptor)
-                .ok_or(CfmLoadError::InvalidOutputs)?;
+            let header =
+                cfm_bytes::<12>(memory, request.descriptor).ok_or(CfmLoadError::InvalidOutputs)?;
             if header != self.descriptor_header {
                 return Err(CfmLoadError::DescriptorChanged);
             }
             let record =
-                resource_bytes::<20>(memory, request.record).ok_or(CfmLoadError::InvalidOutputs)?;
+                cfm_bytes::<20>(memory, request.record).ok_or(CfmLoadError::InvalidOutputs)?;
             if record != self.original_record
                 || record[5] != 1
                 || u32::from_be_bytes(record[0..4].try_into().unwrap()) != request.proc_info
@@ -138,24 +224,12 @@ impl CfmResourceCall {
                 .record
                 .checked_add(8)
                 .ok_or(CfmLoadError::InvalidOutputs)?;
-            if !memory
-                .publish_resource_record(&[(flags_address, &flags), (target_address, &target)])
-            {
+            if !memory.publish_cfm_outputs(&[(flags_address, &flags), (target_address, &target)]) {
                 return Err(CfmLoadError::InvalidOutputs);
             }
             Ok(GuestProcedureInvocation {
                 task: self.task,
-                procedure: GuestProcedure {
-                    original_pointer: self.main_address,
-                    representation: GuestProcedureRepresentation::PowerPcTransitionVector {
-                        address: self.main_address,
-                    },
-                    isa: GuestIsa::PowerPc,
-                    entry,
-                    rtoc,
-                    proc_info: request.proc_info,
-                    routine_flags: request.routine_flags & !3,
-                },
+                procedure,
                 arguments: self.arguments,
                 caller_proc_info: self.caller_proc_info,
             })
@@ -306,6 +380,156 @@ mod tests {
         let mut bytes = vec![0; 20];
         memory.read_bytes_into(OUTPUT, &mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn initialization_records_publish_atomically_in_both_memory_views() {
+        for name in [String::new(), "Café™".to_owned(), "é".repeat(300)] {
+            for fault in 0..5 {
+                let mut outcomes = Vec::new();
+                for classic in [false, true] {
+                    let block = CfmInitBlock::in_memory(CfmLoadId(7), 0x4000, 123, &name);
+                    let size = block.size();
+                    let address = match fault {
+                        3 => u32::MAX - 31,
+                        4 => 0,
+                        _ => OUTPUT,
+                    };
+                    let mapped_size = if fault == 2 { size - 1 } else { size };
+                    let mut memory = GuestAddressSpace::new();
+                    memory.add_region(OUTPUT, vec![0xa5; mapped_size as usize]);
+                    if fault == 1 {
+                        memory.add_readonly_region(OUTPUT + 28, vec![0xa5; 4]);
+                    }
+                    let mut bus = MacMemoryBus::new(0x10000);
+                    bus.set_addressing_32_bit(true);
+                    bus.attach_guest_address_space(memory.shared_view());
+                    let result = if classic {
+                        block.publish(&mut bus, address)
+                    } else {
+                        block.publish(&mut memory, address)
+                    };
+                    let bytes: Vec<_> = (0..size)
+                        .map(|offset| memory.procedure_read_u8(OUTPUT + offset))
+                        .collect();
+                    if fault == 0 {
+                        assert_eq!(result, Ok(()));
+                        let bytes: Vec<_> = bytes.iter().map(|byte| byte.unwrap()).collect();
+                        assert_eq!(&bytes[..8], &[0; 8]);
+                        assert_eq!(&bytes[8..12], &7u32.to_be_bytes());
+                        assert_eq!(&bytes[12..16], &[0; 4]);
+                        assert_eq!(&bytes[16..20], &0x4000u32.to_be_bytes());
+                        assert_eq!(&bytes[20..24], &123u32.to_be_bytes());
+                        assert_eq!(&bytes[24..28], &[0; 4]);
+                        assert_eq!(&bytes[28..32], &(OUTPUT + 48).to_be_bytes());
+                        assert_eq!(&bytes[32..48], &[0; 16]);
+                        let expected = if name.is_empty() {
+                            vec![0]
+                        } else if name == "Café™" {
+                            vec![5, b'C', b'a', b'f', 0x8e, 0xaa]
+                        } else {
+                            let mut name = vec![0x8e; 256];
+                            name[0] = 255;
+                            name
+                        };
+                        assert_eq!(&bytes[48..], expected.as_slice());
+                    } else {
+                        assert_eq!(result, Err(CfmLoadError::InvalidOutputs));
+                        assert!(bytes[..mapped_size as usize]
+                            .iter()
+                            .all(|b| *b == Some(0xa5)));
+                        if fault == 2 {
+                            assert_eq!(bytes.last(), Some(&None));
+                        }
+                    }
+                    outcomes.push((result, bytes));
+                }
+                assert_eq!(outcomes[0], outcomes[1], "fault {fault}");
+            }
+        }
+    }
+
+    #[test]
+    fn initializer_invocation_validates_target_and_retains_task_in_both_views() {
+        const VECTOR: u32 = OUTPUT + 0x200;
+        const ENTRY: u32 = OUTPUT + 0x300;
+        let task = crate::execution_kernel::ExecutionTaskId::from_thread_id(42);
+        for fault in 0..11 {
+            let mut outcomes = Vec::new();
+            for classic in [false, true] {
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(OUTPUT, vec![0; if fault == 6 { 47 } else { 48 }]);
+                let entry = if fault == 1 {
+                    0
+                } else if fault == 8 {
+                    u32::MAX - 1
+                } else {
+                    ENTRY
+                };
+                let mut vector = entry.to_be_bytes().to_vec();
+                vector.extend(0x0100_4000u32.to_be_bytes());
+                if fault == 2 {
+                    vector.pop();
+                }
+                if fault == 9 {
+                    memory.add_region(0, vector.clone());
+                }
+                memory.add_region(VECTOR, vector);
+                if fault != 3 {
+                    memory.add_region(ENTRY, vec![0x60; if fault == 4 { 3 } else { 4 }]);
+                }
+                let vector = match fault {
+                    5 => u32::MAX - 3,
+                    9 => 0,
+                    _ => VECTOR,
+                };
+                let block = match fault {
+                    7 => 0,
+                    10 => u32::MAX - 31,
+                    _ => OUTPUT,
+                };
+                let mut bus = MacMemoryBus::new(0x10000);
+                bus.set_addressing_32_bit(true);
+                bus.attach_guest_address_space(memory.shared_view());
+                let result = if classic {
+                    initialization_invocation(&mut bus, task, vector, block)
+                } else {
+                    initialization_invocation(&mut memory, task, vector, block)
+                };
+                if fault == 0 {
+                    let invocation = result.unwrap();
+                    assert_eq!(invocation.task, task);
+                    assert_eq!(invocation.arguments.as_slice(), &[OUTPUT]);
+                    assert_eq!(invocation.caller_proc_info, 0xe1);
+                    assert_eq!(
+                        invocation.procedure,
+                        GuestProcedure {
+                            original_pointer: VECTOR,
+                            representation: GuestProcedureRepresentation::PowerPcTransitionVector {
+                                address: VECTOR
+                            },
+                            isa: GuestIsa::PowerPc,
+                            entry: ENTRY,
+                            rtoc: 0x0100_4000,
+                            proc_info: 0xe1,
+                            routine_flags: 0,
+                        }
+                    );
+                } else {
+                    assert_eq!(
+                        result,
+                        Err(if matches!(fault, 6 | 7 | 10) {
+                            CfmLoadError::InvalidOutputs
+                        } else {
+                            CfmLoadError::CorruptFragment
+                        })
+                    );
+                }
+                assert_eq!(cfm_bytes::<47>(&mut memory, OUTPUT), Some([0; 47]));
+                outcomes.push(result);
+            }
+            assert_eq!(outcomes[0], outcomes[1], "fault {fault}");
+        }
     }
 
     #[test]
