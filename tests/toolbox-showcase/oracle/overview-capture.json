@@ -1,0 +1,2923 @@
+{
+  "fixture_sha256": "1d3a26f6145262c546fab3535a6292765380fb461ac6d55118ddb40c1b9b36a2",
+  "scenario": "oracle/overview.json",
+  "scenario_sha256": "8529d5545d3d7b8f42697d78bc6302d681007af9d13b8f5b4249425f2c369b4f",
+  "capture_date": "2026-09-05",
+  "page_count": 16,
+  "verification": {
+    "method": "reviewed native outcome regions, independent before/after relations, and isolated audible SysBeep interval",
+    "coordinates": "[left, top, right, bottom], right/bottom exclusive",
+    "exclusions": "desktop and clock; the last scripted native pointer position per checkpoint; blinking insertion caret in editable text; event timestamps and accumulated event counters; initial idle pointer outside the Graphics content",
+    "systemless_profiles": [
+      "68k",
+      "ppc",
+      "systemless-theme-68k"
+    ]
+  },
+  "relations": [
+    {
+      "first": "overview-01-graphics.png",
+      "second": "overview-16-return-graphics.png",
+      "region": [
+        40,
+        50,
+        600,
+        270
+      ],
+      "equal": true,
+      "label": "return to Graphics restores its original content"
+    },
+    {
+      "first": "overview-05-preferences-initial.png",
+      "second": "overview-05-preferences-reset.png",
+      "region": [
+        60,
+        98,
+        575,
+        354
+      ],
+      "equal": true,
+      "label": "Reset Defaults restores the original preference controls and profile"
+    },
+    {
+      "first": "overview-05-preferences-initial.png",
+      "second": "overview-05-preferences-changed.png",
+      "region": [
+        60,
+        98,
+        575,
+        354
+      ],
+      "equal": false,
+      "label": "preference input changes the controls and active profile"
+    },
+    {
+      "first": "overview-06-modal.png",
+      "second": "overview-06-modal-changed.png",
+      "region": [
+        150,
+        148,
+        168,
+        163
+      ],
+      "equal": false,
+      "label": "modal checkbox changes before acceptance"
+    },
+    {
+      "first": "overview-08-palettes.png",
+      "second": "overview-08-palettes-animated.png",
+      "region": [
+        64,
+        130,
+        574,
+        285
+      ],
+      "equal": false,
+      "label": "indexed palette animation recolors existing pixels",
+      "backends": [
+        "basilisk"
+      ]
+    },
+    {
+      "first": "overview-08-palettes.png",
+      "second": "overview-08-palettes-animated.png",
+      "region": [
+        64,
+        130,
+        574,
+        285
+      ],
+      "equal": true,
+      "label": "direct-color display retains colors when palette animation is unavailable",
+      "backends": [
+        "sheepshaver"
+      ]
+    },
+    {
+      "first": "overview-10-sound-before-beep.png",
+      "second": "overview-10-sound-beeped.png",
+      "region": [
+        72,
+        216,
+        320,
+        230
+      ],
+      "equal": false,
+      "label": "SysBeep request is recorded on the page"
+    },
+    {
+      "first": "overview-13-resources.png",
+      "second": "overview-13-resources-refreshed.png",
+      "region": [
+        64,
+        80,
+        575,
+        296
+      ],
+      "equal": true,
+      "label": "map refresh preserves deferred resource records"
+    },
+    {
+      "first": "overview-13-resources-loaded.png",
+      "second": "overview-13-resources-reloaded.png",
+      "region": [
+        64,
+        80,
+        575,
+        296
+      ],
+      "equal": true,
+      "label": "released resource reloads to the original loaded state"
+    },
+    {
+      "first": "overview-13-resources-loaded.png",
+      "second": "overview-13-resources-released.png",
+      "region": [
+        64,
+        80,
+        575,
+        296
+      ],
+      "equal": false,
+      "label": "ReleaseResource changes the visible lifecycle state"
+    },
+    {
+      "first": "overview-14-sprites.png",
+      "second": "overview-14-sprites-reset.png",
+      "region": [
+        64,
+        130,
+        575,
+        310
+      ],
+      "equal": true,
+      "label": "first and reset masked sprites and validation readouts agree"
+    },
+    {
+      "first": "overview-14-sprites.png",
+      "second": "overview-14-sprites-animated.png",
+      "region": [
+        64,
+        130,
+        384,
+        258
+      ],
+      "equal": false,
+      "label": "Animate Sprite changes the masked source colors"
+    },
+    {
+      "first": "overview-14-sprites-animated.png",
+      "second": "overview-14-sprites-scrolled.png",
+      "first_region": [
+        89,
+        131,
+        383,
+        257
+      ],
+      "second_region": [
+        65,
+        131,
+        359,
+        257
+      ],
+      "equal": true,
+      "label": "ScrollRect moves the existing raster exactly 24 pixels left"
+    }
+  ],
+  "runs": [
+    {
+      "emulator": "basilisk",
+      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "system": "Mac OS 8.1",
+      "clock_source": "live guest clock",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "source_capture_record_sha256": "988eaecfd2ca70a853e0632eb6f9d19e1a56c0b8a72606f6e8a5a4d859a087b6",
+      "checkpoints": [
+        {
+          "file": "reference/basiliskii-68k/overview-01-graphics.png",
+          "sha256": "be05191bb7187c0897f28cabbac75881d392ef757482a955830ebad903e13b09",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              270
+            ]
+          ],
+          "masks": [
+            [
+              398,
+              298,
+              419,
+              324
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-02-controls-initial.png",
+          "sha256": "92613b2f4f066b1a5a6260b677c164df911dc78c00fedc187331de848ba9fb54",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              41,
+              169,
+              67
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-02-controls-changed.png",
+          "sha256": "52237ab1055babbae8fdf1b8d4fd9007199e44327f0b7edeef89c68f13fe875f",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              530,
+              366,
+              551,
+              392
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-02-controls-state.png",
+          "sha256": "0e15140a7c52ac2a822c7e30b34a5ca083a2be18906a7fa5498d0791f2ec919f",
+          "regions": [
+            [
+              84,
+              20,
+              286,
+              102
+            ]
+          ],
+          "masks": [
+            [
+              106,
+              8,
+              127,
+              34
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-03-windows.png",
+          "sha256": "b07e5278754028bfb6642fec20b3e3c9c21d35623fa4f00715ced7faac88ec9b",
+          "regions": [
+            [
+              40,
+              20,
+              600,
+              576
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              57,
+              169,
+              83
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-04-drawing.png",
+          "sha256": "1f75140efcbd3cf94e1c1a91ed20e0eb381d6a3ce2db09d57419a277b01811f1",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              73,
+              169,
+              99
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-preferences-initial.png",
+          "sha256": "98ef62a0f624378c09af97c5b17acf8b6e3d4f44581b6d81e92814f8f760159e",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              89,
+              169,
+              115
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-preferences-changed.png",
+          "sha256": "8d201a1c68253a853883d419414a0c1dd433182c03fcaa70bab0334b3737fd15",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              81,
+              251,
+              102,
+              277
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-difficulty-menu.png",
+          "sha256": "cb63e28ab0732a048eaf8fadd9da8d9fe25ed85ad45e4f14b883c68151641edf",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              328,
+              41,
+              349,
+              67
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-difficulty-selected.png",
+          "sha256": "a7e546a842954404b25d29fae818f62f1a0cc27da65ba35ebb7b620c8335d1d5",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              548,
+              57,
+              569,
+              83
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-sound-menu.png",
+          "sha256": "d292872811ea2eb96d1f060d4bfe0ae7354a1d228a620ca1d24fcbb02fa2c981",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              328,
+              57,
+              349,
+              83
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-sound-selected.png",
+          "sha256": "26ab3a4d891c93b906e7ee29db7097bf7b4e4915255997fa15f5d854137bb28e",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              548,
+              105,
+              569,
+              131
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-renderer-menu.png",
+          "sha256": "45c279df6059325f1da9c92dfead3308b02ef83d6cc9f4faae4ebfb0722304fa",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              328,
+              73,
+              349,
+              99
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-renderer-selected.png",
+          "sha256": "22ccf57156e1b8ee65434b021ab6f8d40fc1ea003610dc9658548453bd4c9ea1",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              548,
+              89,
+              569,
+              115
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-05-preferences-reset.png",
+          "sha256": "98ef62a0f624378c09af97c5b17acf8b6e3d4f44581b6d81e92814f8f760159e",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              253,
+              375,
+              274,
+              401
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-06-dialogs-initial.png",
+          "sha256": "8d1661b60a0900cc91785f62820b86670ff1fd23f196196b04ae50d44e92efed",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              105,
+              169,
+              131
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-06-modal.png",
+          "sha256": "e1948168378040ed6ac058639df7ffba5ed418c9174a78d6d8fd47a3faa2694f",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              168,
+              365,
+              189,
+              391
+            ],
+            [
+              232,
+              199,
+              236,
+              222
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-06-modal-changed.png",
+          "sha256": "e215e581054bfabb8ec7aeee423dd2f88543d78370c7d948aee7a45f684bd423",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              298,
+              153,
+              319,
+              179
+            ],
+            [
+              232,
+              199,
+              236,
+              222
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-06-dialog-accepted.png",
+          "sha256": "e1c8fb2a037a8abd0b0f3a80a021ba882cde1adf728dadfff41578445d3544ae",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              403,
+              258,
+              424,
+              284
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-06-alert.png",
+          "sha256": "0dc78c8ae43fdaf940bbd7365370294991ab7dfbea27153702b8d24bd5e42e6c",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              363,
+              365,
+              384,
+              391
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-06-dialogs-complete.png",
+          "sha256": "e1c8fb2a037a8abd0b0f3a80a021ba882cde1adf728dadfff41578445d3544ae",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              393,
+              228,
+              414,
+              254
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-07-textedit.png",
+          "sha256": "1524ce4c9e8737fa717f41203fcf37dd00a7778c4ebf4686530085c06120ab18",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              121,
+              169,
+              147
+            ],
+            [
+              73,
+              125,
+              76,
+              139
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-08-palettes.png",
+          "sha256": "ae1dcecde58737314147dc681ad16016fe2d237c13f738291a38d5baa9361783",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              137,
+              169,
+              163
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-08-palettes-animated.png",
+          "sha256": "eafe9d60821916377a45a7c3ccff0441fec4f33b7ffe88d66c7011541a43445e",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              173,
+              402,
+              194,
+              428
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-08-menu-bar-drag.png",
+          "sha256": "9efd38b7fedb740f7f1ac1cf2b6c697a1db73ab2d7e3c3b8aea527e3bae9ed52",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              25,
+              169,
+              51
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-08-graphics-restored.png",
+          "sha256": "fe01ab909d42ac11ddcf5a143870ba652cb525f90e94ae12a99b4dc80536297f",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              270
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              25,
+              169,
+              51
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-09-lists.png",
+          "sha256": "15a0c6b4189489d7aca43aa1cab622c44749f0d315df8d90df384eb2809e9a2c",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              153,
+              169,
+              179
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-10-sound-before-beep.png",
+          "sha256": "4ebcd50e870119b9e0b9e51d2e96f78eeea6d5293756594a56f7e1afdcf0a389",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              169,
+              169,
+              195
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-10-sound-beeped.png",
+          "sha256": "f64162de8ab3f7756b08e25315501be7e56e32071559d62c6ee4c0e9316da55e",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              100,
+              315,
+              121,
+              341
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-10-sound-state.png",
+          "sha256": "334e390ad57cab6a7053de01ad8a506d368d55bb4a77d13e26837581c0f02d26",
+          "regions": [
+            [
+              84,
+              20,
+              286,
+              102
+            ]
+          ],
+          "masks": [
+            [
+              106,
+              8,
+              127,
+              34
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-11-styled-text.png",
+          "sha256": "5f1251e7cb737bb2c373d5afc9284787744192e2081b443a114a326f7b5f8f89",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              185,
+              169,
+              211
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-standard-file.png",
+          "sha256": "c2fdbf8f7774e3654d6a66cd8304a877500c9576f1a07decb6d66177d4d45255",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              201,
+              169,
+              227
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-open.png",
+          "sha256": "de3cbc98e936e1b65bd18a517ec8d29a880f6859a94bd49516198b7e82bdf944",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              124,
+              264,
+              145,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-open-folder.png",
+          "sha256": "3a47e7cfb22be5ea121ff2851392921f2d7e2f8fe260c6215c93f7afe7c0ceae",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              124,
+              264,
+              145,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-open-accepted.png",
+          "sha256": "05a397051912b5fca3d8e0a69865c4abe8800a87e840d1966aa54e8b4e605974",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              124,
+              264,
+              145,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-legacy-open.png",
+          "sha256": "27eb7efd797f023255b81b9573a874ecbb79a5c645bc1a6574ecd73a80f2766c",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              264,
+              264,
+              285,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-legacy-open-cancelled.png",
+          "sha256": "332e49800a051bfd36f15fe7815ac1493a911c38125152418ad064fe0deb2ae7",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              264,
+              264,
+              285,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-save.png",
+          "sha256": "e0645fb70f881dbfdd7c31cb92094d88a7f74e3f10efcf818f5955c4af27fd39",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              398,
+              264,
+              419,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-save-accepted.png",
+          "sha256": "bf33d707cc550b09dc0a185af0965c0ec8bf3444016f8dc5d7d54194b0ba6d36",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              398,
+              264,
+              419,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-legacy-save.png",
+          "sha256": "ff201199682a13315b88c775c502633946e777d0b997a658f86c5ea492e945fc",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              518,
+              264,
+              539,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-12-file-complete.png",
+          "sha256": "1c4eab6e095480df06787f983900709d4526c36c17a7791920c2734d16b3a27b",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              518,
+              264,
+              539,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-13-resources.png",
+          "sha256": "428bee2d35501c72060b8ad708be105c8c30a5c072d0ec2ccd57efe21bc32ff6",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              217,
+              169,
+              243
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-13-resources-refreshed.png",
+          "sha256": "428bee2d35501c72060b8ad708be105c8c30a5c072d0ec2ccd57efe21bc32ff6",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              116,
+              312,
+              137,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-13-resources-loaded.png",
+          "sha256": "2355867541a5b4127ae42e6a003cd20117d8345fed6cf13087d829255f4282b6",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              238,
+              312,
+              259,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-13-resources-released.png",
+          "sha256": "3fc308b45e8ee689e83642f28b7c5018e2a0b37e0056cfd291693099b5971cd2",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              366,
+              312,
+              387,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-13-resources-reloaded.png",
+          "sha256": "2355867541a5b4127ae42e6a003cd20117d8345fed6cf13087d829255f4282b6",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              238,
+              312,
+              259,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-14-sprites.png",
+          "sha256": "2234eb67dcb3ba975f0cde7eee0761b76527079df462c933fc30b760760ba1a2",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              233,
+              169,
+              259
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-14-sprites-animated.png",
+          "sha256": "10c0de284f2974c283461822d65912a0e11f814d5754abdeeffb8109ddb46d3d",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              128,
+              364,
+              149,
+              390
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-14-sprites-scrolled.png",
+          "sha256": "528616ee7816104b39f94f91ccfb08e4e4291b9cd8cf87713a0a33eb3e65eb19",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              246,
+              364,
+              267,
+              390
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-14-sprites-reset.png",
+          "sha256": "2234eb67dcb3ba975f0cde7eee0761b76527079df462c933fc30b760760ba1a2",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              358,
+              364,
+              379,
+              390
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-15-events.png",
+          "sha256": "2917fc4cfc90bb5d153f7d07f57987cc0d8eb0d840a656978c08e5962aeef3ae",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              249,
+              169,
+              275
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-15-events-held.png",
+          "sha256": "adb44be53c95ecdc4000c71368c6ddacb65fab292ac1f8cf1c29e8ffeda8808e",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ],
+            [
+              68,
+              135,
+              335,
+              164
+            ],
+            [
+              355,
+              150,
+              572,
+              199
+            ]
+          ],
+          "masks": [
+            [
+              146,
+              344,
+              167,
+              370
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-15-events-key.png",
+          "sha256": "7fd803f4f6d3666ea79eea0967c93a7f456727c98b0710b6e741188ae462bbab",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ],
+            [
+              68,
+              135,
+              335,
+              164
+            ],
+            [
+              68,
+              183,
+              335,
+              198
+            ],
+            [
+              355,
+              183,
+              572,
+              199
+            ]
+          ],
+          "masks": [
+            [
+              146,
+              344,
+              167,
+              370
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-15-cross.png",
+          "sha256": "f449c5eac965eecbdcb52f615e882a871b5ee77a8cfa61eeb5afd6b0704980e0",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              388,
+              310,
+              409,
+              336
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-15-watch.png",
+          "sha256": "131cf10e5b03b8a5712e4c3ef1a5fc55db7ec4bcb5461e8137844f7754eb8343",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              458,
+              310,
+              479,
+              336
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-15-hidden.png",
+          "sha256": "71563d529160747f0fd7de19065644e92a73c605fe9bb4ef1e42c321c7223d0a",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              388,
+              342,
+              409,
+              368
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-15-arrow.png",
+          "sha256": "00c2038b5fa080e5937d95107d6f44efc3cc684e4502deb4c9e43b8c275bd63f",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              528,
+              310,
+              549,
+              336
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-16-popup.png",
+          "sha256": "a8748f20cd04930ca7cd25f7db6ad5dbf065a366131ec608f6f728c186bee43d",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              265,
+              169,
+              291
+            ]
+          ]
+        },
+        {
+          "file": "reference/basiliskii-68k/overview-16-return-graphics.png",
+          "sha256": "fe01ab909d42ac11ddcf5a143870ba652cb525f90e94ae12a99b4dc80536297f",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              270
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              25,
+              169,
+              51
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "emulator": "sheepshaver",
+      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "system": "Mac OS 8.1",
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "width": 800,
+      "height": 600,
+      "depth": 32,
+      "source_capture_record_sha256": "0d5063c09909ca3548fc5f95fe9ff3a7dd0e0a5f4b86fa979965b5ee90f98712",
+      "checkpoints": [
+        {
+          "file": "reference/sheepshaver-ppc/overview-01-graphics.png",
+          "sha256": "87683f4791669e61599b2f327bbd9b9977ad66665134e5a5d18b4e636a5bd0ac",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              270
+            ]
+          ],
+          "masks": [
+            [
+              398,
+              298,
+              419,
+              324
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-02-controls-initial.png",
+          "sha256": "55f3e38de45759acd11f6ed161817b3833525f46fe8e26f5df5543678821e0ba",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              41,
+              169,
+              67
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-02-controls-changed.png",
+          "sha256": "ef0864bfebd66517070527d9f932f55f95bfe4fd8505103f822450d446161c89",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              530,
+              366,
+              551,
+              392
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-02-controls-state.png",
+          "sha256": "4cb92059f0e45c061992d0dfc9b5ccb2f6e8211536e8c15e15b95e9e110d6e66",
+          "regions": [
+            [
+              84,
+              20,
+              286,
+              102
+            ]
+          ],
+          "masks": [
+            [
+              106,
+              8,
+              127,
+              34
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-03-windows.png",
+          "sha256": "8c5fafcc569dfd0742207e3767dfcfd493f40c12eef1d798222fd92b366fb3c8",
+          "regions": [
+            [
+              40,
+              20,
+              600,
+              576
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              57,
+              169,
+              83
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-04-drawing.png",
+          "sha256": "fe6427f733ba6203d10fd7b195064c40eaab81b1d6ac841575d317e0935ee587",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              73,
+              169,
+              99
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-preferences-initial.png",
+          "sha256": "6fdb0cf0c5df4f48a4095355740e9d71d30e98164043f78dd219810a008e7e02",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              89,
+              169,
+              115
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-preferences-changed.png",
+          "sha256": "b8c9008dd2bdb3de356c384728dfea941189e896f952e527ee1e05440a0ef691",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              81,
+              251,
+              102,
+              277
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-difficulty-menu.png",
+          "sha256": "b545166d450563815eb1e0f18b97731ea4bdc1a2ba6e29812df53c5ef2d2eafb",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              328,
+              41,
+              349,
+              67
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-difficulty-selected.png",
+          "sha256": "c7f888ed28fb29a11a19389f49100f2de8ad4d70f55c7791895e26a46d5721ef",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              548,
+              57,
+              569,
+              83
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-sound-menu.png",
+          "sha256": "aaee666c064907d8f1ddd2a767d22f0ffea9457a8579ff5f674a97b7540aa581",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              328,
+              57,
+              349,
+              83
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-sound-selected.png",
+          "sha256": "215965bdce63a5f11d76d53c6b652b5755f7bb53c8e932c3c3fd55431b5eac19",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              548,
+              105,
+              569,
+              131
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-renderer-menu.png",
+          "sha256": "984bae985362b704e2df20ecb0bb3b86f58053f3b7ab16c684ed458ccd36b215",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              328,
+              73,
+              349,
+              99
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-renderer-selected.png",
+          "sha256": "2cf3b51838ef6c77c7f850ee2623c2fcd1e5e5732af7c6dfbcd83a3fbe36061b",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              548,
+              89,
+              569,
+              115
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-05-preferences-reset.png",
+          "sha256": "6fdb0cf0c5df4f48a4095355740e9d71d30e98164043f78dd219810a008e7e02",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              253,
+              375,
+              274,
+              401
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-06-dialogs-initial.png",
+          "sha256": "b44d693e93c240a03f26ebfbb9c6f5dc00f594e6cf19cc3ea80af123ef81707b",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              105,
+              169,
+              131
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-06-modal.png",
+          "sha256": "08e5fc64a2596d3c9afb132fd8bf44947a054438231394e5e4ccaebdb4a20313",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              168,
+              365,
+              189,
+              391
+            ],
+            [
+              232,
+              199,
+              236,
+              222
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-06-modal-changed.png",
+          "sha256": "e907233014e68af86cdbfca776fa7641730dcb88db5075cc0bdf2000f543db36",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              298,
+              153,
+              319,
+              179
+            ],
+            [
+              232,
+              199,
+              236,
+              222
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-06-dialog-accepted.png",
+          "sha256": "1a0cce40ece020324ef181abab4f600dd84434bfc55b5fe2f3f63a325b9ecfd4",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              403,
+              258,
+              424,
+              284
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-06-alert.png",
+          "sha256": "b874873353271fe69e5aed05f2ae3a3ee4db4e6a3376af637bb86ebe43ccb13c",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              363,
+              365,
+              384,
+              391
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-06-dialogs-complete.png",
+          "sha256": "376ff68ea90c15bb31e818a80de7e65bb8c45f78c6117df8c49c5ce173f1b0f4",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              393,
+              228,
+              414,
+              254
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-07-textedit.png",
+          "sha256": "a679ebe09d5220a72354c22a0962615be63607685eafcc5325fb5626b9481fb7",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              121,
+              169,
+              147
+            ],
+            [
+              73,
+              125,
+              76,
+              139
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-08-palettes.png",
+          "sha256": "02c4ae11c67fa11d62914ee2e374e21bbdb0fb98d785f83fb96bd1fa5b8a15c2",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              137,
+              169,
+              163
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-08-palettes-animated.png",
+          "sha256": "63b358d4b18779de01c09bc98381312a9267af41fc2abbb0d13f224bacc39f69",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              173,
+              402,
+              194,
+              428
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-08-menu-bar-drag.png",
+          "sha256": "86cf93f00c062504fcb43f51387766880c63e77199f85b75d94bd1d9cd285caa",
+          "regions": [
+            [
+              40,
+              20,
+              650,
+              290
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              25,
+              169,
+              51
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-08-graphics-restored.png",
+          "sha256": "87683f4791669e61599b2f327bbd9b9977ad66665134e5a5d18b4e636a5bd0ac",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              270
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              25,
+              169,
+              51
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-09-lists.png",
+          "sha256": "eeda6076d2870fa845fd138eb5a7d1ca1014040398a53fa25cc8894f7c842a9b",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              153,
+              169,
+              179
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-10-sound-before-beep.png",
+          "sha256": "1638f68016f0c3aaed78560c71d764270b77e7727fd66c822f6523c584e5f7a2",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              169,
+              169,
+              195
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-10-sound-beeped.png",
+          "sha256": "45de0cd9afa39e079e417d3af4e5465688a9415e0b47bcee27757be66eea63b0",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              100,
+              315,
+              121,
+              341
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-10-sound-state.png",
+          "sha256": "42f59a29b73f9103264cfe768842feedaab005981f18b308de84001ac49c8ba9",
+          "regions": [
+            [
+              84,
+              20,
+              286,
+              102
+            ]
+          ],
+          "masks": [
+            [
+              106,
+              8,
+              127,
+              34
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-11-styled-text.png",
+          "sha256": "617bfdf1aa4e65a54be95a5a66f833e8ba0fa79b662644181615d94e5349cb4a",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              185,
+              169,
+              211
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-standard-file.png",
+          "sha256": "dba8a25334d2d709b574fb7f043718e0878ad97b88d9c30725b67b8d7c000b56",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              201,
+              169,
+              227
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-open.png",
+          "sha256": "dcc3cdc88aadb96ab2898ff9f9c3897e3fe2cece90d65ba6dd3566a790e86939",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              124,
+              264,
+              145,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-open-folder.png",
+          "sha256": "b9c5d593961b3c0b88d4e8d5933d9a80407b7f7a5c4b3ced42d602d92c1afbf0",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              124,
+              264,
+              145,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-open-accepted.png",
+          "sha256": "d56a51c752261733129ea58f4e2bc486966d77183f7ffb359a3e038af20add6f",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              124,
+              264,
+              145,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-legacy-open.png",
+          "sha256": "ece914cf52b89838dc22cc0a1f5825da489c6ffbf0f4eb6a1280c6e7680a1042",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              264,
+              264,
+              285,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-legacy-open-cancelled.png",
+          "sha256": "67ec8bb7fb650703796553bc0796fad7a082f10f9ab9763933dd4f93e090dde1",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              264,
+              264,
+              285,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-save.png",
+          "sha256": "7698cb93fc8ad290b73ecc6a4731471c438ba6323efae9f15944dd81ed1f300c",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              398,
+              264,
+              419,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-save-accepted.png",
+          "sha256": "c3c76dbe4499b9264feddd465e809446c12750b2a42c2d423ba5f40936a5cff8",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              398,
+              264,
+              419,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-legacy-save.png",
+          "sha256": "9f90de939a4939fd81d49cb7b30093fba584c6e433813af1da3ae5173d67b02f",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              518,
+              264,
+              539,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-12-file-complete.png",
+          "sha256": "c2b4e7699aab4ee6dcd7a6330ce6fc4524cbda2a6f882d0d4c46e5a30fcf0b63",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              518,
+              264,
+              539,
+              290
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-13-resources.png",
+          "sha256": "ebb1ba804ae8ab3bba7ffd7bafaf7c6101266998bbd41f802cacbcdab1eb5cc3",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              217,
+              169,
+              243
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-13-resources-refreshed.png",
+          "sha256": "ebb1ba804ae8ab3bba7ffd7bafaf7c6101266998bbd41f802cacbcdab1eb5cc3",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              116,
+              312,
+              137,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-13-resources-loaded.png",
+          "sha256": "1f03f57dc033d2072305df541bf408f9313c42b12e468c235a4130b761e41aa1",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              238,
+              312,
+              259,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-13-resources-released.png",
+          "sha256": "27d8309168475da12882e5294e46c6841609738602d67230e11890c2e30a917e",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              366,
+              312,
+              387,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-13-resources-reloaded.png",
+          "sha256": "0857180b1953b6294b2190f362d158f3bce1d888411c66687194e998356cb88f",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              238,
+              312,
+              259,
+              338
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-14-sprites.png",
+          "sha256": "b76b35f8c96d87861206d7476fe1fb8ce04438a918c27f4692e0bbdaf14db985",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              233,
+              169,
+              259
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-14-sprites-animated.png",
+          "sha256": "fc9344533d39ff09e569e729f2e0ff44835273b2efd8982bbd587bdf16c1066e",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              128,
+              364,
+              149,
+              390
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-14-sprites-scrolled.png",
+          "sha256": "70075001346a650e5e9b2d06718aa08a7787a86e96182079f0f7e348c9268f74",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              246,
+              364,
+              267,
+              390
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-14-sprites-reset.png",
+          "sha256": "b76b35f8c96d87861206d7476fe1fb8ce04438a918c27f4692e0bbdaf14db985",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              358,
+              364,
+              379,
+              390
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-15-events.png",
+          "sha256": "6d06d1a51278ff2f8fb983f15a26b8b18a1185cade63056bea88cfd60c173f48",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              249,
+              169,
+              275
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-15-events-held.png",
+          "sha256": "bb356a866b366635ba3a9c45373776ae9f258986634326b776f5be41390652b6",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ],
+            [
+              68,
+              135,
+              335,
+              164
+            ],
+            [
+              355,
+              150,
+              572,
+              199
+            ]
+          ],
+          "masks": [
+            [
+              146,
+              344,
+              167,
+              370
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-15-events-key.png",
+          "sha256": "512984862a48e21488d9a787d7274ee7a93f014f845eb7321fb385e003e9aa46",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ],
+            [
+              68,
+              135,
+              335,
+              164
+            ],
+            [
+              68,
+              183,
+              335,
+              198
+            ],
+            [
+              355,
+              183,
+              572,
+              199
+            ]
+          ],
+          "masks": [
+            [
+              146,
+              344,
+              167,
+              370
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-15-cross.png",
+          "sha256": "821fceb1023c014e6475e7d41704da285acded28b7a75e30c162e709eee978f9",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              388,
+              310,
+              409,
+              336
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-15-watch.png",
+          "sha256": "8f4bec4110e5ad47374e44f21e55ce7766d1d7c4e2faeb9a8e4cb44cc3cf4608",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              458,
+              310,
+              479,
+              336
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-15-hidden.png",
+          "sha256": "5b7e2a0100c1dc64327a962c05952ed18fc8d109bcafd93a4befb4e9b3c4f71a",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              388,
+              342,
+              409,
+              368
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-15-arrow.png",
+          "sha256": "26c32b8fd17a5c956ab125ce569c5e5508517fc57dbd15e1d4fa0f061ef03fab",
+          "regions": [
+            [
+              64,
+              64,
+              575,
+              108
+            ],
+            [
+              68,
+              215,
+              335,
+              231
+            ],
+            [
+              68,
+              267,
+              335,
+              330
+            ],
+            [
+              355,
+              263,
+              572,
+              299
+            ]
+          ],
+          "masks": [
+            [
+              528,
+              310,
+              549,
+              336
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-16-popup.png",
+          "sha256": "60983a87cf5154f06555ce62998c3433e997861eb324c7570809a30721f12063",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              420
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              265,
+              169,
+              291
+            ]
+          ]
+        },
+        {
+          "file": "reference/sheepshaver-ppc/overview-16-return-graphics.png",
+          "sha256": "c7ae8002fa9db9f7f17fdfc1f271e0a50ae5fdfb6f48ef40fe4cda62d992724c",
+          "regions": [
+            [
+              40,
+              50,
+              600,
+              270
+            ]
+          ],
+          "masks": [
+            [
+              148,
+              25,
+              169,
+              51
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

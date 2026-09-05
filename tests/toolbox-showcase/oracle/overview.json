@@ -1,0 +1,2415 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-01-graphics.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 43,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 43,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-02-controls-initial.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 135
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 135
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 135
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 290
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 290
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 290
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 368,
+      "h": 532
+    },
+    {
+      "type": "mouse_down",
+      "v": 368,
+      "h": 532
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 368,
+      "h": 532
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-02-controls-changed.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 108
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-02-controls-state.png"
+    },
+    {
+      "type": "mouse_up",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 59,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 59,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-03-windows.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 100,
+      "h": 100
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 100
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 100,
+      "h": 100
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 75,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 75,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-04-drawing.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 91,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 91,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-preferences-initial.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 130,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 130,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 130,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 180,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 180,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 180,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 130,
+      "h": 162
+    },
+    {
+      "type": "mouse_down",
+      "v": 130,
+      "h": 162
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 130,
+      "h": 162
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 155,
+      "h": 162
+    },
+    {
+      "type": "mouse_down",
+      "v": 155,
+      "h": 162
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 155,
+      "h": 162
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 255,
+      "h": 375
+    },
+    {
+      "type": "mouse_down",
+      "v": 255,
+      "h": 375
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 255,
+      "h": 375
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 253,
+      "h": 83
+    },
+    {
+      "type": "mouse_down",
+      "v": 253,
+      "h": 83
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 253,
+      "h": 83
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-preferences-changed.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 43,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 43,
+      "h": 330
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-difficulty-menu.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 59,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 59,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-difficulty-selected.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 43,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 59,
+      "h": 330
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-sound-menu.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 107,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 107,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-sound-selected.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 43,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 75,
+      "h": 330
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-renderer-menu.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 91,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 91,
+      "h": 550
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-renderer-selected.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 377,
+      "h": 255
+    },
+    {
+      "type": "mouse_down",
+      "v": 377,
+      "h": 255
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 377,
+      "h": 255
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-05-preferences-reset.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 107,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 107,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-06-dialogs-initial.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 367,
+      "h": 170
+    },
+    {
+      "type": "mouse_down",
+      "v": 367,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 367,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-06-modal.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 155,
+      "h": 300
+    },
+    {
+      "type": "mouse_down",
+      "v": 155,
+      "h": 300
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 155,
+      "h": 300
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-06-modal-changed.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 260,
+      "h": 405
+    },
+    {
+      "type": "mouse_down",
+      "v": 260,
+      "h": 405
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 260,
+      "h": 405
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-06-dialog-accepted.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 367,
+      "h": 365
+    },
+    {
+      "type": "mouse_down",
+      "v": 367,
+      "h": 365
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 367,
+      "h": 365
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-06-alert.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 230,
+      "h": 395
+    },
+    {
+      "type": "mouse_down",
+      "v": 230,
+      "h": 395
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 230,
+      "h": 395
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-06-dialogs-complete.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 123,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 123,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-07-textedit.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 139,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 139,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-08-palettes.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 404,
+      "h": 175
+    },
+    {
+      "type": "mouse_down",
+      "v": 404,
+      "h": 175
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 404,
+      "h": 175
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-08-palettes-animated.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 27,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-08-menu-bar-drag.png"
+    },
+    {
+      "type": "mouse_up",
+      "v": 27,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-08-graphics-restored.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 155,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 155,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-09-lists.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 171,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 171,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-10-sound-before-beep.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 317,
+      "h": 102
+    },
+    {
+      "type": "mouse_down",
+      "v": 317,
+      "h": 102
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 317,
+      "h": 102
+    },
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-10-sound-beeped.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 108
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-10-sound-state.png"
+    },
+    {
+      "type": "mouse_up",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 187,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 187,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-11-styled-text.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-standard-file.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 266,
+      "h": 126
+    },
+    {
+      "type": "mouse_down",
+      "v": 266,
+      "h": 126
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 266,
+      "h": 126
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-open.png"
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-open-folder.png"
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-open-accepted.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 266,
+      "h": 266
+    },
+    {
+      "type": "mouse_down",
+      "v": 266,
+      "h": 266
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 266,
+      "h": 266
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-legacy-open.png"
+    },
+    {
+      "type": "key_down",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "key_up",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-legacy-open-cancelled.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "mouse_down",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-save.png"
+    },
+    {
+      "type": "key_down",
+      "key": "s"
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "key_up",
+      "key": "s"
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-save-accepted.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 266,
+      "h": 520
+    },
+    {
+      "type": "mouse_down",
+      "v": 266,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 266,
+      "h": 520
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-legacy-save.png"
+    },
+    {
+      "type": "key_down",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "key_up",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-12-file-complete.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 219,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 219,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-13-resources.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 314,
+      "h": 118
+    },
+    {
+      "type": "mouse_down",
+      "v": 314,
+      "h": 118
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 314,
+      "h": 118
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-13-resources-refreshed.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 314,
+      "h": 240
+    },
+    {
+      "type": "mouse_down",
+      "v": 314,
+      "h": 240
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 314,
+      "h": 240
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-13-resources-loaded.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 314,
+      "h": 368
+    },
+    {
+      "type": "mouse_down",
+      "v": 314,
+      "h": 368
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 314,
+      "h": 368
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-13-resources-released.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 314,
+      "h": 240
+    },
+    {
+      "type": "mouse_down",
+      "v": 314,
+      "h": 240
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 314,
+      "h": 240
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-13-resources-reloaded.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 235,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 235,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-14-sprites.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 366,
+      "h": 130
+    },
+    {
+      "type": "mouse_down",
+      "v": 366,
+      "h": 130
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 366,
+      "h": 130
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-14-sprites-animated.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 366,
+      "h": 248
+    },
+    {
+      "type": "mouse_down",
+      "v": 366,
+      "h": 248
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 366,
+      "h": 248
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-14-sprites-scrolled.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 366,
+      "h": 360
+    },
+    {
+      "type": "mouse_down",
+      "v": 366,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 366,
+      "h": 360
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-14-sprites-reset.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 59,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 59,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 100,
+      "h": 100
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 100
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 100,
+      "h": 100
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 251,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 251,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-15-events.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 346,
+      "h": 148
+    },
+    {
+      "type": "mouse_down",
+      "v": 346,
+      "h": 148
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-15-events-held.png"
+    },
+    {
+      "type": "mouse_up",
+      "v": 346,
+      "h": 148
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "key_down",
+      "key": "shift"
+    },
+    {
+      "type": "key_down",
+      "key": "e"
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "key_up",
+      "key": "e"
+    },
+    {
+      "type": "key_up",
+      "key": "shift"
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-15-events-key.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 312,
+      "h": 390
+    },
+    {
+      "type": "mouse_down",
+      "v": 312,
+      "h": 390
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 312,
+      "h": 390
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-15-cross.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 312,
+      "h": 460
+    },
+    {
+      "type": "mouse_down",
+      "v": 312,
+      "h": 460
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 312,
+      "h": 460
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-15-watch.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 344,
+      "h": 390
+    },
+    {
+      "type": "mouse_down",
+      "v": 344,
+      "h": 390
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 344,
+      "h": 390
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-15-hidden.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 344,
+      "h": 460
+    },
+    {
+      "type": "mouse_down",
+      "v": 344,
+      "h": 460
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 344,
+      "h": 460
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 312,
+      "h": 530
+    },
+    {
+      "type": "mouse_down",
+      "v": 312,
+      "h": 530
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 312,
+      "h": 530
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-15-arrow.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 267,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 267,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-16-popup.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 27,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 27,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 120
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "overview-16-return-graphics.png"
+    }
+  ]
+}

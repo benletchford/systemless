@@ -92,6 +92,9 @@ jobs:
       - name: Verify reproducible toolbox showcase archive
         run: ./tests/toolbox-showcase/build.sh --verify
 
+      - name: Verify toolbox native capture identities and coverage
+        run: python3 tests/toolbox-showcase/oracle/verify_coverage.py
+
       - name: Headless library build (no default features)
         run: cargo check --no-default-features
 

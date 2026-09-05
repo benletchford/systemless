@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
+  "fixture_sha256": "1d3a26f6145262c546fab3535a6292765380fb461ac6d55118ddb40c1b9b36a2",
   "scenario": "oracle/windows.json",
   "scenario_sha256": "0e574d9865fff550b2ff5103ecc4dd499f81bf8fa2cba534852e1c71504c4189",
   "capture_date": "2026-09-05",
@@ -43,7 +43,7 @@
         },
         {
           "file": "reference/basiliskii-68k/03-windows-aux-activated.png",
-          "sha256": "5552998cdcbe933e0d003bf796a0af3a2107eec3e1004cc565578cc8ac0b0690"
+          "sha256": "65d0c7c58912472588921bbf03f1e96f5744d4281ea028b209ee399708b13fc0"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-moved.png",
@@ -59,13 +59,15 @@
         },
         {
           "file": "reference/basiliskii-68k/03-windows-promoted.png",
-          "sha256": "78def37c5691219a2be4c3029e3666b1470b3b2810746ccb61e2ad015e1d67f7"
+          "sha256": "fdf25e881314a828e572a7c93aaedba0ef1935cfd4161d16ac52d7813c7bf864"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-main-promoted.png",
-          "sha256": "b34d0ef0cc9598ac73efb50d96127d40ed28fddea1c42424debe05659d30fb99"
+          "sha256": "771b2ab75135c8b390d24c14f630ecb83903cdf8c4bb9fe747d5eb188fa56f1a"
         }
-      ]
+      ],
+      "clock_source": "live guest clock",
+      "source_capture_record_sha256": "13199d7b97de5099222fadd5c4958b559a2b25769cd1ea7d28302c672dc34dd3"
     },
     {
       "emulator": "sheepshaver",
@@ -90,21 +92,23 @@
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-resized.png",
-          "sha256": "0dc98a6ca1413fb677d51447f0a612498621242eb31f8ba6899c4ccd8995a186"
+          "sha256": "df9fc2440adb3db050199da2970d96452d4bc2c2ae9a5dd7d62869b706b08ba5"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-hit-test.png",
-          "sha256": "cca864cf5835254ab893493e6f9aaa66ebc3d899f8c8d8c857d823f0edc0ca00"
+          "sha256": "514e4c8795a4717baaada4bc0367f067d96e4fed3fd50c71e4462af24b46fa92"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-promoted.png",
-          "sha256": "b318b4037a0d8d4bdcfb9bd70b3ddb129edc15d433ec6dd79cf06676bb47bed8"
+          "sha256": "21fc40a0814aab997c51b5e31e5dd3789559f8051a936544c317c4c8bd26ec79"
         },
         {
           "file": "reference/sheepshaver-ppc/03-windows-main-promoted.png",
           "sha256": "1ab18fa2af90d50cc860f28f3dda8004ead39158da3f4868eaf150d85f245c7d"
         }
-      ]
+      ],
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "source_capture_record_sha256": "4e336d734ce7f2ee6aaf8be4bcef5db7e30db85a1637d8c2b0349a48c402d319"
     }
   ]
 }

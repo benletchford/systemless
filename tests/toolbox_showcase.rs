@@ -2743,6 +2743,28 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "28-sprites-scrolled.png");
 
+    // Rebuild the original source after animation and scrolling. The native
+    // full-page replay exposed an unlocked offscreen mask on first entry;
+    // the initial scene must already agree with a later Reset Scene.
+    click_point(&mut runner, win_top + 316, win_left + 318);
+    run_ticks(&mut runner, "reset sprite scene", 2);
+    runner.set_mouse_position(550, 760);
+    assert_eq!(
+        assert_sprites_page_rendered(&mut runner, win_top, win_left),
+        (initial_first_body, initial_second_body),
+        "reset must restore both masked sprite colors"
+    );
+    let (reset_width, _, reset_frame) = rendered_rgb(&mut runner);
+    for v in (win_top + 80)..(win_top + 260) {
+        let start = (v as usize * reset_width as usize + (win_left + 24) as usize) * 3;
+        let end = (v as usize * reset_width as usize + (win_left + 535) as usize) * 3;
+        assert!(
+            reset_frame[start..end] == initial_frame[start..end],
+            "first and reset sprite raster/validation readouts differ at row {v}"
+        );
+    }
+    assert_reference_frame(&mut runner, "28-sprites-reset.png");
+
     // 25. Visit Windows once more so the Events page records an activation
     // transition when the main window is selected back from the two-window
     // overlap stack. Their update events are retained in the page's lifecycle
@@ -2998,9 +3020,12 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(resource_popup_v, resource_popup_h);
     runner.push_mouse_down(resource_popup_v, resource_popup_h);
     run_popup_tracking_tick(&mut runner, "resource popup to open");
+    step_until_gui(&mut runner, "resource popup overlay to be painted", |r| {
+        rendered_rgb(r).2 != popup_initial_frame
+    });
     let resource_open_frame = rendered_rgb(&mut runner).2;
-    assert_ne!(
-        popup_initial_frame, resource_open_frame,
+    assert!(
+        popup_initial_frame != resource_open_frame,
         "resource popup must paint a live dropdown over the page"
     );
     // Item 3 is the separator: rows 1 and 2 are 16 pixels each.

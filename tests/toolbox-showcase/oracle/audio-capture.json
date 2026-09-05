@@ -1,7 +1,7 @@
 {
-  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
+  "fixture_sha256": "1d3a26f6145262c546fab3535a6292765380fb461ac6d55118ddb40c1b9b36a2",
   "scenario": "oracle/audio.json",
-  "scenario_sha256": "6758a6eb6e038c2e18daf3d46ec77552c05143056fd13def1788c481c4170c2c",
+  "scenario_sha256": "7633d8f0f3e43231dcba889b35d5d31e3a75ee874477de577da960a76832a7b6",
   "capture_date": "2026-09-05",
   "verification": {
     "resource_samples": 131072,
@@ -16,6 +16,11 @@
       "maximum_sample_difference": 3,
       "maximum_mean_sample_difference": 1
     },
+    "displayed_gates": [
+      "channel busy",
+      "completion received",
+      "flush issued"
+    ],
     "outcomes": [
       "full/75%/50% waveforms identical across both native emulators",
       "flush preserves current sample",
@@ -34,7 +39,7 @@
       "width": 800,
       "height": 600,
       "depth": 8,
-      "source_pcm_sha256": "5e259dcd565150ddceadee4945499579b5b8c0c4cec5f39476606fb385b7c029",
+      "source_pcm_sha256": "49728b15e82e7e813899799264cb0d88ab99dae717fdbd14767eb79243a4a81f",
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/17-sound-controls.png",
@@ -42,7 +47,7 @@
         },
         {
           "file": "reference/basiliskii-68k/17-sound-playing.png",
-          "sha256": "1a749bbfb3314eb502f3f7895a745d86bcd784f20bc5c59654355c90d6d2e247"
+          "sha256": "1f8c095e46bf85cf03680cded8a0c07ef00b99f994d442c4dea8811d75dd4072"
         },
         {
           "file": "reference/basiliskii-68k/17-sound-completed.png",
@@ -54,7 +59,7 @@
         },
         {
           "file": "reference/basiliskii-68k/17-sound-queued-idle.png",
-          "sha256": "d53d4aafe58fc41413fed4556461cc7861b7ba2edb286068d7445e5a1d52a678"
+          "sha256": "bb2e5cb7c67c282c7d7f2b05ac439bc1d3c3a56cee35d6da31a821c569049e41"
         },
         {
           "file": "reference/basiliskii-68k/17-sound-flushed.png",
@@ -79,23 +84,23 @@
         {
           "file": "reference/native-audio/sndplay-full-44100.u8",
           "sha256": "13530e553ed51ee29f13061f4b0fe6d851911d382de1078ebfcd065f66731b58",
-          "source_start_frame": 712706,
-          "source_end_frame_exclusive": 972439
+          "source_start_frame": 720898,
+          "source_end_frame_exclusive": 980631
         },
         {
           "file": "reference/native-audio/sndplay-volume75-44100.u8",
           "sha256": "916407349a8c0db5e3626ea335cffe20595d8e4f23846007fd71527778ad4540",
-          "source_start_frame": 1064962,
-          "source_end_frame_exclusive": 1324695
+          "source_start_frame": 1052674,
+          "source_end_frame_exclusive": 1312407
         },
         {
           "file": "reference/native-audio/sndplay-volume50-44100.u8",
           "sha256": "d79ceb27ef76e590ca1bf8ae816b68a413c6f62ff59935004759dd72f0821d37",
-          "source_start_frame": 1851394,
-          "source_end_frame_exclusive": 2111127
+          "source_start_frame": 1843202,
+          "source_end_frame_exclusive": 2102935
         }
       ],
-      "cancelled_frames": 225277
+      "cancelled_frames": 212989
     },
     {
       "emulator": "sheepshaver",
@@ -106,7 +111,7 @@
       "width": 800,
       "height": 600,
       "depth": 32,
-      "source_pcm_sha256": "cd7e476ac1436754b72a3e79adef37c1ffa700173445891e2ae321d69d842556",
+      "source_pcm_sha256": "469f4f7a2beda78ca9238ec9038409f029568c463f625e3d572a676c90bc82be",
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/17-sound-controls.png",
@@ -122,7 +127,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/17-sound-volume75.png",
-          "sha256": "f61d9f4a04a0ab047fe070c19791d71975de3eefe4b04c151bc12653cdf65989"
+          "sha256": "9f37fc1987b4de09a57c8927732087c60dd97c20a8254460b3a84e205d76e136"
         },
         {
           "file": "reference/sheepshaver-ppc/17-sound-queued-idle.png",
@@ -151,23 +156,23 @@
         {
           "file": "reference/native-audio/sndplay-full-44100.u8",
           "sha256": "13530e553ed51ee29f13061f4b0fe6d851911d382de1078ebfcd065f66731b58",
-          "source_start_frame": 831490,
-          "source_end_frame_exclusive": 1091223
+          "source_start_frame": 843778,
+          "source_end_frame_exclusive": 1103511
         },
         {
           "file": "reference/native-audio/sndplay-volume75-44100.u8",
           "sha256": "916407349a8c0db5e3626ea335cffe20595d8e4f23846007fd71527778ad4540",
-          "source_start_frame": 1150978,
-          "source_end_frame_exclusive": 1410711
+          "source_start_frame": 1159170,
+          "source_end_frame_exclusive": 1418903
         },
         {
           "file": "reference/native-audio/sndplay-volume50-44100.u8",
           "sha256": "d79ceb27ef76e590ca1bf8ae816b68a413c6f62ff59935004759dd72f0821d37",
-          "source_start_frame": 1650690,
-          "source_end_frame_exclusive": 1910423
+          "source_start_frame": 1679362,
+          "source_end_frame_exclusive": 1939095
         }
       ],
-      "cancelled_frames": 40957
+      "cancelled_frames": 57341
     }
   ]
 }

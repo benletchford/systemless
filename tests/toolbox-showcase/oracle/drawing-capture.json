@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
+  "fixture_sha256": "1d3a26f6145262c546fab3535a6292765380fb461ac6d55118ddb40c1b9b36a2",
   "scenario": "oracle/drawing.json",
   "scenario_sha256": "d7724d3a028ab21f5d73f8ad21fc87db0a53052c80a6706fb5026aadc46008e5",
   "capture_date": "2026-09-05",
@@ -40,9 +40,11 @@
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/04-drawing.png",
-          "sha256": "1f75140efcbd3cf94e1c1a91ed20e0eb381d6a3ce2db09d57419a277b01811f1"
+          "sha256": "5e74d37842f6df718746ee0a1ae368e6f93b8cc8052e6c866193e986dcf31f60"
         }
-      ]
+      ],
+      "clock_source": "live guest clock",
+      "source_capture_record_sha256": "708be9ff50b08fadcc2b4d4888685e66a6ceea05f28eec6e8907f36554bed4aa"
     },
     {
       "emulator": "sheepshaver",
@@ -57,7 +59,9 @@
           "file": "reference/sheepshaver-ppc/04-drawing.png",
           "sha256": "45699ac583caea7ea57e1840c34f141b4f08eacf6c1be3b3a21768925b04efa0"
         }
-      ]
+      ],
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "source_capture_record_sha256": "61c1cee6b0f57baae8bfe5cc3e80b48ed1c1ea8e91e2257c2bb516a76847e81b"
     }
   ]
 }
