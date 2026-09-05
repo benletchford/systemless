@@ -7614,18 +7614,15 @@ impl PpcLoadedApp {
                             CfmOperation::Load(load) => {
                                 ppc_complete_cfm_load(load, result, memory, &mut cfm_connections)
                             }
-                            CfmOperation::Resource(call) => match ppc_finish_resource_call(
-                                call,
-                                result,
-                                memory,
-                                &mut cfm_connections,
-                            ) {
-                                Ok(call) => {
-                                    resource_call = Some(call);
-                                    0
+                            CfmOperation::Resource(call) => {
+                                match call.complete(result, &mut cfm_connections, memory) {
+                                    Ok(call) => {
+                                        resource_call = Some(call);
+                                        0
+                                    }
+                                    Err(error) => ppc_i16_result(error.os_error()),
                                 }
-                                Err(error) => ppc_i16_result(error),
-                            },
+                            }
                         },
                     ) {
                         if let Some(call) = resource_call {
@@ -44737,72 +44734,24 @@ fn ppc_resource_fragment_bytes(
     ppc_memory_read_bytes(memory, address, length)
 }
 
-fn ppc_finish_resource_call(
-    operation: CfmResourceCall,
-    result: u32,
-    memory: &mut PpcSectionMem,
-    connections: &mut Vec<PpcCfmConnection>,
-) -> Result<CfmResourceCall, i16> {
-    if result == 0
-        && !operation.main_address.checked_add(7).is_some_and(|_| {
-            memory
-                .read_u32_be(operation.main_address)
-                .is_some_and(|entry| entry != 0 && memory.read_u32_be(entry).is_some())
-                && memory.read_u32_be(operation.main_address + 4).is_some()
-        })
-    {
-        connections.retain(|connection| connection.id != operation.id.0);
-        return Err(PPC_FRAG_CORRUPT_ERR);
-    }
-    let request = operation.preparation;
-    let mut header = [0; 12];
-    let record = if memory
-        .read_bytes_into(request.descriptor, &mut header)
-        .is_some()
-        && header == operation.descriptor_header
-    {
-        let mut bytes = [0; 20];
-        memory
-            .read_bytes_into(request.record, &mut bytes)
-            .map(|_| bytes)
-    } else {
-        None
-    };
-    operation
-        .complete(result, connections, record, |writes| {
-            memory.try_write_ranges_atomic(writes)
-        })
-        .map_err(|error| error.os_error())
-}
-
 fn ppc_invoke_prepared_resource(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     calls: &SharedGuestCallStack,
-    operation: CfmResourceCall,
+    operation: crate::execution_kernel::GuestProcedureInvocation,
     final_pc: u32,
 ) -> Result<(), i16> {
-    let entry = memory
-        .read_u32_be(operation.main_address)
-        .ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    let rtoc = memory
-        .read_u32_be(
-            operation
-                .main_address
-                .checked_add(4)
-                .ok_or(PPC_FRAG_CORRUPT_ERR)?,
-        )
-        .ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    if entry == 0 || memory.read_u32_be(entry).is_none() {
-        return Err(PPC_FRAG_CORRUPT_ERR);
+    let procedure = operation.procedure;
+    if procedure.isa != GuestIsa::PowerPc {
+        return Err(PPC_PARAM_ERR);
     }
     let effect = GuestCallEffect::call_guest(
         GuestCallRequest::for_task(
             operation.task,
             GuestCallTarget {
                 isa: GuestIsa::PowerPc,
-                entry,
-                rtoc,
+                entry: procedure.entry,
+                rtoc: procedure.rtoc,
             },
         )
         .with_powerpc_arguments(operation.arguments),
@@ -44816,7 +44765,7 @@ fn ppc_invoke_prepared_resource(
     if !calls.activate_powerpc_effect_with_operation(cpu, memory, effect, None, None) {
         return Err(PPC_PARAM_ERR);
     }
-    cpu.gpr[12] = operation.main_address;
+    cpu.gpr[12] = procedure.original_pointer;
     Ok(())
 }
 
@@ -44930,7 +44879,9 @@ fn ppc_prepare_resource_call(
         };
         let activate = (|| {
             if prepared.init_addr == 0 {
-                let operation = ppc_finish_resource_call(operation, 0, memory, connections)?;
+                let operation = operation
+                    .complete(0, connections, memory)
+                    .map_err(|error| error.os_error())?;
                 return ppc_invoke_prepared_resource(cpu, memory, calls, operation, cpu.lr);
             }
             let block = ppc_create_mem_fragment_init_block(

@@ -122,6 +122,18 @@ impl GuestProcedureMemory for MacMemoryBus {
     }
 }
 
+impl crate::cfm::CfmResourceMemory for GuestAddressSpace {
+    fn publish_resource_record(&mut self, writes: &[(u32, &[u8])]) -> bool {
+        self.try_write_ranges_atomic(writes)
+    }
+}
+
+impl crate::cfm::CfmResourceMemory for MacMemoryBus {
+    fn publish_resource_record(&mut self, writes: &[(u32, &[u8])]) -> bool {
+        self.try_write_ranges_atomic(writes)
+    }
+}
+
 /// Validate the whole structure, including reserved bytes, before interpreting
 /// it. A missing later record must not turn an incomplete descriptor into a
 /// callable earlier candidate. PowerPC System Software (1994), pp. 2-36–2-38.

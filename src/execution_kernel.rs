@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
-use crate::guest_procedure::GuestIsa;
+use crate::guest_procedure::{GuestIsa, GuestProcedure};
 
 /// Stable execution-task identity used by the continuation owner.
 ///
@@ -182,6 +182,21 @@ pub(crate) enum GuestCallArguments {
     None,
     PowerPc(PowerPcArguments),
     M68k(M68kCallRequest),
+}
+
+/// A manager's invocation before the caller ABI installs its return context.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuestProcedureInvocation {
+    pub(crate) task: ExecutionTaskId,
+    pub(crate) procedure: GuestProcedure,
+    pub(crate) arguments: GuestArgumentValues,
+    pub(crate) caller_proc_info: u32,
+}
+
+impl TaskOwned for GuestProcedureInvocation {
+    fn task(&self) -> ExecutionTaskId {
+        self.task
+    }
 }
 
 /// One architecture-neutral guest procedure request.
