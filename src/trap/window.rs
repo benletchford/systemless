@@ -3686,6 +3686,73 @@ impl super::TrapDispatcher {
         self.set_current_port_state(bus, cpu, old_port, Some(old_gdevice));
     }
 
+    /// Capture visibility from the stacking geometry, independently of any
+    /// application-narrowed visRgn (for example, a scrolling viewport).
+    /// Inside Macintosh Volume I, I-297: CalcVis.
+    fn snapshot_window_visibility(&self, bus: &mut MacMemoryBus, window: u32) -> u32 {
+        let region = Self::alloc_rect_region_handle(bus, None);
+        let saved_vis = bus.read_long(window + 24);
+        bus.write_long(window + 24, region);
+        self.calc_window_vis_region(bus, window);
+        bus.write_long(window + 24, saved_vis);
+        region
+    }
+
+    /// Reordering windows paints newly exposed backgrounds and frames before
+    /// reporting update events. Preserve all previously visible content and
+    /// the caller's port/clip; release the captured region after use.
+    /// Macintosh Toolbox Essentials (1992), pp. 4-90..4-91;
+    /// Inside Macintosh Volume I, I-296: PaintOne.
+    fn paint_newly_exposed_window<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window: u32,
+        old_visible: u32,
+    ) {
+        let new_visible = self.snapshot_window_visibility(bus, window);
+        Self::write_region_boolean_op(
+            bus,
+            old_visible,
+            new_visible,
+            old_visible,
+            RegionBooleanOp::Difference,
+        );
+        if let Some(exposed) = Self::region_handle_rect(bus, old_visible) {
+            let old_port = *self.current_port;
+            let old_gdevice = *self.current_gdevice;
+            let old_clip = bus.read_long(window + 28);
+            let old_vis = bus.read_long(window + 24);
+            bus.write_long(window + 28, old_visible);
+            bus.write_long(window + 24, new_visible);
+            self.set_current_port_state(bus, cpu, window, None);
+            self.draw_rect(
+                cpu,
+                bus,
+                &Rect {
+                    top: exposed.0,
+                    left: exposed.1,
+                    bottom: exposed.2,
+                    right: exposed.3,
+                },
+                ShapeOp::Erase,
+            );
+            bus.write_long(window + 28, old_clip);
+            bus.write_long(window + 24, old_vis);
+            self.set_current_port_state(bus, cpu, old_port, Some(old_gdevice));
+            self.invalidate_window_rect(bus, window, exposed);
+        }
+        if self.window_visible(bus, window) {
+            let hilited = bus.read_byte(window + Self::WINDOW_HILITED_OFFSET) != 0;
+            self.draw_single_window_chrome_inline(bus, window, hilited);
+        }
+        for region in [old_visible, new_visible] {
+            let pointer = bus.read_long(region);
+            bus.free(pointer);
+            bus.free(region);
+        }
+    }
+
     pub(crate) fn dispatch_window<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -5577,7 +5644,9 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
                 if the_window != 0 {
+                    let old_visible = self.snapshot_window_visibility(bus, the_window);
                     self.track_window_front(bus, the_window);
+                    self.paint_newly_exposed_window(bus, cpu, the_window, old_visible);
                     if let Some(content) = self.window_content_rect(bus, the_window) {
                         self.invalidate_window_rect(bus, the_window, content);
                     }
@@ -5600,6 +5669,12 @@ impl super::TrapDispatcher {
                 let the_window = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 if the_window != 0 && self.window_list.contains(&the_window) {
+                    let mut old_visibility = Vec::new();
+                    for &window in self.window_list.iter() {
+                        if self.window_visible(bus, window) {
+                            old_visibility.push((window, self.snapshot_window_visibility(bus, window)));
+                        }
+                    }
                     let was_active = self.front_window == the_window;
                     // Read bounds (portRect, port+16..22) for follow-on
                     // inval before the move reshuffles indices.
@@ -5612,8 +5687,7 @@ impl super::TrapDispatcher {
                     if behind == 0 {
                         // Move to back
                         self.window_list.push(the_window);
-                    } else if let Some(behind_idx) =
-                        self.window_list.iter().position(|&w| w == behind)
+                    } else if let Some(behind_idx) = self.window_list.iter().position(|&w| w == behind)
                     {
                         // Insert just after behindWindow so theWindow
                         // is immediately behind it.
@@ -5639,6 +5713,9 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
+                    }
+                    for (window, old_visible) in old_visibility {
+                        self.paint_newly_exposed_window(bus, cpu, window, old_visible);
                     }
                     if let Some(rect) = bounds {
                         // Any window that was behind and is now exposed
@@ -13943,6 +14020,99 @@ mod tests {
         let result = dispatch(&mut disp, 0x120, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    #[test]
+    fn bringtofront_repaints_exposed_content_and_preserves_visible_pixels() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = bus.alloc(800 * 600);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
+        disp.set_screen_mode_for_test(screen, 800, 800, 600, 8);
+        let target = bus.alloc(256);
+        let front = bus.alloc(256);
+        for (window, top, left, bottom, right) in
+            [(target, 100, 100, 300, 400), (front, 150, 200, 350, 500)]
+        {
+            disp.init_cgraf_window(
+                &mut bus, &mut cpu, window, screen, top, left, bottom, right, "Window", 4, true, false,
+                true, 0,
+            );
+        }
+        *disp.window_list = vec![front, target];
+        disp.front_window = front;
+        disp.recalculate_window_vis_regions(&mut bus);
+        disp.set_current_port_state(&mut bus, &mut cpu, front, None);
+        let saved_device = *disp.current_gdevice;
+        let saved_clip = bus.read_long(target + 28);
+        // Window Manager repainting must not inherit the application's clip.
+        super::super::TrapDispatcher::write_region_handle_rect(&mut bus, saved_clip, None);
+        let exposed = screen + 200 * 800 + 220;
+        let already_visible = screen + 120 * 800 + 120;
+        let outside_target = screen + 250 * 800 + 450;
+        for pixel in [exposed, already_visible, outside_target] {
+            bus.write_byte(pixel, 0x7B);
+        }
+        cpu.write_reg(Register::A7, TEST_SP - 4);
+        bus.write_long(TEST_SP - 4, target);
+        dispatch(&mut disp, 0x120, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(exposed), 0, "erase newly exposed content");
+        assert_eq!(bus.read_byte(already_visible), 0x7B);
+        assert_eq!(bus.read_byte(outside_target), 0x7B);
+        assert_eq!(bus.read_long(target + 28), saved_clip);
+        assert_eq!(*disp.current_port, front);
+        assert_eq!(*disp.current_gdevice, saved_device);
+        assert_eq!(disp.front_window, front, "preserve activation");
+        assert_eq!(disp.window_list[0], target);
+        assert!(disp.window_has_pending_update(&bus, target));
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    #[test]
+    fn sendbehind_raises_below_a_palette_and_repaints_only_exposed_content() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen, 800, 800, 600, 8);
+        let target = bus.alloc(256);
+        let front = bus.alloc(256);
+        let palette = bus.alloc(256);
+        for (window, top, left, bottom, right) in [
+            (target, 100, 100, 300, 400),
+            (front, 150, 200, 350, 500),
+            (palette, 40, 250, 180, 300),
+        ] {
+            disp.init_cgraf_window(
+                &mut bus, &mut cpu, window, screen, top, left, bottom, right, "Window", 4, true,
+                false, true, 0,
+            );
+            disp.validate_window_rect(&mut bus, window, (0, 0, 600, 800));
+        }
+        *disp.window_list = vec![palette, front, target];
+        disp.front_window = front;
+        disp.recalculate_window_vis_regions(&mut bus);
+        // An application's temporary viewport is not the old stacking geometry.
+        let vis = bus.read_long(target + 24);
+        super::super::TrapDispatcher::write_region_handle_rect(&mut bus, vis, Some((0, 0, 1, 1)));
+        let exposed = screen + 200 * 800 + 220;
+        let already_visible = screen + 120 * 800 + 120;
+        let covered_by_palette = screen + 160 * 800 + 270;
+        for pixel in [exposed, already_visible, covered_by_palette] {
+            bus.write_byte(pixel, 0x7B);
+        }
+        cpu.write_reg(Register::A7, TEST_SP - 8);
+        bus.write_long(TEST_SP - 8, palette);
+        bus.write_long(TEST_SP - 4, target);
+        dispatch(&mut disp, 0x121, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.window_list, vec![palette, target, front]);
+        assert_eq!(bus.read_byte(exposed), 0);
+        assert_eq!(bus.read_byte(already_visible), 0x7B);
+        assert_eq!(bus.read_byte(covered_by_palette), 0x7B);
+        assert!(disp.window_has_pending_update(&bus, target));
+        assert_eq!(disp.front_window, front);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
     }
 
