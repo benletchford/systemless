@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
+  "fixture_sha256": "1d3a26f6145262c546fab3535a6292765380fb461ac6d55118ddb40c1b9b36a2",
   "scenario": "oracle/lists.json",
   "scenario_sha256": "cc8bad1ba5fee115e3bf613ec528001cb6b70f9c296c3f68a6febe21dc991dec",
   "capture_date": "2026-09-05",
@@ -33,7 +33,7 @@
         },
         {
           "file": "reference/basiliskii-68k/15-lists-selected.png",
-          "sha256": "f783c89625975b53eb01d944caf207ed014ebb5b9414b3109a050288117f6a4f"
+          "sha256": "5edfc2cbc680a2801c2fc0b1e6f1d0757df20d893fb559c64ae6c1b2627c506d"
         },
         {
           "file": "reference/basiliskii-68k/15-lists-mutated.png",
@@ -41,7 +41,7 @@
         },
         {
           "file": "reference/basiliskii-68k/15-lists-scrolled.png",
-          "sha256": "29a1527b1f278a3bbd94198f89bf69d4f219172e7a780b40a0fa21aeb67e5463"
+          "sha256": "637fa0d7c0275fb59f627d51799bd55732fc3f8a7fa6d0dc62d36d2d60cd2ad4"
         },
         {
           "file": "reference/basiliskii-68k/15-lists-resized.png",
@@ -49,17 +49,19 @@
         },
         {
           "file": "reference/basiliskii-68k/15-lists-inactive.png",
-          "sha256": "1910fce93e7e2c973d6ee441cd62ebdfbdb670e05de20e419ff21b94334af4b1"
+          "sha256": "513ff9836d592266e9e18c71d7dbac833d3c848d5968cc806767f33b8ecf38af"
         },
         {
           "file": "reference/basiliskii-68k/16-lists-interacted.png",
-          "sha256": "f3e8fee40b6b81b0d0e77effb0af625f4ab72b1565075700b58a1e0270bde285"
+          "sha256": "c8b76470c433bfd391dadd4e9598e5cb43ef234f51ba5e60c67c236deceeac15"
         },
         {
           "file": "reference/basiliskii-68k/34-popup-lists.png",
-          "sha256": "dcbeeae62fb455185cd6750b9e93fa5ee902921bd8066d8eb063fb4973303267"
+          "sha256": "e31a17a8c833b85bffa24dbdb30add41ecf77043f9417a7a2c39fb7631e98def"
         }
-      ]
+      ],
+      "clock_source": "live guest clock",
+      "source_capture_record_sha256": "fae0151d1b9d7cdf389667e0eb6b9c5610235c47898f3d5ceaab104787755b10"
     },
     {
       "emulator": "sheepshaver",
@@ -72,7 +74,7 @@
       "checkpoints": [
         {
           "file": "reference/sheepshaver-ppc/15-lists.png",
-          "sha256": "eeda6076d2870fa845fd138eb5a7d1ca1014040398a53fa25cc8894f7c842a9b"
+          "sha256": "48399b59b1f6472c3b9dacda9d7e6f080eec926f636a87dd2ac1ef8344872808"
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-selected.png",
@@ -80,7 +82,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-mutated.png",
-          "sha256": "fe4d1beb84f05411b182583d7c02413e3de3b2274aaa84f25fda8742ef6db84c"
+          "sha256": "85609fdb4025e8c4cf71fa4c97ac46b7dc0c64f1c2768f1fb4735d73a7ac5776"
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-scrolled.png",
@@ -96,13 +98,15 @@
         },
         {
           "file": "reference/sheepshaver-ppc/16-lists-interacted.png",
-          "sha256": "0618849907c6e4be861a389b4cb8585e77851890a8a8476d1c18a2092bbbbfb3"
+          "sha256": "b9e7c832958ee43e78f05f1670687b8bca0ede3c90e1112072cdaa4db9f75100"
         },
         {
           "file": "reference/sheepshaver-ppc/34-popup-lists.png",
-          "sha256": "017ca07c92ed76c1615fcb5cfff719f7355a176eeb0a028a73a553619d1d56e3"
+          "sha256": "60983a87cf5154f06555ce62998c3433e997861eb324c7570809a30721f12063"
         }
-      ]
+      ],
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "source_capture_record_sha256": "8abf24b171f020a3b6757befb3c79c952efa7ee1220327a8859cdba121e54ab2"
     }
   ]
 }

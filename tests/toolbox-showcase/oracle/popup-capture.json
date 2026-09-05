@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
+  "fixture_sha256": "1d3a26f6145262c546fab3535a6292765380fb461ac6d55118ddb40c1b9b36a2",
   "scenario": "oracle/popup.json",
   "scenario_sha256": "f57f7a2a1777697bc7d0d8b046a260e634fa51cd77e5cd6d92defb68dfced3c8",
   "capture_date": "2026-09-05",
@@ -21,8 +21,32 @@
       "depth": 8,
       "checkpoints": [
         {
+          "file": "reference/basiliskii-68k/popup/34-popup-lists.png",
+          "sha256": "e31a17a8c833b85bffa24dbdb30add41ecf77043f9417a7a2c39fb7631e98def"
+        },
+        {
+          "file": "reference/basiliskii-68k/popup-separator.png",
+          "sha256": "793bb08168336c493c766f711584cf93979e7cab1e62e042af5eec6f3aea1ee1"
+        },
+        {
           "file": "reference/basiliskii-68k/35-popup-lists-open.png",
           "sha256": "8a65e72acd7667e244c4dd3ef1e2d5b847b6a4c17ea819a9bad297632fdfff2f"
+        },
+        {
+          "file": "reference/basiliskii-68k/popup-disabled-cancel.png",
+          "sha256": "0fea8087a86f65c467daaf33f8ea9936dec870699539bc0aac1a15064d773873"
+        },
+        {
+          "file": "reference/basiliskii-68k/popup-long-selected.png",
+          "sha256": "3cb8d79a87fd9e3fe35fddd629c3e5cf42d956b85fef11220f26b67fdf4a6969"
+        },
+        {
+          "file": "reference/basiliskii-68k/program-open.png",
+          "sha256": "63d9bff8787fe9b37cfc63578f3b12d274095313bc18b1d37fcfc9672c99613d"
+        },
+        {
+          "file": "reference/basiliskii-68k/program-disabled-cancel.png",
+          "sha256": "237a33e95b3cb6c35948acaee030bcfe57d9311ed637793245c2026cfe6e7657"
         },
         {
           "file": "reference/basiliskii-68k/36-popup-lists-scrolled.png",
@@ -33,10 +57,16 @@
           "sha256": "31c4ddad7de395e4e0f086b0a13eb8d3c0bd61b0f78491fb51fcc898125f580f"
         },
         {
+          "file": "reference/basiliskii-68k/program-scrolled-up.png",
+          "sha256": "67364d75d2bee570439d7604a0a65f483e53b11888694dec427d5196cdfee3f0"
+        },
+        {
           "file": "reference/basiliskii-68k/37-popup-lists-selected.png",
           "sha256": "9d04b1aff5eaed44cc9e9f3eb54b2db820613c498cf0c32f28316a0f14df6e25"
         }
-      ]
+      ],
+      "clock_source": "live guest clock",
+      "source_capture_record_sha256": "05038f62b332fad25fcd329e1e298db5e66463b9bf780d3b2f5fcc09fa28c01b"
     },
     {
       "emulator": "sheepshaver",
@@ -48,8 +78,32 @@
       "depth": 32,
       "checkpoints": [
         {
+          "file": "reference/sheepshaver-ppc/popup/34-popup-lists.png",
+          "sha256": "017ca07c92ed76c1615fcb5cfff719f7355a176eeb0a028a73a553619d1d56e3"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/popup-separator.png",
+          "sha256": "dad5898c61dc37bbb02e57aaab6bb21fee57fd97e5cbe841350c1b9d53e1b86f"
+        },
+        {
           "file": "reference/sheepshaver-ppc/35-popup-lists-open.png",
           "sha256": "6829fe6a8e27af8f164d67bab6fb03d014770469bc461ac253d1409b3e6542dd"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/popup-disabled-cancel.png",
+          "sha256": "05f57a0b04fba950950ab1fac29ff76872d0604a4853ea1ac2ca756033407835"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/popup-long-selected.png",
+          "sha256": "d7287e61e0bd1d597da2554da8593429f1e9ded669b4bca4bc5210bef9af715f"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/program-open.png",
+          "sha256": "6fb5cd1ed5fbc5b5a1d9592fc8d51fdf5118f5d11688c25294ec2ed710b4f0b3"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/program-disabled-cancel.png",
+          "sha256": "3aa499587b2bf28806c1755845177450f8051ca3789d6b8eac7c07bdc2f20a09"
         },
         {
           "file": "reference/sheepshaver-ppc/36-popup-lists-scrolled.png",
@@ -60,10 +114,16 @@
           "sha256": "85342d033130569fb289e7bc30bcd5bd8085837d719494a88415f04b42f11ab6"
         },
         {
+          "file": "reference/sheepshaver-ppc/program-scrolled-up.png",
+          "sha256": "b7f356209aade78802eaea86d2bd038853eb44644200838487ea36d17ffc519e"
+        },
+        {
           "file": "reference/sheepshaver-ppc/37-popup-lists-selected.png",
-          "sha256": "b7ae808d3f7d4e0dd75eeac420a83f50e6db02bd55afb8b26a331392414bbfdc"
+          "sha256": "3ca47f57c7acc758929a06db1b87bbc786003545062ae9eef3342914549476d3"
         }
-      ]
+      ],
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "source_capture_record_sha256": "339906ade18d5fb97b067d875edbaeebf7e47305b43fcc053ae78d102c9dfc6f"
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "2fe73499df690532f312e4a50da34a9bf89bf0876af4c04e24cb0c34a5e7ca08",
+  "fixture_sha256": "1d3a26f6145262c546fab3535a6292765380fb461ac6d55118ddb40c1b9b36a2",
   "scenario": "oracle/textedit.json",
   "scenario_sha256": "e69a6233f0fd85cbff2036e4b11ad0cc05576e2d709fcc13ebe0d14d163b3a90",
   "capture_date": "2026-09-05",
@@ -83,14 +83,6 @@
       "depth": 8,
       "checkpoints": [
         {
-          "file": "reference/basiliskii-68k/10-te-copied.png",
-          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
-        },
-        {
-          "file": "reference/basiliskii-68k/10-te-cut.png",
-          "sha256": "c2595179447a8c2f81811b0a8a27becfdab9840b87f516120edaced225211635"
-        },
-        {
           "file": "reference/basiliskii-68k/10-te-initial.png",
           "sha256": "1524ce4c9e8737fa717f41203fcf37dd00a7778c4ebf4686530085c06120ab18"
         },
@@ -99,26 +91,36 @@
           "sha256": "d36ddd58f515713616e1af922b3bb31cebf602ed40ce556ed1ff050c2c6a0aff"
         },
         {
-          "file": "reference/basiliskii-68k/10-te-pasted.png",
-          "sha256": "bdef73fe389a93b484cb1b5c2e9023dead5bda9549cf6548adfef36b8421f6aa"
-        },
-        {
-          "file": "reference/basiliskii-68k/10-te-reset.png",
-          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
-        },
-        {
           "file": "reference/basiliskii-68k/10-te-selected.png",
           "sha256": "0fc54ae9871f4bac6f0c82d16c7e13fa7a32df39e08c62a791502ab58f7529b4"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-copied.png",
+          "sha256": "4ac6b6d5d44a7c7d9a7ec769bd97f737dd56c2ec719d383043c58ae2868aedff"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-cut.png",
+          "sha256": "f79c4304b71f7baa40ca62b36a58dc2e3acb914efd8878213ff769ee3f441371"
+        },
+        {
+          "file": "reference/basiliskii-68k/10-te-pasted.png",
+          "sha256": "e41783c71584f5938cde41895e5cfa2bb568b9c58cbb1102e12301e985e6119b"
         },
         {
           "file": "reference/basiliskii-68k/10-te-typed.png",
           "sha256": "1e317ee56db027f62da8696b18a57dc664b118439777e8350cb8b169b68a691a"
         },
         {
+          "file": "reference/basiliskii-68k/10-te-reset.png",
+          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
+        },
+        {
           "file": "reference/basiliskii-68k/10-textedit.png",
           "sha256": "26ae1a7772ba70ea08f3b905e8dd9b3e87b2a3e1a71add71a1b1d64ba3d108dc"
         }
-      ]
+      ],
+      "clock_source": "live guest clock",
+      "source_capture_record_sha256": "c12cbd0f839b74f3df2b696f2e5b3a861aad5d430bc340be7cffed946f0ebe4f"
     },
     {
       "emulator": "sheepshaver",
@@ -130,42 +132,44 @@
       "depth": 32,
       "checkpoints": [
         {
+          "file": "reference/sheepshaver-ppc/10-te-initial.png",
+          "sha256": "7ebaa73aefa9b6efced2ab2507646c3f7ea9a319aaf1a92a88dfce5fa44a2773"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-mouse-selected.png",
+          "sha256": "97bef8c177404f15a98bd88878d98c77aa4a632a76d223a81850ce7d56e75845"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/10-te-selected.png",
+          "sha256": "daf15fb01e78f5d6fae90d708d10131a1de0ce982716d339f94bad1f0890ce47"
+        },
+        {
           "file": "reference/sheepshaver-ppc/10-te-copied.png",
           "sha256": "845980e92495f859f4cd389c978ba1d95aefec118c0d9092e6c82df9f65c6bb3"
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-cut.png",
-          "sha256": "4587eb12ee4363074cf4491beed831515f387f4631694926a80716073ad93eaa"
-        },
-        {
-          "file": "reference/sheepshaver-ppc/10-te-initial.png",
-          "sha256": "a679ebe09d5220a72354c22a0962615be63607685eafcc5325fb5626b9481fb7"
-        },
-        {
-          "file": "reference/sheepshaver-ppc/10-te-mouse-selected.png",
-          "sha256": "f41650664995bcc1e873feb209165fe38463f2666bd8c8e078371a9cd704e3fc"
+          "sha256": "8129133c57985b306cfe396e40f734a33f4460db9ae4d06d4822e848aaf90716"
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-pasted.png",
           "sha256": "3dda873fea267a48bd48600dc865ad99678191d84ec3e2057c891c34f9575ea6"
         },
         {
+          "file": "reference/sheepshaver-ppc/10-te-typed.png",
+          "sha256": "6105475a1d93051396b4a08745db94f61e972366aba217a8f05e9912535170e0"
+        },
+        {
           "file": "reference/sheepshaver-ppc/10-te-reset.png",
           "sha256": "11f43e46c84cce602e30c03f9bd8986c16167b247105bbc20425da35dfcbaab6"
-        },
-        {
-          "file": "reference/sheepshaver-ppc/10-te-selected.png",
-          "sha256": "3838fb5241ed48dfd5c5439770c8a15df2af63289e46bbfe29da0dc3b4bf73ea"
-        },
-        {
-          "file": "reference/sheepshaver-ppc/10-te-typed.png",
-          "sha256": "c8b58490706402dc5ad238e293c9b1484d27a802aacf207741b7436a869a79b6"
         },
         {
           "file": "reference/sheepshaver-ppc/10-textedit.png",
           "sha256": "50bad8cd0968f3f60d5c02c87eb35ce01fc26a41c8a1cd0a068d8fbeab302d8d"
         }
-      ]
+      ],
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "source_capture_record_sha256": "a6e482547060b8c3984e988c949a10011fc2b3a3f735ad625c5df08a67028bd6"
     }
   ]
 }

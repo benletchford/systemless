@@ -1,0 +1,243 @@
+{
+  "profiles": [
+    "systemless-68k",
+    "systemless-ppc",
+    "systemless-theme-68k"
+  ],
+  "native_emulators": [
+    "basilisk",
+    "sheepshaver"
+  ],
+  "pages": [
+    {
+      "page": 1,
+      "name": "Graphics",
+      "overview_checkpoint": "overview-01-graphics.png",
+      "systemless_checkpoints": [
+        "01-graphics.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Initial shapes, clipping, patterns and text; leaving Palettes and returning restores the original content."
+    },
+    {
+      "page": 2,
+      "name": "Controls",
+      "overview_checkpoint": "overview-02-controls-state.png",
+      "systemless_checkpoints": [
+        "02-controls.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Button, checkbox and scrollbar each set their State menu checkmark."
+    },
+    {
+      "page": 3,
+      "name": "Windows",
+      "overview_checkpoint": "overview-03-windows.png",
+      "systemless_checkpoints": [
+        "03-windows.png",
+        "03-windows-main-promoted.png"
+      ],
+      "native_scenarios": [
+        "overview",
+        "windows"
+      ],
+      "contract": "Three-window stack, activation, title-bar drag, resize, overlap hit test and predecessor promotion after each close."
+    },
+    {
+      "page": 4,
+      "name": "Drawing & 3D Bevels",
+      "overview_checkpoint": "overview-04-drawing.png",
+      "systemless_checkpoints": [
+        "04-drawing.png"
+      ],
+      "native_scenarios": [
+        "overview",
+        "drawing"
+      ],
+      "contract": "QuickDraw shapes and images; visible PPC QuickDraw 3D traversal, silhouette and interior lighting; labelled 68K fallback."
+    },
+    {
+      "page": 5,
+      "name": "Game Preferences",
+      "overview_checkpoint": "overview-05-preferences-reset.png",
+      "systemless_checkpoints": [
+        "05-preferences.png",
+        "06-nested-menus.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Controls update the active profile and hierarchical menu marks; Difficulty, Sound and Renderer menu selections update controls; Reset restores defaults."
+    },
+    {
+      "page": 6,
+      "name": "Dialogs & Alerts",
+      "overview_checkpoint": "overview-06-dialogs-complete.png",
+      "systemless_checkpoints": [
+        "07-modal-dialog.png",
+        "08-alert.png",
+        "09-dialogs.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Resource-backed modal opens, checkbox changes, OK accepts; About alert opens and dismisses; status records completion."
+    },
+    {
+      "page": 7,
+      "name": "TextEdit",
+      "overview_checkpoint": "overview-07-textedit.png",
+      "systemless_checkpoints": [
+        "10-te-initial.png",
+        "10-te-mouse-selected.png",
+        "10-te-copied.png",
+        "10-te-cut.png",
+        "10-te-pasted.png",
+        "10-te-typed.png",
+        "10-te-reset.png",
+        "10-textedit.png"
+      ],
+      "native_scenarios": [
+        "overview",
+        "textedit"
+      ],
+      "contract": "Mouse selection, copy/private scrap, cut, paste, typing over selection, reset and paragraph justification agree with native readouts."
+    },
+    {
+      "page": 8,
+      "name": "Palettes",
+      "overview_checkpoint": "overview-08-palettes-animated.png",
+      "systemless_checkpoints": [
+        "11-palette.png",
+        "12-palette-animated.png",
+        "13-menu-hover.png",
+        "14-graphics-return.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Indexed transfers preserve their color contracts; animation recolors indexed pixels and leaves direct devices unchanged; menu-bar drag restores Graphics."
+    },
+    {
+      "page": 9,
+      "name": "Lists & Inventory",
+      "overview_checkpoint": "overview-09-lists.png",
+      "systemless_checkpoints": [
+        "15-lists.png",
+        "15-lists-mutated.png",
+        "15-lists-scrolled.png"
+      ],
+      "native_scenarios": [
+        "overview",
+        "lists"
+      ],
+      "contract": "Selection/readback, mutation, scrolling, resizing, activation and hidden-scrollbar lifetime."
+    },
+    {
+      "page": 10,
+      "name": "Sound & Channels",
+      "overview_checkpoint": "overview-10-sound-beeped.png",
+      "systemless_checkpoints": [
+        "17-sound-controls.png",
+        "18-sound-complete.png"
+      ],
+      "native_scenarios": [
+        "overview",
+        "audio"
+      ],
+      "contract": "Audible SysBeep; complete full/75%/50% native resource PCM; queued volume, flush, quiet, completion callback and disposal."
+    },
+    {
+      "page": 11,
+      "name": "Styled Text & Fonts",
+      "overview_checkpoint": "overview-11-styled-text.png",
+      "systemless_checkpoints": [
+        "19-styled-text.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Multistyled text and Font Manager/measurement readouts render with the documented native presentation differences."
+    },
+    {
+      "page": 12,
+      "name": "Standard File",
+      "overview_checkpoint": "overview-12-file-complete.png",
+      "systemless_checkpoints": [
+        "20-standard-file-page.png",
+        "21-standard-file-open.png",
+        "22-standard-file-complete.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Filtered Open navigates to and accepts TEXT; legacy Open cancels; modern Save edits/accepts then creates/deletes its file; legacy Save cancels."
+    },
+    {
+      "page": 13,
+      "name": "Resource Browser",
+      "overview_checkpoint": "overview-13-resources-reloaded.png",
+      "systemless_checkpoints": [
+        "23-resource-browser.png",
+        "24-resource-browser-loaded.png",
+        "25-resource-browser-released.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Deferred DATA enumeration, stable refresh, named loading, handle release and identical reload; DATA/MENU/WIND counts and lifecycle readouts."
+    },
+    {
+      "page": 14,
+      "name": "Sprites, Masks & Scrolling",
+      "overview_checkpoint": "overview-14-sprites-reset.png",
+      "systemless_checkpoints": [
+        "26-sprites.png",
+        "27-sprites-animated.png",
+        "28-sprites-scrolled.png",
+        "28-sprites-reset.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "First visit already has intact masks and verified pixel/region checks; animation changes both sprites; ScrollRect translates the existing raster 24 pixels; Reset restores initial scene."
+    },
+    {
+      "page": 15,
+      "name": "Events & Cursors",
+      "overview_checkpoint": "overview-15-arrow.png",
+      "systemless_checkpoints": [
+        "29-events-cursors.png",
+        "30-events-mouse-held.png",
+        "31-events-key-modifiers.png",
+        "32-events-cursor-hidden.png",
+        "33-events-cursors-final.png"
+      ],
+      "native_scenarios": [
+        "overview"
+      ],
+      "contract": "Activation/update lifecycle, held Button/StillDown/WaitMouseUp, PostEvent/peek/take, Shift and GetKeys, cursor selection and balanced hide/show."
+    },
+    {
+      "page": 16,
+      "name": "Popup & Dropdown Lists",
+      "overview_checkpoint": "overview-16-popup.png",
+      "systemless_checkpoints": [
+        "34-popup-lists.png",
+        "35-popup-lists-open.png",
+        "36-popup-lists-scrolled.png",
+        "36-popup-lists-deep-selected.png",
+        "37-popup-lists-selected.png"
+      ],
+      "native_scenarios": [
+        "overview",
+        "popup"
+      ],
+      "contract": "Resource and programmatic controls, disabled/separator cancellation, scroll to item 36, final item 4, and restored closed titles."
+    }
+  ]
+}

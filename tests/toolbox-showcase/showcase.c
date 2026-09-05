@@ -3155,6 +3155,8 @@ void PrepareSpriteScene(void)
     RGBColor black;
     RGBColor white;
     Point regionProbe;
+    PixMapHandle pixelMaps[4];
+    short locked;
     short x;
     short y;
 
@@ -3165,6 +3167,21 @@ void PrepareSpriteScene(void)
     gSpriteScrollDelta = 0;
     gSpriteScrolled = false;
     if (!gSpriteReady) return;
+
+    /* LockPixels makes an offscreen baseAddr a pointer and keeps its image
+       stable throughout drawing and mask/region transfers. Balance each
+       successful lock, including partial failure. Imaging With QuickDraw
+       (1994), pp. 6-32--6-33. */
+    pixelMaps[0] = worldPixels = GetGWorldPixMap(gSpriteWorld);
+    pixelMaps[1] = sourcePixels = GetGWorldPixMap(gSpriteSource);
+    pixelMaps[2] = maskPixels = GetGWorldPixMap(gSpriteMask);
+    pixelMaps[3] = deepMaskPixels = GetGWorldPixMap(gSpriteDeepMask);
+    for (locked = 0; locked < 4; locked++) {
+        if (pixelMaps[locked] == nil || !LockPixels(pixelMaps[locked])) {
+            while (locked > 0) UnlockPixels(pixelMaps[--locked]);
+            return;
+        }
+    }
 
     background.red = 0x1111; background.green = 0x2222; background.blue = 0x5555;
     stripeColor.red = 0x2222; stripeColor.green = 0x5555; stripeColor.blue = 0x8888;
@@ -3208,15 +3225,6 @@ void PrepareSpriteScene(void)
     SetRect(&sourceRect, 0, 0, kSpriteSize, kSpriteSize);
     SetRect(&firstSpriteRect, 38, 38, 38 + kSpriteSize, 38 + kSpriteSize);
     SetRect(&secondSpriteRect, 214, 38, 214 + kSpriteSize, 38 + kSpriteSize);
-    sourcePixels = GetGWorldPixMap(gSpriteSource);
-    maskPixels = GetGWorldPixMap(gSpriteMask);
-    deepMaskPixels = GetGWorldPixMap(gSpriteDeepMask);
-    worldPixels = GetGWorldPixMap(gSpriteWorld);
-    if (sourcePixels == nil || maskPixels == nil || deepMaskPixels == nil || worldPixels == nil) {
-        SetGWorld(savedWorld, savedDevice);
-        return;
-    }
-
     /* Boolean source modes apply the current foreground and background
        colors. Black and white reproduce the source colors unchanged.
        Imaging With QuickDraw (1994), pp. 4-32--4-34. */
@@ -3241,12 +3249,14 @@ void PrepareSpriteScene(void)
                  &sourceRect, &sourceRect, &secondSpriteRect, srcCopy, gSpriteRegion);
 
     SetGWorld(savedWorld, savedDevice);
+    while (locked > 0) UnlockPixels(pixelMaps[--locked]);
 }
 
 void ScrollSpriteScene(void)
 {
     GWorldPtr savedWorld;
     GDHandle savedDevice;
+    PixMapHandle worldPixels;
     Rect scrollRect;
     Rect exposed;
     RGBColor background;
@@ -3254,6 +3264,8 @@ void ScrollSpriteScene(void)
     Point updateProbe;
 
     if (!gSpriteReady) return;
+    worldPixels = GetGWorldPixMap(gSpriteWorld);
+    if (worldPixels == nil || !LockPixels(worldPixels)) return;
     background.red = 0x1111; background.green = 0x2222; background.blue = 0x5555;
     accent.red = 0xeeee; accent.green = 0xeeee; accent.blue = 0x3333;
 
@@ -3284,6 +3296,7 @@ void ScrollSpriteScene(void)
     gSpriteScrollDelta = gSpriteScrolled ? 24 : -24;
     gSpriteScrolled = !gSpriteScrolled;
     SetGWorld(savedWorld, savedDevice);
+    UnlockPixels(worldPixels);
 }
 
 /*
@@ -3663,9 +3676,10 @@ void DrawSpritesPage(void)
         worldPixels = GetGWorldPixMap(gSpriteWorld);
         windowPixels = GetGWorldPixMap((GWorldPtr)gMainWindow);
         SetRect(&worldRect, 0, 0, kSpriteWorldWidth, kSpriteWorldHeight);
-        if (worldPixels != nil && windowPixels != nil) {
+        if (worldPixels != nil && windowPixels != nil && LockPixels(worldPixels)) {
             CopyBits((BitMap *)*worldPixels, (BitMap *)*windowPixels,
                      &worldRect, &displayRect, srcCopy, nil);
+            UnlockPixels(worldPixels);
         }
         RGBForeColor(&black);
         FrameRect(&displayRect);

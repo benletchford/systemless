@@ -268,6 +268,21 @@
       "ticks": 1
     },
     {
+      "type": "run_until_pixel",
+      "x": 472,
+      "y": 185,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 180
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
       "type": "mouse_move",
       "v": 550,
       "h": 760
