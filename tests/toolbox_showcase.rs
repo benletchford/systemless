@@ -672,6 +672,7 @@ fn assert_drawing_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_le
         let mut intersection = 0;
         let mut union = 0;
         let mut native_pixels = 0;
+        let mut lighting_pixels = 0;
         for v in 80..150 {
             for h in 30..125 {
                 let offset = ((win_top as u32 + v) * width + win_left as u32 + h) as usize * 3;
@@ -682,11 +683,35 @@ fn assert_drawing_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_le
                 native_pixels += usize::from(native_geometry);
                 intersection += usize::from(actual_geometry && native_geometry);
                 union += usize::from(actual_geometry || native_geometry);
+                // Ignore the one-pixel contour, where rasterization differs.
+                // Across the face interior, retain the native lighting gradient;
+                // eight RGB levels allow one 5-bit display quantization step.
+                let interior = native_geometry
+                    && (0..3).all(|dv| {
+                        (0..3).all(|dh| {
+                            let pixel = oracle.get_pixel(40 + h + dh - 1, 50 + v + dv - 1).0;
+                            geometry(pixel[0], pixel[1], pixel[2])
+                        })
+                    });
+                if interior {
+                    lighting_pixels += 1;
+                    for channel in 0..3 {
+                        assert!(
+                            actual[offset + channel].abs_diff(native[channel]) <= 8,
+                            "native QD3D lighting differs at local ({v},{h}), channel {channel}: actual {}, native {}",
+                            actual[offset + channel], native[channel]
+                        );
+                    }
+                }
             }
         }
         assert!(
             native_pixels > 400,
             "oracle must contain a substantial rendered face"
+        );
+        assert!(
+            lighting_pixels > 400,
+            "oracle must have a substantial face interior"
         );
         // The small face has one-pixel rasterization differences between renderers.
         assert!(
