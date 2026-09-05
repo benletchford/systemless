@@ -47,10 +47,10 @@ use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
-use systemless::ui_theme::UiThemeId;
 #[cfg(target_os = "macos")]
 use systemless::runner::MenuBarPolicy;
 use systemless::trap::dispatch::ScreenCopyBitsRect;
+use systemless::ui_theme::UiThemeId;
 
 #[cfg(not(target_os = "macos"))]
 use softbuffer::Surface;
@@ -149,9 +149,9 @@ struct Cli {
     #[arg(long, value_name = "BITS", value_parser = parse_screen_depth)]
     screen_depth: Option<u16>,
 
-    /// Integer host-pixel scale (1 is one host pixel per guest pixel)
-    #[arg(long, value_name = "N", default_value_t = 1, value_parser = parse_display_scale)]
-    display_scale: u32,
+    /// Override automatic window sizing with an integer physical-pixel scale
+    #[arg(long, value_name = "N", value_parser = parse_display_scale)]
+    display_scale: Option<u32>,
 
     /// Guest chrome theme
     #[arg(
@@ -204,6 +204,118 @@ fn guest_scaled_physical_size(
     winit::dpi::PhysicalSize::new(
         width.saturating_mul(display_scale),
         height.saturating_mul(display_scale),
+    )
+}
+
+/// Fit guest content into a host-pixel box, including fractional enlargement
+/// and downscaling. Integer rounding here used to progressively shrink windows
+/// when a game changed its crop or resolution.
+fn fit_window_size(
+    width: u32,
+    height: u32,
+    bounds: winit::dpi::PhysicalSize<u32>,
+) -> winit::dpi::PhysicalSize<u32> {
+    let width = f64::from(width.max(1));
+    let height = f64::from(height.max(1));
+    let scale =
+        (f64::from(bounds.width.max(1)) / width).min(f64::from(bounds.height.max(1)) / height);
+    winit::dpi::PhysicalSize::new(
+        (width * scale).round().max(1.0) as u32,
+        (height * scale).round().max(1.0) as u32,
+    )
+}
+
+/// Aim for a 960×720 logical-point content box, leaving room for desktop
+/// chrome on smaller monitors. DPI converts that box to physical pixels;
+/// guest resolution never changes the requested on-screen footprint.
+fn automatic_window_size(
+    width: u32,
+    height: u32,
+    monitor: Option<winit::dpi::PhysicalSize<u32>>,
+    scale_factor: f64,
+) -> winit::dpi::PhysicalSize<u32> {
+    let dpi = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let mut bounds = winit::dpi::PhysicalSize::new(
+        (960.0 * dpi).round().max(1.0) as u32,
+        (720.0 * dpi).round().max(1.0) as u32,
+    );
+    if let Some(monitor) = monitor.filter(|m| m.width > 0 && m.height > 0) {
+        bounds.width = bounds.width.min((f64::from(monitor.width) * 0.8) as u32);
+        bounds.height = bounds.height.min((f64::from(monitor.height) * 0.8) as u32);
+    }
+    fit_window_size(width, height, bounds)
+}
+
+/// Use the actual window's display, including the macOS menu bar and Dock
+/// exclusions. Other platforms leave a conservative margin around the monitor.
+fn window_monitor_bounds(
+    window: &Window,
+) -> Option<(
+    winit::dpi::PhysicalPosition<i32>,
+    winit::dpi::PhysicalSize<u32>,
+)> {
+    let monitor = window.current_monitor()?;
+    let position = monitor.position();
+    let size = monitor.size();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::AppKit(handle) = handle.as_raw() {
+                // SAFETY: winit owns the NSView/NSWindow, and this helper is
+                // called on the AppKit main thread during window creation.
+                unsafe {
+                    let view: &NSObject = handle.ns_view.cast().as_ref();
+                    let native_window: *mut NSObject = msg_send![view, window];
+                    if let Some(native_window) = native_window.as_ref() {
+                        let screen: *mut NSObject = msg_send![native_window, screen];
+                        if let Some(screen) = screen.as_ref() {
+                            let frame: objc2_foundation::CGRect = msg_send![screen, frame];
+                            let visible: objc2_foundation::CGRect = msg_send![screen, visibleFrame];
+                            let dpi = window.scale_factor();
+                            if visible.size.width > 0.0 && visible.size.height > 0.0 {
+                                // AppKit's Y axis points up; winit's points down.
+                                let left = (visible.origin.x - frame.origin.x) * dpi;
+                                let top = (frame.origin.y + frame.size.height
+                                    - visible.origin.y
+                                    - visible.size.height)
+                                    * dpi;
+                                return Some((
+                                    winit::dpi::PhysicalPosition::new(
+                                        position.x.saturating_add(left.round() as i32),
+                                        position.y.saturating_add(top.round() as i32),
+                                    ),
+                                    winit::dpi::PhysicalSize::new(
+                                        (visible.size.width * dpi).round().max(1.0) as u32,
+                                        (visible.size.height * dpi).round().max(1.0) as u32,
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some((position, size))
+}
+
+fn guest_resize_scale(
+    display_scale: Option<u32>,
+    fullscreen: bool,
+    maximized: bool,
+) -> Option<u32> {
+    display_scale.filter(|_| !fullscreen && !maximized)
+}
+
+fn window_guest_resize_scale(window: &Window, display_scale: Option<u32>) -> Option<u32> {
+    guest_resize_scale(
+        display_scale,
+        window.fullscreen().is_some(),
+        window.is_maximized(),
     )
 }
 
@@ -648,9 +760,9 @@ struct App {
     addressing_24_bit: bool,
     /// Explicit guest framebuffer depth, or architecture defaults.
     screen_depth: Option<u16>,
-    /// Explicit integer host-pixel scale. Physical sizing keeps compositor
-    /// DPI from silently changing the requested guest-to-host ratio.
-    display_scale: u32,
+    /// None chooses a comfortable monitor-aware size; Some preserves an
+    /// explicit physical guest-to-host pixel ratio.
+    display_scale: Option<u32>,
     /// Selected guest chrome presentation provider.
     ui_theme: UiThemeId,
     #[cfg(target_os = "macos")]
@@ -680,7 +792,7 @@ impl App {
             native_integrations,
             addressing_24_bit,
             Some(screen_depth),
-            1,
+            Some(1),
             UiThemeId::ClassicSystem7,
             false,
         )
@@ -692,7 +804,7 @@ impl App {
         native_integrations: bool,
         addressing_24_bit: bool,
         screen_depth: Option<u16>,
-        display_scale: u32,
+        display_scale: Option<u32>,
         ui_theme: UiThemeId,
         start_fullscreen: bool,
     ) -> Self {
@@ -1514,14 +1626,13 @@ impl App {
                 self.content_rect_relearn_after_full = invalidated_crop.is_some();
                 persist_content_rect(&self.game_path, screen_mode, rect);
                 if let Some(window) = self.window.as_ref() {
-                    let current = window.inner_size();
-                    let integer_scale = (current.width / rect.width)
-                        .min(current.height / rect.height)
-                        .max(1);
-                    let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
-                        rect.width.saturating_mul(integer_scale),
-                        rect.height.saturating_mul(integer_scale),
-                    ));
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                        let _ = window.request_inner_size(guest_scaled_physical_size(
+                            rect.width,
+                            rect.height,
+                            scale,
+                        ));
+                    }
                 }
                 self.window_sized_content_rect = Some(rect);
             }
@@ -1540,6 +1651,14 @@ impl App {
                 game_w,
                 game_h,
             );
+            let allow_guest_resize = self.window.as_ref().is_some_and(|window| {
+                window_guest_resize_scale(window, self.display_scale).is_some()
+            });
+            if !allow_guest_resize {
+                self.pending_window_transition = None;
+                self.transient_window_restore_geometry = None;
+                self.window_sized_content_rect = Some(desired_content);
+            }
             if let Some(pending) = self.pending_window_transition {
                 if pending.content != desired_content {
                     // The dialog changed or closed before AppKit delivered the
@@ -1571,7 +1690,7 @@ impl App {
             } else {
                 self.window_sized_content_rect != Some(desired_content)
             };
-            if transition_needed {
+            if transition_needed && allow_guest_resize {
                 let (target_size, target_position) = if desired_content != stable_content {
                     if self.transient_window_restore_geometry.is_none() {
                         self.transient_window_restore_geometry = Some(TransientWindowGeometry {
@@ -2218,13 +2337,24 @@ impl ApplicationHandler for App {
             };
             #[cfg(not(target_os = "macos"))]
             let window_title = "Systemless - Macintosh Emulator";
+            let monitor = event_loop.primary_monitor();
+            let initial_window_size = self.display_scale.map_or_else(
+                || {
+                    automatic_window_size(
+                        initial_size.0,
+                        initial_size.1,
+                        monitor.as_ref().map(|monitor| monitor.size()),
+                        monitor
+                            .as_ref()
+                            .map_or(1.0, |monitor| monitor.scale_factor()),
+                    )
+                },
+                |scale| guest_scaled_physical_size(initial_size.0, initial_size.1, scale),
+            );
             let window_attrs = Window::default_attributes()
                 .with_title(window_title)
-                .with_inner_size(guest_scaled_physical_size(
-                    initial_size.0,
-                    initial_size.1,
-                    self.display_scale,
-                ))
+                .with_visible(false)
+                .with_inner_size(initial_window_size)
                 .with_resizable(true);
             let window_attrs = platform_window_attrs(window_attrs);
 
@@ -2233,6 +2363,28 @@ impl ApplicationHandler for App {
                     .create_window(window_attrs)
                     .expect("Failed to create window"),
             );
+            // The window manager may choose a different monitor from the
+            // primary one. Resolve its actual DPI before showing the window.
+            if self.display_scale.is_none() {
+                let bounds = window_monitor_bounds(&window);
+                let target = automatic_window_size(
+                    initial_size.0,
+                    initial_size.1,
+                    bounds.map(|(_, size)| size),
+                    window.scale_factor(),
+                );
+                let _ = window.request_inner_size(target);
+                if let Some((origin, extent)) = bounds {
+                    window.set_outer_position(winit::dpi::PhysicalPosition::new(
+                        origin
+                            .x
+                            .saturating_add((extent.width.saturating_sub(target.width) / 2) as i32),
+                        origin.y.saturating_add(
+                            (extent.height.saturating_sub(target.height) / 2) as i32,
+                        ),
+                    ));
+                }
+            }
             // The guest cursor is the host pointer on macOS; it is drawn into
             // the frame elsewhere.
             #[cfg(target_os = "macos")]
@@ -2244,6 +2396,7 @@ impl ApplicationHandler for App {
             if self.start_fullscreen {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             }
+            window.set_visible(true);
 
             #[cfg(target_os = "macos")]
             let surface = metal_present::MetalPresenter::new(window.clone())
@@ -2450,11 +2603,13 @@ impl ApplicationHandler for App {
                 self.current_screen_width = sw;
                 self.current_screen_height = sh;
                 if let Some(window) = &self.window {
-                    let _ = window.request_inner_size(guest_scaled_physical_size(
-                        sw,
-                        sh,
-                        self.display_scale,
-                    ));
+                    // Automatic sizing owns only the initial geometry. Keep
+                    // the user's window through guest mode changes and fit
+                    // the new framebuffer into it during presentation.
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                        let _ =
+                            window.request_inner_size(guest_scaled_physical_size(sw, sh, scale));
+                    }
                 }
                 self.force_next_render = true;
             }
@@ -2473,7 +2628,7 @@ fn run_gui(
     native_integrations: bool,
     addressing_24_bit: bool,
     screen_depth: Option<u16>,
-    display_scale: u32,
+    display_scale: Option<u32>,
     ui_theme: UiThemeId,
     fullscreen: bool,
 ) {
@@ -3178,26 +3333,96 @@ mod tests {
         assert!(cli.prefer_powerpc);
         assert!(cli.addressing_24_bit);
         assert_eq!(cli.screen_depth, Some(4));
-        assert_eq!(cli.display_scale, 2);
+        assert_eq!(cli.display_scale, Some(2));
         assert_eq!(cli.ui_theme, UiThemeId::SystemlessDefault);
         assert_eq!(cli.max_instructions, Some(1234));
     }
 
     #[test]
-    fn cli_defaults_to_one_physical_host_pixel_and_systemless_theme() {
+    fn cli_defaults_to_automatic_window_size_and_systemless_theme() {
         let cli = Cli::try_parse_from(["systemless", "game.sit"])
             .expect("default display scale should parse");
-        assert_eq!(cli.display_scale, 1);
+        assert_eq!(cli.display_scale, None);
         assert_eq!(cli.screen_depth, None);
         assert_eq!(cli.ui_theme, UiThemeId::SystemlessDefault);
         assert_eq!(
-            guest_scaled_physical_size(800, 600, cli.display_scale),
+            guest_scaled_physical_size(800, 600, 1),
             winit::dpi::PhysicalSize::new(800, 600)
         );
 
         let invalid = Cli::try_parse_from(["systemless", "--display-scale", "0", "game.sit"])
             .expect_err("zero display scale should be rejected");
         assert_eq!(invalid.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn automatic_windows_have_the_same_logical_size_across_dpi() {
+        use winit::dpi::PhysicalSize;
+        for dpi in [1.0, 1.25, 1.5, 2.0, 3.0] {
+            let monitor = PhysicalSize::new((1920.0 * dpi) as u32, (1080.0 * dpi) as u32);
+            for (width, height) in [(320, 240), (640, 480), (1600, 1200), (4096, 3072)] {
+                assert_eq!(
+                    automatic_window_size(width, height, Some(monitor), dpi),
+                    PhysicalSize::new((960.0 * dpi) as u32, (720.0 * dpi) as u32)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_windows_fit_small_and_portrait_monitors() {
+        use winit::dpi::PhysicalSize;
+        for monitor in [
+            PhysicalSize::new(800, 600),
+            PhysicalSize::new(1080, 1920),
+            PhysicalSize::new(640, 360),
+        ] {
+            for (width, height) in [(640, 480), (320, 200), (480, 900), (4096, 2160)] {
+                let size = automatic_window_size(width, height, Some(monitor), 2.0);
+                assert!(size.width > 0 && size.height > 0);
+                assert!(size.width <= monitor.width * 4 / 5);
+                assert!(size.height <= monitor.height * 4 / 5);
+                assert!(
+                    (f64::from(size.width) / f64::from(width)
+                        - f64::from(size.height) / f64::from(height))
+                    .abs()
+                        < 0.01
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_windows_have_safe_monitor_and_dpi_fallbacks() {
+        use winit::dpi::PhysicalSize;
+        for dpi in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                automatic_window_size(640, 480, None, dpi),
+                PhysicalSize::new(960, 720)
+            );
+        }
+        assert_eq!(
+            automatic_window_size(640, 480, Some(PhysicalSize::new(0, 0)), 2.0),
+            PhysicalSize::new(1920, 1440)
+        );
+        let zero = automatic_window_size(0, 0, None, 1.0);
+        assert!(zero.width > 0 && zero.height > 0);
+    }
+
+    #[test]
+    fn guest_layout_changes_preserve_automatic_fullscreen_and_maximized_windows() {
+        for fullscreen in [false, true] {
+            for maximized in [false, true] {
+                assert_eq!(guest_resize_scale(None, fullscreen, maximized), None);
+            }
+        }
+        assert_eq!(guest_resize_scale(Some(2), false, false), Some(2));
+        assert_eq!(guest_resize_scale(Some(2), true, false), None);
+        assert_eq!(guest_resize_scale(Some(2), false, true), None);
+        assert_eq!(
+            guest_scaled_physical_size(640, 480, 2),
+            winit::dpi::PhysicalSize::new(1280, 960)
+        );
     }
 
     #[test]
@@ -3798,7 +4023,11 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner.dispatcher_mut().sound_manager_mut().channels.push(chan);
+        runner
+            .dispatcher_mut()
+            .sound_manager_mut()
+            .channels
+            .push(chan);
         runner
             .dispatcher_mut()
             .sound_manager_mut()
@@ -3912,7 +4141,11 @@ mod tests {
             1,
             8,
         );
-        runner.dispatcher_mut().sound_manager_mut().channels.push(chan);
+        runner
+            .dispatcher_mut()
+            .sound_manager_mut()
+            .channels
+            .push(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);

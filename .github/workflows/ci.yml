@@ -62,6 +62,9 @@ jobs:
       - name: Run library tests
         run: cargo test --lib --features test-support
 
+      - name: Run desktop tests
+        run: cargo test --locked --bin systemless
+
       - name: Run toolbox showcase integration test (68k)
         run: cargo test --test toolbox_showcase
 
