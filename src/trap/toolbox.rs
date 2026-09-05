@@ -16431,7 +16431,13 @@ impl super::TrapDispatcher {
                         if thread_state == 0 {
                             -50
                         } else {
-                            match ThreadManager::new(&self.guest_calls).state(thread_to_get) {
+                            let manager = ThreadManager::new(&self.guest_calls);
+                            let state = if selector == 0x060F {
+                                manager.state_given_task(bus.read_long(sp + 8), thread_to_get)
+                            } else {
+                                manager.state(thread_to_get)
+                            };
+                            match state {
                                 Ok(state) if bus.try_write_word(thread_state, state) => 0,
                                 Ok(_) => -50,
                                 Err(error) => error,
@@ -16480,21 +16486,12 @@ impl super::TrapDispatcher {
                             Err(error) => error,
                         }
                     }
-                    // SetThreadReadyGivenTaskRef(threadTRef, threadToSet)
-                    0x0410 => {
-                        let task = ExecutionTaskId::from_thread_id(
-                            self.resolve_cooperative_thread_id(bus.read_long(sp)),
-                        );
-                        match self.guest_calls.scheduling_state(task) {
-                            None => Self::THREAD_NOT_FOUND_ERR,
-                            Some(ExecutionTaskState::Stopped) => {
-                                self.guest_calls
-                                    .set_scheduling_state(task, ExecutionTaskState::Ready);
-                                0
-                            }
-                            Some(_) => 0,
-                        }
-                    }
+                    // SetThreadReadyGivenTaskRef (0xA3F2)
+                    // Mark a stopped thread ready without switching during the call.
+                    // OSErr (ThreadTaskRef threadTRef, ThreadID threadToSet);
+                    // Inside Macintosh: Thread Manager (1999), pp. 75–76.
+                    0x0410 => ThreadManager::new(&self.guest_calls)
+                        .ready_given_task(bus.read_long(sp + 4), bus.read_long(sp)),
                     // SetThreadScheduler(threadScheduler)
                     0x0209 => {
                         self.cooperative_thread_scheduler = bus.read_long(sp);
@@ -16555,8 +16552,12 @@ impl super::TrapDispatcher {
                         if thread_t_ref == 0 {
                             -50
                         } else {
-                            bus.write_long(thread_t_ref, Self::APPLICATION_THREAD_ID);
-                            0
+                            let reference = ThreadManager::new(&self.guest_calls).task_reference();
+                            if bus.try_write_long(thread_t_ref, reference) {
+                                0
+                            } else {
+                                -50
+                            }
                         }
                     }
                     0x000B => ThreadManager::new(&self.guest_calls).begin_critical(),

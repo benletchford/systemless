@@ -39,7 +39,8 @@ impl M68kExecution {
 
     /// A launch cannot discard contexts still associated with live calls.
     pub(crate) fn can_relaunch(&self) -> bool {
-        self.parked.is_empty()
+        self.calls.current_task_is_running()
+            && self.parked.is_empty()
             && self.calls.is_empty()
             && !self.calls.has_live_workers()
             && !self.calls.has_pending_task_handoff()

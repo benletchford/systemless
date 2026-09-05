@@ -46,6 +46,42 @@ impl<'a> ThreadManager<'a> {
             .ok_or(THREAD_NOT_FOUND_ERR)
     }
 
+    // Thread task references identify the process, not an execution thread.
+    // The current runtime hosts one process per service. Preserve the existing
+    // process-local opaque token while process construction is migrated.
+    // Inside Macintosh: Thread Manager (1999), pp. 46, 73–76.
+    pub(crate) fn task_reference(&self) -> u32 {
+        ExecutionTaskId::APPLICATION.thread_id()
+    }
+
+    pub(crate) fn state_given_task(&self, reference: u32, thread: u32) -> Result<u16, i16> {
+        if reference != self.task_reference() {
+            return Err(THREAD_PROTOCOL_ERR);
+        }
+        self.state(thread)
+    }
+
+    pub(crate) fn ready_given_task(&self, reference: u32, thread: u32) -> i16 {
+        if reference != self.task_reference() {
+            return THREAD_PROTOCOL_ERR;
+        }
+        let task = ExecutionTaskId::from_thread_id(self.resolve_thread(thread));
+        match self.execution.scheduling_state(task) {
+            None => THREAD_NOT_FOUND_ERR,
+            Some(ExecutionTaskState::Stopped) => {
+                if self
+                    .execution
+                    .set_scheduling_state(task, ExecutionTaskState::Ready)
+                {
+                    0
+                } else {
+                    THREAD_PROTOCOL_ERR
+                }
+            }
+            Some(_) => THREAD_PROTOCOL_ERR,
+        }
+    }
+
     // ThreadBeginCritical / ThreadEndCritical, Thread Manager (1999), pp. 69–70.
     pub(crate) fn begin_critical(&self) -> i16 {
         self.execution.begin_critical();

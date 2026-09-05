@@ -5602,6 +5602,7 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: bool,
     ) -> (usize, bool) {
+        self.dispatcher.guest_calls.resume_ready_task();
         self.m68k.apply_task_handoff();
         let route = self
             .dispatcher
@@ -6573,7 +6574,8 @@ impl FixtureRunner {
             // the native caller is parked. Do not deliver the native
             // application's VBL/Time Manager work against that successor's
             // task; the callback phase is retried once its owner is selected.
-            let native_callbacks_allowed = ppc_app.guest_calls.current_task() == ppc_task
+            let native_callbacks_allowed = ppc_app.guest_calls.current_task_is_running()
+                && ppc_app.guest_calls.current_task() == ppc_task
                 && ExecutionTaskId::from_thread_id(
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
@@ -6683,7 +6685,8 @@ impl FixtureRunner {
             (Vec::new(), Vec::new())
         } else {
             let tick_advance = self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
-            let native_callbacks_allowed = ppc_app.guest_calls.current_task() == ppc_task
+            let native_callbacks_allowed = ppc_app.guest_calls.current_task_is_running()
+                && ppc_app.guest_calls.current_task() == ppc_task
                 && ExecutionTaskId::from_thread_id(
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
@@ -6934,7 +6937,9 @@ impl FixtureRunner {
         // task and the continuation captured above must remain suspended until
         // its owner is scheduled again. Continuing here would execute the old
         // callback against the new task's registers and stack.
-        if ppc_app.guest_calls.current_task() != task {
+        if ppc_app.guest_calls.current_task() != task
+            || !ppc_app.guest_calls.current_task_is_running()
+        {
             return Some((0, true));
         }
 
@@ -6996,7 +7001,9 @@ impl FixtureRunner {
                         running = false;
                         break;
                     }
-                    if ppc_app.guest_calls.current_task() != task {
+                    if ppc_app.guest_calls.current_task() != task
+                        || !ppc_app.guest_calls.current_task_is_running()
+                    {
                         // The trap switched cooperative tasks. Preserve the active
                         // frame and let the outer scheduler run the newly selected
                         // task; only this task may resume the captured continuation.
@@ -15522,6 +15529,100 @@ mod tests {
         let ppc_app = runner.native.application().expect("PPC app retained");
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.gpr[3], u32::from(TRAP));
+    }
+
+    #[test]
+    fn stopped_last_thread_waits_for_a_task_reference_wakeup() {
+        use crate::cpu::CpuOps;
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::trap::test_helpers::{setup, TEST_SP};
+        const CLASSIC_PC: u32 = 0x4000;
+        const CLASSIC_SP: u32 = 0x5000;
+        for native in [false, true] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            if native {
+                let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+                let loaded = app.ppc.as_mut().unwrap();
+                loaded.entry_pc = PPC_IMPORT_TRAP_BASE;
+                loaded.cpu.pc = PPC_IMPORT_TRAP_BASE;
+                loaded.memory.add_region(PPC_IMPORT_TRAP_BASE, vec![0; 4]);
+                loaded.memory.add_region(
+                    PPC_CODE_BASE,
+                    [0x3a800055_u32, 0x48000000]
+                        .into_iter()
+                        .flat_map(u32::to_be_bytes)
+                        .collect(),
+                );
+                let mut binding = test_ppc_import_binding(0, "InterfaceLib", "SetThreadState");
+                binding.dispatcher_target = PpcImportDispatcherTarget::SetThreadState;
+                binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+                loaded.import_count = 1;
+                loaded.imports.push(binding);
+                runner.init_app(&app);
+                let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                cpu.lr = PPC_CODE_BASE;
+                cpu.gpr[3] = 1;
+                cpu.gpr[4] = 1;
+                cpu.gpr[5] = 0;
+                cpu.gpr[20] = 0;
+            } else {
+                for (i, word) in [0x303cu16, 0x0508, 0xabf2, 0x7c55, 0x60fe]
+                    .into_iter()
+                    .enumerate()
+                {
+                    runner.bus.write_word(CLASSIC_PC + i as u32 * 2, word);
+                }
+                runner.bus.write_long(CLASSIC_SP, 0);
+                runner.bus.write_word(CLASSIC_SP + 4, 1);
+                runner.bus.write_long(CLASSIC_SP + 6, 1);
+                runner.m68k.cpu.write_reg(Register::PC, CLASSIC_PC);
+                runner.m68k.cpu.write_reg(Register::A7, CLASSIC_SP);
+                runner.m68k.cpu.write_reg(Register::D6, 0);
+            }
+            let calls = runner.dispatcher.guest_calls.shared_handle();
+            let (steps, running) = runner.run_steps(32, None);
+            assert!(steps > 0 && running);
+            assert_eq!(
+                calls.scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Stopped)
+            );
+            assert!(!runner.m68k.can_relaunch());
+            for _ in 0..3 {
+                assert_eq!(runner.run_steps(32, None), (0, true));
+            }
+            if native {
+                let cpu = &runner.native.application().unwrap().cpu;
+                assert_eq!(cpu.pc, PPC_CODE_BASE);
+                assert_eq!(cpu.gpr[20], 0);
+            } else {
+                assert_eq!(runner.m68k.cpu.read_reg(Register::PC), CLASSIC_PC + 6);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D6), 0);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::A7), CLASSIC_SP + 10);
+            }
+            // An interrupt/completion edge may mark the stopped thread ready;
+            // the wake call must not execute or replace the suspended CPU.
+            let (mut wake, mut cpu, mut bus) = setup();
+            wake.guest_calls = calls.shared_handle();
+            bus.write_long(TEST_SP, ExecutionTaskId::APPLICATION.thread_id());
+            bus.write_long(TEST_SP + 4, 2);
+            cpu.write_reg(Register::D0, 0x0410);
+            wake.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(
+                calls.scheduling_state(ExecutionTaskId::APPLICATION),
+                Some(ExecutionTaskState::Ready)
+            );
+            let (steps, running) = runner.run_steps(32, None);
+            assert!(steps > 0 && running);
+            assert!(calls.current_task_is_running());
+            if native {
+                assert_eq!(runner.native.application().unwrap().cpu.gpr[20], 0x55);
+            } else {
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D6), 0x55);
+            }
+        }
     }
 
     #[test]

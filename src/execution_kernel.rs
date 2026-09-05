@@ -724,11 +724,6 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
                         .copied()
                         .find(|candidate| eligible(*candidate))
                 });
-            // A ready caller can resume itself. A stopped caller requires a
-            // runnable successor; do not report a successful stop while running it.
-            if next.is_none() && requested == ExecutionTaskState::Stopped {
-                return None;
-            }
             next
         } else {
             None
@@ -738,11 +733,12 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         }
         state.critical_depth = depth;
         state.ready.retain(|queued| *queued != task);
-        let final_state = if switching && successor.is_none() {
-            ExecutionTaskState::Running
-        } else {
-            requested
-        };
+        let final_state =
+            if switching && successor.is_none() && requested == ExecutionTaskState::Ready {
+                ExecutionTaskState::Running
+            } else {
+                requested
+            };
         state.task_states.insert(task, final_state);
         if final_state == ExecutionTaskState::Ready {
             state.ready.push_back(task);

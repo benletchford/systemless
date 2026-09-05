@@ -898,6 +898,38 @@ impl SharedGuestCallStack {
         Some(task)
     }
 
+    /// Scheduling resumes only after a wake operation marks a task ready and
+    /// its saved engine context can be installed. A stopped cursor owns no work.
+    pub(crate) fn resume_ready_task(&self) -> bool {
+        let mut tasks = self.0.borrow_mut();
+        if tasks.handoff.is_some() || tasks.kernel.critical_depth() != 0 {
+            return false;
+        }
+        let current = tasks.kernel.current_task();
+        let next = match tasks.kernel.scheduling_state(current) {
+            Some(ExecutionTaskState::Running) => return false,
+            Some(ExecutionTaskState::Ready) => current,
+            _ => match tasks.kernel.next_ready_task(None) {
+                Some(next) => next,
+                None => return false,
+            },
+        };
+        let Some(context) = tasks.saved_context(next) else {
+            return false;
+        };
+        if tasks.kernel.switch_to_task(next).is_err() {
+            return false;
+        }
+        tasks.handoff = Some((next, context));
+        true
+    }
+
+    pub(crate) fn current_task_is_running(&self) -> bool {
+        let tasks = self.0.borrow();
+        tasks.kernel.scheduling_state(tasks.kernel.current_task())
+            == Some(ExecutionTaskState::Running)
+    }
+
     pub(crate) fn set_native_thread_state(
         &self,
         cpu: &mut PpcCpu,
@@ -910,16 +942,20 @@ impl SharedGuestCallStack {
         let current = tasks.kernel.current_task();
         let successor =
             tasks.change_thread_state(thread, new_state, suggested, end_critical, || true)?;
-        let Some((next, context)) = successor else {
+        if successor.is_none()
+            && tasks.kernel.scheduling_state(current) != Some(ExecutionTaskState::Stopped)
+        {
             return Ok(false);
-        };
+        }
         let mut outgoing = cpu.clone();
         outgoing.pc = outgoing.lr;
         outgoing.gpr[3] = 0;
         tasks.save_native_cpu(current, &outgoing);
         *cpu = outgoing;
         tasks.native_cpu_task = Some(current);
-        tasks.install_native_successor(next, context, cpu);
+        if let Some((next, context)) = successor {
+            tasks.install_native_successor(next, context, cpu);
+        }
         Ok(true)
     }
 
@@ -936,11 +972,13 @@ impl SharedGuestCallStack {
         let current = tasks.kernel.current_task();
         let successor =
             tasks.change_thread_state(thread, new_state, suggested, end_critical, commit)?;
-        let Some((next, context)) = successor else {
+        if successor.is_none()
+            && tasks.kernel.scheduling_state(current) != Some(ExecutionTaskState::Stopped)
+        {
             return Ok(false);
-        };
+        }
         tasks.cooperative_contexts.insert(current, outgoing);
-        tasks.handoff = Some((next, context));
+        tasks.handoff = successor;
         Ok(true)
     }
 
