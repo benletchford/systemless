@@ -3920,11 +3920,11 @@ impl PpcLoadedApp {
             return false;
         }
 
-        fn ordinary_overlaps(memory: &mut PpcSectionMem, start: u64, end: u64) -> bool {
+        fn mapped_overlaps(memory: &mut PpcSectionMem, start: u64, end: u64) -> bool {
             if start >= end {
                 return false;
             }
-            memory.ordinary_mapping_overlaps(
+            memory.mapping_overlaps(
                 u32::try_from(start).expect("nonempty guest range starts below 2^32"),
                 u32::try_from(end - start).expect("subrange fits reservation length"),
             )
@@ -3937,8 +3937,8 @@ impl PpcLoadedApp {
         let future_end = u64::from(self.heap_limit());
         let before_end = end.min(future_start);
         let after_start = start.max(future_end);
-        if ordinary_overlaps(&mut self.memory, start, before_end)
-            || ordinary_overlaps(&mut self.memory, after_start, end)
+        if mapped_overlaps(&mut self.memory, start, before_end)
+            || mapped_overlaps(&mut self.memory, after_start, end)
         {
             return false;
         }
@@ -13074,20 +13074,26 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     }
     // Keep a bounded pool of synthetic import slots mapped from launch so
     // GetMemFragment can bind imports while the CPU is already running.
-    memory.add_readonly_region(
-        PPC_IMPORT_TVECTOR_BASE,
-        import_tvector_bytes(PPC_IMPORT_SLOT_COUNT as usize),
-    );
-    memory.add_readonly_region(
-        PPC_IMPORT_TRAP_BASE,
-        import_trap_bytes(PPC_IMPORT_SLOT_COUNT as usize),
-    );
+    memory
+        .publish_system_code(
+            PPC_IMPORT_TVECTOR_BASE,
+            import_tvector_bytes(PPC_IMPORT_SLOT_COUNT as usize),
+        )
+        .ok_or(PpcLoadError::AddressOverflow)?;
+    memory
+        .publish_system_code(
+            PPC_IMPORT_TRAP_BASE,
+            import_trap_bytes(PPC_IMPORT_SLOT_COUNT as usize),
+        )
+        .ok_or(PpcLoadError::AddressOverflow)?;
     memory.add_region(PPC_IMPORT_DATA_BASE, vec![0; PPC_IMPORT_DATA_SIZE]);
     ppc_seed_import_data(&mut memory);
-    memory.add_readonly_region(
-        PPC_CFM_MAIN_STUB_BASE,
-        import_trap_bytes(PPC_CFM_MAIN_STUB_COUNT as usize),
-    );
+    memory
+        .publish_system_code(
+            PPC_CFM_MAIN_STUB_BASE,
+            import_trap_bytes(PPC_CFM_MAIN_STUB_COUNT as usize),
+        )
+        .ok_or(PpcLoadError::AddressOverflow)?;
     memory.add_region(PPC_MAIN_GWORLD, vec![0u8; 256]);
     memory.add_region(PPC_MAIN_GDEVICE, vec![0u8; 256]);
     memory.add_region(PPC_MAIN_GDEVICE_RECORD, vec![0u8; 256]);
@@ -13159,10 +13165,12 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     memory.add_region(PPC_DSP_CONTEXT, vec![0u8; PPC_QA_OBJECTS_SIZE]);
     ppc_seed_qa_rave_objects(&mut memory);
     if init_tvector.is_some() {
-        memory.add_readonly_region(
-            PPC_APPLICATION_INIT_RETURN_PC,
-            ppc_application_init_return_trampoline(entry_pc, rtoc),
-        );
+        memory
+            .publish_system_code(
+                PPC_APPLICATION_INIT_RETURN_PC,
+                ppc_application_init_return_trampoline(entry_pc, rtoc),
+            )
+            .ok_or(PpcLoadError::AddressOverflow)?;
     }
     let mut gworlds = vec![
         ppc_seed_main_gworld(&mut memory),
@@ -13178,7 +13186,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         let reservation_end = reservation_start + u64::from(len);
         let overlaps_stack =
             reservation_start < u64::from(PPC_STACK_TOP) && u64::from(stack_base) < reservation_end;
-        if overlaps_stack || memory.ordinary_mapping_overlaps(base, len) {
+        if overlaps_stack || memory.mapping_overlaps(base, len) {
             return Err(PpcLoadError::AddressOverflow);
         }
     }
@@ -108424,6 +108432,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn native_generated_code_uses_owned_system_provenance() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_initializer()).unwrap();
+        for base in [
+            PPC_IMPORT_TVECTOR_BASE,
+            PPC_IMPORT_TRAP_BASE,
+            PPC_CFM_MAIN_STUB_BASE,
+            PPC_APPLICATION_INIT_RETURN_PC,
+        ] {
+            let word = loaded.memory.read_u32_be(base).unwrap();
+            assert!(loaded
+                .memory
+                .shared_view()
+                .is_shared_readonly_range(base, 4));
+            assert!(!loaded.prepare_shared_system_reservation(base, 4));
+            assert_eq!(loaded.memory.write_u32_be(base, word ^ u32::MAX), None);
+            loaded.memory.add_region(base, vec![0xff; 4]);
+            assert_eq!(loaded.memory.read_u32_be(base), Some(word));
+            let mut detached = loaded.memory.clone();
+            assert_eq!(
+                detached.write_shared_system_u32_be(base, word ^ u32::MAX),
+                Some(())
+            );
+            assert_eq!(detached.read_u32_be(base), Some(word ^ u32::MAX));
+            assert_eq!(loaded.memory.read_u32_be(base), Some(word));
+        }
+        assert!(!loaded
+            .memory
+            .shared_view()
+            .is_shared_readonly_range(PPC_CODE_BASE, 4));
+    }
+
+    #[test]
     fn ppc_loader_rejects_system_reservation_layout_collisions() {
         fn reservation_at(base: u32) -> (MacMemoryBus, (u32, u32)) {
             let bus = MacMemoryBus::new((base + 0x0009_0000) as usize);
@@ -108440,7 +108480,13 @@ pub(crate) mod tests {
         )
         .expect("the 8 MiB runner reservation occupies a native-layout gap");
 
-        for base in [PPC_CODE_BASE, PPC_MAIN_GWORLD] {
+        for base in [
+            PPC_CODE_BASE,
+            PPC_MAIN_GWORLD,
+            PPC_IMPORT_TVECTOR_BASE,
+            PPC_IMPORT_TRAP_BASE,
+            PPC_CFM_MAIN_STUB_BASE,
+        ] {
             let (_bus, reservation) = reservation_at(base);
             assert_eq!(
                 load_pef_application_with_config_and_system_reservation(
@@ -164460,10 +164506,7 @@ pub(crate) mod tests {
             .expect("classic adapter owns low memory");
         context.attach_memory(0, low_memory, &mut native.memory);
         let ram_end = classic_bus.ram_size();
-        for (base, end) in native
-            .memory
-            .ordinary_mapping_holes(0x0010_0000, ram_end)
-        {
+        for (base, end) in native.memory.mapping_holes(0x0010_0000, ram_end) {
             let memory = classic_bus
                 .shared_ram_region(base, end - base)
                 .expect("classic adapter owns the native mapping hole");
@@ -167700,10 +167743,7 @@ pub(crate) mod tests {
             .shared_ram_region(0, low_memory_end)
             .expect("classic adapter owns low memory");
         context.attach_memory(0, low_memory, &mut native.memory);
-        for (base, end) in native
-            .memory
-            .ordinary_mapping_holes(low_memory_end, ram_end)
-        {
+        for (base, end) in native.memory.mapping_holes(low_memory_end, ram_end) {
             let memory = classic_bus
                 .shared_ram_region(base, end - base)
                 .expect("classic adapter owns the native mapping hole");

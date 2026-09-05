@@ -4358,7 +4358,7 @@ impl FixtureRunner {
         // Macintosh: Memory (1992), pp. 2-19--2-21.
         let classic_heap_floor = APP_HEAP_FLOOR;
         let classic_heap_limit = self.bus.classic_heap_limit();
-        for (mapping_start, mapping_end) in ppc_app.memory.ordinary_mapping_ranges() {
+        for (mapping_start, mapping_end) in ppc_app.memory.mapping_ranges() {
             let start = mapping_start.max(classic_heap_floor);
             let end = mapping_end.min(classic_heap_limit);
             if start < end {
@@ -4366,16 +4366,23 @@ impl FixtureRunner {
             }
         }
 
+        // Check the native layout before our own RAM overlays occupy its holes.
+        let system_reservation =
+            self.bus
+                .shared_synthetic_reservation()
+                .filter(|(base, region)| {
+                    let len = u32::try_from(region.len())
+                        .expect("synthetic reservation fits guest address");
+                    ppc_app.prepare_shared_system_reservation(*base, len)
+                });
+
         let process_low_memory = self
             .bus
             .shared_ram_region(0, low_memory_end)
             .expect("FixtureRunner owns the complete process low-memory range");
         self.process_context
             .attach_memory(0, process_low_memory, &mut ppc_app.memory);
-        for (base, end) in ppc_app
-            .memory
-            .ordinary_mapping_holes(low_memory_end, ram_end)
-        {
+        for (base, end) in ppc_app.memory.mapping_holes(low_memory_end, ram_end) {
             let len = end - base;
             let process_memory = self
                 .bus
@@ -4384,17 +4391,9 @@ impl FixtureRunner {
             self.process_context
                 .attach_memory(base, process_memory, &mut ppc_app.memory);
         }
-        let Some((base, region)) = self.bus.shared_synthetic_reservation() else {
+        let Some((base, region)) = system_reservation else {
             return;
         };
-        let len = u32::try_from(region.len()).expect("synthetic reservation fits guest address");
-        if !ppc_app.prepare_shared_system_reservation(base, len) {
-            // Low-level public PEF loading does not know which runner will
-            // eventually own the app. If that late pairing would overlay
-            // already-mapped native state, preserve the native layout rather
-            // than silently replacing it with system bytes.
-            return;
-        }
         // SAFETY: the same serialized ownership contract applies, while the
         // read-only mapping preserves the ROM-like protection enforced by the
         // 68k bus for trap gateways and permanent come-from heads.
@@ -15123,6 +15122,54 @@ mod tests {
             .close_resource_file_refnum(&mut runner.bus, 5));
         assert_eq!(runner.dispatcher.current_resource_refnum(), 9);
         assert_eq!(runner.bus.read_word(0x0A5A), 9);
+    }
+
+    #[test]
+    fn native_system_code_survives_large_process_ram_attachment() {
+        use crate::loader::ppc::tests::synthetic_pef_with_import;
+
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+        let pools = [
+            PPC_IMPORT_TVECTOR_BASE,
+            PPC_IMPORT_TRAP_BASE,
+            PPC_CFM_MAIN_STUB_BASE,
+        ];
+        let words = pools.map(|base| native.memory.read_u32_be(base).unwrap());
+        // Call the imported transition vector, as compiled PEF glue does.
+        // Inside Macintosh: PowerPC System Software (1994), pp. 1-27--1-28.
+        let code = [
+            0x3d80_0000 | (PPC_IMPORT_TVECTOR_BASE >> 16), // lis r12, vector@h
+            0x618c_0000 | (PPC_IMPORT_TVECTOR_BASE & 0xffff), // ori r12,r12,vector@l
+            0x800c_0000,                                   // lwz r0,0(r12)
+            0x804c_0004,                                   // lwz r2,4(r12)
+            0x7c09_03a6,                                   // mtctr r0
+            0x4e80_0420,                                   // bctr
+        ];
+        const ENTRY: u32 = 0x0180_0000;
+        native
+            .memory
+            .add_readonly_region(ENTRY, code.into_iter().flat_map(u32::to_be_bytes).collect());
+        native.entry_pc = ENTRY;
+        native.cpu.pc = ENTRY;
+        native.cpu.lr = native.halt_pc;
+        let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+        let (reservation_base, _) = runner.bus.synthetic_reservation_range().unwrap();
+        runner.set_launch_state(17, 1, 0);
+        runner.init_app(&LoadedApp::from_ppc(native));
+        let native = runner.native.application_mut().unwrap();
+        for (base, word) in pools.into_iter().zip(words) {
+            assert_eq!(native.memory.read_u32_be(base), Some(word));
+            assert!(native.memory.is_shared_readonly_address(base));
+            assert_eq!(native.memory.write_u32_be(base, 0), None);
+        }
+        assert!(native.memory.is_shared_readonly_address(reservation_base));
+        assert_eq!(native.memory.write_u8(reservation_base, 0xff), None);
+        let (steps, running) = runner.run_steps(64, None);
+        assert!(steps >= 6);
+        assert!(!running);
+        let native = runner.native.application_mut().unwrap();
+        assert_eq!(native.cpu.pc, native.halt_pc);
+        assert_eq!(native.cpu.gpr[3], 17);
     }
 
     #[test]

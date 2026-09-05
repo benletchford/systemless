@@ -55,7 +55,36 @@ struct GuestAddressSpaceState {
     regions: PpcSectionMem,
     ordinary_regions: Vec<OrdinaryRegionMapping>,
     shared_regions: Vec<SharedRegionMapping>,
+    /// Derived envelope of nonempty shared mappings; extended on every insert
+    /// and copied with detached snapshots. It only rejects impossible hits.
+    shared_bounds: std::ops::Range<u64>,
     readonly_allocation_exclusions: Vec<(u32, u32)>,
+}
+
+impl GuestAddressSpaceState {
+    fn push_shared_mapping(&mut self, mapping: SharedRegionMapping) {
+        if mapping.region.len() != 0 {
+            let start = u64::from(mapping.base);
+            let end = start.saturating_add(mapping.region.len() as u64);
+            if self.shared_bounds.is_empty() {
+                self.shared_bounds = start..end;
+            } else {
+                self.shared_bounds.start = self.shared_bounds.start.min(start);
+                self.shared_bounds.end = self.shared_bounds.end.max(end);
+            }
+        }
+        self.shared_regions.push(mapping);
+    }
+
+    #[inline]
+    fn may_overlap_shared(&self, start: u64, end: u64) -> bool {
+        start < self.shared_bounds.end && self.shared_bounds.start < end
+    }
+
+    #[inline]
+    fn overlaps_shared(&self, start: u64, end: u64) -> bool {
+        self.may_overlap_shared(start, end) && ranges_overlap(start, end, shared_ranges(self))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +116,9 @@ fn shared_mapping_at(
     state: &GuestAddressSpaceState,
     address: u32,
 ) -> Option<(&SharedRegionMapping, usize)> {
+    if !state.may_overlap_shared(u64::from(address), u64::from(address) + 1) {
+        return None;
+    }
     state.shared_regions.iter().rev().find_map(|mapping| {
         let offset = usize::try_from(address.checked_sub(mapping.base)?).ok()?;
         (offset < mapping.region.len()).then_some((mapping, offset))
@@ -289,7 +321,7 @@ fn route_range_state(
     };
     let start = u64::from(address);
 
-    let shared_overlap = ranges_overlap(start, end, shared_ranges(state));
+    let shared_overlap = state.overlaps_shared(start, end);
     if shared_overlap {
         if ranges_cover_shared(state, start, end) {
             return shared_range_route(state, start, end);
@@ -429,7 +461,7 @@ fn read_routed_u16_state(
     flat_limit: Option<u32>,
 ) -> Option<u16> {
     let end = range_end(address, 2)?;
-    if !ranges_overlap(u64::from(address), end, shared_ranges(state)) {
+    if !state.overlaps_shared(u64::from(address), end) {
         return PpcMemory::read_u16_be(&mut state.regions, address);
     }
     let hi = read_routed_u8_state(state, address, flat_limit)?;
@@ -444,7 +476,7 @@ fn read_routed_u32_state(
     flat_limit: Option<u32>,
 ) -> Option<u32> {
     let end = range_end(address, 4)?;
-    if !ranges_overlap(u64::from(address), end, shared_ranges(state)) {
+    if !state.overlaps_shared(u64::from(address), end) {
         return PpcMemory::read_u32_be(&mut state.regions, address);
     }
     let b0 = read_routed_u8_state(state, address, flat_limit)?;
@@ -483,7 +515,7 @@ fn write_routed_u16_state(
     flat_limit: Option<u32>,
 ) -> Option<()> {
     let end = range_end(address, 2)?;
-    if !ranges_overlap(u64::from(address), end, shared_ranges(state)) {
+    if !state.overlaps_shared(u64::from(address), end) {
         return PpcMemory::write_u16_be(&mut state.regions, address, value);
     }
     let bytes = value.to_be_bytes();
@@ -508,7 +540,7 @@ fn write_routed_u32_state(
     flat_limit: Option<u32>,
 ) -> Option<()> {
     let end = range_end(address, 4)?;
-    if !ranges_overlap(u64::from(address), end, shared_ranges(state)) {
+    if !state.overlaps_shared(u64::from(address), end) {
         return PpcMemory::write_u32_be(&mut state.regions, address, value);
     }
     let bytes = value.to_be_bytes();
@@ -737,6 +769,7 @@ impl Clone for GuestAddressSpace {
         Self(Rc::new(UnsafeCell::new(GuestAddressSpaceState {
             regions: state.regions.clone(),
             ordinary_regions: state.ordinary_regions.clone(),
+            shared_bounds: state.shared_bounds.clone(),
             shared_regions: state
                 .shared_regions
                 .iter()
@@ -815,22 +848,35 @@ impl GuestAddressSpace {
         state.regions.add_readonly_region(base, bytes);
     }
 
-    /// Return the disjoint holes not occupied by ordinary sparse mappings in
+    /// Publish runtime-generated code with system provenance in owned storage.
+    /// Application code remains an ordinary mapping; it cannot acquire this
+    /// provenance by presenting matching bytes. Existing mappings and empty or
+    /// wrapping ranges are refused before changing the address space.
+    pub(crate) fn publish_system_code(&mut self, base: u32, bytes: Vec<u8>) -> Option<()> {
+        let len = u32::try_from(bytes.len()).ok()?;
+        if len == 0 || range_end(base, bytes.len()).is_none() || self.mapping_overlaps(base, len) {
+            return None;
+        }
+        let region = SharedRamRegion::from_owned_bytes(bytes);
+        // SAFETY: this new allocation has no external accessor. Subsequent
+        // views use the existing serialized address-space access contract.
+        unsafe { self.add_shared_readonly_region(base, region) };
+        Some(())
+    }
+
+    /// Return the disjoint holes not occupied by ordinary or shared mappings in
     /// the supplied half-open range.
-    pub(crate) fn ordinary_mapping_holes(&self, start: u32, end: u32) -> Vec<(u32, u32)> {
+    pub(crate) fn mapping_holes(&self, start: u32, end: u32) -> Vec<(u32, u32)> {
         if start >= end {
             return Vec::new();
         }
 
-        let mut occupied = self
-            .state()
-            .ordinary_regions
-            .iter()
-            .filter_map(|mapping| {
-                let mapping_start = u64::from(mapping.base).max(u64::from(start));
-                let mapping_end = u64::from(mapping.base)
-                    .saturating_add(mapping.len as u64)
-                    .min(u64::from(end));
+        let state = self.state();
+        let mut occupied = ordinary_ranges(state)
+            .chain(shared_ranges(state))
+            .filter_map(|(base, limit)| {
+                let mapping_start = base.max(u64::from(start));
+                let mapping_end = limit.min(u64::from(end));
                 (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
             })
             .collect::<Vec<_>>();
@@ -850,22 +896,15 @@ impl GuestAddressSpace {
         holes
     }
 
-    /// Return the disjoint occupied spans of ordinary sparse mappings.
-    ///
-    /// Shared flat-RAM overlays are intentionally not subtracted: callers
-    /// use these spans to keep process allocators away from the native PEF
-    /// layout before those overlays are installed. Inside Macintosh: Memory
-    /// (1992), pp. 2-19--2-21.
-    pub(crate) fn ordinary_mapping_ranges(&self) -> Vec<(u32, u32)> {
-        let mut ranges = self
-            .state()
-            .ordinary_regions
-            .iter()
-            .filter_map(|mapping| {
-                let end = u64::from(mapping.base).checked_add(mapping.len as u64)?;
-                (u64::from(mapping.base) < end)
-                    .then_some((mapping.base, u32::try_from(end).ok()?))
-            })
+    /// Return the disjoint occupied spans of ordinary and shared mappings.
+    /// Callers reserve these spans before adding process RAM overlays so that
+    /// the classic heap cannot select native PEF or generated system code.
+    /// Inside Macintosh: Memory (1992), pp. 2-19--2-21.
+    pub(crate) fn mapping_ranges(&self) -> Vec<(u32, u32)> {
+        let state = self.state();
+        let mut ranges = ordinary_ranges(state)
+            .chain(shared_ranges(state))
+            .filter_map(|(base, end)| Some((u32::try_from(base).ok()?, u32::try_from(end).ok()?)))
             .collect::<Vec<_>>();
         ranges.sort_unstable_by_key(|&(base, _)| base);
 
@@ -893,7 +932,7 @@ impl GuestAddressSpace {
     /// serializes all access. No source-bus slice or fast-memory window may be
     /// used while this address space mutates the shared allocation.
     pub(crate) unsafe fn add_shared_region(&mut self, base: u32, region: SharedRamRegion) {
-        self.state_mut().shared_regions.push(SharedRegionMapping {
+        self.state_mut().push_shared_mapping(SharedRegionMapping {
             base,
             region,
             writable: true,
@@ -917,7 +956,7 @@ impl GuestAddressSpace {
                     (excluded_base, excluded_len) != (base, len)
                 });
         }
-        state.shared_regions.push(SharedRegionMapping {
+        state.push_shared_mapping(SharedRegionMapping {
             base,
             region,
             writable: false,
@@ -960,6 +999,20 @@ impl GuestAddressSpace {
             let mapping_end = mapping_start.saturating_add(mapping.len as u64);
             start < mapping_end && mapping_start < end
         })
+    }
+
+    /// Whether any ordinary or shared backing occupies the requested range.
+    /// Allocation exclusions alone are reservations, not published mappings.
+    pub(crate) fn mapping_overlaps(&self, base: u32, len: u32) -> bool {
+        if len == 0 || u64::from(base) + u64::from(len) > (1u64 << 32) {
+            return false;
+        }
+        self.ordinary_mapping_overlaps(base, len)
+            || self.state().shared_regions.iter().any(|mapping| {
+                let start = u64::from(mapping.base);
+                let end = start + mapping.region.len() as u64;
+                u64::from(base) < end && start < u64::from(base) + u64::from(len)
+            })
     }
 
     /// Write a big-endian long through a shared mapping regardless of its
@@ -1470,6 +1523,94 @@ mod tests {
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
 
     #[test]
+    fn shared_mapping_bounds_follow_insertions_and_detached_views() {
+        let mut memory = GuestAddressSpace::new();
+        let view = memory.shared_view();
+        assert_eq!(memory.read_u32_be(0x8000), None);
+        memory.publish_system_code(0x8000, vec![0x88; 4]).unwrap();
+        assert_eq!(memory.read_u32_be(0x8000), Some(0x8888_8888));
+        assert_eq!(memory.read_u32_be(0x1000), None);
+        let mut bus = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut bus, 0, 0x1111_1111);
+        let region = bus.shared_ram_region(0, 4).unwrap();
+        // SAFETY: all source and address-space accesses are serialized here.
+        unsafe { memory.add_shared_region(0x1000, region) };
+        assert_eq!(memory.read_u32_be(0x1000), Some(0x1111_1111));
+        assert!(!view.is_shared_readonly_range(0x1000, 4));
+        assert!(view.is_shared_readonly_range(0x8000, 4));
+        assert_eq!(memory.read_u32_be(0x4000), None, "holes remain unmapped");
+        let mut detached = memory.clone();
+        assert_eq!(detached.read_u32_be(0x1000), Some(0x1111_1111));
+        assert_eq!(detached.read_u32_be(0x8000), Some(0x8888_8888));
+        memory.publish_system_code(0x9000, vec![0x99; 4]).unwrap();
+        detached.publish_system_code(0x0800, vec![0x08; 4]).unwrap();
+        assert_eq!(memory.read_u32_be(0x9000), Some(0x9999_9999));
+        assert_eq!(detached.read_u32_be(0x9000), None);
+        assert_eq!(memory.read_u32_be(0x0800), None);
+        assert_eq!(detached.read_u32_be(0x0800), Some(0x0808_0808));
+    }
+
+    #[test]
+    fn owned_system_code_preserves_provenance_and_detached_snapshot_independence() {
+        let mut memory = GuestAddressSpace::new();
+        memory
+            .publish_system_code(0x1000, vec![0x60, 0x06, 0x4e, 0xf9, 0, 0, 0x20, 0])
+            .unwrap();
+        let view = memory.shared_view();
+        assert!(view.is_shared_readonly_range(0x1000, 8));
+        assert_eq!(memory.write_u32_be(0x1004, 0x3000), None);
+        memory.add_region(0x1000, vec![0xff; 8]);
+        assert_eq!(memory.read_u32_be(0x1000), Some(0x6006_4ef9));
+        assert!(view.is_shared_readonly_range(0x1000, 8));
+        let mut detached = memory.clone();
+        assert!(detached.shared_view().is_shared_readonly_range(0x1000, 8));
+        assert_eq!(
+            detached.write_shared_system_u32_be(0x1004, 0x4000),
+            Some(())
+        );
+        assert_eq!(detached.read_u32_be(0x1004), Some(0x4000));
+        assert_eq!(memory.read_u32_be(0x1004), Some(0x2000));
+        assert_eq!(memory.write_shared_system_u32_be(0x1004, 0x5000), Some(()));
+        assert_eq!(detached.read_u32_be(0x1004), Some(0x4000));
+        memory.add_readonly_region(0x2000, vec![0x60, 0x06, 0x4e, 0xf9]);
+        assert!(!view.is_shared_readonly_range(0x2000, 4));
+        assert_eq!(memory.write_shared_system_u32_be(0x2000, 0), None);
+    }
+
+    #[test]
+    fn system_code_publication_refuses_invalid_or_occupied_ranges_atomically() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1000, vec![0x11; 4]);
+        memory.add_readonly_region(0x2000, vec![0x22; 4]);
+        memory.publish_system_code(0x3000, vec![0x33; 4]).unwrap();
+        let mut bus = MacMemoryBus::new(0x10000);
+        let region = bus.shared_ram_region(0, 4).unwrap();
+        // SAFETY: the test serializes both memory owners.
+        unsafe { memory.add_shared_region(0x4000, region) };
+        for (base, size) in [
+            (0, 0),
+            (u32::MAX - 1, 4),
+            (0x1000, 4),
+            (0x1ffe, 4),
+            (0x3002, 4),
+            (0x3ffe, 4),
+        ] {
+            let count = memory.region_count();
+            assert_eq!(memory.publish_system_code(base, vec![0x77; size]), None);
+            assert_eq!(memory.region_count(), count);
+            assert_eq!(memory.read_u32_be(0x1000), Some(0x1111_1111));
+            assert_eq!(memory.read_u32_be(0x2000), Some(0x2222_2222));
+            assert_eq!(memory.read_u32_be(0x3000), Some(0x3333_3333));
+            assert_eq!(memory.read_u32_be(0x4000), Some(0));
+        }
+        // The last four bytes are valid; only a range beyond 2^32 wraps.
+        memory
+            .publish_system_code(u32::MAX - 3, vec![0x55; 4])
+            .unwrap();
+        assert_eq!(memory.read_u32_be(u32::MAX - 3), Some(0x5555_5555));
+    }
+
+    #[test]
     fn both_cpu_backends_execute_against_immediately_shared_bytes() {
         const M68K_STORE_PC: u32 = 0x1000;
         const M68K_LOAD_PC: u32 = 0x1020;
@@ -1724,18 +1865,45 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_mapping_holes_track_writable_and_readonly_regions() {
+    fn mapping_holes_preserve_owned_system_code_and_shared_ram() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1200, vec![0; 0x100]);
+        memory
+            .publish_system_code(0x1400, vec![0x5a; 0x100])
+            .unwrap();
+        let mut bus = MacMemoryBus::new(0x1000);
+        // SAFETY: both adapters are accessed serially in this test.
+        unsafe { memory.add_shared_region(0x1600, bus.shared_ram_region(0, 0x100).unwrap()) };
+        for view in [&memory, &memory.clone()] {
+            assert_eq!(
+                view.mapping_ranges(),
+                vec![(0x1200, 0x1300), (0x1400, 0x1500), (0x1600, 0x1700)]
+            );
+            assert_eq!(
+                view.mapping_holes(0x1000, 0x1800),
+                vec![
+                    (0x1000, 0x1200),
+                    (0x1300, 0x1400),
+                    (0x1500, 0x1600),
+                    (0x1700, 0x1800)
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn mapping_holes_track_writable_and_readonly_regions() {
         let mut memory = GuestAddressSpace::new();
         memory.add_region(0x1200, vec![0; 0x100]);
         memory.add_readonly_region(0x1400, vec![0; 0x200]);
         memory.add_region(0x1500, vec![0; 0x200]);
 
         assert_eq!(
-            memory.ordinary_mapping_holes(0x1000, 0x1800),
+            memory.mapping_holes(0x1000, 0x1800),
             vec![(0x1000, 0x1200), (0x1300, 0x1400), (0x1700, 0x1800)]
         );
         assert_eq!(
-            memory.ordinary_mapping_ranges(),
+            memory.mapping_ranges(),
             vec![(0x1200, 0x1300), (0x1400, 0x1700)]
         );
         assert!(memory.ordinary_mapping_overlaps(0x1280, 0x100));
@@ -1743,11 +1911,11 @@ mod tests {
 
         let detached = memory.clone();
         assert_eq!(
-            detached.ordinary_mapping_holes(0x1000, 0x1800),
+            detached.mapping_holes(0x1000, 0x1800),
             vec![(0x1000, 0x1200), (0x1300, 0x1400), (0x1700, 0x1800)]
         );
         assert_eq!(
-            detached.ordinary_mapping_ranges(),
+            detached.mapping_ranges(),
             vec![(0x1200, 0x1300), (0x1400, 0x1700)]
         );
     }
