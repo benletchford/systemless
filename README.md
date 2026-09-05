@@ -221,9 +221,11 @@ systemless --ui-theme classic-system7 path/to/game.sit
 systemless --fullscreen path/to/game.sit
 ```
 
-Desktop windows default to a physical 1:1 guest-to-host pixel ratio. Use
-`--display-scale` with an integer from 1 through 8 for explicit pixel-perfect
-enlargement. `--fullscreen` starts the guest in a borderless fullscreen space.
+Desktop windows automatically open at a comfortable size for the display,
+including Retina and other high-DPI screens. Games keep their aspect ratio,
+and the initial window fits within the monitor. Use `--display-scale` with an
+integer from 1 through 8 to override automatic sizing with an exact physical
+guest-to-host pixel ratio (`1` selects 1:1). `--fullscreen` starts the guest in a borderless fullscreen space.
 On systems where macOS selects direct scan-out for the fullscreen surface this
 measurably reduced pointer-to-screen latency in testing (see issue #1050); the
 benefit depends on the machine and compositor state and is not guaranteed.
