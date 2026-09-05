@@ -5,6 +5,7 @@
 //! read-only regions, and instruction-cache behavior required by native PEF
 //! applications.
 
+use crate::guest_procedure::GuestIsa;
 use m68k::core::memory::{BusFault, BusFaultKind};
 use m68k::AddressBus;
 use ppc::{PpcMemory, PpcSectionMem, PpcSectionMemSpan};
@@ -18,6 +19,7 @@ struct SharedRegionMapping {
     base: u32,
     region: SharedRamRegion,
     writable: bool,
+    code_isa: Option<GuestIsa>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -777,6 +779,7 @@ impl Clone for GuestAddressSpace {
                     base: mapping.base,
                     region: mapping.region.detached_clone(),
                     writable: mapping.writable,
+                    code_isa: mapping.code_isa,
                 })
                 .collect(),
             readonly_allocation_exclusions: state.readonly_allocation_exclusions.clone(),
@@ -852,7 +855,12 @@ impl GuestAddressSpace {
     /// Application code remains an ordinary mapping; it cannot acquire this
     /// provenance by presenting matching bytes. Existing mappings and empty or
     /// wrapping ranges are refused before changing the address space.
-    pub(crate) fn publish_system_code(&mut self, base: u32, bytes: Vec<u8>) -> Option<()> {
+    pub(crate) fn publish_system_code(
+        &mut self,
+        isa: GuestIsa,
+        base: u32,
+        bytes: Vec<u8>,
+    ) -> Option<()> {
         let len = u32::try_from(bytes.len()).ok()?;
         if len == 0 || range_end(base, bytes.len()).is_none() || self.mapping_overlaps(base, len) {
             return None;
@@ -860,7 +868,7 @@ impl GuestAddressSpace {
         let region = SharedRamRegion::from_owned_bytes(bytes);
         // SAFETY: this new allocation has no external accessor. Subsequent
         // views use the existing serialized address-space access contract.
-        unsafe { self.add_shared_readonly_region(base, region) };
+        unsafe { self.add_shared_readonly_region(Some(isa), base, region) };
         Some(())
     }
 
@@ -936,18 +944,26 @@ impl GuestAddressSpace {
             base,
             region,
             writable: true,
+            code_isa: None,
         });
     }
 
     /// Overlay runner-owned system code without allowing ordinary guest
-    /// writes. Trap Manager uses the privileged writer below when it must
+    /// writes. `code_isa` identifies code and its transition vectors only when
+    /// the publishing owner supplies that identity; generic protected data uses
+    /// `None`. Trap Manager uses the privileged writer below when it must
     /// update the protected exit of a permanent come-from head.
     ///
     /// # Safety
     ///
     /// The ownership and serialization requirements are the same as for
     /// [`Self::add_shared_region`].
-    pub(crate) unsafe fn add_shared_readonly_region(&mut self, base: u32, region: SharedRamRegion) {
+    pub(crate) unsafe fn add_shared_readonly_region(
+        &mut self,
+        code_isa: Option<GuestIsa>,
+        base: u32,
+        region: SharedRamRegion,
+    ) {
         let state = self.state_mut();
         if let Ok(len) = u32::try_from(region.len()) {
             state
@@ -960,6 +976,7 @@ impl GuestAddressSpace {
             base,
             region,
             writable: false,
+            code_isa,
         });
     }
 
@@ -1032,9 +1049,12 @@ impl GuestAddressSpace {
         Some(())
     }
 
-    pub(crate) fn is_shared_readonly_address(&self, address: u32) -> bool {
+    /// ISA supplied by the owner of the selected system mapping. Protection
+    /// alone does not identify an instruction set, and ordinary mappings never
+    /// acquire this metadata by presenting matching bytes.
+    pub(crate) fn system_code_isa(&self, address: u32) -> Option<GuestIsa> {
         self.locate_shared_mapping(address)
-            .is_some_and(|(mapping, _)| !mapping.writable)
+            .and_then(|(mapping, _)| mapping.code_isa)
     }
 
     /// Return the highest end address among staged allocation exclusions or
@@ -1517,17 +1537,51 @@ impl AddressBus for GuestAddressSpace {
 
 #[cfg(test)]
 mod tests {
-    use super::GuestAddressSpace;
+    use super::{GuestAddressSpace, GuestIsa};
     use crate::memory::{MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
+
+    #[test]
+    fn system_code_isa_follows_mapping_owner_and_detached_lifetime() {
+        let mut memory = GuestAddressSpace::new();
+        memory
+            .publish_system_code(GuestIsa::PowerPc, 0x1000, vec![0x60, 0x06, 0x4e, 0xf9])
+            .unwrap();
+        memory.add_readonly_region(0x2000, vec![0x60, 0x06, 0x4e, 0xf9]);
+        let mut bus = MacMemoryBus::new(0x1000);
+        // SAFETY: all source-bus and mapped-view access is serialized here.
+        unsafe {
+            memory.add_shared_readonly_region(None, 0x3000, bus.shared_ram_region(0, 4).unwrap());
+            memory.add_shared_readonly_region(
+                Some(GuestIsa::M68k),
+                0x4000,
+                bus.shared_ram_region(4, 4).unwrap(),
+            );
+        }
+        memory.add_region(0x1000, vec![0; 4]);
+        assert_eq!(memory.system_code_isa(0x1000), Some(GuestIsa::PowerPc));
+        assert_eq!(memory.system_code_isa(0x2000), None);
+        assert_eq!(memory.system_code_isa(0x3000), None);
+        assert_eq!(memory.system_code_isa(0x4000), Some(GuestIsa::M68k));
+        assert_eq!(memory.system_code_isa(0x5000), None);
+        let detached = memory.clone();
+        // A newer shared writable mapping wins and carries no code identity.
+        unsafe { memory.add_shared_region(0x1000, bus.shared_ram_region(8, 4).unwrap()) };
+        assert_eq!(memory.system_code_isa(0x1000), None);
+        assert_eq!(detached.system_code_isa(0x1000), Some(GuestIsa::PowerPc));
+        assert_eq!(detached.system_code_isa(0x3000), None);
+        assert_eq!(detached.system_code_isa(0x4000), Some(GuestIsa::M68k));
+    }
 
     #[test]
     fn shared_mapping_bounds_follow_insertions_and_detached_views() {
         let mut memory = GuestAddressSpace::new();
         let view = memory.shared_view();
         assert_eq!(memory.read_u32_be(0x8000), None);
-        memory.publish_system_code(0x8000, vec![0x88; 4]).unwrap();
+        memory
+            .publish_system_code(GuestIsa::M68k, 0x8000, vec![0x88; 4])
+            .unwrap();
         assert_eq!(memory.read_u32_be(0x8000), Some(0x8888_8888));
         assert_eq!(memory.read_u32_be(0x1000), None);
         let mut bus = MacMemoryBus::new(0x10000);
@@ -1542,8 +1596,12 @@ mod tests {
         let mut detached = memory.clone();
         assert_eq!(detached.read_u32_be(0x1000), Some(0x1111_1111));
         assert_eq!(detached.read_u32_be(0x8000), Some(0x8888_8888));
-        memory.publish_system_code(0x9000, vec![0x99; 4]).unwrap();
-        detached.publish_system_code(0x0800, vec![0x08; 4]).unwrap();
+        memory
+            .publish_system_code(GuestIsa::M68k, 0x9000, vec![0x99; 4])
+            .unwrap();
+        detached
+            .publish_system_code(GuestIsa::M68k, 0x0800, vec![0x08; 4])
+            .unwrap();
         assert_eq!(memory.read_u32_be(0x9000), Some(0x9999_9999));
         assert_eq!(detached.read_u32_be(0x9000), None);
         assert_eq!(memory.read_u32_be(0x0800), None);
@@ -1554,7 +1612,11 @@ mod tests {
     fn owned_system_code_preserves_provenance_and_detached_snapshot_independence() {
         let mut memory = GuestAddressSpace::new();
         memory
-            .publish_system_code(0x1000, vec![0x60, 0x06, 0x4e, 0xf9, 0, 0, 0x20, 0])
+            .publish_system_code(
+                GuestIsa::M68k,
+                0x1000,
+                vec![0x60, 0x06, 0x4e, 0xf9, 0, 0, 0x20, 0],
+            )
             .unwrap();
         let view = memory.shared_view();
         assert!(view.is_shared_readonly_range(0x1000, 8));
@@ -1582,7 +1644,9 @@ mod tests {
         let mut memory = GuestAddressSpace::new();
         memory.add_region(0x1000, vec![0x11; 4]);
         memory.add_readonly_region(0x2000, vec![0x22; 4]);
-        memory.publish_system_code(0x3000, vec![0x33; 4]).unwrap();
+        memory
+            .publish_system_code(GuestIsa::M68k, 0x3000, vec![0x33; 4])
+            .unwrap();
         let mut bus = MacMemoryBus::new(0x10000);
         let region = bus.shared_ram_region(0, 4).unwrap();
         // SAFETY: the test serializes both memory owners.
@@ -1596,7 +1660,10 @@ mod tests {
             (0x3ffe, 4),
         ] {
             let count = memory.region_count();
-            assert_eq!(memory.publish_system_code(base, vec![0x77; size]), None);
+            assert_eq!(
+                memory.publish_system_code(GuestIsa::M68k, base, vec![0x77; size]),
+                None
+            );
             assert_eq!(memory.region_count(), count);
             assert_eq!(memory.read_u32_be(0x1000), Some(0x1111_1111));
             assert_eq!(memory.read_u32_be(0x2000), Some(0x2222_2222));
@@ -1605,7 +1672,7 @@ mod tests {
         }
         // The last four bytes are valid; only a range beyond 2^32 wraps.
         memory
-            .publish_system_code(u32::MAX - 3, vec![0x55; 4])
+            .publish_system_code(GuestIsa::M68k, u32::MAX - 3, vec![0x55; 4])
             .unwrap();
         assert_eq!(memory.read_u32_be(u32::MAX - 3), Some(0x5555_5555));
     }
@@ -1869,7 +1936,7 @@ mod tests {
         let mut memory = GuestAddressSpace::new();
         memory.add_region(0x1200, vec![0; 0x100]);
         memory
-            .publish_system_code(0x1400, vec![0x5a; 0x100])
+            .publish_system_code(GuestIsa::M68k, 0x1400, vec![0x5a; 0x100])
             .unwrap();
         let mut bus = MacMemoryBus::new(0x1000);
         // SAFETY: both adapters are accessed serially in this test.
