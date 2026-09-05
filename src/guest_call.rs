@@ -366,7 +366,7 @@ pub(crate) struct ThreadStorage {
     pub(crate) stack_base: u32,
     pub(crate) stack_limit: u32,
     /// Managed pointers are released through the process Memory Manager;
-    /// reserved guest stacks return to the execution owner's classic pool.
+    /// reserved guest stacks use the classic allocator when not recycled.
     pub(crate) managed_pointer: bool,
 }
 
@@ -395,7 +395,7 @@ struct ExecutionTaskCalls {
     cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
     native_threads: ExecutionTaskContextBank<NativeThreadContext>,
     thread_storage: ExecutionTaskContextBank<ThreadStorage>,
-    classic_thread_pool: Vec<(u32, u32)>,
+    thread_pool: Vec<(GuestIsa, ThreadStorage)>,
     native_cpu_task: Option<ExecutionTaskId>,
     handoff: Option<(ExecutionTaskId, TaskResumeContext)>,
 }
@@ -409,7 +409,7 @@ impl Clone for ExecutionTaskCalls {
             cooperative_contexts: self.cooperative_contexts.clone(),
             native_threads: self.native_threads.clone(),
             thread_storage: self.thread_storage.clone(),
-            classic_thread_pool: self.classic_thread_pool.clone(),
+            thread_pool: self.thread_pool.clone(),
             native_cpu_task: self.native_cpu_task,
             handoff: self.handoff.clone(),
         }
@@ -424,7 +424,7 @@ impl PartialEq for ExecutionTaskCalls {
             && self.cooperative_contexts == other.cooperative_contexts
             && self.native_threads.same_tasks(&other.native_threads)
             && self.thread_storage == other.thread_storage
-            && self.classic_thread_pool == other.classic_thread_pool
+            && self.thread_pool == other.thread_pool
             && self.native_cpu_task == other.native_cpu_task
             && self
                 .handoff
@@ -448,7 +448,7 @@ impl Default for ExecutionTaskCalls {
             cooperative_contexts: ExecutionTaskContextBank::default(),
             native_threads: ExecutionTaskContextBank::default(),
             thread_storage: ExecutionTaskContextBank::default(),
-            classic_thread_pool: Vec::new(),
+            thread_pool: Vec::new(),
             native_cpu_task: None,
             handoff: None,
         }
@@ -585,8 +585,14 @@ impl ExecutionTaskCalls {
         &mut self,
         task: ExecutionTaskId,
         successor: Option<ExecutionTaskId>,
+        recycle: bool,
         commit: impl FnOnce(&ThreadStorage) -> bool,
     ) -> Option<(ThreadStorage, Option<(ExecutionTaskId, TaskResumeContext)>)> {
+        // Thread Manager (1999), p. 60: DisposeThread may never retire
+        // the application thread, even while a worker is running.
+        if task == ExecutionTaskId::APPLICATION {
+            return None;
+        }
         if self.handoff.is_some() {
             return None;
         }
@@ -595,6 +601,11 @@ impl ExecutionTaskCalls {
             return None;
         }
         let storage = self.thread_storage.get(task).copied().unwrap_or_default();
+        let pooled_isa = if recycle && storage.stack_base != 0 {
+            Some(self.kernel.task_entry_isa(task)?)
+        } else {
+            None
+        };
         let next = match successor {
             Some(next) => Some((next, self.saved_context(next)?)),
             None => None,
@@ -605,9 +616,14 @@ impl ExecutionTaskCalls {
         self.cooperative_contexts.remove(task);
         self.native_threads.remove(task);
         self.thread_storage.remove(task);
-        if storage.stack_base != 0 && !storage.managed_pointer {
-            self.classic_thread_pool
-                .push((storage.stack_base, storage.stack_limit));
+        if let Some(isa) = pooled_isa {
+            self.thread_pool.push((
+                isa,
+                ThreadStorage {
+                    result_destination: 0,
+                    ..storage
+                },
+            ));
         }
         if self.native_cpu_task == Some(task) {
             self.native_cpu_task = None;
@@ -654,7 +670,7 @@ impl ExecutionTaskCalls {
             && self.cooperative_contexts.is_empty()
             && self.native_threads.is_empty()
             && self.thread_storage.is_empty()
-            && self.classic_thread_pool.is_empty()
+            && self.thread_pool.is_empty()
             && self.native_cpu_task.is_none()
             && self.handoff.is_none()
     }
@@ -820,10 +836,11 @@ impl SharedGuestCallStack {
         &self,
         task: ExecutionTaskId,
         successor: Option<ExecutionTaskId>,
+        recycle: bool,
         commit: impl FnOnce(&ThreadStorage) -> bool,
     ) -> Option<(ThreadStorage, Option<CooperativeThread>)> {
         let mut tasks = self.0.borrow_mut();
-        let (finished, next) = tasks.retire_thread(task, successor, commit)?;
+        let (finished, next) = tasks.retire_thread(task, successor, recycle, commit)?;
         let classic = match next {
             Some((_, TaskResumeContext::Classic(context))) => Some(context),
             Some((next, context)) => {
@@ -856,45 +873,78 @@ impl SharedGuestCallStack {
         self.request_classic_thread_stack(size, 2).ok().flatten()
     }
 
-    /// Select storage without publishing a task. Thread Manager (1999),
-    /// pp. 48, 57–58: opt-in pool use, best fit, exact match and -617 refusal.
     pub(crate) fn request_classic_thread_stack(
         &self,
         size: u32,
         options: u32,
     ) -> Result<Option<(u32, u32)>, i16> {
+        self.request_thread_stack(GuestIsa::M68k, size, options)
+            .map(|storage| storage.map(|storage| (storage.stack_base, storage.stack_limit)))
+    }
+
+    /// Select storage without publishing a task. Thread Manager (1999),
+    /// pp. 48, 57–58: same-ISA pool use, best fit, exact match and -617 refusal.
+    pub(crate) fn request_thread_stack(
+        &self,
+        isa: GuestIsa,
+        size: u32,
+        options: u32,
+    ) -> Result<Option<ThreadStorage>, i16> {
         if options & 2 == 0 {
             return Ok(None);
         }
         let mut tasks = self.0.borrow_mut();
         let index = tasks
-            .classic_thread_pool
+            .thread_pool
             .iter()
             .enumerate()
-            .filter_map(|(index, &(base, limit))| {
-                let available = limit.checked_sub(base)?;
-                (base != 0 && available >= size && (options & 16 == 0 || available == size))
+            .filter_map(|(index, (entry_isa, storage))| {
+                let available = storage.stack_limit.checked_sub(storage.stack_base)?;
+                (*entry_isa == isa
+                    && storage.stack_base != 0
+                    && available >= size
+                    && (options & 16 == 0 || available == size))
                     .then_some((index, available))
             })
             .min_by_key(|&(_, available)| available)
             .map(|(index, _)| index);
         match index {
-            Some(index) => Ok(Some(tasks.classic_thread_pool.swap_remove(index))),
+            Some(index) => Ok(Some(tasks.thread_pool.swap_remove(index).1)),
             None if options & 4 != 0 => Ok(None),
             None => Err(-617),
         }
     }
 
+    pub(crate) fn recycle_thread_stack(&self, isa: GuestIsa, storage: ThreadStorage) {
+        self.0.borrow_mut().thread_pool.push((
+            isa,
+            ThreadStorage {
+                result_destination: 0,
+                ..storage
+            },
+        ));
+    }
+
     pub(crate) fn recycle_classic_thread_stack(&self, stack: (u32, u32)) {
-        self.0.borrow_mut().classic_thread_pool.push(stack);
+        self.recycle_thread_stack(
+            GuestIsa::M68k,
+            ThreadStorage {
+                stack_base: stack.0,
+                stack_limit: stack.1,
+                ..ThreadStorage::default()
+            },
+        );
     }
 
     pub(crate) fn classic_thread_pool_count(&self, minimum_size: u32) -> usize {
         self.0
             .borrow()
-            .classic_thread_pool
+            .thread_pool
             .iter()
-            .filter(|(base, limit)| limit.saturating_sub(*base) >= minimum_size)
+            .filter(|(isa, storage)| {
+                *isa == GuestIsa::M68k
+                    && storage.stack_limit.saturating_sub(storage.stack_base) >= minimum_size
+            })
             .count()
     }
 
@@ -1153,6 +1203,7 @@ impl SharedGuestCallStack {
         &self,
         task: ExecutionTaskId,
         cpu: &mut PpcCpu,
+        recycle: bool,
         commit: impl FnOnce(&ThreadStorage) -> bool,
     ) -> Option<ThreadStorage> {
         let mut tasks = self.0.borrow_mut();
@@ -1161,7 +1212,7 @@ impl SharedGuestCallStack {
         } else {
             None
         };
-        let (finished, successor) = tasks.retire_thread(task, successor, commit)?;
+        let (finished, successor) = tasks.retire_thread(task, successor, recycle, commit)?;
         if let Some((next, context)) = successor {
             tasks.install_native_successor(next, context, cpu);
         }
@@ -1878,6 +1929,122 @@ mod tests {
     }
 
     #[test]
+    fn thread_disposal_refuses_the_application_before_committing_either_abi_result() {
+        let calls = SharedGuestCallStack::default();
+        assert!(calls
+            .save_cooperative_context(ExecutionTaskId::APPLICATION, CooperativeThread::default()));
+        let worker = calls
+            .create_classic_thread(
+                CooperativeThread::default(),
+                ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        for recycle in [false, true] {
+            assert!(calls
+                .retire_cooperative_context(
+                    ExecutionTaskId::APPLICATION,
+                    Some(worker),
+                    recycle,
+                    |_| panic!("application disposal must not write its result")
+                )
+                .is_none());
+            assert!(calls
+                .retire_native_thread(
+                    ExecutionTaskId::APPLICATION,
+                    &mut PpcCpu::new(),
+                    recycle,
+                    |_| panic!("application disposal must not write its result")
+                )
+                .is_none());
+            assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+            assert_eq!(calls.next_ready_task(None), Some(worker));
+        }
+        assert!(calls.switch_to_task(worker));
+        assert!(calls
+            .retire_cooperative_context(ExecutionTaskId::APPLICATION, None, false, |_| panic!(
+                "a worker must not dispose its application"
+            ))
+            .is_none());
+        assert_eq!(calls.current_task(), worker);
+        assert!(calls
+            .cooperative_context(ExecutionTaskId::APPLICATION)
+            .is_some());
+    }
+
+    #[test]
+    fn thread_recycled_storage_retains_entry_isa_and_is_unavailable_until_retirement_commits() {
+        let calls = SharedGuestCallStack::default();
+        let classic_storage = ThreadStorage {
+            result_destination: 0x8000,
+            stack_base: 0x1000,
+            stack_limit: 0x1800,
+            managed_pointer: false,
+        };
+        let classic = calls
+            .create_classic_thread(CooperativeThread::default(), classic_storage, true, |_| {
+                true
+            })
+            .unwrap();
+        let native = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    cpu: Box::new(PpcCpu::new()),
+                },
+                ThreadStorage {
+                    stack_base: 0x2000,
+                    stack_limit: 0x3000,
+                    managed_pointer: true,
+                    ..classic_storage
+                },
+                true,
+                |_| true,
+            )
+            .unwrap();
+        assert!(calls
+            .retire_cooperative_context(classic, None, true, |_| false)
+            .is_none());
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::M68k, 1024, 2),
+            Err(-617)
+        );
+        assert_eq!(calls.thread_storage(classic), Some(classic_storage));
+        assert!(calls
+            .retire_cooperative_context(classic, None, true, |_| true)
+            .is_some());
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::PowerPc, 1024, 2),
+            Err(-617)
+        );
+        assert!(calls
+            .retire_native_thread(native, &mut PpcCpu::new(), true, |_| true)
+            .is_some());
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::PowerPc, 1024, 2 | 16),
+            Err(-617)
+        );
+        let pooled_native = calls
+            .request_thread_stack(GuestIsa::PowerPc, 4096, 2 | 16)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pooled_native.stack_base, 0x2000);
+        assert!(pooled_native.managed_pointer);
+        assert_eq!(pooled_native.result_destination, 0);
+        let pooled_classic = calls
+            .request_thread_stack(GuestIsa::M68k, 1024, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pooled_classic.stack_base, classic_storage.stack_base);
+        assert!(!pooled_classic.managed_pointer);
+        assert_eq!(pooled_classic.result_destination, 0);
+        assert_eq!(
+            calls.request_thread_stack(GuestIsa::M68k, 1024, 2),
+            Err(-617)
+        );
+    }
+
+    #[test]
     fn native_retirement_hands_off_to_classic_without_losing_the_native_caller() {
         let calls = SharedGuestCallStack::default();
         let mut cpu = PpcCpu::new();
@@ -1908,7 +2075,7 @@ mod tests {
         assert!(calls.switch_to_task(native));
         assert!(calls.prepare_native_task(&mut cpu));
         assert!(calls
-            .retire_native_thread(native, &mut cpu, |_| true)
+            .retire_native_thread(native, &mut cpu, false, |_| true)
             .is_some());
         assert_eq!(calls.current_task(), classic);
         assert!(calls.has_classic_task_handoff());
@@ -2107,7 +2274,7 @@ mod tests {
         assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
         assert!(!calls.remove_task(worker));
         assert!(calls
-            .retire_cooperative_context(worker, None, |_| {
+            .retire_cooperative_context(worker, None, false, |_| {
                 panic!("pending continuations must reject retirement before result delivery")
             })
             .is_none());

@@ -15536,7 +15536,8 @@ mod tests {
         const FRAME: u32 = 0x6000;
         const MADE: u32 = 0x7000;
         const RESULT: u32 = 0x7100;
-        for native_worker in [false, true] {
+        for (native_worker, recycle) in [(false, false), (false, true), (true, false), (true, true)]
+        {
             let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
             let loaded = app.ppc.as_mut().unwrap();
             loaded.entry_pc = PPC_IMPORT_TRAP_BASE;
@@ -15607,7 +15608,9 @@ mod tests {
                 if native_worker {
                     runner.m68k.cpu.write_reg(Register::A7, FRAME);
                     runner.m68k.cpu.write_reg(Register::D0, 0x0504);
-                    runner.bus.write_word(FRAME, 0);
+                    runner
+                        .bus
+                        .write_word(FRAME, if recycle { 0x0100 } else { 0 });
                     runner.bus.write_long(FRAME + 2, 0xcafebabe);
                     runner.bus.write_long(FRAME + 6, worker.thread_id());
                     runner
@@ -15622,7 +15625,7 @@ mod tests {
                     cpu.lr = PPC_CODE_BASE;
                     cpu.gpr[3] = worker.thread_id();
                     cpu.gpr[4] = 0xcafebabe;
-                    cpu.gpr[5] = 0;
+                    cpu.gpr[5] = u32::from(recycle);
                     assert!(runner.run_steps(32, None).1);
                     assert_eq!(
                         runner.native.application().unwrap().cpu.gpr[3] as i16,
@@ -15643,14 +15646,72 @@ mod tests {
                         .native_ptr_records()
                         .iter()
                         .any(|record| record.ptr == storage.stack_base);
-                    assert_eq!(live, attempt == 0);
+                    assert_eq!(live, attempt == 0 || recycle);
                     assert_eq!(calls.classic_thread_pool_count(0), 0);
                 } else {
                     assert_eq!(
+                        runner.bus.get_alloc_size(storage.stack_base).is_some(),
+                        attempt == 0 || recycle
+                    );
+                    assert_eq!(
                         calls.classic_thread_pool_count(0),
-                        usize::from(attempt != 0)
+                        usize::from(attempt != 0 && recycle)
                     );
                 }
+            }
+            // Request the recycled stack through its original ABI. A released
+            // stack is unavailable, while recycled storage keeps its allocation
+            // and acquires a fresh identity and result destination.
+            if native_worker {
+                let cpu = &mut runner.native.application_mut().unwrap().cpu;
+                cpu.pc = PPC_IMPORT_TRAP_BASE;
+                cpu.lr = PPC_CODE_BASE;
+                cpu.gpr[3] = 1;
+                cpu.gpr[4] = PPC_CODE_BASE;
+                cpu.gpr[5] = 0xabcdef;
+                cpu.gpr[6] = 1024;
+                cpu.gpr[7] = 1 | 2 | 16;
+                cpu.gpr[8] = RESULT + 4;
+                cpu.gpr[9] = MADE;
+                assert!(runner.run_steps(32, None).1);
+                assert_eq!(
+                    runner.native.application().unwrap().cpu.gpr[3] as i16,
+                    if recycle { 0 } else { -617 }
+                );
+            } else {
+                runner.m68k.cpu.write_reg(Register::A7, FRAME);
+                runner.m68k.cpu.write_reg(Register::D0, 0x0e03);
+                for (offset, value) in [
+                    (0, MADE),
+                    (4, RESULT + 4),
+                    (8, 1 | 2 | 16),
+                    (12, 1024),
+                    (16, 0xabcdef),
+                    (20, 0x8000),
+                    (24, 1),
+                ] {
+                    runner.bus.write_long(FRAME + offset, value);
+                }
+                runner
+                    .dispatcher
+                    .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    runner.m68k.cpu.read_reg(Register::D0) as i16,
+                    if recycle { 0 } else { -617 }
+                );
+            }
+            assert_eq!(runner.bus.read_long(MADE), if recycle { 4 } else { 0 });
+            if recycle {
+                let reused = calls
+                    .thread_storage(ExecutionTaskId::from_thread_id(4))
+                    .unwrap();
+                assert_eq!(reused.stack_base, storage.stack_base);
+                assert_eq!(reused.stack_limit, storage.stack_limit);
+                assert_eq!(reused.managed_pointer, native_worker);
+                assert_eq!(reused.result_destination, RESULT + 4);
+                assert!(calls.thread_storage(worker).is_none());
             }
         }
     }

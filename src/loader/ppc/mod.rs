@@ -7595,6 +7595,7 @@ impl PpcLoadedApp {
                         process_memory_manager,
                         task,
                         result,
+                        false,
                     );
                     return PpcImportAction::Yield(1);
                 }
@@ -24308,7 +24309,21 @@ fn dispatch_supported_import(
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
             let target = target.unwrap();
-            let stack = process_memory_manager.new_native_ptr(memory, size, true);
+            let pooled = match toolbox_startup.guest_calls.request_thread_stack(
+                GuestIsa::PowerPc,
+                size,
+                options,
+            ) {
+                Ok(pooled) => pooled,
+                Err(error) => {
+                    let _ = memory.write_u32_be(made, 0);
+                    return Some(PpcImportAction::Return(ppc_i16_result(error)));
+                }
+            };
+            let stack = pooled.map_or_else(
+                || process_memory_manager.new_native_ptr(memory, size, true),
+                |storage| storage.stack_base,
+            );
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
@@ -24319,7 +24334,10 @@ fn dispatch_supported_import(
                 let _ = memory.write_u32_be(made, 0);
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
             }
-            let Some(top) = stack.checked_add(size) else {
+            let Some(top) = pooled
+                .map(|storage| storage.stack_limit)
+                .or_else(|| stack.checked_add(size))
+            else {
                 process_memory_manager.dispose_native_ptr(stack);
                 let _ = memory.write_u32_be(made, 0);
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
@@ -24346,7 +24364,13 @@ fn dispatch_supported_import(
                 |task| memory.write_u32_be(made, task.thread_id()).is_some(),
             );
             if created.is_none() {
-                process_memory_manager.dispose_native_ptr(stack);
+                if let Some(storage) = pooled {
+                    toolbox_startup
+                        .guest_calls
+                        .recycle_thread_stack(GuestIsa::PowerPc, storage);
+                } else {
+                    process_memory_manager.dispose_native_ptr(stack);
+                }
                 let _ = memory.write_u32_be(made, 0);
             }
             ppc_apply_process_native_allocator(
@@ -24397,6 +24421,7 @@ fn dispatch_supported_import(
             }
             let current = task == calls.current_task();
             let result = cpu.gpr[4];
+            let recycle = cpu.gpr[5] as u8 != 0;
             Some(
                 if ppc_retire_native_thread(
                     calls,
@@ -24405,6 +24430,7 @@ fn dispatch_supported_import(
                     process_memory_manager,
                     task,
                     result,
+                    recycle,
                 ) {
                     if current {
                         PpcImportAction::Yield(1)
@@ -90685,8 +90711,9 @@ fn ppc_retire_native_thread(
     manager: &mut ProcessNativeMemoryManager,
     task: crate::guest_call::ExecutionTaskId,
     result: u32,
+    recycle: bool,
 ) -> bool {
-    let Some(finished) = calls.retire_native_thread(task, cpu, |context| {
+    let Some(finished) = calls.retire_native_thread(task, cpu, recycle, |context| {
         context.result_destination == 0
             || memory
                 .write_u32_be(context.result_destination, result)
@@ -90694,8 +90721,12 @@ fn ppc_retire_native_thread(
     }) else {
         return false;
     };
-    if finished.stack_base != 0 && finished.managed_pointer {
-        manager.dispose_native_ptr(finished.stack_base);
+    if !recycle && finished.stack_base != 0 {
+        if finished.managed_pointer {
+            manager.dispose_native_ptr(finished.stack_base);
+        } else {
+            manager.dispose_classic_ptr_from_native_import(finished.stack_base);
+        }
     }
     true
 }
@@ -167650,6 +167681,15 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[7] = 2; // kUsePremadeThread, with an empty pool
+        assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-617));
+        assert_eq!(loaded.memory.read_u32_be(made), Some(0));
+        assert!(!loaded.guest_calls.has_live_workers());
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[7] = 2 | 4; // kCreateIfNeeded preserves the unconsumed ID
         assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
         assert_eq!(loaded.cpu.gpr[3], 0);
         assert_eq!(loaded.memory.read_u32_be(made), Some(3));
