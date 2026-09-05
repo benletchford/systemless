@@ -5,16 +5,20 @@
 //! section bases, relocations, synthetic import TVectors, and an initial
 //! stack frame. It deliberately does not implement Toolbox imports yet.
 
+#[cfg(test)]
+use super::pef::SECTION_KIND_UNPACKED_DATA;
 use super::pef::{
-    apply_pef_relocations_detailed, instantiate_pef_sections, parse_pef_exported_symbols,
-    parse_pef_header, parse_pef_imported_symbols, parse_pef_loader_header, parse_pef_reloc_headers,
+    apply_pef_relocations_detailed, instantiate_pef_sections, parse_pef_header,
+    parse_pef_imported_symbols, parse_pef_loader_header, parse_pef_reloc_headers,
     parse_pef_sections, pef_reloc_chunk_stream, resolve_pef_imports, PefHeader, PefLoaderHeader,
     PefRelocApplyError, PefRelocContext, PefRelocHeader, PefResolvedImport, PefSection,
-    SECTION_KIND_CODE, SECTION_KIND_CONSTANT, SECTION_KIND_EXECUTABLE_DATA,
-    SECTION_KIND_PATTERN_DATA, SECTION_KIND_UNPACKED_DATA,
+    SECTION_KIND_CODE, SECTION_KIND_CONSTANT,
 };
 use super::ApplicationSizeResource;
 use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
+use crate::cfm::fragment::{
+    first_base_for_kind, first_data_base, section_bases, CfmSection as MappedSection,
+};
 use crate::cfm::{
     CfmLoadId, CfmLoadOperation, CfmLoadOutputs, CfmOperation, CfmResourceCall,
     CfmResourcePreparation,
@@ -12503,14 +12507,6 @@ pub enum PpcLoadError {
     AddressOverflow,
 }
 
-#[derive(Debug)]
-struct MappedSection {
-    index: usize,
-    section_kind: u8,
-    base: u32,
-    bytes: Vec<u8>,
-}
-
 static PEF_DUMP_PATH: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
 
 fn pef_dump_path() -> Option<&'static std::path::Path> {
@@ -13330,38 +13326,6 @@ fn map_instantiated_sections(data: &[u8]) -> Result<Vec<MappedSection>, PpcLoadE
     }
 
     Ok(mapped)
-}
-
-fn section_bases(mapped: &[MappedSection]) -> Vec<Option<u32>> {
-    let mut bases = Vec::new();
-    for section in mapped {
-        if bases.len() <= section.index {
-            bases.resize(section.index + 1, None);
-        }
-        bases[section.index] = Some(section.base);
-    }
-    bases
-}
-
-fn first_base_for_kind(mapped: &[MappedSection], kind: u8) -> Option<u32> {
-    mapped
-        .iter()
-        .find(|section| section.section_kind == kind)
-        .map(|section| section.base)
-}
-
-fn first_data_base(mapped: &[MappedSection]) -> Option<u32> {
-    mapped
-        .iter()
-        .find(|section| {
-            matches!(
-                section.section_kind,
-                SECTION_KIND_UNPACKED_DATA
-                    | SECTION_KIND_PATTERN_DATA
-                    | SECTION_KIND_EXECUTABLE_DATA
-            )
-        })
-        .map(|section| section.base)
 }
 
 fn bind_imports(
@@ -44702,38 +44666,6 @@ fn ppc_install_legacy_call_universal_proc_arguments(cpu: &mut PpcCpu) {
     }
 }
 
-fn ppc_resource_fragment_bytes(
-    memory: &mut PpcSectionMem,
-    address: u32,
-    available: Option<u32>,
-) -> Option<Vec<u8>> {
-    if available.is_some_and(|size| size < 40) {
-        return None;
-    }
-    let header_bytes = ppc_memory_read_bytes(memory, address, 40)?;
-    let header = parse_pef_header(&header_bytes)?;
-    if header.architecture != *b"pwpc" || header.format_version != 1 {
-        return None;
-    }
-    let table_len = 40u32.checked_add(u32::from(header.section_count).checked_mul(28)?)?;
-    if available.is_some_and(|size| size < table_len) {
-        return None;
-    }
-    let table = ppc_memory_read_bytes(memory, address, table_len)?;
-    let mut length = table_len;
-    for section in parse_pef_sections(&table)? {
-        length = length.max(section.container_offset.checked_add(section.packed_size)?);
-    }
-    if available.is_some_and(|size| size < length) {
-        return None;
-    }
-    address.checked_add(length.checked_sub(1)?)?;
-    if !ppc_memory_can_read_bytes(memory, address, length) {
-        return None;
-    }
-    ppc_memory_read_bytes(memory, address, length)
-}
-
 fn ppc_invoke_prepared_resource(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -44838,8 +44770,12 @@ fn ppc_prepare_resource_call(
         } else {
             None
         };
-        let fragment = ppc_resource_fragment_bytes(memory, request.fragment_address, available)
-            .ok_or(PPC_FRAG_CORRUPT_ERR)?;
+        let fragment = crate::cfm::fragment::read_resource_fragment(
+            memory,
+            request.fragment_address,
+            available,
+        )
+        .ok_or(PPC_FRAG_CORRUPT_ERR)?;
         let id = *next_id;
         if id == 0 || id > PPC_CFM_MAIN_STUB_COUNT {
             return Err(PPC_FRAG_LIB_CONN_ERR);
@@ -51487,8 +51423,7 @@ fn ppc_prepare_mem_fragment(
     imports: &mut Vec<PpcImportBinding>,
     import_count: &mut u32,
     import_binding_indices: &mut Vec<Option<usize>>,
-) -> Result<PpcPreparedMemFragment, i16> {
-    let loader = parse_pef_loader_header(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
+) -> Result<crate::cfm::fragment::CfmPreparedFragment, i16> {
     let imported_symbols = parse_pef_imported_symbols(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
     let resolved_imports = resolve_pef_imports(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
     let local_import_count = u32::try_from(imported_symbols.len()).map_err(|_| PPC_FRAG_NO_MEM)?;
@@ -51499,93 +51434,28 @@ fn ppc_prepare_mem_fragment(
         return Err(PPC_FRAG_NO_MEM);
     }
 
-    let instantiated = instantiate_pef_sections(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    let mut mapped_sections = Vec::with_capacity(instantiated.len());
-    let mut next_heap_cursor = *heap_cursor;
-    for section in instantiated {
-        let alignment =
-            alignment_bytes(section.header.alignment).map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-        let size = u32::try_from(section.bytes.len()).map_err(|_| PPC_FRAG_NO_ADDR_SPACE)?;
-        let (base, next) = ppc_aligned_heap_allocation_bounds(
-            memory,
-            next_heap_cursor,
-            heap_limit,
-            size,
-            alignment,
-        )
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-        mapped_sections.push(MappedSection {
-            index: section.index,
-            section_kind: section.header.section_kind,
-            base,
-            bytes: section.bytes,
-        });
-        next_heap_cursor = next;
-    }
-    next_heap_cursor =
-        align_up(next_heap_cursor, PPC_HEAP_ALIGNMENT).map_err(|_| PPC_FRAG_NO_ADDR_SPACE)?;
-    if next_heap_cursor >= heap_limit {
-        return Err(PPC_FRAG_NO_ADDR_SPACE);
-    }
-
-    let section_bases = section_bases(&mapped_sections);
-    let code_base =
-        first_base_for_kind(&mapped_sections, SECTION_KIND_CODE).ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    let data_base = first_data_base(&mapped_sections).unwrap_or(code_base);
     let new_bindings =
         bind_imports_at_base(resolved_imports, imported_symbols.len(), *import_count)
             .map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
     let import_addrs =
         import_addresses(&new_bindings, imported_symbols.len()).map_err(|_| PPC_FRAG_NO_MEM)?;
 
-    let reloc_headers = parse_pef_reloc_headers(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    for reloc in &reloc_headers {
-        let stream = pef_reloc_chunk_stream(fragment, reloc).ok_or(PPC_FRAG_CORRUPT_ERR)?;
-        let mapped = mapped_sections
-            .iter_mut()
-            .find(|section| section.index == usize::from(reloc.section_index))
-            .ok_or(PPC_FRAG_CORRUPT_ERR)?;
-        let context = PefRelocContext {
-            code_base,
-            data_base,
-            section_bases: &section_bases,
-            import_addrs: &import_addrs,
-        };
-        apply_pef_relocations_detailed(&mut mapped.bytes, stream, &context)
-            .map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-    }
-
-    let main_addr =
-        ppc_fragment_special_tvector(&mapped_sections, loader.main_section, loader.main_offset)?;
-    let init_addr =
-        ppc_fragment_special_tvector(&mapped_sections, loader.init_section, loader.init_offset)?;
-    let term_addr =
-        ppc_fragment_special_tvector(&mapped_sections, loader.term_section, loader.term_offset)?;
-    let exports = ppc_resolve_fragment_exports(fragment, &mapped_sections, &import_addrs)?;
-
-    // Publish the complete relocated layout only after its process allocator
-    // and every destination accept it. No guest code or mapping changes occur
-    // between preflight and writes. PowerPC System Software, pp. 3-21–3-22.
-    let publish_sections = || {
-        for section in &mapped_sections {
-            let Ok(size) = u32::try_from(section.bytes.len()) else {
-                return false;
-            };
-            if !memory.preflight_writable_range(section.base, size) {
-                return false;
-            }
-        }
-        for section in &mapped_sections {
-            memory
-                .write_bytes(section.base, &section.bytes)
-                .expect("preflighted CFM section remains mapped and writable");
-        }
-        true
-    };
+    let plan = crate::cfm::fragment::CfmFragmentPlan::prepare(
+        fragment,
+        &import_addrs,
+        *heap_cursor,
+        heap_limit,
+        PPC_HEAP_ALIGNMENT,
+        |cursor, size, alignment| {
+            ppc_aligned_heap_allocation_bounds(memory, cursor, heap_limit, size, alignment)
+        },
+    )
+    .map_err(|error| error.os_error())?;
+    let next_heap_cursor = plan.next_heap_cursor();
     let committed = process_memory_manager.commit_native_heap_cursor_with(
         *heap_cursor,
         next_heap_cursor,
-        publish_sections,
+        || plan.publish(memory),
     );
     if !committed {
         return Err(PPC_FRAG_NO_ADDR_SPACE);
@@ -51594,93 +51464,7 @@ fn ppc_prepare_mem_fragment(
     imports.extend(new_bindings);
     *import_count = next_import_count;
     *import_binding_indices = ppc_import_binding_indices(imports, *import_count);
-    Ok(PpcPreparedMemFragment {
-        main_addr,
-        init_addr,
-        term_addr,
-        exports,
-    })
-}
-
-fn ppc_resolve_fragment_exports(
-    fragment: &[u8],
-    mapped_sections: &[MappedSection],
-    import_addrs: &[u32],
-) -> Result<Vec<PpcCfmExport>, i16> {
-    let loader = parse_pef_loader_header(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    let exported_symbols = if loader.exported_symbol_count == 0 {
-        Vec::new()
-    } else {
-        parse_pef_exported_symbols(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?
-    };
-    exported_symbols
-        .into_iter()
-        .map(|symbol| {
-            let address = match symbol.section_index {
-                section_index if section_index >= 0 => {
-                    let section_index =
-                        usize::try_from(section_index).map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-                    let section = mapped_sections
-                        .iter()
-                        .find(|section| section.index == section_index)
-                        .ok_or(PPC_FRAG_CORRUPT_ERR)?;
-                    let offset =
-                        usize::try_from(symbol.symbol_value).map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-                    if offset >= section.bytes.len() {
-                        return Err(PPC_FRAG_CORRUPT_ERR);
-                    }
-                    section
-                        .base
-                        .checked_add(symbol.symbol_value)
-                        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?
-                }
-                // Inside Macintosh: PowerPC System Software (1994),
-                // pp. 1-25--1-26: PEF uses -2 for an absolute export.
-                -2 => symbol.symbol_value,
-                // A re-export stores the imported-symbol index in the value
-                // field. Resolve only through the already checked local
-                // import address table; never index the raw fragment bytes.
-                -3 => {
-                    let import_index =
-                        usize::try_from(symbol.symbol_value).map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-                    *import_addrs.get(import_index).ok_or(PPC_FRAG_CORRUPT_ERR)?
-                }
-                _ => return Err(PPC_FRAG_CORRUPT_ERR),
-            };
-            Ok(PpcCfmExport {
-                name: symbol.name,
-                class: symbol.class,
-                address,
-            })
-        })
-        .collect()
-}
-
-fn ppc_fragment_special_tvector(
-    mapped_sections: &[MappedSection],
-    section_index: i32,
-    offset: u32,
-) -> Result<u32, i16> {
-    if section_index < 0 {
-        return Ok(0);
-    }
-    let section_index = usize::try_from(section_index).map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-    let section = mapped_sections
-        .iter()
-        .find(|section| section.index == section_index)
-        .ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    let offset_usize = usize::try_from(offset).map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-    if offset_usize
-        .checked_add(8)
-        .filter(|end| *end <= section.bytes.len())
-        .is_none()
-    {
-        return Err(PPC_FRAG_CORRUPT_ERR);
-    }
-    section
-        .base
-        .checked_add(offset)
-        .ok_or(PPC_FRAG_NO_ADDR_SPACE)
+    Ok(plan.into_fragment())
 }
 
 fn ppc_cfm_main_stub_addr(connection_id: u32) -> u32 {
@@ -113280,8 +113064,12 @@ pub(crate) mod tests {
             base: 0x0310_0000,
             bytes: vec![0; 8],
         }];
-        let exports =
-            ppc_resolve_fragment_exports(&fragment, &mapped, &[0xcafe_babe, 0xdead_beef]).unwrap();
+        let exports = crate::cfm::fragment::resolve_fragment_exports(
+            &fragment,
+            &mapped,
+            &[0xcafe_babe, 0xdead_beef],
+        )
+        .unwrap();
 
         assert_eq!(
             exports,
@@ -177453,14 +177241,14 @@ pub(crate) mod tests {
                 .memory
                 .write_bytes(fragment_address, &fragment)
                 .unwrap();
-            assert!(ppc_resource_fragment_bytes(
+            assert!(crate::cfm::fragment::read_resource_fragment(
                 &mut loaded.memory,
                 fragment_address,
                 Some(fragment.len() as u32 - 1)
             )
             .is_none());
             assert_eq!(
-                ppc_resource_fragment_bytes(
+                crate::cfm::fragment::read_resource_fragment(
                     &mut loaded.memory,
                     fragment_address,
                     Some(fragment.len() as u32)

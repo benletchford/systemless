@@ -58,14 +58,6 @@ pub struct PpcCfmLibraryFragment {
     pub bytes: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PpcPreparedMemFragment {
-    pub(crate) main_addr: u32,
-    pub(crate) init_addr: u32,
-    pub(crate) term_addr: u32,
-    pub(crate) exports: Vec<PpcCfmExport>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PpcInputSnapshot {
     pub key_map: [u8; 16],
