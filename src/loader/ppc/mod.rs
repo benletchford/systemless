@@ -301,8 +301,8 @@ const PPC_CFM_FIND_LIB: u32 = 2;
 const PPC_CFM_LOAD_LIB: u32 = 1;
 const PPC_CFM_LOAD_NEW_COPY: u32 = 5;
 const PPC_CFM_POWERPC_ARCH: u32 = u32::from_be_bytes(*b"pwpc");
-const PPC_CFM_INIT_BLOCK_SIZE: u32 = 48;
-const PPC_CFM_LOCATOR_IN_MEMORY: u32 = 0;
+#[cfg(test)]
+use crate::cfm::CFM_INIT_BLOCK_SIZE as PPC_CFM_INIT_BLOCK_SIZE;
 const PPC_INITIAL_STACK_FRAME_SIZE: u32 = 64;
 const PPC_INTERRUPT_RED_ZONE_SIZE: u32 = 224;
 const PPC_PARAMETER_AREA_OFFSET: u32 = 24;
@@ -44894,23 +44894,23 @@ fn ppc_prepare_resource_call(
                 fragment.len() as u32,
                 &name,
             )?;
-            let target = prepared.init_addr.checked_add(7).and_then(|_| {
-                Some(GuestCallTarget {
-                    isa: GuestIsa::PowerPc,
-                    entry: memory.read_u32_be(prepared.init_addr)?,
-                    rtoc: memory.read_u32_be(prepared.init_addr + 4)?,
-                })
-            });
-            let activated = target.is_some_and(|target| {
-                if memory.read_u32_be(target.entry).is_none() {
-                    return false;
-                }
+            let invocation = crate::cfm::initialization_invocation(
+                memory,
+                operation.task,
+                prepared.init_addr,
+                block,
+            );
+            let activated = invocation.is_ok_and(|invocation| {
                 let effect = GuestCallEffect::call_guest(
-                    GuestCallRequest::for_task(calls.current_task(), target)
-                        .with_powerpc_arguments(
-                            crate::execution_kernel::GuestArgumentValues::from_slice(&[block])
-                                .unwrap(),
-                        ),
+                    GuestCallRequest::for_task(
+                        invocation.task,
+                        GuestCallTarget {
+                            isa: invocation.procedure.isa,
+                            entry: invocation.procedure.entry,
+                            rtoc: invocation.procedure.rtoc,
+                        },
+                    )
+                    .with_powerpc_arguments(invocation.arguments),
                     GuestCallContinuation::to_powerpc(
                         PPC_GUEST_CALL_RETURN_PC,
                         cpu.lr,
@@ -51385,22 +51385,26 @@ fn ppc_activate_cfm_initializer(
     init_block: u32,
     operation: Option<CfmLoadOperation>,
 ) -> PpcImportAction {
-    let target = init_addr.checked_add(7).and_then(|_| {
-        Some(GuestCallTarget {
-            isa: GuestIsa::PowerPc,
-            entry: memory.read_u32_be(init_addr)?,
-            rtoc: memory.read_u32_be(init_addr + 4)?,
-        })
-    });
-    let Some(target) = target else {
+    let invocation = crate::cfm::initialization_invocation(
+        memory,
+        guest_calls.current_task(),
+        init_addr,
+        init_block,
+    );
+    let Ok(invocation) = invocation else {
         memory_manager.release_native_scratch(init_block);
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
     };
     let effect = GuestCallEffect::call_guest(
-        GuestCallRequest::for_task(guest_calls.current_task(), target).with_powerpc_arguments(
-            crate::guest_call::PowerPcArguments::from_slice(&[init_block])
-                .expect("one initializer argument fits the native ABI"),
-        ),
+        GuestCallRequest::for_task(
+            invocation.task,
+            GuestCallTarget {
+                isa: invocation.procedure.isa,
+                entry: invocation.procedure.entry,
+                rtoc: invocation.procedure.rtoc,
+            },
+        )
+        .with_powerpc_arguments(invocation.arguments),
         GuestCallContinuation::to_powerpc(
             PPC_GUEST_CALL_RETURN_PC,
             cpu.lr,
@@ -51439,20 +51443,13 @@ fn ppc_create_mem_fragment_init_block(
     length: u32,
     fragment_name: &str,
 ) -> Result<u32, i16> {
-    // Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-16,
-    // defines the 48-byte, 680x0-aligned InitBlock and its in-memory
-    // FragmentLocator. CFM passes this block as the initialization routine's
-    // sole argument before making any fragment entry point available.
-    let name = encode_mac_roman_lossy(fragment_name);
-    let name_len = name.len().min(255);
-    let size = PPC_CFM_INIT_BLOCK_SIZE + name_len as u32 + 1;
-    let mut bytes = vec![0; size as usize];
-    bytes[8..12].copy_from_slice(&connection_id.to_be_bytes());
-    bytes[12..16].copy_from_slice(&PPC_CFM_LOCATOR_IN_MEMORY.to_be_bytes());
-    bytes[16..20].copy_from_slice(&mem_addr.to_be_bytes());
-    bytes[20..24].copy_from_slice(&length.to_be_bytes());
-    bytes[PPC_CFM_INIT_BLOCK_SIZE as usize] = name_len as u8;
-    bytes[PPC_CFM_INIT_BLOCK_SIZE as usize + 1..].copy_from_slice(&name[..name_len]);
+    let block = crate::cfm::CfmInitBlock::in_memory(
+        CfmLoadId(connection_id),
+        mem_addr,
+        length,
+        fragment_name,
+    );
+    let size = block.size();
     let init_block = if let Some(manager) = process_memory_manager.as_deref_mut() {
         let ptr = manager.new_native_scratch(memory, size);
         if let Some(heap) = manager.native_heap_state() {
@@ -51472,9 +51469,7 @@ fn ppc_create_mem_fragment_init_block(
     if init_block == 0 {
         return Err(PPC_FRAG_NO_MEM);
     }
-    let name_ptr = init_block + PPC_CFM_INIT_BLOCK_SIZE;
-    bytes[28..32].copy_from_slice(&name_ptr.to_be_bytes());
-    if memory.write_bytes(init_block, &bytes).is_none() {
+    if block.publish(memory, init_block).is_err() {
         if let Some(manager) = process_memory_manager {
             manager.release_native_scratch(init_block);
         }
@@ -112705,6 +112700,7 @@ pub(crate) mod tests {
         let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x1000);
         let mut manager = owner.0.borrow_mut();
         let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, 0x4e80_0020u32.to_be_bytes().to_vec());
         memory.add_region(
             0x2000,
             [0x1000u32, 0x2100]

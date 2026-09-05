@@ -122,14 +122,14 @@ impl GuestProcedureMemory for MacMemoryBus {
     }
 }
 
-impl crate::cfm::CfmResourceMemory for GuestAddressSpace {
-    fn publish_resource_record(&mut self, writes: &[(u32, &[u8])]) -> bool {
+impl crate::cfm::CfmMemory for GuestAddressSpace {
+    fn publish_cfm_outputs(&mut self, writes: &[(u32, &[u8])]) -> bool {
         self.try_write_ranges_atomic(writes)
     }
 }
 
-impl crate::cfm::CfmResourceMemory for MacMemoryBus {
-    fn publish_resource_record(&mut self, writes: &[(u32, &[u8])]) -> bool {
+impl crate::cfm::CfmMemory for MacMemoryBus {
+    fn publish_cfm_outputs(&mut self, writes: &[(u32, &[u8])]) -> bool {
         self.try_write_ranges_atomic(writes)
     }
 }
