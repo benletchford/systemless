@@ -622,6 +622,12 @@ impl<R: Copy + TaskOwned, C: Copy> ContinuationStore<R, C> {
         })
     }
 
+    /// Unlike legacy execution routing, observations must distinguish an
+    /// explicitly bound ISA from the historical implicit classic default.
+    pub(crate) fn bound_task_entry_isa(&self, task: ExecutionTaskId) -> Option<GuestIsa> {
+        self.0.borrow().task_entry_isas.get(&task).copied()
+    }
+
     pub(crate) fn has_live_workers(&self) -> bool {
         self.0
             .borrow()
@@ -1254,6 +1260,10 @@ impl<T> ExecutionTaskContextBank<T> {
 }
 
 impl<T> ExecutionContextBank<T> {
+    pub(crate) fn get(&self, task: ExecutionTaskId, call_id: CallId) -> Option<&T> {
+        self.by_call.get(&(task, call_id))
+    }
+
     pub(crate) fn contains(&self, task: ExecutionTaskId, call_id: CallId) -> bool {
         self.by_call.contains_key(&(task, call_id))
     }

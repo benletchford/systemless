@@ -378,6 +378,13 @@ enum TaskResumeContext {
 }
 
 impl TaskResumeContext {
+    fn stack_pointer(&self) -> u32 {
+        match self {
+            Self::Classic(context) => context.a_regs[7],
+            Self::Native(cpu) => cpu.gpr[1],
+        }
+    }
+
     fn isa(&self) -> GuestIsa {
         match self {
             Self::Classic(_) => GuestIsa::M68k,
@@ -886,6 +893,88 @@ impl SharedGuestCallStack {
         let tasks = self.0.borrow();
         tasks.kernel.scheduling_state(task)?;
         Some(tasks.thread_storage.get(task).copied().unwrap_or_default())
+    }
+
+    /// Observe the thread's original stack without exposing a parked engine.
+    /// Classic reentry uses a bridge stack; the oldest parked classic caller
+    /// remains the owner of the thread allocation. Native reentry continues
+    /// on its native stack, so prefer its live or suspended active context.
+    pub(crate) fn thread_stack_pointer(
+        &self,
+        task: ExecutionTaskId,
+        live_isa: GuestIsa,
+        live_sp: u32,
+    ) -> Option<(GuestIsa, u32)> {
+        let tasks = self.0.borrow();
+        tasks.kernel.scheduling_state(task)?;
+        let calls = tasks.kernel.task_states(task);
+        let entry = tasks.kernel.bound_task_entry_isa(task).or_else(|| {
+            if task != ExecutionTaskId::APPLICATION {
+                return None;
+            }
+            // Detached legacy adapters may lack launch metadata. Observe the
+            // oldest call or a unique saved engine without initializing them
+            // as a side effect of an otherwise read-only query.
+            if let Some(call) = calls.first() {
+                return Some(match tasks.frames.get(&call.call_id())?.origin {
+                    GuestCallOrigin::M68k(_) => GuestIsa::M68k,
+                    GuestCallOrigin::PowerPc(_) => GuestIsa::PowerPc,
+                });
+            }
+            match (
+                tasks.cooperative_contexts.get(task),
+                tasks.native_threads.get(task),
+            ) {
+                (Some(_), None) => Some(GuestIsa::M68k),
+                (None, Some(_)) => Some(GuestIsa::PowerPc),
+                (None, None) if task == tasks.kernel.current_task() => Some(live_isa),
+                _ => None,
+            }
+        })?;
+        if entry == GuestIsa::M68k {
+            let bank = tasks.m68k_contexts.borrow();
+            for call in &calls {
+                if matches!(
+                    tasks.frames.get(&call.call_id())?.origin,
+                    GuestCallOrigin::M68k(_)
+                ) {
+                    if let Some(cpu) = bank.get(task, call.call_id()) {
+                        return Some((entry, cpu.core.a(7)));
+                    }
+                    if call.phase() != ContinuationPhase::Pending {
+                        return None;
+                    }
+                }
+            }
+        }
+        if let Some((owner, context)) = &tasks.handoff {
+            if *owner == task && context.isa() == entry {
+                return Some((entry, context.stack_pointer()));
+            }
+        }
+        if task == tasks.kernel.current_task() && live_isa == entry {
+            return Some((entry, live_sp));
+        }
+        if task != tasks.kernel.current_task() {
+            if let Some(context) = tasks.saved_context(task) {
+                if context.isa() == entry {
+                    return Some((entry, context.stack_pointer()));
+                }
+            }
+        }
+        if entry == GuestIsa::PowerPc {
+            for call in calls.iter().rev() {
+                if matches!(
+                    tasks.frames.get(&call.call_id())?.origin,
+                    GuestCallOrigin::PowerPc(_)
+                ) {
+                    if let Some(cpu) = tasks.powerpc_contexts.get(task, call.call_id()) {
+                        return Some((entry, cpu.gpr[1]));
+                    }
+                }
+            }
+        }
+        None
     }
 
     #[cfg(test)]
@@ -2801,6 +2890,91 @@ mod tests {
         assert_eq!((resume.return_pc, resume.final_sp), (0x3000, 0x4000));
         assert_eq!(resume.powerpc.gpr3, 0x1234_5678);
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn thread_stack_space_uses_original_callers_through_nested_isa_transitions() {
+        use crate::thread_manager::ThreadManager;
+        for entry in [GuestIsa::M68k, GuestIsa::PowerPc] {
+            let calls = SharedGuestCallStack::default();
+            assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, entry));
+            let mut classic = M68kCpu::new();
+            classic.core.set_a(7, 0x9000);
+            let mut native = PpcCpu::new();
+            native.gpr[1] = 0x9000;
+            let enter_native =
+                |calls: &SharedGuestCallStack, classic: &mut M68kCpu, native: &mut PpcCpu| {
+                    assert!(calls.begin_m68k_to_powerpc(
+                        GuestCallTarget {
+                            isa: GuestIsa::PowerPc,
+                            entry: 0x1000,
+                            rtoc: 0x2000
+                        },
+                        PowerPcArguments::from_slice(&[]).unwrap(),
+                        0x3000,
+                        0x6004,
+                        None
+                    ));
+                    calls
+                        .activate_powerpc_with_classic_caller(native, classic, RETURN_PC)
+                        .unwrap();
+                };
+            let enter_classic =
+                |calls: &SharedGuestCallStack, classic: &mut M68kCpu, native: &PpcCpu| {
+                    assert!(calls.begin_powerpc_to_m68k(
+                        GuestCallTarget {
+                            isa: GuestIsa::M68k,
+                            entry: 0x5000,
+                            rtoc: 0
+                        },
+                        0x5000,
+                        0x6000,
+                        0x7000,
+                        0x6004,
+                        M68kRegisterState::default(),
+                        None,
+                        0x8000,
+                        0x2000,
+                        PpcNativeReturnGpr3::Preserve
+                    ));
+                    calls.activate_m68k_parking(classic, native).unwrap();
+                    classic.core.set_a(7, 0x6000);
+                };
+            if entry == GuestIsa::M68k {
+                enter_native(&calls, &mut classic, &mut native);
+            }
+            enter_classic(&calls, &mut classic, &native);
+            let manager = ThreadManager::new(&calls);
+            assert_eq!(
+                manager.stack_space(1, GuestIsa::M68k, 0x6000, |_| 0x8000),
+                Ok(0x1000)
+            );
+            enter_native(&calls, &mut classic, &mut native);
+            native.gpr[1] = 0x8800;
+            let expected = if entry == GuestIsa::M68k {
+                0x1000
+            } else {
+                0x800
+            };
+            assert_eq!(
+                manager.stack_space(1, GuestIsa::PowerPc, native.gpr[1], |_| 0x8000),
+                Ok(expected)
+            );
+            enter_classic(&calls, &mut classic, &native);
+            let depth = calls.len();
+            assert_eq!(
+                manager.stack_space(1, GuestIsa::M68k, 0x6000, |_| 0x8000),
+                Ok(expected)
+            );
+            let other = calls.create_task().unwrap();
+            assert!(calls.set_scheduling_state(other, ExecutionTaskState::Ready));
+            assert!(calls.switch_to_task(other));
+            assert_eq!(
+                manager.stack_space(2, GuestIsa::M68k, 0x1234, |_| 0x8000),
+                Ok(expected)
+            );
+            assert_eq!(calls.len(), depth);
+        }
     }
 
     #[test]

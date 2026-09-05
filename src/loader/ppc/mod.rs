@@ -1644,6 +1644,7 @@ pub enum PpcImportDispatcherTarget {
     GetFreeThreadCount,
     GetSpecificFreeThreadCount,
     GetDefaultThreadStackSize,
+    ThreadCurrentStackSpace,
     YieldToThread,
     YieldToAnyThread,
     DisposeThread,
@@ -15059,6 +15060,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetDefaultThreadStackSize") => {
             PpcImportDispatcherTarget::GetDefaultThreadStackSize
         }
+        ("InterfaceLib", "ThreadCurrentStackSpace") => {
+            PpcImportDispatcherTarget::ThreadCurrentStackSpace
+        }
         ("InterfaceLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
         ("InterfaceLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
         ("InterfaceLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
@@ -24362,6 +24366,28 @@ fn dispatch_supported_import(
                         PPC_PARAM_ERR
                     }
                 }
+                Ok(_) => PPC_PARAM_ERR,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ThreadCurrentStackSpace => {
+            // OSErr ThreadCurrentStackSpace(ThreadID, unsigned long *);
+            // Thread Manager (1999), pp. 17–18 and 61.
+            let output = cpu.gpr[4];
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let result = match manager.stack_space(
+                cpu.gpr[3],
+                GuestIsa::PowerPc,
+                cpu.gpr[1],
+                |isa| match isa {
+                    GuestIsa::M68k => memory
+                        .read_u32_be(crate::memory::globals::addr::APPL_LIMIT)
+                        .unwrap_or(0),
+                    GuestIsa::PowerPc => process_memory_manager.application_heap_limit(heap_limit),
+                },
+            ) {
+                Err(error) => error,
+                Ok(value) if output != 0 && memory.write_u32_be(output, value).is_some() => 0,
                 Ok(_) => PPC_PARAM_ERR,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
@@ -167829,6 +167855,152 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
             Some(vec![b'A', b'Z', 0x83, b'!', b'q'])
         );
+    }
+
+    #[test]
+    fn native_stack_space_import_uses_the_parked_classic_application_limit() {
+        use crate::guest_call::{ExecutionTaskId, GuestCallTarget, PowerPcArguments};
+        const OUTPUT: u32 = PPC_DATA_BASE + 0x5000;
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"ThreadCurrentStackSpace")).unwrap();
+        loaded.memory.add_region(0, vec![0; 0x200]);
+        loaded
+            .memory
+            .write_u32_be(crate::memory::globals::addr::APPL_LIMIT, 0x8000)
+            .unwrap();
+        loaded.memory.add_region(OUTPUT, vec![0; 4]);
+        assert!(loaded.application_heap_limit() > 0x9000);
+        assert!(loaded
+            .guest_calls
+            .bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::M68k));
+        let mut classic = crate::cpu::M68kCpu::new();
+        classic.core.set_a(7, 0x9000);
+        assert!(loaded.guest_calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: loaded.entry_pc,
+                rtoc: loaded.rtoc
+            },
+            PowerPcArguments::from_slice(&[1, OUTPUT]).unwrap(),
+            0x1000,
+            0x9004,
+            None
+        ));
+        loaded.activate_powerpc_from_m68k(&mut classic).unwrap();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0x1000));
+    }
+
+    #[test]
+    fn native_thread_stack_space_queries_current_suspended_and_classic_threads() {
+        use crate::guest_call::{CooperativeThread, ExecutionTaskId, ThreadStorage};
+        const OUTPUT: u32 = PPC_DATA_BASE + 0x5000;
+        const MADE: u32 = OUTPUT + 8;
+        const PARTIAL: u32 = OUTPUT + 0x1000;
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"ThreadCurrentStackSpace")).unwrap();
+        loaded.memory.add_region(OUTPUT, vec![0xaa; 16]);
+        loaded.memory.add_region(PARTIAL, vec![0x5a; 3]);
+        let query = |loaded: &mut PpcLoadedApp, thread: u32, output: u32| {
+            loaded.imports[0].dispatcher_target =
+                dispatcher_target_for_import("InterfaceLib", "ThreadCurrentStackSpace");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = thread;
+            loaded.cpu.gpr[4] = output;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            loaded.cpu.gpr[3] as i16
+        };
+        let main_sp = loaded.cpu.gpr[1];
+        for alias in [0, 1, 2] {
+            assert_eq!(query(&mut loaded, alias, OUTPUT), 0);
+            assert_eq!(
+                loaded.memory.read_u32_be(OUTPUT),
+                Some(main_sp - loaded.application_heap_limit())
+            );
+        }
+        let limit = loaded.application_heap_limit() - 0x400;
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import("InterfaceLib", "SetApplLimit");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = limit;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.application_heap_limit(), limit);
+        assert_eq!(query(&mut loaded, 1, OUTPUT), 0);
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(main_sp - limit));
+
+        loaded.imports[0].dispatcher_target =
+            dispatcher_target_for_import("InterfaceLib", "NewThread");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3..10].copy_from_slice(&[1, PPC_CODE_BASE, 0, 4096, 0, 0, MADE]);
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
+        assert_eq!(query(&mut loaded, worker.thread_id(), OUTPUT), 0);
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(4096 - 64));
+        let mut classic = CooperativeThread::default();
+        classic.a_regs[7] = 0x9300;
+        let classic = loaded
+            .guest_calls
+            .create_classic_thread(
+                classic,
+                ThreadStorage {
+                    stack_base: 0x9000,
+                    stack_limit: 0xa000,
+                    ..Default::default()
+                },
+                true,
+                |_| true,
+            )
+            .unwrap();
+        assert_eq!(query(&mut loaded, classic.thread_id(), OUTPUT), 0);
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0x300));
+        assert!(loaded
+            .guest_calls
+            .yield_native_thread(&mut loaded.cpu, worker.thread_id())
+            .unwrap());
+        let worker_sp = loaded.cpu.gpr[1];
+        let storage = loaded.guest_calls.thread_storage(worker).unwrap();
+        assert_eq!(query(&mut loaded, 1, OUTPUT), 0);
+        assert_eq!(
+            loaded.memory.read_u32_be(OUTPUT),
+            Some(worker_sp - storage.stack_base)
+        );
+        assert_eq!(query(&mut loaded, 2, OUTPUT), 0);
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(main_sp - limit));
+        assert_eq!(
+            crate::thread_manager::ThreadManager::new(&loaded.guest_calls).stack_space(
+                2,
+                GuestIsa::M68k,
+                0x1234,
+                |isa| {
+                    assert_eq!(isa, GuestIsa::PowerPc);
+                    limit
+                },
+            ),
+            Ok(main_sp - limit),
+        );
+        loaded.cpu.gpr[1] = storage.stack_base - 4;
+        assert_eq!(query(&mut loaded, 1, OUTPUT), 0);
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0));
+        loaded.cpu.gpr[1] = storage.stack_limit + 4;
+        assert_eq!(query(&mut loaded, 1, OUTPUT), -619);
+        loaded.cpu.gpr[1] = worker_sp;
+        assert_eq!(query(&mut loaded, 0xdead, OUTPUT), -618);
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0));
+        assert_eq!(query(&mut loaded, 1, PARTIAL), -50);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, PARTIAL, 3),
+            Some(vec![0x5a; 3])
+        );
+        assert_eq!(query(&mut loaded, 1, 0), -50);
+        assert_eq!(loaded.guest_calls.current_task(), worker);
     }
 
     #[test]
