@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.36.0](https://github.com/benletchford/systemless/compare/v0.35.0...v0.36.0) (2026-09-05)
+
+
+### Features
+
+* execute native cooperative threads through the process task owner ([ba8ce41](https://github.com/benletchford/systemless/commit/ba8ce413847af53e041a9cc93e1bdbdd99ca74ea))
+* share thread stack-space queries across CPU adapters ([f9cb1e5](https://github.com/benletchford/systemless/commit/f9cb1e59cf8de72c94770ada1bcaf8467af5cc00))
+
+
+### Bug Fixes
+
+* **desktop:** exclude guest menu rows from native presentation ([563cc52](https://github.com/benletchford/systemless/commit/563cc5227d4b5e290d3be100ef6c79c8dc8f17c6))
+* preserve native time across interrupt callback returns ([96054db](https://github.com/benletchford/systemless/commit/96054db42ab8d6f67ecb5f60139da3526132926b))
+* protect native worker stacks during interrupt callbacks ([70a1003](https://github.com/benletchford/systemless/commit/70a1003d46ec0eaf7440845eb04f85c683955554))
+
 ## [0.35.0](https://github.com/benletchford/systemless/compare/v0.34.1...v0.35.0) (2026-09-05)
 
 
