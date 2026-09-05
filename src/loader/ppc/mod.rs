@@ -15,6 +15,7 @@ use super::pef::{
 };
 use super::ApplicationSizeResource;
 use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
+use crate::cfm::{CfmLoadCompletion, CfmLoadId, CfmLoadOperation, CfmLoadOutputs};
 use crate::event_queue::{
     EventProbeResult, EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
 };
@@ -261,6 +262,7 @@ pub const PPC_FRAG_LIB_NOT_FOUND: i16 = -2804;
 pub const PPC_FRAG_FORMAT_UNKNOWN: i16 = -2806;
 pub const PPC_FRAG_HAD_UNRESOLVEDS: i16 = -2807;
 pub const PPC_FRAG_NO_MEM: i16 = -2809;
+pub const PPC_FRAG_INIT_LOOP: i16 = -2815;
 pub const PPC_FRAG_NO_ADDR_SPACE: i16 = -2810;
 pub const PPC_FRAG_LIB_CONN_ERR: i16 = -2817;
 pub const PPC_FRAG_CONNECTION_ID_NOT_FOUND: i16 = -2801;
@@ -7601,7 +7603,13 @@ impl PpcLoadedApp {
                     return PpcImportAction::Yield(1);
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
-                    if guest_calls.complete_powerpc_releasing_scratch(cpu, process_memory_manager) {
+                    if guest_calls.complete_powerpc_resuming_load(
+                        cpu,
+                        process_memory_manager,
+                        |operation, result| {
+                            ppc_complete_cfm_load(operation, result, memory, &mut cfm_connections)
+                        },
+                    ) {
                         let native_heap = process_memory_manager
                             .native_heap_state()
                             .expect("native allocator registered during execution");
@@ -50616,7 +50624,13 @@ fn ppc_get_shared_library(
     let conn_id_ptr = cpu.gpr[6];
     let main_addr_ptr = cpu.gpr[7];
     let err_name_ptr = cpu.gpr[8];
-    if lib_name_ptr == 0 || conn_id_ptr == 0 || main_addr_ptr == 0 {
+    if lib_name_ptr == 0
+        || conn_id_ptr == 0
+        || main_addr_ptr == 0
+        || !memory.preflight_writable_range(conn_id_ptr, 4)
+        || !memory.preflight_writable_range(main_addr_ptr, 4)
+        || (err_name_ptr != 0 && !memory.preflight_writable_range(err_name_ptr, 1))
+    {
         return return_error(PPC_PARAM_ERR);
     }
     if arch_type != PPC_CFM_POWERPC_ARCH {
@@ -50648,8 +50662,12 @@ fn ppc_get_shared_library(
     if find_flags == PPC_CFM_FIND_LIB && existing_connection.is_none() {
         return return_error(PPC_FRAG_LIB_NOT_FOUND);
     }
+    let created_connection = existing_connection.is_none();
     let mut initialization = None;
     let connection = match existing_connection {
+        Some(connection) if guest_calls.is_cfm_load_pending(CfmLoadId(connection.id)) => {
+            return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP));
+        }
         Some(connection) => connection,
         None => {
             let id = *next_cfm_connection_id;
@@ -50738,33 +50756,32 @@ fn ppc_get_shared_library(
         }
     };
 
-    if memory.write_u32_be(conn_id_ptr, connection.id).is_none()
-        || memory
-            .write_u32_be(main_addr_ptr, connection.main_addr)
-            .is_none()
-    {
-        if let Some((_, init_block)) = initialization {
-            process_memory_manager.release_native_scratch(init_block);
-        }
-        return return_error(PPC_PARAM_ERR);
-    }
-    if err_name_ptr != 0 && memory.write_u8(err_name_ptr, 0).is_none() {
-        if let Some((_, init_block)) = initialization {
-            process_memory_manager.release_native_scratch(init_block);
-        }
-        return return_error(PPC_PARAM_ERR);
-    }
-    let Some((init_addr, init_block)) = initialization else {
-        return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
+    let operation = CfmLoadOperation {
+        id: CfmLoadId(connection.id),
+        created_connection,
+        main_address: connection.main_addr,
+        outputs: CfmLoadOutputs {
+            connection: conn_id_ptr,
+            main_address: main_addr_ptr,
+            error_name: err_name_ptr,
+        },
     };
-    ppc_activate_cfm_initializer(
-        cpu,
-        memory,
-        guest_calls,
-        process_memory_manager,
-        init_addr,
-        init_block,
-    )
+    if let Some((init_addr, init_block)) = initialization {
+        let action = ppc_activate_cfm_initializer(
+            cpu,
+            memory,
+            guest_calls,
+            process_memory_manager,
+            init_addr,
+            init_block,
+            Some(operation),
+        );
+        if action != PpcImportAction::Continue {
+            cfm_connections.retain(|connection| connection.id != operation.id.0);
+        }
+        return action;
+    }
+    PpcImportAction::Return(ppc_complete_cfm_load(operation, 0, memory, cfm_connections))
 }
 
 fn ppc_close_connection(
@@ -50952,8 +50969,12 @@ fn ppc_get_mem_fragment(
     if find_flags == PPC_CFM_FIND_LIB && existing_connection.is_none() {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_LIB_NOT_FOUND));
     }
+    let created_connection = existing_connection.is_none();
     let mut initialization = None;
     let connection = match existing_connection {
+        Some(connection) if guest_calls.is_cfm_load_pending(CfmLoadId(connection.id)) => {
+            return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP));
+        }
         Some(connection) => connection,
         None => {
             let id = *next_cfm_connection_id;
@@ -51017,33 +51038,74 @@ fn ppc_get_mem_fragment(
             connection
         }
     };
-    if memory.write_u32_be(conn_id_ptr, connection.id).is_none()
-        || memory
-            .write_u32_be(main_addr_ptr, connection.main_addr)
-            .is_none()
-    {
-        if let Some((_, init_block)) = initialization {
-            process_memory_manager.release_native_scratch(init_block);
-        }
-        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
-    }
-    if err_name_ptr != 0 && memory.write_u8(err_name_ptr, 0).is_none() {
-        if let Some((_, init_block)) = initialization {
-            process_memory_manager.release_native_scratch(init_block);
-        }
-        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
-    }
-    let Some((init_addr, init_block)) = initialization else {
-        return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
+    let operation = CfmLoadOperation {
+        id: CfmLoadId(connection.id),
+        created_connection,
+        main_address: connection.main_addr,
+        outputs: CfmLoadOutputs {
+            connection: conn_id_ptr,
+            main_address: main_addr_ptr,
+            error_name: err_name_ptr,
+        },
     };
-    ppc_activate_cfm_initializer(
-        cpu,
-        memory,
-        guest_calls,
-        process_memory_manager,
-        init_addr,
-        init_block,
-    )
+    if let Some((init_addr, init_block)) = initialization {
+        let action = ppc_activate_cfm_initializer(
+            cpu,
+            memory,
+            guest_calls,
+            process_memory_manager,
+            init_addr,
+            init_block,
+            Some(operation),
+        );
+        if action != PpcImportAction::Continue {
+            cfm_connections.retain(|connection| connection.id != operation.id.0);
+        }
+        return action;
+    }
+    PpcImportAction::Return(ppc_complete_cfm_load(operation, 0, memory, cfm_connections))
+}
+
+fn ppc_complete_cfm_load(
+    operation: CfmLoadOperation,
+    initializer_result: u32,
+    memory: &mut PpcSectionMem,
+    connections: &mut Vec<PpcCfmConnection>,
+) -> u32 {
+    let result = match operation.resume(initializer_result) {
+        CfmLoadCompletion::InitializationFailed(_) => PPC_FRAG_USER_INIT_PROC_ERR,
+        CfmLoadCompletion::Ready(operation) => {
+            if !connections
+                .iter()
+                .any(|connection| connection.id == operation.id.0)
+            {
+                PPC_FRAG_CONNECTION_ID_NOT_FOUND
+            } else if !memory.preflight_writable_range(operation.outputs.connection, 4)
+                || !memory.preflight_writable_range(operation.outputs.main_address, 4)
+                || (operation.outputs.error_name != 0
+                    && !memory.preflight_writable_range(operation.outputs.error_name, 1))
+            {
+                PPC_PARAM_ERR
+            } else {
+                memory
+                    .write_u32_be(operation.outputs.connection, operation.id.0)
+                    .expect("preflighted CFM output");
+                memory
+                    .write_u32_be(operation.outputs.main_address, operation.main_address)
+                    .expect("preflighted CFM output");
+                if operation.outputs.error_name != 0 {
+                    memory
+                        .write_u8(operation.outputs.error_name, 0)
+                        .expect("preflighted CFM error name");
+                }
+                PPC_NO_ERR
+            }
+        }
+    };
+    if result != PPC_NO_ERR && operation.created_connection {
+        connections.retain(|connection| connection.id != operation.id.0);
+    }
+    ppc_i16_result(result)
 }
 
 fn ppc_activate_cfm_initializer(
@@ -51053,6 +51115,7 @@ fn ppc_activate_cfm_initializer(
     memory_manager: &mut ProcessNativeMemoryManager,
     init_addr: u32,
     init_block: u32,
+    operation: Option<CfmLoadOperation>,
 ) -> PpcImportAction {
     let target = init_addr.checked_add(7).and_then(|_| {
         Some(GuestCallTarget {
@@ -51074,13 +51137,23 @@ fn ppc_activate_cfm_initializer(
             PPC_GUEST_CALL_RETURN_PC,
             cpu.lr,
             cpu.gpr[2],
-            PpcNativeReturnGpr3::ZeroOrSet {
-                zero: ppc_i16_result(PPC_NO_ERR),
-                nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
+            if operation.is_some() {
+                PpcNativeReturnGpr3::Preserve
+            } else {
+                PpcNativeReturnGpr3::ZeroOrSet {
+                    zero: ppc_i16_result(PPC_NO_ERR),
+                    nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
+                }
             },
         ),
     );
-    if !guest_calls.activate_powerpc_effect_with_scratch(cpu, memory, effect, Some(init_block)) {
+    if !guest_calls.activate_powerpc_effect_with_scratch(
+        cpu,
+        memory,
+        effect,
+        Some(init_block),
+        operation,
+    ) {
         memory_manager.release_native_scratch(init_block);
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR));
     }
@@ -112398,7 +112471,8 @@ pub(crate) mod tests {
                 &calls,
                 &mut manager,
                 0x2000,
-                first
+                first,
+                None,
             ),
             PpcImportAction::Continue
         );
@@ -112412,7 +112486,8 @@ pub(crate) mod tests {
                 &calls,
                 &mut manager,
                 0x2000,
-                second
+                second,
+                None,
             ),
             PpcImportAction::Continue
         );
@@ -112442,7 +112517,8 @@ pub(crate) mod tests {
                 &calls,
                 &mut manager,
                 0x2000,
-                third
+                third,
+                None,
             ),
             PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR))
         );
@@ -112464,7 +112540,8 @@ pub(crate) mod tests {
                 &calls,
                 &mut manager,
                 u32::MAX - 3,
-                fourth
+                fourth,
+                None,
             ),
             PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CORRUPT_ERR))
         );
@@ -112476,7 +112553,201 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn cfm_initializer_storage_is_released_when_fragment_outputs_are_unmapped() {
+    fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
+        use crate::execution_kernel::ExecutionTaskState;
+        for (use_memory, failed) in [(false, false), (false, true), (true, false), (true, true)] {
+            let calls = SharedGuestCallStack::default();
+            let worker = calls.create_task().unwrap();
+            assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+            assert!(calls.switch_to_task(worker));
+            let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x10000);
+            let mut manager = owner.0.borrow_mut();
+            let mut memory = PpcSectionMem::new();
+            memory.add_region(PPC_HEAP_BASE, vec![0; 0x10000]);
+            memory.add_region(0x5000, b"\x04test".to_vec());
+            memory.add_region(0x6000, vec![0xa5; 64]);
+            memory.add_region(0x8000, vec![0; 128]);
+            let fragment = synthetic_pef_with_initializer();
+            memory.add_region(0x9000, fragment.clone());
+            let mut libraries = vec![PpcCfmLibraryFragment {
+                name: "test".to_string(),
+                bytes: synthetic_pef_with_initializer(),
+            }];
+            let mut connections = Vec::new();
+            let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+            let mut imports = Vec::new();
+            let mut import_count = 0;
+            let mut indices = Vec::new();
+            let mut cursor = PPC_HEAP_BASE;
+            let mut cpu = PpcCpu::new();
+            cpu.gpr[1] = 0x8000;
+            cpu.gpr[2] = 0x2200;
+            cpu.lr = 0x4000;
+            cpu.gpr[3] = 0x5000;
+            cpu.gpr[4] = PPC_CFM_POWERPC_ARCH;
+            cpu.gpr[5] = PPC_CFM_LOAD_LIB;
+            cpu.gpr[6] = 0x6000;
+            cpu.gpr[7] = 0x6004;
+            cpu.gpr[8] = 0x6008;
+            if use_memory {
+                cpu.gpr[3] = 0x9000;
+                cpu.gpr[4] = fragment.len() as u32;
+                cpu.gpr[5] = 0x5000;
+                cpu.gpr[6] = PPC_CFM_LOAD_LIB;
+                cpu.gpr[7] = 0x6000;
+                cpu.gpr[8] = 0x6004;
+                cpu.gpr[9] = 0x6008;
+            }
+            let request = cpu.clone();
+            macro_rules! load {
+                ($cpu:expr) => {
+                    if use_memory {
+                        ppc_get_mem_fragment(
+                            $cpu,
+                            &calls,
+                            &mut manager,
+                            &mut memory,
+                            &mut cursor,
+                            PPC_HEAP_BASE + 0x10000,
+                            &mut connections,
+                            &mut next_connection,
+                            &mut imports,
+                            &mut import_count,
+                            &mut indices,
+                        )
+                    } else {
+                        ppc_get_shared_library(
+                            $cpu,
+                            &calls,
+                            &mut manager,
+                            &mut memory,
+                            &mut cursor,
+                            PPC_HEAP_BASE + 0x10000,
+                            &mut connections,
+                            &mut libraries,
+                            &mut next_connection,
+                            &mut imports,
+                            &mut import_count,
+                            &mut indices,
+                        )
+                    }
+                };
+            }
+            assert_eq!(load!(&mut cpu), PpcImportAction::Continue);
+            let id = connections[0].id;
+            assert!(calls.is_cfm_load_pending(CfmLoadId(id)));
+            assert_eq!(memory.read_u32_be(0x6000), Some(0xa5a5_a5a5));
+            assert_eq!(memory.read_u32_be(0x6004), Some(0xa5a5_a5a5));
+            let mut recursive = request.clone();
+            assert_eq!(
+                load!(&mut recursive),
+                PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP))
+            );
+            assert_eq!(connections.len(), 1);
+            assert_eq!(manager.native_ptr_records().len(), 1);
+            memory.add_region(0x5100, b"\x05inner".to_vec());
+            libraries.push(PpcCfmLibraryFragment {
+                name: "inner".to_string(),
+                bytes: fragment.clone(),
+            });
+            let mut inner = request.clone();
+            inner.gpr[if use_memory { 5 } else { 3 }] = 0x5100;
+            assert_eq!(load!(&mut inner), PpcImportAction::Continue);
+            let inner_id = connections[1].id;
+            assert_ne!(inner_id, id);
+            assert!(calls.is_cfm_load_pending(CfmLoadId(inner_id)));
+            inner.pc = PPC_GUEST_CALL_RETURN_PC;
+            inner.gpr[3] = 1;
+            assert!(calls.complete_powerpc_resuming_load(
+                &mut inner,
+                &mut manager,
+                |operation, result| ppc_complete_cfm_load(
+                    operation,
+                    result,
+                    &mut memory,
+                    &mut connections
+                )
+            ));
+            assert!(!calls.is_cfm_load_pending(CfmLoadId(inner_id)));
+            assert!(calls.is_cfm_load_pending(CfmLoadId(id)));
+            assert_eq!(connections.len(), 1);
+            assert_eq!(connections[0].id, id);
+            assert_eq!(manager.native_ptr_records().len(), 1);
+            // Give the prepared test fragment an initializer returning the chosen OSErr.
+            memory
+                .write_u32_be(cpu.pc, 0x3860_0000 | u32::from(failed))
+                .unwrap();
+            memory.write_u32_be(cpu.pc + 4, 0x4e80_0020).unwrap();
+            assert_eq!(
+                cpu.run_with_imports(&mut memory, 2, 0, 0xff00_0000, 0, |_, _, _| {
+                    PpcImportAction::Halt
+                }),
+                PpcRunResult::CycleLimit { cycles: 2 }
+            );
+            assert_eq!(cpu.pc, PPC_GUEST_CALL_RETURN_PC);
+            let before = calls.clone();
+            assert!(!calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
+            assert_eq!(
+                calls, before,
+                "the manager operation cannot be discarded by a plain return"
+            );
+            assert!(calls.complete_powerpc_resuming_load(
+                &mut cpu,
+                &mut manager,
+                |operation, result| ppc_complete_cfm_load(
+                    operation,
+                    result,
+                    &mut memory,
+                    &mut connections
+                )
+            ));
+            assert_eq!((cpu.pc, cpu.gpr[2]), (0x4000, 0x2200));
+            assert!(!calls.is_cfm_load_pending(CfmLoadId(id)));
+            assert!(manager.native_ptr_records().is_empty());
+            if failed {
+                assert_eq!(cpu.gpr[3], ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR));
+                assert!(connections.is_empty());
+                assert_eq!(memory.read_u32_be(0x6000), Some(0xa5a5_a5a5));
+                cpu = request.clone();
+                assert_eq!(load!(&mut cpu), PpcImportAction::Continue);
+                assert!(connections[0].id > id);
+                cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+                cpu.gpr[3] = 1;
+                assert!(calls.complete_powerpc_resuming_load(
+                    &mut cpu,
+                    &mut manager,
+                    |operation, result| ppc_complete_cfm_load(
+                        operation,
+                        result,
+                        &mut memory,
+                        &mut connections
+                    )
+                ));
+                assert!(connections.is_empty());
+            } else {
+                assert_eq!(cpu.gpr[3], 0);
+                assert_eq!(memory.read_u32_be(0x6000), Some(id));
+                assert_eq!(memory.read_u32_be(0x6004), Some(connections[0].main_addr));
+                cpu = request.clone();
+                assert_eq!(load!(&mut cpu), PpcImportAction::Return(0));
+                assert_eq!(connections.len(), 1);
+                cpu.gpr[if use_memory { 7 } else { 6 }] = 0x7000;
+                assert_eq!(
+                    load!(&mut cpu),
+                    PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+                );
+                assert_eq!(
+                    connections[0].id, id,
+                    "bad outputs must not invalidate a reused ready connection"
+                );
+            }
+            assert!(calls.is_empty());
+            assert!(manager.native_ptr_records().is_empty());
+        }
+    }
+
+    #[test]
+    fn cfm_initializer_storage_is_released_when_load_outputs_become_readonly() {
         for invalid_register in [6, 7, 8] {
             let calls = SharedGuestCallStack::default();
             let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x10000);
@@ -112485,6 +112756,8 @@ pub(crate) mod tests {
             memory.add_region(PPC_HEAP_BASE, vec![0; 0x10000]);
             let fragment = synthetic_pef_with_initializer();
             let mut cpu = PpcCpu::new();
+            cpu.gpr[1] = 0x8000;
+            memory.add_region(0x8000, vec![0; 128]);
             cpu.gpr[3] = 0x5000;
             cpu.gpr[4] = PPC_CFM_POWERPC_ARCH;
             cpu.gpr[5] = PPC_CFM_LOAD_LIB;
@@ -112498,6 +112771,7 @@ pub(crate) mod tests {
                 bytes: fragment,
             }];
             memory.add_region(0x6000, vec![0; 64]);
+            memory.add_region(0x7000, vec![0; 4]);
             let mut cursor = PPC_HEAP_BASE;
             let mut connections = Vec::new();
             let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
@@ -112516,13 +112790,30 @@ pub(crate) mod tests {
                     &mut 0,
                     &mut Vec::new()
                 ),
-                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+                PpcImportAction::Continue
             );
             assert_eq!(
                 connections.len(),
                 1,
                 "reached output publication after preparing the initializer"
             );
+            assert!(calls.is_cfm_load_pending(CfmLoadId(connections[0].id)));
+            assert_eq!(memory.read_u32_be(0x6000), Some(0));
+            memory.add_readonly_region(0x7000, vec![0; 4]);
+            cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+            cpu.gpr[3] = 0;
+            assert!(calls.complete_powerpc_resuming_load(
+                &mut cpu,
+                &mut manager,
+                |operation, result| ppc_complete_cfm_load(
+                    operation,
+                    result,
+                    &mut memory,
+                    &mut connections
+                )
+            ));
+            assert_eq!(cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+            assert!(connections.is_empty());
             assert!(manager.native_ptr_records().is_empty());
             assert_eq!(manager.native_free_ptr_blocks().len(), 1);
             assert!(calls.is_empty());
@@ -112616,6 +112907,7 @@ pub(crate) mod tests {
                     &mut manager,
                     0x2000,
                     init_block,
+                    None,
                 ),
                 PpcImportAction::Continue
             );
