@@ -32,12 +32,12 @@ fn no_visrgn_auto_expand_enabled() -> bool {
 }
 
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
-/// Device indices of the menu mark's colours, valid while the main device's
-/// colour table keeps the pointer and seed they were resolved against.
+/// Device indices of the menu mark's colours, valid while the colour
+/// environment they were resolved in (see `color_environment_digest`) is
+/// unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MenuMarkIndexCache {
-    pub(crate) ctab: u32,
-    pub(crate) seed: u32,
+    pub(crate) digest: u64,
     pub(crate) indices: [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()],
 }
 
@@ -2795,35 +2795,66 @@ impl super::TrapDispatcher {
         standard_menu_bar_title_baseline(menu_bar_height, metrics.ascent, metrics.descent)
     }
 
+    /// A digest of everything a screen colour lookup reads: the screen depth,
+    /// the main device's colour table (pointer and every entry, read through
+    /// the bus) when there is one, and the host-side device table that the
+    /// lookup falls back to otherwise. Caches of resolved device indices are
+    /// keyed on it rather than on `ctSeed`: the seed is meant to change with
+    /// the entries (Inside Macintosh Volume V (1986), V-143), but Systemless's
+    /// own depth switch rewrites the table in place and stamps the seed with
+    /// the depth, so a colour-to-grayscale change at the same depth keeps it.
+    /// One bulk read of the table per digest is far cheaper than the scans
+    /// the caches avoid.
+    pub(super) fn color_environment_digest(&self, bus: &MacMemoryBus) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut digest = FNV_OFFSET;
+        let mut mix = |bytes: &[u8]| {
+            for &byte in bytes {
+                digest ^= u64::from(byte);
+                digest = digest.wrapping_mul(FNV_PRIME);
+            }
+        };
+        let (_, _, _, _, depth) = self.screen_mode;
+        mix(&depth.to_le_bytes());
+        if let Some(ctab) = Self::main_gdevice_ctab(bus) {
+            let entries = usize::from(bus.read_word(ctab + 6)).saturating_add(1).min(256);
+            let mut bytes = vec![0u8; entries * 8];
+            bus.read_bytes_into(ctab + 8, &mut bytes);
+            mix(&ctab.to_le_bytes());
+            mix(&bytes);
+        } else {
+            mix(&[0xFF]);
+        }
+        for rgb in self.device_clut.iter() {
+            for channel in rgb {
+                mix(&channel.to_le_bytes());
+            }
+        }
+        digest
+    }
+
     /// The menu mark's colours resolved through the main device's colour
-    /// table, cached against that table's pointer and seed. Every write to
-    /// the device table also writes a fresh `ctSeed` (Inside Macintosh
-    /// Volume V (1986), V-143), so an unchanged seed means unchanged entries;
+    /// table, cached against the colour environment they were resolved in;
     /// without the cache every menu-bar redraw scans the table once per
     /// colour through the bus.
     pub(super) fn menu_mark_palette_indices(
         &self,
         bus: &MacMemoryBus,
     ) -> [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()] {
-        let identity = Self::main_gdevice_ctab(bus).map(|ctab| (ctab, bus.read_long(ctab)));
-        if let (Some((ctab, seed)), Some(cached)) = (identity, self.menu_mark_indices.get()) {
-            if cached.ctab == ctab && cached.seed == seed {
+        let digest = self.color_environment_digest(bus);
+        if let Some(cached) = self.menu_mark_indices.get() {
+            if cached.digest == digest {
                 return cached.indices;
             }
         }
-        let mut resolved_all = true;
         let indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
             Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
-                resolved_all = false;
                 super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
             })
         });
-        if let Some((ctab, seed)) = identity {
-            if resolved_all {
-                self.menu_mark_indices
-                    .set(Some(MenuMarkIndexCache { ctab, seed, indices }));
-            }
-        }
+        self.menu_mark_indices
+            .set(Some(MenuMarkIndexCache { digest, indices }));
         indices
     }
 
@@ -5714,7 +5745,7 @@ mod redraw_chrome_tests {
     }
 
     #[test]
-    fn menu_mark_indices_are_cached_until_the_device_table_seed_changes() {
+    fn menu_mark_indices_are_cached_until_the_colour_environment_changes() {
         let (_disp, _cpu, mut bus) = setup_with_port();
         let mut disp = TrapDispatcher::new();
         let base = bus.alloc(16 * 16);
@@ -5728,23 +5759,26 @@ mod redraw_chrome_tests {
             .menu_mark_indices
             .get()
             .expect("resolved indices are cached");
-        assert_eq!((cached.ctab, cached.indices), (ctab, first));
+        assert_eq!(cached.indices, first);
 
-        // Same table, same seed: served from the cache. Poison the cached
-        // indices to prove no lookup happens.
+        // Same environment: served from the cache. Poison the cached indices
+        // to prove no lookup happens.
         disp.menu_mark_indices.set(Some(super::MenuMarkIndexCache {
             indices: [9; 4],
             ..cached
         }));
         assert_eq!(disp.menu_mark_palette_indices(&bus), [9; 4]);
 
-        // A new seed means the entries may differ: resolved again.
-        bus.write_long(ctab, cached.seed.wrapping_add(1));
-        assert_eq!(disp.menu_mark_palette_indices(&bus), first);
-        assert_eq!(
-            disp.menu_mark_indices.get().map(|cache| cache.seed),
-            Some(cached.seed.wrapping_add(1))
+        // An entry rewritten in place, seed untouched: resolved again.
+        let entry = ctab + 8 + 8 * 200;
+        bus.write_word(entry + 2, bus.read_word(entry + 2) ^ 0x0F0F);
+        let fresh = disp.menu_mark_palette_indices(&bus);
+        assert_ne!(fresh, [9; 4], "a changed table is not served from the cache");
+        assert_ne!(
+            disp.menu_mark_indices.get().map(|cache| cache.digest),
+            Some(cached.digest)
         );
+        assert_eq!(fresh, first, "the mark's colours were not the entry that changed");
     }
 
     #[test]
