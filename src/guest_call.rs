@@ -27,6 +27,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// Install a saved register context while retaining the furthest native
+/// execution time. Task switches, mixed-mode returns and interrupt returns
+/// share this policy; restoring registers must not rewind the time base.
+pub(crate) fn restore_powerpc_context(cpu: &mut PpcCpu, context: PpcCpu) {
+    let time_base = cpu.time_base().max(context.time_base());
+    *cpu = context;
+    cpu.set_time_base(time_base);
+}
+
 /// Saved 68K state for one cooperative Thread Manager thread.
 ///
 /// Cooperative switches occur only inside `_ThreadDispatch`, so the HLE can
@@ -676,9 +685,7 @@ impl ExecutionTaskCalls {
                 self.handoff = Some((task, TaskResumeContext::Classic(context)));
             }
             TaskResumeContext::Native(next) => {
-                let time_base = cpu.time_base().max(next.time_base());
-                *cpu = *next;
-                cpu.set_time_base(time_base);
+                restore_powerpc_context(cpu, *next);
                 self.native_cpu_task = Some(task);
             }
         }
@@ -1185,9 +1192,7 @@ impl SharedGuestCallStack {
             }
         }
         if let Some(next) = next {
-            let time_base = cpu.time_base().max(next.time_base());
-            *cpu = *next;
-            cpu.set_time_base(time_base);
+            restore_powerpc_context(cpu, *next);
         }
         tasks.native_cpu_task = Some(current);
         true
@@ -1687,7 +1692,6 @@ impl SharedGuestCallStack {
             (task, semantic.call_id())
         };
         let result = PowerPcReturnState { gpr3: cpu.gpr[3] };
-        let elapsed_time_base = cpu.time_base();
         let mut tasks = self.0.borrow_mut();
         let kernel = tasks.kernel.shared_handle();
         let Ok((parked_cpu, _)) =
@@ -1706,8 +1710,7 @@ impl SharedGuestCallStack {
             .as_mut()
             .expect("validated PowerPC transition must have an execution payload");
         execution.completed = Some(result);
-        *cpu = *parked_cpu;
-        cpu.set_time_base(elapsed_time_base);
+        restore_powerpc_context(cpu, *parked_cpu);
         true
     }
 
@@ -2055,9 +2058,7 @@ impl SharedGuestCallStack {
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
         if let Some(native) = native {
-            let time_base = cpu.time_base().max(native.time_base());
-            *cpu = *native;
-            cpu.set_time_base(time_base);
+            restore_powerpc_context(cpu, *native);
         }
         if let Some(result) = result {
             cpu.gpr[3] = result;
