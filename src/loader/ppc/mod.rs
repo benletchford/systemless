@@ -164506,10 +164506,7 @@ pub(crate) mod tests {
             .expect("classic adapter owns low memory");
         context.attach_memory(0, low_memory, &mut native.memory);
         let ram_end = classic_bus.ram_size();
-        for (base, end) in native
-            .memory
-            .ordinary_mapping_holes(0x0010_0000, ram_end)
-        {
+        for (base, end) in native.memory.mapping_holes(0x0010_0000, ram_end) {
             let memory = classic_bus
                 .shared_ram_region(base, end - base)
                 .expect("classic adapter owns the native mapping hole");
@@ -167746,10 +167743,7 @@ pub(crate) mod tests {
             .shared_ram_region(0, low_memory_end)
             .expect("classic adapter owns low memory");
         context.attach_memory(0, low_memory, &mut native.memory);
-        for (base, end) in native
-            .memory
-            .ordinary_mapping_holes(low_memory_end, ram_end)
-        {
+        for (base, end) in native.memory.mapping_holes(low_memory_end, ram_end) {
             let memory = classic_bus
                 .shared_ram_region(base, end - base)
                 .expect("classic adapter owns the native mapping hole");
