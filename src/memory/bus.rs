@@ -1430,6 +1430,16 @@ impl MacMemoryBus {
     /// sparse span may be valid, while any hole or read-only byte rejects the
     /// operation before the first destination byte changes.
     pub(crate) fn is_guest_address_writable(&self, address: u32, len: usize) -> bool {
+        if len == 0 {
+            return true;
+        }
+        // A complete flat route needs one protection-range check. Keep bulk
+        // drawing on the bulk path rather than checking every pixel byte.
+        if self.route(address, len) == GuestMemoryRoute::Flat {
+            return u32::try_from(len).ok().is_some_and(|len| {
+                !self.readonly_code_overlaps(self.translate_guest_address(address), len)
+            });
+        }
         (0..len).all(|offset| {
             let guest_address = address.wrapping_add(offset as u32);
             let translated = self.translate_guest_address(guest_address);
@@ -3953,6 +3963,18 @@ mod tests {
 
         bus.set_addressing_32_bit(false);
         assert!(bus.is_guest_address_mapped(0x00ff_ffff, 2));
+    }
+
+    #[test]
+    fn writable_range_preflight_preserves_empty_ranges_and_flat_protection() {
+        let mut bus = MacMemoryBus::new(0x10000);
+        bus.protect_readonly_code(0x3000, 4);
+        assert!(bus.is_guest_address_writable(0x3001, 0));
+        assert!(bus.is_guest_address_writable(u32::MAX, 0));
+        assert!(!bus.is_guest_address_writable(0x3001, 1));
+        assert!(!bus.is_guest_address_writable(0x2FFF, 2));
+        assert!(bus.is_guest_address_writable(0x2FFE, 2));
+        assert!(bus.is_guest_address_writable(0x3004, 2));
     }
 
     #[test]
