@@ -3844,7 +3844,7 @@ mod tests {
             .expect("read-only alias");
         // SAFETY: access remains serialized as above.
         unsafe {
-            memory.add_shared_readonly_region(ALIAS + 4, readonly);
+            memory.add_shared_readonly_region(None, ALIAS + 4, readonly);
         }
         let before = bus.read_byte(ALIAS + 4);
         bus.write_byte(ALIAS + 4, before ^ 0xff);

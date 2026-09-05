@@ -13076,12 +13076,14 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     // GetMemFragment can bind imports while the CPU is already running.
     memory
         .publish_system_code(
+            GuestIsa::PowerPc,
             PPC_IMPORT_TVECTOR_BASE,
             import_tvector_bytes(PPC_IMPORT_SLOT_COUNT as usize),
         )
         .ok_or(PpcLoadError::AddressOverflow)?;
     memory
         .publish_system_code(
+            GuestIsa::PowerPc,
             PPC_IMPORT_TRAP_BASE,
             import_trap_bytes(PPC_IMPORT_SLOT_COUNT as usize),
         )
@@ -13090,6 +13092,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     ppc_seed_import_data(&mut memory);
     memory
         .publish_system_code(
+            GuestIsa::PowerPc,
             PPC_CFM_MAIN_STUB_BASE,
             import_trap_bytes(PPC_CFM_MAIN_STUB_COUNT as usize),
         )
@@ -13167,6 +13170,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     if init_tvector.is_some() {
         memory
             .publish_system_code(
+                GuestIsa::PowerPc,
                 PPC_APPLICATION_INIT_RETURN_PC,
                 ppc_application_init_return_trampoline(entry_pc, rtoc),
             )
@@ -45054,14 +45058,11 @@ fn ppc_call_universal_proc(
         // changed an interrupt mask, so consuming the saved token is a no-op.
         return Some(PpcImportAction::ReturnPreserve);
     }
-    // InterfaceLib may return a direct 680x0 system gateway as a UniversalProcPtr.
-    // The runner maps that system-owned synthetic reservation read-only, which
-    // supplies the architecture information that a bare pointer does not carry.
-    let raw_isa = if memory.is_shared_readonly_address(proc_ptr) {
-        GuestIsa::M68k
-    } else {
-        raw_isa
-    };
+    // System owners identify native transition vectors and direct 680x0
+    // gateways explicitly; read-only storage alone cannot select an ISA.
+    // Inside Macintosh: PowerPC System Software (1994), pp. 1-27--1-28,
+    // 2-42--2-43.
+    let raw_isa = memory.system_code_isa(proc_ptr).unwrap_or(raw_isa);
     let target = resolve_guest_procedure(
         memory,
         proc_ptr,
@@ -108150,9 +108151,11 @@ pub(crate) mod tests {
         let (synthetic_base, synthetic) = bus.shared_synthetic_reservation().unwrap();
         // SAFETY: this focused fixture serializes the two adapters.
         unsafe {
-            loaded
-                .memory
-                .add_shared_readonly_region(synthetic_base, synthetic)
+            loaded.memory.add_shared_readonly_region(
+                Some(GuestIsa::M68k),
+                synthetic_base,
+                synthetic,
+            )
         };
         let ds_err = bus
             .shared_ram_region(crate::memory::globals::addr::DS_ERR_CODE, 2)
@@ -108273,7 +108276,7 @@ pub(crate) mod tests {
         bus.write_byte(reservation_base, 0x5a);
         // SAFETY: this focused fixture serializes the two adapters.
         unsafe {
-            memory.add_shared_readonly_region(reservation_base, reservation);
+            memory.add_shared_readonly_region(Some(GuestIsa::M68k), reservation_base, reservation);
         }
 
         let mut heap_cursor = local_base;
@@ -108368,12 +108371,15 @@ pub(crate) mod tests {
         unsafe {
             installed
                 .memory
-                .add_shared_readonly_region(shared_base, shared)
+                .add_shared_readonly_region(Some(GuestIsa::M68k), shared_base, shared)
         };
         assert!(!installed
             .memory
             .has_readonly_allocation_exclusion(reservation.0, reservation.1));
-        assert!(installed.memory.is_shared_readonly_address(reservation.0));
+        assert!(installed
+            .memory
+            .shared_view()
+            .is_shared_readonly_range(reservation.0, 1));
         assert_eq!(installed.memory.write_u8(reservation.0, 0xff), None);
         assert_eq!(bus.read_byte(reservation_base), 0x5a);
     }
@@ -108441,6 +108447,7 @@ pub(crate) mod tests {
             PPC_APPLICATION_INIT_RETURN_PC,
         ] {
             let word = loaded.memory.read_u32_be(base).unwrap();
+            assert_eq!(loaded.memory.system_code_isa(base), Some(GuestIsa::PowerPc));
             assert!(loaded
                 .memory
                 .shared_view()

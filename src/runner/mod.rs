@@ -8,6 +8,7 @@ use crate::execution_kernel::ExecutionRoute;
 use crate::execution_m68k::M68kExecution;
 use crate::execution_native::{NativeEngineRole, NativeExecution};
 use crate::guest_call::ExecutionTaskId;
+use crate::guest_procedure::GuestIsa;
 use crate::loader::ppc::{
     PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
     PpcImportBinding, PpcImportDispatcherTarget, PpcInputSnapshot,
@@ -4398,7 +4399,9 @@ impl FixtureRunner {
         // read-only mapping preserves the ROM-like protection enforced by the
         // 68k bus for trap gateways and permanent come-from heads.
         unsafe {
-            ppc_app.memory.add_shared_readonly_region(base, region);
+            ppc_app
+                .memory
+                .add_shared_readonly_region(Some(GuestIsa::M68k), base, region);
         }
     }
 
@@ -15125,6 +15128,49 @@ mod tests {
     }
 
     #[test]
+    fn universal_proc_preserves_native_isa_for_protected_transition_vectors() {
+        use crate::loader::ppc::tests::synthetic_pef_with_import;
+
+        const VECTOR: u32 = 0x0180_0000;
+        const ENTRY: u32 = VECTOR + 8;
+        const RESULT: u32 = 0x1234_5678;
+        for installed in [false, true] {
+            for protected in [false, true] {
+                let mut native =
+                    load_pef_application(&synthetic_pef_with_import(b"CallUniversalProc")).unwrap();
+                let words = [ENTRY, PPC_DATA_BASE, 0x3c60_1234, 0x6063_5678, 0x4e80_0020];
+                let bytes = words.into_iter().flat_map(u32::to_be_bytes).collect();
+                if protected {
+                    native
+                        .memory
+                        .publish_system_code(GuestIsa::PowerPc, VECTOR, bytes)
+                        .unwrap();
+                } else {
+                    native.memory.add_readonly_region(VECTOR, bytes);
+                }
+                native.cpu.gpr[3] = VECTOR;
+                native.cpu.gpr[4] = 0x30; // Pascal, no arguments, long result.
+                if installed {
+                    let mut runner =
+                        FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+                    runner.init_app(&LoadedApp::from_ppc(native));
+                    let (_, running) = runner.run_steps(128, None);
+                    assert!(!running, "installed protected={protected}");
+                    assert_eq!(runner.native.application_mut().unwrap().cpu.gpr[3], RESULT);
+                } else {
+                    let probe = native.run_with_hle_imports(128);
+                    assert_eq!(probe.unsupported_import_index, None);
+                    assert_eq!(native.cpu.pc, native.halt_pc);
+                    assert_eq!(
+                        native.cpu.gpr[3], RESULT,
+                        "standalone protected={protected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn native_system_code_survives_large_process_ram_attachment() {
         use crate::loader::ppc::tests::synthetic_pef_with_import;
 
@@ -15159,10 +15205,13 @@ mod tests {
         let native = runner.native.application_mut().unwrap();
         for (base, word) in pools.into_iter().zip(words) {
             assert_eq!(native.memory.read_u32_be(base), Some(word));
-            assert!(native.memory.is_shared_readonly_address(base));
+            assert!(native.memory.shared_view().is_shared_readonly_range(base, 1));
             assert_eq!(native.memory.write_u32_be(base, 0), None);
         }
-        assert!(native.memory.is_shared_readonly_address(reservation_base));
+        assert!(native
+            .memory
+            .shared_view()
+            .is_shared_readonly_range(reservation_base, 1));
         assert_eq!(native.memory.write_u8(reservation_base, 0xff), None);
         let (steps, running) = runner.run_steps(64, None);
         assert!(steps >= 6);
