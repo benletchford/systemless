@@ -1149,6 +1149,10 @@ impl App {
     }
 
     fn step_frame(&mut self) {
+        self.step_frame_with_clock(std::time::Instant::now);
+    }
+
+    fn step_frame_with_clock(&mut self, mut host_now: impl FnMut() -> std::time::Instant) {
         let Some(runner) = self.runner.as_ref() else {
             return;
         };
@@ -1157,7 +1161,7 @@ impl App {
             return;
         }
 
-        let now = runner.host_now();
+        let now = host_now();
         // Seed the wall-clock origin from the guest's current tick, not `now`.
         // The runner boots with a non-zero TickCount (DEFAULT_LAUNCH_TICKS ≈ 600
         // ≈ 10s of simulated post-boot time), so anchoring the origin at `now`
@@ -1250,7 +1254,7 @@ impl App {
             if runner.guest_tick() >= effective_target || runner.is_halted() {
                 break;
             }
-            if runner.host_now() >= cpu_deadline {
+            if host_now() >= cpu_deadline {
                 break;
             }
 
@@ -3876,10 +3880,8 @@ mod tests {
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
         );
-        let pc = runner.bus_mut().alloc(256 * 1024);
-        for offset in (0..256 * 1024).step_by(2) {
-            runner.bus_mut().write_word(pc + offset, 0x4E71); // NOP
-        }
+        let pc = runner.bus_mut().alloc(2);
+        runner.bus_mut().write_word(pc, 0x60FE); // BRA.S *
         runner.cpu_mut().write_reg(Register::PC, pc);
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
         runner.bus_mut().write_long(0x016A, 0);
@@ -3892,13 +3894,16 @@ mod tests {
         app.last_presented_guest_tick = Some(0);
         app.force_next_render = false;
 
-        app.step_frame();
+        // Keep the frame budget independent of emulator setup time and host
+        // scheduling. The instruction cap still bounds foreground execution.
+        app.step_frame_with_clock(|| now);
 
         let runner = app.runner.as_ref().unwrap();
         assert!(
             app.total_instructions > 0,
             "test setup should execute foreground startup work"
         );
+        assert!(!runner.is_halted(), "foreground loop must remain runnable");
         assert_eq!(
             runner.guest_tick(),
             0,
