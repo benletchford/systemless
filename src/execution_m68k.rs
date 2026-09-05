@@ -4,14 +4,12 @@
 //! must move with their context. The task store remains the process authority.
 
 use crate::cpu::{M68kCpu, Register};
-use crate::execution_kernel::ExecutionContextBank;
 use crate::guest_call::{PendingM68kExecution, SharedGuestCallStack};
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use ppc::PpcMemory;
 
 pub(crate) struct M68kExecution {
     pub(crate) cpu: M68kCpu,
-    pub(crate) parked: ExecutionContextBank<M68kCpu>,
     calls: SharedGuestCallStack,
 }
 
@@ -19,7 +17,6 @@ impl M68kExecution {
     pub(crate) fn new(calls: &SharedGuestCallStack) -> Self {
         Self {
             cpu: M68kCpu::new(),
-            parked: ExecutionContextBank::default(),
             calls: calls.shared_handle(),
         }
     }
@@ -40,7 +37,7 @@ impl M68kExecution {
     /// A launch cannot discard contexts still associated with live calls.
     pub(crate) fn can_relaunch(&self) -> bool {
         self.calls.current_task_is_running()
-            && self.parked.is_empty()
+            && !self.calls.has_parked_m68k_contexts()
             && self.calls.is_empty()
             && !self.calls.has_live_workers()
             && !self.calls.has_pending_task_handoff()
@@ -51,9 +48,7 @@ impl M68kExecution {
         if let Some(active) = self.calls.active_m68k() {
             return Some(active);
         }
-        let pending = self
-            .calls
-            .activate_m68k_parking(&mut self.parked, &mut self.cpu)?;
+        let pending = self.calls.activate_m68k_parking(&mut self.cpu)?;
         for (index, value) in pending.registers.data.into_iter().enumerate() {
             self.cpu.core.set_d(index, value);
         }
@@ -67,18 +62,15 @@ impl M68kExecution {
 
     /// Apply a completed native result to its actual caller, then restore it.
     pub(crate) fn resume_after_powerpc(&mut self, memory: &mut PpcSectionMem) -> bool {
-        let Some(parked) = self
-            .calls
-            .commit_m68k_resume(&mut self.parked, |resume, parked| {
-                let cpu = parked.unwrap_or(&mut self.cpu);
-                if !Self::apply_m68k_resume_result(cpu, memory, resume) {
-                    return false;
-                }
-                cpu.write_reg(Register::PC, resume.return_pc);
-                cpu.write_reg(Register::A7, resume.final_sp);
-                true
-            })
-        else {
+        let Some(parked) = self.calls.commit_m68k_resume(|resume, parked| {
+            let cpu = parked.unwrap_or(&mut self.cpu);
+            if !Self::apply_m68k_resume_result(cpu, memory, resume) {
+                return false;
+            }
+            cpu.write_reg(Register::PC, resume.return_pc);
+            cpu.write_reg(Register::A7, resume.final_sp);
+            true
+        }) else {
             return false;
         };
         if let Some(parked) = parked {

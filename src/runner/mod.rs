@@ -16238,14 +16238,16 @@ mod tests {
             assert!(running);
             assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 3);
             assert_eq!(
-            runner.m68k.parked.task_len(ExecutionTaskId::APPLICATION),
+            runner.dispatcher.guest_calls.m68k_context_bank().borrow().task_len(ExecutionTaskId::APPLICATION),
             1,
             "the application-owned nested 68K context must stay parked while its callback yields"
         );
             assert_eq!(
                 runner
-                    .m68k
-                    .parked
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow()
                     .task_len(ExecutionTaskId::from_thread_id(3)),
                 0,
                 "the worker must not consume the application's parked context"
@@ -16256,7 +16258,12 @@ mod tests {
             assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
             if !native_worker {
                 assert_eq!(
-                    runner.m68k.parked.task_len(ExecutionTaskId::APPLICATION),
+                    runner
+                        .dispatcher
+                        .guest_calls
+                        .m68k_context_bank()
+                        .borrow()
+                        .task_len(ExecutionTaskId::APPLICATION),
                     1,
                     "returning from the worker must leave the nested application context parked"
                 );
@@ -16268,7 +16275,12 @@ mod tests {
             }
             assert_eq!(runner.dispatcher.guest_calls.current_task().thread_id(), 2);
             assert!(runner.dispatcher.guest_calls.is_empty());
-            assert!(runner.m68k.parked.is_empty());
+            assert!(runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .is_empty());
             let ppc_app = runner.native.application().expect("PPC app retained");
             assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
             // The outer routine has a void ProcInfo, so its internal callback's
@@ -16468,17 +16480,36 @@ mod tests {
                 runner.m68k.cpu.read_reg(Register::PC),
                 runner.m68k.cpu.read_reg(Register::A7),
                 runner.dispatcher.guest_calls.len(),
-                runner.m68k.parked.len(),
+                runner.dispatcher.guest_calls.m68k_context_bank().borrow().len(),
                 runner.native.application()
                     .map_or(0, |ppc_app| ppc_app.cpu.pc),
             );
-            maximum_parked = maximum_parked.max(runner.m68k.parked.len());
-            if !runner.m68k.parked.is_empty()
+            maximum_parked = maximum_parked.max(
+                runner
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow()
+                    .len(),
+            );
+            if !runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .is_empty()
                 && runner.m68k.cpu.read_reg(Register::PC) == M68K_INNER + 6
             {
                 inner_entries += 1;
             }
-            if !checked_wrong_boundary && !runner.m68k.parked.is_empty() {
+            if !checked_wrong_boundary
+                && !runner
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow()
+                    .is_empty()
+            {
                 let frame_count = runner.dispatcher.guest_calls.len();
                 let mut native_context = runner
                     .native
@@ -16486,7 +16517,15 @@ mod tests {
                     .expect("PPC app");
                 let mut ppc_app = native_context.adapter_mut();
                 assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
-                assert_eq!(runner.m68k.parked.len(), 1);
+                assert_eq!(
+                    runner
+                        .dispatcher
+                        .guest_calls
+                        .m68k_context_bank()
+                        .borrow()
+                        .len(),
+                    1
+                );
                 assert_eq!(ppc_app.guest_calls.len(), frame_count);
                 runner
                     .native
@@ -16502,7 +16541,12 @@ mod tests {
         assert!(checked_wrong_boundary);
         assert_eq!(inner_entries, 2);
         assert_eq!(maximum_parked, 1);
-        assert!(runner.m68k.parked.is_empty());
+        assert!(runner
+            .dispatcher
+            .guest_calls
+            .m68k_context_bank()
+            .borrow()
+            .is_empty());
         assert!(runner.dispatcher.guest_calls.is_empty());
         assert_eq!(runner.m68k.cpu.core.d(6), OUTER_D6);
         let ppc_app = runner.native.application_mut().expect("PPC app retained");
@@ -17091,7 +17135,11 @@ mod tests {
             assert!(ppc_app
                 .guest_calls
                 .park_context(
-                    &mut runner.m68k.parked,
+                    &mut runner
+                        .dispatcher
+                        .guest_calls
+                        .m68k_context_bank()
+                        .borrow_mut(),
                     task,
                     call_id,
                     std::mem::take(&mut runner.m68k.cpu),
@@ -17113,7 +17161,12 @@ mod tests {
             assert_eq!(runner.m68k.cpu.read_reg(Register::PC), RETURN_PC);
             assert_eq!(runner.m68k.cpu.read_reg(Register::A7), FINAL_SP);
             assert!(ppc_app.guest_calls.is_empty());
-            assert!(runner.m68k.parked.is_empty());
+            assert!(runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .is_empty());
         }
     }
 
@@ -17169,28 +17222,64 @@ mod tests {
         assert!(ppc_app
             .guest_calls
             .park_context(
-                &mut runner.m68k.parked,
+                &mut runner
+                    .dispatcher
+                    .guest_calls
+                    .m68k_context_bank()
+                    .borrow_mut(),
                 task,
                 call_id,
                 std::mem::take(&mut runner.m68k.cpu),
             )
             .is_ok());
-        assert_eq!(runner.m68k.parked.task_len(task), 1);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            1
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
-        assert_eq!(runner.m68k.parked.task_len(task), 1);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            1
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         ppc_app.memory.add_readonly_region(RESULT, vec![0xaa; 4]);
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(0xaaaa_aaaa));
-        assert_eq!(runner.m68k.parked.task_len(task), 1);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            1
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
 
         ppc_app.memory.add_region(RESULT, vec![0; 4]);
         assert!(runner.resume_m68k_after_powerpc(&mut ppc_app));
-        assert_eq!(runner.m68k.parked.task_len(task), 0);
+        assert_eq!(
+            runner
+                .dispatcher
+                .guest_calls
+                .m68k_context_bank()
+                .borrow()
+                .task_len(task),
+            0
+        );
         assert!(ppc_app.guest_calls.peek_m68k_resume().is_none());
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(RESULT_VALUE));
         assert_eq!(runner.m68k.cpu.core.d(0), PARKED_D0);

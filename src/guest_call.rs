@@ -8,6 +8,7 @@
 //! while each adapter remains responsible for its architectural registers and
 //! ABI frame.
 
+use crate::cpu::M68kCpu;
 #[cfg(test)]
 pub(crate) use crate::execution_kernel::MAX_POWERPC_GUEST_ARGUMENTS;
 pub(crate) use crate::execution_kernel::{
@@ -392,6 +393,7 @@ struct ExecutionTaskCalls {
     kernel: ContinuationStore,
     frames: HashMap<CallId, GuestCallFrame>,
     powerpc_contexts: ExecutionContextBank<Box<PpcCpu>>,
+    m68k_contexts: Rc<RefCell<ExecutionContextBank<M68kCpu>>>,
     cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
     native_threads: ExecutionTaskContextBank<NativeThreadContext>,
     thread_storage: ExecutionTaskContextBank<ThreadStorage>,
@@ -402,10 +404,15 @@ struct ExecutionTaskCalls {
 
 impl Clone for ExecutionTaskCalls {
     fn clone(&self) -> Self {
+        assert!(
+            self.m68k_contexts.borrow().is_empty(),
+            "cannot clone an execution owner while a non-cloneable 68K engine is parked"
+        );
         Self {
             kernel: self.kernel.clone(),
             frames: self.frames.clone(),
             powerpc_contexts: self.powerpc_contexts.clone(),
+            m68k_contexts: Rc::new(RefCell::new(ExecutionContextBank::default())),
             cooperative_contexts: self.cooperative_contexts.clone(),
             native_threads: self.native_threads.clone(),
             thread_storage: self.thread_storage.clone(),
@@ -421,6 +428,10 @@ impl PartialEq for ExecutionTaskCalls {
         self.kernel == other.kernel
             && self.frames == other.frames
             && self.powerpc_contexts.same_slots(&other.powerpc_contexts)
+            && self
+                .m68k_contexts
+                .borrow()
+                .same_slots(&other.m68k_contexts.borrow())
             && self.cooperative_contexts == other.cooperative_contexts
             && self.native_threads.same_tasks(&other.native_threads)
             && self.thread_storage == other.thread_storage
@@ -445,6 +456,7 @@ impl Default for ExecutionTaskCalls {
             kernel: ContinuationStore::default(),
             frames: HashMap::new(),
             powerpc_contexts: ExecutionContextBank::default(),
+            m68k_contexts: Rc::new(RefCell::new(ExecutionContextBank::default())),
             cooperative_contexts: ExecutionTaskContextBank::default(),
             native_threads: ExecutionTaskContextBank::default(),
             thread_storage: ExecutionTaskContextBank::default(),
@@ -667,6 +679,7 @@ impl ExecutionTaskCalls {
 
     fn is_pristine(&self) -> bool {
         self.kernel.is_pristine()
+            && self.m68k_contexts.borrow().is_empty()
             && self.cooperative_contexts.is_empty()
             && self.native_threads.is_empty()
             && self.thread_storage.is_empty()
@@ -681,7 +694,8 @@ impl ExecutionTaskCalls {
 /// Both CPU adapters share this owner, but every Thread Manager task has an
 /// independent LIFO stack. Switching tasks changes which stack subsequent
 /// Mixed Mode operations address; it cannot expose another task's suspended
-/// call. Ordinary `Clone` still creates an independent process snapshot.
+/// call. Ordinary `Clone` creates an independent process snapshot only when
+/// no non-cloneable 68K engine is parked; `shared_handle` preserves custody.
 #[derive(Debug, Default)]
 pub(crate) struct SharedGuestCallStack(Rc<RefCell<ExecutionTaskCalls>>);
 
@@ -737,6 +751,22 @@ impl SharedGuestCallStack {
     /// parked contexts with the same cooperative task.  The task owner itself
     /// remains process-wide; this is a view of its current cursor, not a second
     /// owner.  Inside Macintosh: Processes (1994), pp. 4-4--4-6.
+    /// Borrowing this process-owned bank never spans guest execution. Each
+    /// transition selects the bank from its execution owner instead of keeping
+    /// a separate bank handle on the CPU adapter.
+    fn classic_contexts(&self) -> Rc<RefCell<ExecutionContextBank<M68kCpu>>> {
+        Rc::clone(&self.0.borrow().m68k_contexts)
+    }
+
+    pub(crate) fn has_parked_m68k_contexts(&self) -> bool {
+        !self.classic_contexts().borrow().is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn m68k_context_bank(&self) -> Rc<RefCell<ExecutionContextBank<M68kCpu>>> {
+        self.classic_contexts()
+    }
+
     pub(crate) fn current_task(&self) -> ExecutionTaskId {
         self.0.borrow().kernel.current_task()
     }
@@ -1598,11 +1628,12 @@ impl SharedGuestCallStack {
     /// Commit the ABI result and restore the exact caller under one validated
     /// retirement boundary. The adapter closure must leave state unchanged
     /// when it rejects a result and must not execute guest code.
-    pub(crate) fn commit_m68k_resume<T>(
+    pub(crate) fn commit_m68k_resume(
         &self,
-        bank: &mut ExecutionContextBank<T>,
-        apply: impl FnOnce(M68kResume, Option<&mut T>) -> bool,
-    ) -> Option<Option<T>> {
+        apply: impl FnOnce(M68kResume, Option<&mut M68kCpu>) -> bool,
+    ) -> Option<Option<M68kCpu>> {
+        let bank = self.classic_contexts();
+        let mut bank = bank.borrow_mut();
         let resume = self.peek_m68k_resume()?;
         let (task, call_id) = self.pending_m68k_resume_owner()?;
         let mut tasks = self.0.borrow_mut();
@@ -1634,13 +1665,14 @@ impl SharedGuestCallStack {
         self.activate_m68k_in_bank(&mut ExecutionContextBank::<()>::default(), &mut (), None)
     }
 
-    pub(crate) fn activate_m68k_parking<T: Default>(
+    pub(crate) fn activate_m68k_parking(
         &self,
-        bank: &mut ExecutionContextBank<T>,
-        installed: &mut T,
+        installed: &mut M68kCpu,
     ) -> Option<PendingM68kExecution> {
         let caller = self.suspended_m68k_context_owner().map(|(_, call)| call);
-        self.activate_m68k_in_bank(bank, installed, caller)
+        let bank = self.classic_contexts();
+        let pending = self.activate_m68k_in_bank(&mut bank.borrow_mut(), installed, caller);
+        pending
     }
 
     fn activate_m68k_in_bank<T: Default>(
@@ -1938,6 +1970,51 @@ mod tests {
         )
         .into_ppc_import_action()
         .expect("native PowerPC request should adapt to CallNative")
+    }
+
+    #[test]
+    fn classic_parked_engines_follow_the_process_owner_and_refuse_snapshot_duplication() {
+        let calls = SharedGuestCallStack::default();
+        assert!(calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0
+            },
+            0x2000,
+            0x3000
+        ));
+        let (call, _) = calls.top_frame().unwrap();
+        let bank = calls.m68k_context_bank();
+        let mut cpu = M68kCpu::new();
+        cpu.core.set_a(7, 0x7654);
+        cpu.core.set_d(6, 0xabcdef);
+        assert!(calls
+            .park_context(
+                &mut bank.borrow_mut(),
+                ExecutionTaskId::APPLICATION,
+                call,
+                cpu
+            )
+            .is_ok());
+        let shared = calls.shared_handle();
+        assert!(Rc::ptr_eq(&bank, &shared.m68k_context_bank()));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| calls.clone())).is_err());
+        assert!(bank.borrow().contains(ExecutionTaskId::APPLICATION, call));
+        let mut adopting = SharedGuestCallStack::default();
+        adopting.attach_to(&calls);
+        assert!(Rc::ptr_eq(&bank, &adopting.m68k_context_bank()));
+        assert!(!adopting.is_pristine());
+        let restored = bank
+            .borrow_mut()
+            .take(&calls.0.borrow().kernel, ExecutionTaskId::APPLICATION, call)
+            .unwrap();
+        assert_eq!(restored.core.a(7), 0x7654);
+        assert_eq!(restored.core.d(6), 0xabcdef);
+        assert!(adopting.m68k_context_bank().borrow().is_empty());
+        let snapshot = calls.clone();
+        assert!(!Rc::ptr_eq(&bank, &snapshot.m68k_context_bank()));
+        assert_eq!(calls, snapshot);
     }
 
     #[test]
