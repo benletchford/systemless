@@ -112,3 +112,13 @@ tempfile = "3"
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# Execute emulator-heavy integration tests efficiently without production LTO
+# costs or dropping the runtime checks exercised by ordinary debug tests.
+[profile.ci-test]
+inherits = "dev"
+opt-level = 2
+debug = "line-tables-only"
+debug-assertions = true
+overflow-checks = true
+incremental = false
