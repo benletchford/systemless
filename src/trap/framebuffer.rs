@@ -108,6 +108,55 @@ pub(crate) struct MenuMarkIndexCache {
     pub(crate) indices: [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()],
 }
 
+/// Which piece of themed chrome a cached rendering is, with the inputs its
+/// artwork depends on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ThemeChromeKind {
+    DialogFrame {
+        content: (i16, i16, i16, i16),
+        frame: (i16, i16, i16, i16),
+        proc_id: i16,
+        active: bool,
+        fill_content: bool,
+    },
+    MenuBar {
+        width: i16,
+        height: i16,
+    },
+    MenuTitle {
+        rect: (i16, i16, i16, i16),
+        enabled: bool,
+        highlighted: bool,
+    },
+}
+
+/// Themed chrome rendered earlier, as device pixel indices, keyed by
+/// everything the rendering depends on. The chrome redraw runs every host
+/// frame and its pieces rarely change between frames, so replaying resolved
+/// pixels replaces rendering a bitmap, resolving its colours through the
+/// device table and scanning every pixel again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ThemeChromeCacheKey {
+    pub(crate) kind: ThemeChromeKind,
+    pub(crate) theme: crate::ui_theme::UiThemeId,
+    /// Screen geometry and depth, and the main device colour table's pointer
+    /// and seed: colour resolution depends on all of them.
+    pub(crate) screen: (u32, u32, i16, i16, u16),
+    pub(crate) ctab: Option<(u32, u32)>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ThemeChromeCacheEntry {
+    pub(crate) key: ThemeChromeCacheKey,
+    /// Pixels as (x, y, device index), in blit order; only the opaque ones
+    /// for masked artwork.
+    pub(crate) pixels: Vec<(i16, i16, u8)>,
+}
+
+/// Enough entries for a menu bar, its titles and a dialog frame; the
+/// least recently used entry is evicted beyond that.
+const THEME_CHROME_CACHE_ENTRIES: usize = 24;
+
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
     /// Returns (screen_base, row_bytes, width, height, pixel_size).
@@ -240,6 +289,16 @@ impl super::TrapDispatcher {
         if screen_width <= 0 || height <= 0 {
             return true;
         }
+        let key = self.theme_chrome_key(
+            bus,
+            ThemeChromeKind::MenuBar {
+                width: screen_width,
+                height,
+            },
+        );
+        if self.replay_theme_chrome(bus, &key) {
+            return true;
+        }
 
         let theme = self.ui_theme();
         let palette = theme.palette();
@@ -260,7 +319,9 @@ impl super::TrapDispatcher {
                 },
             },
         );
-        self.blit_theme_bitmap_mono(bus, 0, 0, &bitmap);
+        let pixels = self.resolve_theme_bitmap_pixels(bus, 0, 0, &bitmap, false);
+        self.blit_theme_pixels(bus, &pixels);
+        self.remember_theme_chrome(key, pixels);
         true
     }
 
@@ -283,6 +344,17 @@ impl super::TrapDispatcher {
         if width <= 0 || height <= 0 {
             return true;
         }
+        let key = self.theme_chrome_key(
+            bus,
+            ThemeChromeKind::MenuTitle {
+                rect: (top, left, bottom, right),
+                enabled,
+                highlighted,
+            },
+        );
+        if self.replay_theme_chrome(bus, &key) {
+            return true;
+        }
 
         let theme = self.ui_theme();
         let palette = theme.palette();
@@ -301,7 +373,9 @@ impl super::TrapDispatcher {
                 highlighted,
             },
         );
-        self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
+        let pixels = self.resolve_theme_bitmap_pixels(bus, top, left, &bitmap, false);
+        self.blit_theme_pixels(bus, &pixels);
+        self.remember_theme_chrome(key, pixels);
         true
     }
 
@@ -538,6 +612,20 @@ impl super::TrapDispatcher {
             self.erase_structure_frame_around_content(bus, frame, content);
         }
 
+        let key = self.theme_chrome_key(
+            bus,
+            ThemeChromeKind::DialogFrame {
+                content,
+                frame,
+                proc_id,
+                active,
+                fill_content,
+            },
+        );
+        if self.replay_theme_chrome(bus, &key) {
+            return true;
+        }
+
         let (content_top, content_left, content_bottom, content_right) = content;
         let theme = self.ui_theme();
         let palette = theme.palette();
@@ -563,12 +651,97 @@ impl super::TrapDispatcher {
                 fill_content,
             },
         );
-        if fill_content {
-            self.blit_theme_bitmap_mono(bus, frame_top, frame_left, &bitmap);
-        } else {
-            self.blit_theme_bitmap_mono_masked(bus, frame_top, frame_left, &bitmap);
-        }
+        let pixels = self.resolve_theme_bitmap_pixels(bus, frame_top, frame_left, &bitmap, !fill_content);
+        self.blit_theme_pixels(bus, &pixels);
+        self.remember_theme_chrome(key, pixels);
         true
+    }
+
+    fn theme_chrome_key(&self, bus: &MacMemoryBus, kind: ThemeChromeKind) -> ThemeChromeCacheKey {
+        ThemeChromeCacheKey {
+            kind,
+            theme: self.ui_theme_id(),
+            screen: self.get_screen_params(),
+            ctab: Self::main_gdevice_ctab(bus).map(|ctab| (ctab, bus.read_long(ctab))),
+        }
+    }
+
+    /// Blit the cached rendering for `key`, if there is one, and report so.
+    fn replay_theme_chrome(&self, bus: &mut MacMemoryBus, key: &ThemeChromeCacheKey) -> bool {
+        let mut cache = self.theme_chrome_cache.borrow_mut();
+        let Some(index) = cache.iter().position(|entry| entry.key == *key) else {
+            return false;
+        };
+        // Most recently used last, so eviction takes the front.
+        let entry = cache.remove(index);
+        self.blit_theme_pixels(bus, &entry.pixels);
+        cache.push(entry);
+        true
+    }
+
+    fn remember_theme_chrome(&self, key: ThemeChromeCacheKey, pixels: Vec<(i16, i16, u8)>) {
+        let mut cache = self.theme_chrome_cache.borrow_mut();
+        if cache.len() >= THEME_CHROME_CACHE_ENTRIES {
+            cache.remove(0);
+        }
+        cache.push(ThemeChromeCacheEntry { key, pixels });
+    }
+
+    /// Resolve a theme bitmap to (x, y, device index) triples, skipping the
+    /// window-background colour when `masked`. Colours are resolved once
+    /// each through the device table.
+    fn resolve_theme_bitmap_pixels(
+        &self,
+        bus: &MacMemoryBus,
+        top: i16,
+        left: i16,
+        bitmap: &ThemeBitmap,
+        masked: bool,
+    ) -> Vec<(i16, i16, u8)> {
+        let rgba = bitmap.rgba();
+        let transparent = self.ui_theme().palette().window_background;
+        let mut indices = HashMap::new();
+        let mut pixels = Vec::new();
+        for y in 0..bitmap.height() {
+            for x in 0..bitmap.width() {
+                let offset = ((y * bitmap.width() + x) * 4) as usize;
+                let color = Rgb8 {
+                    r: rgba[offset],
+                    g: rgba[offset + 1],
+                    b: rgba[offset + 2],
+                };
+                if masked && color == transparent {
+                    continue;
+                }
+                let pixel = *indices
+                    .entry((color.r, color.g, color.b))
+                    .or_insert_with(|| self.theme_pixel_index(bus, color));
+                pixels.push((
+                    left.saturating_add(x as i16),
+                    top.saturating_add(y as i16),
+                    pixel,
+                ));
+            }
+        }
+        pixels
+    }
+
+    fn blit_theme_pixels(&self, bus: &mut MacMemoryBus, pixels: &[(i16, i16, u8)]) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        for &(x, y, pixel) in pixels {
+            Self::fb_set_pixel_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                pixel,
+            );
+        }
     }
 
     fn blit_theme_bitmap_mono(
@@ -5955,6 +6128,63 @@ mod redraw_chrome_tests {
             let mirrored = disp.with_color_mirror(&bus, |mirror| mirror.pixel_index_for_rgb(rgb));
             assert_eq!(mirrored, scanned, "device-table probe {rgb:04X?}");
         }
+    }
+
+    #[test]
+    fn themed_dialog_frame_replays_cached_pixels_identically() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut disp = TrapDispatcher::new();
+        disp.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+        let width = 64u32;
+        let height = 48u32;
+        let base = bus.alloc(width * height);
+        disp.set_screen_mode_for_test(base, width, width as u16, height as u16, 8);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main); // MainDevice
+        let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
+        let content = (12i16, 10i16, 40i16, 54i16);
+        let frame = (content.0 - 8, content.1 - 8, content.2 + 3, content.3 + 8);
+        let screen =
+            |bus: &crate::memory::MacMemoryBus| bus.read_bytes(base, (width * height) as usize);
+
+        assert!(
+            disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, true, false),
+            "the default theme draws the frame"
+        );
+        let rendered = screen(&bus);
+        let cached = disp
+            .theme_chrome_cache
+            .borrow()
+            .last()
+            .map(|entry| entry.pixels.len())
+            .expect("the rendered frame is cached");
+        assert!(cached > 0 && (cached as u32) < width * height, "only opaque pixels are kept");
+
+        // Same inputs: replayed from the cache onto a cleared screen, pixel
+        // for pixel.
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, true, false));
+        assert_eq!(screen(&bus), rendered);
+
+        // A new colour-table seed is a different key: rendered afresh, same pixels.
+        let seed = bus.read_long(ctab);
+        bus.write_long(ctab, seed.wrapping_add(1));
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, true, false));
+        assert_eq!(screen(&bus), rendered);
+        assert_eq!(
+            disp.theme_chrome_cache.borrow().last().map(|entry| entry.key.ctab),
+            Some(Some((ctab, seed.wrapping_add(1))))
+        );
+
+        // A different frame state is not served from the active one's cache:
+        // the cache now describes the inactive frame.
+        assert!(disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, false, false));
+        assert!(matches!(
+            disp.theme_chrome_cache.borrow().last().map(|entry| &entry.key.kind),
+            Some(super::ThemeChromeKind::DialogFrame { active: false, .. })
+        ));
+        assert_eq!(disp.theme_chrome_cache.borrow().len(), 3, "three distinct renderings are kept");
     }
 
     #[test]

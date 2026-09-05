@@ -2152,6 +2152,9 @@ pub struct TrapDispatcher {
     pub(crate) color_mirror: std::cell::RefCell<super::framebuffer::ColorTableMirror>,
     /// Set for the duration of a chrome pass, whose lookups reuse the mirror.
     pub(crate) color_mirror_fresh: std::cell::Cell<bool>,
+    /// Themed chrome rendered earlier, replayed while its inputs hold; see
+    /// `ThemeChromeCacheEntry`.
+    pub(crate) theme_chrome_cache: std::cell::RefCell<Vec<super::framebuffer::ThemeChromeCacheEntry>>,
     /// Color tables produced from palettes whose entries are all pmExplicit.
     /// Their pixel values are literal device indices, so indexed CopyBits
     /// must preserve those values instead of color-matching duplicate RGBs.
@@ -3702,6 +3705,7 @@ impl TrapDispatcher {
             menu_mark_indices: std::cell::Cell::new(None),
             color_mirror: std::cell::RefCell::new(Default::default()),
             color_mirror_fresh: std::cell::Cell::new(false),
+            theme_chrome_cache: std::cell::RefCell::new(Vec::new()),
             explicit_palette_ctabs: HashSet::new(),
             icon_transform_override: 0,
             printing_error: 0,
