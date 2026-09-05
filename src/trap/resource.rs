@@ -2674,9 +2674,8 @@ impl super::TrapDispatcher {
                 let pc = cpu.read_reg(Register::PC); // past A9F0
                 let a9f0_addr = pc.wrapping_sub(2);
 
-                let is_loadseg_trampoline = self
-                    .trap_gateways
-                    .get(0xA9F0)
+                let is_loadseg_trampoline = bus
+                    .system_trap_gateway(0xA9F0)
                     .is_some_and(|addr| addr == a9f0_addr);
 
                 let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
