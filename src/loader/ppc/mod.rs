@@ -27,8 +27,8 @@ use crate::event_queue::{
     EventProbeResult, EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
 };
 use crate::guest_call::{
-    format_ppc_import_action, GuestCallContinuation, GuestCallEffect, GuestCallRequest,
-    GuestCallTarget, SharedGuestCallStack,
+    format_ppc_import_action, install_powerpc_call_arguments, GuestCallContinuation,
+    GuestCallEffect, GuestCallRequest, GuestCallTarget, SharedGuestCallStack,
 };
 use crate::guest_procedure::{
     resolve_guest_procedure, GuestIsa, GuestProcedure,
@@ -4213,7 +4213,7 @@ impl PpcLoadedApp {
         self.cpu.pc = pending.target.entry;
         self.cpu.lr = PPC_GUEST_CALL_RETURN_PC;
         self.cpu.gpr[2] = pending.target.rtoc;
-        ppc_install_native_call_arguments(
+        install_powerpc_call_arguments(
             &mut self.cpu,
             &mut self.memory,
             pending.arguments.as_slice(),
@@ -7009,7 +7009,7 @@ impl PpcLoadedApp {
                 self.memory.write_u32_be(command_ptr + 4, command.param2)?;
                 Some(command_ptr)
             });
-            let _ = ppc_install_native_call_arguments(
+            let _ = install_powerpc_call_arguments(
                 &mut self.cpu,
                 &mut self.memory,
                 &[completion.channel, command_ptr.unwrap_or(0)],
@@ -7173,7 +7173,7 @@ impl PpcLoadedApp {
             // Inside Macintosh: Processes (1994), pp. 3-21--3-22: the Time
             // Manager passes the expired TMTask record to its callback. Mixed
             // Mode marshals that pointer into the native PowerPC argument area.
-            let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
+            let _ = install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
             self.run_with_hle_imports_with_trace(
                 max_cycles,
                 trace_imports,
@@ -7334,7 +7334,7 @@ impl PpcLoadedApp {
             // reset vblCount. Inside Macintosh: PowerPC System Software (1994),
             // pp. 2-32–2-33 documents the register-based routine convention that
             // Mixed Mode uses to marshal that four-byte A0 parameter to native PPC.
-            let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
+            let _ = install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
             self.run_with_hle_imports_with_trace(
                 max_cycles,
                 trace_imports,
@@ -7417,7 +7417,7 @@ impl PpcLoadedApp {
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
             self.cpu.gpr[2] = target.rtoc;
-            let _ = ppc_install_native_call_arguments(
+            let _ = install_powerpc_call_arguments(
                 &mut self.cpu,
                 &mut self.memory,
                 &[doubleback.channel, doubleback.exhausted_buffer],
@@ -31697,7 +31697,7 @@ fn ppc_qsort_compare_next(
         .base
         .checked_add(state.index.checked_mul(state.width)?)?;
     let right = left.checked_add(state.width)?;
-    ppc_install_native_call_arguments(cpu, memory, &[left, right])?;
+    install_powerpc_call_arguments(cpu, memory, &[left, right])?;
     GuestCallEffect::call_guest(
         GuestCallRequest::new(GuestCallTarget {
             isa: GuestIsa::PowerPc,
@@ -44772,32 +44772,6 @@ fn ppc_parameter_area_slot_addr(sp: u32, slot: usize) -> Option<u32> {
     sp.checked_add(offset)
 }
 
-fn ppc_install_native_call_arguments(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    args: &[u32],
-) -> Option<()> {
-    for index in 0..PPC_NATIVE_PARAMETER_GPR_COUNT {
-        cpu.gpr[3 + index] = 0;
-    }
-    for (index, value) in args.iter().copied().enumerate() {
-        if index < PPC_NATIVE_PARAMETER_GPR_COUNT {
-            cpu.gpr[3 + index] = value;
-        }
-    }
-    let parameter_slots = args.len().max(PPC_NATIVE_PARAMETER_GPR_COUNT);
-    for index in 0..parameter_slots {
-        let value = if index < PPC_NATIVE_PARAMETER_GPR_COUNT {
-            cpu.gpr[3 + index]
-        } else {
-            args[index]
-        };
-        let addr = ppc_parameter_area_slot_addr(cpu.gpr[1], index)?;
-        memory.write_u32_be(addr, value)?;
-    }
-    Some(())
-}
-
 fn ppc_install_legacy_call_universal_proc_arguments(cpu: &mut PpcCpu) {
     for index in 0..PPC_CALL_UNIVERSAL_PROC_REGISTER_VARARGS {
         cpu.gpr[3 + index] = cpu.gpr[5 + index];
@@ -45090,7 +45064,7 @@ fn ppc_call_universal_proc(
                     {
                         args.remove(0);
                     }
-                    ppc_install_native_call_arguments(cpu, memory, &args)?
+                    install_powerpc_call_arguments(cpu, memory, &args)?
                 }
                 None => ppc_install_legacy_call_universal_proc_arguments(cpu),
             }
@@ -64563,7 +64537,7 @@ fn ppc_process_apple_event(
         || reply_handle == 0
         || !ppc_write_ae_desc(memory, descriptors, PPC_CORE_EVENT_CLASS, event_handle)
         || !ppc_write_ae_desc(memory, descriptors + 8, PPC_CORE_EVENT_CLASS, reply_handle)
-        || ppc_install_native_call_arguments(
+        || install_powerpc_call_arguments(
             cpu,
             memory,
             &[descriptors, descriptors + 8, handler.refcon],
@@ -68267,7 +68241,7 @@ fn ppc_next_dialog_callback(
         let dialog = state.dialog;
         let restore_rtoc = state.restore_rtoc;
         state.next_callback += 1;
-        if ppc_install_native_call_arguments(cpu, memory, &[dialog, item_number]).is_none() {
+        if install_powerpc_call_arguments(cpu, memory, &[dialog, item_number]).is_none() {
             continue;
         }
         return GuestCallEffect::call_guest(
@@ -69634,7 +69608,7 @@ fn ppc_dispatch_legacy_control(
             let restore_rtoc = cpu.gpr[2];
             let final_pc = cpu.lr;
             let target = ppc_resolve_callback_target(memory, action_proc, restore_rtoc, None)?;
-            ppc_install_native_call_arguments(cpu, memory, &[cpu.gpr[3], part as u16 as u32])?;
+            install_powerpc_call_arguments(cpu, memory, &[cpu.gpr[3], part as u16 as u32])?;
             Some(
                 GuestCallEffect::call_guest(
                     GuestCallRequest::new(GuestCallTarget {
@@ -72561,7 +72535,7 @@ fn ppc_dm_get_indexed_display_mode_values(
     let restore_rtoc = cpu.gpr[2];
     let final_pc = cpu.lr;
     let target = ppc_resolve_callback_target(memory, callback, restore_rtoc, None)?;
-    ppc_install_native_call_arguments(
+    install_powerpc_call_arguments(
         cpu,
         memory,
         &[user_data, item_index, list + PPC_DM_MODE_LIST_ENTRY_OFFSET],
@@ -76467,7 +76441,7 @@ fn ppc_dispatch_native_menu_definition_with_return(
     let call = invocation.call(scratch);
     match target.isa {
         GuestIsa::PowerPc => {
-            ppc_install_native_call_arguments(cpu, memory, &call.native_arguments())?;
+            install_powerpc_call_arguments(cpu, memory, &call.native_arguments())?;
             Some(
                 GuestCallEffect::call_guest(
                     GuestCallRequest::new(GuestCallTarget {
@@ -84901,7 +84875,7 @@ fn ppc_standard_file_filter_next_action(
     } else {
         vec![state.filter_pb]
     };
-    ppc_install_native_call_arguments(cpu, memory, &arguments)?;
+    install_powerpc_call_arguments(cpu, memory, &arguments)?;
     Some(
         GuestCallEffect::call_guest(
             GuestCallRequest::new(GuestCallTarget {
@@ -91048,7 +91022,7 @@ fn ppc_begin_native_exception(
     cpu.lr = PPC_HALT_PC;
     cpu.gpr[1] = callback_sp;
     cpu.gpr[2] = rtoc;
-    ppc_install_native_call_arguments(cpu, memory, &[information])?;
+    install_powerpc_call_arguments(cpu, memory, &[information])?;
 
     Some(PpcNativeExceptionContext {
         cause,
@@ -110011,6 +109985,98 @@ pub(crate) mod tests {
             Some((first + second).to_bits())
         );
         assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), first + second);
+    }
+
+    #[test]
+    fn native_arguments_refuse_without_partial_register_or_stack_writes() {
+        for failure in 0..5 {
+            let mut cpu = PpcCpu::new();
+            cpu.gpr.fill(0xfeed_beef);
+            cpu.gpr[1] = match failure {
+                3 => u32::MAX - 8,
+                4 => u32::MAX - 39,
+                _ => 0x8000,
+            };
+            cpu.pc = 0x1234;
+            cpu.lr = 0x5678;
+            let mut memory = PpcSectionMem::new();
+            memory.add_region(0x8018, vec![0xa5; 32]);
+            match failure {
+                1 => memory.add_readonly_region(0x8038, vec![0xa5; 4]),
+                2 => {
+                    memory.add_region(0x8038, vec![0xa5; 4]);
+                    memory.add_readonly_region(0x803a, vec![0xa5; 1]);
+                }
+                _ => {}
+            }
+            let registers = cpu.gpr;
+            let arguments = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+            assert!(install_powerpc_call_arguments(&mut cpu, &mut memory, &arguments).is_none());
+            assert_eq!(cpu.gpr, registers, "failure {failure}");
+            assert_eq!((cpu.pc, cpu.lr), (0x1234, 0x5678));
+            for offset in 0..32 {
+                assert_eq!(memory.read_u8(0x8018 + offset), Some(0xa5));
+            }
+
+            // Retry across independently mapped words, including a spilled argument.
+            let mut memory = PpcSectionMem::new();
+            for slot in 0..9 {
+                memory.add_region(0x8018 + slot * 4, vec![0xa5; 4]);
+            }
+            cpu.gpr[1] = 0x8000;
+            assert!(install_powerpc_call_arguments(&mut cpu, &mut memory, &arguments).is_some());
+            assert_eq!(&cpu.gpr[3..11], &arguments[..8]);
+            for (slot, value) in arguments.iter().enumerate() {
+                assert_eq!(memory.read_u32_be(0x8018 + slot as u32 * 4), Some(*value));
+            }
+            assert_eq!((cpu.pc, cpu.lr), (0x1234, 0x5678));
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_call_universal_proc_preserves_arguments_on_stack_refusal() {
+        for traced in [false, true] {
+            let pef = synthetic_pef_with_import(b"CallUniversalProc");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let descriptor = PPC_HEAP_BASE + 0x1000;
+            let callback_rtoc = PPC_HEAP_BASE + 0x3000;
+            let proc_info = test_stack_proc_info(PPC_PROCINFO_SIZE_FOUR, &[PPC_PROCINFO_SIZE_FOUR]);
+            install_test_powerpc_callback(
+                &mut loaded,
+                descriptor,
+                descriptor + 0x80,
+                PPC_HEAP_BASE + 0x2000,
+                callback_rtoc,
+                proc_info,
+                &[d_form_u(36, 3, 2, 0), BLR],
+            );
+            let start_pc = loaded.cpu.pc;
+            let sp = loaded.cpu.gpr[1];
+            loaded.memory.write_bytes(sp + 24, &[0xa5; 32]).unwrap();
+            loaded.memory.add_readonly_region(sp + 52, vec![0xa5; 4]);
+            loaded.cpu.gpr[3] = descriptor;
+            loaded.cpu.gpr[4] = proc_info;
+            loaded.cpu.gpr[5] = 0x1234_5678;
+            let registers = loaded.cpu.gpr[3..11].to_vec();
+            let calls = loaded.guest_calls.clone();
+            let probe = loaded.run_with_hle_imports_with_trace(64, traced, false, None, None);
+            assert_eq!(probe.unsupported_import_index, Some(0));
+            assert_eq!(&loaded.cpu.gpr[3..11], registers.as_slice());
+            assert_eq!(loaded.guest_calls, calls);
+            for offset in 0..32 {
+                assert_eq!(loaded.memory.read_u8(sp + 24 + offset), Some(0xa5));
+            }
+            assert_eq!(loaded.memory.read_u32_be(callback_rtoc), Some(0));
+
+            // The same import and arguments can run after moving to a writable frame.
+            loaded.cpu.pc = start_pc;
+            loaded.cpu.gpr[1] = PPC_HEAP_BASE + 0x4000;
+            let probe = loaded.run_with_hle_imports_with_trace(64, traced, false, None, None);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+            assert_eq!(loaded.memory.read_u32_be(callback_rtoc), Some(0x1234_5678));
+            assert!(loaded.guest_calls.is_empty());
+        }
     }
 
     #[test]
