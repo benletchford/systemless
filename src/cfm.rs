@@ -1,6 +1,27 @@
 //! Semantic resumption of one CFM load across guest initialization.
 //! Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18, 3-27.
 
+use crate::execution_kernel::GuestProcedureInvocation;
+use crate::guest_procedure::{
+    GuestIsa, GuestProcedure, GuestProcedureMemory, GuestProcedureRepresentation,
+};
+
+/// Mapping-aware reads and one atomic publication boundary for a resource call.
+pub(crate) trait CfmResourceMemory: GuestProcedureMemory {
+    fn publish_resource_record(&mut self, writes: &[(u32, &[u8])]) -> bool;
+}
+
+fn resource_bytes<const N: usize>(
+    memory: &mut impl GuestProcedureMemory,
+    address: u32,
+) -> Option<[u8; N]> {
+    let mut bytes = [0; N];
+    for (offset, byte) in bytes.iter_mut().enumerate() {
+        *byte = memory.procedure_read_u8(address.checked_add(u32::try_from(offset).ok()?)?)?;
+    }
+    Some(bytes)
+}
+
 /// A selected resource routine whose fragment must be prepared before it is callable.
 /// PowerPC System Software (1994), pp. 2-27–2-28 and 2-36.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,21 +82,41 @@ impl CfmResourceCall {
         self,
         initializer_result: u32,
         connections: &mut Vec<CfmConnection>,
-        record: Option<[u8; 20]>,
-        write_outputs: impl FnOnce(&[(u32, &[u8])]) -> bool,
-    ) -> Result<Self, CfmLoadError> {
+        memory: &mut impl CfmResourceMemory,
+    ) -> Result<GuestProcedureInvocation, CfmLoadError> {
         let request = self.preparation;
         let result = (|| {
             if initializer_result != 0 {
                 return Err(CfmLoadError::InitializationFailed);
             }
+            // Resource code becomes callable only after successful preparation.
+            // PowerPC System Software (1994), pp. 2-27–2-28 and 2-36.
+            self.main_address
+                .checked_add(7)
+                .ok_or(CfmLoadError::CorruptFragment)?;
+            let entry = memory
+                .procedure_read_u32(self.main_address)
+                .filter(|entry| *entry != 0)
+                .ok_or(CfmLoadError::CorruptFragment)?;
+            let rtoc = memory
+                .procedure_read_u32(self.main_address + 4)
+                .ok_or(CfmLoadError::CorruptFragment)?;
+            memory
+                .procedure_read_u32(entry)
+                .ok_or(CfmLoadError::CorruptFragment)?;
             if !connections
                 .iter()
                 .any(|connection| connection.id == self.id.0)
             {
                 return Err(CfmLoadError::ConnectionNotFound);
             }
-            let record = record.ok_or(CfmLoadError::InvalidOutputs)?;
+            let header = resource_bytes::<12>(memory, request.descriptor)
+                .ok_or(CfmLoadError::InvalidOutputs)?;
+            if header != self.descriptor_header {
+                return Err(CfmLoadError::DescriptorChanged);
+            }
+            let record =
+                resource_bytes::<20>(memory, request.record).ok_or(CfmLoadError::InvalidOutputs)?;
             if record != self.original_record
                 || record[5] != 1
                 || u32::from_be_bytes(record[0..4].try_into().unwrap()) != request.proc_info
@@ -97,10 +138,27 @@ impl CfmResourceCall {
                 .record
                 .checked_add(8)
                 .ok_or(CfmLoadError::InvalidOutputs)?;
-            if !write_outputs(&[(flags_address, &flags), (target_address, &target)]) {
+            if !memory
+                .publish_resource_record(&[(flags_address, &flags), (target_address, &target)])
+            {
                 return Err(CfmLoadError::InvalidOutputs);
             }
-            Ok(self)
+            Ok(GuestProcedureInvocation {
+                task: self.task,
+                procedure: GuestProcedure {
+                    original_pointer: self.main_address,
+                    representation: GuestProcedureRepresentation::PowerPcTransitionVector {
+                        address: self.main_address,
+                    },
+                    isa: GuestIsa::PowerPc,
+                    entry,
+                    rtoc,
+                    proc_info: request.proc_info,
+                    routine_flags: request.routine_flags & !3,
+                },
+                arguments: self.arguments,
+                caller_proc_info: self.caller_proc_info,
+            })
         })();
         if result.is_err() {
             connections.retain(|connection| connection.id != self.id.0);
@@ -152,6 +210,7 @@ pub(crate) enum CfmLoadError {
     ConnectionNotFound,
     InvalidOutputs,
     DescriptorChanged,
+    CorruptFragment,
 }
 
 impl CfmLoadError {
@@ -160,7 +219,7 @@ impl CfmLoadError {
             Self::InitializationFailed => -2821,
             Self::ConnectionNotFound => -2801,
             Self::InvalidOutputs => -50,
-            Self::DescriptorChanged => -2820,
+            Self::DescriptorChanged | Self::CorruptFragment => -2820,
         }
     }
 }
@@ -323,66 +382,176 @@ mod tests {
 
     #[test]
     fn prepared_resource_publication_is_atomic_and_rejects_changed_records_in_both_views() {
-        for classic in [false, true] {
-            for fault in 0..4 {
+        use crate::execution_kernel::{ExecutionTaskId, GuestArgumentValues};
+
+        const VECTOR: u32 = OUTPUT + 0x200;
+        const ENTRY: u32 = OUTPUT + 0x300;
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Fault {
+            None,
+            ProtectedOutput,
+            ChangedRecord,
+            InitializerFailed,
+            ChangedHeader,
+            ShortHeader,
+            ShortRecord,
+            ShortVector,
+            ZeroEntry,
+            MissingEntry,
+            WrappingVector,
+            ShortEntry,
+            MissingConnection,
+            WrappingDescriptor,
+            WrappingRecord,
+        }
+        for fault in [
+            Fault::None,
+            Fault::ProtectedOutput,
+            Fault::ChangedRecord,
+            Fault::InitializerFailed,
+            Fault::ChangedHeader,
+            Fault::ShortHeader,
+            Fault::ShortRecord,
+            Fault::ShortVector,
+            Fault::ZeroEntry,
+            Fault::MissingEntry,
+            Fault::WrappingVector,
+            Fault::ShortEntry,
+            Fault::MissingConnection,
+            Fault::WrappingDescriptor,
+            Fault::WrappingRecord,
+        ] {
+            let mut outcomes = Vec::new();
+            for classic in [false, true] {
+                let mut header = [0; 12];
+                header[..3].copy_from_slice(&[0xaa, 0xfe, 7]);
                 let mut record = [0u8; 20];
+                record[..4].copy_from_slice(&0x3f0u32.to_be_bytes());
                 record[5] = 1;
-                record[6..8].copy_from_slice(&3u16.to_be_bytes());
+                record[6..8].copy_from_slice(&0xbu16.to_be_bytes());
                 record[8..12].copy_from_slice(&0x100u32.to_be_bytes());
-                let operation = CfmResourceCall {
-                    task: crate::execution_kernel::ExecutionTaskId::APPLICATION,
+                let mut operation = CfmResourceCall {
+                    task: ExecutionTaskId::from_thread_id(42),
                     id: CfmLoadId(7),
                     preparation: CfmResourcePreparation {
                         descriptor: OUTPUT - 12,
                         record: OUTPUT,
                         fragment_address: OUTPUT - 12 + 0x100,
-                        proc_info: 0,
-                        routine_flags: 3,
+                        proc_info: 0x3f0,
+                        routine_flags: 0xb,
                     },
-                    descriptor_header: [0; 12],
+                    descriptor_header: header,
                     original_record: record,
-                    main_address: 0x1234_5678,
-                    arguments: crate::execution_kernel::GuestArgumentValues::from_slice(&[])
+                    main_address: VECTOR,
+                    arguments: GuestArgumentValues::from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9])
                         .unwrap(),
-                    caller_proc_info: 0,
+                    caller_proc_info: 0x2f0,
                 };
-                if fault == 2 {
+                if fault == Fault::ChangedRecord {
                     record[19] = 1;
                 }
+                if matches!(fault, Fault::ChangedHeader | Fault::InitializerFailed) {
+                    header[11] = 1;
+                }
                 let mut memory = GuestAddressSpace::new();
-                memory.add_region(OUTPUT, record.to_vec());
-                if fault == 1 {
+                let header_size = if fault == Fault::ShortHeader { 11 } else { 12 };
+                let record_size = if fault == Fault::ShortRecord { 19 } else { 20 };
+                memory.add_region(OUTPUT - 12, header[..header_size].to_vec());
+                memory.add_region(OUTPUT, record[..record_size].to_vec());
+                if fault == Fault::ProtectedOutput {
                     memory.add_readonly_region(OUTPUT + 11, vec![record[11]]);
                 }
+                let entry = if matches!(fault, Fault::ZeroEntry | Fault::InitializerFailed) {
+                    0
+                } else {
+                    ENTRY
+                };
+                let mut vector = entry.to_be_bytes().to_vec();
+                vector.extend(0x0100_4000u32.to_be_bytes());
+                if fault == Fault::ShortVector {
+                    vector.pop();
+                }
+                memory.add_region(VECTOR, vector);
+                if fault != Fault::MissingEntry {
+                    let size = if fault == Fault::ShortEntry { 3 } else { 4 };
+                    memory.add_region(ENTRY, [0x4e, 0x80, 0, 0x20][..size].to_vec());
+                }
+                match fault {
+                    Fault::WrappingVector => operation.main_address = u32::MAX - 3,
+                    Fault::WrappingDescriptor => operation.preparation.descriptor = u32::MAX - 4,
+                    Fault::WrappingRecord => operation.preparation.record = u32::MAX - 10,
+                    _ => {}
+                }
+                let before: Vec<_> = (0..20)
+                    .map(|offset| memory.procedure_read_u8(OUTPUT + offset))
+                    .collect();
                 let mut bus = MacMemoryBus::new(0x10000);
                 bus.set_addressing_32_bit(true);
                 bus.attach_guest_address_space(memory.shared_view());
-                let mut connections = vec![connection(7), connection(9)];
-                let result = operation.complete(
-                    u32::from(fault == 3),
-                    &mut connections,
-                    Some(record),
-                    |writes| {
-                        if classic {
-                            bus.try_write_ranges_atomic(writes)
-                        } else {
-                            memory.try_write_ranges_atomic(writes)
-                        }
-                    },
-                );
-                assert_eq!(result.is_ok(), fault == 0);
-                if fault == 0 {
-                    record[6..8].copy_from_slice(&0u16.to_be_bytes());
-                    record[8..12].copy_from_slice(&operation.main_address.to_be_bytes());
+                let mut own_connection = connection(7);
+                own_connection.main_addr = VECTOR;
+                let mut connections = vec![own_connection, connection(9)];
+                if fault == Fault::MissingConnection {
+                    connections.remove(0);
                 }
-                assert_eq!(snapshot(&mut memory), record);
-                assert_eq!(bus.read_bytes(OUTPUT, 20), record);
+                let initializer_result = u32::from(fault == Fault::InitializerFailed);
+                let result = if classic {
+                    operation.complete(initializer_result, &mut connections, &mut bus)
+                } else {
+                    operation.complete(initializer_result, &mut connections, &mut memory)
+                };
+                let expected_error = match fault {
+                    Fault::None => None,
+                    Fault::InitializerFailed => Some(CfmLoadError::InitializationFailed),
+                    Fault::ChangedHeader | Fault::ChangedRecord => {
+                        Some(CfmLoadError::DescriptorChanged)
+                    }
+                    Fault::MissingConnection => Some(CfmLoadError::ConnectionNotFound),
+                    Fault::ShortVector
+                    | Fault::ZeroEntry
+                    | Fault::MissingEntry
+                    | Fault::WrappingVector
+                    | Fault::ShortEntry => Some(CfmLoadError::CorruptFragment),
+                    _ => Some(CfmLoadError::InvalidOutputs),
+                };
+                assert_eq!(result.as_ref().err().copied(), expected_error, "{fault:?}");
+                let expected_bytes = if fault == Fault::None {
+                    let invocation = result.unwrap();
+                    assert_eq!(invocation.task.thread_id(), 42);
+                    assert_eq!(
+                        invocation.arguments.as_slice(),
+                        &[1, 2, 3, 4, 5, 6, 7, 8, 9]
+                    );
+                    assert_eq!(invocation.caller_proc_info, 0x2f0);
+                    assert_eq!(invocation.procedure.entry, ENTRY);
+                    assert_eq!(invocation.procedure.rtoc, 0x0100_4000);
+                    assert_eq!(invocation.procedure.proc_info, 0x3f0);
+                    assert_eq!(invocation.procedure.routine_flags, 8);
+                    assert_eq!(
+                        invocation.procedure.representation,
+                        GuestProcedureRepresentation::PowerPcTransitionVector { address: VECTOR }
+                    );
+                    record[6..8].copy_from_slice(&8u16.to_be_bytes());
+                    record[8..12].copy_from_slice(&VECTOR.to_be_bytes());
+                    record.into_iter().map(Some).collect::<Vec<_>>()
+                } else {
+                    before
+                };
+                for (offset, expected) in expected_bytes.into_iter().enumerate() {
+                    assert_eq!(memory.procedure_read_u8(OUTPUT + offset as u32), expected);
+                    assert_eq!(bus.procedure_read_u8(OUTPUT + offset as u32), expected);
+                }
                 assert_eq!(
                     connections.iter().any(|connection| connection.id == 7),
-                    fault == 0
+                    fault == Fault::None
                 );
                 assert_eq!(connections.last(), Some(&connection(9)));
+                outcomes.push(result);
             }
+            assert_eq!(
+                outcomes[0], outcomes[1],
+                "memory views disagree for {fault:?}"
+            );
         }
     }
 
