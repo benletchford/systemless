@@ -61,6 +61,7 @@ mod event_queue;
 pub use event_queue::{
     EventManagerSnapshot, EventProbeResult, EventQueueProbeSnapshot, EventRecordSnapshot,
 };
+mod cfm;
 mod execution_kernel;
 mod execution_m68k;
 mod execution_native;

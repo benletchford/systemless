@@ -8,6 +8,7 @@
 //! while each adapter remains responsible for its architectural registers and
 //! ABI frame.
 
+use crate::cfm::{CfmLoadId, CfmLoadOperation};
 use crate::cpu::{CpuOps, M68kCpu, M68kExtendedContext, Register};
 #[cfg(test)]
 pub(crate) use crate::execution_kernel::MAX_POWERPC_GUEST_ARGUMENTS;
@@ -182,6 +183,7 @@ struct GuestCallFrame {
     target: GuestCallTarget,
     origin: GuestCallOrigin,
     native_scratch: Option<u32>,
+    cfm_load: Option<CfmLoadOperation>,
     m68k_execution: Option<M68kExecution>,
     powerpc_execution: Option<PowerPcExecution>,
 }
@@ -317,6 +319,7 @@ impl GuestCallEffect {
                     result,
                 }),
                 native_scratch: None,
+                cfm_load: None,
                 m68k_execution: None,
                 powerpc_execution: None,
             }),
@@ -336,6 +339,7 @@ impl GuestCallEffect {
                     result,
                 }),
                 native_scratch: None,
+                cfm_load: None,
                 m68k_execution: None,
                 powerpc_execution: Some(PowerPcExecution {
                     arguments,
@@ -361,6 +365,7 @@ impl GuestCallEffect {
                     return_gpr3,
                 }),
                 native_scratch: None,
+                cfm_load: None,
                 m68k_execution: None,
                 powerpc_execution: None,
             }),
@@ -382,6 +387,7 @@ impl GuestCallEffect {
                     return_gpr3,
                 }),
                 native_scratch: None,
+                cfm_load: None,
                 m68k_execution: Some(M68kExecution {
                     entry: request.entry,
                     initial_sp: request.initial_sp,
@@ -435,6 +441,7 @@ impl PartialEq for GuestCallFrame {
         self.target == other.target
             && self.origin == other.origin
             && self.native_scratch == other.native_scratch
+            && self.cfm_load == other.cfm_load
             && self.m68k_execution == other.m68k_execution
             && match (&self.powerpc_execution, &other.powerpc_execution) {
                 (None, None) => true,
@@ -1997,7 +2004,7 @@ impl SharedGuestCallStack {
         memory: &mut GuestAddressSpace,
         effect: GuestCallEffect,
     ) -> bool {
-        self.activate_powerpc_effect_with_scratch(cpu, memory, effect, None)
+        self.activate_powerpc_effect_with_scratch(cpu, memory, effect, None, None)
     }
 
     /// Transfer a tracked temporary allocation to this exact call on success.
@@ -2008,6 +2015,7 @@ impl SharedGuestCallStack {
         memory: &mut GuestAddressSpace,
         effect: GuestCallEffect,
         scratch: Option<u32>,
+        cfm_load: Option<CfmLoadOperation>,
     ) -> bool {
         let GuestCallEffect::CallGuest {
             request,
@@ -2045,6 +2053,12 @@ impl SharedGuestCallStack {
             .get_mut(&call_id)
             .expect("submitted call has its architectural frame")
             .native_scratch = scratch;
+        self.0
+            .borrow_mut()
+            .frames
+            .get_mut(&call_id)
+            .expect("submitted call has its manager continuation")
+            .cfm_load = cfm_load;
         // Submission just installed this task's pending top frame. This
         // synchronous transition cannot be displaced by another guest call.
         self.0
@@ -2108,23 +2122,42 @@ impl SharedGuestCallStack {
     /// synthetic return import. A frame belonging to 68k remains untouched.
     #[cfg(test)]
     pub(crate) fn complete_powerpc(&self, cpu: &mut PpcCpu) -> bool {
-        self.complete_powerpc_inner(cpu, None)
+        self.complete_powerpc_inner(cpu, None, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_powerpc_releasing_scratch(
         &self,
         cpu: &mut PpcCpu,
         memory_manager: &mut ProcessNativeMemoryManager,
     ) -> bool {
-        self.complete_powerpc_inner(cpu, Some(memory_manager))
+        self.complete_powerpc_inner(cpu, Some(memory_manager), None)
+    }
+
+    pub(crate) fn is_cfm_load_pending(&self, id: CfmLoadId) -> bool {
+        self.0
+            .borrow()
+            .frames
+            .values()
+            .any(|frame| frame.cfm_load.is_some_and(|operation| operation.id == id))
+    }
+
+    pub(crate) fn complete_powerpc_resuming_load(
+        &self,
+        cpu: &mut PpcCpu,
+        memory_manager: &mut ProcessNativeMemoryManager,
+        mut resume: impl FnMut(CfmLoadOperation, u32) -> u32,
+    ) -> bool {
+        self.complete_powerpc_inner(cpu, Some(memory_manager), Some(&mut resume))
     }
 
     fn complete_powerpc_inner(
         &self,
         cpu: &mut PpcCpu,
         memory_manager: Option<&mut ProcessNativeMemoryManager>,
+        resume: Option<&mut dyn FnMut(CfmLoadOperation, u32) -> u32>,
     ) -> bool {
-        let (task, call_id, origin, scratch) = {
+        let (task, call_id, origin, scratch, cfm_load) = {
             let tasks = self.0.borrow();
             let task = tasks.kernel.current_task();
             let semantic = match tasks.kernel.peek(task) {
@@ -2151,7 +2184,16 @@ impl SharedGuestCallStack {
                     return false;
                 }
             }
-            (task, semantic.call_id(), origin, frame.native_scratch)
+            if frame.cfm_load.is_some() && resume.is_none() {
+                return false;
+            }
+            (
+                task,
+                semantic.call_id(),
+                origin,
+                frame.native_scratch,
+                frame.cfm_load,
+            )
         };
         let mut tasks = self.0.borrow_mut();
         if tasks
@@ -2160,6 +2202,10 @@ impl SharedGuestCallStack {
             .is_err()
         {
             return false;
+        }
+        if let Some(operation) = cfm_load {
+            cpu.gpr[3] =
+                resume.expect("CFM return requires its semantic consumer")(operation, cpu.gpr[3]);
         }
         let _ = tasks
             .kernel
