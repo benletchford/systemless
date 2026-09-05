@@ -1403,9 +1403,9 @@ impl SharedGuestCallStack {
         ))
     }
 
-    /// Park a native caller and retain the emulated 68k execution interval
-    /// that will satisfy it. The caller's PowerPC registers remain in its CPU
-    /// context; only the documented return state is applied at completion.
+    /// Prepare the emulated 68K interval for a native caller. Activation
+    /// retains its complete native context; completion restores that context
+    /// before applying the documented return state.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin_powerpc_to_m68k(
         &self,
@@ -1696,16 +1696,23 @@ impl SharedGuestCallStack {
     /// Return the top cross-ISA 68k interval and mark its CPU context active.
     #[cfg(test)]
     pub(crate) fn activate_m68k(&self) -> Option<PendingM68kExecution> {
-        self.activate_m68k_in_bank(&mut ExecutionContextBank::<()>::default(), &mut (), None)
+        self.activate_m68k_in_bank(
+            &mut ExecutionContextBank::<()>::default(),
+            &mut (),
+            None,
+            None,
+        )
     }
 
     pub(crate) fn activate_m68k_parking(
         &self,
         installed: &mut M68kCpu,
+        native: &PpcCpu,
     ) -> Option<PendingM68kExecution> {
         let caller = self.suspended_m68k_context_owner().map(|(_, call)| call);
         let bank = self.classic_contexts();
-        let pending = self.activate_m68k_in_bank(&mut bank.borrow_mut(), installed, caller);
+        let pending =
+            self.activate_m68k_in_bank(&mut bank.borrow_mut(), installed, caller, Some(native));
         pending
     }
 
@@ -1714,6 +1721,7 @@ impl SharedGuestCallStack {
         bank: &mut ExecutionContextBank<T>,
         installed: &mut T,
         caller: Option<CallId>,
+        native: Option<&PpcCpu>,
     ) -> Option<PendingM68kExecution> {
         let (task, call_id, pending, started) = {
             let tasks = self.0.borrow();
@@ -1735,8 +1743,21 @@ impl SharedGuestCallStack {
             return Some(pending);
         }
         let mut tasks = self.0.borrow_mut();
-        bank.activate_parking_caller(&tasks.kernel, task, call_id, caller, installed)
+        if let Some(native) = native {
+            let kernel = tasks.kernel.shared_handle();
+            bank.activate_parking_caller_with_context(
+                &kernel,
+                task,
+                call_id,
+                caller,
+                installed,
+                Some((&mut tasks.powerpc_contexts, Box::new(native.clone()))),
+            )
             .ok()?;
+        } else {
+            bank.activate_parking_caller(&tasks.kernel, task, call_id, caller, installed)
+                .ok()?;
+        }
         let frame = tasks
             .frames
             .get_mut(&call_id)
@@ -1896,9 +1917,27 @@ impl SharedGuestCallStack {
             (task, semantic.call_id(), origin)
         };
         let mut tasks = self.0.borrow_mut();
-        if tasks.kernel.complete(task, call_id, result).is_err() {
+        let native = if tasks.powerpc_contexts.contains(task, call_id) {
+            let kernel = tasks.kernel.shared_handle();
+            let Ok((context, _)) = tasks
+                .powerpc_contexts
+                .take_while_completing(&kernel, task, call_id, result)
+            else {
+                return false;
+            };
+            Some(context)
+        } else {
+            #[cfg(not(test))]
             return false;
-        }
+            #[cfg(test)]
+            {
+                // Register-only unit fixtures have no native engine to retain.
+                if tasks.kernel.complete(task, call_id, result).is_err() {
+                    return false;
+                }
+                None
+            }
+        };
         let _ = tasks
             .kernel
             .retire(task, call_id)
@@ -1907,6 +1946,11 @@ impl SharedGuestCallStack {
             .frames
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
+        if let Some(native) = native {
+            let time_base = cpu.time_base().max(native.time_base());
+            *cpu = *native;
+            cpu.set_time_base(time_base);
+        }
         if let Some(result) = result {
             cpu.gpr[3] = result;
         }
@@ -2883,6 +2927,88 @@ mod tests {
         assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, None, &mut cpu));
         assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x5000, 0x5000, 0x6000));
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn classic_callback_activation_retains_native_context_until_a_valid_return() {
+        for occupied in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            assert!(calls.begin_powerpc_to_m68k(
+                GuestCallTarget {
+                    isa: GuestIsa::M68k,
+                    entry: 0x2000,
+                    rtoc: 0
+                },
+                0x2000,
+                0x3000,
+                0x4000,
+                0x3004,
+                M68kRegisterState::default(),
+                Some(M68kResultSource::Data(0)),
+                0x5000,
+                0x6000,
+                PpcNativeReturnGpr3::Preserve
+            ));
+            let (call, _) = calls.top_frame().unwrap();
+            let mut native = PpcCpu::new();
+            native.gpr[1] = 0x9000;
+            native.gpr[20] = 0xabcdef;
+            native.fpr[20] = 0x400921fb54442d18;
+            native.cr = 0x12345678;
+            native.set_time_base(7);
+            if occupied {
+                let kernel = calls.0.borrow().kernel.shared_handle();
+                assert!(calls
+                    .0
+                    .borrow_mut()
+                    .powerpc_contexts
+                    .park(
+                        &kernel,
+                        ExecutionTaskId::APPLICATION,
+                        call,
+                        Box::new(native.clone())
+                    )
+                    .is_ok());
+            }
+            let mut classic = M68kCpu::new();
+            classic.core.set_d(6, 0x7777);
+            let activated = calls.activate_m68k_parking(&mut classic, &native);
+            if occupied {
+                assert!(activated.is_none());
+                assert_eq!(classic.core.d(6), 0x7777);
+                assert!(calls.active_m68k().is_none());
+                continue;
+            }
+            assert!(activated.is_some());
+            assert!(calls
+                .0
+                .borrow()
+                .powerpc_contexts
+                .contains(ExecutionTaskId::APPLICATION, call));
+            native.gpr[1] = 0x1111;
+            native.gpr[20] = 0;
+            native.fpr[20] = 0;
+            native.cr = 0;
+            native.set_time_base(44);
+            assert!(!calls.complete_m68k_for_powerpc(0x4000, 0x3000, Some(42), &mut native));
+            assert_eq!(native.gpr[1], 0x1111);
+            assert!(calls
+                .0
+                .borrow()
+                .powerpc_contexts
+                .contains(ExecutionTaskId::APPLICATION, call));
+            assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, Some(42), &mut native));
+            assert_eq!(
+                (native.gpr[1], native.gpr[2], native.gpr[3]),
+                (0x9000, 0x6000, 42)
+            );
+            assert_eq!(native.gpr[20], 0xabcdef);
+            assert_eq!(native.fpr[20], 0x400921fb54442d18);
+            assert_eq!(native.cr, 0x12345678);
+            assert_eq!(native.time_base(), 44);
+            assert!(calls.0.borrow().powerpc_contexts.is_empty());
+            assert!(calls.is_empty());
+        }
     }
 
     #[test]

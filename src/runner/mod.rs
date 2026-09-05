@@ -6932,7 +6932,7 @@ impl FixtureRunner {
             return Some((0, true));
         }
         let task = ppc_app.guest_calls.current_task();
-        let pending = self.m68k.activate_pending()?;
+        let pending = self.m68k.activate_pending(&ppc_app.cpu)?;
 
         // Thread Manager calls are allowed to yield while guest callback code
         // is running. Once that happens, `self.m68k.cpu` belongs to the successor

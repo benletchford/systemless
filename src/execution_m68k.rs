@@ -44,11 +44,14 @@ impl M68kExecution {
     }
 
     /// Validate and park the outgoing context before installing the callback.
-    pub(crate) fn activate_pending(&mut self) -> Option<PendingM68kExecution> {
+    pub(crate) fn activate_pending(
+        &mut self,
+        native: &ppc::PpcCpu,
+    ) -> Option<PendingM68kExecution> {
         if let Some(active) = self.calls.active_m68k() {
             return Some(active);
         }
-        let pending = self.calls.activate_m68k_parking(&mut self.cpu)?;
+        let pending = self.calls.activate_m68k_parking(&mut self.cpu, native)?;
         for (index, value) in pending.registers.data.into_iter().enumerate() {
             self.cpu.core.set_d(index, value);
         }

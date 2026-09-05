@@ -1408,8 +1408,31 @@ impl<T> ExecutionContextBank<T> {
     where
         T: Default,
     {
+        self.activate_parking_caller_with_context::<R, C, ()>(
+            kernel, task, call_id, caller, installed, None,
+        )
+    }
+
+    pub(crate) fn activate_parking_caller_with_context<R: Copy + TaskOwned, C: Copy, U>(
+        &mut self,
+        kernel: &ContinuationStore<R, C>,
+        task: ExecutionTaskId,
+        call_id: CallId,
+        caller: Option<CallId>,
+        installed: &mut T,
+        companion: Option<(&mut ExecutionContextBank<U>, U)>,
+    ) -> Result<(), ContinuationError>
+    where
+        T: Default,
+    {
         let mut state = kernel.0.borrow_mut();
         ContinuationStore::validate_transition(&state, task, call_id, ContinuationPhase::Pending)?;
+        if companion
+            .as_ref()
+            .is_some_and(|(bank, _)| bank.contains(task, call_id))
+        {
+            return Err(ContinuationError::ContextAttached { call_id, count: 1 });
+        }
         if let Some(caller) = caller {
             ContinuationStore::validate_context_owner(&state, task, caller)?;
             if caller == call_id {
@@ -1427,6 +1450,10 @@ impl<T> ExecutionContextBank<T> {
                     .insert((task, caller), std::mem::take(installed));
                 *state.attached_contexts.entry(caller).or_default() += 1;
             }
+        }
+        if let Some((bank, context)) = companion {
+            bank.by_call.insert((task, call_id), context);
+            *state.attached_contexts.entry(call_id).or_default() += 1;
         }
         state
             .stacks
