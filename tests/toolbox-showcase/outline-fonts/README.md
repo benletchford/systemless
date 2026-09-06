@@ -5,13 +5,12 @@ TrueType fonts, Classic System 7 theme and a fixed startup clock. The guest
 screen remains 800 × 600 at 8-bit depth. The desktop uses the same 4× surface
 initialization as the capture test.
 
-Refreshed on 6 September 2026 against renderer revision
-[`c1c95e3`](https://github.com/benletchford/systemless/commit/c1c95e3cb47d539bae1cd9a8a20dc5602ff4c52d):
-116 guest-reference frames across 68k and PowerPC, ten enlarged page captures,
-six first-paint/restore captures and one final Metal capture. All 133 regenerated
-images retain the previous decoded pixels; the performance fixes preserve their
-appearance. Both architecture suites also passed against the regenerated references
-with update mode disabled.
+The complete review galleries now cover both 68K and PowerPC through the shared
+4× presentation surface: 58 interaction checkpoints per architecture. Guest
+pixel baselines remain separate and are still checked exactly. First-paint tests
+exercise lists and text input before and after copying, window movement and typing
+on both CPU architectures. Desktop ARGB and browser RGBA output are checked for
+pixel parity, and software minification is compared with Metal output.
 
 Images labelled **before** are archived regression evidence and intentionally
 remain unchanged, as do the BasiliskII/SheepShaver oracle captures. The Escape
@@ -19,7 +18,7 @@ Velocity comparison below is retained from its separate dialog investigation.
 For the final Mac window appearance, use the [Metal output](#final-mac-window-scaling);
 the guest-resolution reference tables do not show the desktop's sharp text layer.
 
-The [complete 58-checkpoint review gallery](../README.md#68k-desktop-presentation)
+The [complete review galleries](../README.md#68k-desktop-presentation)
 also captures every window, menu, dialog, selection and page transition through
 the 4× presentation surface. The five-page table here is a scale comparison.
 

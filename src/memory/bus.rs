@@ -497,7 +497,7 @@ pub struct MacMemoryBus {
     /// guest memory unchanged, while still allowing temporary stack writes
     /// that are restored before the cycle closes.
     write_probe_original: Option<WriteProbeJournal>,
-    pub(crate) presentation: Option<super::presentation::Presentation>,
+    pub(crate) presentation: super::presentation::PresentationSlot,
     /// The journal's allocation between probes. Probes start more than a
     /// million times in a long SimCity 2000 session; reusing one map keeps
     /// the table's capacity instead of regrowing it from empty each time.
@@ -1242,7 +1242,7 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
-            presentation: None,
+            presentation: Default::default(),
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1337,7 +1337,7 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
-            presentation: None,
+            presentation: Default::default(),
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1349,6 +1349,7 @@ impl MacMemoryBus {
     /// Retain one native process's sparse mappings for serialized cross-ISA access.
     pub(crate) fn attach_guest_address_space(&mut self, memory: SharedGuestAddressSpace) {
         debug_assert!(self.foreign_address_space.is_none());
+        memory.set_presentation(self.presentation.clone());
         self.foreign_address_space = Some(memory);
     }
 
@@ -2422,7 +2423,7 @@ impl MemoryBus for MacMemoryBus {
         if self.readonly_code_overlaps(address, 1) {
             return;
         }
-        if let Some(p) = &mut self.presentation {
+        if let Some(mut p) = self.presentation.as_mut() {
             p.write(address, value);
         }
         self.record_write_probe_range(address, 1);

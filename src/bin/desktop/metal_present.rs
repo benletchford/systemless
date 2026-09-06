@@ -1479,6 +1479,18 @@ mod tests {
             (5, vec![96, 96, 128, 159, 159]),
         ] {
             let result = render_rgba(&source, width, 3);
+            let packed: Vec<u32> = source
+                .pixels()
+                .map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]]))
+                .collect();
+            let mut software = Vec::new();
+            systemless::display::resize_argb_coverage(&packed, (8, 8), (width, 3), &mut software);
+            for (gpu, cpu) in result.pixels().zip(software) {
+                let [a, r, g, b] = cpu.to_be_bytes();
+                for (actual, expected) in gpu.0.into_iter().zip([r, g, b, a]) {
+                    assert!(actual.abs_diff(expected) <= 1);
+                }
+            }
             // Exact area averages retain alternating one-pixel strokes at
             // integral and fractional reductions; allow UNorm rounding error.
             for (x, _, pixel) in result.enumerate_pixels() {

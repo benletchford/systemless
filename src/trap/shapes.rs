@@ -1693,10 +1693,32 @@ impl super::TrapDispatcher {
                 // Inside Macintosh I, "The GrafPort" (QuickDraw): portBits.bounds
                 // establishes local coordinates; visRgn and clipRgn limit drawing.
                 // Feed only these already-clipped cells to the presentation plane.
-                if pixel_size == 8 && matches!(op, ShapeOp::Glyph(0 | 1)) {
+                if matches!(pixel_size, 8 | 16 | 32) && matches!(op, ShapeOp::Glyph(0 | 1)) {
                     let dx = (x - bounds_left) as u32;
-                    if dx < pix_row_bytes {
-                        bus.outline_glyph_pixel(pix_base + dy * pix_row_bytes + dx, x, y, fg_idx);
+                    let lanes = u32::from(pixel_size / 8);
+                    if (dx + 1) * lanes <= pix_row_bytes {
+                        let (r, g, b) = effective_fg_color;
+                        let foreground = match pixel_size {
+                            8 => u32::from(fg_idx),
+                            16 => {
+                                (u32::from(r >> 11) << 10)
+                                    | (u32::from(g >> 11) << 5)
+                                    | u32::from(b >> 11)
+                            }
+                            _ => {
+                                (u32::from(r >> 8) << 16)
+                                    | (u32::from(g >> 8) << 8)
+                                    | u32::from(b >> 8)
+                            }
+                        };
+                        for lane in 0..lanes {
+                            bus.outline_glyph_pixel(
+                                pix_base + dy * pix_row_bytes + dx * lanes + lane,
+                                x,
+                                y,
+                                (foreground >> ((lanes - 1 - lane) * 8)) as u8,
+                            );
+                        }
                     }
                 }
                 let alpha = coverage_at(y, x);
@@ -1820,19 +1842,31 @@ impl super::TrapDispatcher {
                     } & index_mask;
                     let field_mask = index_mask << shift;
                     bus.write_byte(addr, (byte & !field_mask) | (new << shift));
-                } else if pixel_size == 32 {
-                    let byte_offset = dy * pix_row_bytes + dx * 4;
-                    if byte_offset + 4 > (dy + 1) * pix_row_bytes {
+                } else if matches!(pixel_size, 16 | 32) {
+                    let lanes = u32::from(pixel_size / 8);
+                    let byte_offset = dy * pix_row_bytes + dx * lanes;
+                    if byte_offset + lanes > (dy + 1) * pix_row_bytes {
                         continue;
                     }
                     let addr = pix_base + byte_offset;
-                    let old = bus.read_long(addr) & 0x00FF_FFFF;
+                    let old = if pixel_size == 16 {
+                        u32::from(bus.read_word(addr)) & 0x7fff
+                    } else {
+                        bus.read_long(addr) & 0x00ff_ffff
+                    };
                     let (fg_r, fg_g, fg_b) = effective_fg_color;
-                    let fg_color =
-                        ((fg_r as u32 >> 8) << 16) | ((fg_g as u32 >> 8) << 8) | (fg_b as u32 >> 8);
+                    let pack = |r: u16, g: u16, b: u16| {
+                        if pixel_size == 16 {
+                            (u32::from(r >> 11) << 10)
+                                | (u32::from(g >> 11) << 5)
+                                | u32::from(b >> 11)
+                        } else {
+                            (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8)
+                        }
+                    };
+                    let fg_color = pack(fg_r, fg_g, fg_b);
                     let (bg_r, bg_g, bg_b) = effective_bg_color;
-                    let bg_color =
-                        ((bg_r as u32 >> 8) << 16) | ((bg_g as u32 >> 8) << 8) | (bg_b as u32 >> 8);
+                    let bg_color = pack(bg_r, bg_g, bg_b);
                     let color = match op {
                         ShapeOp::Paint | ShapeOp::Frame => {
                             let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
@@ -1862,7 +1896,11 @@ impl super::TrapDispatcher {
                         }
                         ShapeOp::Invert => !old & 0x00FF_FFFF,
                     };
-                    bus.write_long(addr, color);
+                    if pixel_size == 16 {
+                        bus.write_word(addr, (color & 0x7fff) as u16);
+                    } else {
+                        bus.write_long(addr, color);
+                    }
                 } else if pixel_size == 1 {
                     let byte_offset = dy * pix_row_bytes + (dx / 8);
                     if (dx / 8) >= pix_row_bytes {

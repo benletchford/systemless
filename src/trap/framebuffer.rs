@@ -1960,6 +1960,34 @@ impl super::TrapDispatcher {
             None
         };
 
+        if matches!(pixel_size, 16 | 32) && !style.extended() && !style.condensed() {
+            bus.begin_outline_glyph(
+                glyph,
+                data,
+                x,
+                y,
+                false,
+                metrics.as_ref().map(|(_, _, m)| m.descent),
+                None,
+            );
+            if let Some((top, left, bottom, right)) =
+                bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+            {
+                let lanes = u32::from(pixel_size / 8);
+                for py in top.max(0)..bottom.min(i32::from(screen_height)) {
+                    for px in left.max(0)..right.min(i32::from(screen_width)) {
+                        for lane in 0..lanes {
+                            bus.outline_glyph_pixel(
+                                screen_base + py as u32 * row_bytes + px as u32 * lanes + lane,
+                                px as i16,
+                                py as i16,
+                                if black { 0 } else { 255 },
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // Glyph data is 8-bit coverage per pixel (row-major, one byte
         // per pixel). Threshold at >=128 (bitmap glyphs are exclusively
         // 0 or 255).
@@ -2016,6 +2044,7 @@ impl super::TrapDispatcher {
                 }
             }
         }
+        bus.end_outline_glyph();
     }
 
     fn fb_set_styled_text_pixel(
@@ -2161,7 +2190,7 @@ impl super::TrapDispatcher {
                 .unwrap_or(i16::MAX);
         }
 
-        if pixel_size == 8 {
+        if matches!(pixel_size, 8 | 16 | 32) {
             let descent = synthetic_italic.map(|(font, size)| get_font_metrics(font, size).descent);
             bus.begin_outline_glyph(glyph, data, x, y, style.bold(), descent, None);
             bus.style_outline_glyph(style);
@@ -2177,12 +2206,21 @@ impl super::TrapDispatcher {
                 });
                 for py in top.max(0)..bottom.min(i32::from(screen_height)) {
                     for px in left.max(0)..right.min(i32::from(screen_width)) {
-                        bus.outline_glyph_pixel(
-                            screen_base + py as u32 * row_bytes + px as u32,
-                            px as i16,
-                            py as i16,
-                            index,
-                        );
+                        let lanes = u32::from(pixel_size / 8);
+                        for lane in 0..lanes {
+                            bus.outline_glyph_pixel(
+                                screen_base + py as u32 * row_bytes + px as u32 * lanes + lane,
+                                px as i16,
+                                py as i16,
+                                if pixel_size == 8 {
+                                    index
+                                } else if black {
+                                    0
+                                } else {
+                                    255
+                                },
+                            );
+                        }
                     }
                 }
             }

@@ -745,7 +745,7 @@ struct App {
     #[cfg(target_os = "macos")]
     window_resize_events: u64,
     #[cfg(not(target_os = "macos"))]
-    scaled_row: Vec<u32>,
+    scaled_frame: Vec<u32>,
     runner: Option<FixtureRunner>,
     save_store: Option<DesktopSaveStore>,
     game_path: PathBuf,
@@ -896,7 +896,7 @@ impl App {
             #[cfg(target_os = "macos")]
             window_resize_events: 0,
             #[cfg(not(target_os = "macos"))]
-            scaled_row: Vec::new(),
+            scaled_frame: Vec::new(),
             runner: None,
             save_store: None,
             game_path,
@@ -1023,21 +1023,7 @@ impl App {
             );
         }
         game::init_game(&mut runner, &app);
-        if !runner.is_powerpc_app() {
-            let dispatcher = runner.dispatcher();
-            let screen = dispatcher.screen_mode;
-            let palette = display::rgba_palette_from_clut_with_gamma(
-                &dispatcher.device_clut,
-                &dispatcher.device_gamma,
-            )
-            .map(|word| {
-                let [r, g, b, _] = word.to_le_bytes();
-                [r, g, b]
-            });
-            runner
-                .bus_mut()
-                .prepare_outline_presentation(screen, palette);
-        }
+        runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
         // Configure the wall-clock-paced GUI from the loaded architecture's
@@ -1468,21 +1454,9 @@ impl App {
         let Some(runner) = self.runner.as_mut() else {
             return;
         };
-        if !runner.is_powerpc_app() {
+        {
             let _timing = FramePhaseTimer::new("outline palette preparation");
-            let dispatcher = runner.dispatcher();
-            let screen = dispatcher.screen_mode;
-            let palette = display::rgba_palette_from_clut_with_gamma(
-                &dispatcher.device_clut,
-                &dispatcher.device_gamma,
-            )
-            .map(|word| {
-                let [r, g, b, _] = word.to_le_bytes();
-                [r, g, b]
-            });
-            runner
-                .bus_mut()
-                .prepare_outline_presentation(screen, palette);
+            runner.prepare_text_presentation();
         }
         {
             let _timing = FramePhaseTimer::new("window compositing");
@@ -1895,7 +1869,7 @@ impl App {
             if let Some(surface) = self
                 .surface
                 .as_mut()
-                .filter(|_| !runner.bus().has_outline_presentation())
+                .filter(|_| !runner.bus().has_visible_outline_detail())
             {
                 let presented_directly = surface
                     .present_guest_frame(
@@ -1932,7 +1906,7 @@ impl App {
         );
         let guest_frame = runner
             .bus()
-            .has_outline_presentation()
+            .has_visible_outline_detail()
             .then(|| frame_argb.clone());
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
@@ -1995,11 +1969,11 @@ impl App {
             let draw_y = draw_y as usize;
             let draw_w = draw_w as usize;
             let draw_h = draw_h as usize;
-            let mut scaled_row = std::mem::take(&mut self.scaled_row);
+            let mut scaled_frame = std::mem::take(&mut self.scaled_frame);
 
             let Some(surface) = self.surface.as_mut() else {
                 self.frame_argb = frame_argb;
-                self.scaled_row = scaled_row;
+                self.scaled_frame = scaled_frame;
                 return;
             };
 
@@ -2026,21 +2000,20 @@ impl App {
                     buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
                 }
             } else {
-                scaled_row.resize(draw_w, 0xFF000000);
+                display::resize_argb_coverage(
+                    &frame_argb,
+                    (game_w, game_h),
+                    (draw_w as u32, draw_h as u32),
+                    &mut scaled_frame,
+                );
                 for row in 0..draw_h {
-                    let source_y = row * game_h as usize / draw_h;
-                    let src_row =
-                        &frame_argb[source_y * game_w as usize..(source_y + 1) * game_w as usize];
-                    for (destination_x, pixel) in scaled_row.iter_mut().enumerate() {
-                        let source_x = destination_x * game_w as usize / draw_w;
-                        *pixel = src_row[source_x];
-                    }
                     let dst_offset = (draw_y + row) * buf_w as usize + draw_x;
-                    buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
+                    buffer[dst_offset..dst_offset + draw_w]
+                        .copy_from_slice(&scaled_frame[row * draw_w..(row + 1) * draw_w]);
                 }
             }
 
-            self.scaled_row = scaled_row;
+            self.scaled_frame = scaled_frame;
             buffer.present().expect("Failed to present buffer");
         }
 

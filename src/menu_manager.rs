@@ -986,7 +986,7 @@ pub(crate) trait TrackedMenuPaneView {
     fn saved_width(&self) -> i16;
     fn saved_height(&self) -> i16;
     fn front_buffer(&self) -> Self::Surface;
-    fn saved_pixels(&self) -> &[Self::Pixel];
+    fn saved_pixels(&self) -> &crate::memory::SavedPixels<Self::Pixel>;
     fn item_appearances(&self) -> &[Self::Appearance];
 }
 
@@ -1027,7 +1027,7 @@ macro_rules! impl_tracked_menu_pane_view {
             fn front_buffer(&self) -> Self::Surface {
                 self.front_buffer
             }
-            fn saved_pixels(&self) -> &[Self::Pixel] {
+            fn saved_pixels(&self) -> &crate::memory::SavedPixels<Self::Pixel> {
                 &self.saved_pixels
             }
             fn item_appearances(&self) -> &[Self::Appearance] {

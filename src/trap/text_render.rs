@@ -839,11 +839,11 @@ impl super::TrapDispatcher {
                     bottom: v + scaled_descent,
                     right: h + glyph.advance as i16 * fs,
                 };
-                if let Some(p) = &mut bus.presentation {
+                if let Some(mut p) = bus.presentation.as_mut() {
                     p.erasing_text = true;
                 }
                 self.draw_rect(cpu, bus, &copy_rect, ShapeOp::Erase);
-                if let Some(p) = &mut bus.presentation {
+                if let Some(mut p) = bus.presentation.as_mut() {
                     p.erasing_text = false;
                 }
             }

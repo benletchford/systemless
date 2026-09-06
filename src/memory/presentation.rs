@@ -1,10 +1,81 @@
-//! Indexed-screen outline presentation. Guest memory and text metrics stay unchanged.
+//! Indexed and direct-color outline presentation. Guest memory and text metrics stay unchanged.
 //! Ordinary framebuffer writes replace enlarged pixels in drawing order; supported
 //! outline glyphs retain indexed coverage through snapshots and pixel transfers.
 //! Frontends consume the presentation at its physical dimensions.
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// Shared by both CPU adapters; access is scoped to a single drawing operation.
+#[derive(Clone, Default)]
+pub(crate) struct PresentationSlot(std::rc::Rc<std::cell::RefCell<Option<Presentation>>>);
+impl std::fmt::Debug for PresentationSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PresentationSlot")
+            .field(&self.is_some())
+            .finish()
+    }
+}
+impl PresentationSlot {
+    pub fn as_ref(&self) -> Option<std::cell::Ref<'_, Presentation>> {
+        std::cell::Ref::filter_map(self.0.borrow(), |p| p.as_ref()).ok()
+    }
+    pub fn as_mut(&self) -> Option<std::cell::RefMut<'_, Presentation>> {
+        std::cell::RefMut::filter_map(self.0.borrow_mut(), |p| p.as_mut()).ok()
+    }
+    pub fn is_some(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+    pub fn is_none(&self) -> bool {
+        !self.is_some()
+    }
+    pub fn set(&self, value: Option<Presentation>) {
+        *self.0.borrow_mut() = value;
+    }
+    pub fn observes(&self, address: u32, len: usize) -> bool {
+        self.as_ref()
+            .is_some_and(|p| p.observes_range(address, len))
+    }
+    pub(crate) fn capture_detail<T>(
+        &self,
+        pixels: &mut SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+    ) {
+        if let Some(p) = self.as_ref() {
+            for byte in 0..len {
+                if let Some(detail) = p.detail(address + byte as u32) {
+                    pixels.detail.insert(offset + byte, detail);
+                }
+            }
+        }
+    }
+    pub(crate) fn restore_detail<T>(
+        &self,
+        pixels: &SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+    ) {
+        if let Some(mut p) = self.as_mut() {
+            for byte in 0..len {
+                if let Some(detail) = pixels.detail.get(&(offset + byte)) {
+                    p.put_detail(address + byte as u32, detail);
+                }
+            }
+        }
+    }
+    pub fn write_bytes(&self, address: u32, bytes: &[u8]) {
+        if let Some(mut p) = self.as_mut() {
+            if p.observes_range(address, bytes.len()) {
+                for (i, &value) in bytes.iter().enumerate() {
+                    p.write(address + i as u32, value);
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct OutlineGlyph {
@@ -136,6 +207,18 @@ impl<'a, T> IntoIterator for &'a SavedPixels<T> {
     }
 }
 impl<T> SavedPixels<T> {
+    pub(crate) fn transform_detail(&mut self, mut map: impl FnMut(usize, u8) -> u8) {
+        for (&offset, cell) in &mut self.detail {
+            cell.value = map(offset, cell.value);
+            for value in &mut cell.indices {
+                *value = map(offset, *value);
+            }
+            for ink in cell.ink.values_mut() {
+                ink.foreground = map(offset, ink.foreground);
+                ink.background.map(&mut |value| map(offset, value));
+            }
+        }
+    }
     pub fn map<U>(self, map: impl FnMut(T) -> U) -> SavedPixels<U> {
         SavedPixels {
             values: self.values.into_iter().map(map).collect(),
@@ -175,6 +258,8 @@ pub(crate) struct Presentation {
     row_bytes: u32,
     width: u32,
     height: u32,
+    depth: u16,
+    direct_palettes: [[[u8; 3]; 256]; 4],
     pub scale: u32,
     palette: [[u8; 3]; 256],
     pixels: Vec<u8>,
@@ -191,6 +276,20 @@ pub(crate) struct Presentation {
 }
 
 impl Presentation {
+    fn bytes_per_pixel(&self) -> u32 {
+        u32::from(self.depth.max(8) / 8)
+    }
+    fn logical_width(&self) -> u32 {
+        self.width / self.bytes_per_pixel()
+    }
+    fn palette_at(&self, x: u32) -> &[[u8; 3]; 256] {
+        if self.depth == 8 {
+            &self.palette
+        } else {
+            &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
+        }
+    }
+
     /// Only screen bytes and retained offscreen glyphs need write interception.
     /// Ordinary heap/stack ranges retain the bus's bulk memory paths.
     pub(super) fn observes_range(&self, address: u32, len: usize) -> bool {
@@ -220,6 +319,63 @@ impl Presentation {
     }
 
     fn render_pixels<T: Copy>(&self, map: impl Fn([u8; 3]) -> T) -> Vec<T> {
+        if self.depth == 8 {
+            return self.render_indexed_pixels(map);
+        }
+        let lanes = self.bytes_per_pixel();
+        let width = self.logical_width();
+        let mut output =
+            Vec::with_capacity((width * self.height * self.scale * self.scale) as usize);
+        for y in 0..self.height {
+            for sy in 0..self.scale {
+                for x in 0..width {
+                    let first = (y * self.width + x * lanes) as usize;
+                    if !self.text_cells[first..first + lanes as usize]
+                        .iter()
+                        .any(|&text| text)
+                    {
+                        let mut rgb = [0u8; 3];
+                        for lane in 0..lanes {
+                            let color = self.direct_palettes[lane as usize]
+                                [self.guest_values[first + lane as usize] as u8 as usize];
+                            for channel in 0..3 {
+                                rgb[channel] = rgb[channel].saturating_add(color[channel]);
+                            }
+                        }
+                        output.extend(std::iter::repeat_n(map(rgb), self.scale as usize));
+                        continue;
+                    }
+                    for sx in 0..self.scale {
+                        let mut rgb = [0u8; 3];
+                        for lane in 0..lanes {
+                            let bx = x * lanes + lane;
+                            let cell = (y * self.width + bx) as usize;
+                            let color = if self.text_cells[cell] {
+                                let start = (((y * self.scale + sy) * self.width * self.scale
+                                    + bx * self.scale
+                                    + sx)
+                                    * 3) as usize;
+                                [
+                                    self.pixels[start],
+                                    self.pixels[start + 1],
+                                    self.pixels[start + 2],
+                                ]
+                            } else {
+                                self.palette_at(bx)[self.guest_values[cell] as u8 as usize]
+                            };
+                            for c in 0..3 {
+                                rgb[c] = rgb[c].saturating_add(color[c]);
+                            }
+                        }
+                        output.push(map(rgb));
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn render_indexed_pixels<T: Copy>(&self, map: impl Fn([u8; 3]) -> T) -> Vec<T> {
         let width = (self.width * self.scale) as usize;
         let mut output = Vec::with_capacity(width * (self.height * self.scale) as usize);
         for y in 0..self.height {
@@ -317,9 +473,13 @@ impl Presentation {
                 self.ink.remove(&(pixel * 3));
                 let rgb = if let Some(ink) = cell.ink.get(&i) {
                     self.ink.insert(pixel * 3, ink.clone());
-                    ink.rgb(&self.palette)
+                    ink.rgb(if self.depth == 8 {
+                        &self.palette
+                    } else {
+                        &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
+                    })
                 } else {
-                    self.palette[cell.indices[i] as usize]
+                    self.palette_at(x)[cell.indices[i] as usize]
                 };
                 self.pixels[pixel * 3..pixel * 3 + 3].copy_from_slice(&rgb);
             }
@@ -341,6 +501,7 @@ impl Presentation {
         let cell = (y * self.width + x) as usize;
         if !self.text_cells[cell] {
             let index = self.guest_values[cell] as u8;
+            let color = self.palette_at(x)[index as usize];
             for sy in 0..self.scale {
                 let start =
                     ((y * self.scale + sy) * self.width * self.scale + x * self.scale) as usize;
@@ -348,7 +509,7 @@ impl Presentation {
                 for pixel in
                     self.pixels[start * 3..(start + self.scale as usize) * 3].chunks_exact_mut(3)
                 {
-                    pixel.copy_from_slice(&self.palette[index as usize]);
+                    pixel.copy_from_slice(&color);
                 }
             }
         }
@@ -400,7 +561,7 @@ impl Presentation {
             return;
         }
         self.text_cells[cell] = false;
-        let color = self.palette[value as usize];
+        let color = self.palette_at(x)[value as usize];
         for sy in 0..self.scale {
             for sx in 0..self.scale {
                 let offset =
@@ -479,7 +640,13 @@ impl Presentation {
         }
         self.prepare_text_cell(px, py);
         let (glyph, h, v) = self.glyph.as_ref().unwrap();
-        let color = self.palette[foreground as usize];
+        let lane = (px % self.bytes_per_pixel()) as usize;
+        let palette = if self.depth == 8 {
+            &self.palette
+        } else {
+            &self.direct_palettes[lane]
+        };
+        let color = palette[foreground as usize];
         for sy in 0..self.scale {
             for sx in 0..self.scale {
                 let gx =
@@ -527,19 +694,65 @@ impl Presentation {
                         .over(previous.foreground, previous.alpha);
                 }
                 ink.alpha = ink.alpha.max(alpha);
-                self.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(&self.palette));
+                self.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(palette));
             }
         }
     }
 }
 
 impl MacMemoryBus {
+    /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
+    pub(crate) fn sync_presented_bytes(&mut self, destination: u32, source: u32, bytes: &[u8]) {
+        if destination == source {
+            return;
+        }
+        if self.presentation.is_none() {
+            self.write_bytes(destination, bytes);
+            return;
+        }
+        let previous = self.read_bytes(destination, bytes.len());
+        for (i, (&old, &new)) in previous.iter().zip(bytes).enumerate() {
+            if old != new {
+                self.write_byte(destination + i as u32, new);
+            }
+        }
+        if let Some(mut p) = self.presentation.as_mut() {
+            let changes = {
+                let mut source_cells = p
+                    .offscreen
+                    .range(source..source + bytes.len() as u32)
+                    .peekable();
+                let mut changes = Vec::new();
+                for (i, &value) in bytes.iter().enumerate() {
+                    let address = source + i as u32;
+                    let detail = if source_cells.peek().is_some_and(|(key, _)| **key == address) {
+                        source_cells.next().map(|(_, cell)| cell)
+                    } else {
+                        None
+                    };
+                    let destination = destination + i as u32;
+                    if !p.matches_detail(destination, detail) {
+                        changes.push((destination, value, detail.cloned()));
+                    }
+                }
+                changes
+            };
+            for (address, value, detail) in changes {
+                if let Some(detail) = detail {
+                    p.put_detail(address, &detail);
+                } else {
+                    p.write(address, value);
+                }
+            }
+        }
+    }
+
     pub(crate) fn outline_glyph_pixel(&mut self, address: u32, x: i16, y: i16, foreground: u8) {
         if self.presentation.is_none() {
             return;
         }
         let background = self.read_byte(address);
-        if let Some(p) = &mut self.presentation {
+        if let Some(mut p) = self.presentation.as_mut() {
             p.glyph_pixel(address, x, y, foreground, background);
         }
     }
@@ -604,7 +817,7 @@ impl MacMemoryBus {
             }
         }
         self.write_byte(address, value);
-        if let Some(p) = &mut self.presentation {
+        if let Some(mut p) = self.presentation.as_mut() {
             p.put_detail(address, &cell);
         }
         true
@@ -629,7 +842,7 @@ impl MacMemoryBus {
                 ink.foreground = map(ink.foreground);
                 ink.background.map(&mut map);
             }
-            if let Some(p) = &mut self.presentation {
+            if let Some(mut p) = self.presentation.as_mut() {
                 p.put_detail(address, &cell);
             }
         }
@@ -642,12 +855,15 @@ impl MacMemoryBus {
         address: u32,
         len: usize,
     ) {
-        if let Some(p) = &self.presentation {
+        if let Some(p) = self.presentation.as_ref() {
             if len == 0 {
                 return;
             }
             let end = (u64::from(address) + len as u64).min(u64::from(u32::MAX) + 1);
             for (&addr, cell) in p.offscreen.range(address..=(end - 1) as u32) {
+                if p.position(addr).is_some() {
+                    continue;
+                }
                 pixels
                     .detail
                     .insert(offset + (addr - address) as usize, cell.clone());
@@ -697,7 +913,7 @@ impl MacMemoryBus {
             }
             self.write_byte(dst, value);
             if let Some(cell) = detail {
-                if let Some(p) = &mut self.presentation {
+                if let Some(mut p) = self.presentation.as_mut() {
                     p.put_detail(dst, cell);
                 }
             }
@@ -718,7 +934,7 @@ impl MacMemoryBus {
                 ink.foreground = map(ink.foreground);
                 ink.background.map(&mut map);
             }
-            if let Some(p) = &mut self.presentation {
+            if let Some(mut p) = self.presentation.as_mut() {
                 p.put_detail(address, cell);
             }
         }
@@ -737,16 +953,25 @@ impl MacMemoryBus {
         screen: (u32, u32, u16, u16, u16),
         palette: [[u8; 3]; 256],
     ) {
-        if screen.4 != 8 {
-            self.presentation = None;
+        if !matches!(screen.4, 8 | 16 | 32) {
+            self.presentation.set(None);
             return;
         }
-        if let Some(p) = self.presentation.as_mut().filter(|p| {
-            (p.base, p.row_bytes, p.width, p.height)
-                == (screen.0, screen.1, screen.2 as u32, screen.3 as u32)
+        let slot = self.presentation.clone();
+        if slot.as_ref().is_some_and(|p| {
+            (p.base, p.row_bytes, p.logical_width(), p.height, p.depth)
+                == (
+                    screen.0,
+                    screen.1,
+                    screen.2 as u32,
+                    screen.3 as u32,
+                    screen.4,
+                )
                 && p.scale == 4
         }) {
-            if p.palette != palette {
+            let mut guard = slot.as_mut().unwrap();
+            let p = &mut *guard;
+            if p.depth == 8 && p.palette != palette {
                 // Indexed pixels retain their CLUT indexes when the device's
                 // colors change (Imaging With QuickDraw, 1994, 4-5–4-6).
                 p.palette = palette;
@@ -771,6 +996,7 @@ impl MacMemoryBus {
                 }
             }
         } else {
+            // Drop the slot borrow before replacing its surface.
             self.enable_outline_presentation(screen, palette, 4);
         }
     }
@@ -778,6 +1004,14 @@ impl MacMemoryBus {
     /// Whether an outline presentation surface is available to a frontend.
     pub fn has_outline_presentation(&self) -> bool {
         self.presentation.is_some()
+    }
+
+    /// Frames without visible retained text can use the ordinary framebuffer
+    /// presenter while continuing to track offscreen text for later copies.
+    pub fn has_visible_outline_detail(&self) -> bool {
+        self.presentation
+            .as_ref()
+            .is_some_and(|p| p.text_cells.iter().any(|&text| text))
     }
 
     /// Composite host overlays onto the outline surface. Overlay positions stay
@@ -788,10 +1022,12 @@ impl MacMemoryBus {
         with_overlays: &[u32],
     ) -> Option<(u32, u32, Vec<u32>)> {
         let p = self.presentation.as_ref()?;
-        if guest.len() != (p.width * p.height) as usize || with_overlays.len() != guest.len() {
+        if guest.len() != (p.logical_width() * p.height) as usize
+            || with_overlays.len() != guest.len()
+        {
             return None;
         }
-        let width = p.width * p.scale;
+        let width = p.logical_width() * p.scale;
         let height = p.height * p.scale;
         let mut pixels = p.render_pixels(|c| {
             0xff000000 | ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32
@@ -800,14 +1036,53 @@ impl MacMemoryBus {
             if before == after {
                 continue;
             }
-            let x = index as u32 % p.width;
-            let y = index as u32 / p.width;
+            let x = index as u32 % p.logical_width();
+            let y = index as u32 / p.logical_width();
             for dy in 0..p.scale {
                 let start = ((y * p.scale + dy) * width + x * p.scale) as usize;
                 pixels[start..start + p.scale as usize].fill(after);
             }
         }
         Some((width, height, pixels))
+    }
+
+    /// RGBA counterpart of `presented_argb` for browser and image frontends.
+    pub fn presented_rgba(
+        &self,
+        guest: &[u8],
+        with_overlays: &[u8],
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        let p = self.presentation.as_ref()?;
+        let logical_width = p.logical_width();
+        if guest.len() != (logical_width * p.height * 4) as usize
+            || with_overlays.len() != guest.len()
+        {
+            return None;
+        }
+        let width = logical_width * p.scale;
+        let mut pixels: Vec<u8> = p
+            .render_pixels(|c| [c[0], c[1], c[2], 255])
+            .into_iter()
+            .flatten()
+            .collect();
+        for (index, (before, after)) in guest
+            .chunks_exact(4)
+            .zip(with_overlays.chunks_exact(4))
+            .enumerate()
+        {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % logical_width;
+            let y = index as u32 / logical_width;
+            for dy in 0..p.scale {
+                let start = ((y * p.scale + dy) * width + x * p.scale) as usize * 4;
+                for pixel in pixels[start..start + p.scale as usize * 4].chunks_exact_mut(4) {
+                    pixel.copy_from_slice(after);
+                }
+            }
+        }
+        Some((width, p.height * p.scale, pixels))
     }
 
     /// Start an indexed outline surface at 2x through 4x resolution.
@@ -819,19 +1094,43 @@ impl MacMemoryBus {
         scale: u32,
     ) {
         let (base, row_bytes, width, height, depth) = screen;
-        assert_eq!(depth, 8, "outline presentation supports 8-bit screens only");
+        assert!(matches!(depth, 8 | 16 | 32));
+        let width = u32::from(width) * u32::from(depth / 8);
         assert!((2..=4).contains(&scale));
         assert!(width > 0 && height > 0 && row_bytes >= u32::from(width));
         assert!(
             u64::from(base) + u64::from(row_bytes) * u64::from(height)
                 <= u64::from(self.ram_size())
         );
+        let retained = self.presentation.as_mut().and_then(|mut previous| {
+            (previous.depth == depth && previous.scale == scale).then(|| {
+                (
+                    std::mem::take(&mut previous.offscreen),
+                    previous.glyph_count,
+                )
+            })
+        });
         let mut presentation = Presentation {
             offscreen: BTreeMap::new(),
             base,
             row_bytes,
             width: width.into(),
             height: height.into(),
+            depth,
+            direct_palettes: std::array::from_fn(|lane| {
+                std::array::from_fn(|i| {
+                    let byte = i as u8;
+                    let expand = |v: u8| (v << 3) | (v >> 2);
+                    match (depth, lane) {
+                        (16, 0) => [expand((byte >> 2) & 31), (byte & 3) * 66, 0],
+                        (16, 1) => [0, ((byte >> 5) & 7) * 8 + (byte >> 7), expand(byte & 31)],
+                        (32, 1) => [byte, 0, 0],
+                        (32, 2) => [0, byte, 0],
+                        (32, 3) => [0, 0, byte],
+                        _ => [0; 3],
+                    }
+                })
+            }),
             scale,
             palette,
             pixels: vec![0; width as usize * height as usize * scale as usize * scale as usize * 3],
@@ -855,14 +1154,18 @@ impl MacMemoryBus {
                 presentation.write(address, self.read_byte(address));
             }
         }
-        self.presentation = Some(presentation);
+        if let Some((offscreen, glyph_count)) = retained {
+            presentation.offscreen = offscreen;
+            presentation.glyph_count = glyph_count;
+        }
+        self.presentation.set(Some(presentation));
     }
 
     /// Return the real guest's presentation capture and number of outline draws.
     pub fn outline_presentation_rgb(&self) -> Option<(u32, u32, Vec<u8>, usize)> {
         let p = self.presentation.as_ref()?;
         Some((
-            p.width * p.scale,
+            p.logical_width() * p.scale,
             p.height * p.scale,
             p.render_pixels(|rgb| rgb).into_iter().flatten().collect(),
             p.glyph_count,
@@ -870,7 +1173,37 @@ impl MacMemoryBus {
     }
 
     pub(crate) fn begin_presentation_text_run(&mut self, opaque: bool) {
-        if let Some(p) = &mut self.presentation {
+        self.presentation.begin_presentation_text_run(opaque);
+    }
+    pub(crate) fn end_presentation_text_run(&mut self) {
+        self.presentation.end_presentation_text_run();
+    }
+    pub(crate) fn begin_outline_glyph(
+        &mut self,
+        glyph: &Glyph,
+        data: &[u8],
+        x: i16,
+        y: i16,
+        bold: bool,
+        italic: Option<i16>,
+        underline: Option<(i16, i16)>,
+    ) {
+        self.presentation
+            .begin_outline_glyph(glyph, data, x, y, bold, italic, underline);
+    }
+    pub(crate) fn style_outline_glyph(
+        &mut self,
+        style: crate::quickdraw::text::QuickDrawTextStyle,
+    ) {
+        self.presentation.style_outline_glyph(style);
+    }
+    pub(crate) fn end_outline_glyph(&mut self) {
+        self.presentation.end_outline_glyph();
+    }
+}
+impl PresentationSlot {
+    pub(crate) fn begin_presentation_text_run(&mut self, opaque: bool) {
+        if let Some(mut p) = self.as_mut() {
             p.run_ink.clear();
             p.offscreen_run_ink.clear();
             p.in_text_run = opaque;
@@ -878,7 +1211,7 @@ impl MacMemoryBus {
     }
 
     pub(crate) fn end_presentation_text_run(&mut self) {
-        if let Some(p) = &mut self.presentation {
+        if let Some(mut p) = self.as_mut() {
             p.run_ink.clear();
             p.offscreen_run_ink.clear();
             p.in_text_run = false;
@@ -895,7 +1228,7 @@ impl MacMemoryBus {
         italic_descent: Option<i16>,
         underline: Option<(i16, i16)>,
     ) {
-        let Some(p) = &mut self.presentation else {
+        let Some(mut p) = self.as_mut() else {
             return;
         };
         if let Some(mut outline) = outline::presentation_glyph(glyph, data, p.scale) {
@@ -981,9 +1314,10 @@ impl MacMemoryBus {
         &mut self,
         style: crate::quickdraw::text::QuickDrawTextStyle,
     ) {
-        let Some(p) = &mut self.presentation else {
+        let Some(mut p) = self.as_mut() else {
             return;
         };
+        let p = &mut *p;
         let Some((glyph, _, _)) = &mut p.glyph else {
             return;
         };
@@ -1023,7 +1357,7 @@ impl MacMemoryBus {
     }
 
     pub(crate) fn end_outline_glyph(&mut self) {
-        if let Some(p) = &mut self.presentation {
+        if let Some(mut p) = self.as_mut() {
             p.glyph = None;
         }
     }
@@ -1118,6 +1452,7 @@ mod tests {
             assert!(!p.observes_range(0x3000, 0x1000));
             assert!(p.observes_range(0x1fff, 2));
             assert!(!p.observes_range(0x2000, 0));
+            drop(p);
             bus.fill_bytes(0x3000, 0x1000, 0);
             assert!(bus.presentation.as_ref().unwrap().detail(0x2000).is_some());
             write(&mut bus);
@@ -1129,6 +1464,24 @@ mod tests {
         assert_eq!(snapshot.detail.len(), 2);
         assert!(snapshot.detail.contains_key(&1));
         assert!(snapshot.detail.contains_key(&0x1001));
+    }
+
+    #[test]
+    fn screen_snapshot_ignores_detail_from_an_old_offscreen_mapping() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x2000);
+        let stale = bus.presentation.as_ref().unwrap().detail(0x2000).unwrap();
+        bus.presentation
+            .as_mut()
+            .unwrap()
+            .offscreen
+            .insert(0x1000, stale);
+        let original = bus.outline_presentation_rgb().unwrap().2;
+        let saved = bus.save_pixel_bytes(0x1000, 8);
+        assert!(saved.detail.is_empty());
+        bus.fill_bytes(0x1000, 8, 42);
+        bus.restore_saved_pixels(0x1000, &saved, 0, 8);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, original);
     }
 
     #[test]
@@ -1229,7 +1582,7 @@ mod tests {
         palette[255] = [255; 3];
         let screen = (0x1000, 8, 8, 8, 8);
         bus.prepare_outline_presentation(screen, palette);
-        let p = bus.presentation.as_mut().unwrap();
+        let mut p = bus.presentation.as_mut().unwrap();
         p.glyph = Some((
             OutlineGlyph {
                 pixels: vec![128, 255, 0, 0],
@@ -1245,6 +1598,7 @@ mod tests {
         p.glyph.as_mut().unwrap().0.pixels[1] = 0;
         p.glyph_pixel(0x1000, 0, 0, 2, 255);
         p.glyph = None;
+        drop(p);
         // Both foreground indexes were black when drawn. Retaining only RGB
         // cannot distinguish them after the CLUT assigns different colors.
         palette[0] = [255, 0, 0];
@@ -1290,7 +1644,7 @@ mod tests {
     #[test]
     fn clipped_coverage_blends_over_background_and_later_writes_erase_it() {
         let mut bus = bus();
-        let p = bus.presentation.as_mut().unwrap();
+        let mut p = bus.presentation.as_mut().unwrap();
         p.glyph = Some((
             OutlineGlyph {
                 pixels: vec![128; 8],
@@ -1306,6 +1660,7 @@ mod tests {
         // Only the first logical cell survives the caller's clipping region.
         p.glyph_pixel(0x1000, 0, 0, 0, 255);
         p.glyph_pixel(0x1000, 0, 0, 0, 255); // Repainting must not darken the edge.
+        drop(p);
         bus.write_byte(0x1000, 0); // Guest ink must not replace the blended plane.
         bus.end_outline_glyph();
         let (_, _, rgb, _) = bus.outline_presentation_rgb().unwrap();
@@ -1320,7 +1675,7 @@ mod tests {
     fn text_run_overhang_survives_adjacent_erase_but_not_a_new_run() {
         let mut bus = bus();
         bus.begin_presentation_text_run(true);
-        let p = bus.presentation.as_mut().unwrap();
+        let mut p = bus.presentation.as_mut().unwrap();
         p.glyph = Some((
             OutlineGlyph {
                 pixels: vec![128; 4],
@@ -1333,6 +1688,7 @@ mod tests {
             0,
         ));
         p.glyph_pixel(0x1001, 1, 0, 0, 255);
+        drop(p);
         bus.end_outline_glyph();
         bus.presentation.as_mut().unwrap().erasing_text = true;
         bus.write_byte(0x1001, 255);
@@ -1342,6 +1698,73 @@ mod tests {
         bus.begin_presentation_text_run(true);
         bus.write_byte(0x1001, 255);
         assert_eq!(&bus.outline_presentation_rgb().unwrap().2[6..12], &[255; 6]);
+    }
+
+    #[test]
+    fn rgba_and_argb_frontends_present_identical_pixels_and_overlay_positions() {
+        let mut bus = bus();
+        for depth in [8, 16, 32] {
+            let lanes = u32::from(depth / 8);
+            bus.enable_outline_presentation((0x1000, 8 * lanes, 8, 8, depth), [[255; 3]; 256], 4);
+            let guest = vec![0xffffffff; 64];
+            let mut overlay = guest.clone();
+            overlay[19] = 0xff12ab34;
+            let rgba = |pixels: &[u32]| {
+                pixels
+                    .iter()
+                    .flat_map(|p| {
+                        let [a, r, g, b] = p.to_be_bytes();
+                        [r, g, b, a]
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (w, h, argb) = bus.presented_argb(&guest, &overlay).unwrap();
+            let presented = bus.presented_rgba(&rgba(&guest), &rgba(&overlay)).unwrap();
+            assert_eq!(presented, (w, h, rgba(&argb)));
+            assert_eq!(argb[(2 * 4 * w + 3 * 4) as usize], 0xff12ab34);
+        }
+    }
+
+    #[test]
+    fn direct_color_planes_decode_guest_bytes_and_preserve_owned_detail() {
+        for depth in [16, 32] {
+            let mut bus = bus();
+            let lanes = u32::from(depth / 8);
+            bus.enable_outline_presentation((0x1000, 8 * lanes, 8, 8, depth), [[0; 3]; 256], 4);
+            let white = if depth == 16 {
+                vec![0x7f, 0xff]
+            } else {
+                vec![0, 255, 255, 255]
+            };
+            bus.write_bytes(0x1000, &white);
+            assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..12], &[255; 12]);
+            {
+                let mut p = bus.presentation.as_mut().unwrap();
+                p.glyph = Some((
+                    OutlineGlyph {
+                        pixels: vec![128; 16],
+                        width: 4,
+                        height: 4,
+                        left: 0,
+                        top: 0,
+                    },
+                    0,
+                    0,
+                ));
+                for lane in 0..lanes {
+                    p.glyph_pixel(0x1000 + lane, 0, 0, 0, white[lane as usize]);
+                }
+            }
+            bus.write_bytes(0x1000, &vec![0; lanes as usize]);
+            bus.end_outline_glyph();
+            let capture = bus.outline_presentation_rgb().unwrap().2;
+            assert!(capture[..12].iter().all(|&v| (126..=128).contains(&v)));
+            let saved = bus.save_pixel_bytes(0x1000, lanes as usize);
+            bus.write_bytes(0x1000, &vec![0; lanes as usize]);
+            assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..12], &[0; 12]);
+            bus.restore_saved_pixels(0x1000, &saved, 0, lanes as usize);
+            assert_eq!(bus.outline_presentation_rgb().unwrap().2, capture);
+        }
     }
 
     #[test]
@@ -1387,8 +1810,10 @@ mod tests {
         assert!(native.pixels.iter().any(|&a| a > 0 && a < 255));
         assert!(native.height > i32::from(glyph.height));
         let plain_width = native.width;
+        drop(p);
         bus.begin_outline_glyph(glyph, data, 0, 7, false, Some(2), Some((advance as i16, 1)));
-        let styled = &bus.presentation.as_ref().unwrap().glyph.as_ref().unwrap().0;
+        let p = bus.presentation.as_ref().unwrap();
+        let styled = &p.glyph.as_ref().unwrap().0;
         assert!(styled.width > plain_width);
         assert!(styled.top + styled.height >= 4);
         assert!(styled.pixels.iter().any(|&a| a > 0 && a < 255));
