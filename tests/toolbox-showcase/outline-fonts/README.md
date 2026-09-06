@@ -19,6 +19,10 @@ Velocity comparison below is retained from its separate dialog investigation.
 For the final Mac window appearance, use the [Metal output](#final-mac-window-scaling);
 the guest-resolution reference tables do not show the desktop's sharp text layer.
 
+The [complete 58-checkpoint review gallery](../README.md#68k-desktop-presentation)
+also captures every window, menu, dialog, selection and page transition through
+the 4× presentation surface. The five-page table here is a scale comparison.
+
 | Page | 2× (1600 × 1200) | 4× (3200 × 2400) |
 | --- | --- | --- |
 | TextEdit | [Open](2x/textedit.png) | [Open](4x/textedit.png) |
