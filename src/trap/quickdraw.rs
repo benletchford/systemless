@@ -3644,7 +3644,7 @@ impl super::TrapDispatcher {
                 // Port/region resolution, diagnostics, and picture/screen
                 // effects remain at this edge. The shared operation decides
                 // whether the resolved format, mode, and geometry belong to
-                // its rectangular byte-aligned srcCopy family.
+                // its rectangular byte-aligned or packed srcCopy family.
                 let row_copy_edge_eligible = !Self::region_is_complex(bus, vis_rgn_handle)
                     && !Self::region_is_complex(bus, clip_rgn_handle)
                     && !Self::region_is_complex(bus, mask_rgn)
@@ -35225,6 +35225,153 @@ mod tests {
 
     // ==================== CopyBits ====================
 
+    fn run_packed_identity_route(depth: u16, std_bits: bool) {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_base = bus.alloc(8);
+        let destination_base = bus.alloc(8);
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+        let (width, source_row, destination_row, expected_row) = match depth {
+            2 => (
+                8,
+                [0x1b, 0xe4, 0x91, 0],
+                [0x80, 0x01, 0x5a, 0],
+                [0x9b, 0xe5, 0x5a, 0],
+            ),
+            4 => (
+                6,
+                [0x01, 0x23, 0x45, 0x92],
+                [0xa0, 0x00, 0x0b, 0x5a],
+                [0xa1, 0x23, 0x4b, 0x5a],
+            ),
+            _ => unreachable!(),
+        };
+        let row_bytes = if depth == 2 { 3 } else { 4 };
+        write_pixmap_indexed(
+            &mut bus,
+            source_pixmap,
+            source_base,
+            row_bytes,
+            width,
+            2,
+            depth,
+            0,
+        );
+        write_pixmap_indexed(
+            &mut bus,
+            destination_pixmap,
+            destination_base,
+            row_bytes,
+            width,
+            2,
+            depth,
+            0,
+        );
+        for (pixmap, bounds) in [
+            (source_pixmap, [-2, 10, 0, 10 + width as i16]),
+            (destination_pixmap, [20, 30, 22, 30 + width as i16]),
+        ] {
+            for (offset, value) in [6, 8, 10, 12].into_iter().zip(bounds) {
+                bus.write_word(pixmap + offset, value as u16);
+            }
+        }
+        let mut source = source_row[..row_bytes as usize].repeat(2);
+        *source.last_mut().unwrap() ^= 1;
+        let mut destination = destination_row[..row_bytes as usize].repeat(2);
+        *destination.last_mut().unwrap() ^= 1;
+        bus.write_bytes(source_base, &source);
+        bus.write_bytes(destination_base, &destination);
+        let copy_right = if depth == 2 { 17 } else { 15 };
+        write_rect(&mut bus, source_rect, -2, 11, 0, copy_right);
+        write_rect(
+            &mut bus,
+            destination_rect,
+            20,
+            31,
+            22,
+            31 + (copy_right - 11),
+        );
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        if std_bits {
+            const PORT: u32 = 0x181000;
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(PORT + 2, destination_handle);
+            bus.write_word(PORT + 6, 0xc000);
+            *d.current_port = PORT;
+            bus.write_long(TEST_SP + 14, source_pixmap);
+            assert!(d
+                .dispatch_quickdraw(true, 0x0eb, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+            assert!(d
+                .dispatch_quickdraw(true, 0x0ec, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+        }
+        let mut expected = expected_row[..row_bytes as usize].repeat(2);
+        *expected.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            bus.read_bytes(destination_base, row_bytes as usize * 2),
+            expected,
+            "depth={depth}, std_bits={std_bits}"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_bytes(destination_base, &destination);
+        let (unequal_source_right, unequal_destination_right, unequal_expected) = if depth == 2 {
+            (17, 36, &[0x6f, 0x91, 0x5a][..])
+        } else {
+            (15, 34, &[0x12, 0x34, 0x0b, 0x5a][..])
+        };
+        write_rect(&mut bus, source_rect, -2, 11, -1, unequal_source_right);
+        write_rect(
+            &mut bus,
+            destination_rect,
+            20,
+            30,
+            21,
+            unequal_destination_right,
+        );
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        assert_eq!(
+            bus.read_bytes(destination_base, row_bytes as usize),
+            unequal_expected,
+            "unequal field offsets: depth={depth}, std_bits={std_bits}"
+        );
+    }
+
+    #[test]
+    fn copy_bits_packed_identity_preserves_edges_and_padding() {
+        for depth in [2, 4] {
+            run_packed_identity_route(depth, false);
+        }
+    }
+
+    #[test]
+    fn std_bits_packed_identity_preserves_edges_and_padding() {
+        for depth in [2, 4] {
+            run_packed_identity_route(depth, true);
+        }
+    }
+
     #[test]
     fn test_copy_bits() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
@@ -36045,6 +36192,143 @@ mod tests {
                 [0, 1, 2, 3, 0, 1, 2, 7, 4, 5, 6, 11, 8, 9, 10, 15],
                 "trap=${trap:03X}"
             );
+        }
+    }
+
+    #[test]
+    fn copybits_and_stdbits_snapshot_packed_distinct_guest_aliases() {
+        const SOURCE: u32 = 0x00D0_0000;
+        const DESTINATION: u32 = 0x00E0_0000;
+        for trap in [0x0EC, 0x0EB] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let mut memory = GuestAddressSpace::new();
+            let backing = SharedRamRegion::from_owned_bytes(vec![
+                0x1b, 0xe4, 0xaa, 0xe4, 0x1b, 0xbb, 0, 0, 0xcc,
+            ]);
+            // SAFETY: the trap accesses both aliases serially through one
+            // attached bus, and no byte slice survives a memory call.
+            unsafe {
+                memory.add_shared_region(SOURCE, backing.clone());
+                memory.add_shared_region(DESTINATION, backing);
+            }
+            bus.attach_guest_address_space(memory.shared_view());
+
+            let port = 0x181000;
+            let source_pixmap = bus.alloc(50);
+            let destination_pixmap = bus.alloc(50);
+            let destination_handle = bus.alloc(4);
+            let rect = bus.alloc(8);
+            write_pixmap_indexed(&mut bus, source_pixmap, SOURCE, 3, 8, 2, 2, 0);
+            write_pixmap_indexed(&mut bus, destination_pixmap, DESTINATION + 3, 3, 8, 2, 2, 0);
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(port + 2, destination_handle);
+            bus.write_word(port + 6, 0xC000);
+            bus.write_long(port + 24, 0);
+            bus.write_long(port + 28, 0);
+            *d.current_port = port;
+            write_rect(&mut bus, rect, 0, 0, 2, 8);
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 6, rect);
+            bus.write_long(TEST_SP + 10, rect);
+            bus.write_long(
+                TEST_SP + 14,
+                if trap == 0x0EC {
+                    destination_pixmap
+                } else {
+                    source_pixmap
+                },
+            );
+            if trap == 0x0EC {
+                bus.write_long(TEST_SP + 18, source_pixmap);
+            }
+            assert!(d
+                .dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+
+            let mut actual = [0; 9];
+            memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+            assert_eq!(
+                actual,
+                [0x1b, 0xe4, 0xaa, 0x1b, 0xe4, 0xbb, 0xe4, 0x1b, 0xcc],
+                "trap=${trap:03X}"
+            );
+        }
+    }
+
+    #[test]
+    fn copybits_and_stdbits_packed_failures_do_not_fallback() {
+        const SOURCE: u32 = 0x00D0_0000;
+        const DESTINATION: u32 = 0x00E0_0000;
+        for trap in [0x0EC, 0x0EB] {
+            for source_failure in [true, false] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(
+                    SOURCE,
+                    if source_failure {
+                        vec![0x1b, 0xe4, 0xaa]
+                    } else {
+                        vec![0x1b, 0xe4, 0xaa, 0xe4, 0x1b, 0xbb]
+                    },
+                );
+                memory.add_region(DESTINATION, vec![0x80, 0x01, 0x5a, 0x81, 0x02, 0x5b]);
+                if !source_failure {
+                    memory.add_readonly_region(DESTINATION + 3, vec![0x81, 0x02]);
+                }
+                bus.attach_guest_address_space(memory.shared_view());
+
+                let port = 0x181000;
+                let source_pixmap = bus.alloc(50);
+                let destination_pixmap = bus.alloc(50);
+                let destination_handle = bus.alloc(4);
+                let rect = bus.alloc(8);
+                write_pixmap_indexed(&mut bus, source_pixmap, SOURCE, 3, 8, 2, 2, 0);
+                write_pixmap_indexed(&mut bus, destination_pixmap, DESTINATION, 3, 8, 2, 2, 0);
+                bus.write_long(destination_handle, destination_pixmap);
+                bus.write_long(port + 2, destination_handle);
+                bus.write_word(port + 6, 0xC000);
+                bus.write_long(port + 24, 0);
+                bus.write_long(port + 28, 0);
+                *d.current_port = port;
+                write_rect(&mut bus, rect, 0, 1, 2, 7);
+
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 0);
+                bus.write_long(TEST_SP + 6, rect);
+                bus.write_long(TEST_SP + 10, rect);
+                bus.write_long(
+                    TEST_SP + 14,
+                    if trap == 0x0EC {
+                        destination_pixmap
+                    } else {
+                        source_pixmap
+                    },
+                );
+                if trap == 0x0EC {
+                    bus.write_long(TEST_SP + 18, source_pixmap);
+                }
+                assert!(d
+                    .dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+
+                let mut actual = [0; 6];
+                memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+                let expected = if source_failure {
+                    [0x80, 0x01, 0x5a, 0x81, 0x02, 0x5b]
+                } else {
+                    [0x9b, 0xe5, 0x5a, 0x81, 0x02, 0x5b]
+                };
+                assert_eq!(
+                    actual, expected,
+                    "trap=${trap:03X}, source_failure={source_failure}"
+                );
+            }
         }
     }
 
