@@ -6228,7 +6228,13 @@ impl FixtureRunner {
                     return (count, false);
                 }
                 BatchExit::AlineTrap { opcode } => {
-                    self.m68k.complete_manager_return(&self.bus);
+                    if self.m68k.complete_manager_return(&self.bus)
+                        && self
+                            .dispatcher
+                            .resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
+                    {
+                        continue;
+                    }
                     // Accounting (count/ticks) happened via `executed`
                     // above. The batch may have retired instructions before
                     // the trap, so the loop-top `pc` is stale; the trap
@@ -7057,7 +7063,13 @@ impl FixtureRunner {
                     break;
                 }
                 BatchExit::AlineTrap { opcode } => {
-                    self.m68k.complete_manager_return(&self.bus);
+                    if self.m68k.complete_manager_return(&self.bus)
+                        && self
+                            .dispatcher
+                            .resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
+                    {
+                        continue;
+                    }
                     if !self.dispatcher.aline_vector_is_default(&self.bus) {
                         self.m68k.cpu.core.take_aline_exception(&mut self.bus);
                         continue;

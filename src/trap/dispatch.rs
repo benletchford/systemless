@@ -7331,7 +7331,11 @@ impl TrapDispatcher {
         cfm: Option<&crate::cfm::CfmState>,
         bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
     ) -> Result<()> {
-        crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus);
+        if crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus)
+            && self.resume_completed_menu_bar_build(cpu, bus)
+        {
+            return Ok(());
+        }
         self.initialize_trap_tables(bus)?;
         // Low-memory Ticks is guest-owned writable state. Import it at the
         // ABI boundary before any manager, trace, or diagnostic path observes

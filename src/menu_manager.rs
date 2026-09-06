@@ -193,6 +193,16 @@ impl<Handle: Copy + PartialEq> MenuBarBuild<Handle> {
         }
     }
 
+    /// Only this build's published, unconsumed callback receipt can resume it.
+    pub(crate) fn callback_ready(&self) -> bool {
+        self.completion.as_ref().is_some_and(|completion| {
+            matches!(
+                *completion.0.borrow(),
+                MenuDefinitionCompletionState::Ready(_)
+            )
+        })
+    }
+
     pub(crate) fn next_step(&mut self) -> Option<MenuBarBuildStep<Handle>> {
         if let Some(completion) = self.completion.as_ref() {
             // mSizeMsg publishes dimensions in the live menu record, not its
