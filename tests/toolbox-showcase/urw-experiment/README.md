@@ -9,6 +9,13 @@ presentation captures are identified separately.
 
 ## Higher-resolution direction
 
+The latest [2× versus 4× real-showcase comparison](presentation-4x/README.md)
+also corrects repeated-edge darkening and adjacent-character overhang erasure.
+Both sizes use the updated compositor; the original 2× captures below remain
+as a record of the preceding revision.
+
+![2× versus 4× text detail](presentation-4x/text-detail-comparison.png)
+
 Both one-bit URW versions failed visual review. The new
 [real 2× Toolbox Showcase captures](presentation/README.md) now run the guest
 with an opt-in high-resolution presentation plane. TextEdit paragraphs, headings,
