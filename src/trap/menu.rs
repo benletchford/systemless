@@ -1,6 +1,6 @@
 //! Menu Manager trap handlers.
 
-use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin};
+use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin, MenuTrackingCall, MenuTrackingOrigin};
 use crate::cpu::{CpuOps, Register};
 use crate::guest_call::GuestCallTarget;
 use crate::guest_procedure::{resolve_guest_procedure, GuestIsa};
@@ -26,7 +26,7 @@ use crate::menu_manager::{
     MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane,
     MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, ProcessMenuTrackingState,
-    PopupMenuRequest, ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
+    MenuTrackingRequest, PopupMenuRequest, ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
     StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
     STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
@@ -657,7 +657,7 @@ impl super::TrapDispatcher {
             self.restore_visible_dialog_snapshots(bus);
         }
         self.restore_menu_definition_port(cpu, bus);
-        self.finish_menu_no_hit(bus, cpu, self.menu_tracking.context().classic_stack, result_offset);
+        self.finish_menu_no_hit(bus, cpu, self.menu_tracking.context().classic_stack(), result_offset);
     }
 
     fn finish_custom_menu_tracking<C: CpuOps>(
@@ -679,7 +679,7 @@ impl super::TrapDispatcher {
             self.restore_visible_dialog_snapshots(bus);
         }
         self.restore_menu_definition_port(cpu, bus);
-        let sp = self.menu_tracking.context().classic_stack;
+        let sp = self.menu_tracking.context().classic_stack();
         bus.write_long(sp + result_offset, result);
         cpu.write_reg(Register::A7, sp + result_offset);
     }
@@ -1731,8 +1731,26 @@ impl super::TrapDispatcher {
     ) -> Option<Result<()>> {
         self.menu_tracking.bind_execution(&self.guest_calls);
         self.retire_menu_definition(cpu, bus);
-        let _menu_root =
-            (is_tool && matches!(trap_num, 0x13d | 0x00b)).then(|| self.menu_tracking.enter());
+        let _menu_root = (is_tool && matches!(trap_num, 0x13d | 0x00b)).then(|| {
+            let sp = cpu.read_reg(Register::A7);
+            let request = if trap_num == 0x00b {
+                MenuTrackingRequest::PopUp(PopupMenuRequest {
+                    menu_handle: bus.read_long(sp + 6),
+                    anchor: (bus.read_word(sp + 4) as i16, bus.read_word(sp + 2) as i16),
+                    requested_item: bus.read_word(sp) as i16,
+                })
+            } else {
+                MenuTrackingRequest::MenuSelect { initial_point: bus.read_long(sp) }
+            };
+            self.menu_tracking.enter_call(MenuTrackingCall {
+                request,
+                origin: MenuTrackingOrigin::M68k {
+                    stack_pointer: sp,
+                    return_address: self.current_trap_caller
+                        .unwrap_or_else(|| cpu.read_reg(Register::PC)),
+                },
+            })
+        });
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // InitMenus ($A930)
@@ -2134,10 +2152,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-355
             // MenuSelect ($A93D): Full mouse tracking with dropdown, highlighting, flashing
             (true, 0x13D) => {
-                if self
-                    .menu_tracking
-                    .as_ref()
-                    .is_some_and(|tracking| tracking.front_buffer.is_some())
+                if self.menu_tracking.context().caller_isa() == Some(GuestIsa::PowerPc)
                 {
                     // A native MenuSelect owns this process continuation. A
                     // nested 68k call must not consume its presentation state
@@ -2238,10 +2253,9 @@ impl super::TrapDispatcher {
                                     && mv < mbar_h
                                 {
                                     let old_saved = self.menu_tracking.take().unwrap();
-                                    let sp = self.menu_tracking.context().classic_stack;
                                     self.clear_active_menu_definition();
                                     self.restore_menu_tracking_pixels(bus, old_saved);
-                                    if self.open_menu_dropdown(bus, new_idx, sp) {
+                                    if self.open_menu_dropdown(bus, new_idx) {
                                         self.prepare_menu_definition_port(cpu, bus);
                                         if !self.arm_pending_menu_definition(
                                             cpu,
@@ -2305,7 +2319,7 @@ impl super::TrapDispatcher {
                             self.menu_tracking.as_mut().unwrap().advance_flash()
                         {
                             // Flash complete — finish up
-                            let sp = self.menu_tracking.context().classic_stack;
+                            let sp = self.menu_tracking.context().classic_stack();
                             let saved = self.menu_tracking.take().unwrap();
                             let active_menu = saved
                                 .submenus
@@ -2404,7 +2418,7 @@ impl super::TrapDispatcher {
                                 .menu_tracking
                                 .as_ref()
                                 .map(|tracking| {
-                                    (self.menu_tracking.context().classic_stack, tracking.menu_handle)
+                                    (self.menu_tracking.context().classic_stack(), tracking.menu_handle)
                                 })
                                 .unwrap();
                             let saved = self.menu_tracking.take().unwrap();
@@ -2436,9 +2450,8 @@ impl super::TrapDispatcher {
                             {
                                 // Switch to different menu
                                 let old_saved = self.menu_tracking.take().unwrap();
-                                let sp = self.menu_tracking.context().classic_stack;
                                 self.restore_menu_tracking_pixels(bus, old_saved);
-                                if self.open_menu_dropdown(bus, new_idx, sp) {
+                                if self.open_menu_dropdown(bus, new_idx) {
                                     self.prepare_menu_definition_port(cpu, bus);
                                     if !self.arm_pending_menu_definition(
                                         cpu,
@@ -2533,7 +2546,7 @@ impl super::TrapDispatcher {
                         // Pop the Point parameter (4 bytes) but keep result space
                         // Stack on entry: SP+0: pt(4), SP+4: result(4)
                         // We store SP so we can write result later
-                        if self.open_menu_dropdown(bus, menu_idx, sp) {
+                        if self.open_menu_dropdown(bus, menu_idx) {
                             self.prepare_menu_definition_port(cpu, bus);
                             if !self.arm_pending_menu_definition(
                                 cpu,
@@ -2574,10 +2587,7 @@ impl super::TrapDispatcher {
             // Macintosh Toolbox Essentials 1992, 3-120
             // PopUpMenuSelect ($A80B): Full re-fire tracking with dropdown display, item highlighting, flash animation; uses MenuTrackingState
             (true, 0x00B) => {
-                if self
-                    .menu_tracking
-                    .as_ref()
-                    .is_some_and(|tracking| tracking.front_buffer.is_some())
+                if self.menu_tracking.context().caller_isa() == Some(GuestIsa::PowerPc)
                 {
                     // Preserve an outer native retained call and return from
                     // this nested Pascal call through its own result slot.
@@ -2690,7 +2700,7 @@ impl super::TrapDispatcher {
                         if let MenuFlashStep::Complete(result) =
                             self.menu_tracking.as_mut().unwrap().advance_flash()
                         {
-                            let sp = self.menu_tracking.context().classic_stack;
+                            let sp = self.menu_tracking.context().classic_stack();
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
@@ -2715,7 +2725,7 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 10, result);
                             }
                         } else {
-                            let sp = self.menu_tracking.context().classic_stack;
+                            let sp = self.menu_tracking.context().classic_stack();
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
@@ -2763,7 +2773,6 @@ impl super::TrapDispatcher {
                                 (0, 0, 0, 0),
                                 Vec::new(),
                             ));
-                            self.menu_tracking.context_mut().classic_stack = sp;
                             self.menu_tracking.context_mut().definition =
                                 Some(request.begin_definition());
                             self.prepare_menu_definition_port(cpu, bus);
@@ -2801,7 +2810,6 @@ impl super::TrapDispatcher {
                         ));
                         let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
                         Self::write_menu_scrolling_globals(bus, &rows, content_top);
-                        self.menu_tracking.context_mut().classic_stack = sp;
                         self.draw_menu_dropdown(bus, menu_idx, dd_rect);
                         if highlighted_item > 0 {
                             self.set_menu_tracking_highlight(bus, highlighted_item);
@@ -4390,7 +4398,6 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         menu_idx: usize,
-        stack_ptr: u32,
     ) -> bool {
         // Fault in this menu's icon resources while `self` is still
         // mutable; the draw path below reads them through `&self` only.
@@ -4459,7 +4466,6 @@ impl super::TrapDispatcher {
             let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
             Self::write_menu_scrolling_globals(bus, &rows, dropdown_rect.0);
         }
-        self.menu_tracking.context_mut().classic_stack = stack_ptr;
         custom_definition
     }
 
@@ -7446,6 +7452,82 @@ mod tests {
             bus.read_bytes(trampoline + 60, 10),
             invocation.scratch_bytes()
         );
+    }
+
+    #[test]
+    fn classic_tracking_retains_original_return_for_both_menu_entry_forms() {
+        use crate::guest_call::{MenuTrackingCall, MenuTrackingOrigin};
+        use crate::memory::globals::addr;
+        use crate::menu_manager::{MenuTrackingRequest, PopupMenuRequest};
+        for opcode in [0xa93d, 0xad3d, 0xa80b, 0xac0b] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+            disp.menu_bar_hidden = false;
+            bus.write_word(addr::MBAR_HEIGHT, 20);
+            bus.write_word(addr::MENU_FLASH, 0);
+            let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 337, 0x306E40, "File");
+            append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x306E80, "One;Two");
+            insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+            disp.draw_menu_bar_to_fb(&mut bus);
+            let auto_pop = opcode & 0x0400 != 0;
+            let popup = opcode & !0x0400 == 0xa80b;
+            let trap_pc = 0x0012_3600;
+            let parameters = TEST_SP + if auto_pop { 4 } else { 0 };
+            let return_pc = trap_pc + if auto_pop { 0x100 } else { 2 };
+            if auto_pop {
+                bus.write_long(TEST_SP, return_pc);
+            }
+            let request = if popup {
+                bus.write_word(parameters, 1);
+                bus.write_word(parameters + 2, 30);
+                bus.write_word(parameters + 4, 30);
+                bus.write_long(parameters + 6, handle);
+                MenuTrackingRequest::PopUp(PopupMenuRequest {
+                    menu_handle: handle,
+                    anchor: (30, 30),
+                    requested_item: 1,
+                })
+            } else {
+                let initial_point = (10u32 << 16) | 12;
+                bus.write_long(parameters, initial_point);
+                MenuTrackingRequest::MenuSelect { initial_point }
+            };
+            bus.write_byte(addr::MB_STATE, 0);
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(Register::A7, TEST_SP);
+            disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                disp.menu_tracking.context().call,
+                Some(MenuTrackingCall {
+                    request,
+                    origin: MenuTrackingOrigin::M68k {
+                        stack_pointer: parameters,
+                        return_address: return_pc
+                    },
+                }),
+                "opcode {opcode:04x}"
+            );
+            let state = disp
+                .menu_tracking
+                .as_ref()
+                .expect("standard menu remains live until release");
+            bus.write_word(addr::MOUSE_LOC2, (state.popup_top + 8) as u16);
+            bus.write_word(addr::MOUSE_LOC2 + 2, (state.popup_left + 8) as u16);
+            bus.write_byte(addr::MB_STATE, 0x80);
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+            let result_slot = parameters + if popup { 10 } else { 4 };
+            assert_eq!(
+                bus.read_long(result_slot),
+                (337u32 << 16) | 1,
+                "opcode {opcode:04x}"
+            );
+            assert_eq!(cpu.read_reg(Register::A7), result_slot);
+            assert_eq!(cpu.read_reg(Register::PC), return_pc);
+            assert!(disp.menu_tracking.is_none());
+            assert_eq!(disp.menu_tracking.context().call, None);
+            assert!(disp.guest_calls.is_empty());
+        }
     }
 
     #[test]
@@ -13579,7 +13661,7 @@ mod tests {
             super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0xFFFF; 3]).unwrap();
         let black = super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0; 3]).unwrap();
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
 
         assert_eq!(
             disp.menu_tracking.as_ref().unwrap().dropdown_rect(),
@@ -13634,7 +13716,7 @@ mod tests {
         let wide_item_width =
             super::super::TrapDispatcher::fb_measure_string("Wide Underline", 0, 12) + 32;
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
 
         assert_eq!(
             expected_width, wide_item_width,
@@ -13704,7 +13786,7 @@ mod tests {
             .standard_menu_width(&bus, &disp.menus[0].items)
             .max(regions[0].1 - regions[0].0 + 20);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -13804,7 +13886,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"SICN", 263, &sicn);
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -13850,7 +13932,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"SICN", 263, &sicn);
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -13946,7 +14028,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"ICON", 263, &icon);
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -14319,7 +14401,7 @@ mod tests {
             "Open/O;Close/W",
         );
         insert_menu(&mut disp, &mut cpu, &mut bus, handle);
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         assert!(
             disp.menu_tracking.is_some(),
             "precondition: dropdown tracking should be active"

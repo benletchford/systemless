@@ -618,36 +618,95 @@ struct MenuCalls {
     next_id: u64,
 }
 
+/// The original caller's return boundary, independent of menu presentation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativeMenuSelectOrigin {
-    pub(crate) initial_point: u32,
-    pub(crate) return_address: u32,
+pub(crate) enum MenuTrackingOrigin {
+    M68k {
+        stack_pointer: u32,
+        return_address: u32,
+    },
+    PowerPc {
+        stack_pointer: u32,
+        return_address: u32,
+    },
+}
+
+impl MenuTrackingOrigin {
+    pub(crate) fn isa(self) -> GuestIsa {
+        match self {
+            Self::M68k { .. } => GuestIsa::M68k,
+            Self::PowerPc { .. } => GuestIsa::PowerPc,
+        }
+    }
+    pub(crate) fn return_address(self) -> u32 {
+        match self {
+            Self::M68k { return_address, .. } | Self::PowerPc { return_address, .. } => {
+                return_address
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NativePopupMenuOrigin {
-    pub(crate) request: crate::menu_manager::PopupMenuRequest,
-    pub(crate) stack_pointer: u32,
-    pub(crate) return_address: u32,
+pub(crate) struct MenuTrackingCall {
+    pub(crate) request: crate::menu_manager::MenuTrackingRequest,
+    pub(crate) origin: MenuTrackingOrigin,
+}
+
+impl MenuTrackingCall {
+    pub(crate) fn popup_request(self) -> Option<crate::menu_manager::PopupMenuRequest> {
+        match self.request {
+            crate::menu_manager::MenuTrackingRequest::PopUp(request) => Some(request),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MenuTrackingContext {
     pub(crate) tracking: Option<crate::menu_manager::ProcessMenuTrackingState>,
     pub(crate) definition: Option<crate::menu_manager::MenuDefinitionTracking>,
-    pub(crate) native_menu: Option<NativeMenuSelectOrigin>,
-    pub(crate) native_popup: Option<NativePopupMenuOrigin>,
+    pub(crate) call: Option<MenuTrackingCall>,
     pub(crate) native_port: Option<(u32, u32)>,
     pub(crate) classic_port: Option<crate::trap::dispatch::PortStateSnapshot>,
-    pub(crate) classic_stack: u32,
 }
 
 impl MenuTrackingContext {
+    pub(crate) fn caller_isa(&self) -> Option<GuestIsa> {
+        self.call.map(|call| call.origin.isa())
+    }
+    pub(crate) fn native_menu(&self) -> Option<MenuTrackingCall> {
+        self.call.filter(|call| {
+            call.origin.isa() == GuestIsa::PowerPc
+                && matches!(
+                    call.request,
+                    crate::menu_manager::MenuTrackingRequest::MenuSelect { .. }
+                )
+        })
+    }
+    pub(crate) fn native_popup(&self) -> Option<MenuTrackingCall> {
+        self.call
+            .filter(|call| call.origin.isa() == GuestIsa::PowerPc && call.popup_request().is_some())
+    }
+    pub(crate) fn clear_native_menu(&mut self) {
+        if self.native_menu().is_some() {
+            self.call = None;
+        }
+    }
+    pub(crate) fn clear_native_popup(&mut self) {
+        if self.native_popup().is_some() {
+            self.call = None;
+        }
+    }
+    pub(crate) fn classic_stack(&self) -> u32 {
+        match self.call.map(|call| call.origin) {
+            Some(MenuTrackingOrigin::M68k { stack_pointer, .. }) => stack_pointer,
+            _ => panic!("classic menu call must be prepared before tracking"),
+        }
+    }
     fn is_idle(&self) -> bool {
         self.tracking.is_none()
             && self.definition.is_none()
-            && self.native_menu.is_none()
-            && self.native_popup.is_none()
             && self.native_port.is_none()
             && self.classic_port.is_none()
     }
@@ -767,6 +826,11 @@ impl SharedMenuTracking {
             _ => unreachable!(),
         }
     }
+    pub(crate) fn enter_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
+        let entry = self.enter();
+        self.context_mut().call.get_or_insert(call);
+        entry
+    }
     pub(crate) fn enter(&mut self) -> MenuTrackingEntry {
         let id = self.begin();
         MenuTrackingEntry {
@@ -826,6 +890,12 @@ impl SharedMenuTracking {
             .kernel
             .peek(task)
             .map(|call| call.call_id());
+        // Cancellation can empty a root outside its original ABI entry.
+        // A subsequent entry starts a fresh operation and cannot inherit its caller.
+        self.calls.calls.retain(|call| {
+            call.task != task || call.parent != parent
+                || !matches!(&call.operation, MenuOperation::Tracking(context) if context.is_idle())
+        });
         if let Some(call) = self.calls.calls.iter().rev().find(|call| {
             call.task == task
                 && call.parent == parent
@@ -3125,6 +3195,70 @@ mod tests {
     }
 
     #[test]
+    fn tracking_reentry_preserves_the_original_request_and_return_boundary() {
+        use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
+        for origin in [
+            MenuTrackingOrigin::M68k {
+                stack_pointer: 0x1000,
+                return_address: 0x2000,
+            },
+            MenuTrackingOrigin::PowerPc {
+                stack_pointer: 0x3000,
+                return_address: 0x4000,
+            },
+        ] {
+            let calls = SharedGuestCallStack::default();
+            let mut tracking = calls.menu_tracking_view();
+            let original = MenuTrackingCall {
+                request: MenuTrackingRequest::MenuSelect {
+                    initial_point: 0x1234_5678,
+                },
+                origin,
+            };
+            let entry = tracking.enter_call(original);
+            *tracking = Some(test_process_menu_tracking(111));
+            let reentry = tracking.enter_call(MenuTrackingCall {
+                request: MenuTrackingRequest::MenuSelect { initial_point: 0 },
+                origin: MenuTrackingOrigin::PowerPc {
+                    stack_pointer: 0x5000,
+                    return_address: 0x6000,
+                },
+            });
+            assert_eq!(entry.id, reentry.id);
+            assert_eq!(tracking.context().call, Some(original));
+            assert_eq!(tracking.context().caller_isa(), Some(origin.isa()));
+            drop(reentry);
+            assert_eq!(tracking.context().call, Some(original));
+            *tracking = None;
+            drop(entry);
+            assert!(calls.is_empty());
+            assert_eq!(tracking.context().call, None);
+            let cancelled = tracking.enter_call(original);
+            *tracking = Some(test_process_menu_tracking(222));
+            *tracking = None;
+            let replacement = MenuTrackingCall {
+                request: MenuTrackingRequest::MenuSelect { initial_point: 9 },
+                origin: MenuTrackingOrigin::PowerPc {
+                    stack_pointer: 0x7000,
+                    return_address: 0x8000,
+                },
+            };
+            let fresh = tracking.enter_call(replacement);
+            assert_ne!(cancelled.id, fresh.id);
+            drop(cancelled);
+            assert_eq!(tracking.context().call, Some(replacement));
+            drop(fresh);
+            let idle = tracking.enter_call(original);
+            drop(idle);
+            assert!(
+                calls.is_empty(),
+                "an immediate return cannot retain an idle call record"
+            );
+            assert_eq!(tracking.context().call, None);
+        }
+    }
+
+    #[test]
     fn menu_tracking_roots_preserve_parent_state_and_exact_receipts() {
         use crate::menu_manager::{
             test_process_menu_tracking, MenuDefinitionCompletion, MenuDefinitionMessage,
@@ -3135,13 +3269,15 @@ mod tests {
         let outer = tracking.enter();
         let outer_id = outer.id;
         *tracking = Some(test_process_menu_tracking(111));
-        tracking.context_mut().native_menu = Some(NativeMenuSelectOrigin {
-            initial_point: 12,
-            return_address: 0x1234,
+        tracking.context_mut().call = Some(MenuTrackingCall {
+            request: crate::menu_manager::MenuTrackingRequest::MenuSelect { initial_point: 12 },
+            origin: MenuTrackingOrigin::PowerPc {
+                stack_pointer: 0x1000,
+                return_address: 0x1234,
+            },
         });
         tracking.context_mut().native_port = Some((0x2000, 0x3000));
-        tracking.context_mut().definition =
-            Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
+        tracking.context_mut().definition = Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
         let invocation = tracking
             .context()
             .definition
@@ -3172,8 +3308,7 @@ mod tests {
         assert!(tracking.is_none());
         assert_eq!(tracking.context().native_port, None);
         *tracking = Some(test_process_menu_tracking(222));
-        tracking.context_mut().definition =
-            Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
+        tracking.context_mut().definition = Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
         MenuDefinitionOperation {
             scratch: 0,
             completion,
@@ -3197,7 +3332,12 @@ mod tests {
         assert_eq!(tracking.as_ref().unwrap().menu_handle, 111);
         assert_eq!(tracking.context().native_port, Some((0x2000, 0x3000)));
         assert_eq!(
-            tracking.context().native_menu.unwrap().return_address,
+            tracking
+                .context()
+                .native_menu()
+                .unwrap()
+                .origin
+                .return_address(),
             0x1234
         );
         assert!(calls.complete_m68k(0x4002, 0x5000));
@@ -3276,19 +3416,23 @@ mod tests {
         let owned = tracking.enter();
         assert_ne!(main.id, owned.id);
         *tracking = Some(crate::menu_manager::test_process_menu_tracking(222));
-        tracking.context_mut().native_popup = Some(NativePopupMenuOrigin {
-            request: crate::menu_manager::PopupMenuRequest {
-                menu_handle: 222,
-                anchor: (20, 30),
-                requested_item: 2,
+        tracking.context_mut().call = Some(MenuTrackingCall {
+            request: crate::menu_manager::MenuTrackingRequest::PopUp(
+                crate::menu_manager::PopupMenuRequest {
+                    menu_handle: 222,
+                    anchor: (20, 30),
+                    requested_item: 2,
+                },
+            ),
+            origin: MenuTrackingOrigin::PowerPc {
+                stack_pointer: 0x4000,
+                return_address: 0x5000,
             },
-            stack_pointer: 0x4000,
-            return_address: 0x5000,
         });
         tracking.context_mut().native_port = Some((0x6000, 0x7000));
         assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
         assert_eq!(tracking.as_ref().unwrap().menu_handle, 111);
-        assert_eq!(tracking.context().native_popup, None);
+        assert_eq!(tracking.context().native_popup(), None);
         assert!(calls.remove_task(worker));
         drop(owned);
         assert_eq!(calls.0.borrow().menu_calls.calls.len(), 1);

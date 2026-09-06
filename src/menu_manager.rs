@@ -2387,6 +2387,13 @@ const STANDARD_POPUP_SCREEN_MARGIN: i16 = 4;
 const STANDARD_POPUP_BOTTOM_RESERVE: i16 = 20;
 const STANDARD_POPUP_SCROLL_STEP: i16 = 16;
 
+/// Logical entry to a retained Menu Manager interaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuTrackingRequest {
+    MenuSelect { initial_point: u32 },
+    PopUp(PopupMenuRequest),
+}
+
 /// Logical PopUpMenuSelect arguments, independent of the caller's return ABI.
 /// Macintosh Toolbox Essentials (1992), pp. 3-119--3-120.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
