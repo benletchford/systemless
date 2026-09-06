@@ -5903,6 +5903,15 @@ impl super::TrapDispatcher {
         );
 
         self.restore_user_item_preserved_pixels(bus, &user_item_rects, &user_item_backups);
+        // Restored user-item backgrounds can overlap manager-owned picture
+        // items. DrawDialog must still render those items (MTE 1992, 6-142).
+        if !skip_pictures && !user_item_backups.is_empty() {
+            for item in items {
+                if item.item_type & 0x7F == 64 && item.resource_id != 0 {
+                    self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
+                }
+            }
+        }
         self.capture_gui_frame(bus, &format!("draw_dialog_preserved_{:08X}", dialog_ptr));
     }
 
@@ -6095,6 +6104,91 @@ impl super::TrapDispatcher {
                     }
                 }
             }
+        }
+    }
+
+    fn draw_dialog_picture_item(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        item: &DialogItem,
+        dialog_ptr: u32,
+    ) {
+        let (top, left, bottom, right) = bounds;
+        let (_, _, screen_width, screen_height, _) = self.get_screen_params();
+        let abs_top = top + item.rect.0;
+        let abs_left = left + item.rect.1;
+        let abs_bottom = top + item.rect.2;
+        let abs_right = left + item.rect.3;
+        if let Some((_, pic_ptr)) = self.find_or_load_resource_any(bus, *b"PICT", item.resource_id)
+        {
+            // Draw PICT into the item's display rectangle.
+            // DrawPicture must map against the port's logical
+            // ColorTable (or stable color_manager_clut), NOT
+            // the transient hardware CLUT state (device_clut),
+            // which may be faded down to black mid-transition.
+            // Imaging With QuickDraw 1994, p. 7-11, 7-14.
+            let dialog_clut = if dialog_ptr != 0 {
+                let port_version = bus.read_word(dialog_ptr + 6);
+                let is_cgraf_port = (port_version & 0xC000) == 0xC000;
+                let ctab_handle = if is_cgraf_port {
+                    let pm_handle = bus.read_long(dialog_ptr + 2);
+                    if pm_handle != 0 {
+                        let pm_ptr = bus.read_long(pm_handle);
+                        if pm_ptr != 0 {
+                            bus.read_long(pm_ptr + 42)
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                self.read_port_clut(bus, ctab_handle)
+            } else {
+                *self.color_manager_clut
+            };
+            let device_ct_seed =
+                Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus)).unwrap_or(0);
+            // Picture items draw through the dialog port. Preserve
+            // their destination geometry while clipping to content,
+            // visRgn and clipRgn (including nonrectangular regions).
+            // Imaging With QuickDraw 1994, pp. 2-11–2-12.
+            let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, dialog_ptr);
+            let mut picture_clip = Self::drawpicture_current_port_pixel_clip(
+                bus,
+                dialog_ptr,
+                bounds_top,
+                bounds_left,
+                screen_width.max(0) as u16,
+                screen_height.max(0) as u16,
+            )
+            .unwrap_or_else(|| {
+                super::pict::DstClip::new(
+                    (0, 0, i32::from(screen_height), i32::from(screen_width)),
+                    Vec::new(),
+                )
+            });
+            picture_clip.intersect_rect((
+                i32::from(top),
+                i32::from(left),
+                i32::from(bottom),
+                i32::from(right),
+            ));
+            super::pict::draw_picture(
+                bus,
+                pic_ptr,
+                abs_top,
+                abs_left,
+                abs_bottom,
+                abs_right,
+                self.screen_mode,
+                &dialog_clut,
+                device_ct_seed,
+                Some(&picture_clip),
+            );
         }
     }
 
@@ -6456,53 +6550,7 @@ impl super::TrapDispatcher {
                     // Items reaching here overlap the dialog rect (the
                     // fully-outside clip happens above the match).
                     if !skip_pictures && item.resource_id != 0 {
-                        if let Some((_, pic_ptr)) =
-                            self.find_or_load_resource_any(bus, *b"PICT", item.resource_id)
-                        {
-                            // Draw PICT into the item's display rectangle.
-                            // DrawPicture must map against the port's logical
-                            // ColorTable (or stable color_manager_clut), NOT
-                            // the transient hardware CLUT state (device_clut),
-                            // which may be faded down to black mid-transition.
-                            // Imaging With QuickDraw 1994, p. 7-11, 7-14.
-                            let dialog_clut = if dialog_ptr != 0 {
-                                let port_version = bus.read_word(dialog_ptr + 6);
-                                let is_cgraf_port = (port_version & 0xC000) == 0xC000;
-                                let ctab_handle = if is_cgraf_port {
-                                    let pm_handle = bus.read_long(dialog_ptr + 2);
-                                    if pm_handle != 0 {
-                                        let pm_ptr = bus.read_long(pm_handle);
-                                        if pm_ptr != 0 {
-                                            bus.read_long(pm_ptr + 42)
-                                        } else {
-                                            0
-                                        }
-                                    } else {
-                                        0
-                                    }
-                                } else {
-                                    0
-                                };
-                                self.read_port_clut(bus, ctab_handle)
-                            } else {
-                                *self.color_manager_clut
-                            };
-                            let device_ct_seed =
-                                Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
-                                    .unwrap_or(0);
-                            super::pict::draw_picture(
-                                bus,
-                                pic_ptr,
-                                abs_top,
-                                abs_left,
-                                abs_bottom,
-                                abs_right,
-                                self.screen_mode,
-                                &dialog_clut,
-                                device_ct_seed,
-                                None,
-                            );
-                        }
+                        self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
                     }
                 }
                 // resCtrl — DITL item backed by a live CNTL resource.
@@ -11387,6 +11435,13 @@ impl super::TrapDispatcher {
                         // application drawing already present in the dialog
                         // port. A complete bulk composition can precede a
                         // final DrawDialog call that adds standard controls.
+                        // MTE 1992, 6-142: DrawDialog redraws picture items
+                        // as well as controls over the application's background.
+                        for item in &items {
+                            if item.item_type & 0x7F == 64 && item.resource_id != 0 {
+                                self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
+                            }
+                        }
                         self.redraw_standard_dialog_items(
                             bus,
                             bounds,
@@ -24819,6 +24874,45 @@ mod tests {
             themed, classic,
             "systemless-default must not change DrawDialog PICT item pixels"
         );
+    }
+
+    #[test]
+    fn dialog_picture_items_clip_without_rescaling_the_destination() {
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            let (mut disp, _cpu, mut bus) = setup();
+            disp.set_ui_theme_id(theme);
+            let (base, stride, _, _, _) = disp.screen_mode;
+            let bounds = (40, 60, 100, 140);
+            let port = bus.alloc(170);
+            bus.write_word(port + 8, (-40i16) as u16);
+            bus.write_word(port + 10, (-60i16) as u16);
+            disp.install_test_resource(&mut bus, *b"PICT", 421, &solid_fill_pict_resource(120, 16));
+            let items = [DialogItem {
+                item_type: 64,
+                rect: (8, -20, 24, 100),
+                text: String::new(),
+                resource_id: 421,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }];
+            // The picture extends twenty pixels beyond both sides. Compare
+            // against an otherwise identical draw without the picture, so
+            // the test also protects each theme's frame and desktop pixels.
+            disp.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, true, port);
+            let before = bus.read_bytes(base, (stride * 110) as usize).to_vec();
+            disp.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, port);
+            for y in 48..64u32 {
+                for x in 35..165u32 {
+                    let offset = (y * stride + x) as usize;
+                    if (60..140).contains(&x) {
+                        assert_eq!(bus.read_byte(base + offset as u32), 255);
+                    } else {
+                        assert_eq!(bus.read_byte(base + offset as u32), before[offset]);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

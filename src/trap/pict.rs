@@ -132,6 +132,15 @@ impl DstClip {
         Self { rect, regions }
     }
 
+    pub(crate) fn intersect_rect(&mut self, rect: DstClipRect) {
+        self.rect = (
+            self.rect.0.max(rect.0),
+            self.rect.1.max(rect.1),
+            self.rect.2.min(rect.2),
+            self.rect.3.min(rect.3),
+        );
+    }
+
     pub(crate) fn rect(&self) -> DstClipRect {
         self.rect
     }
