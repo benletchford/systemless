@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.38.3](https://github.com/benletchford/systemless/compare/v0.38.2...v0.38.3) (2026-09-06)
+
+
+### Bug Fixes
+
+* preflight native task context installation ([7102d6a](https://github.com/benletchford/systemless/commit/7102d6aa7ad3dda2bd910126e0b3bd11bf13eddf))
+
+
+### Code Refactoring
+
+* centralize PPC import binding transactions ([b5e5318](https://github.com/benletchford/systemless/commit/b5e5318eb8a4005eff089fe3d28d0e63e6f34979))
+* encapsulate process tick state with copied access ([390f316](https://github.com/benletchford/systemless/commit/390f3164fc0d75b932750542a0e56622074a980f))
+* isolate optional PEF dump diagnostics ([b635d8d](https://github.com/benletchford/systemless/commit/b635d8dd0516ffdab89eb1abaf31f14eda3d0b00))
+* separate host execution budgets from guest capabilities ([927397c](https://github.com/benletchford/systemless/commit/927397ce09f2ba395556077ed40b2c29644514bd))
+* share packed identity CopyBits row transfers ([1657fb9](https://github.com/benletchford/systemless/commit/1657fb92ab03eb58a0ea68c58ad721888dac6242))
+* share rectangular CopyBits transfer outcomes ([4b3f637](https://github.com/benletchford/systemless/commit/4b3f637ee3e7972b8990bb7c35723deb042566c9))
+
 ## [0.38.2](https://github.com/benletchford/systemless/compare/v0.38.1...v0.38.2) (2026-09-06)
 
 
