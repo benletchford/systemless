@@ -5,6 +5,7 @@
 //! section bases, relocations, synthetic import TVectors, and an initial
 //! stack frame. It deliberately does not implement Toolbox imports yet.
 
+use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin};
 #[cfg(test)]
 use super::pef::SECTION_KIND_UNPACKED_DATA;
 use super::pef::{
@@ -65,7 +66,7 @@ use crate::menu_manager::{
     standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
     standard_menu_text_advance, standard_menu_title_advance, standard_menu_width,
     standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
-    ColorIconLayout, MenuBarBuild, MenuBarBuildStep, MenuBarResource, MenuBarTitleRegion,
+    ColorIconLayout, MenuBarBuild, MenuBarResource, MenuBarTitleRegion,
     MenuColorTable, MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane,
     MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
@@ -2853,12 +2854,6 @@ struct PpcMenuSelectCall {
     return_address: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcPendingMenuBarBuild {
-    build: MenuBarBuild<u32>,
-    return_address: u32,
-}
-
 type PpcMenuTracking = ProcessMenuTrackingState;
 type PpcSubmenuTracking = ProcessTrackedMenuPane;
 
@@ -3037,7 +3032,6 @@ pub struct PpcToolboxStartupState {
     /// Custom popup MDEF state before its returned rectangle creates a pane.
     menu_definition_tracking: Option<MenuDefinitionTracking>,
     /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
-    pending_menu_bar_build: Option<PpcPendingMenuBarBuild>,
     /// Native call frame parked while a custom MDEF owns MenuSelect.
     menu_select_call: Option<PpcMenuSelectCall>,
     /// Caller QuickDraw port/device restored after a retained custom MDEF.
@@ -3118,7 +3112,6 @@ impl Default for PpcToolboxStartupState {
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             menu_tracking: SharedProcessMenuTracking::default(),
             menu_definition_tracking: None,
-            pending_menu_bar_build: None,
             menu_select_call: None,
             menu_definition_saved_gworld: None,
             popup_menu_call: None,
@@ -16882,7 +16875,7 @@ fn dispatch_supported_import(
             )))
         }
         PpcImportDispatcherTarget::GetNewMBar => {
-            if toolbox_startup.pending_menu_bar_build.is_some() {
+            if toolbox_startup.guest_calls.menu_bar_build().is_some() {
                 return Some(ppc_continue_menu_bar_build(
                     cpu,
                     process_memory_manager,
@@ -16912,10 +16905,12 @@ fn dispatch_supported_import(
             let menu_handles = ppc_menu_list_definition(memory, result_handle)
                 .map(|menu_list| menu_list.handles().collect())
                 .unwrap_or_default();
-            toolbox_startup.pending_menu_bar_build = Some(PpcPendingMenuBarBuild {
-                build: MenuBarBuild::new(result_handle, menu_handles),
-                return_address: cpu.lr,
-            });
+            if toolbox_startup.guest_calls.begin_menu_bar_build(
+                MenuBarBuild::new(result_handle, menu_handles),
+                MenuBarCallOrigin::PowerPc { return_address: cpu.lr },
+            ).is_none() {
+                return Some(PpcImportAction::Return(0));
+            }
             Some(ppc_continue_menu_bar_build(
                 cpu,
                 process_memory_manager,
@@ -76366,6 +76361,7 @@ fn ppc_dispatch_native_menu_definition_with_return(
     final_pc: u32,
     return_gpr3: PpcNativeReturnGpr3,
 ) -> Option<PpcImportAction> {
+    let menu_build = toolbox_startup.guest_calls.menu_bar_build();
     let target = ppc_menu_definition_target(cpu, memory, resources, invocation.menu_handle)?;
     let manager = process_memory_manager.as_deref_mut()?;
     // The emulated callback owns its wrapper and stack as well as its
@@ -76441,10 +76437,8 @@ fn ppc_dispatch_native_menu_definition_with_return(
         definition.bind_completion(invocation, completion.clone());
     }
     if invocation.message == MenuDefinitionMessage::Size {
-        if let Some(pending) = toolbox_startup.pending_menu_bar_build.as_mut() {
-            pending
-                .build
-                .bind_completion(invocation.menu_handle, completion);
+        if let Some(id) = menu_build {
+            toolbox_startup.guest_calls.bind_menu_bar_build_completion(id, invocation.menu_handle, completion);
         }
     }
     prepared
@@ -79594,23 +79588,20 @@ fn ppc_continue_menu_bar_build(
     current_resource_refnum: i16,
 ) -> PpcImportAction {
     loop {
-        let Some(step) = startup
-            .pending_menu_bar_build
-            .as_mut()
-            .and_then(|pending| pending.build.next_step())
-        else {
-            return PpcImportAction::Return(0);
-        };
-        let menu_handle = match step {
-            MenuBarBuildStep::Size(menu_handle) => menu_handle,
-            MenuBarBuildStep::Complete(result_handle) => {
-                let Some(pending) = startup.pending_menu_bar_build.take() else {
-                    return PpcImportAction::Return(0);
-                };
-                let return_address = pending.return_address;
+        let menu_handle = match startup
+            .guest_calls
+            .advance_menu_bar_build(GuestIsa::PowerPc)
+        {
+            Some(MenuBarBuildResume::Size(handle)) => handle,
+            Some(MenuBarBuildResume::Complete {
+                result,
+                origin: MenuBarCallOrigin::PowerPc { return_address },
+            }) => {
                 cpu.lr = return_address;
-                return PpcImportAction::Return(result_handle);
+                return PpcImportAction::Return(result);
             }
+            Some(MenuBarBuildResume::Waiting) => return PpcImportAction::Yield(u64::MAX),
+            _ => return PpcImportAction::Return(0),
         };
         if let Some(action) = ppc_dispatch_native_menu_definition(
             cpu,
@@ -102339,7 +102330,157 @@ pub(crate) mod tests {
             assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
             assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
         }
-        assert_eq!(loaded.toolbox_startup.pending_menu_bar_build, None);
+        assert!(!loaded.guest_calls.has_menu_bar_builds());
+    }
+
+    #[test]
+    fn nested_getnewmbar_keeps_each_build_and_its_return_separate() {
+        let pef = synthetic_pef_with_import(b"GetNewMBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let marker = PPC_DATA_BASE + 0x7800;
+        loaded.memory.add_region(marker, vec![0; 4]);
+        let descriptor = PPC_DATA_BASE + 0x7100;
+        let tvector = PPC_DATA_BASE + 0x7180;
+        install_test_powerpc_callback(
+            &mut loaded,
+            descriptor,
+            tvector,
+            PPC_CODE_BASE + 0x4000,
+            PPC_DATA_BASE + 0x7300,
+            test_stack_proc_info(
+                PPC_PROCINFO_SIZE_NONE,
+                &[
+                    PPC_PROCINFO_SIZE_TWO,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                ],
+            ),
+            &[
+                0x9421_ffa0, // stwu r1,-96(r1)
+                0x7c08_02a6, // mflr r0
+                0x9001_0064, // stw r0,100(r1)
+                0x9081_0038, // retain the outer menu handle
+                0x3860_0385, // li r3,901: nested empty MBAR resource
+                0x3d80_0000 | (PPC_IMPORT_TRAP_BASE >> 16),
+                0x618c_0000 | (PPC_IMPORT_TRAP_BASE & 0xffff),
+                0x7d89_03a6, // mtctr r12
+                0x4e80_0421, // bctrl: nested GetNewMBar
+                0x3d40_0000 | (marker >> 16),
+                0x614a_0000 | (marker & 0xffff),
+                0x906a_0000, // retain the nested menu-list handle
+                0x8081_0038,
+                d_form_u(32, 6, 4, 0),
+                d_form_u(14, 7, 0, 123),
+                d_form_u(44, 7, 6, 2),
+                d_form_u(14, 7, 0, 45),
+                d_form_u(44, 7, 6, 4),
+                0x8001_0064,
+                0x7c08_03a6,
+                0x3821_0060,
+                BLR,
+            ],
+        );
+        let descriptor_bytes = ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
+        let ref_num = *loaded.process_file_system.current_resource_file;
+        loaded.process_file_system.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MBAR"),
+                res_id: 901,
+                name: Vec::new(),
+                data: vec![0, 0],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MBAR"),
+                res_id: 900,
+                name: Vec::new(),
+                data: vec![0, 2, 2, 89, 2, 90],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 601,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(601, 256, b"First"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 602,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(602, 256, b"Second"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MDEF"),
+                res_id: 256,
+                name: Vec::new(),
+                data: descriptor_bytes,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+        loaded.cpu.gpr[3] = 900;
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNewMBar;
+        let probe = loaded.run_with_hle_imports(256);
+        assert_eq!(probe.handled_import_count, 5);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        let inner = loaded.memory.read_u32_be(marker).unwrap();
+        assert_ne!(
+            inner, 0,
+            "nested GetNewMBar must produce its own menu-list handle"
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, inner)
+                .unwrap()
+                .handles()
+                .count(),
+            0
+        );
+        assert!(loaded.guest_calls.is_empty());
+        assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+        let list_handle = loaded.cpu.gpr[3];
+        let menu_handles = ppc_menu_list_definition(&mut loaded.memory, list_handle)
+            .unwrap()
+            .handles()
+            .collect::<Vec<_>>();
+        assert_eq!(menu_handles.len(), 2);
+        for menu_handle in menu_handles {
+            let menu = loaded.memory.read_u32_be(menu_handle).unwrap();
+            assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
+            assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
+        }
+        assert!(!loaded.guest_calls.has_menu_bar_builds());
     }
 
     #[test]

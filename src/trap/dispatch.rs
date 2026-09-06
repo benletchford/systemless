@@ -1644,7 +1644,6 @@ pub struct TrapDispatcher {
     /// Custom popup MDEF state before its returned rectangle creates a pane.
     pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
     /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
-    pub(crate) pending_menu_bar_build: Option<super::menu::PendingMenuBarBuild>,
     /// Caller QuickDraw state restored after a retained custom MDEF finishes.
     pub(crate) menu_definition_port_state: Option<PortStateSnapshot>,
     /// 68k call frame parked while the shared Menu Manager state yields.
@@ -3361,7 +3360,6 @@ impl TrapDispatcher {
             menu_tracking: SharedProcessMenuTracking::default(),
             guest_calls: SharedGuestCallStack::default(),
             menu_definition_tracking: None,
-            pending_menu_bar_build: None,
             menu_definition_port_state: None,
             menu_tracking_stack_ptr: 0,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
@@ -3619,7 +3617,7 @@ impl TrapDispatcher {
         &self,
         menu_tracking: Option<&ProcessMenuTrackingState>,
     ) -> bool {
-        self.pending_menu_bar_build.is_some()
+        self.guest_calls.menu_bar_build().is_some()
             || self
                 .menu_tracking
                 .as_ref()
@@ -3645,7 +3643,6 @@ impl TrapDispatcher {
     ) -> bool {
         let trap_no_autopop = opcode & !0x0400;
         let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
-        let is_menu_bar_build_refire = trap_no_autopop == 0xA9C0;
         let is_dialog_refire =
             matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
         let is_standard_file_refire = trap_no_autopop == 0xA9EA;
@@ -3656,7 +3653,6 @@ impl TrapDispatcher {
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
         (is_menu_refire && is_menu_tracking)
-            || (is_menu_bar_build_refire && self.pending_menu_bar_build.is_some())
             || (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))

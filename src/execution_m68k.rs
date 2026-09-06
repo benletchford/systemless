@@ -17,6 +17,13 @@ pub(crate) struct M68kMenuDefinitionFrame {
 }
 
 impl M68kMenuDefinitionFrame {
+    /// Resume a retained Toolbox operation through a plain trap, without
+    /// repeating the original auto-pop entry's caller-return consumption.
+    pub(crate) fn trap_return(&mut self, opcode: u16) -> u32 {
+        self.image[52..54].copy_from_slice(&opcode.to_be_bytes());
+        self.entry + 52
+    }
+
     pub(crate) const RESERVATION: u32 = 80;
     pub(crate) const STACK_PREFIX: u32 = 58;
 

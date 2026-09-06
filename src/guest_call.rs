@@ -560,12 +560,43 @@ impl TaskResumeContext {
     }
 }
 
+/// Identity of one retained Menu Manager build, independent of callback depth.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuBarBuildId(u64);
+
+/// Caller return placement belongs to execution, not to menu sizing policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuBarCallOrigin {
+    M68k { stack_pointer: u32, return_address: Option<u32> },
+    PowerPc { return_address: u32 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuBarBuildResume {
+    Size(u32),
+    Waiting,
+    Complete { result: u32, origin: MenuBarCallOrigin },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MenuBarCall {
+    id: MenuBarBuildId,
+    task: ExecutionTaskId,
+    parent: Option<CallId>,
+    origin: MenuBarCallOrigin,
+    build: crate::menu_manager::MenuBarBuild<u32>,
+}
+
 #[derive(Debug)]
 struct ExecutionTaskCalls {
     /// Authoritative task/order/phase state. The frame map below is only the
     /// temporary CPU-adapter projection keyed by this store's CallId.
     kernel: ContinuationStore,
     frames: HashMap<CallId, GuestCallFrame>,
+    /// Manager roots outlive each individual guest callback and retain the
+    /// invoking task, enclosing call and original ABI return placement.
+    menu_bar_calls: Vec<MenuBarCall>,
+    next_menu_bar_call: u64,
     powerpc_contexts: ExecutionContextBank<Box<PpcCpu>>,
     m68k_contexts: Rc<RefCell<ExecutionContextBank<M68kCpu>>>,
     cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
@@ -585,6 +616,8 @@ impl Clone for ExecutionTaskCalls {
         Self {
             kernel: self.kernel.clone(),
             frames: self.frames.clone(),
+            menu_bar_calls: self.menu_bar_calls.clone(),
+            next_menu_bar_call: self.next_menu_bar_call,
             powerpc_contexts: self.powerpc_contexts.clone(),
             m68k_contexts: Rc::new(RefCell::new(ExecutionContextBank::default())),
             cooperative_contexts: self.cooperative_contexts.clone(),
@@ -601,6 +634,8 @@ impl PartialEq for ExecutionTaskCalls {
     fn eq(&self, other: &Self) -> bool {
         self.kernel == other.kernel
             && self.frames == other.frames
+            && self.menu_bar_calls == other.menu_bar_calls
+            && self.next_menu_bar_call == other.next_menu_bar_call
             && self.powerpc_contexts.same_slots(&other.powerpc_contexts)
             && self
                 .m68k_contexts
@@ -629,6 +664,8 @@ impl Default for ExecutionTaskCalls {
         Self {
             kernel: ContinuationStore::default(),
             frames: HashMap::new(),
+            menu_bar_calls: Vec::new(),
+            next_menu_bar_call: 0,
             powerpc_contexts: ExecutionContextBank::default(),
             m68k_contexts: Rc::new(RefCell::new(ExecutionContextBank::default())),
             cooperative_contexts: ExecutionTaskContextBank::default(),
@@ -802,6 +839,7 @@ impl ExecutionTaskCalls {
         self.cooperative_contexts.remove(task);
         self.native_threads.remove(task);
         self.thread_storage.remove(task);
+        self.menu_bar_calls.retain(|call| call.task != task);
         if let Some(isa) = pooled_isa {
             self.thread_pool.push((
                 isa,
@@ -851,6 +889,8 @@ impl ExecutionTaskCalls {
 
     fn is_pristine(&self) -> bool {
         self.kernel.is_pristine()
+            && self.menu_bar_calls.is_empty()
+            && self.next_menu_bar_call == 0
             && self.m68k_contexts.borrow().is_empty()
             && self.cooperative_contexts.is_empty()
             && self.native_threads.is_empty()
@@ -910,7 +950,8 @@ impl SharedGuestCallStack {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.borrow().kernel.is_empty()
+        let tasks = self.0.borrow();
+        tasks.kernel.is_empty() && tasks.menu_bar_calls.is_empty()
     }
 
     pub(crate) fn depth(&self) -> usize {
@@ -937,6 +978,113 @@ impl SharedGuestCallStack {
     #[cfg(test)]
     pub(crate) fn m68k_context_bank(&self) -> Rc<RefCell<ExecutionContextBank<M68kCpu>>> {
         self.classic_contexts()
+    }
+
+    /// The enclosing guest call distinguishes a nested Toolbox entry from
+    /// resumption after its own MDEF has retired. Another task cannot observe
+    /// or consume this operation, even when it uses the same import or trap.
+    pub(crate) fn menu_bar_build(&self) -> Option<MenuBarBuildId> {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        let parent = tasks.kernel.peek(task).map(|call| call.call_id());
+        tasks
+            .menu_bar_calls
+            .iter()
+            .rev()
+            .find(|call| call.task == task && call.parent == parent)
+            .map(|call| call.id)
+    }
+
+    pub(crate) fn menu_bar_build_origin(&self) -> Option<MenuBarCallOrigin> {
+        let id = self.menu_bar_build()?;
+        self.0
+            .borrow()
+            .menu_bar_calls
+            .iter()
+            .find(|call| call.id == id)
+            .map(|call| call.origin)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_menu_bar_builds(&self) -> bool {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        tasks.menu_bar_calls.iter().any(|call| call.task == task)
+    }
+
+    pub(crate) fn begin_menu_bar_build(
+        &self,
+        build: crate::menu_manager::MenuBarBuild<u32>,
+        origin: MenuBarCallOrigin,
+    ) -> Option<MenuBarBuildId> {
+        let mut tasks = self.0.borrow_mut();
+        let task = tasks.kernel.current_task();
+        let parent = tasks.kernel.peek(task).map(|call| call.call_id());
+        if tasks
+            .menu_bar_calls
+            .iter()
+            .any(|call| call.task == task && call.parent == parent)
+        {
+            return None;
+        }
+        let next = tasks.next_menu_bar_call.checked_add(1)?;
+        let id = MenuBarBuildId(tasks.next_menu_bar_call);
+        tasks.next_menu_bar_call = next;
+        tasks.menu_bar_calls.push(MenuBarCall {
+            id,
+            task,
+            parent,
+            origin,
+            build,
+        });
+        Some(id)
+    }
+
+    pub(crate) fn advance_menu_bar_build(&self, isa: GuestIsa) -> Option<MenuBarBuildResume> {
+        let mut tasks = self.0.borrow_mut();
+        let task = tasks.kernel.current_task();
+        let parent = tasks.kernel.peek(task).map(|call| call.call_id());
+        let index = tasks
+            .menu_bar_calls
+            .iter()
+            .rposition(|call| call.task == task && call.parent == parent)?;
+        let origin_isa = match tasks.menu_bar_calls[index].origin {
+            MenuBarCallOrigin::M68k { .. } => GuestIsa::M68k,
+            MenuBarCallOrigin::PowerPc { .. } => GuestIsa::PowerPc,
+        };
+        if origin_isa != isa {
+            return None;
+        }
+        match tasks.menu_bar_calls[index].build.next_step() {
+            Some(crate::menu_manager::MenuBarBuildStep::Size(handle)) => {
+                Some(MenuBarBuildResume::Size(handle))
+            }
+            Some(crate::menu_manager::MenuBarBuildStep::Complete(result)) => {
+                let call = tasks.menu_bar_calls.remove(index);
+                Some(MenuBarBuildResume::Complete {
+                    result,
+                    origin: call.origin,
+                })
+            }
+            None => Some(MenuBarBuildResume::Waiting),
+        }
+    }
+
+    pub(crate) fn bind_menu_bar_build_completion(
+        &self,
+        id: MenuBarBuildId,
+        handle: u32,
+        completion: crate::menu_manager::MenuDefinitionCompletion,
+    ) {
+        let mut tasks = self.0.borrow_mut();
+        let task = tasks.kernel.current_task();
+        if let Some(call) = tasks
+            .menu_bar_calls
+            .iter_mut()
+            .find(|call| call.id == id && call.task == task)
+        {
+            call.build.bind_completion(handle, completion);
+        }
     }
 
     pub(crate) fn current_task(&self) -> ExecutionTaskId {
@@ -1029,6 +1177,7 @@ impl SharedGuestCallStack {
         tasks.cooperative_contexts.remove(task);
         tasks.native_threads.remove(task);
         tasks.thread_storage.remove(task);
+        tasks.menu_bar_calls.retain(|call| call.task != task);
         true
     }
 
@@ -2601,6 +2750,111 @@ mod tests {
     use ppc::PpcRunResult;
 
     const RETURN_PC: u32 = 0x01f0_4000;
+
+    #[test]
+    fn menu_bar_operations_scope_nested_calls_and_preserve_each_return_abi() {
+        use crate::menu_manager::{
+            MenuBarBuild, MenuDefinitionCompletion, MenuDefinitionOperation, MenuDefinitionResult,
+        };
+        let calls = SharedGuestCallStack::default();
+        let outer_origin = MenuBarCallOrigin::M68k {
+            stack_pointer: 0x3000,
+            return_address: None,
+        };
+        let outer = calls
+            .begin_menu_bar_build(MenuBarBuild::new(111, vec![5]), outer_origin)
+            .unwrap();
+        assert_eq!(calls.advance_menu_bar_build(GuestIsa::PowerPc), None);
+        assert_eq!(calls.menu_bar_build(), Some(outer));
+        assert_eq!(
+            calls.advance_menu_bar_build(GuestIsa::M68k),
+            Some(MenuBarBuildResume::Size(5))
+        );
+        assert!(!calls.is_empty());
+        assert!(!calls.is_pristine());
+        assert!(calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0
+            },
+            0x2000,
+            0x3000
+        ));
+        assert_eq!(calls.menu_bar_build(), None);
+        let completion = MenuDefinitionCompletion::pending();
+        calls.bind_menu_bar_build_completion(outer, 5, completion.clone());
+        let inner_origin = MenuBarCallOrigin::PowerPc {
+            return_address: 0x4000,
+        };
+        let inner = calls
+            .begin_menu_bar_build(MenuBarBuild::new(222, vec![]), inner_origin)
+            .unwrap();
+        assert_ne!(inner, outer);
+        assert_eq!(
+            calls.advance_menu_bar_build(GuestIsa::PowerPc),
+            Some(MenuBarBuildResume::Complete {
+                result: 222,
+                origin: inner_origin
+            })
+        );
+        assert!(calls.complete_m68k(0x2002, 0x3000));
+        assert_eq!(calls.menu_bar_build(), Some(outer));
+        assert_eq!(
+            calls.advance_menu_bar_build(GuestIsa::M68k),
+            Some(MenuBarBuildResume::Waiting)
+        );
+        MenuDefinitionOperation {
+            scratch: 0,
+            completion,
+        }
+        .complete_result(Ok(MenuDefinitionResult {
+            menu_rect: (0, 0, 0, 0),
+            which_item: 0,
+        }));
+        assert_eq!(
+            calls.advance_menu_bar_build(GuestIsa::M68k),
+            Some(MenuBarBuildResume::Complete {
+                result: 111,
+                origin: outer_origin
+            })
+        );
+        assert_eq!(calls.advance_menu_bar_build(GuestIsa::M68k), None);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn menu_bar_operations_follow_tasks_and_retirement() {
+        use crate::menu_manager::MenuBarBuild;
+        let calls = SharedGuestCallStack::default();
+        let origin = MenuBarCallOrigin::PowerPc {
+            return_address: 0x1000,
+        };
+        let main = calls
+            .begin_menu_bar_build(MenuBarBuild::new(111, vec![]), origin)
+            .unwrap();
+        let worker = ExecutionTaskId::from_thread_id(7);
+        assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(worker));
+        assert_eq!(calls.menu_bar_build(), None);
+        let owned = calls
+            .begin_menu_bar_build(MenuBarBuild::new(222, vec![]), origin)
+            .unwrap();
+        assert_ne!(main, owned);
+        assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
+        assert_eq!(calls.menu_bar_build(), Some(main));
+        assert!(calls.remove_task(worker));
+        assert_eq!(calls.0.borrow().menu_bar_calls.len(), 1);
+        assert_eq!(
+            calls.advance_menu_bar_build(GuestIsa::PowerPc),
+            Some(MenuBarBuildResume::Complete {
+                result: 111,
+                origin
+            })
+        );
+        assert!(calls.is_empty());
+    }
 
     fn native_action(
         entry: u32,

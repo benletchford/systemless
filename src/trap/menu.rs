@@ -1,5 +1,6 @@
 //! Menu Manager trap handlers.
 
+use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin};
 use crate::cpu::{CpuOps, Register};
 use crate::guest_call::GuestCallTarget;
 use crate::guest_procedure::{resolve_guest_procedure, GuestIsa};
@@ -16,7 +17,7 @@ use crate::menu_manager::{
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarBuild as SharedMenuBarBuild,
-    MenuBarBuildStep as SharedMenuBarBuildStep, MenuBarResource as SharedMenuBarResource,
+    MenuBarResource as SharedMenuBarResource,
     MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuColorTable,
     MenuDefinitionInvocation as SharedMenuDefinitionInvocation,
     MenuDefinitionPane as SharedMenuDefinitionPane,
@@ -68,12 +69,6 @@ pub struct Menu {
 
 pub(crate) type MenuTrackingState = ProcessMenuTrackingState;
 pub(crate) type SubmenuTrackingState = ProcessTrackedMenuPane;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PendingMenuBarBuild {
-    pub(crate) stack_ptr: u32,
-    pub(crate) build: SharedMenuBarBuild<u32>,
-}
 
 pub(crate) fn tracked_menu_state(
     kind: MenuTrackingKind,
@@ -511,15 +506,23 @@ impl super::TrapDispatcher {
             return false;
         };
         let scratch = entry + 60;
-        let Some(frame) =
+        let Some(mut frame) =
             M68kMenuDefinitionFrame::new(invocation.call(scratch), proc_addr, final_sp, return_pc == cpu.read_reg(Register::PC))
         else {
             return false;
+        };
+        let auto_pop_build = matches!(self.guest_calls.menu_bar_build_origin(),
+            Some(MenuBarCallOrigin::M68k { return_address: Some(_), .. }));
+        let return_pc = if auto_pop_build {
+            frame.trap_return(0xa9c0)
+        } else {
+            return_pc
         };
         let floor = frame.entry - M68kMenuDefinitionFrame::STACK_PREFIX;
         if !bus.is_guest_address_writable(floor, (final_sp - floor) as usize) {
             return false;
         }
+        let menu_build = self.guest_calls.menu_bar_build();
         let completion = crate::menu_manager::MenuDefinitionCompletion::pending();
         if return_pc != cpu.read_reg(Register::PC) {
             if !self.guest_calls.begin_m68k_with_operation(
@@ -533,12 +536,13 @@ impl super::TrapDispatcher {
                 definition.bind_completion(invocation, completion.clone());
             }
             if invocation.message == crate::menu_manager::MenuDefinitionMessage::Size {
-                if let Some(pending) = self.pending_menu_bar_build.as_mut() {
-                    pending
-                        .build
-                        .bind_completion(invocation.menu_handle, completion);
+                if let Some(id) = menu_build {
+                    self.guest_calls.bind_menu_bar_build_completion(id, invocation.menu_handle, completion);
                 }
             }
+        }
+        if auto_pop_build && self.current_trap_caller.is_some() {
+            self.preserve_auto_pop_pc_once = true;
         }
         for (offset, byte) in frame
             .image
@@ -916,24 +920,25 @@ impl super::TrapDispatcher {
     fn continue_menu_bar_build<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         self.retire_menu_definition(cpu, bus);
         loop {
-            let Some(step) = self
-                .pending_menu_bar_build
-                .as_mut()
-                .and_then(|pending| pending.build.next_step())
-            else {
-                return;
-            };
-            let menu_handle = match step {
-                SharedMenuBarBuildStep::Size(menu_handle) => menu_handle,
-                SharedMenuBarBuildStep::Complete(result_handle) => {
-                    let Some(pending) = self.pending_menu_bar_build.take() else {
-                        return;
-                    };
-                    let stack_ptr = pending.stack_ptr;
-                    bus.write_long(stack_ptr + 2, result_handle);
-                    cpu.write_reg(Register::A7, stack_ptr + 2);
+            let menu_handle = match self.guest_calls.advance_menu_bar_build(GuestIsa::M68k) {
+                Some(MenuBarBuildResume::Size(handle)) => handle,
+                Some(MenuBarBuildResume::Complete {
+                    result,
+                    origin:
+                        MenuBarCallOrigin::M68k {
+                            stack_pointer,
+                            return_address,
+                        },
+                }) => {
+                    bus.write_long(stack_pointer + 2, result);
+                    cpu.write_reg(Register::A7, stack_pointer + 2);
+                    if let Some(address) = return_address {
+                        cpu.write_reg(Register::PC, address);
+                        self.preserve_auto_pop_pc_once = self.current_trap_caller.is_some();
+                    }
                     return;
                 }
+                _ => return,
             };
             if self.arm_menu_definition_to(
                 cpu,
@@ -1975,7 +1980,8 @@ impl super::TrapDispatcher {
             // FUNCTION GetNewMBar(menuBarID: INTEGER): Handle;
             // Inside Macintosh Volume I, I-354
             (true, 0x1C0) => {
-                if self.pending_menu_bar_build.is_some() {
+                self.retire_menu_definition(cpu, bus);
+                if self.guest_calls.menu_bar_build().is_some() {
                     self.continue_menu_bar_build(cpu, bus);
                     return Some(Ok(()));
                 }
@@ -2005,16 +2011,20 @@ impl super::TrapDispatcher {
                     bus.write_bytes(list_block, &list_bytes);
                     let list_handle = bus.alloc(4);
                     bus.write_long(list_handle, list_block);
-                    self.pending_menu_bar_build = Some(PendingMenuBarBuild {
-                        stack_ptr: sp,
-                        build: SharedMenuBarBuild::new(list_handle, menu_handles),
-                    });
+                    if self.guest_calls.begin_menu_bar_build(
+                        SharedMenuBarBuild::new(list_handle, menu_handles),
+                        MenuBarCallOrigin::M68k { stack_pointer: sp, return_address: self.current_trap_caller },
+                    ).is_none() {
+                        bus.write_long(sp + 2, 0);
+                        cpu.write_reg(Register::A7, sp + 2);
+                        return Some(Ok(()));
+                    }
                     list_handle
                 } else {
                     0
                 };
 
-                if handle != 0 && self.pending_menu_bar_build.is_some() {
+                if handle != 0 && self.guest_calls.menu_bar_build().is_some() {
                     self.continue_menu_bar_build(cpu, bus);
                 } else {
                     bus.write_long(sp + 2, handle);
@@ -8814,6 +8824,133 @@ mod tests {
     }
 
     #[test]
+    fn nested_classic_getnewmbar_preserves_plain_and_auto_pop_returns() {
+        for opcode in [0xa9c0, 0xadc0] {
+            let (mut disp, _, mut bus) = setup();
+            let mut cpu = crate::cpu::M68kCpu::new();
+            let first_menu = seed_menu_resource(&mut bus, 601, "First");
+            let second_menu = seed_menu_resource(&mut bus, 602, "Second");
+            for menu in [first_menu, second_menu] {
+                bus.write_word(menu + 6, 256);
+                bus.write_word(menu + 8, 0);
+            }
+            let mdef = bus.alloc(96);
+            bus.write_word(mdef, 0x4E75);
+            let mbar = seed_mbar_resource(&mut bus, &[601, 602]);
+            disp.resources = Some(crate::trap::dispatch::LoadedResources {
+                files: std::collections::HashMap::from([(
+                    0,
+                    crate::trap::dispatch::ResourceFileMap {
+                        loaded: std::collections::HashMap::from([
+                            ((*b"MBAR", 900), mbar),
+                            ((*b"MENU", 601), first_menu),
+                            ((*b"MENU", 602), second_menu),
+                            ((*b"MDEF", 256), mdef),
+                        ]),
+                        named: std::collections::HashMap::new(),
+                        names_by_id: std::collections::HashMap::new(),
+                        attrs: std::collections::HashMap::new(),
+                        map_attrs: 0,
+                    },
+                )]),
+                names: std::collections::HashMap::new(),
+                search_order: vec![0],
+                current_file: 0,
+            });
+            let inner = seed_mbar_resource(&mut bus, &[]);
+            disp.resources
+                .as_mut()
+                .unwrap()
+                .files
+                .get_mut(&0)
+                .unwrap()
+                .loaded
+                .insert((*b"MBAR", 901), inner);
+            let marker = bus.alloc(4);
+            let code = [
+                0x206f,
+                16,     // menu handle from the Pascal MDEF frame
+                0x2050, // dereference the live menu record
+                0x2f08, // save the outer record
+                0x598f, // reserve nested Handle result
+                0x3f3c,
+                901,
+                0xa9c0, // nested GetNewMBar
+                0x201f, // consume nested result
+                0x23c0,
+                (marker >> 16) as u16,
+                marker as u16,
+                0x205f, // restore outer record
+                0x317c,
+                123,
+                2,
+                0x317c,
+                45,
+                4,
+                0x4e74,
+                18,
+            ];
+            for (index, word) in code.into_iter().enumerate() {
+                bus.write_word(mdef + index as u32 * 2, word);
+            }
+            let trap_pc = 0x0012_3600;
+            let return_pc = if opcode == 0xadc0 {
+                trap_pc + 0x100
+            } else {
+                trap_pc + 2
+            };
+            let parameters = if opcode == 0xadc0 {
+                TEST_SP + 4
+            } else {
+                TEST_SP
+            };
+            bus.write_word(trap_pc, opcode);
+            if opcode == 0xadc0 {
+                bus.write_long(TEST_SP, return_pc);
+            }
+            bus.write_word(parameters, 900);
+            cpu.write_reg(Register::PC, trap_pc);
+            cpu.write_reg(Register::A7, TEST_SP);
+            for _ in 0..256 {
+                match cpu.step(&mut bus) {
+                    crate::cpu::StepResult::Ok => {}
+                    crate::cpu::StepResult::Aline(trap) => {
+                        disp.dispatch(trap, &mut cpu, &mut bus).unwrap()
+                    }
+                    _ => panic!("unexpected instruction while building menus"),
+                }
+                if cpu.read_reg(Register::PC) == return_pc {
+                    break;
+                }
+            }
+            assert_eq!(cpu.read_reg(Register::PC), return_pc);
+            assert_eq!(cpu.read_reg(Register::A7), parameters + 2);
+            let inner_handle = bus.read_long(marker);
+            assert_ne!(inner_handle, 0);
+            assert_eq!(
+                menu_list_from_memory(&bus, inner_handle)
+                    .unwrap()
+                    .regular_handles()
+                    .count(),
+                0
+            );
+            let result = bus.read_long(parameters + 2);
+            let menus = menu_list_from_memory(&bus, result)
+                .unwrap()
+                .regular_handles()
+                .collect::<Vec<_>>();
+            assert_eq!(menus.len(), 2);
+            for handle in menus {
+                let record = bus.read_long(handle);
+                assert_eq!(bus.read_word(record + 2), 123);
+                assert_eq!(bus.read_word(record + 4), 45);
+            }
+            assert!(disp.guest_calls.is_empty());
+            assert!(!disp.preserve_auto_pop_pc_once);
+        }
+    }
+
+    #[test]
     fn getnewmbar_sizes_each_custom_menu_before_returning_the_list() {
         let (mut disp, mut cpu, mut bus) = setup();
         let first_menu = seed_menu_resource(&mut bus, 601, "First");
@@ -8857,7 +8994,7 @@ mod tests {
         assert_eq!(bus.read_word(trampoline + 6), 2);
         let first_handle = bus.read_long(trampoline + 10);
         assert_eq!(bus.read_word(bus.read_long(first_handle)), 601);
-        assert!(disp.is_tracking_refire(0xA9C0));
+        assert!(!disp.is_tracking_refire(0xA9C0));
         bus.write_word(bus.read_long(first_handle) + 2, 101);
         bus.write_word(bus.read_long(first_handle) + 4, 41);
 
@@ -8881,7 +9018,7 @@ mod tests {
         let list_handle = bus.read_long(TEST_SP + 2);
         assert_ne!(list_handle, 0);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
-        assert_eq!(disp.pending_menu_bar_build, None);
+        assert!(!disp.guest_calls.has_menu_bar_builds());
         assert!(
             disp.guest_calls.is_empty(),
             "completed GetNewMBar must retire every MDEF frame"
