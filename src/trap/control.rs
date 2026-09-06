@@ -1,5 +1,6 @@
 //! Control Manager trap handlers.
 
+use crate::memory::SavedPixels;
 use super::dispatch::{ControlAuxRecordState, ControlTrackingState};
 use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
@@ -174,7 +175,7 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         owner: u32,
         rect: (i16, i16, i16, i16),
-    ) -> Vec<(i16, i16, i16, i16, Vec<u8>)> {
+    ) -> Vec<(i16, i16, i16, i16, SavedPixels)> {
         if owner == 0 {
             return Vec::new();
         }
@@ -218,7 +219,7 @@ impl super::TrapDispatcher {
                     left + run_start,
                     column - run_start,
                     1,
-                    pixels[start..end].to_vec(),
+                    pixels.slice(start..end),
                 ));
             }
         }
@@ -3552,7 +3553,7 @@ impl super::TrapDispatcher {
                                                 popup_tracking: false,
                                                 active_menu: 0,
                                                 highlighted_item: 0,
-                                                saved_pixels: Vec::new(),
+                                                saved_pixels: Default::default(),
                                                 dropdown_rect: (0, 0, 0, 0),
                                                 popup_content_top: 0,
                                                 popup_scroll_direction: None,
@@ -3726,7 +3727,7 @@ impl super::TrapDispatcher {
                                         popup_tracking: false,
                                         active_menu: 0,
                                         highlighted_item: 0,
-                                        saved_pixels: Vec::new(),
+                                        saved_pixels: Default::default(),
                                         dropdown_rect: (0, 0, 0, 0),
                                         popup_content_top: 0,
                                         popup_scroll_direction: None,

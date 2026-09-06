@@ -1,5 +1,6 @@
 //! Window Manager trap handlers.
 
+use crate::memory::SavedPixels;
 use crate::cpu::{CpuOps, Register};
 use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -1411,7 +1412,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
-    ) -> Option<(i16, i16, i16, i16, Vec<u8>)> {
+    ) -> Option<(i16, i16, i16, i16, SavedPixels)> {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let top = rect.0.max(0).min(screen_height);
@@ -1462,6 +1463,17 @@ impl super::TrapDispatcher {
             }
         }
 
+        let mut pixels: SavedPixels = pixels.into();
+        if pixel_size == 8 {
+            for (row, y) in (top..bottom).enumerate() {
+                bus.capture_pixel_detail(
+                    &mut pixels,
+                    row * width_u,
+                    screen_base + y as u32 * row_bytes + left as u32,
+                    width_u,
+                );
+            }
+        }
         Some((top, left, width, height, pixels))
     }
 
@@ -1472,7 +1484,7 @@ impl super::TrapDispatcher {
         dst_left: i16,
         width: i16,
         height: i16,
-        pixels: &[u8],
+        pixels: &SavedPixels,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -1501,7 +1513,7 @@ impl super::TrapDispatcher {
                 let e = (row_base + (x1 - dst_left) as usize).min(pixels.len());
                 if s < e {
                     let addr = screen_base + y as u32 * row_bytes + x0 as u32;
-                    bus.restore_screen_bytes(addr, &pixels[s..e]);
+                    bus.restore_saved_pixels(addr, pixels, s, e - s);
                 }
             }
             return;
@@ -1594,7 +1606,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
-    ) -> Vec<(i16, i16, i16, i16, Vec<u8>)> {
+    ) -> Vec<(i16, i16, i16, i16, SavedPixels)> {
         Self::window_drag_outline_strips(rect)
             .into_iter()
             .filter_map(|strip| self.save_screen_rect_pixels(bus, strip))
@@ -1604,7 +1616,7 @@ impl super::TrapDispatcher {
     pub(super) fn restore_window_drag_outline_pixels(
         &self,
         bus: &mut MacMemoryBus,
-        pixels: &[(i16, i16, i16, i16, Vec<u8>)],
+        pixels: &[(i16, i16, i16, i16, SavedPixels)],
     ) {
         for (top, left, width, height, saved) in pixels {
             self.restore_screen_rect_pixels(bus, *top, *left, *width, *height, saved);
@@ -8619,7 +8631,7 @@ mod tests {
             utility,
             PersistentDialogSnapshot {
                 bounds: (80, 100, 220, 420),
-                pixels: vec![0xEE; 140 * 320],
+                pixels: vec![0xEE; 140 * 320].into(),
             },
         );
         let update_handle = bus.read_long(document + 122);
@@ -9575,7 +9587,7 @@ mod tests {
             dialog,
             PersistentDialogSnapshot {
                 bounds: (120, 120, 140, 180),
-                pixels: vec![0xEE; 20 * 60],
+                pixels: vec![0xEE; 20 * 60].into(),
             },
         );
 
@@ -9947,7 +9959,7 @@ mod tests {
             target,
             PersistentDialogSnapshot {
                 bounds: (80, 100, 220, 420),
-                pixels: vec![0xEE; 140 * 320],
+                pixels: vec![0xEE; 140 * 320].into(),
             },
         );
         let update_handle = bus.read_long(back + 122);

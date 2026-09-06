@@ -77562,7 +77562,7 @@ fn ppc_begin_tracked_menu_with_appearances(
         saved_width,
         saved_height,
         front_buffer: Some(front.into()),
-        saved_pixels,
+        saved_pixels: saved_pixels.into(),
         item_appearances,
         submenus: Vec::new(),
     })
@@ -78263,7 +78263,7 @@ fn ppc_begin_submenu_tracking_with_resources(
         saved_width,
         saved_height,
         front_buffer: Some(front.into()),
-        saved_pixels,
+        saved_pixels: saved_pixels.into(),
         item_appearances,
     })
 }
@@ -94789,7 +94789,7 @@ pub(crate) mod tests {
                 );
             }
         }
-        assert_eq!(restored, tracking.saved_pixels);
+        assert_eq!(restored, *tracking.saved_pixels);
     }
 
     #[test]
@@ -172153,7 +172153,7 @@ pub(crate) mod tests {
                     .unwrap()
                     .into(),
             ),
-            saved_pixels: vec![0; 33 * 21],
+            saved_pixels: vec![0; 33 * 21].into(),
             item_appearances: Vec::new(),
             submenus: Vec::new(),
         };

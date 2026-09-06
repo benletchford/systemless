@@ -3363,6 +3363,22 @@ fn first_page_outlines_survive_palette_changes() {
         page(&mut runner, target);
         let fresh = text_pixels(&mut runner, target);
         capture(&runner, &format!("{name}-fresh.png"));
+        // Exercise the same screen -> offscreen -> covered screen -> restore
+        // path used by games caching text. No guest redraw is allowed to repair it.
+        let before_copy = runner.bus().outline_presentation_rgb().unwrap().2;
+        let (base, row_bytes, _, height, _) = runner.dispatcher().screen_mode;
+        let len = row_bytes * u32::from(height);
+        let scratch = runner.bus_mut().alloc(len);
+        runner.bus_mut().block_move(base, scratch, len);
+        systemless::memory::MemoryBus::fill_bytes(runner.bus_mut(), base, len, 0);
+        runner.bus_mut().block_move(scratch, base, len);
+        assert_eq!(
+            runner.bus().outline_presentation_rgb().unwrap().2,
+            before_copy,
+            "{name} must retain sharp pixels through an offscreen round trip without repainting"
+        );
+        capture(&runner, &format!("{name}-after-copy.png"));
+
         let (top, left, _, _) = runner.window_bounds();
         drag_mouse(&mut runner, top - 10, left + 100, top - 5, left + 100);
         finish_paint(&mut runner);

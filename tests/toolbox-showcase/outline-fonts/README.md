@@ -53,7 +53,9 @@ The desktop refreshes the display palette between CPU slices. The regression
 visits the palette page before opening Lists and TextEdit, then compares their
 fresh text pixels with a full repaint after dragging the window. TextEdit is
 also checked after inserting and deleting a character. Both comparisons must
-be byte-identical. The regression fails against the previous implementation
+be byte-identical. Each page also goes through a screen-to-offscreen copy,
+a complete screen overwrite, and restoration without a guest repaint; its
+full-resolution pixels must match exactly. The regression fails against the previous implementation
 (`d86e44e6`); [its fresh Lists capture](first-paint/lists-before-fix.png)
 reproduces the patchy text. These fixed captures are taken before the drag or typing:
 
@@ -61,7 +63,9 @@ reproduces the patchy text. These fixed captures are taken before the drag or ty
 <img src="first-paint/textedit-fresh.png" alt="Fresh TextEdit page after a palette change, before typing" width="800">
 
 [Lists after dragging](first-paint/lists-after-drag.png) ·
-[TextEdit after dragging](first-paint/textedit-after-drag.png)
+[TextEdit after dragging](first-paint/textedit-after-drag.png) ·
+[Lists after offscreen restoration](first-paint/lists-after-copy.png) ·
+[TextEdit after offscreen restoration](first-paint/textedit-after-copy.png)
 
 ```sh
 SYSTEMLESS_FIRST_PAINT_EVIDENCE_DIR=tests/toolbox-showcase/outline-fonts/first-paint \
@@ -132,15 +136,33 @@ bitmap/outline resources and explicit local overrides retain precedence.
 See [URW provenance](../../../src/quickdraw/fonts/urw/README.md) and
 [Noto provenance](../../../src/quickdraw/fonts/noto/README.md).
 
-The 4× desktop surface handles plain, bold, italic and underlined 68k
-srcCopy/srcOr text on 8-bit screens, plus shared chrome and outline menu
-symbols. The guest's binary framebuffer and text advances remain unchanged
+The 4× desktop surface handles 68k srcCopy/srcOr outline text on 8-bit
+screens and offscreen buffers, including synthesized bold, italic, underline,
+outline and shadow styles, plus shared chrome and menu symbols. The guest's binary framebuffer and text advances remain unchanged
 by presentation. Visibility and clipping regions constrain the enlarged ink;
 repeated coverage does not darken edges, and opaque text runs preserve
 adjacent overhangs. Cursor and debug overlays retain guest coordinates.
 
-Native PowerPC drawing, other pixel depths, remaining styles/transfer modes
-and browser output use the logical raster. Bitmap copies, selection inversions
-and palette changes can discard extra outline detail until text is redrawn.
+Owned dialog, menu, control and window snapshots retain indexed subpixels.
+Indexed CopyBits, ScrollRect, BlockMove, palette translation and selection
+inversions carry that coverage through their operations. Palette changes
+recolor the retained indexes. Ordinary guest erases still replace coverage.
+
+Native PowerPC drawing, other pixel depths, non-srcCopy/srcOr text drawing
+and browser output use the logical raster.
 Substituted font metrics can also overflow fixed layouts in guest applications;
 increasing presentation resolution does not change those layouts.
+
+## Preservation regressions
+
+The trap regression draws real outline text and round-trips it through both
+CopyBits entry paths, an offscreen PixMap, ScrollRect and InvertRect. Separate
+checks cover completely occluded dialog/menu/window snapshots, overlapping
+copies, palette remapping, transparent/Boolean transfers and invalidation by
+ordinary guest writes. These compare physical pixels without a repair repaint.
+
+```sh
+cargo test --no-default-features --lib outline_detail_survives
+cargo test --no-default-features --lib memory::presentation::tests
+cargo test --no-default-features --lib dialog_snapshot_replay_retains_unchanged_outline_detail
+```

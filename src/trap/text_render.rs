@@ -646,11 +646,13 @@ impl super::TrapDispatcher {
         });
 
         // Draw all characters (they will use the global underline info)
+        bus.begin_presentation_text_run(self.tx_mode == 0);
         for i in 0..len {
             let ch = bus.read_byte(s_ptr + 1 + i as u32);
             self.draw_char(cpu, bus, ch as char);
         }
 
+        bus.end_presentation_text_run();
         // Clear underline info
         self.underline_info = None;
     }
@@ -855,7 +857,7 @@ impl super::TrapDispatcher {
             let tx_size = self.tx_size;
             let tx_mode = self.tx_mode;
 
-            if self.tx_face & !7 == 0 && matches!(tx_mode, 0 | 1) && fs == 1 {
+            if matches!(tx_mode, 0 | 1) && fs == 1 {
                 bus.begin_outline_glyph(
                     glyph,
                     data,
@@ -865,6 +867,9 @@ impl super::TrapDispatcher {
                     is_italic.then_some(metrics.descent),
                     is_underline.then_some((i16::from(glyph.advance) + bold_extra, ul_thick)),
                 );
+                bus.style_outline_glyph(crate::quickdraw::text::QuickDrawTextStyle::from_bits(
+                    self.tx_face as u8,
+                ));
             }
             let r = if let Some((top, left, bottom, right)) =
                 bus.presentation.as_ref().and_then(|p| p.glyph_bounds())

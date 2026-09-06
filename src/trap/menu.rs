@@ -1,8 +1,8 @@
 //! Menu Manager trap handlers.
 
-use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin, MenuTrackingCall, MenuTrackingOrigin};
+use crate::memory::SavedPixels;
 use crate::cpu::{CpuOps, Register};
-use crate::guest_call::GuestCallTarget;
+use crate::guest_call::{GuestCallTarget, MenuBarBuildResume, MenuBarCallOrigin, MenuTrackingCall, MenuTrackingOrigin};
 use crate::guest_procedure::{resolve_guest_procedure, GuestIsa};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
@@ -74,7 +74,7 @@ pub(crate) fn tracked_menu_state(
     kind: MenuTrackingKind,
     menu_handle: u32,
     rect: (i16, i16, i16, i16),
-    saved_pixels: Vec<u8>,
+    saved_pixels: SavedPixels,
 ) -> MenuTrackingState {
     tracked_menu_state_with_content_top(kind, menu_handle, rect, rect.0, saved_pixels)
 }
@@ -84,7 +84,7 @@ fn tracked_menu_state_with_content_top(
     menu_handle: u32,
     rect: (i16, i16, i16, i16),
     content_top: i16,
-    saved_pixels: Vec<u8>,
+    saved_pixels: SavedPixels,
 ) -> MenuTrackingState {
     let (popup_top, popup_left, popup_bottom, popup_right) = rect;
     MenuTrackingState {
@@ -104,7 +104,7 @@ fn tracked_menu_state_with_content_top(
         saved_width: popup_right.saturating_sub(popup_left),
         saved_height: popup_bottom.saturating_sub(popup_top),
         front_buffer: None,
-        saved_pixels: saved_pixels.into_iter().map(u16::from).collect(),
+        saved_pixels: saved_pixels.map(u16::from),
         item_appearances: Vec::new(),
         submenus: Vec::new(),
     }
@@ -114,7 +114,7 @@ pub(crate) fn tracked_submenu_state(
     menu_handle: u32,
     parent_item: i16,
     rect: (i16, i16, i16, i16),
-    saved_pixels: Vec<u8>,
+    saved_pixels: SavedPixels,
 ) -> SubmenuTrackingState {
     let (popup_top, popup_left, popup_bottom, popup_right) = rect;
     SubmenuTrackingState {
@@ -131,7 +131,7 @@ pub(crate) fn tracked_submenu_state(
         saved_width: popup_right.saturating_sub(popup_left),
         saved_height: popup_bottom.saturating_sub(popup_top),
         front_buffer: None,
-        saved_pixels: saved_pixels.into_iter().map(u16::from).collect(),
+        saved_pixels: saved_pixels.map(u16::from),
         item_appearances: Vec::new(),
     }
 }
@@ -142,7 +142,12 @@ pub(crate) fn test_tracked_menu_state(
     rect: (i16, i16, i16, i16),
     highlighted_item: i16,
 ) -> MenuTrackingState {
-    let mut state = tracked_menu_state(MenuTrackingKind::MenuBar, menu_handle, rect, Vec::new());
+    let mut state = tracked_menu_state(
+        MenuTrackingKind::MenuBar,
+        menu_handle,
+        rect,
+        Vec::new().into(),
+    );
     state.highlighted_item = highlighted_item;
     state
 }
@@ -2867,7 +2872,7 @@ impl super::TrapDispatcher {
                                 MenuTrackingKind::PopUp,
                                 menu_handle,
                                 (0, 0, 0, 0),
-                                Vec::new(),
+                                Default::default(),
                             ));
                             self.menu_tracking.context_mut().definition =
                                 Some(request.begin_definition());
@@ -5577,13 +5582,13 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
-    ) -> Vec<u8> {
+    ) -> SavedPixels {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
         // Include shadow area (+1 right, +1 bottom)
         let save_bottom = bottom + 1;
         let save_right = right + 1;
-        let mut saved = Vec::new();
+        let mut saved: SavedPixels = Default::default();
         let screen_h_i16 = screen_h;
         for y in top..save_bottom {
             if y < 0 || y >= screen_h_i16 {
@@ -5612,6 +5617,22 @@ impl super::TrapDispatcher {
                 saved.push(bus.read_byte(row_start + bx));
             }
         }
+        if pixel_size == 8 {
+            let mut offset = 0;
+            for y in top.max(0)..save_bottom.min(screen_h) {
+                let left = left.max(0) as u32;
+                let len = (save_right.max(0) as u32)
+                    .min(row_bytes)
+                    .saturating_sub(left) as usize;
+                bus.capture_pixel_detail(
+                    &mut saved,
+                    offset,
+                    screen_base + y as u32 * row_bytes + left,
+                    len,
+                );
+                offset += len;
+            }
+        }
         saved
     }
 
@@ -5621,7 +5642,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
-        saved: &[Pixel],
+        saved: &SavedPixels<Pixel>,
     ) {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
@@ -5648,7 +5669,7 @@ impl super::TrapDispatcher {
             let row_start = screen_base + (y as u32) * row_bytes;
             for bx in byte_left..(byte_left + bytes_per_row) {
                 if idx < saved.len() {
-                    bus.write_byte(row_start + bx, saved[idx].into() as u8);
+                    bus.restore_saved_pixels(row_start + bx, saved, idx, 1);
                     idx += 1;
                 }
             }
@@ -5697,12 +5718,10 @@ impl super::TrapDispatcher {
                     );
                 } else if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                    let b = bus.read_byte(addr);
                     let (background, foreground) = hilite_indexes.unwrap_or((0, 255));
-                    bus.write_byte(
-                        addr,
-                        Self::menu_hilited_pixel_index(b, background, foreground),
-                    );
+                    bus.map_screen_byte(addr, |index| {
+                        Self::menu_hilited_pixel_index(index, background, foreground)
+                    });
                 }
             }
         }
@@ -5919,15 +5938,14 @@ impl super::TrapDispatcher {
                         );
                     } else if let Some((background, foreground)) = hilite_indexes {
                         let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                        let b = bus.read_byte(addr);
-                        bus.write_byte(
-                            addr,
-                            Self::menu_hilited_pixel_index(b, background, foreground),
-                        );
+                        bus.map_screen_byte(addr, |index| {
+                            Self::menu_hilited_pixel_index(index, background, foreground)
+                        });
                     } else {
                         let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                        let b = bus.read_byte(addr);
-                        bus.write_byte(addr, Self::menu_hilited_pixel_index(b, 0, 255));
+                        bus.map_screen_byte(addr, |index| {
+                            Self::menu_hilited_pixel_index(index, 0, 255)
+                        });
                     }
                 }
             }
@@ -12437,7 +12455,7 @@ mod tests {
                 ctrl_ptr: 0,
                 active_menu: 0,
                 highlighted_item: 1,
-                saved_pixels: Vec::new(),
+                saved_pixels: Default::default(),
                 dropdown_rect: rect,
             }),
             ..Default::default()

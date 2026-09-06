@@ -4,6 +4,7 @@
 //! `impl TrapDispatcher` blocks with `dispatch_*` methods that return
 //! `Option<Result<()>>` — `Some` if the trap was handled, `None` to pass through.
 
+use crate::memory::SavedPixels;
 pub(crate) use super::gateways::TrapTableProfile;
 #[cfg(test)]
 use super::gateways::{M68K_68040_COME_FROM_TRAPS, POWERPC_604_COME_FROM_TRAPS};
@@ -533,14 +534,14 @@ pub struct DialogTrackingState {
     /// Active editText item index (1-based, 0=none)
     pub edit_item: i16,
     /// Framebuffer pixels saved under the dialog (for restore on dismiss)
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
     /// Saved stack pointer from ModalDialog's first call
     pub stack_ptr: u32,
     /// Pointer to the itemHit variable (where to write the result)
     pub item_hit_ptr: u32,
     /// Snapshot of the fully-rendered dialog pixels (including pictures).
     /// Used by redraw_chrome to restore the dialog without re-parsing PICTs.
-    pub rendered_pixels: Vec<u8>,
+    pub rendered_pixels: SavedPixels,
     /// Remaining flash toggles (6 = 3 flashes). 0 = not flashing.
     pub flash_remaining: u8,
     /// Frames left in the current flash toggle phase
@@ -599,7 +600,7 @@ pub(crate) struct StandardFilePutTrackingState {
     pub sel_start: i16,
     pub sel_end: i16,
     pub bounds: (i16, i16, i16, i16),
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
 }
 
 /// Candidate file shown by a retained Standard File get dialog.
@@ -631,7 +632,7 @@ pub(crate) struct StandardFileGetTrackingState {
     pub file_types: Option<Vec<u32>>,
     pub selected: usize,
     pub bounds: (i16, i16, i16, i16),
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
 }
 
 /// Popup-menu control state owned by an active ModalDialog loop.
@@ -641,7 +642,7 @@ pub struct DialogPopupTrackingState {
     pub ctrl_ptr: u32,
     pub active_menu: usize,
     pub highlighted_item: i16,
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
     pub dropdown_rect: (i16, i16, i16, i16),
 }
 
@@ -681,7 +682,7 @@ pub struct DialogUserItemTrackingState {
 #[derive(Clone, Debug)]
 pub(crate) struct PersistentDialogSnapshot {
     pub bounds: (i16, i16, i16, i16),
-    pub pixels: Vec<u8>,
+    pub pixels: SavedPixels,
 }
 
 /// State for controls tracked through TrackControl.
@@ -693,7 +694,7 @@ pub(crate) struct ControlTrackingState {
     pub popup_tracking: bool,
     pub active_menu: usize,
     pub highlighted_item: i16,
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
     pub dropdown_rect: (i16, i16, i16, i16),
     pub popup_content_top: i16,
     pub popup_scroll_direction: Option<crate::menu_manager::MenuScrollDirection>,
@@ -728,7 +729,7 @@ pub(crate) struct ScrollbarThumbTrackingState {
     pub thumb_size: i16,
     pub slop_rect: (i16, i16, i16, i16),
     pub outline_rect: Option<(i16, i16, i16, i16)>,
-    pub saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
 }
 
 /// Retained state for TrackBox while the mouse button remains down.
@@ -752,7 +753,7 @@ pub(crate) struct WindowTrackingState {
     pub bounds_rect: (i16, i16, i16, i16),
     pub original_outline_rect: (i16, i16, i16, i16),
     pub outline_rect: (i16, i16, i16, i16),
-    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
     pub command_down: bool,
 }
 
@@ -782,7 +783,7 @@ pub(crate) struct GrowWindowTrackingState {
     pub start_point: (i16, i16),
     pub size_rect: (i16, i16, i16, i16),
     pub outline_rect: (i16, i16, i16, i16),
-    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
 }
 
 /// Retained state shared by DragGrayRgn and DragTheRgn while the mouse
@@ -799,7 +800,7 @@ pub(crate) struct RegionTrackingState {
     pub axis: i16,
     pub original_outline_rect: (i16, i16, i16, i16),
     pub outline_rect: Option<(i16, i16, i16, i16)>,
-    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
     pub outline_pattern: [u8; 8],
 }
 
@@ -1594,7 +1595,7 @@ pub struct TrapDispatcher {
     /// Saved framebuffer pixels under transient/non-document windows.
     /// Used to emulate Window Manager save-under behavior for dialog-like
     /// windows created through the Window Manager rather than Dialog Manager.
-    pub(crate) window_saved_under_pixels: HashMap<u32, (i16, i16, i16, i16, Vec<u8>)>,
+    pub(crate) window_saved_under_pixels: HashMap<u32, (i16, i16, i16, i16, SavedPixels)>,
     /// Aux-control state keyed by ControlHandle. On System 7.5.3 in 32-bit
     /// mode, each control has a stable AuxCtlRec even before custom colors are
     /// installed, so HLE GetAuxCtl currently treats aux-record presence as the
@@ -2034,7 +2035,7 @@ pub struct TrapDispatcher {
     pub(crate) dialog_filter_result_addr: u32,
     /// Saved background pixels for dialogs that returned a non-dismissing item
     /// (e.g., checkbox click). Keyed by dialog_ptr. Reused when ModalDialog re-enters.
-    pub(crate) dialog_saved_pixels: HashMap<u32, Vec<u8>>,
+    pub(crate) dialog_saved_pixels: HashMap<u32, SavedPixels>,
     /// Rendered front-dialog pixels retained after a visible dialog draw,
     /// including first-show shells and ModalDialog returns before DisposDialog
     /// closes the window.
@@ -2702,7 +2703,7 @@ impl TrapDispatcher {
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
     ) -> Vec<u8> {
-        self.save_dialog_pixels(bus, rect)
+        self.save_dialog_pixels(bus, rect).into_vec()
     }
 
     /// Test-only: invoke restore_dialog_pixels for the byte-isomorphism
@@ -2714,7 +2715,7 @@ impl TrapDispatcher {
         rect: (i16, i16, i16, i16),
         saved: &[u8],
     ) {
-        self.restore_dialog_pixels(bus, rect, saved);
+        self.restore_dialog_pixels(bus, rect, &saved.to_vec().into());
     }
 
     /// Return the process-scoped wrapping Macintosh tick counter.
@@ -10202,10 +10203,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: 0,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -10230,7 +10231,7 @@ mod tests {
             popup_tracking: true,
             active_menu: 0,
             highlighted_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             dropdown_rect: (0, 0, 0, 0),
             popup_content_top: 0,
             popup_scroll_direction: None,

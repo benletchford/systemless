@@ -1,6 +1,7 @@
 //! Architecture-neutral Menu Manager records and list operations.
 
 use crate::mac_roman::decode_mac_roman;
+use crate::memory::SavedPixels;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
 use std::cell::RefCell;
@@ -801,7 +802,7 @@ pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) saved_width: i16,
     pub(crate) saved_height: i16,
     pub(crate) front_buffer: Surface,
-    pub(crate) saved_pixels: Vec<Pixel>,
+    pub(crate) saved_pixels: SavedPixels<Pixel>,
     pub(crate) item_appearances: Vec<Appearance>,
 }
 
@@ -838,7 +839,7 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) saved_width: i16,
     pub(crate) saved_height: i16,
     pub(crate) front_buffer: Surface,
-    pub(crate) saved_pixels: Vec<Pixel>,
+    pub(crate) saved_pixels: SavedPixels<Pixel>,
     pub(crate) item_appearances: Vec<Appearance>,
     pub(crate) submenus: Vec<TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>,
 }
@@ -871,7 +872,7 @@ pub(crate) fn test_process_menu_tracking(menu_handle: u32) -> ProcessMenuTrackin
         saved_width: 101,
         saved_height: 41,
         front_buffer: None,
-        saved_pixels: Vec::new(),
+        saved_pixels: Default::default(),
         item_appearances: Vec::new(),
         submenus: Vec::new(),
     }
@@ -4221,7 +4222,7 @@ mod tests {
             saved_width: 100,
             saved_height: 40,
             front_buffer: (),
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             item_appearances: Vec::new(),
             submenus: vec![TrackedMenuPane {
                 parent_item: 1,
@@ -4237,7 +4238,7 @@ mod tests {
                 saved_width: 100,
                 saved_height: 40,
                 front_buffer: (),
-                saved_pixels: Vec::new(),
+                saved_pixels: Default::default(),
                 item_appearances: Vec::new(),
             }],
         }

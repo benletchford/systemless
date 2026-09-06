@@ -1859,11 +1859,13 @@ impl super::TrapDispatcher {
             None,
             None,
         );
-        if let Some(p) = &mut bus.presentation {
-            if let Some((top, left, bottom, right)) = p.glyph_bounds() {
+        if let Some((top, left, bottom, right)) =
+            bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+        {
+            {
                 for py in top.max(clip_top)..bottom.min(clip_bottom) {
                     for px in left.max(clip_left)..right.min(clip_right) {
-                        p.glyph_pixel(
+                        bus.outline_glyph_pixel(
                             screen_base + py as u32 * row_bytes + px as u32,
                             px as i16,
                             py as i16,
@@ -2154,8 +2156,36 @@ impl super::TrapDispatcher {
                 pixel_index_override,
                 black,
             );
+            bus.end_outline_glyph();
             return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
                 .unwrap_or(i16::MAX);
+        }
+
+        if pixel_size == 8 {
+            let descent = synthetic_italic.map(|(font, size)| get_font_metrics(font, size).descent);
+            bus.begin_outline_glyph(glyph, data, x, y, style.bold(), descent, None);
+            bus.style_outline_glyph(style);
+            if let Some((top, left, bottom, right)) =
+                bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+            {
+                let index = pixel_index_override.unwrap_or_else(|| {
+                    if black {
+                        Self::logical_black_pixel_index(bus)
+                    } else {
+                        Self::logical_white_pixel_index(bus)
+                    }
+                });
+                for py in top.max(0)..bottom.min(i32::from(screen_height)) {
+                    for px in left.max(0)..right.min(i32::from(screen_width)) {
+                        bus.outline_glyph_pixel(
+                            screen_base + py as u32 * row_bytes + px as u32,
+                            px as i16,
+                            py as i16,
+                            index,
+                        );
+                    }
+                }
+            }
         }
 
         let glyph_y = y.saturating_add(style.glyph_y_offset() as i16);
@@ -2177,6 +2207,7 @@ impl super::TrapDispatcher {
                     black,
                 );
             }
+            bus.end_outline_glyph();
             return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
                 .unwrap_or(i16::MAX);
         };
@@ -2222,6 +2253,7 @@ impl super::TrapDispatcher {
             }
         }
 
+        bus.end_outline_glyph();
         i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX)
     }
 
@@ -3181,6 +3213,15 @@ impl super::TrapDispatcher {
                 for row in 0..bounded_row_count {
                     let src_addr = port_base + (src_y_offset + row) * port_rb + src_x_offset;
                     let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
+                    if bus.has_outline_presentation() {
+                        bus.copy_mapped_ram_bytes(
+                            src_addr,
+                            dst_addr,
+                            bounded_col_count,
+                            &translation,
+                        );
+                        continue;
+                    }
                     bus.read_bytes_into(src_addr, &mut src_row);
                     for (dst, src) in dst_row.iter_mut().zip(src_row.iter()) {
                         *dst = translation[*src as usize];
@@ -3272,6 +3313,17 @@ impl super::TrapDispatcher {
             for row in 0..row_count {
                 let src_row = port_base + (src_y_offset + row) * port_rb;
                 let dst_row = screen_base + (dst_y + row) * screen_rb;
+                if port_pixel_size == 8 && dst_pixel_size == 8 && bus.has_outline_presentation() {
+                    let table = packed_translation
+                        .unwrap_or_else(|| std::array::from_fn(|index| index as u8));
+                    bus.copy_mapped_ram_bytes(
+                        src_row + src_first as u32,
+                        dst_row + dst_first as u32,
+                        col_count,
+                        &table,
+                    );
+                    continue;
+                }
                 bus.read_bytes_into(src_row + src_first as u32, &mut src_buf);
                 if dst_pixel_size != 8 {
                     bus.read_bytes_into(dst_row + dst_first as u32, &mut dst_buf);
@@ -3808,10 +3860,7 @@ impl super::TrapDispatcher {
             for row in 0..row_count {
                 let src_addr = candidate.base + row * candidate.row_bytes;
                 let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
-                for col in 0..col_count {
-                    let src_idx = bus.read_byte(src_addr + col);
-                    bus.write_byte(dst_addr + col, translation[src_idx as usize]);
-                }
+                bus.copy_mapped_ram_bytes(src_addr, dst_addr, col_count, &translation);
             }
             self.manual_cport_screen_witness = Self::manual_cport_screen_witness(
                 bus,
@@ -4024,10 +4073,10 @@ impl super::TrapDispatcher {
         let menu_height = (bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16)
             .clamp(0, height.max(0));
         let saved = (menu_height > 0 && self.window_bounds.0.saturating_sub(23) < menu_height)
-            .then(|| bus.read_bytes(base, row_bytes as usize * menu_height as usize));
+            .then(|| bus.save_pixel_bytes(base, row_bytes as usize * menu_height as usize));
         draw(self, bus);
         if let Some(saved) = saved {
-            bus.write_bytes(base, &saved);
+            bus.restore_saved_pixels(base, &saved, 0, saved.len());
         }
     }
 
@@ -5400,7 +5449,7 @@ mod redraw_chrome_tests {
         ];
         let root_rect = (20, 10, 38, 100);
         let child_rect = (24, 140, 42, 230);
-        let mut child = tracked_submenu_state(701, 1, child_rect, Vec::new());
+        let mut child = tracked_submenu_state(701, 1, child_rect, Vec::new().into());
         child.highlighted_item = 1;
         let mut tracking = test_tracked_menu_state(700, root_rect, 1);
         tracking.submenus.push(child);
@@ -5449,7 +5498,7 @@ mod redraw_chrome_tests {
             popup_tracking: true,
             active_menu: 0,
             highlighted_item: 1,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             dropdown_rect,
             popup_content_top: dropdown_rect.0,
             popup_scroll_direction: None,
@@ -5516,7 +5565,7 @@ mod redraw_chrome_tests {
             popup_tracking: true,
             active_menu: 0,
             highlighted_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             dropdown_rect,
             popup_content_top: dropdown_rect.0,
             popup_scroll_direction: None,
@@ -5731,7 +5780,7 @@ mod redraw_chrome_tests {
         let saved = disp
             .save_screen_rect_pixels(&bus, (0, 1, 1, 3))
             .expect("packed screen rectangle");
-        assert_eq!(saved.4, vec![5, 5]);
+        assert_eq!(saved.4, vec![5, 5].into());
         bus.write_byte(screen_base, 0xAA);
         bus.write_byte(screen_base + 1, 0xAA);
         disp.restore_screen_rect_pixels(&mut bus, saved.0, saved.1, saved.2, saved.3, &saved.4);
@@ -6884,7 +6933,7 @@ mod redraw_chrome_tests {
             .insert(PORT_PTR, vec![DialogItem::default()]);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
         disp.window_saved_under_pixels
-            .insert(PORT_PTR, (100, 180, 440, 108, vec![0xFF; 440 * 108]));
+            .insert(PORT_PTR, (100, 180, 440, 108, vec![0xFF; 440 * 108].into()));
 
         disp.redraw_chrome(&mut bus);
 
@@ -7194,6 +7243,24 @@ mod redraw_chrome_tests {
             disp.restore_dialog_pixels(&mut bus, bounds, &saved);
             assert!(bus.outline_presentation_rgb().unwrap().2 == expected);
         }
+        // Cover the text completely, then dismiss a menu and a window. Their
+        // owned snapshots must restore detail, not just unchanged guest bytes.
+        let dropdown = disp.save_dropdown_pixels(&bus, bounds);
+        for y in 8..56u32 {
+            bus.fill_bytes(base + y * 64 + 8, 48, 42);
+        }
+        disp.restore_dialog_pixels(&mut bus, bounds, &saved);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+        for y in 8..57u32 {
+            bus.fill_bytes(base + y * 64 + 8, 49, 42);
+        }
+        disp.restore_dropdown_pixels(&mut bus, bounds, &dropdown);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+        for y in 8..56u32 {
+            bus.fill_bytes(base + y * 64 + 8, 48, 42);
+        }
+        disp.restore_screen_rect_pixels(&mut bus, top, left, width, height, &occluder);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
         // Actual guest writes retain their draw/erase semantics even when
         // their bytes happen to match the existing logical framebuffer.
         let guest = bus.read_bytes(base, 64 * 64);
