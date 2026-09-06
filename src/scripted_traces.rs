@@ -1342,6 +1342,9 @@ fn scripted_call_menu_trap(
     trap_num: u16,
     label: &str,
 ) -> Result<(), String> {
+    if matches!(trap_num, 0x13d | 0x00b) && dispatcher.resume_menu_tracking(cpu, bus).is_some() {
+        return Ok(());
+    }
     dispatcher
         .dispatch_menu(true, trap_num, cpu, bus)
         .ok_or_else(|| format!("{label} was not handled"))?

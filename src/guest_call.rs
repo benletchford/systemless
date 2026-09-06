@@ -826,13 +826,54 @@ impl SharedMenuTracking {
             _ => unreachable!(),
         }
     }
-    pub(crate) fn enter_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
-        let entry = self.enter();
-        self.context_mut().call.get_or_insert(call);
-        entry
+    pub(crate) fn enter_new_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
+        let task = self.execution.current_task();
+        let parent = self
+            .execution
+            .0
+            .borrow()
+            .kernel
+            .peek(task)
+            .map(|call| call.call_id());
+        let id = self.push_tracking(task, parent);
+        self.context_mut().call = Some(call);
+        self.scope(id)
     }
-    pub(crate) fn enter(&mut self) -> MenuTrackingEntry {
-        let id = self.begin();
+
+    pub(crate) fn ready_call(&self, isa: GuestIsa) -> Option<MenuTrackingCall> {
+        if !self.execution.current_task_is_running() {
+            return None;
+        }
+        let task = self.execution.current_task();
+        let parent = self
+            .execution
+            .0
+            .borrow()
+            .kernel
+            .peek(task)
+            .map(|call| call.call_id());
+        let root = &self.calls.calls[self.active_index()?];
+        if root.parent != parent {
+            return None;
+        }
+        let MenuOperation::Tracking(context) = &root.operation else {
+            return None;
+        };
+        context
+            .call
+            .filter(|call| call.origin.isa() == isa && !context.is_idle())
+    }
+
+    pub(crate) fn resume_call(
+        &mut self,
+        isa: GuestIsa,
+    ) -> Option<(MenuTrackingCall, MenuTrackingEntry)> {
+        let call = self.ready_call(isa)?;
+        let id = self.calls.calls[self.active_index()?].id;
+        Some((call, self.scope(id)))
+    }
+
+    fn scope(&self, id: MenuOperationId) -> MenuTrackingEntry {
         MenuTrackingEntry {
             id,
             tracking: Self {
@@ -842,6 +883,17 @@ impl SharedMenuTracking {
             },
         }
     }
+
+    pub(crate) fn enter_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
+        let entry = self.enter();
+        self.context_mut().call.get_or_insert(call);
+        entry
+    }
+    pub(crate) fn enter(&mut self) -> MenuTrackingEntry {
+        let id = self.begin();
+        self.scope(id)
+    }
+
     pub(crate) fn entry_id(&self) -> Option<MenuOperationId> {
         let task = self.execution.current_task();
         let parent = self
@@ -903,6 +955,9 @@ impl SharedMenuTracking {
         }) {
             return call.id;
         }
+        self.push_tracking(task, parent)
+    }
+    fn push_tracking(&mut self, task: ExecutionTaskId, parent: Option<CallId>) -> MenuOperationId {
         let id = MenuOperationId(self.calls.next_id);
         self.calls.next_id = self
             .calls
@@ -3191,6 +3246,55 @@ mod tests {
         );
         assert_eq!(calls.advance_menu_bar_build(GuestIsa::M68k), None);
         assert_eq!(calls.ready_menu_bar_build(GuestIsa::M68k), None);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn fresh_menu_entries_and_resumption_use_exact_call_ownership() {
+        use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
+        let calls = SharedGuestCallStack::default();
+        let mut tracking = calls.menu_tracking_view();
+        let original = MenuTrackingCall {
+            request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
+            origin: MenuTrackingOrigin::M68k {
+                stack_pointer: 0x4000,
+                return_address: 0x5000,
+            },
+        };
+        let outer = tracking.enter_new_call(original);
+        *tracking = Some(test_process_menu_tracking(111));
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(original));
+        assert_eq!(tracking.ready_call(GuestIsa::PowerPc), None);
+        assert!(calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0
+            },
+            0x2000,
+            0x3000
+        ));
+        assert_eq!(
+            tracking.ready_call(GuestIsa::M68k),
+            None,
+            "a live callback still owns execution"
+        );
+        assert!(calls.complete_m68k(0x2002, 0x3000));
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(original));
+        let inner = tracking.enter_new_call(original);
+        assert_ne!(
+            inner.id, outer.id,
+            "a fresh public entry cannot resume the prior operation"
+        );
+        *tracking = Some(test_process_menu_tracking(222));
+        *tracking = None;
+        drop(inner);
+        assert_eq!(tracking.as_ref().unwrap().menu_handle, 111);
+        let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
+        assert_eq!(resumed.id, outer.id);
+        *tracking = None;
+        drop(resumed);
+        drop(outer);
         assert!(calls.is_empty());
     }
 

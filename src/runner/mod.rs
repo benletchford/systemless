@@ -5995,6 +5995,44 @@ impl FixtureRunner {
                 break;
             }
 
+            if !sound_work_only
+                && self.active_interrupt_callback.is_none()
+                && self.dispatcher.has_ready_menu_tracking()
+            {
+                // Preserve the guest-time charge of a menu wait step after removing trap reentry.
+                let wait_cost = 1 + hle_trap_extra_tick_cost(0xa93d);
+                if self.frozen_ticks.is_none() && self.charge_tick_budget(wait_cost, tick_cap) {
+                    break;
+                }
+                if self.active_interrupt_callback.is_some() {
+                    continue;
+                }
+                self.dispatcher.yield_for_ui = yield_for_ui;
+                if let Some(opcode) = self
+                    .dispatcher
+                    .resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus)
+                {
+                    count += 1;
+                    self.total_instructions = self.total_instructions.wrapping_add(1);
+                    if self.dispatcher.has_ready_menu_tracking() {
+                        if yield_for_ui && self.frozen_ticks.is_none() {
+                            self.frozen_ticks = Some(self.guest_tick());
+                        }
+                        let fired_hook = self.fire_menu_hook_proc(opcode);
+                        if yield_for_ui && !fired_hook {
+                            if finish_frame {
+                                self.finish_host_frame(audio_samples, sound_interrupt_dispatched);
+                            }
+                            return (count, true);
+                        }
+                    } else if self.process_context.menu_tracking().is_none() && self.frozen_ticks.is_some()
+                    {
+                        self.unfreeze_ticks_to(real_tick_cap);
+                    }
+                    continue;
+                }
+            }
+
             if pc == 0 {
                 // App's RTS chain reached PC=0 — treat as clean exit.
                 // Some apps (e.g. Centaurian 1.2.1) zero out our
@@ -6229,9 +6267,8 @@ impl FixtureRunner {
                 }
                 BatchExit::AlineTrap { opcode } => {
                     if self.m68k.complete_manager_return(&self.bus)
-                        && self
-                            .dispatcher
-                            .resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
+                        && (self.dispatcher.resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
+                            || self.dispatcher.resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus).is_some())
                     {
                         continue;
                     }
@@ -6310,7 +6347,7 @@ impl FixtureRunner {
                             // The m68k CPU already advanced PC past the A-line
                             // instruction during fetch (read_imm_16 does pc += 2).
                             //
-                            // When menu or dialog tracking is active, REWIND PC
+                            // For remaining tracking traps, rewind PC
                             // back to the A-line instruction so it re-fires on
                             // the next frame.
                             //
@@ -6318,13 +6355,10 @@ impl FixtureRunner {
                             // push-back logic — both call
                             // `TrapDispatcher::is_tracking_refire` so
                             // they can never diverge. Strips auto-pop
-                            // bit so `$AD3D` / `$AC0B` / `$AD91`
+                            // bit so `$AD91`
                             // match too.
                             let is_tracking_refire =
-                                self.dispatcher.is_tracking_refire_with_menu_tracking(
-                                    opcode,
-                                    self.process_context.menu_tracking().is_some(),
-                                );
+                                self.dispatcher.is_tracking_refire(opcode);
                             if is_tracking_refire {
                                 // An asynchronous callback may have been
                                 // injected while this tracking trap was
@@ -6372,26 +6406,19 @@ impl FixtureRunner {
                                 }
                                 self.m68k.cpu.write_reg(Register::PC, pc);
 
-                                // Fire MenuSelect's documented MenuHook while
-                                // the dropdown is still live on screen. The
-                                // hook is guest code, so inject it before the
-                                // next A93D re-fire instead of approximating it
-                                // inside the HLE trap body.
-                                let fired_menu_hook = self.fire_menu_hook_proc(opcode);
-
                                 // Fire pending dialog userItem draw procs.
                                 // The trampoline redirects PC to execute the
                                 // 68K draw proc; when it RTS's, PC returns to
                                 // the ModalDialog A-line for the next re-fire.
                                 let uses_dialog_callbacks =
                                     tracking_refire_uses_dialog_callbacks(opcode);
-                                let fired_draw_proc = if fired_menu_hook || !uses_dialog_callbacks {
+                                let fired_draw_proc = if !uses_dialog_callbacks {
                                     false
                                 } else {
                                     self.fire_dialog_draw_procs()
                                 };
                                 let mut fired_filter_proc = false;
-                                if uses_dialog_callbacks && !fired_menu_hook && !fired_draw_proc {
+                                if uses_dialog_callbacks && !fired_draw_proc {
                                     // Fire the filter proc for any dialog that has one,
                                     // once draw procs are complete. On a real Mac,
                                     // ModalDialog calls the filter for every event
@@ -6409,7 +6436,6 @@ impl FixtureRunner {
                                 // presenting here shows half-painted screens.
                                 // Headless mode keeps executing as before.
                                 if yield_for_ui
-                                    && !fired_menu_hook
                                     && !fired_draw_proc
                                     && !fired_filter_proc
                                 {
@@ -7007,7 +7033,8 @@ impl FixtureRunner {
             return Some((0, true));
         }
 
-        if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc
+        if !self.dispatcher.has_ready_menu_tracking()
+            && self.m68k.cpu.read_reg(Register::PC) == pending.return_pc
             && self.m68k.cpu.read_reg(Register::A7) == pending.final_sp
         {
             let completed = self.process_context.with_memory_and_cfm(|manager, _| {
@@ -7024,6 +7051,10 @@ impl FixtureRunner {
         let mut running = true;
         let mut watch_buf = Vec::with_capacity(4);
         while executed < max_steps {
+            if self.dispatcher.resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus).is_some() {
+                executed += 1;
+                continue;
+            }
             if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc {
                 running = self.process_context.with_memory_and_cfm(|manager, _| {
                     self.m68k.complete_pending(
@@ -7064,9 +7095,8 @@ impl FixtureRunner {
                 }
                 BatchExit::AlineTrap { opcode } => {
                     if self.m68k.complete_manager_return(&self.bus)
-                        && self
-                            .dispatcher
-                            .resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
+                        && (self.dispatcher.resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
+                            || self.dispatcher.resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus).is_some())
                     {
                         continue;
                     }
@@ -16253,7 +16283,7 @@ mod tests {
         if interrupt {
             let mut parked = false;
             for _ in 0..512 {
-                if runner.m68k.cpu.read_reg(Register::PC) == entry
+                if runner.m68k.cpu.read_reg(Register::PC) == stack - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION + 52
                     && runner.m68k.cpu.read_reg(Register::A7)
                         == stack - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
                 {
@@ -16300,6 +16330,144 @@ mod tests {
         if interrupt {
             assert_eq!(runner.bus.read_word(marker + 4), 1);
         }
+    }
+
+    #[test]
+    fn classic_menu_wait_resumes_without_refiring_new_trap_patch() {
+        for auto_pop in [false, true] {
+            for custom in [false, true] {
+                run_menu_patch_during_tracking(auto_pop, custom);
+            }
+        }
+    }
+
+    fn run_menu_patch_during_tracking(auto_pop: bool, custom: bool) {
+        use crate::memory::globals::addr;
+        let ClassicPowerPcMdefFixture {
+            mut runner,
+            menu,
+            record,
+            marker,
+            entry,
+            stack,
+        } = classic_powerpc_mdef_fixture();
+        runner.dispatcher.menu_bar_hidden = false;
+        runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+        runner.bus.write_word(addr::MENU_FLASH, 0);
+        if !custom {
+            let code = runner
+                .bus
+                .alloc(crate::menu_manager::STANDARD_MENU_DEFINITION_SHIM.len() as u32);
+            runner
+                .bus
+                .write_bytes(code, &crate::menu_manager::STANDARD_MENU_DEFINITION_SHIM);
+            let handle = runner.bus.alloc(4);
+            runner.bus.write_long(handle, code);
+            runner.bus.write_long(record + 6, handle);
+        }
+        runner.bus.write_word(record + 2, 80);
+        runner.bus.write_word(record + 4, 32);
+        runner.bus.write_bytes(
+            record + 14,
+            b"\x06Custom\x01A\x00\x00\x00\x00\x01B\x00\x00\x00\x00\x00",
+        );
+        runner.bus.write_word(stack, 0);
+        runner.bus.write_long(stack + 2, menu);
+        runner
+            .dispatcher
+            .dispatch_menu(true, 0x135, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        runner.dispatcher.draw_menu_bar_to_fb(&mut runner.bus);
+        let original_port = *runner.dispatcher.current_port;
+        let parameters = stack + if auto_pop { 4 } else { 0 };
+        let return_pc = entry + if auto_pop { 0x100 } else { 2 };
+        runner.bus.write_word(return_pc, 0x60fe);
+        runner
+            .bus
+            .write_word(entry, if auto_pop { 0xAD3D } else { 0xA93D });
+        if auto_pop {
+            runner.bus.write_long(stack, return_pc);
+        }
+        runner.bus.write_word(parameters, 10);
+        runner.bus.write_word(parameters + 2, 16);
+        runner.bus.write_long(parameters + 4, 0);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner.push_canonical_mouse_down(10, 16);
+
+        for _ in 0..8 {
+            assert!(runner.run_steps(128, None).1);
+        }
+        let rect = runner
+            .process_context
+            .menu_tracking()
+            .expect("classic tracking remains active")
+            .dropdown_rect();
+        if custom {
+            assert!(
+                runner.bus.read_long(marker) > 0,
+                "PowerPC draw callback ran"
+            );
+        }
+        let (v, h) = (rect.0 + 24, rect.1 + 16);
+        runner.dispatcher.set_mouse_position(v, h);
+        for _ in 0..8 {
+            assert!(runner.run_steps(128, None).1);
+        }
+        runner.push_canonical_mouse_up(v, h);
+        let patch_marker = runner.bus.alloc(4);
+        let patch = runner.bus.alloc(12);
+        for (index, word) in [
+            0x23fc,
+            0,
+            1,
+            (patch_marker >> 16) as u16,
+            patch_marker as u16,
+            0x4e75,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            runner.bus.write_word(patch + index as u32 * 2, word);
+        }
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, 0xa93d, patch)
+            .unwrap();
+        for _ in 0..16 {
+            assert!(runner.run_steps(128, None).1);
+            assert_eq!(
+                runner.bus.read_long(patch_marker),
+                0,
+                "a new MenuSelect patch intercepted the already-active interaction"
+            );
+            if runner.process_context.menu_tracking().is_none()
+                && runner.dispatcher.guest_calls.is_empty()
+            {
+                break;
+            }
+        }
+        assert!(runner.process_context.menu_tracking().is_none(),
+            "tracking stayed live: pc={:08x}, sp={:08x}, patch={:08x}, marker={}, depth={}, pending={:?}",
+            runner.m68k.cpu.read_reg(Register::PC), runner.m68k.cpu.read_reg(Register::A7), patch,
+            runner.bus.read_long(patch_marker), runner.dispatcher.guest_calls.depth(),
+            runner.dispatcher.menu_tracking.as_ref().and_then(|tracking| tracking.definition.as_ref()).and_then(|definition| definition.pending_invocation()));
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        assert_eq!(runner.bus.read_long(parameters + 4), (140 << 16) | 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), parameters + 4);
+        assert_eq!(*runner.dispatcher.current_port, original_port);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
+        if auto_pop {
+            runner.bus.write_long(stack, return_pc);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        assert!(runner.run_steps(128, None).1);
+        assert_eq!(
+            runner.bus.read_long(patch_marker),
+            1,
+            "fresh entries must still honor the new patch"
+        );
     }
 
     #[test]
