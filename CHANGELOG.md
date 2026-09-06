@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.38.2](https://github.com/benletchford/systemless/compare/v0.38.1...v0.38.2) (2026-09-06)
+
+
+### Bug Fixes
+
+* match native NewPixMap handle allocation order ([0c0ff2a](https://github.com/benletchford/systemless/commit/0c0ff2ac4d1da51f5de535278f7c4078a68204ed))
+* preserve background positions when moving dialogs ([2a6230b](https://github.com/benletchford/systemless/commit/2a6230bcce86a8123a124184d942f4e78f30e9da))
+
 ## [0.38.1](https://github.com/benletchford/systemless/compare/v0.38.0...v0.38.1) (2026-09-06)
 
 
