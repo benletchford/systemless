@@ -1619,6 +1619,81 @@ mod tests {
         assert_eq!(cpu.ir, reference.ir);
     }
 
+    struct CountingGuestAddressSpace<'a> {
+        memory: &'a mut GuestAddressSpace,
+        instruction_reads: usize,
+    }
+
+    impl<'a> CountingGuestAddressSpace<'a> {
+        fn new(memory: &'a mut GuestAddressSpace) -> Self {
+            Self {
+                memory,
+                instruction_reads: 0,
+            }
+        }
+    }
+
+    impl PpcMemory for CountingGuestAddressSpace<'_> {
+        fn read_u8(&mut self, addr: u32) -> Option<u8> {
+            PpcMemory::read_u8(self.memory, addr)
+        }
+
+        fn write_u8(&mut self, addr: u32, value: u8) -> Option<()> {
+            PpcMemory::write_u8(self.memory, addr, value)
+        }
+
+        fn read_u16_be(&mut self, addr: u32) -> Option<u16> {
+            PpcMemory::read_u16_be(self.memory, addr)
+        }
+
+        fn write_u16_be(&mut self, addr: u32, value: u16) -> Option<()> {
+            PpcMemory::write_u16_be(self.memory, addr, value)
+        }
+
+        fn read_u32_be(&mut self, addr: u32) -> Option<u32> {
+            PpcMemory::read_u32_be(self.memory, addr)
+        }
+
+        fn write_u32_be(&mut self, addr: u32, value: u32) -> Option<()> {
+            PpcMemory::write_u32_be(self.memory, addr, value)
+        }
+
+        fn read_u64_be(&mut self, addr: u32) -> Option<u64> {
+            PpcMemory::read_u64_be(self.memory, addr)
+        }
+
+        fn write_u64_be(&mut self, addr: u32, value: u64) -> Option<()> {
+            PpcMemory::write_u64_be(self.memory, addr, value)
+        }
+
+        fn read_instruction_u32_be(&mut self, addr: u32) -> Option<u32> {
+            self.instruction_reads += 1;
+            PpcMemory::read_instruction_u32_be(self.memory, addr)
+        }
+
+        fn instruction_cache_token(&mut self, addr: u32) -> Option<u64> {
+            PpcMemory::instruction_cache_token(self.memory, addr)
+        }
+    }
+
+    fn run_cached_add(
+        cpu: &mut PpcCpu,
+        memory: &mut CountingGuestAddressSpace<'_>,
+        pc: u32,
+        expected: u32,
+    ) {
+        cpu.pc = pc;
+        cpu.lr = 0;
+        cpu.gpr[3] = 0;
+        assert_eq!(
+            cpu.run_with_imports(memory, 8, 0, 0, 0, |_, _, _| {
+                unreachable!("test program has no imports")
+            }),
+            PpcRunResult::Halted { pc: 0, cycles: 2 }
+        );
+        assert_eq!(cpu.gpr[3], expected);
+    }
+
     #[test]
     fn powerpc_store_rewrites_code_seen_by_warmed_attached_m68k_trace() {
         const PPC_WRITER: u32 = 0x0100_0000;
@@ -1722,6 +1797,95 @@ mod tests {
             PpcRunResult::Halted { pc: 0, cycles: 2 }
         );
         assert_eq!(ppc.gpr[3], 2);
+    }
+
+    #[test]
+    fn immutable_powerpc_overlay_invalidates_same_cpu_cache_after_refused_guest_writes() {
+        const PPC_CODE: u32 = 0x0100_0000;
+        const ADD_ONE: u32 = 0x3863_0001;
+        const ADD_TWO: u32 = 0x3863_0002;
+        const BLR: u32 = 0x4e80_0020;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_readonly_region(
+            PPC_CODE,
+            [ADD_ONE, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let original_token = PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).unwrap();
+        let mut cpu = PpcCpu::new();
+
+        {
+            let mut counted = CountingGuestAddressSpace::new(&mut memory);
+            run_cached_add(&mut cpu, &mut counted, PPC_CODE, 1);
+            assert_eq!(counted.instruction_reads, 2);
+            assert_eq!(
+                PpcMemory::write_u32_be(&mut counted, PPC_CODE, ADD_TWO),
+                None
+            );
+        }
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.attach_guest_address_space(memory.shared_view());
+        assert!(!bus.try_write_long(PPC_CODE, ADD_TWO));
+        assert_eq!(MemoryBus::read_long(&bus, PPC_CODE), ADD_ONE);
+
+        {
+            let mut counted = CountingGuestAddressSpace::new(&mut memory);
+            run_cached_add(&mut cpu, &mut counted, PPC_CODE, 1);
+            assert_eq!(
+                counted.instruction_reads, 0,
+                "the unchanged immutable block must come from the warmed cache"
+            );
+        }
+
+        memory.add_readonly_region(PPC_CODE, ADD_TWO.to_be_bytes().to_vec());
+        let overlay_token = PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).unwrap();
+        assert_ne!(overlay_token, original_token);
+        assert_eq!(MemoryBus::read_long(&bus, PPC_CODE), ADD_TWO);
+        {
+            let mut counted = CountingGuestAddressSpace::new(&mut memory);
+            run_cached_add(&mut cpu, &mut counted, PPC_CODE, 2);
+            assert_eq!(counted.instruction_reads, 2);
+        }
+    }
+
+    #[test]
+    fn same_powerpc_cpu_distinguishes_independent_immutable_memory_tokens() {
+        const PPC_CODE: u32 = 0x0100_0000;
+        const BLR: u32 = 0x4e80_0020;
+
+        let mut first = GuestAddressSpace::new();
+        first.add_readonly_region(
+            PPC_CODE,
+            [0x3863_0001u32, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let mut second = GuestAddressSpace::new();
+        second.add_readonly_region(
+            PPC_CODE,
+            [0x3863_0002u32, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let first_token = PpcMemory::instruction_cache_token(&mut first, PPC_CODE).unwrap();
+        let second_token = PpcMemory::instruction_cache_token(&mut second, PPC_CODE).unwrap();
+        assert_ne!(first_token, second_token);
+
+        let mut cpu = PpcCpu::new();
+        for (memory, expected) in [(&mut first, 1), (&mut second, 2)] {
+            let mut counted = CountingGuestAddressSpace::new(memory);
+            run_cached_add(&mut cpu, &mut counted, PPC_CODE, expected);
+            assert_eq!(counted.instruction_reads, 2);
+        }
+        let mut counted = CountingGuestAddressSpace::new(&mut first);
+        run_cached_add(&mut cpu, &mut counted, PPC_CODE, 1);
+        assert_eq!(counted.instruction_reads, 2);
     }
 
     #[test]
