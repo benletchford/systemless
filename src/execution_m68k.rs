@@ -8,6 +8,97 @@ use crate::guest_call::{PendingM68kExecution, SharedGuestCallStack};
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use ppc::PpcMemory;
 
+/// Stack-local Pascal MDEF lowering shared by classic and native callers.
+/// Code lives above the callback SP, so nested calls cannot overwrite it.
+/// Macintosh Toolbox Essentials (1992), pp. 3-148--3-151.
+pub(crate) struct M68kMenuDefinitionFrame {
+    pub(crate) entry: u32,
+    pub(crate) image: [u8; 60],
+}
+
+impl M68kMenuDefinitionFrame {
+    pub(crate) const RESERVATION: u32 = 80;
+    pub(crate) const STACK_PREFIX: u32 = 58;
+
+    pub(crate) fn new(
+        call: crate::menu_manager::MenuDefinitionCall,
+        target: u32,
+        final_sp: u32,
+        release_stack: bool,
+    ) -> Option<Self> {
+        let entry = final_sp.checked_sub(Self::RESERVATION)?;
+        entry.checked_sub(Self::STACK_PREFIX)?;
+        if entry & 1 != 0 {
+            return None;
+        }
+        let mut image = [0; 60];
+        for (offset, value) in [
+            (0, 0x48e7u16),
+            (2, 0xf0f0), // MOVEM D0-D3/A0-A3,-(SP)
+            (4, 0x3f3c),
+            (6, call.message as i16 as u16),
+            (8, 0x2f3c),
+            (14, 0x2f3c),
+            (20, 0x2f3c),
+            (26, 0x2f3c),
+            (32, 0x4eb9), // JSR target
+            (38, 0x2e7c), // restore saved-register SP
+            (44, 0x4cdf),
+            (46, 0x0f0f),
+            // RTD changes PC and SP in one instruction. An interrupt must
+            // never see SP above code which the foreground will still fetch.
+            (48, 0x4e74),
+            (50, if release_stack { Self::RESERVATION as u16 } else { 0 }),
+        ] {
+            image[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        for (offset, value) in [
+            (10, call.menu_handle),
+            (16, call.menu_rect),
+            (22, call.hit_point),
+            (28, call.which_item),
+            (34, target),
+            (40, entry - 36),
+        ] {
+            image[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        Some(Self { entry, image })
+    }
+}
+
+/// Consume a manager result while its stack reservation is still live, then
+/// restore the caller ABI before trap/vector lookup can invoke more guest code.
+pub(crate) fn complete_classic_manager_return<C: crate::cpu::CpuOps>(
+    calls: &SharedGuestCallStack,
+    cpu: &mut C,
+    bus: &crate::memory::MacMemoryBus,
+) -> bool {
+    use crate::memory::MemoryBus;
+    let restored_sp = calls.complete_m68k_with_operation(
+        cpu.read_reg(Register::PC),
+        cpu.read_reg(Register::A7),
+        |operation| {
+            let crate::guest_call::ManagerContinuation::Menu(operation) = operation else {
+                panic!("classic manager return has no completion consumer");
+            };
+            let result = if bus.is_guest_address_mapped(operation.scratch, 10) {
+                <[u8; 10]>::try_from(bus.read_bytes(operation.scratch, 10))
+                    .map(crate::menu_manager::MenuDefinitionInvocation::decode_result)
+                    .map_err(|_| ())
+            } else {
+                Err(())
+            };
+            operation.complete_result(result);
+        },
+    );
+    if let Some(sp) = restored_sp {
+        cpu.write_reg(Register::A7, sp);
+        true
+    } else {
+        false
+    }
+}
+
 pub(crate) struct M68kExecution {
     pub(crate) cpu: M68kCpu,
     calls: SharedGuestCallStack,
@@ -19,6 +110,10 @@ impl M68kExecution {
             cpu: M68kCpu::new(),
             calls: calls.shared_handle(),
         }
+    }
+
+    pub(crate) fn complete_manager_return(&mut self, bus: &crate::memory::MacMemoryBus) -> bool {
+        complete_classic_manager_return(&self.calls, &mut self.cpu, bus)
     }
 
     pub(crate) fn apply_task_handoff(&mut self) {

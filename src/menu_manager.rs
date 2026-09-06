@@ -168,18 +168,38 @@ pub(crate) struct MenuBarBuild<Handle> {
     result_handle: Option<Handle>,
     menu_handles: Vec<Handle>,
     next_menu: usize,
+    completion: Option<MenuDefinitionCompletion>,
 }
 
-impl<Handle: Copy> MenuBarBuild<Handle> {
+impl<Handle: Copy + PartialEq> MenuBarBuild<Handle> {
     pub(crate) fn new(result_handle: Handle, menu_handles: Vec<Handle>) -> Self {
         Self {
             result_handle: Some(result_handle),
             menu_handles,
             next_menu: 0,
+            completion: None,
+        }
+    }
+
+    pub(crate) fn bind_completion(&mut self, handle: Handle, completion: MenuDefinitionCompletion) {
+        if self.completion.is_none()
+            && self
+                .next_menu
+                .checked_sub(1)
+                .and_then(|index| self.menu_handles.get(index))
+                == Some(&handle)
+        {
+            self.completion = Some(completion);
         }
     }
 
     pub(crate) fn next_step(&mut self) -> Option<MenuBarBuildStep<Handle>> {
+        if let Some(completion) = self.completion.as_ref() {
+            // mSizeMsg publishes dimensions in the live menu record, not its
+            // rectangle/item arguments. The receipt gates callback retirement.
+            let _ = completion.take()?;
+            self.completion = None;
+        }
         if let Some(handle) = self.menu_handles.get(self.next_menu).copied() {
             self.next_menu += 1;
             Some(MenuBarBuildStep::Size(handle))
@@ -289,6 +309,10 @@ impl MenuDefinitionOperation {
             .read_bytes_into(self.scratch, &mut bytes)
             .map(|()| MenuDefinitionInvocation::decode_result(bytes))
             .ok_or(());
+        self.complete_result(result);
+    }
+
+    pub(crate) fn complete_result(self, result: Result<MenuDefinitionResult, ()>) {
         let mut state = self.completion.0.borrow_mut();
         if matches!(*state, MenuDefinitionCompletionState::Pending) {
             *state = MenuDefinitionCompletionState::Ready(result);
@@ -3767,6 +3791,23 @@ mod tests {
         );
         assert_eq!(MenuDefinitionMessage::Draw as i16, 0);
         assert_eq!(MenuDefinitionMessage::PopUp as i16, 3);
+    }
+
+    #[test]
+    fn menu_bar_build_waits_for_its_own_callback_before_advancing() {
+        let mut build = MenuBarBuild::new(1u32, vec![2, 3]);
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Size(2)));
+        let completion = MenuDefinitionCompletion::pending();
+        build.bind_completion(2, completion.clone());
+        assert_eq!(build.next_step(), None);
+        let nested = MenuDefinitionCompletion::pending();
+        build.bind_completion(2, nested.clone());
+        MenuDefinitionOperation { scratch: 0, completion: nested }.complete_result(Ok(MenuDefinitionInvocation::decode_result([0; 10])));
+        assert_eq!(build.next_step(), None, "nested receipt must not release the outer build");
+        MenuDefinitionOperation { scratch: 0, completion }.complete_result(Ok(MenuDefinitionInvocation::decode_result([0; 10])));
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Size(3)));
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Complete(1)));
+        assert_eq!(build.next_step(), None);
     }
 
     #[test]
