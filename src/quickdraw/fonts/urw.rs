@@ -179,6 +179,69 @@ fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
     Some((face, extended))
 }
 
+/// Resolve only glyphs actually supplied by this fallback, preserving resource fonts.
+pub(crate) fn presentation_glyph(
+    glyph: &Glyph,
+    data: &[u8],
+    scale: u32,
+) -> Option<crate::memory::presentation::OutlineGlyph> {
+    let cache = FACES.lock().ok()?;
+    for (&(family, size), &(face, extended)) in cache.iter() {
+        if face.data.as_ptr() != data.as_ptr() {
+            continue;
+        }
+        let ch = face
+            .glyphs
+            .iter()
+            .position(|g| std::ptr::eq(g, glyph))
+            .map(|i| char::from(i as u8 + 32))
+            .or_else(|| {
+                extended
+                    .glyphs
+                    .iter()
+                    .find(|g| std::ptr::eq(&g.glyph, glyph))
+                    .map(|g| {
+                        crate::mac_roman::decode_mac_roman(&[g.mac_code])
+                            .chars()
+                            .next()
+                            .unwrap()
+                    })
+            })?;
+        use skrifa::{
+            instance::{LocationRef, Size},
+            outline::{DrawSettings, HintingInstance, SmoothMode, Target},
+            FontRef, MetadataProvider,
+        };
+        let font = FontRef::new(bytes(family)?).ok()?;
+        let outlines = font.outline_glyphs();
+        let hint = HintingInstance::new(
+            &outlines,
+            Size::new(size as f32 * scale as f32),
+            LocationRef::default(),
+            Target::from(SmoothMode::Normal),
+        )
+        .ok()?;
+        let mut path = OutlinePath::default();
+        outlines
+            .get(font.charmap().map(ch)?)?
+            .draw(DrawSettings::hinted(&hint, false), &mut path)
+            .ok()?;
+        let mut pixels = Vec::new();
+        let placement = zeno::Mask::new(path.0.as_slice())
+            .origin(zeno::Origin::BottomLeft)
+            .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
+            .render_into(&mut pixels, None);
+        return Some(crate::memory::presentation::OutlineGlyph {
+            pixels,
+            width: placement.width as i32,
+            height: placement.height as i32,
+            left: placement.left,
+            top: -placement.top,
+        });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

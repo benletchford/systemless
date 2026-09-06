@@ -1850,9 +1850,34 @@ impl super::TrapDispatcher {
         let clip_left = i32::from(clip_left.max(0));
         let clip_bottom = i32::from(clip_bottom.min(screen_height));
         let clip_right = i32::from(clip_right.min(screen_width));
+        #[cfg(feature = "experimental-urw-fonts")]
+        bus.begin_outline_glyph(
+            glyph,
+            data,
+            gx - i16::from(glyph.origin_x),
+            gy - i16::from(glyph.origin_y),
+            false,
+        );
+        #[cfg(feature = "experimental-urw-fonts")]
+        if let Some(p) = &mut bus.presentation {
+            if let Some((top, left, bottom, right)) = p.glyph_bounds() {
+                for py in top.max(clip_top)..bottom.min(clip_bottom) {
+                    for px in left.max(clip_left)..right.min(clip_right) {
+                        p.glyph_pixel(
+                            screen_base + py as u32 * row_bytes + px as u32,
+                            px as i16,
+                            py as i16,
+                            index,
+                        );
+                    }
+                }
+            }
+        }
         let col_start = (clip_left - i32::from(gx)).max(0);
         let col_end = (clip_right - i32::from(gx)).min(gw as i32);
         if col_start >= col_end {
+            #[cfg(feature = "experimental-urw-fonts")]
+            bus.end_outline_glyph();
             return;
         }
         let width = (col_end - col_start) as usize;
@@ -1876,6 +1901,8 @@ impl super::TrapDispatcher {
             }
             bus.write_bytes(start, &span);
         }
+        #[cfg(feature = "experimental-urw-fonts")]
+        bus.end_outline_glyph();
     }
 
     fn fb_draw_glyph_bitmap_with_slant(

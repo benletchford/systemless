@@ -3197,6 +3197,25 @@ fn capture_urw_font_experiment() {
             && menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
     });
     wait_for_page_event_loop(&mut runner, "initial graphics paint");
+    #[cfg(feature = "experimental-urw-fonts")]
+    if let Ok(scale) = std::env::var("SYSTEMLESS_FONT_PRESENTATION_SCALE") {
+        assert!(
+            !powerpc,
+            "high-resolution capture currently covers the 68k renderer"
+        );
+        let mode = runner.dispatcher().screen_mode;
+        let rgba = systemless::display::rgba_palette_from_clut_with_gamma(
+            &runner.dispatcher().device_clut,
+            &runner.dispatcher().device_gamma,
+        );
+        let palette = rgba.map(|word| {
+            let [r, g, b, _] = word.to_le_bytes();
+            [r, g, b]
+        });
+        runner
+            .bus_mut()
+            .enable_urw_presentation(mode, palette, scale.parse().unwrap());
+    }
     for (page, filename) in [
         (ITEM_PAGE_GRAPHICS, "graphics.png"),
         (ITEM_PAGE_CONTROLS, "controls.png"),
@@ -3211,6 +3230,34 @@ fn capture_urw_font_experiment() {
         wait_for_page_event_loop(&mut runner, filename);
         let (width, height, pixels) = rendered_rgb(&mut runner);
         write_rgb(&directory.join(filename), width, height, pixels);
+        #[cfg(feature = "experimental-urw-fonts")]
+        if let Some((w, h, pixels, glyphs)) = runner.bus().urw_presentation_rgb() {
+            assert!(glyphs > 0, "capture must execute real outline draws");
+            let guest = image::open(directory.join(filename)).unwrap().to_rgb8();
+            let reference = image::open(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/urw-experiment/after")
+                    .join(filename),
+            )
+            .unwrap()
+            .to_rgb8();
+            assert_eq!(
+                guest, reference,
+                "presentation must preserve guest pixels: {filename}"
+            );
+            let enlarged =
+                image::imageops::resize(&guest, w, h, image::imageops::FilterType::Nearest);
+            assert_ne!(
+                pixels,
+                enlarged.as_raw().as_slice(),
+                "must rasterize fresh outlines"
+            );
+            enlarged
+                .save(directory.join(format!("enlarged-{filename}")))
+                .unwrap();
+            eprintln!("{filename}: {glyphs} cumulative native outline draws");
+            write_rgb(&directory.join(format!("native-{filename}")), w, h, pixels);
+        }
         if page == ITEM_PAGE_STYLED_TEXT {
             let (top, left, _, _) = runner.window_bounds();
             assert_styled_text_page_rendered(&mut runner, top, left);

@@ -497,6 +497,8 @@ pub struct MacMemoryBus {
     /// guest memory unchanged, while still allowing temporary stack writes
     /// that are restored before the cycle closes.
     write_probe_original: Option<WriteProbeJournal>,
+    #[cfg(feature = "experimental-urw-fonts")]
+    pub(crate) presentation: Option<super::presentation::Presentation>,
     /// The journal's allocation between probes. Probes start more than a
     /// million times in a long SimCity 2000 session; reusing one map keeps
     /// the table's capacity instead of regrowing it from empty each time.
@@ -1166,11 +1168,13 @@ impl MacMemoryBus {
         let fast = flat_route
             && !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
         let fast = flat_route
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         let translated_src = self.range_translates_contiguously(src, count_usize);
         let translated_dst = self.range_translates_contiguously(dst, count_usize);
         let src_for_overlap = self.translate_guest_address(src);
@@ -1236,6 +1240,8 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
+            #[cfg(feature = "experimental-urw-fonts")]
+            presentation: None,
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1330,6 +1336,8 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
+            #[cfg(feature = "experimental-urw-fonts")]
+            presentation: None,
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1701,6 +1709,9 @@ impl MacMemoryBus {
     /// before the write, which the caller does.
     #[inline]
     fn only_write_probe_blocks_fast_path(&self) -> bool {
+        if self.presentation_active() {
+            return false;
+        }
         #[cfg(debug_assertions)]
         if WATCHPOINT_ARMED.load(Ordering::Relaxed) {
             return false;
@@ -2023,7 +2034,8 @@ impl MacMemoryBus {
         {
             return false;
         }
-        if self.route(src, len as usize) != GuestMemoryRoute::Flat
+        if self.presentation_active()
+            || self.route(src, len as usize) != GuestMemoryRoute::Flat
             || self.route(dst, len as usize) != GuestMemoryRoute::Flat
         {
             // Routed aliases can overlap the same backing through unrelated
@@ -2035,9 +2047,12 @@ impl MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         let translated_src = self.range_translates_contiguously(src, len as usize);
         let translated_dst = self.range_translates_contiguously(dst, len as usize);
         let src = translated_src.unwrap_or(src);
@@ -2081,7 +2096,8 @@ impl MacMemoryBus {
         {
             return false;
         }
-        if self.route(src, len as usize) != GuestMemoryRoute::Flat
+        if self.presentation_active()
+            || self.route(src, len as usize) != GuestMemoryRoute::Flat
             || self.route(dst, len as usize) != GuestMemoryRoute::Flat
         {
             let mut bytes = self.read_bytes(src, len as usize);
@@ -2091,9 +2107,12 @@ impl MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         let translated_src = self.range_translates_contiguously(src, len as usize);
         let translated_dst = self.range_translates_contiguously(dst, len as usize);
         let src = translated_src.unwrap_or(src);
@@ -2227,11 +2246,26 @@ impl MacMemoryBus {
         ((translated as u64).saturating_add(len as u64) <= address_space_end).then_some(translated)
     }
 
+    #[inline]
+    fn presentation_active(&self) -> bool {
+        #[cfg(feature = "experimental-urw-fonts")]
+        {
+            self.presentation.is_some()
+        }
+        #[cfg(not(feature = "experimental-urw-fonts"))]
+        {
+            false
+        }
+    }
+
     /// Raw window over guest RAM for the m68k fastmem path, or `None`
     /// while any per-access diagnostic (framebuffer-write tracer, memory
     /// read/write tracer, watchpoint) needs to observe individual bus
     /// accesses — fastmem reads/writes bypass those hooks entirely.
     pub(crate) fn fast_mem_window(&mut self) -> Option<(*mut u8, u32)> {
+        if self.presentation_active() {
+            return None;
+        }
         if !self.addressing_32_bit
             || self.foreign_address_space.is_some()
             || fb_write_trace_range().is_some()
@@ -2374,6 +2408,10 @@ impl MemoryBus for MacMemoryBus {
         }
         if self.readonly_code_overlaps(address, 1) {
             return;
+        }
+        #[cfg(feature = "experimental-urw-fonts")]
+        if let Some(p) = &mut self.presentation {
+            p.write(address, value);
         }
         self.record_write_probe_range(address, 1);
         maybe_log_mem_write(address, 1, value as u32);
@@ -2580,11 +2618,13 @@ impl MemoryBus for MacMemoryBus {
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
         let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 2 <= self.ram_size as u64)
         {
@@ -2644,11 +2684,13 @@ impl MemoryBus for MacMemoryBus {
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
         let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 4 <= self.ram_size as u64)
         {
@@ -2739,9 +2781,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(data.len() as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
@@ -2776,9 +2821,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
@@ -2821,9 +2869,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         if fast && span <= u64::from(u32::MAX) {
             if let Some(start) = self.range_translates_contiguously(address, span as usize) {
                 let end = u64::from(start) + span;
@@ -2861,9 +2912,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
