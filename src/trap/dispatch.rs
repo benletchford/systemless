@@ -803,7 +803,7 @@ pub(crate) struct RegionTrackingState {
     pub outline_pattern: [u8; 8],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PortDrawState {
     pub fg_color: (u16, u16, u16),
     pub bg_color: (u16, u16, u16),
@@ -842,13 +842,13 @@ impl Default for PortDrawState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PortRegionSnapshot {
     pub handle: u32,
     pub bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PortStateSnapshot {
     pub port: u32,
     pub gdevice: u32,
@@ -1641,13 +1641,6 @@ pub struct TrapDispatcher {
     pub(crate) menu_tracking: SharedProcessMenuTracking,
     /// Process-owned nested guest-procedure continuations shared by both CPUs.
     pub(crate) guest_calls: SharedGuestCallStack,
-    /// Custom popup MDEF state before its returned rectangle creates a pane.
-    pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
-    /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
-    /// Caller QuickDraw state restored after a retained custom MDEF finishes.
-    pub(crate) menu_definition_port_state: Option<PortStateSnapshot>,
-    /// 68k call frame parked while the shared Menu Manager state yields.
-    pub(crate) menu_tracking_stack_ptr: u32,
     /// A host-native menu selection waiting for the guest's normal
     /// FindWindow -> MenuSelect event path.  It is consumed only by
     /// MenuSelect and revalidated against the live menu list there.
@@ -2288,7 +2281,6 @@ impl TrapDispatcher {
         );
         context.attach_event_queue(&mut self.event_queue);
         context.attach_input_state(&mut self.input_state);
-        context.attach_menu_tracking(&mut self.menu_tracking);
         context.attach_window_list(&mut self.window_list);
         self.process_window_list_attached = true;
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
@@ -2304,6 +2296,7 @@ impl TrapDispatcher {
         self.attach_memory_manager_handle(memory_manager);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
+        context.attach_menu_tracking(&mut self.menu_tracking);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
         context.attach_apple_event_launch_state(&mut self.apple_event_launch_state);
     }
@@ -3195,6 +3188,7 @@ impl TrapDispatcher {
     }
 
     pub fn new() -> Self {
+        let guest_calls = SharedGuestCallStack::default();
         let mut process_file_system = SharedProcessFileSystem::default();
         *process_file_system.vfs_directories = vec![ProcessVfsDirectory {
             dir_id: 2,
@@ -3357,11 +3351,8 @@ impl TrapDispatcher {
             menu_bar_hidden: false,
             sound_manager: SharedProcessSoundManager::default(),
             menus: Vec::new(),
-            menu_tracking: SharedProcessMenuTracking::default(),
-            guest_calls: SharedGuestCallStack::default(),
-            menu_definition_tracking: None,
-            menu_definition_port_state: None,
-            menu_tracking_stack_ptr: 0,
+            menu_tracking: guest_calls.menu_tracking_view(),
+            guest_calls,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
@@ -3623,7 +3614,7 @@ impl TrapDispatcher {
                 .as_ref()
                 .or(menu_tracking)
                 .and_then(crate::menu_manager::MenuTrackingState::active_definition)
-                .or(self.menu_definition_tracking.as_ref())
+                .or(self.menu_tracking.context().definition.as_ref())
                 .is_some_and(|tracking| tracking.pending_invocation().is_some())
     }
 

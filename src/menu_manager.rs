@@ -500,8 +500,8 @@ const MAX_MENU_ITEMS: usize = 1024;
 
 /// The public Menu Manager operation that owns an active tracking session.
 ///
-/// Guest ABI continuation details deliberately live in the architecture
-/// adapter rather than in this manager-owned state.
+/// Guest ABI continuation details live in the execution-owned menu root,
+/// separate from this manager's tracking policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MenuTrackingKind {
     MenuBar,

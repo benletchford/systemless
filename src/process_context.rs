@@ -1274,7 +1274,7 @@ pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState
 /// p. I-260; Volume II (1985), pp. II-349--II-350.
 pub(crate) type SharedProcessTickState = SharedProcessValue<u32>;
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
-pub(crate) type SharedProcessMenuTracking = SharedProcessValue<Option<ProcessMenuTrackingState>>;
+pub(crate) type SharedProcessMenuTracking = crate::guest_call::SharedMenuTracking;
 pub(crate) type SharedProcessWindowList = SharedProcessValue<Vec<u32>>;
 pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
@@ -1493,14 +1493,6 @@ impl<T: PartialEq> PartialEq<T> for SharedProcessValue<T> {
 
 impl<T: Eq> Eq for SharedProcessValue<T> {}
 
-#[cfg(test)]
-impl<T: Clone> SharedProcessValue<T> {
-    /// Copy a detached process snapshot for value-oriented assertions.
-    pub(crate) fn snapshot(&self) -> T {
-        (**self).clone()
-    }
-}
-
 impl<T> std::ops::Deref for SharedProcessValue<T> {
     type Target = T;
 
@@ -1527,7 +1519,6 @@ impl<T> SharedProcessValue<T> {
         Self(Rc::clone(&self.0))
     }
 
-    #[cfg(test)]
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
@@ -6154,6 +6145,7 @@ pub(crate) struct ProcessContext {
 
 impl Default for ProcessContext {
     fn default() -> Self {
+        let guest_calls = SharedGuestCallStack::default();
         Self {
             cfm: crate::cfm::CfmState::default(),
             memory: Vec::new(),
@@ -6161,10 +6153,10 @@ impl Default for ProcessContext {
             tick_state: SharedProcessTickState::default(),
             event_queue: SharedProcessEventQueue::default(),
             input_state: SharedProcessInputState::default(),
-            menu_tracking: SharedProcessMenuTracking::default(),
+            menu_tracking: guest_calls.menu_tracking_view(),
             window_list: SharedProcessWindowList::default(),
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
-            guest_calls: SharedGuestCallStack::default(),
+            guest_calls,
             apple_event_handlers: SharedProcessAppleEventHandlers::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             file_system: SharedProcessFileSystem::default(),
@@ -6469,19 +6461,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_menu_tracking(&self, adapter: &mut SharedProcessMenuTracking) {
-        // MenuSelect owns one retained selection and pane hierarchy until the
-        // mouse is released and any MenuFlash phases complete. Both ISA
-        // gateways therefore attach to the same process continuation. Inside
-        // Macintosh Volume I (1985), pp. I-354--I-366; Macintosh Toolbox
-        // Essentials (1992), pp. 3-87--3-92 and 3-140--3-142.
-        if Rc::ptr_eq(&adapter.0, &self.menu_tracking.0) {
-            return;
-        }
-        assert!(
-            adapter.is_none() || self.menu_tracking.is_none(),
-            "cannot attach two active Menu Manager continuations"
-        );
-        adapter.attach_to(&self.menu_tracking, Option::is_none);
+        adapter.attach_to(&self.guest_calls.menu_tracking_view());
     }
 
     pub(crate) fn attach_classic_file_system(

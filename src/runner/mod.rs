@@ -15367,7 +15367,7 @@ mod tests {
                 .unwrap()
                 .memory
                 .read_u32_be(callback_marker);
-            callback_value == Some(CALLBACK_VALUE) && runner.dispatcher.guest_calls.is_empty()
+            callback_value == Some(CALLBACK_VALUE) && runner.dispatcher.guest_calls.depth() == 0
         });
         assert!(
             callback_completed,
@@ -15554,7 +15554,7 @@ mod tests {
                 .memory
                 .read_u32_be(callback_marker)
                 == Some(CALLBACK_VALUE)
-                && runner.dispatcher.guest_calls.is_empty()
+                && runner.dispatcher.guest_calls.depth() == 0
         });
         assert!(
             callback_completed,
