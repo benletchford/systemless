@@ -3,7 +3,8 @@
 //! The PEF parser lives in [`super::pef`]. This module turns parsed and
 //! instantiated PEF data into deterministic CPU + guest-address-space state:
 //! section bases, relocations, synthetic import TVectors, and an initial
-//! stack frame. It deliberately does not implement Toolbox imports yet.
+//! stack frame. Parsed loader facts are mapped here into the native runtime;
+//! optional PEF dump formatting lives in the private `pef_dump` child.
 
 use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin};
 #[cfg(test)]
@@ -11,9 +12,8 @@ use super::pef::SECTION_KIND_UNPACKED_DATA;
 use super::pef::{
     apply_pef_relocations_detailed, instantiate_pef_sections, parse_pef_header,
     parse_pef_imported_symbols, parse_pef_loader_header, parse_pef_reloc_headers,
-    parse_pef_sections, pef_reloc_chunk_stream, resolve_pef_imports, PefHeader, PefLoaderHeader,
-    PefRelocApplyError, PefRelocContext, PefRelocHeader, PefResolvedImport, PefSection,
-    SECTION_KIND_CODE, SECTION_KIND_CONSTANT,
+    parse_pef_sections, pef_reloc_chunk_stream, resolve_pef_imports, PefRelocApplyError,
+    PefRelocContext, PefResolvedImport, SECTION_KIND_CODE, SECTION_KIND_CONSTANT,
 };
 use super::ApplicationSizeResource;
 use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
@@ -130,7 +130,11 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+mod pef_dump;
 mod theme;
+#[cfg(test)]
+use pef_dump::format_pef_dump_json;
+use pef_dump::{maybe_write, PefDumpContext};
 use theme::*;
 
 pub mod graphics;
@@ -12611,264 +12615,6 @@ pub enum PpcLoadError {
     AddressOverflow,
 }
 
-static PEF_DUMP_PATH: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-
-fn pef_dump_path() -> Option<&'static std::path::Path> {
-    PEF_DUMP_PATH
-        .get_or_init(|| {
-            let value = std::env::var_os("SYSTEMLESS_PEF_DUMP")?;
-            let path = std::path::PathBuf::from(value);
-            (!path.as_os_str().is_empty()).then_some(path)
-        })
-        .as_deref()
-}
-
-fn maybe_write_pef_dump(path: &std::path::Path, report: &str) {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "[PEF-DUMP] failed to create parent {}: {}",
-                parent.display(),
-                error
-            );
-            return;
-        }
-    }
-    if let Err(error) = std::fs::write(path, report) {
-        eprintln!("[PEF-DUMP] failed to write {}: {}", path.display(), error);
-    }
-}
-
-struct PefDumpContext<'a> {
-    data_len: usize,
-    header: PefHeader,
-    loader: PefLoaderHeader,
-    raw_sections: &'a [PefSection],
-    mapped_sections: &'a [MappedSection],
-    imports: &'a [PpcImportBinding],
-    reloc_headers: &'a [PefRelocHeader],
-    entry_pc: u32,
-    rtoc: u32,
-    stack_base: u32,
-    stack_size: u32,
-}
-
-fn format_pef_dump_json(ctx: &PefDumpContext<'_>) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::new();
-    let _ = writeln!(out, "{{");
-    let _ = writeln!(out, "  \"format\": \"systemless_pef_dump_v1\",");
-    let _ = writeln!(out, "  \"data_len\": {},", ctx.data_len);
-    let _ = writeln!(out, "  \"header\": {{");
-    let _ = writeln!(
-        out,
-        "    \"architecture\": \"{}\",",
-        json_escape(&String::from_utf8_lossy(&ctx.header.architecture))
-    );
-    let _ = writeln!(
-        out,
-        "    \"format_version\": {},",
-        ctx.header.format_version
-    );
-    let _ = writeln!(out, "    \"section_count\": {},", ctx.header.section_count);
-    let _ = writeln!(
-        out,
-        "    \"instantiated_section_count\": {}",
-        ctx.header.instantiated_section_count
-    );
-    let _ = writeln!(out, "  }},");
-    let _ = writeln!(out, "  \"loader\": {{");
-    let _ = writeln!(out, "    \"main_section\": {},", ctx.loader.main_section);
-    let _ = writeln!(out, "    \"main_offset\": {},", ctx.loader.main_offset);
-    let _ = writeln!(out, "    \"init_section\": {},", ctx.loader.init_section);
-    let _ = writeln!(out, "    \"init_offset\": {},", ctx.loader.init_offset);
-    let _ = writeln!(out, "    \"term_section\": {},", ctx.loader.term_section);
-    let _ = writeln!(out, "    \"term_offset\": {},", ctx.loader.term_offset);
-    let _ = writeln!(
-        out,
-        "    \"imported_library_count\": {},",
-        ctx.loader.imported_library_count
-    );
-    let _ = writeln!(
-        out,
-        "    \"total_imported_symbol_count\": {},",
-        ctx.loader.total_imported_symbol_count
-    );
-    let _ = writeln!(
-        out,
-        "    \"reloc_section_count\": {},",
-        ctx.loader.reloc_section_count
-    );
-    let _ = writeln!(
-        out,
-        "    \"reloc_instr_offset\": {},",
-        ctx.loader.reloc_instr_offset
-    );
-    let _ = writeln!(
-        out,
-        "    \"loader_strings_offset\": {}",
-        ctx.loader.loader_strings_offset
-    );
-    let _ = writeln!(out, "  }},");
-    let _ = writeln!(out, "  \"sections\": [");
-    for (index, section) in ctx.raw_sections.iter().enumerate() {
-        let mapped = ctx
-            .mapped_sections
-            .iter()
-            .find(|mapped| mapped.index == index);
-        let comma = if index + 1 == ctx.raw_sections.len() {
-            ""
-        } else {
-            ","
-        };
-        let _ = writeln!(out, "    {{");
-        let _ = writeln!(out, "      \"index\": {},", index);
-        let _ = writeln!(
-            out,
-            "      \"kind\": \"{}\",",
-            json_escape(section.kind_name())
-        );
-        let _ = writeln!(out, "      \"kind_id\": {},", section.section_kind);
-        let _ = writeln!(
-            out,
-            "      \"default_address\": \"{}\",",
-            hex32(section.default_address)
-        );
-        let _ = writeln!(out, "      \"total_size\": {},", section.total_size);
-        let _ = writeln!(out, "      \"unpacked_size\": {},", section.unpacked_size);
-        let _ = writeln!(out, "      \"packed_size\": {},", section.packed_size);
-        let _ = writeln!(
-            out,
-            "      \"container_offset\": {},",
-            section.container_offset
-        );
-        let _ = writeln!(out, "      \"alignment\": {},", section.alignment);
-        match mapped {
-            Some(mapped) => {
-                let _ = writeln!(out, "      \"mapped_base\": \"{}\",", hex32(mapped.base));
-                let _ = writeln!(out, "      \"mapped_size\": {}", mapped.bytes.len());
-            }
-            None => {
-                let _ = writeln!(out, "      \"mapped_base\": null,");
-                let _ = writeln!(out, "      \"mapped_size\": 0");
-            }
-        }
-        let _ = writeln!(out, "    }}{}", comma);
-    }
-    let _ = writeln!(out, "  ],");
-    let _ = writeln!(out, "  \"imports\": [");
-    for (index, import) in ctx.imports.iter().enumerate() {
-        let comma = if index + 1 == ctx.imports.len() {
-            ""
-        } else {
-            ","
-        };
-        let _ = writeln!(out, "    {{");
-        let _ = writeln!(out, "      \"symbol_index\": {},", import.symbol_index);
-        let _ = writeln!(out, "      \"library_index\": {},", import.library_index);
-        let _ = writeln!(
-            out,
-            "      \"library\": \"{}\",",
-            json_escape(&import.library_name)
-        );
-        let _ = writeln!(
-            out,
-            "      \"symbol\": \"{}\",",
-            json_escape(&import.symbol_name)
-        );
-        let _ = writeln!(out, "      \"class\": {},", import.class);
-        let _ = writeln!(
-            out,
-            "      \"class_name\": \"{}\",",
-            pef_import_class_name(import.class)
-        );
-        let _ = writeln!(out, "      \"weak\": {},", import.weak);
-        let _ = writeln!(out, "      \"trap_pc\": \"{}\",", hex32(import.trap_pc));
-        match import.tvector_address {
-            Some(address) => {
-                let _ = writeln!(out, "      \"tvector_address\": \"{}\",", hex32(address));
-            }
-            None => {
-                let _ = writeln!(out, "      \"tvector_address\": null,");
-            }
-        }
-        let _ = writeln!(
-            out,
-            "      \"dispatcher_target\": \"{}\"",
-            json_escape(&format!("{:?}", import.dispatcher_target))
-        );
-        let _ = writeln!(out, "    }}{}", comma);
-    }
-    let _ = writeln!(out, "  ],");
-    let _ = writeln!(out, "  \"relocations\": [");
-    for (index, reloc) in ctx.reloc_headers.iter().enumerate() {
-        let comma = if index + 1 == ctx.reloc_headers.len() {
-            ""
-        } else {
-            ","
-        };
-        let _ = writeln!(out, "    {{");
-        let _ = writeln!(out, "      \"section_index\": {},", reloc.section_index);
-        let _ = writeln!(out, "      \"reloc_count\": {},", reloc.reloc_count);
-        let _ = writeln!(
-            out,
-            "      \"first_reloc_offset\": {}",
-            reloc.first_reloc_offset
-        );
-        let _ = writeln!(out, "    }}{}", comma);
-    }
-    let _ = writeln!(out, "  ],");
-    let _ = writeln!(out, "  \"entry\": {{");
-    let _ = writeln!(out, "    \"entry_pc\": \"{}\",", hex32(ctx.entry_pc));
-    let _ = writeln!(out, "    \"rtoc\": \"{}\"", hex32(ctx.rtoc));
-    let _ = writeln!(out, "  }},");
-    let _ = writeln!(out, "  \"stack\": {{");
-    let _ = writeln!(out, "    \"base\": \"{}\",", hex32(ctx.stack_base));
-    let _ = writeln!(out, "    \"top\": \"{}\",", hex32(PPC_STACK_TOP));
-    let _ = writeln!(out, "    \"size\": {}", ctx.stack_size);
-    let _ = writeln!(out, "  }}");
-    let _ = writeln!(out, "}}");
-    out
-}
-
-fn hex32(value: u32) -> String {
-    format!("0x{:08X}", value)
-}
-
-fn pef_import_class_name(class: u8) -> &'static str {
-    match class {
-        0 => "code",
-        1 => "data",
-        2 => "tvector",
-        3 => "toc",
-        4 => "glue",
-        _ => "reserved",
-    }
-}
-
-fn json_escape(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch.is_control() => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "\\u{:04X}", ch as u32);
-            }
-            ch => out.push(ch),
-        }
-    }
-    out
-}
-
 pub fn load_pef_application(data: &[u8]) -> Result<PpcLoadedApp, PpcLoadError> {
     load_pef_application_with_config(data, PpcLoadConfig::default())
 }
@@ -13025,22 +12771,20 @@ fn load_pef_application_with_config_and_optional_system_reservation(
             requested: config.stack_size,
         });
     }
-    if let Some(path) = pef_dump_path() {
-        let report = format_pef_dump_json(&PefDumpContext {
-            data_len: data.len(),
-            header,
-            loader,
-            raw_sections: &raw_sections,
-            mapped_sections: &mapped_sections,
-            imports: &imports,
-            reloc_headers: &reloc_headers,
-            entry_pc,
-            rtoc,
-            stack_base,
-            stack_size,
-        });
-        maybe_write_pef_dump(path, &report);
-    }
+    maybe_write(&PefDumpContext {
+        data_len: data.len(),
+        header,
+        loader,
+        raw_sections: &raw_sections,
+        mapped_sections: &mapped_sections,
+        imports: &imports,
+        reloc_headers: &reloc_headers,
+        entry_pc,
+        rtoc,
+        stack_base,
+        stack_size,
+        stack_top: PPC_STACK_TOP,
+    });
 
     let mut memory = PpcSectionMem::new();
     if let Some((base, len)) = system_reservation {
@@ -104333,11 +104077,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pef_dump_json_escapes_strings() {
-        assert_eq!(json_escape("quote\" slash\\\n"), "quote\\\" slash\\\\\\n");
-    }
-
-    #[test]
     fn pef_dump_json_includes_loader_sections_imports_and_entry() {
         let pef = synthetic_pef_with_import(b"NewPtrClear");
         let loaded = load_pef_application(&pef).unwrap();
@@ -104358,6 +104097,7 @@ pub(crate) mod tests {
             rtoc: loaded.rtoc,
             stack_base: loaded.stack_base,
             stack_size: loaded.stack_size,
+            stack_top: PPC_STACK_TOP,
         });
 
         assert!(report.contains("\"format\": \"systemless_pef_dump_v1\""));
@@ -104369,7 +104109,7 @@ pub(crate) mod tests {
         assert!(report.contains("\"dispatcher_target\": \"NewPtr { clear: true }\""));
         assert!(report.contains("\"entry_pc\": \"0x01000000\""));
         assert!(report.contains("\"rtoc\": \"0x02000000\""));
-        assert!(report.contains(&format!("\"base\": \"{}\"", hex32(PPC_STACK_BASE))));
+        assert!(report.contains("\"base\": \"0x04FF0000\""));
     }
 
     #[test]
