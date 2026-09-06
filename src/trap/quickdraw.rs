@@ -39185,6 +39185,118 @@ mod tests {
     }
 
     #[test]
+    fn themed_menu_bar_cache_follows_a_same_depth_personality_change() {
+        // Same shape as the menu-mark regression: SetDepth colour ->
+        // grayscale at 8 bpp keeps the table pointer, seed and screen tuple
+        // while replacing every entry. The cached replay must match a fresh
+        // rendering after the switch.
+        let (mut d, _cpu, mut bus) = setup();
+        d.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+        let width = 64u32;
+        let height = 32u32;
+        let base = bus.alloc(width * height);
+        d.set_screen_mode_for_test(base, width, width as u16, height as u16, 8);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdh); // MainDevice
+        d.install_standard_depth_clut(&mut bus, 8, true);
+        let ctab = bus.read_long(TrapDispatcher::gdevice_ctab_handle(&bus, gdh));
+        let screen = |bus: &MacMemoryBus| bus.read_bytes(base, (width * height) as usize);
+
+        assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let colour = screen(&bus);
+        assert!(!d.theme_chrome_cache.borrow().is_empty(), "the menu bar is cached");
+        let seed_before = bus.read_long(ctab);
+
+        d.install_standard_depth_clut(&mut bus, 8, false);
+        assert_eq!(bus.read_long(ctab), seed_before, "precondition: the depth switch keeps the seed");
+        bus.fill_bytes(base, width * height, 0);
+        assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let cached_path = screen(&bus);
+        d.theme_chrome_cache.borrow_mut().clear();
+        bus.fill_bytes(base, width * height, 0);
+        assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let fresh = screen(&bus);
+        assert_eq!(cached_path, fresh, "grayscale chrome must not come from the colour cache");
+        assert_ne!(cached_path, colour, "precondition: grayscale renders differently");
+    }
+
+    #[test]
+    fn themed_menu_bar_cache_follows_the_host_table_when_no_device_table_exists() {
+        let (mut d, _cpu, mut bus) = setup();
+        d.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+        let width = 64u32;
+        let height = 32u32;
+        let base = bus.alloc(width * height);
+        d.set_screen_mode_for_test(base, width, width as u16, height as u16, 8);
+        bus.write_long(0x08A4, 0); // MainDevice: none, colours resolve through device_clut
+        let screen = |bus: &MacMemoryBus| bus.read_bytes(base, (width * height) as usize);
+        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, true).unwrap().0;
+        assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let colour = screen(&bus);
+
+        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, false).unwrap().0;
+        bus.fill_bytes(base, width * height, 0);
+        assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let cached_path = screen(&bus);
+        d.theme_chrome_cache.borrow_mut().clear();
+        bus.fill_bytes(base, width * height, 0);
+        assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
+        assert_eq!(cached_path, screen(&bus));
+        assert_ne!(cached_path, colour, "precondition: the grayscale host table renders differently");
+    }
+
+    #[test]
+    fn menu_mark_cache_follows_a_same_depth_personality_change() {
+        // SetDepth from colour to grayscale at 8 bpp rewrites the main
+        // colour table in place and stamps ctSeed with the depth, so the
+        // seed cannot tell the two apart. The cache must.
+        let (mut d, _cpu, mut bus) = setup();
+        let base = bus.alloc(64 * 16);
+        d.set_screen_mode_for_test(base, 64, 64, 16, 8);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdh); // MainDevice
+        d.install_standard_depth_clut(&mut bus, 8, true);
+        let ctab = bus.read_long(TrapDispatcher::gdevice_ctab_handle(&bus, gdh));
+        assert_ne!(ctab, 0, "main device table");
+        let colour = d.menu_mark_palette_indices(&bus);
+        assert!(d.menu_mark_indices.get().is_some());
+        let seed_before = bus.read_long(ctab);
+
+        d.install_standard_depth_clut(&mut bus, 8, false);
+        assert_eq!(
+            bus.read_long(ctab),
+            seed_before,
+            "precondition: the depth switch keeps the seed"
+        );
+        let cached_path = d.menu_mark_palette_indices(&bus);
+        d.menu_mark_indices.set(None);
+        let fresh = d.menu_mark_palette_indices(&bus);
+        assert_eq!(cached_path, fresh, "grayscale indices must not come from the colour cache");
+        assert_ne!(cached_path, colour, "precondition: grayscale resolves differently");
+    }
+
+    #[test]
+    fn menu_mark_cache_follows_the_host_table_when_no_device_table_exists() {
+        let (mut d, _cpu, mut bus) = setup();
+        let base = bus.alloc(64 * 16);
+        d.set_screen_mode_for_test(base, 64, 64, 16, 8);
+        bus.write_long(0x08A4, 0); // MainDevice: none, the lookup falls back to device_clut
+        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, true).unwrap().0;
+        let colour = d.menu_mark_palette_indices(&bus);
+        assert!(d.menu_mark_indices.get().is_some(), "fallback resolutions are cached too");
+
+        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, false).unwrap().0;
+        let cached_path = d.menu_mark_palette_indices(&bus);
+        d.menu_mark_indices.set(None);
+        let fresh = d.menu_mark_palette_indices(&bus);
+        assert_eq!(cached_path, fresh);
+        assert_ne!(
+            cached_path, colour,
+            "precondition: the grayscale host table resolves differently"
+        );
+    }
+
+    #[test]
     fn getpalette_returns_associated_palette_handle_for_window() {
         // Inside Macintosh Volume VI (1991), p. 20-20: GetPalette returns
         // the palette associated with srcWindow.

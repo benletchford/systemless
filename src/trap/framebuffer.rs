@@ -32,6 +32,134 @@ fn no_visrgn_auto_expand_enabled() -> bool {
 }
 
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+/// A host-side copy of the main device's colour table, refreshed whenever the
+/// colour environment (see `color_environment_digest`) changes. Screen chrome
+/// resolves its colours against it with exactly the semantics of the bus scan
+/// (`fb_pixel_index_for_rgb_in_ctab_with_entry_count` with 256 entries): the
+/// black and white shortcuts, the first exact match in table order, else the
+/// nearest entry with the lowest index. Rebuilding it costs one bulk read of
+/// the table; without it every chrome colour cost a full scan through the bus.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ColorTableMirror {
+    pub(crate) digest: u64,
+    pub(crate) present: bool,
+    device_table: bool,
+    /// (value, rgb) per entry in table order.
+    entries: Vec<(u16, [u16; 3])>,
+    depth: u16,
+}
+
+impl ColorTableMirror {
+    fn luma_of_value(&self, wanted: u8) -> Option<u32> {
+        let ordinal = usize::from(wanted);
+        if let Some(&(value, rgb)) = self.entries.get(ordinal) {
+            if self.device_table || value == u16::from(wanted) {
+                return Some(u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]));
+            }
+        }
+        self.entries
+            .iter()
+            .find(|(value, _)| *value == u16::from(wanted))
+            .map(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
+    }
+
+    /// The device index for `rgb`, as the bus scan would answer it.
+    pub(crate) fn pixel_index_for_rgb(&self, rgb: [u16; 3]) -> Option<u8> {
+        if !self.present {
+            return None;
+        }
+        if rgb == [0, 0, 0] && self.luma_of_value(255) == Some(0) {
+            return Some(255);
+        }
+        if rgb == [0xFFFF, 0xFFFF, 0xFFFF] && self.luma_of_value(0) == Some(0xFFFF * 3) {
+            return Some(0);
+        }
+        let mut best_index = None;
+        let mut best_distance = u64::MAX;
+        for (ordinal, &(value, entry_rgb)) in self.entries.iter().enumerate() {
+            let value = if self.device_table { ordinal as u16 } else { value };
+            if usize::from(value) >= 256 {
+                continue;
+            }
+            let index = value as u8;
+            if entry_rgb == rgb {
+                return Some(index);
+            }
+            let dr = i64::from(entry_rgb[0]) - i64::from(rgb[0]);
+            let dg = i64::from(entry_rgb[1]) - i64::from(rgb[1]);
+            let db = i64::from(entry_rgb[2]) - i64::from(rgb[2]);
+            let distance = (dr * dr + dg * dg + db * db) as u64;
+            if distance < best_distance
+                || (distance == best_distance && best_index.map_or(true, |best| index < best))
+            {
+                best_distance = distance;
+                best_index = Some(index);
+            }
+        }
+        best_index
+    }
+}
+
+/// Device indices of the menu mark's colours together with the colours they
+/// were resolved from; valid while each colour still resolves to the same
+/// index through the mirror.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MenuMarkIndexCache {
+    pub(crate) indices: [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()],
+}
+
+/// Which piece of themed chrome a cached rendering is, with the inputs its
+/// artwork depends on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ThemeChromeKind {
+    DialogFrame {
+        content: (i16, i16, i16, i16),
+        frame: (i16, i16, i16, i16),
+        proc_id: i16,
+        active: bool,
+        fill_content: bool,
+    },
+    MenuBar {
+        width: i16,
+        height: i16,
+    },
+    MenuTitle {
+        rect: (i16, i16, i16, i16),
+        enabled: bool,
+        highlighted: bool,
+    },
+}
+
+/// Themed chrome rendered earlier, as device pixel indices, keyed by
+/// everything the rendering depends on. The chrome redraw runs every host
+/// frame and its pieces rarely change between frames, so replaying resolved
+/// pixels replaces rendering a bitmap, resolving its colours through the
+/// device table and scanning every pixel again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ThemeChromeCacheKey {
+    pub(crate) kind: ThemeChromeKind,
+    pub(crate) theme: crate::ui_theme::UiThemeId,
+    /// Screen geometry and depth: the artwork is laid out against them.
+    pub(crate) screen: (u32, u32, i16, i16, u16),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ThemeChromeCacheEntry {
+    pub(crate) key: ThemeChromeCacheKey,
+    /// The artwork's colours and the device indices they resolved to when
+    /// it was rendered. The entry is replayed only while every one of them
+    /// still resolves to the same index, so a palette change that touches
+    /// none of them keeps the rendering, and one that does re-renders it.
+    pub(crate) resolved: Vec<(Rgb8, u8)>,
+    /// Pixels as (x, y, device index), in blit order; only the opaque ones
+    /// for masked artwork.
+    pub(crate) pixels: Vec<(i16, i16, u8)>,
+}
+
+/// Enough entries for a menu bar, its titles and a dialog frame; the
+/// least recently used entry is evicted beyond that.
+const THEME_CHROME_CACHE_ENTRIES: usize = 24;
+
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
     /// Returns (screen_base, row_bytes, width, height, pixel_size).
@@ -164,6 +292,15 @@ impl super::TrapDispatcher {
         if screen_width <= 0 || height <= 0 {
             return true;
         }
+        let key = self.theme_chrome_key(
+            ThemeChromeKind::MenuBar {
+                width: screen_width,
+                height,
+            },
+        );
+        if self.replay_theme_chrome(bus, &key) {
+            return true;
+        }
 
         let theme = self.ui_theme();
         let palette = theme.palette();
@@ -184,7 +321,9 @@ impl super::TrapDispatcher {
                 },
             },
         );
-        self.blit_theme_bitmap_mono(bus, 0, 0, &bitmap);
+        let (resolved, pixels) = self.resolve_theme_bitmap_pixels(bus, 0, 0, &bitmap, false);
+        self.blit_theme_pixels(bus, &pixels);
+        self.remember_theme_chrome(key, resolved, pixels);
         true
     }
 
@@ -207,6 +346,16 @@ impl super::TrapDispatcher {
         if width <= 0 || height <= 0 {
             return true;
         }
+        let key = self.theme_chrome_key(
+            ThemeChromeKind::MenuTitle {
+                rect: (top, left, bottom, right),
+                enabled,
+                highlighted,
+            },
+        );
+        if self.replay_theme_chrome(bus, &key) {
+            return true;
+        }
 
         let theme = self.ui_theme();
         let palette = theme.palette();
@@ -225,7 +374,9 @@ impl super::TrapDispatcher {
                 highlighted,
             },
         );
-        self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
+        let (resolved, pixels) = self.resolve_theme_bitmap_pixels(bus, top, left, &bitmap, false);
+        self.blit_theme_pixels(bus, &pixels);
+        self.remember_theme_chrome(key, resolved, pixels);
         true
     }
 
@@ -462,6 +613,19 @@ impl super::TrapDispatcher {
             self.erase_structure_frame_around_content(bus, frame, content);
         }
 
+        let key = self.theme_chrome_key(
+            ThemeChromeKind::DialogFrame {
+                content,
+                frame,
+                proc_id,
+                active,
+                fill_content,
+            },
+        );
+        if self.replay_theme_chrome(bus, &key) {
+            return true;
+        }
+
         let (content_top, content_left, content_bottom, content_right) = content;
         let theme = self.ui_theme();
         let palette = theme.palette();
@@ -487,12 +651,125 @@ impl super::TrapDispatcher {
                 fill_content,
             },
         );
-        if fill_content {
-            self.blit_theme_bitmap_mono(bus, frame_top, frame_left, &bitmap);
-        } else {
-            self.blit_theme_bitmap_mono_masked(bus, frame_top, frame_left, &bitmap);
-        }
+        let (resolved, pixels) =
+            self.resolve_theme_bitmap_pixels(bus, frame_top, frame_left, &bitmap, !fill_content);
+        self.blit_theme_pixels(bus, &pixels);
+        self.remember_theme_chrome(key, resolved, pixels);
         true
+    }
+
+    fn theme_chrome_key(&self, kind: ThemeChromeKind) -> ThemeChromeCacheKey {
+        ThemeChromeCacheKey {
+            kind,
+            theme: self.ui_theme_id(),
+            screen: self.get_screen_params(),
+        }
+    }
+
+    /// Blit the cached rendering for `key`, if there is one, and report so.
+    fn replay_theme_chrome(&self, bus: &mut MacMemoryBus, key: &ThemeChromeCacheKey) -> bool {
+        let mut cache = self.theme_chrome_cache.borrow_mut();
+        let Some(index) = cache.iter().position(|entry| entry.key == *key) else {
+            return false;
+        };
+        // Still valid only while every colour the artwork used resolves to
+        // the index it was rendered with.
+        let still_valid = self.with_color_mirror(bus, |mirror| {
+            cache[index]
+                .resolved
+                .iter()
+                .all(|&(color, pixel)| self.theme_pixel_index_mirrored(bus, mirror, color) == pixel)
+        });
+        if !still_valid {
+            cache.remove(index);
+            return false;
+        }
+        // Most recently used last, so eviction takes the front.
+        let entry = cache.remove(index);
+        self.blit_theme_pixels(bus, &entry.pixels);
+        cache.push(entry);
+        true
+    }
+
+    fn remember_theme_chrome(
+        &self,
+        key: ThemeChromeCacheKey,
+        resolved: Vec<(Rgb8, u8)>,
+        pixels: Vec<(i16, i16, u8)>,
+    ) {
+        let mut cache = self.theme_chrome_cache.borrow_mut();
+        if cache.len() >= THEME_CHROME_CACHE_ENTRIES {
+            cache.remove(0);
+        }
+        cache.push(ThemeChromeCacheEntry {
+            key,
+            resolved,
+            pixels,
+        });
+    }
+
+    /// Resolve a theme bitmap to (x, y, device index) triples, skipping the
+    /// window-background colour when `masked`. Colours are resolved once
+    /// each through the device table.
+    fn resolve_theme_bitmap_pixels(
+        &self,
+        bus: &MacMemoryBus,
+        top: i16,
+        left: i16,
+        bitmap: &ThemeBitmap,
+        masked: bool,
+    ) -> (Vec<(Rgb8, u8)>, Vec<(i16, i16, u8)>) {
+        let rgba = bitmap.rgba();
+        let transparent = self.ui_theme().palette().window_background;
+        let mut resolved: Vec<(Rgb8, u8)> = Vec::new();
+        let mut pixels = Vec::new();
+        self.with_color_mirror(bus, |mirror| {
+            for y in 0..bitmap.height() {
+                for x in 0..bitmap.width() {
+                    let offset = ((y * bitmap.width() + x) * 4) as usize;
+                    let color = Rgb8 {
+                        r: rgba[offset],
+                        g: rgba[offset + 1],
+                        b: rgba[offset + 2],
+                    };
+                    if masked && color == transparent {
+                        continue;
+                    }
+                    let pixel = match resolved.iter().find(|(c, _)| *c == color) {
+                        Some(&(_, pixel)) => pixel,
+                        None => {
+                            let pixel = self.theme_pixel_index_mirrored(bus, mirror, color);
+                            resolved.push((color, pixel));
+                            pixel
+                        }
+                    };
+                    pixels.push((
+                        left.saturating_add(x as i16),
+                        top.saturating_add(y as i16),
+                        pixel,
+                    ));
+                }
+            }
+        });
+        (resolved, pixels)
+    }
+
+    fn blit_theme_pixels(&self, bus: &mut MacMemoryBus, pixels: &[(i16, i16, u8)]) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        for &(x, y, pixel) in pixels {
+            Self::fb_set_pixel_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                pixel,
+            );
+        }
     }
 
     fn blit_theme_bitmap_mono(
@@ -603,8 +880,26 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let pixel = self.theme_pixel_index(bus, color);
+        let pixel = self.with_color_mirror(bus, |mirror| {
+            self.theme_pixel_index_mirrored(bus, mirror, color)
+        });
         let (top, left, bottom, right) = rect;
+        if pixel_size == 8 {
+            Self::fb_fill_rect_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                pixel,
+            );
+            return;
+        }
         for y in top.max(0)..bottom.min(screen_height) {
             for x in left.max(0)..right.min(screen_width) {
                 Self::fb_set_pixel_index(
@@ -2786,6 +3081,143 @@ impl super::TrapDispatcher {
         standard_menu_bar_title_baseline(menu_bar_height, metrics.ascent, metrics.descent)
     }
 
+    /// A digest of everything a screen colour lookup reads: the screen depth,
+    /// the main device's colour table (pointer and every entry, read through
+    /// the bus) when there is one, and the host-side device table that the
+    /// lookup falls back to otherwise. Caches of resolved device indices are
+    /// keyed on it rather than on `ctSeed`: the seed is meant to change with
+    /// the entries (Inside Macintosh Volume V (1986), V-143), but Systemless's
+    /// own depth switch rewrites the table in place and stamps the seed with
+    /// the depth, so a colour-to-grayscale change at the same depth keeps it.
+    /// One bulk read of the table per digest is far cheaper than the scans
+    /// the caches avoid.
+    /// The digest together with the table's header and entry bytes, so a
+    /// mirror refresh does not read the table twice.
+    fn color_environment(&self, bus: &MacMemoryBus) -> (u64, Option<(u32, [u8; 8], Vec<u8>)>) {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut digest = FNV_OFFSET;
+        let mut mix = |bytes: &[u8]| {
+            for &byte in bytes {
+                digest ^= u64::from(byte);
+                digest = digest.wrapping_mul(FNV_PRIME);
+            }
+        };
+        let (_, _, _, _, depth) = self.screen_mode;
+        mix(&depth.to_le_bytes());
+        let table = if let Some(ctab) = Self::main_gdevice_ctab(bus) {
+            let mut header = [0u8; 8];
+            bus.read_bytes_into(ctab, &mut header);
+            let entries = usize::from(u16::from_be_bytes([header[6], header[7]]))
+                .saturating_add(1)
+                .min(256);
+            let mut bytes = vec![0u8; entries * 8];
+            bus.read_bytes_into(ctab + 8, &mut bytes);
+            mix(&ctab.to_le_bytes());
+            mix(&header[4..8]);
+            mix(&bytes);
+            Some((ctab, header, bytes))
+        } else {
+            mix(&[0xFF]);
+            None
+        };
+        for rgb in self.device_clut.iter() {
+            for channel in rgb {
+                mix(&channel.to_le_bytes());
+            }
+        }
+        (digest, table)
+    }
+
+    /// Bring the colour-table mirror up to date and run `f` against it.
+    pub(super) fn with_color_mirror<R>(
+        &self,
+        bus: &MacMemoryBus,
+        f: impl FnOnce(&ColorTableMirror) -> R,
+    ) -> R {
+        if self.color_mirror_fresh.get() {
+            // Inside a chrome pass the table cannot change: reuse the mirror
+            // refreshed at the start of the pass.
+            return f(&self.color_mirror.borrow());
+        }
+        self.refresh_color_mirror(bus);
+        f(&self.color_mirror.borrow())
+    }
+
+    /// Bring the mirror up to date with the colour environment now.
+    pub(super) fn refresh_color_mirror(&self, bus: &MacMemoryBus) {
+        let (digest, table) = self.color_environment(bus);
+        let mut mirror = self.color_mirror.borrow_mut();
+        if mirror.digest != digest || mirror.entries.is_empty() && table.is_some() {
+            mirror.digest = digest;
+            mirror.depth = self.screen_mode.4;
+            match table {
+                Some((_, header, bytes)) => {
+                    mirror.present = true;
+                    mirror.device_table = (u16::from_be_bytes([header[4], header[5]]) & 0x8000) != 0;
+                    mirror.entries = bytes
+                        .chunks_exact(8)
+                        .map(|e| {
+                            (
+                                u16::from_be_bytes([e[0], e[1]]),
+                                [
+                                    u16::from_be_bytes([e[2], e[3]]),
+                                    u16::from_be_bytes([e[4], e[5]]),
+                                    u16::from_be_bytes([e[6], e[7]]),
+                                ],
+                            )
+                        })
+                        .collect();
+                }
+                None => {
+                    mirror.present = false;
+                    mirror.device_table = false;
+                    mirror.entries.clear();
+                }
+            }
+        }
+    }
+
+    /// `theme_pixel_index` for one colour through the mirror (the depth-1
+    /// path keeps its logical black/white resolution).
+    pub(super) fn theme_pixel_index_mirrored(
+        &self,
+        bus: &MacMemoryBus,
+        mirror: &ColorTableMirror,
+        color: Rgb8,
+    ) -> u8 {
+        if self.screen_mode.4 == 1 {
+            return self.theme_pixel_index(bus, color);
+        }
+        let rgb = [
+            u16::from(color.r) * 0x0101,
+            u16::from(color.g) * 0x0101,
+            u16::from(color.b) * 0x0101,
+        ];
+        mirror.pixel_index_for_rgb(rgb).unwrap_or_else(|| {
+            super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+        })
+    }
+
+    /// The menu mark's colours resolved through the main device's colour
+    /// table, cached against the colour environment they were resolved in;
+    /// without the cache every menu-bar redraw scans the table once per
+    /// colour through the bus.
+    pub(super) fn menu_mark_palette_indices(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()] {
+        let indices = self.with_color_mirror(bus, |mirror| {
+            crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+                mirror.pixel_index_for_rgb(rgb).unwrap_or_else(|| {
+                    super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
+                })
+            })
+        });
+        self.menu_mark_indices.set(Some(MenuMarkIndexCache { indices }));
+        indices
+    }
+
     pub(super) fn fb_draw_retro_computer_menu_mark(
         &self,
         bus: &mut MacMemoryBus,
@@ -2799,11 +3231,7 @@ impl super::TrapDispatcher {
         // appleMark ($14) identifies the system menu title. Preserve its
         // measured advance while substituting original Systemless artwork.
         // Inside Macintosh Volume I, I-354
-        let palette_indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
-            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
-                super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
-            })
-        });
+        let palette_indices = self.menu_mark_palette_indices(bus);
 
         let left = x;
         let metrics = get_font_metrics(0, 12);
@@ -4962,6 +5390,15 @@ impl super::TrapDispatcher {
     /// the chrome and should be called after each frame of emulation.
     pub fn redraw_chrome(&mut self, bus: &mut MacMemoryBus) {
         self.refresh_menu_bar_policy_from_guest(bus);
+        // One colour-table read per chrome pass serves every colour lookup
+        // in it; nothing in the pass writes the table.
+        self.refresh_color_mirror(bus);
+        self.color_mirror_fresh.set(true);
+        self.redraw_chrome_inner(bus);
+        self.color_mirror_fresh.set(false);
+    }
+
+    fn redraw_chrome_inner(&mut self, bus: &mut MacMemoryBus) {
 
         // Blit front window's port pixels to screen framebuffer if they differ.
         // On real Mac OS the Window Manager composites windows to the screen.
@@ -5759,6 +6196,211 @@ mod redraw_chrome_tests {
 
         assert_eq!(bus.read_byte(screen_base), 0b01_11_11_01);
         assert_eq!(bus.read_byte(screen_base + 1), 0x00);
+    }
+
+    #[test]
+    fn menu_mark_indices_are_cached_until_the_colour_environment_changes() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut disp = TrapDispatcher::new();
+        let base = bus.alloc(16 * 16);
+        disp.set_screen_mode_for_test(base, 16, 16, 16, 8);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main); // MainDevice
+        let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
+
+        let scan = |bus: &crate::memory::MacMemoryBus| {
+            crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+                TrapDispatcher::fb_main_screen_pixel_index_for_rgb(bus, rgb).expect("resolves")
+            })
+        };
+        let first = disp.menu_mark_palette_indices(&bus);
+        assert_eq!(first, scan(&bus), "the mirror answers like the bus scan");
+        assert_eq!(disp.menu_mark_indices.get().map(|cache| cache.indices), Some(first));
+
+        // An entry the mark uses, rewritten in place with the seed untouched:
+        // the next resolution follows the table, exactly as a scan would.
+        let entry = ctab + 8 + 8 * u32::from(first[0]);
+        bus.write_word(entry + 2, 0xFFFF);
+        bus.write_word(entry + 4, 0x0000);
+        bus.write_word(entry + 6, 0xFFFF);
+        let fresh = disp.menu_mark_palette_indices(&bus);
+        assert_eq!(fresh, scan(&bus));
+        assert_ne!(fresh, first, "the moved colour resolves elsewhere now");
+    }
+
+    #[test]
+    fn themed_dialog_frame_replays_cached_pixels_identically() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut disp = TrapDispatcher::new();
+        disp.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+        let width = 64u32;
+        let height = 48u32;
+        let base = bus.alloc(width * height);
+        disp.set_screen_mode_for_test(base, width, width as u16, height as u16, 8);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main); // MainDevice
+        let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
+        let content = (12i16, 10i16, 40i16, 54i16);
+        let frame = (content.0 - 8, content.1 - 8, content.2 + 3, content.3 + 8);
+        let screen =
+            |bus: &crate::memory::MacMemoryBus| bus.read_bytes(base, (width * height) as usize);
+
+        assert!(
+            disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, true, false),
+            "the default theme draws the frame"
+        );
+        let rendered = screen(&bus);
+        let cached = disp
+            .theme_chrome_cache
+            .borrow()
+            .last()
+            .map(|entry| entry.pixels.len())
+            .expect("the rendered frame is cached");
+        assert!(cached > 0 && (cached as u32) < width * height, "only opaque pixels are kept");
+
+        // Same inputs: replayed from the cache onto a cleared screen, pixel
+        // for pixel.
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, true, false));
+        assert_eq!(screen(&bus), rendered);
+
+        // A table entry the frame does not use, rewritten in place with the
+        // seed untouched: the cached rendering is still valid and identical.
+        let used: Vec<u8> = disp
+            .theme_chrome_cache
+            .borrow()
+            .last()
+            .map(|entry| entry.resolved.iter().map(|(_, index)| *index).collect())
+            .expect("cached");
+        let unused = (0u8..=255).find(|index| !used.contains(index)).expect("an unused index");
+        let entry = ctab + 8 + 8 * u32::from(unused);
+        bus.write_word(entry + 2, bus.read_word(entry + 2) ^ 0x0F0F);
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, true, false));
+        assert_eq!(screen(&bus), rendered);
+
+        // A different frame state is not served from the active one's cache:
+        // the cache now describes the inactive frame.
+        assert!(disp.draw_theme_dialog_frame(&mut bus, content, frame, 1, false, false));
+        assert!(matches!(
+            disp.theme_chrome_cache.borrow().last().map(|entry| &entry.key.kind),
+            Some(super::ThemeChromeKind::DialogFrame { active: false, .. })
+        ));
+        assert_eq!(
+            disp.theme_chrome_cache.borrow().len(),
+            2,
+            "the active and inactive renderings are kept; the unused-entry change did not add one"
+        );
+    }
+
+    #[test]
+    fn color_mirror_answers_exactly_like_the_bus_scan() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut disp = TrapDispatcher::new();
+        let base = bus.alloc(16 * 16);
+        disp.set_screen_mode_for_test(base, 16, 16, 16, 8);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main); // MainDevice
+        let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
+        // A non-device table with out-of-order values, a duplicate colour and
+        // a value above the index range, plus black/white at the ends.
+        let entries: [(u16, [u16; 3]); 8] = [
+            (0, [0xFFFF, 0xFFFF, 0xFFFF]),
+            (5, [0x1111, 0x2222, 0x3333]),
+            (3, [0x1111, 0x2222, 0x3333]),
+            (300, [0x4444, 0x4444, 0x4444]),
+            (9, [0x8888, 0x0000, 0x0000]),
+            (2, [0x8000, 0x0000, 0x0000]),
+            (7, [0x1234, 0x5678, 0x9ABC]),
+            (255, [0, 0, 0]),
+        ];
+        bus.write_word(ctab + 4, 0); // not a device table: values map indices
+        bus.write_word(ctab + 6, entries.len() as u16 - 1);
+        for (ordinal, (value, rgb)) in entries.iter().enumerate() {
+            let entry = ctab + 8 + ordinal as u32 * 8;
+            bus.write_word(entry, *value);
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
+        let probes: [[u16; 3]; 8] = [
+            [0, 0, 0],
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            [0x1111, 0x2222, 0x3333],
+            [0x4444, 0x4444, 0x4444],
+            [0x8100, 0, 0],
+            [0x8700, 0, 0],
+            [0x1234, 0x5678, 0x9ABC],
+            [0x7000, 0x7000, 0x7000],
+        ];
+        for rgb in probes {
+            let scanned = TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, rgb);
+            let mirrored = disp.with_color_mirror(&bus, |mirror| mirror.pixel_index_for_rgb(rgb));
+            assert_eq!(mirrored, scanned, "probe {rgb:04X?}");
+        }
+        // Device-table flag: values are ordinals.
+        bus.write_word(ctab + 4, 0x8000);
+        for rgb in probes {
+            let scanned = TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, rgb);
+            let mirrored = disp.with_color_mirror(&bus, |mirror| mirror.pixel_index_for_rgb(rgb));
+            assert_eq!(mirrored, scanned, "device-table probe {rgb:04X?}");
+        }
+    }
+
+    #[test]
+    fn themed_chrome_survives_palette_changes_to_colours_it_does_not_use() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut disp = TrapDispatcher::new();
+        disp.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+        let width = 64u32;
+        let height = 32u32;
+        let base = bus.alloc(width * height);
+        disp.set_screen_mode_for_test(base, width, width as u16, height as u16, 8);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main); // MainDevice
+        let ctab = TrapDispatcher::main_gdevice_ctab(&bus).expect("main device table");
+        let screen = |bus: &crate::memory::MacMemoryBus| bus.read_bytes(base, (width * height) as usize);
+
+        assert!(disp.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let rendered = screen(&bus);
+        let used: Vec<u8> = disp
+            .theme_chrome_cache
+            .borrow()
+            .last()
+            .map(|entry| entry.resolved.iter().map(|(_, index)| *index).collect())
+            .expect("cached");
+        assert!(!used.is_empty());
+
+        // Animate an entry the menu bar does not use: the cached rendering
+        // stays (poison its pixels to prove it is replayed, then restore).
+        let unused = (0u8..=255).find(|index| !used.contains(index)).expect("an unused index");
+        let entry = ctab + 8 + 8 * u32::from(unused);
+        bus.write_word(entry + 2, bus.read_word(entry + 2) ^ 0x0F0F);
+        {
+            let mut cache = disp.theme_chrome_cache.borrow_mut();
+            let last = cache.last_mut().unwrap();
+            for pixel in last.pixels.iter_mut() {
+                pixel.2 = used[0];
+            }
+        }
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_menu_bar_chrome(&mut bus, 20));
+        assert_ne!(screen(&bus), rendered, "served from the (poisoned) cache");
+        disp.theme_chrome_cache.borrow_mut().clear();
+
+        // Move a colour the menu bar does use: re-rendered, identical output
+        // to a fresh rendering.
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let entry = ctab + 8 + 8 * u32::from(used[0]);
+        bus.write_word(entry + 2, bus.read_word(entry + 2) ^ 0x0F0F);
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_menu_bar_chrome(&mut bus, 20));
+        let cached_path = screen(&bus);
+        disp.theme_chrome_cache.borrow_mut().clear();
+        bus.fill_bytes(base, width * height, 0);
+        assert!(disp.draw_theme_menu_bar_chrome(&mut bus, 20));
+        assert_eq!(cached_path, screen(&bus));
     }
 
     #[test]
