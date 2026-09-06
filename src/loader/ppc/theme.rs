@@ -62,10 +62,11 @@ impl PpcLoadedApp {
         } else {
             self.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i32
         };
-        let palette = ppc_ui_theme(&self.gworlds).provider().palette();
-        let colors = [palette.desktop_light, palette.desktop_dark].map(|color| {
-            ppc_physical_screen_color_pixel(front, ppc_theme_rgb(color), &self.screen_clut)
-        });
+        let colors = [
+            ppc_standard_desktop_color(&self.gworlds, 1, 0),
+            ppc_standard_desktop_color(&self.gworlds, 0, 0),
+        ]
+        .map(|color| ppc_physical_screen_color_pixel(front, color, &self.screen_clut));
         for y in top..front.height as i32 {
             for x in 0..front.width as i32 {
                 if regions.iter().any(|r| {

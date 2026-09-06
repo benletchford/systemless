@@ -51219,12 +51219,12 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
     let clut = ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback);
     let entry_count = ppc_indexed_depth_entry_count(front_buffer.depth).unwrap_or(256);
     let black = u16::from(ppc_rgb_color_to_index_in_clut(
-        PPC_RGB_BLACK,
+        ppc_standard_desktop_color(std::slice::from_ref(&record), 0, 0),
         &clut,
         entry_count,
     ));
     let white = u16::from(ppc_rgb_color_to_index_in_clut(
-        PPC_RGB_WHITE,
+        ppc_standard_desktop_color(std::slice::from_ref(&record), 1, 0),
         &clut,
         entry_count,
     ));
@@ -52526,6 +52526,16 @@ fn ppc_validate_window_local_rect(
 }
 
 fn ppc_standard_desktop_color(gworlds: &[PpcGWorldRecord], h: i32, v: i32) -> PpcRgbColor {
+    if gworlds
+        .iter()
+        .any(|world| world.port == PPC_MAIN_GWORLD && world.depth == 1)
+    {
+        return if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+            PPC_RGB_BLACK
+        } else {
+            PPC_RGB_WHITE
+        };
+    }
     let palette = ppc_ui_theme(gworlds).provider().palette();
     ppc_theme_rgb(
         if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
@@ -97042,12 +97052,6 @@ pub(crate) mod tests {
             * ppc_main_screen_row_bytes();
         let unhighlighted_bar =
             ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, menu_bar_len).unwrap();
-        let white = ppc_physical_screen_color_pixel(
-            ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap(),
-            PPC_RGB_WHITE,
-            &loaded.screen_clut,
-        )
-        .unwrap();
 
         for (label, item) in [("disabled item", 2i16), ("divider", 3i16)] {
             ppc_track_menu_while_held(
@@ -97071,6 +97075,8 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             };
             let background_point = (i32::from(input.mouse_h), i32::from(input.mouse_v));
+            let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+            let background = ppc_quickdraw_read_pixel(&mut loaded.memory, front, background_point);
             assert_eq!(
                 ppc_menu_tracking_item(&mut loaded.memory, tracking, input),
                 0,
@@ -97087,7 +97093,7 @@ pub(crate) mod tests {
             let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
             assert_eq!(
                 ppc_quickdraw_read_pixel(&mut loaded.memory, front, background_point),
-                Some(white),
+                background,
                 "{label} was drawn highlighted"
             );
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
@@ -143604,16 +143610,27 @@ pub(crate) mod tests {
             loaded.cpu.gpr[6] = u32::from(depth != 1);
             run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
             loaded.set_ui_theme(UiThemeId::SystemlessDefault);
-            let front =
-                ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
-                    .unwrap();
-            let palette = if depth == 1 {
+            let front = ppc_live_front_buffer_for_gworld(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+            )
+            .unwrap();
+            let mut palette = if depth == 1 {
                 UiThemeId::ClassicSystem7
             } else {
                 UiThemeId::SystemlessDefault
             }
             .provider()
             .palette();
+            if depth == 1 {
+                palette.desktop_dark = Rgb8 { r: 0, g: 0, b: 0 };
+                palette.desktop_light = Rgb8 {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                };
+            }
             for (point, color) in [
                 ((700, 400), palette.desktop_dark),
                 ((701, 400), palette.desktop_light),
@@ -144086,10 +144103,18 @@ pub(crate) mod tests {
             &mut last_mem_error,
             &mut handles,
         );
-        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
-            .unwrap();
-        let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut)
-            .unwrap();
+        let black = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 0, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
+        let white = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 1, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
             Some(black),
@@ -144124,10 +144149,18 @@ pub(crate) mod tests {
             PpcInputSnapshot::default(),
         );
 
-        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
-            .unwrap();
-        let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut)
-            .unwrap();
+        let black = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 0, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
+        let white = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 1, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
             Some(black),
@@ -169111,15 +169144,21 @@ pub(crate) mod tests {
         let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(
+                ppc_standard_desktop_color(&loaded.gworlds, 0, 0)
+            )))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(
+                ppc_standard_desktop_color(&loaded.gworlds, 1, 0)
+            )))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 21)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(
+                ppc_standard_desktop_color(&loaded.gworlds, 1, 0)
+            )))
         );
     }
 
