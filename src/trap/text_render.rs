@@ -847,6 +847,25 @@ impl super::TrapDispatcher {
             let tx_size = self.tx_size;
             let tx_mode = self.tx_mode;
 
+            #[cfg(feature = "experimental-urw-fonts")]
+            if self.tx_face & !1 == 0 && matches!(tx_mode, 0 | 1) && fs == 1 {
+                bus.begin_outline_glyph(glyph, data, h, v, is_bold);
+            }
+            #[cfg(feature = "experimental-urw-fonts")]
+            let r = if let Some((top, left, bottom, right)) =
+                bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+            {
+                // Native hinting may move an edge outside the 1x glyph box.
+                let bounded = |n: i32| n.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                Rect {
+                    top: r.top.min(bounded(top)),
+                    left: r.left.min(bounded(left)),
+                    bottom: r.bottom.max(bounded(bottom)),
+                    right: r.right.max(bounded(right)),
+                }
+            } else {
+                r
+            };
             self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(tx_mode), false, |y, x| {
                 // All helper closures below return the per-pixel coverage
                 // byte (0=off, 255=fully on, 1..254=partial). Bold smear
@@ -1085,6 +1104,8 @@ impl super::TrapDispatcher {
 
                 pixel
             });
+            #[cfg(feature = "experimental-urw-fonts")]
+            bus.end_outline_glyph();
 
             // Update Pen (Advance). Apply font scale, plus port.spExtra
             // for space characters per IM:I I-171 (SpaceExtra) and

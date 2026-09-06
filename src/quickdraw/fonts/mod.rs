@@ -37,7 +37,7 @@ pub mod heuristics;
 pub mod override_format;
 pub mod pixel_font;
 #[cfg(feature = "experimental-urw-fonts")]
-mod urw;
+pub(crate) mod urw;
 
 use std::collections::HashMap;
 use std::ffi::OsString;

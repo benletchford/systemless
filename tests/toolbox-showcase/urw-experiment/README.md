@@ -4,16 +4,24 @@ This experiment addresses [#673](https://github.com/benletchford/systemless/issu
 without changing the default renderer. These are screenshots from the real
 Toolbox Showcase guest application, using Classic System 7 chrome, a fixed
 startup clock, the 68K executable, and an 800 × 600, 8-bit screen. Both runs use
-the same fixture and capture routine. Images are unmodified framebuffer exports.
+the same fixture and capture routine. The before/after images below are unmodified framebuffer exports; the new
+presentation captures are identified separately.
 
 ## Higher-resolution direction
 
-Both one-bit URW versions failed visual review. The next experiment is an
-[isolated 1×/2×/3× text proof](resolution/README.md) using the same logical
-spacing and freshly rasterized outlines at higher physical resolution. It also
-preserves grayscale edge coverage. This specimen is not a guest screenshot or
-a completed high-resolution display backend. The captures below remain evidence
-of the low-resolution runtime's current output, not visual acceptance.
+Both one-bit URW versions failed visual review. The new
+[real 2× Toolbox Showcase captures](presentation/README.md) now run the guest
+with an opt-in high-resolution presentation plane. TextEdit paragraphs, headings,
+menus, and buttons use freshly rasterized outlines. All five underlying guest
+framebuffers remain pixel-for-pixel identical to the monochrome captures below.
+
+![Real Toolbox Showcase with 2× text](presentation/native-textedit.png)
+
+This is a capture prototype; unsupported styles and copied bitmap content still
+show the old rendering. It is not yet connected to desktop/browser high-DPI
+presentation. See the capture document for supported paths and remaining work.
+The earlier [standalone 1×/2×/3× specimen](resolution/README.md) remains as a
+separate font comparison, not guest evidence.
 
 | Page | Default bitmap fallback | Experimental URW fallback |
 | --- | --- | --- |
