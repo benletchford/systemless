@@ -375,22 +375,17 @@ generated bitmap override blobs ahead of the built-in catalogue.
 
 ### Experimental URW TrueType fallback
 
-Build with `--features experimental-urw-fonts` to replace the built-in fallback
-with bundled, unmodified URW Core 35 outlines at 1–96 points. This is an opt-in
-prototype for [#673](https://github.com/benletchford/systemless/issues/673).
-Application font resources and local bitmap overrides retain precedence.
-The optional Skrifa/Zeno Rust renderer requires no installed host fonts.
-Monochrome hinting fits outlines to the pixel grid and supplies the matching
-adjusted advances. It uses em-based point sizes and Mac Roman to Unicode
-mapping, with binary masks for QuickDraw transfer modes. No artificial ink
-expansion is applied. Missing characters use the font's missing-glyph shape.
-Styles continue to use QuickDraw synthesis.
+The opt-in `experimental-urw-fonts` feature substitutes bundled URW Core 35
+TrueType faces at 1–96 points. Guest font resources and local overrides retain
+precedence. Skrifa/Zeno rasterizes the outlines without installed host fonts.
 
-This changes wrapping, menu widths, and dialog spacing. Small sizes need visual
-review, and these substitute designs do not reproduce classic Mac metrics or
-pixels. Sizes above 96 points retain bitmap fallback scaling. It does not implement additional guest Font Manager traps and is not
-ready to become the default. See the [font source record](src/quickdraw/fonts/urw/README.md)
-and [toolbox comparison](tests/toolbox-showcase/urw-experiment/README.md).
+The substitutes change logical widths and wrapping. A separate experimental
+8-bit presentation API renders supported text at 2×–4× while preserving guest
+pixels; desktop and browser frontends do not enable it automatically. See the
+[font source and licences](src/quickdraw/fonts/urw/README.md) and
+[Toolbox Showcase gallery](tests/toolbox-showcase/urw-experiment/README.md)
+for reproduction, supported paths, and review limitations. Tracks
+[#673](https://github.com/benletchford/systemless/issues/673).
 
 ### Trademark / non-affiliation
 
