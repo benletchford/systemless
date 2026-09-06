@@ -689,12 +689,12 @@ impl MenuTrackingContext {
             .filter(|call| call.origin.isa() == GuestIsa::PowerPc && call.popup_request().is_some())
     }
     pub(crate) fn clear_native_menu(&mut self) {
-        if self.native_menu().is_some() {
+        if self.native_menu().is_some() && self.tracking.is_none() && self.definition.is_none() {
             self.call = None;
         }
     }
     pub(crate) fn clear_native_popup(&mut self) {
-        if self.native_popup().is_some() {
+        if self.native_popup().is_some() && self.tracking.is_none() && self.definition.is_none() {
             self.call = None;
         }
     }
@@ -884,11 +884,7 @@ impl SharedMenuTracking {
         }
     }
 
-    pub(crate) fn enter_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
-        let entry = self.enter();
-        self.context_mut().call.get_or_insert(call);
-        entry
-    }
+    #[cfg(test)]
     pub(crate) fn enter(&mut self) -> MenuTrackingEntry {
         let id = self.begin();
         self.scope(id)
@@ -3299,7 +3295,7 @@ mod tests {
     }
 
     #[test]
-    fn tracking_reentry_preserves_the_original_request_and_return_boundary() {
+    fn tracking_resumption_preserves_the_original_request_and_return_boundary() {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
         for origin in [
             MenuTrackingOrigin::M68k {
@@ -3319,15 +3315,10 @@ mod tests {
                 },
                 origin,
             };
-            let entry = tracking.enter_call(original);
+            let entry = tracking.enter_new_call(original);
             *tracking = Some(test_process_menu_tracking(111));
-            let reentry = tracking.enter_call(MenuTrackingCall {
-                request: MenuTrackingRequest::MenuSelect { initial_point: 0 },
-                origin: MenuTrackingOrigin::PowerPc {
-                    stack_pointer: 0x5000,
-                    return_address: 0x6000,
-                },
-            });
+            let (resumed_call, reentry) = tracking.resume_call(origin.isa()).unwrap();
+            assert_eq!(resumed_call, original);
             assert_eq!(entry.id, reentry.id);
             assert_eq!(tracking.context().call, Some(original));
             assert_eq!(tracking.context().caller_isa(), Some(origin.isa()));
@@ -3337,7 +3328,7 @@ mod tests {
             drop(entry);
             assert!(calls.is_empty());
             assert_eq!(tracking.context().call, None);
-            let cancelled = tracking.enter_call(original);
+            let cancelled = tracking.enter_new_call(original);
             *tracking = Some(test_process_menu_tracking(222));
             *tracking = None;
             let replacement = MenuTrackingCall {
@@ -3347,12 +3338,12 @@ mod tests {
                     return_address: 0x8000,
                 },
             };
-            let fresh = tracking.enter_call(replacement);
+            let fresh = tracking.enter_new_call(replacement);
             assert_ne!(cancelled.id, fresh.id);
             drop(cancelled);
             assert_eq!(tracking.context().call, Some(replacement));
             drop(fresh);
-            let idle = tracking.enter_call(original);
+            let idle = tracking.enter_new_call(original);
             drop(idle);
             assert!(
                 calls.is_empty(),
