@@ -3,7 +3,7 @@
 use super::types::{Rect, ShapeOp, UnderlineInfo};
 use crate::cpu::CpuOps;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::quickdraw::fonts::heuristics::{
+use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_slant_for_underline,
     get_italic_underline_extend_left, get_italic_underline_extend_right, get_underline_offset,
     use_baseline_analysis, use_smart_underline_break,
@@ -355,10 +355,12 @@ impl super::TrapDispatcher {
 
         if !is_underline {
             // No underline, no outline/shadow: simple per-character drawing
+            bus.begin_presentation_text_run(self.tx_mode == 0);
             for i in 0..len {
                 let ch = bus.read_byte(s_ptr + 1 + i as u32);
                 self.draw_char(cpu, bus, ch as char);
             }
+            bus.end_presentation_text_run();
             return;
         }
 
@@ -644,11 +646,13 @@ impl super::TrapDispatcher {
         });
 
         // Draw all characters (they will use the global underline info)
+        bus.begin_presentation_text_run(self.tx_mode == 0);
         for i in 0..len {
             let ch = bus.read_byte(s_ptr + 1 + i as u32);
             self.draw_char(cpu, bus, ch as char);
         }
 
+        bus.end_presentation_text_run();
         // Clear underline info
         self.underline_info = None;
     }
@@ -835,7 +839,13 @@ impl super::TrapDispatcher {
                     bottom: v + scaled_descent,
                     right: h + glyph.advance as i16 * fs,
                 };
+                if let Some(mut p) = bus.presentation.as_mut() {
+                    p.erasing_text = true;
+                }
                 self.draw_rect(cpu, bus, &copy_rect, ShapeOp::Erase);
+                if let Some(mut p) = bus.presentation.as_mut() {
+                    p.erasing_text = false;
+                }
             }
 
             // Extract underline info for continuous underline (if set by draw_string)
@@ -847,6 +857,34 @@ impl super::TrapDispatcher {
             let tx_size = self.tx_size;
             let tx_mode = self.tx_mode;
 
+            if matches!(tx_mode, 0 | 1) && fs == 1 {
+                bus.begin_outline_glyph(
+                    glyph,
+                    data,
+                    h,
+                    v,
+                    is_bold,
+                    is_italic.then_some(metrics.descent),
+                    is_underline.then_some((i16::from(glyph.advance) + bold_extra, ul_thick)),
+                );
+                bus.style_outline_glyph(crate::quickdraw::text::QuickDrawTextStyle::from_bits(
+                    self.tx_face as u8,
+                ));
+            }
+            let r = if let Some((top, left, bottom, right)) =
+                bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+            {
+                // Native hinting may move an edge outside the 1x glyph box.
+                let bounded = |n: i32| n.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                Rect {
+                    top: r.top.min(bounded(top)),
+                    left: r.left.min(bounded(left)),
+                    bottom: r.bottom.max(bounded(bottom)),
+                    right: r.right.max(bounded(right)),
+                }
+            } else {
+                r
+            };
             self.draw_generic_shape(cpu, bus, &r, ShapeOp::Glyph(tx_mode), false, |y, x| {
                 // All helper closures below return the per-pixel coverage
                 // byte (0=off, 255=fully on, 1..254=partial). Bold smear
@@ -1085,6 +1123,7 @@ impl super::TrapDispatcher {
 
                 pixel
             });
+            bus.end_outline_glyph();
 
             // Update Pen (Advance). Apply font scale, plus port.spExtra
             // for space characters per IM:I I-171 (SpaceExtra) and

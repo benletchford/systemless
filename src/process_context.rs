@@ -6618,6 +6618,12 @@ impl ProcessContext {
         self.menu_tracking.as_ref()
     }
 
+    pub(crate) fn set_menu_presentation_tick(&mut self, tick: u32) {
+        if let Some(tracking) = self.menu_tracking.as_mut() {
+            tracking.set_flash_tick(tick);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn menu_tracking_mut(&mut self) -> Option<&mut ProcessMenuTrackingState> {
         self.menu_tracking.as_mut()

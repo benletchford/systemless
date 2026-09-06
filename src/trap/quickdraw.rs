@@ -2196,10 +2196,12 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
+                bus.begin_presentation_text_run(self.tx_mode == 0);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
+                bus.end_presentation_text_run();
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
             }
@@ -2259,10 +2261,12 @@ impl super::TrapDispatcher {
                 }
 
                 // Render text using draw_char
+                bus.begin_presentation_text_run(self.tx_mode == 0);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(text_buf + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
+                bus.end_presentation_text_run();
                 self.tx_size = saved_tx_size;
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
@@ -3800,7 +3804,26 @@ impl super::TrapDispatcher {
                 // CopyBits must preserve source pixels for overlapping blits.
                 // Snapshot the touched source rows when src and dst share storage
                 // so later writes don't affect subsequent reads.
-                let source_snapshot = if src_info.base == dst_info.base {
+                let detail_table = (bus.has_outline_presentation()
+                    && mode_base == 0
+                    && src_info.pixel_size == 8
+                    && dst_info.pixel_size == 8)
+                    .then(|| {
+                        self.copy_bits_src_copy_table(
+                            bus,
+                            dst_ctab_handle,
+                            src_clut,
+                            dst_clut,
+                            palette_translation,
+                            None,
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        )
+                    })
+                    .flatten();
+                let source_snapshot = if src_info.base == dst_info.base
+                    || (bus.has_outline_presentation() && src_info.pixel_size == 8)
+                {
                     let mut row_start = u32::MAX;
                     let mut row_end = 0u32;
                     for dy in clip_t..clip_b {
@@ -3833,7 +3856,16 @@ impl super::TrapDispatcher {
                                 [snapshot_offset..snapshot_offset + src_info.row_bytes as usize]
                                 .copy_from_slice(&row_data);
                         }
-                        Some((row_start, row_count, snapshot))
+                        Some((row_start, row_count, {
+                            let mut snapshot: crate::memory::SavedPixels = snapshot.into();
+                            bus.capture_pixel_detail(
+                                &mut snapshot,
+                                0,
+                                src_info.base + row_start * src_info.row_bytes,
+                                (row_count * src_info.row_bytes) as usize,
+                            );
+                            snapshot
+                        }))
                     } else {
                         None
                     }
@@ -4137,6 +4169,44 @@ impl super::TrapDispatcher {
                                 let src_addr =
                                     src_info.base + src_y_off * src_info.row_bytes + src_x_off;
                                 let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
+                                if let Some((row_start, _, snapshot)) = &source_snapshot {
+                                    let offset =
+                                        (src_addr - src_info.base - row_start * src_info.row_bytes)
+                                            as usize;
+                                    if detail_table.is_none()
+                                        && bus.transfer_saved_pixel(
+                                            dst_addr,
+                                            snapshot,
+                                            offset,
+                                            |bus, src, dst| {
+                                                if mode_base == 36
+                                                    && transparent_src_indices.as_ref().is_some_and(
+                                                        |indices| indices[src as usize],
+                                                    )
+                                                {
+                                                    return dst;
+                                                }
+                                                self.copy_bits_color_source_mode_pixel(
+                                                    bus,
+                                                    dst_ctab_handle,
+                                                    src_clut,
+                                                    dst_clut,
+                                                    256,
+                                                    palette_translation,
+                                                    shared_indexed_pixel_mask,
+                                                    mode_base,
+                                                    src,
+                                                    dst,
+                                                    copy_fg_rgb,
+                                                    copy_bg_rgb,
+                                                )
+                                                .unwrap_or(dst)
+                                            },
+                                        )
+                                    {
+                                        continue;
+                                    }
+                                }
                                 let src_pixel = read_src_byte(bus, src_addr);
                                 if mode_base == 36 {
                                     let src_rgb = src_clut.unwrap()[src_pixel as usize];
@@ -4194,7 +4264,21 @@ impl super::TrapDispatcher {
                                         .iter()
                                         .any(|&(probe_x, probe_y)| dx == probe_x && dy == probe_y)
                                     {
-                                        bus.write_byte(dst_addr, dst_pixel);
+                                        if let (Some(table), Some((row_start, _, snapshot))) =
+                                            (&detail_table, &source_snapshot)
+                                        {
+                                            let offset = src_addr
+                                                - src_info.base
+                                                - row_start * src_info.row_bytes;
+                                            bus.copy_saved_pixel(
+                                                dst_addr,
+                                                snapshot,
+                                                offset as usize,
+                                                |index| table[index as usize],
+                                            );
+                                        } else {
+                                            bus.write_byte(dst_addr, dst_pixel);
+                                        }
                                         continue;
                                     }
                                     {
@@ -4231,7 +4315,20 @@ impl super::TrapDispatcher {
                                         );
                                     }
                                 }
-                                bus.write_byte(dst_addr, dst_pixel);
+                                if let (Some(table), Some((row_start, _, snapshot))) =
+                                    (&detail_table, &source_snapshot)
+                                {
+                                    let offset =
+                                        src_addr - src_info.base - row_start * src_info.row_bytes;
+                                    bus.copy_saved_pixel(
+                                        dst_addr,
+                                        snapshot,
+                                        offset as usize,
+                                        |index| table[index as usize],
+                                    );
+                                } else {
+                                    bus.write_byte(dst_addr, dst_pixel);
+                                }
                             }
                             (src_bits, dst_bits)
                                 if src_bits >= 8 && dst_bits >= 8 && src_bits == dst_bits =>
@@ -5767,6 +5864,22 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                let mut scroll_pixels: crate::memory::SavedPixels = buf.into();
+                if is_color {
+                    for row in 0..hu {
+                        let addr = base_addr
+                            + ((top - port_top) as u32 + row) * row_bytes
+                            + (left - port_left) as u32;
+                        bus.capture_pixel_detail(
+                            &mut scroll_pixels,
+                            (row * pixel_row_bytes) as usize,
+                            addr,
+                            pixel_row_bytes as usize,
+                        );
+                    }
+                }
+                let buf = scroll_pixels;
+
                 // BackPat updates the dispatcher-level cache (self.bk_pat).
                 // sync_port_draw_state mirrors this into classic GrafPort
                 // memory (+32) for caller visibility, but the cache is the
@@ -5810,7 +5923,16 @@ impl super::TrapDispatcher {
                                 self.debug_scroll_rect_last_changed_bytes =
                                     self.debug_scroll_rect_last_changed_bytes.saturating_add(1);
                             }
-                            bus.write_byte(addr, pixel_byte);
+                            if src_row >= 0 && src_row < h && src_col >= 0 && src_col < w {
+                                bus.copy_saved_pixel(
+                                    addr,
+                                    &buf,
+                                    (src_row as u32 * pixel_row_bytes + src_col as u32) as usize,
+                                    |index| index,
+                                );
+                            } else {
+                                bus.write_byte(addr, pixel_byte);
+                            }
                         }
                     }
                 } else {
@@ -20278,13 +20400,24 @@ impl super::TrapDispatcher {
                 let bytes = &mut row[..(end - start) as usize];
                 let src_addr = src_row + (start + shift - i32::from(src_info.bounds_left)) as u32;
                 let dst_addr = dst_row + (start - i32::from(dst_info.bounds_left)) as u32;
+                let detail = bus
+                    .has_outline_presentation()
+                    .then(|| bus.save_pixel_bytes(src_addr, bytes.len()));
                 bus.read_bytes_into(src_addr, bytes);
                 if !identity {
                     for byte in bytes.iter_mut() {
                         *byte = table[usize::from(*byte)];
                     }
                 }
-                bus.write_bytes(dst_addr, bytes);
+                if let Some(detail) = detail {
+                    for i in 0..bytes.len() {
+                        bus.copy_saved_pixel(dst_addr + i as u32, &detail, i, |index| {
+                            table[index as usize]
+                        });
+                    }
+                } else {
+                    bus.write_bytes(dst_addr, bytes);
+                }
             }
         }
         true
@@ -20656,7 +20789,27 @@ impl super::TrapDispatcher {
             false
         };
 
-        let source_snapshot = if !shared_rows_written && src_info.base == dst_info.base {
+        let detail_table = (bus.has_outline_presentation()
+            && mode_base == 0
+            && src_info.pixel_size == 8
+            && dst_info.pixel_size == 8)
+            .then(|| {
+                self.copy_bits_src_copy_table(
+                    bus,
+                    dst_ctab_handle,
+                    src_clut,
+                    dst_clut,
+                    palette_translation,
+                    None,
+                    copy_fg_rgb,
+                    copy_bg_rgb,
+                )
+            })
+            .flatten();
+        let source_snapshot = if !shared_rows_written && (src_info.base == dst_info.base
+            || (bus.has_outline_presentation() && src_info.pixel_size == 8))
+        {
+
             let mut row_start = u32::MAX;
             let mut row_end = 0u32;
             for dy in clip_t..clip_b {
@@ -20694,7 +20847,16 @@ impl super::TrapDispatcher {
                     snapshot[snapshot_offset..snapshot_offset + src_info.row_bytes as usize]
                         .copy_from_slice(&row_data);
                 }
-                Some((row_start, row_count, snapshot))
+                Some((row_start, row_count, {
+                    let mut snapshot: crate::memory::SavedPixels = snapshot.into();
+                    bus.capture_pixel_detail(
+                        &mut snapshot,
+                        0,
+                        src_info.base + row_start * src_info.row_bytes,
+                        (row_count * src_info.row_bytes) as usize,
+                    );
+                    snapshot
+                }))
             } else {
                 None
             }
@@ -20975,6 +21137,43 @@ impl super::TrapDispatcher {
                     (8, 8) => {
                         let src_addr = src_info.base + src_y_off * src_info.row_bytes + src_x_off;
                         let dst_addr = dst_info.base + dst_y * dst_info.row_bytes + dst_x;
+                        if let Some((row_start, _, snapshot)) = &source_snapshot {
+                            let offset = (src_addr - src_info.base - row_start * src_info.row_bytes)
+                                as usize;
+                            if detail_table.is_none()
+                                && bus.transfer_saved_pixel(
+                                    dst_addr,
+                                    snapshot,
+                                    offset,
+                                    |bus, src, dst| {
+                                        if mode_base == 36
+                                            && transparent_src_indices
+                                                .as_ref()
+                                                .is_some_and(|indices| indices[src as usize])
+                                        {
+                                            return dst;
+                                        }
+                                        self.copy_bits_color_source_mode_pixel(
+                                            bus,
+                                            dst_ctab_handle,
+                                            src_clut,
+                                            dst_clut,
+                                            256,
+                                            palette_translation,
+                                            shared_indexed_pixel_mask,
+                                            mode_base,
+                                            src,
+                                            dst,
+                                            copy_fg_rgb,
+                                            copy_bg_rgb,
+                                        )
+                                        .unwrap_or(dst)
+                                    },
+                                )
+                            {
+                                continue;
+                            }
+                        }
                         let src_pixel = read_src_byte(bus, src_addr);
                         if mode_base == 36
                             && transparent_src_indices
@@ -20999,7 +21198,16 @@ impl super::TrapDispatcher {
                         ) else {
                             continue;
                         };
-                        bus.write_byte(dst_addr, dst_pixel);
+                        if let (Some(table), Some((row_start, _, snapshot))) =
+                            (&detail_table, &source_snapshot)
+                        {
+                            let offset = src_addr - src_info.base - row_start * src_info.row_bytes;
+                            bus.copy_saved_pixel(dst_addr, snapshot, offset as usize, |index| {
+                                table[index as usize]
+                            });
+                        } else {
+                            bus.write_byte(dst_addr, dst_pixel);
+                        }
                     }
                     (src_bits, dst_bits)
                         if src_bits >= 8 && dst_bits >= 8 && src_bits == dst_bits =>
@@ -30089,15 +30297,19 @@ mod tests {
                 widths
             );
         }
-        // Exact 2x-face parity: the doubled size doubles the width
-        // (within a rounding pixel), pinning the previously-correct
-        // integer-scale answers.
-        let w12 = widths[(12 - 9) as usize] as i32;
-        let w24 = widths[(24 - 9) as usize] as i32;
-        assert!(
-            (w24 - 2 * w12).abs() <= 1,
-            "24pt width {w24} must be twice the 12pt width {w12}"
-        );
+        // Hinting rounds each advance at the requested size; it need not
+        // equal twice the rounded advance at half the size (IM: Text 3-27).
+        for (size, width) in (9i16..=36).zip(widths) {
+            let face = crate::quickdraw::fonts::get_font_face_or_default(d.tx_font, size);
+            let expected: i16 = text
+                .iter()
+                .map(|c| i16::from(face.glyphs[(c - 32) as usize].advance))
+                .sum();
+            assert_eq!(
+                width, expected,
+                "StringWidth must use the drawn strike at {size}pt"
+            );
+        }
     }
 
     #[test]
@@ -31760,6 +31972,87 @@ mod tests {
         let handle = bus.alloc(4);
         make_rgn(bus, rgn, handle, 0, 0, 16, 16);
         handle
+    }
+
+    #[test]
+    fn outline_detail_survives_copybits_scrollrect_and_invertrect() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let base = bus.alloc(256);
+        let scratch = bus.alloc(256);
+        d.screen_mode = (base, 16, 16, 16, 8);
+        bus.write_long(0x0824, base);
+        bus.fill_bytes(base, 256, 0);
+        let palette = std::array::from_fn(|i| [255 - i as u8; 3]);
+        bus.enable_outline_presentation(d.screen_mode, palette, 4);
+        let port = *d.current_port;
+        let pixmap = install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, base, 0, 0);
+        let offscreen = bus.alloc(50);
+        write_pixmap_8(&mut bus, offscreen, scratch, 16, 16, 0);
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 0, 0, 16, 16);
+        TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 9);
+        let expected = bus.outline_presentation_rgb().unwrap().2;
+        assert!(expected.iter().any(|&v| v > 0 && v < 255));
+        for common in [false, true] {
+            for (src, dst) in [(pixmap, offscreen), (offscreen, pixmap)] {
+                if dst == pixmap {
+                    bus.fill_bytes(base, 256, 42);
+                }
+                if common {
+                    d.copy_bits_common(&mut cpu, &mut bus, src, dst, rect, rect, 0, 0)
+                        .unwrap();
+                } else {
+                    cpu.write_reg(Register::A7, TEST_SP);
+                    bus.write_long(TEST_SP, 0);
+                    bus.write_word(TEST_SP + 4, 0);
+                    bus.write_long(TEST_SP + 6, rect);
+                    bus.write_long(TEST_SP + 10, rect);
+                    bus.write_long(TEST_SP + 14, dst);
+                    bus.write_long(TEST_SP + 18, src);
+                    assert!(d
+                        .dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+                        .unwrap()
+                        .is_ok());
+                }
+            }
+            let actual = bus.outline_presentation_rgb().unwrap().2;
+            assert!(
+                actual == expected,
+                "CopyBits common={common}, changed={} actual AA={} expected AA={}",
+                actual.iter().zip(&expected).filter(|(a, b)| a != b).count(),
+                actual.iter().filter(|&&v| v > 0 && v < 255).count(),
+                expected.iter().filter(|&&v| v > 0 && v < 255).count()
+            );
+        }
+        for delta in [1i16, -1] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, delta as u16);
+            bus.write_word(TEST_SP + 6, delta as u16);
+            bus.write_long(TEST_SP + 8, rect);
+            assert!(d
+                .dispatch_quickdraw(true, 0x0EF, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+        }
+        assert_eq!(
+            bus.outline_presentation_rgb().unwrap().2,
+            expected,
+            "ScrollRect round trip"
+        );
+        for _ in 0..2 {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, rect);
+            assert!(d
+                .dispatch_quickdraw(true, 0x0A4, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+        }
+        assert_eq!(
+            bus.outline_presentation_rgb().unwrap().2,
+            expected,
+            "InvertRect round trip"
+        );
     }
 
     #[test]

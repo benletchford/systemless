@@ -175,6 +175,61 @@ pub(crate) fn default_arrow_cursor_image() -> CursorImage {
     CursorImage::mono(data, mask, hot_v, hot_h)
 }
 
+/// Resize presentation pixels with area coverage on shrinking axes and nearest
+/// sampling on enlarging axes. Shared by software desktop and browser output.
+pub fn resize_argb_coverage(
+    source: &[u32],
+    source_size: (u32, u32),
+    size: (u32, u32),
+    output: &mut Vec<u32>,
+) {
+    let (sw, sh) = source_size;
+    let (dw, dh) = size;
+    assert!(sw > 0 && sh > 0 && dw > 0 && dh > 0);
+    assert_eq!(source.len(), (sw as usize) * sh as usize);
+    output.resize(dw as usize * dh as usize, 0);
+    if source_size == size {
+        output.copy_from_slice(source);
+        return;
+    }
+    let interval = |position: u32, source: u32, destination: u32| -> (u64, u64, u64) {
+        if source > destination {
+            (
+                u64::from(position) * u64::from(source),
+                u64::from(position + 1) * u64::from(source),
+                u64::from(destination),
+            )
+        } else {
+            let cell = ((u64::from(position) * 2 + 1) * u64::from(source)
+                / (u64::from(destination) * 2))
+                .min(u64::from(source - 1));
+            (cell, cell + 1, 1)
+        }
+    };
+    for y in 0..dh {
+        let (top, bottom, uy) = interval(y, sh, dh);
+        for x in 0..dw {
+            let (left, right, ux) = interval(x, sw, dw);
+            let mut sum = [0u64; 4];
+            let total = (right - left) * (bottom - top);
+            for sy in top / uy..bottom.div_ceil(uy) {
+                let wy = bottom.min((sy + 1) * uy) - top.max(sy * uy);
+                for sx in left / ux..right.div_ceil(ux) {
+                    let weight = wy * (right.min((sx + 1) * ux) - left.max(sx * ux));
+                    let pixel = source[sy as usize * sw as usize + sx as usize];
+                    for (channel, sum) in sum.iter_mut().enumerate() {
+                        *sum += u64::from((pixel >> (channel * 8)) & 255) * weight;
+                    }
+                }
+            }
+            output[y as usize * dw as usize + x as usize] =
+                sum.iter().enumerate().fold(0, |pixel, (channel, sum)| {
+                    pixel | ((((sum + total / 2) / total) as u32) << (channel * 8))
+                });
+        }
+    }
+}
+
 /// Render the current screen to an RGBA pixel buffer (4 bytes per pixel).
 ///
 /// Uses `ram_slice()` for bulk memory access. Supports 1bpp, 2bpp, 4bpp,
@@ -1453,6 +1508,27 @@ fn draw_debug_text_rgba(
     }
 }
 
+fn debug_glyph_pixels(ch: char, mut paint: impl FnMut(i32, i32)) {
+    use crate::quickdraw::fonts::{get_font_face_or_default, style::FONT_MONACO};
+    let face = get_font_face_or_default(FONT_MONACO, 9);
+    let code = if ch.is_ascii() && !ch.is_ascii_control() {
+        ch as usize
+    } else {
+        b'?' as usize
+    };
+    let glyph = &face.glyphs[code - 32];
+    for row in 0..glyph.height as usize {
+        for col in 0..glyph.width as usize {
+            if face.data[glyph.data_offset + row * glyph.width as usize + col] != 0 {
+                paint(
+                    col as i32 + glyph.origin_x as i32,
+                    row as i32 + glyph.origin_y as i32 + 7,
+                );
+            }
+        }
+    }
+}
+
 fn draw_debug_char_argb(
     pixels: &mut [u32],
     width: usize,
@@ -1462,22 +1538,12 @@ fn draw_debug_char_argb(
     ch: char,
     color: u32,
 ) {
-    let glyph = debug_glyph(ch.to_ascii_uppercase());
-    for (row, bits) in glyph.iter().enumerate() {
-        let gy = y + row;
-        if gy >= height {
-            break;
+    debug_glyph_pixels(ch, |dx, dy| {
+        let (gx, gy) = (x as i32 + dx, y as i32 + dy);
+        if gx >= 0 && gy >= 0 && gx < width as i32 && gy < height as i32 {
+            pixels[gy as usize * width + gx as usize] = color;
         }
-        for col in 0..5 {
-            let gx = x + col;
-            if gx >= width {
-                continue;
-            }
-            if ((bits >> (4 - col)) & 1) != 0 {
-                pixels[gy * width + gx] = color;
-            }
-        }
-    }
+    });
 }
 
 fn draw_debug_char_rgba(
@@ -1489,153 +1555,13 @@ fn draw_debug_char_rgba(
     ch: char,
     color: [u8; 4],
 ) {
-    let glyph = debug_glyph(ch.to_ascii_uppercase());
-    for (row, bits) in glyph.iter().enumerate() {
-        let gy = y + row;
-        if gy >= height {
-            break;
+    debug_glyph_pixels(ch, |dx, dy| {
+        let (gx, gy) = (x as i32 + dx, y as i32 + dy);
+        if gx >= 0 && gy >= 0 && gx < width as i32 && gy < height as i32 {
+            let idx = (gy as usize * width + gx as usize) * 4;
+            pixels[idx..idx + 4].copy_from_slice(&color);
         }
-        for col in 0..5 {
-            let gx = x + col;
-            if gx >= width {
-                continue;
-            }
-            if ((bits >> (4 - col)) & 1) != 0 {
-                let idx = (gy * width + gx) * 4;
-                pixels[idx..idx + 4].copy_from_slice(&color);
-            }
-        }
-    }
-}
-
-fn debug_glyph(ch: char) -> [u8; 7] {
-    match ch {
-        'A' => [
-            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'B' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
-        ],
-        'C' => [
-            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
-        ],
-        'D' => [
-            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
-        ],
-        'E' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
-        ],
-        'F' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'G' => [
-            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
-        ],
-        'H' => [
-            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'I' => [
-            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        'J' => [
-            0b00001, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110,
-        ],
-        'K' => [
-            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
-        ],
-        'L' => [
-            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
-        ],
-        'M' => [
-            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
-        ],
-        'N' => [
-            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
-        ],
-        'O' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'P' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'Q' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
-        ],
-        'R' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
-        ],
-        'S' => [
-            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        'T' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'U' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'V' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
-        ],
-        'W' => [
-            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
-        ],
-        'X' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
-        ],
-        'Y' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'Z' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
-        ],
-        '0' => [
-            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
-        ],
-        '1' => [
-            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        '2' => [
-            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
-        ],
-        '3' => [
-            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        '4' => [
-            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
-        ],
-        '5' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
-        ],
-        '6' => [
-            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
-        ],
-        '7' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
-        ],
-        '8' => [
-            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
-        ],
-        '9' => [
-            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
-        ],
-        ' ' => [0, 0, 0, 0, 0, 0, 0],
-        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
-        ',' => [0, 0, 0, 0, 0b01100, 0b01100, 0b01000],
-        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
-        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
-        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
-        '/' => [
-            0b00001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000,
-        ],
-        '[' => [
-            0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110,
-        ],
-        ']' => [
-            0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110,
-        ],
-        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
-        _ => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
-    }
+    });
 }
 
 /// Convert a 16-bit Mac CLUT entry to 0xAARRGGBB.
@@ -1711,6 +1637,31 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn software_minification_preserves_fractional_stroke_coverage() {
+        let source: Vec<u32> = (0..64)
+            .map(|i| if i % 2 == 0 { 0xff000000 } else { 0xffffffff })
+            .collect();
+        let mut output = Vec::new();
+        for (width, expected) in [
+            (2, vec![128, 128]),
+            (3, vec![96, 128, 159]),
+            (5, vec![96, 96, 128, 159, 159]),
+        ] {
+            super::resize_argb_coverage(&source, (8, 8), (width, 3), &mut output);
+            for (i, pixel) in output.iter().enumerate() {
+                assert_eq!((pixel & 255) as u8, expected[i % width as usize]);
+                assert_eq!(pixel >> 24, 255);
+            }
+        }
+        super::resize_argb_coverage(&source, (8, 8), (16, 16), &mut output);
+        for y in 0..16 {
+            for x in 0..16 {
+                assert_eq!(output[y * 16 + x], source[(y / 2) * 8 + x / 2]);
+            }
+        }
+    }
+
     use super::{
         argb_palette_from_clut, argb_palette_from_clut_with_gamma, classic_depth_mode,
         classic_pixel_size, clut_component_to_u8, clut_to_argb,

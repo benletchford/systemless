@@ -3,14 +3,68 @@
 //! ABI decoding, port/mask resolution and picture recording stay at the callers
 //! until their corresponding operation families migrate.
 
-use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
+use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus, SavedPixels};
 
 pub(crate) trait CopyBitsMemory {
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()>;
     fn write_copy_row(&mut self, address: u32, bytes: &[u8]) -> Option<()>;
+    fn capture_copy_detail(
+        &self,
+        _address: u32,
+        _pixels: &mut SavedPixels,
+        _offset: usize,
+        _len: usize,
+    ) {
+    }
+    fn write_copy_pixels(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels,
+        offset: usize,
+        len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> Option<()> {
+        let mut row = pixels[offset..offset + len].to_vec();
+        if let Some(palette) = palette {
+            for pixel in &mut row {
+                *pixel = palette[*pixel as usize];
+            }
+        }
+        self.write_copy_row(address, &row)
+    }
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
+    fn capture_copy_detail(
+        &self,
+        address: u32,
+        pixels: &mut SavedPixels,
+        offset: usize,
+        len: usize,
+    ) {
+        self.presentation()
+            .capture_detail(pixels, offset, address, len);
+    }
+    fn write_copy_pixels(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels,
+        offset: usize,
+        len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> Option<()> {
+        let mut row = pixels[offset..offset + len].to_vec();
+        if let Some(palette) = palette {
+            for pixel in &mut row {
+                *pixel = palette[*pixel as usize];
+            }
+        }
+        self.write_bytes(address, &row)?;
+        self.presentation()
+            .restore_copy_detail(pixels, offset, address, len, palette);
+        Some(())
+    }
+
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()> {
         self.read_bytes_into(address, bytes)
     }
@@ -21,6 +75,43 @@ impl CopyBitsMemory for GuestAddressSpace {
 }
 
 impl CopyBitsMemory for MacMemoryBus {
+    fn capture_copy_detail(
+        &self,
+        address: u32,
+        pixels: &mut SavedPixels,
+        offset: usize,
+        len: usize,
+    ) {
+        self.capture_pixel_detail(pixels, offset, address, len);
+    }
+    fn write_copy_pixels(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels,
+        offset: usize,
+        len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> Option<()> {
+        if !self.is_guest_address_writable(address, len) {
+            return None;
+        }
+        if !self.has_outline_presentation() {
+            let mut row = pixels[offset..offset + len].to_vec();
+            if let Some(palette) = palette {
+                for pixel in &mut row {
+                    *pixel = palette[*pixel as usize];
+                }
+            }
+            return self.write_copy_row(address, &row);
+        }
+        for i in 0..len {
+            self.copy_saved_pixel(address + i as u32, pixels, offset + i, |index| {
+                palette.map_or(index, |table| table[index as usize])
+            });
+        }
+        Some(())
+    }
+
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()> {
         if !self.is_guest_address_mapped(address, bytes.len()) {
             return None;
@@ -229,18 +320,16 @@ impl RowCopy<'_> {
             if memory.read_copy_row(*source, row).is_none() {
                 return RowCopyOutcome::ReadOrGeometryFailure;
             }
-            if let Some(palette) = self.palette {
-                for pixel in row {
-                    *pixel = palette[usize::from(*pixel)];
-                }
+        }
+        let mut pixels: SavedPixels = pixels.into();
+        if matches!(depth, 8 | 16 | 32) {
+            for (row, (source, _)) in addresses.iter().enumerate() {
+                memory.capture_copy_detail(*source, &mut pixels, row * row_len, row_len);
             }
         }
-        for (rows_written, ((_, destination), row)) in addresses
-            .iter()
-            .zip(pixels.chunks_exact(row_len))
-            .enumerate()
-        {
-            if memory.write_copy_row(*destination, row).is_none() {
+        for (rows_written, (_, destination)) in addresses.iter().enumerate() {
+            if memory.write_copy_pixels(*destination, &pixels, rows_written * row_len,
+                row_len, self.palette).is_none() {
                 return RowCopyOutcome::WriteFailure { rows_written };
             }
         }

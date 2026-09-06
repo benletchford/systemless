@@ -66,6 +66,39 @@ use winit::window::Window;
 use winit::window::WindowAttributes;
 use winit::window::WindowId;
 
+/// Opt-in stall diagnostics; disabled runs avoid reading the clock per phase.
+struct FramePhaseTimer {
+    phase: &'static str,
+    start: Option<std::time::Instant>,
+}
+
+impl FramePhaseTimer {
+    fn new(phase: &'static str) -> Self {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled =
+            *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PROFILE_FRAMES").is_some());
+        Self {
+            phase,
+            start: enabled.then(std::time::Instant::now),
+        }
+    }
+}
+
+impl Drop for FramePhaseTimer {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let elapsed = start.elapsed();
+            if elapsed >= std::time::Duration::from_millis(50) {
+                eprintln!(
+                    "[SLOW-FRAME] {}: {:.1} ms",
+                    self.phase,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+            }
+        }
+    }
+}
+
 /// Initial screen dimensions: 800x600 8bpp color mode by default.
 const INITIAL_SCREEN_WIDTH: u32 = 800;
 const INITIAL_SCREEN_HEIGHT: u32 = 600;
@@ -532,7 +565,7 @@ fn persist_content_rect(
 #[cfg(target_os = "macos")]
 fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
     attrs
-        .with_disallow_hidpi(true)
+        .with_disallow_hidpi(false)
         .with_accepts_first_mouse(true)
 }
 
@@ -712,7 +745,7 @@ struct App {
     #[cfg(target_os = "macos")]
     window_resize_events: u64,
     #[cfg(not(target_os = "macos"))]
-    scaled_row: Vec<u32>,
+    scaled_frame: Vec<u32>,
     runner: Option<FixtureRunner>,
     save_store: Option<DesktopSaveStore>,
     game_path: PathBuf,
@@ -863,7 +896,7 @@ impl App {
             #[cfg(target_os = "macos")]
             window_resize_events: 0,
             #[cfg(not(target_os = "macos"))]
-            scaled_row: Vec::new(),
+            scaled_frame: Vec::new(),
             runner: None,
             save_store: None,
             game_path,
@@ -990,6 +1023,7 @@ impl App {
             );
         }
         game::init_game(&mut runner, &app);
+        runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
         // Configure the wall-clock-paced GUI from the loaded architecture's
@@ -1163,6 +1197,7 @@ impl App {
     }
 
     fn step_frame_with_clock(&mut self, mut host_now: impl FnMut() -> std::time::Instant) {
+        let _timing = FramePhaseTimer::new("CPU and audio frame");
         let Some(runner) = self.runner.as_ref() else {
             return;
         };
@@ -1220,12 +1255,12 @@ impl App {
             .unwrap_or(now);
 
         let slice_budget = game::MAX_INSTRUCTIONS_PER_FRAME;
-        let audio_interval = self
+        let presentation_interval = self
             .last_audio_mix_time
             .replace(now)
             .map(|previous| now.saturating_duration_since(previous))
-            .unwrap_or(FRAME_DURATION)
-            .min(MAX_AUDIO_MIX_INTERVAL);
+            .unwrap_or(FRAME_DURATION);
+        let audio_interval = presentation_interval.min(MAX_AUDIO_MIX_INTERVAL);
         let audio_samples =
             Self::audio_samples_for_duration(audio_interval, &mut self.audio_sample_remainder);
         if std::env::var_os("SYSTEMLESS_TRACE_AUDIO").is_some()
@@ -1239,6 +1274,7 @@ impl App {
         }
 
         let runner = self.runner.as_mut().expect("runner checked above");
+        runner.advance_menu_presentation_clock(presentation_interval);
         // A PPC HLE slice currently borrows its large mutable state by moving
         // collections into a dispatch closure and restoring them afterward.
         // Yield once per guest VBL rather than paying that boundary thousands
@@ -1281,8 +1317,10 @@ impl App {
             } else {
                 remaining_audio.div_ceil(batches_left)
             };
-            let (steps, running) =
-                runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio);
+            let (steps, running) = {
+                let _timing = FramePhaseTimer::new("foreground CPU batch");
+                runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio)
+            };
             total_steps += steps;
             foreground_steps += steps;
             audio_mixed += batch_audio;
@@ -1400,6 +1438,7 @@ impl App {
     }
 
     fn render_frame(&mut self) {
+        let _timing = FramePhaseTimer::new("render frame (main thread)");
         let render_start = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         let force_gpu_present = self.force_gpu_present;
@@ -1416,7 +1455,14 @@ impl App {
         let Some(runner) = self.runner.as_mut() else {
             return;
         };
-        runner.composite_frame();
+        {
+            let _timing = FramePhaseTimer::new("outline palette preparation");
+            runner.prepare_text_presentation();
+        }
+        {
+            let _timing = FramePhaseTimer::new("window compositing");
+            runner.composite_frame();
+        }
         let presented_tick = runner.guest_tick();
 
         let (_, _, scrn_right, scrn_bottom, _) = runner.dispatcher().screen_mode;
@@ -1821,7 +1867,11 @@ impl App {
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
             presentation_rect = content;
             let palette = display::argb_palette_from_clut_with_gamma(&device_clut, &device_gamma);
-            if let Some(surface) = self.surface.as_mut() {
+            if let Some(surface) = self
+                .surface
+                .as_mut()
+                .filter(|_| !runner.bus().has_visible_outline_detail())
+            {
                 let presented_directly = surface
                     .present_guest_frame(
                         framebuffer,
@@ -1855,6 +1905,10 @@ impl App {
             &device_gamma,
             &mut frame_argb,
         );
+        let guest_frame = runner
+            .bus()
+            .has_visible_outline_detail()
+            .then(|| frame_argb.clone());
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
         }
@@ -1869,6 +1923,26 @@ impl App {
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
 
+        #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
+        let (game_w, game_h) = if let Some((width, height, presented)) =
+            guest_frame.as_ref().and_then(|guest| {
+                let _timing = FramePhaseTimer::new("outline pixel expansion");
+                runner.bus().presented_argb(guest, &frame_argb)
+            }) {
+            #[cfg(target_os = "macos")]
+            {
+                let scale = width / game_w;
+                presentation_rect.left *= scale;
+                presentation_rect.top *= scale;
+                presentation_rect.width *= scale;
+                presentation_rect.height *= scale;
+            }
+            frame_argb = presented;
+            (width, height)
+        } else {
+            (game_w, game_h)
+        };
+
         #[cfg(target_os = "macos")]
         {
             let Some(surface) = self.surface.as_mut() else {
@@ -1876,6 +1950,7 @@ impl App {
                 return;
             };
             crop_argb_frame(&mut frame_argb, game_w, presentation_rect);
+            let _timing = FramePhaseTimer::new("raster presentation submission");
             surface
                 .present(
                     &frame_argb,
@@ -1895,11 +1970,11 @@ impl App {
             let draw_y = draw_y as usize;
             let draw_w = draw_w as usize;
             let draw_h = draw_h as usize;
-            let mut scaled_row = std::mem::take(&mut self.scaled_row);
+            let mut scaled_frame = std::mem::take(&mut self.scaled_frame);
 
             let Some(surface) = self.surface.as_mut() else {
                 self.frame_argb = frame_argb;
-                self.scaled_row = scaled_row;
+                self.scaled_frame = scaled_frame;
                 return;
             };
 
@@ -1926,21 +2001,20 @@ impl App {
                     buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
                 }
             } else {
-                scaled_row.resize(draw_w, 0xFF000000);
+                display::resize_argb_coverage(
+                    &frame_argb,
+                    (game_w, game_h),
+                    (draw_w as u32, draw_h as u32),
+                    &mut scaled_frame,
+                );
                 for row in 0..draw_h {
-                    let source_y = row * game_h as usize / draw_h;
-                    let src_row =
-                        &frame_argb[source_y * game_w as usize..(source_y + 1) * game_w as usize];
-                    for (destination_x, pixel) in scaled_row.iter_mut().enumerate() {
-                        let source_x = destination_x * game_w as usize / draw_w;
-                        *pixel = src_row[source_x];
-                    }
                     let dst_offset = (draw_y + row) * buf_w as usize + draw_x;
-                    buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
+                    buffer[dst_offset..dst_offset + draw_w]
+                        .copy_from_slice(&scaled_frame[row * draw_w..(row + 1) * draw_w]);
                 }
             }
 
-            self.scaled_row = scaled_row;
+            self.scaled_frame = scaled_frame;
             buffer.present().expect("Failed to present buffer");
         }
 

@@ -103,7 +103,7 @@ use crate::process_context::{
     SharedProcessQuickDrawPixelStates, SharedProcessTickState,
     SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
 };
-use crate::quickdraw::fonts::heuristics::{
+use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
 };
 use crate::quickdraw::fonts::{
@@ -2854,7 +2854,7 @@ struct PpcGoAwayCall {
 struct PpcGoAwayTrackingState {
     call: PpcGoAwayCall,
     surface: PpcQuickDrawSurface,
-    saved_pixels: Vec<u16>,
+    saved_pixels: crate::memory::SavedPixels<u16>,
     highlighted: bool,
 }
 
@@ -2875,7 +2875,7 @@ struct PpcDragWindowTrackingState {
     original_structure: (i16, i16, i16, i16),
     bounds: (i16, i16, i16, i16),
     outline: (i16, i16, i16, i16),
-    saved_pixels: Vec<(i32, i32, u16)>,
+    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2894,7 +2894,7 @@ struct PpcGrowWindowTrackingState {
     original_content: (i16, i16, i16, i16),
     size_limits: (i16, i16, i16, i16),
     outline: (i16, i16, i16, i16),
-    saved_pixels: Vec<(i32, i32, u16)>,
+    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2931,7 +2931,7 @@ struct PpcStandardFileGetTrackingState {
     selected: usize,
     bounds: (i16, i16, i16, i16),
     front_buffer: PpcFrontBuffer,
-    saved_pixels: Vec<(i32, i32, u16)>,
+    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2956,7 +2956,7 @@ struct PpcStandardFilePutTrackingState {
     sel_end: usize,
     bounds: (i16, i16, i16, i16),
     front_buffer: PpcFrontBuffer,
-    saved_pixels: Vec<(i32, i32, u16)>,
+    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51406,12 +51406,12 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
     let clut = ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback);
     let entry_count = ppc_indexed_depth_entry_count(front_buffer.depth).unwrap_or(256);
     let black = u16::from(ppc_rgb_color_to_index_in_clut(
-        PPC_RGB_BLACK,
+        ppc_standard_desktop_color(std::slice::from_ref(&record), 0, 0),
         &clut,
         entry_count,
     ));
     let white = u16::from(ppc_rgb_color_to_index_in_clut(
-        PPC_RGB_WHITE,
+        ppc_standard_desktop_color(std::slice::from_ref(&record), 1, 0),
         &clut,
         entry_count,
     ));
@@ -52457,8 +52457,9 @@ fn ppc_draw_grow_icon(
         );
     }
     if let Some(saved) = preserved_front_pixels {
-        for (x, y, pixel) in saved.pixels {
+        for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
             let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
+            ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
         }
     }
 }
@@ -52500,15 +52501,16 @@ fn ppc_draw_existing_window_frame(
         ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
     }
     if let Some(saved) = preserved_front_pixels {
-        for (x, y, pixel) in saved.pixels {
+        for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
             let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
+            ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
         }
     }
 }
 
 struct PpcOccludedWindowPixels {
     front_buffer: PpcFrontBuffer,
-    pixels: Vec<(i32, i32, u16)>,
+    pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
 }
 
 fn ppc_front_window_occlusion_pixels(
@@ -52552,9 +52554,14 @@ fn ppc_front_window_occlusion_pixels(
             }
         }
     }
+    let mut saved = crate::memory::SavedPixels::from(pixels);
+    for index in 0..saved.len() {
+        let (x, y, _) = saved[index];
+        ppc_capture_saved_detail(memory, front_buffer, (x, y), &mut saved, index);
+    }
     Some(PpcOccludedWindowPixels {
         front_buffer,
-        pixels,
+        pixels: saved,
     })
 }
 
@@ -52706,6 +52713,16 @@ fn ppc_validate_window_local_rect(
 }
 
 fn ppc_standard_desktop_color(gworlds: &[PpcGWorldRecord], h: i32, v: i32) -> PpcRgbColor {
+    if gworlds
+        .iter()
+        .any(|world| world.port == PPC_MAIN_GWORLD && world.depth == 1)
+    {
+        return if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+            PPC_RGB_BLACK
+        } else {
+            PPC_RGB_WHITE
+        };
+    }
     let palette = ppc_ui_theme(gworlds).provider().palette();
     ppc_theme_rgb(
         if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
@@ -56059,8 +56076,7 @@ fn ppc_invert_region(
                 ..(i32::from(interval[1]) - i32::from(surface.left))
             {
                 if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) {
-                    wrote |=
-                        ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel ^ mask);
+                    wrote |= ppc_invert_pixel_detail(memory, front_buffer, (x, y), pixel, mask);
                 }
             }
         }
@@ -56153,6 +56169,55 @@ fn ppc_read_pascal_string(memory: &mut PpcSectionMem, string_ptr: u32) -> Option
         bytes.push(memory.read_u8(string_ptr.checked_add(1 + offset)?)?);
     }
     Some(bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_begin_outline_text_glyph(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    vis: Option<&[u8]>,
+    clip: Option<&[u8]>,
+    glyph: &crate::quickdraw::fonts::Glyph,
+    data: &[u8],
+    h: i32,
+    v: i32,
+    color: u16,
+    style: QuickDrawTextStyle,
+    italic: Option<i16>,
+    underline: Option<(i16, i16)>,
+) {
+    let mut slot = memory.presentation();
+    if slot.is_none() || !matches!(surface.front_buffer.depth, 8 | 16) {
+        return;
+    }
+    let (Ok(h), Ok(v)) = (i16::try_from(h), i16::try_from(v)) else {
+        return;
+    };
+    slot.begin_outline_glyph(glyph, data, h, v, style.bold(), italic, underline);
+    slot.style_outline_glyph(style);
+    let bounds = slot.as_ref().and_then(|p| p.glyph_bounds());
+    let Some((top, left, bottom, right)) = bounds else {
+        return;
+    };
+    let fb = surface.front_buffer;
+    let lanes = fb.depth / 8;
+    for y in top.max(0)..bottom.min(fb.height as i32) {
+        for x in left.max(0)..right.min(fb.width as i32) {
+            if !ppc_local_point_in_port_regions(surface, (x, y), vis, clip) {
+                continue;
+            }
+            let address = fb.base_addr + y as u32 * fb.row_bytes + x as u32 * lanes;
+            for lane in 0..lanes {
+                let foreground = (color >> ((lanes - 1 - lane) * 8)) as u8;
+                let Some(background) = memory.read_u8(address + lane) else {
+                    continue;
+                };
+                if let Some(mut p) = slot.as_mut() {
+                    p.glyph_pixel(address + lane, x as i16, y as i16, foreground, background);
+                }
+            }
+        }
+    }
 }
 
 fn ppc_apply_text_pixel(
@@ -56307,6 +56372,22 @@ fn ppc_draw_text_chars(
     let mut base_advance = 0i32;
     for ch in chars {
         if let Some((glyph, data)) = get_glyph(text_font, face.size, ch) {
+            if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator {
+                ppc_begin_outline_text_glyph(
+                    memory,
+                    surface,
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                    glyph,
+                    data,
+                    local_h + base_advance,
+                    local_v,
+                    color_pixel,
+                    QuickDrawTextStyle::from_bits(0),
+                    None,
+                    None,
+                );
+            }
             let width = glyph.width as usize;
             let height = glyph.height as usize;
             for row in 0..height {
@@ -56339,6 +56420,7 @@ fn ppc_draw_text_chars(
                     }
                 }
             }
+            memory.presentation().end_outline_glyph();
             base_advance = base_advance.saturating_add(i32::from(glyph.advance));
         } else {
             base_advance = base_advance.saturating_add(6);
@@ -56436,6 +56518,25 @@ fn ppc_draw_text_chars_styled(
             source_advance = source_advance.saturating_add(6);
             continue;
         };
+        if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator {
+            ppc_begin_outline_text_glyph(
+                memory,
+                surface,
+                vis_storage.as_deref(),
+                clip_storage.as_deref(),
+                glyph,
+                data,
+                local_h + source_advance,
+                local_v,
+                color_pixel,
+                style,
+                synthetic_italic.then_some(metrics.descent),
+                style.underline().then_some((
+                    glyph.advance as i16,
+                    get_underline_thickness(text_font, face.size).max(1),
+                )),
+            );
+        }
         let mut base_pixels = HashSet::new();
         for row in 0..glyph.height as usize {
             for col in 0..glyph.width as usize {
@@ -56554,6 +56655,7 @@ fn ppc_draw_text_chars_styled(
                 );
             }
         }
+        memory.presentation().end_outline_glyph();
         source_advance =
             source_advance.saturating_add(style.glyph_advance(i32::from(glyph.advance)));
     }
@@ -56721,6 +56823,24 @@ fn ppc_invert_rect(
     ppc_invert_rect_bounds(memory, gworlds, current_gworld, rect)
 }
 
+fn ppc_invert_pixel_detail(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    point: (i32, i32),
+    pixel: u16,
+    mask: u16,
+) -> bool {
+    let mut detail = crate::memory::SavedPixels::<()>::default();
+    ppc_capture_saved_detail(memory, front, point, &mut detail, 0);
+    let wrote = ppc_quickdraw_write_raw_pixel(memory, front, point, pixel ^ mask);
+    if wrote && matches!(front.depth, 8 | 16) {
+        let lanes = (front.depth / 8) as usize;
+        detail.transform_detail(|offset, value| value ^ (mask >> ((lanes - 1 - offset) * 8)) as u8);
+        ppc_restore_saved_detail(memory, front, point, &detail, 0);
+    }
+    wrote
+}
+
 fn ppc_invert_rect_bounds(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -56754,7 +56874,7 @@ fn ppc_invert_rect_bounds(
     for y in top..bottom {
         for x in left..right {
             if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) {
-                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel ^ mask);
+                wrote |= ppc_invert_pixel_detail(memory, front_buffer, (x, y), pixel, mask);
             }
         }
     }
@@ -58136,6 +58256,7 @@ fn ppc_copy_bits(
             _ => return None,
         };
         let mut writes = Vec::new();
+        let mut details = crate::memory::SavedPixels::<()>::default();
         for dst_y in copy_top..copy_bottom {
             let rel_y = i64::from(dst_y) - i64::from(dst_top);
             let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
@@ -58240,6 +58361,22 @@ fn ppc_copy_bits(
                 } else {
                     src_pixel
                 };
+                if matches!(mode, 0 | 36)
+                    && src_bits.depth == dst_bits.depth
+                    && matches!(src_bits.depth, 8 | 16)
+                    && src_pixel == pixel
+                {
+                    let lanes = src_bits.depth / 8;
+                    let address = src_bits.base_addr
+                        + (src_y - i32::from(src_bits.top)) as u32 * src_bits.row_bytes
+                        + (src_x - i32::from(src_bits.left)) as u32 * lanes;
+                    memory.presentation().capture_detail(
+                        &mut details,
+                        writes.len() * lanes as usize,
+                        address,
+                        lanes as usize,
+                    );
+                }
                 writes.push((dst_x, dst_y, pixel));
             }
         }
@@ -58250,8 +58387,20 @@ fn ppc_copy_bits(
             reason = "no-pixels";
             return None;
         }
-        for (x, y, pixel) in writes {
+        for (index, (x, y, pixel)) in writes.into_iter().enumerate() {
             ppc_write_pixmap_raw_pixel(memory, dst_bits, x, y, pixel)?;
+            if matches!(dst_bits.depth, 8 | 16) {
+                let lanes = dst_bits.depth / 8;
+                let address = dst_bits.base_addr
+                    + (y - i32::from(dst_bits.top)) as u32 * dst_bits.row_bytes
+                    + (x - i32::from(dst_bits.left)) as u32 * lanes;
+                memory.presentation().restore_detail(
+                    &details,
+                    index * lanes as usize,
+                    address,
+                    lanes as usize,
+                );
+            }
         }
         Some(())
     })();
@@ -71245,8 +71394,15 @@ fn ppc_drag_outline_points(front: PpcFrontBuffer, rect: (i16, i16, i16, i16)) ->
 }
 
 fn ppc_restore_drag_window_outline(memory: &mut PpcSectionMem, state: &PpcDragWindowTrackingState) {
-    for (x, y, pixel) in state.saved_pixels.iter().copied() {
+    for (index, (x, y, pixel)) in state.saved_pixels.iter().copied().enumerate() {
         let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
+        ppc_restore_saved_detail(
+            memory,
+            state.front_buffer,
+            (x, y),
+            &state.saved_pixels,
+            index,
+        );
     }
 }
 
@@ -71275,7 +71431,18 @@ fn ppc_refresh_drag_window_outline(
         .filter_map(|(x, y)| {
             ppc_quickdraw_read_pixel(memory, state.front_buffer, (x, y)).map(|pixel| (x, y, pixel))
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .into();
+    for index in 0..state.saved_pixels.len() {
+        let (x, y, _) = state.saved_pixels[index];
+        ppc_capture_saved_detail(
+            memory,
+            state.front_buffer,
+            (x, y),
+            &mut state.saved_pixels,
+            index,
+        );
+    }
     let Some(black) =
         ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_BLACK, screen_clut)
     else {
@@ -71438,7 +71605,7 @@ fn ppc_dispatch_drag_window(
         original_structure,
         bounds,
         outline: original_structure,
-        saved_pixels: Vec::new(),
+        saved_pixels: Vec::new().into(),
     };
     ppc_refresh_drag_window_outline(
         memory,
@@ -71461,8 +71628,15 @@ fn ppc_grow_window_call(cpu: &PpcCpu) -> PpcGrowWindowCall {
 }
 
 fn ppc_restore_grow_window_outline(memory: &mut PpcSectionMem, state: &PpcGrowWindowTrackingState) {
-    for (x, y, pixel) in state.saved_pixels.iter().copied() {
+    for (index, (x, y, pixel)) in state.saved_pixels.iter().copied().enumerate() {
         let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
+        ppc_restore_saved_detail(
+            memory,
+            state.front_buffer,
+            (x, y),
+            &state.saved_pixels,
+            index,
+        );
     }
 }
 
@@ -71498,7 +71672,18 @@ fn ppc_refresh_grow_window_outline(
         .filter_map(|(x, y)| {
             ppc_quickdraw_read_pixel(memory, state.front_buffer, (x, y)).map(|pixel| (x, y, pixel))
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .into();
+    for index in 0..state.saved_pixels.len() {
+        let (x, y, _) = state.saved_pixels[index];
+        ppc_capture_saved_detail(
+            memory,
+            state.front_buffer,
+            (x, y),
+            &mut state.saved_pixels,
+            index,
+        );
+    }
     let Some(black) =
         ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_BLACK, screen_clut)
     else {
@@ -71616,7 +71801,7 @@ fn ppc_dispatch_grow_window(
             ppc_window_proc_id(memory, call.window),
             original_content,
         ),
-        saved_pixels: Vec::new(),
+        saved_pixels: Vec::new().into(),
     };
     ppc_refresh_grow_window_outline(
         memory,
@@ -71661,7 +71846,7 @@ fn ppc_go_away_window_is_trackable(
 fn ppc_go_away_highlight_pixels(
     memory: &mut PpcSectionMem,
     surface: PpcQuickDrawSurface,
-) -> Option<Vec<u16>> {
+) -> Option<crate::memory::SavedPixels<u16>> {
     let mut pixels = Vec::with_capacity(121);
     for v in -15..-4 {
         for h in 8..19 {
@@ -71671,6 +71856,19 @@ fn ppc_go_away_highlight_pixels(
                 surface.local_point((h, v)),
             )?);
         }
+    }
+    let mut pixels = crate::memory::SavedPixels::from(pixels);
+    for (index, (h, v)) in (-15..-4)
+        .flat_map(|v| (8..19).map(move |h| (h, v)))
+        .enumerate()
+    {
+        ppc_capture_saved_detail(
+            memory,
+            surface.front_buffer,
+            surface.local_point((h, v)),
+            &mut pixels,
+            index,
+        );
     }
     Some(pixels)
 }
@@ -71688,9 +71886,17 @@ fn ppc_draw_go_away_tracking_feedback(
         16 => 0x7fff,
         _ => return,
     };
-    for ((h, v), pixel) in (-15..-4)
+    let mut saved = state.saved_pixels.clone();
+    if highlighted {
+        let lanes = (state.surface.front_buffer.depth / 8).max(1) as usize;
+        saved.transform_detail(|offset, byte| {
+            byte ^ (mask >> ((lanes - 1 - offset % lanes) * 8)) as u8
+        });
+    }
+    for (index, ((h, v), pixel)) in (-15..-4)
         .flat_map(|v| (8..19).map(move |h| (h, v)))
         .zip(state.saved_pixels.iter().copied())
+        .enumerate()
     {
         let value = if highlighted { pixel ^ mask } else { pixel };
         let _ = ppc_quickdraw_write_raw_pixel(
@@ -71698,6 +71904,13 @@ fn ppc_draw_go_away_tracking_feedback(
             state.surface.front_buffer,
             state.surface.local_point((h, v)),
             value,
+        );
+        ppc_restore_saved_detail(
+            memory,
+            state.surface.front_buffer,
+            state.surface.local_point((h, v)),
+            &saved,
+            index,
         );
     }
 }
@@ -76548,7 +76761,11 @@ fn ppc_step_menu_tracking_body(
                 .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar && state.is_flashing())
             {
                 let mut state = toolbox_startup.menu_tracking.take().unwrap();
-                let step = state.advance_flash();
+                let step = state.advance_flash_at(
+                    memory
+                        .read_u32_be(crate::memory::globals::addr::TICKS)
+                        .unwrap_or(0),
+                );
                 if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
                     *toolbox_startup.menu_tracking = Some(state);
                     return Some(PpcImportAction::Yield(u64::MAX));
@@ -76749,6 +76966,11 @@ fn ppc_step_menu_tracking_body(
                         let result = (u32::from(menu_id) << 16) | u32::from(item as u16);
                         if result != 0 {
                             let state = toolbox_startup.menu_tracking.as_mut().unwrap();
+                            state.set_flash_tick(
+                                memory
+                                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                                    .unwrap_or(0),
+                            );
                             if state.begin_flash(
                                 memory
                                     .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -76956,7 +77178,11 @@ fn ppc_continue_custom_popup_menu_tracking(
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup.menu_tracking.as_mut().unwrap().advance_flash();
+        let step = startup.menu_tracking.as_mut().unwrap().advance_flash_at(
+            memory
+                .read_u32_be(crate::memory::globals::addr::TICKS)
+                .unwrap_or(0),
+        );
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
@@ -77095,6 +77321,11 @@ fn ppc_continue_custom_popup_menu_tracking(
             };
             if result != 0 {
                 let state = startup.menu_tracking.as_mut().unwrap();
+                state.set_flash_tick(
+                    memory
+                        .read_u32_be(crate::memory::globals::addr::TICKS)
+                        .unwrap_or(0),
+                );
                 let flash_enabled = state.begin_flash(
                     memory
                         .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -77202,7 +77433,11 @@ fn ppc_dispatch_pop_up_menu_select(
             let Some(mut state) = startup.menu_tracking.take() else {
                 return PpcImportAction::Return(0);
             };
-            let step = state.advance_flash();
+            let step = state.advance_flash_at(
+                memory
+                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                    .unwrap_or(0),
+            );
             if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
                 *startup.menu_tracking = Some(state);
                 return PpcImportAction::Yield(u64::MAX);
@@ -77260,6 +77495,11 @@ fn ppc_dispatch_pop_up_menu_select(
                 .and_then(|menu| memory.read_u16_be(menu))
                 .unwrap_or(0);
             let result = (u32::from(menu_id) << 16) | u32::from(highlighted_item as u16);
+            state.set_flash_tick(
+                memory
+                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                    .unwrap_or(0),
+            );
             let flash_enabled = state.begin_flash(
                 memory
                     .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -77545,6 +77785,18 @@ fn ppc_begin_tracked_menu_with_appearances(
             )?);
         }
     }
+    let mut saved_pixels = crate::memory::SavedPixels::from(saved_pixels);
+    for y in 0..i32::from(saved_height) {
+        for x in 0..i32::from(saved_width) {
+            ppc_capture_saved_detail(
+                memory,
+                front,
+                (i32::from(popup_left) + x, i32::from(popup_top) + y),
+                &mut saved_pixels,
+                (y * i32::from(saved_width) + x) as usize,
+            );
+        }
+    }
     Some(PpcMenuTracking {
         kind,
         menu_handle,
@@ -77557,12 +77809,13 @@ fn ppc_begin_tracked_menu_with_appearances(
         highlighted_item,
         definition: None,
         flash_remaining: 0,
-        flash_delay: 0,
+        flash_tick: None,
+        flash_deadline: 0,
         flash_result: 0,
         saved_width,
         saved_height,
         front_buffer: Some(front.into()),
-        saved_pixels,
+        saved_pixels: saved_pixels.into(),
         item_appearances,
         submenus: Vec::new(),
     })
@@ -77597,6 +77850,16 @@ fn ppc_restore_tracked_menu(
                         i32::from(state.popup_top()) + y,
                     ),
                     pixel,
+                );
+                ppc_restore_saved_detail(
+                    memory,
+                    front,
+                    (
+                        i32::from(state.popup_left()) + x,
+                        i32::from(state.popup_top()) + y,
+                    ),
+                    state.saved_pixels(),
+                    index,
                 );
             }
             index += 1;
@@ -78248,6 +78511,18 @@ fn ppc_begin_submenu_tracking_with_resources(
             )?);
         }
     }
+    let mut saved_pixels = crate::memory::SavedPixels::from(saved_pixels);
+    for y in 0..i32::from(saved_height) {
+        for x in 0..i32::from(saved_width) {
+            ppc_capture_saved_detail(
+                memory,
+                front,
+                (i32::from(popup_left) + x, i32::from(popup_top) + y),
+                &mut saved_pixels,
+                (y * i32::from(saved_width) + x) as usize,
+            );
+        }
+    }
     Some(PpcSubmenuTracking {
         parent_item,
         menu_handle,
@@ -78263,7 +78538,7 @@ fn ppc_begin_submenu_tracking_with_resources(
         saved_width,
         saved_height,
         front_buffer: Some(front.into()),
-        saved_pixels,
+        saved_pixels: saved_pixels.into(),
         item_appearances,
     })
 }
@@ -78773,7 +79048,11 @@ fn ppc_continue_custom_menu_bar_tracking(
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup.menu_tracking.as_mut().unwrap().advance_flash();
+        let step = startup.menu_tracking.as_mut().unwrap().advance_flash_at(
+            memory
+                .read_u32_be(crate::memory::globals::addr::TICKS)
+                .unwrap_or(0),
+        );
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
@@ -78885,6 +79164,11 @@ fn ppc_continue_custom_menu_bar_tracking(
     };
     if result != 0 {
         let state = startup.menu_tracking.as_mut().unwrap();
+        state.set_flash_tick(
+            memory
+                .read_u32_be(crate::memory::globals::addr::TICKS)
+                .unwrap_or(0),
+        );
         let flash_enabled = state.begin_flash(
             memory
                 .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -84861,11 +85145,48 @@ fn ppc_standard_file_get_entries(
     entries
 }
 
+fn ppc_capture_saved_detail<T>(
+    memory: &PpcSectionMem,
+    front: PpcFrontBuffer,
+    point: (i32, i32),
+    pixels: &mut crate::memory::SavedPixels<T>,
+    index: usize,
+) {
+    if matches!(front.depth, 8 | 16) {
+        let lanes = front.depth / 8;
+        let address = front.base_addr + point.1 as u32 * front.row_bytes + point.0 as u32 * lanes;
+        memory.presentation().capture_detail(
+            pixels,
+            index * lanes as usize,
+            address,
+            lanes as usize,
+        );
+    }
+}
+fn ppc_restore_saved_detail<T>(
+    memory: &PpcSectionMem,
+    front: PpcFrontBuffer,
+    point: (i32, i32),
+    pixels: &crate::memory::SavedPixels<T>,
+    index: usize,
+) {
+    if matches!(front.depth, 8 | 16) {
+        let lanes = front.depth / 8;
+        let address = front.base_addr + point.1 as u32 * front.row_bytes + point.0 as u32 * lanes;
+        memory.presentation().restore_detail(
+            pixels,
+            index * lanes as usize,
+            address,
+            lanes as usize,
+        );
+    }
+}
+
 fn ppc_standard_file_save_pixels(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
     bounds: (i16, i16, i16, i16),
-) -> Vec<(i32, i32, u16)> {
+) -> crate::memory::SavedPixels<(i32, i32, u16)> {
     let top = i32::from(bounds.0).max(0).min(front.height as i32);
     let left = i32::from(bounds.1).max(0).min(front.width as i32);
     let bottom = i32::from(bounds.2).max(0).min(front.height as i32);
@@ -84878,16 +85199,22 @@ fn ppc_standard_file_save_pixels(
             }
         }
     }
-    pixels
+    let mut saved = crate::memory::SavedPixels::from(pixels);
+    for index in 0..saved.len() {
+        let (x, y, _) = saved[index];
+        ppc_capture_saved_detail(memory, front, (x, y), &mut saved, index);
+    }
+    saved
 }
 
 fn ppc_standard_file_restore_pixels(
     memory: &mut PpcSectionMem,
-    pixels: &[(i32, i32, u16)],
+    pixels: &crate::memory::SavedPixels<(i32, i32, u16)>,
     front: PpcFrontBuffer,
 ) {
-    for (x, y, value) in pixels.iter().copied() {
+    for (index, (x, y, value)) in pixels.iter().copied().enumerate() {
         let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), value);
+        ppc_restore_saved_detail(memory, front, (x, y), pixels, index);
     }
 }
 
@@ -89054,9 +89381,15 @@ fn ppc_block_move(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) {
     let dest_ptr = cpu.gpr[4];
     let byte_count = cpu.gpr[5] as usize;
     let mut bytes = vec![0; byte_count];
-    let _ = memory
-        .read_bytes_into(source_ptr, &mut bytes)
-        .and_then(|()| memory.write_bytes(dest_ptr, &bytes));
+    if memory.read_bytes_into(source_ptr, &mut bytes).is_none() {
+        return;
+    }
+    let mut pixels = crate::memory::SavedPixels::from(bytes);
+    let presentation = memory.presentation();
+    presentation.capture_detail(&mut pixels, 0, source_ptr, byte_count);
+    if memory.write_bytes(dest_ptr, &pixels).is_some() {
+        presentation.restore_detail(&pixels, 0, dest_ptr, byte_count);
+    }
 }
 
 #[cfg(test)]
@@ -93340,9 +93673,16 @@ pub(crate) mod tests {
 
     #[test]
     fn menu_bar_title_baseline_tracks_the_live_menu_bar_height() {
-        assert_eq!(ppc_menu_bar_title_baseline(12), 11);
-        assert_eq!(ppc_menu_bar_title_baseline(20), 14);
-        assert_eq!(ppc_menu_bar_title_baseline(30), 19);
+        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+        for height in [12, 20, 30] {
+            let baseline = ppc_menu_bar_title_baseline(height);
+            let top = baseline - metrics.ascent;
+            let bottom = height - baseline - metrics.descent;
+            assert!(
+                (top - bottom).abs() <= 1,
+                "title must be vertically centered"
+            );
+        }
         assert_eq!(ppc_menu_bar_system_mark_top(12), 0);
         assert_eq!(ppc_menu_bar_system_mark_top(20), 3);
         assert_eq!(ppc_menu_bar_system_mark_top(30), 8);
@@ -94699,6 +95039,8 @@ pub(crate) mod tests {
             ..PpcInputSnapshot::default()
         });
 
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(256);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert_eq!(
@@ -94723,8 +95065,13 @@ pub(crate) mod tests {
             mouse_h: 20,
             ..PpcInputSnapshot::default()
         });
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(256);
-        assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
+        assert_eq!(
+            probe.handled_import_count, 0,
+            "retained custom tracking bypasses public entry"
+        );
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert_eq!(
             loaded
@@ -94737,6 +95084,8 @@ pub(crate) mod tests {
         );
         let mut phases = vec![6];
         for _ in 0..64 {
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(256);
             assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
             let remaining = loaded
@@ -94782,7 +95131,7 @@ pub(crate) mod tests {
                 );
             }
         }
-        assert_eq!(restored, tracking.saved_pixels);
+        assert_eq!(restored, *tracking.saved_pixels);
     }
 
     #[test]
@@ -94989,7 +95338,7 @@ pub(crate) mod tests {
             let state = loaded.toolbox_startup.menu_tracking.as_mut().unwrap();
             assert_eq!(state.flash_result, (141u32 << 16) | 2);
             state.flash_remaining = 1;
-            state.flash_delay = 0;
+            state.flash_deadline = state.flash_tick.unwrap_or(0);
         }
         let probe = loaded.run_with_hle_imports(256);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
@@ -95079,6 +95428,8 @@ pub(crate) mod tests {
                 if loaded.cpu.pc == PPC_CODE_BASE + 0x4000 {
                     break;
                 }
+                let tick = loaded.current_tick().wrapping_add(1);
+                loaded.set_tick_count(tick);
                 let probe = loaded.run_with_hle_imports(1);
                 assert_eq!(probe.unsupported_import_index, None);
             }
@@ -95093,6 +95444,8 @@ pub(crate) mod tests {
                 loaded.memory.read_u16_be(loaded.cpu.gpr[7]),
                 Some(requested_item as u16)
             );
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(512);
             assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
@@ -95119,6 +95472,8 @@ pub(crate) mod tests {
                 mouse_h: 45,
                 ..PpcInputSnapshot::default()
             });
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(512);
             assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
@@ -95133,8 +95488,13 @@ pub(crate) mod tests {
             );
             let mut phases = vec![6];
             for _ in 0..64 {
+                let tick = loaded.current_tick().wrapping_add(1);
+                loaded.set_tick_count(tick);
                 let probe = loaded.run_with_hle_imports(512);
-                assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
+                assert_eq!(
+                    probe.handled_import_count, 0,
+                    "retained custom tracking bypasses public entry"
+                );
                 let remaining = loaded
                     .toolbox_startup
                     .menu_tracking
@@ -96669,12 +97029,6 @@ pub(crate) mod tests {
             * ppc_main_screen_row_bytes();
         let unhighlighted_bar =
             ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, menu_bar_len).unwrap();
-        let white = ppc_physical_screen_color_pixel(
-            ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap(),
-            PPC_RGB_WHITE,
-            &loaded.screen_clut,
-        )
-        .unwrap();
 
         for (label, item) in [("disabled item", 2i16), ("divider", 3i16)] {
             ppc_track_menu_while_held(
@@ -96698,6 +97052,8 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             };
             let background_point = (i32::from(input.mouse_h), i32::from(input.mouse_v));
+            let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+            let background = ppc_quickdraw_read_pixel(&mut loaded.memory, front, background_point);
             assert_eq!(
                 ppc_menu_tracking_item(&mut loaded.memory, tracking, input),
                 0,
@@ -96714,7 +97070,7 @@ pub(crate) mod tests {
             let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
             assert_eq!(
                 ppc_quickdraw_read_pixel(&mut loaded.memory, front, background_point),
-                Some(white),
+                background,
                 "{label} was drawn highlighted"
             );
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
@@ -143013,16 +143369,27 @@ pub(crate) mod tests {
             loaded.cpu.gpr[6] = u32::from(depth != 1);
             run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
             loaded.set_ui_theme(UiThemeId::SystemlessDefault);
-            let front =
-                ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
-                    .unwrap();
-            let palette = if depth == 1 {
+            let front = ppc_live_front_buffer_for_gworld(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+            )
+            .unwrap();
+            let mut palette = if depth == 1 {
                 UiThemeId::ClassicSystem7
             } else {
                 UiThemeId::SystemlessDefault
             }
             .provider()
             .palette();
+            if depth == 1 {
+                palette.desktop_dark = Rgb8 { r: 0, g: 0, b: 0 };
+                palette.desktop_light = Rgb8 {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                };
+            }
             for (point, color) in [
                 ((700, 400), palette.desktop_dark),
                 ((701, 400), palette.desktop_light),
@@ -143495,10 +143862,18 @@ pub(crate) mod tests {
             &mut last_mem_error,
             &mut handles,
         );
-        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
-            .unwrap();
-        let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut)
-            .unwrap();
+        let black = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 0, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
+        let white = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 1, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
             Some(black),
@@ -143533,10 +143908,18 @@ pub(crate) mod tests {
             PpcInputSnapshot::default(),
         );
 
-        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
-            .unwrap();
-        let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut)
-            .unwrap();
+        let black = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 0, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
+        let white = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, 1, 0),
+            &loaded.screen_clut,
+        )
+        .unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
             Some(black),
@@ -156039,7 +156422,7 @@ pub(crate) mod tests {
                 height: 0,
                 depth: 16,
             },
-            saved_pixels: Vec::new(),
+            saved_pixels: Vec::new().into(),
         };
 
         ppc_standard_file_insert_name_character(&mut tracking, b'y');
@@ -161871,6 +162254,8 @@ pub(crate) mod tests {
             ..PpcInputSnapshot::default()
         });
 
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(64);
 
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
@@ -161933,6 +162318,8 @@ pub(crate) mod tests {
             ..PpcInputSnapshot::default()
         };
         loaded.set_input_snapshot(item_one);
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert_eq!(loaded.cpu.lr, parked_lr);
@@ -161958,6 +162345,8 @@ pub(crate) mod tests {
             .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 1)
             .unwrap();
         loaded.set_input_snapshot(item_two_release);
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         let flash = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
@@ -161973,6 +162362,8 @@ pub(crate) mod tests {
             vec![ppc_quickdraw_read_pixel(&mut loaded.memory, front, flash_probe).unwrap()];
         let mut final_probe = None;
         for _ in 0..32 {
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(64);
             if loaded.toolbox_startup.menu_tracking.is_some() {
                 flash_pixels.push(
@@ -162798,22 +163189,18 @@ pub(crate) mod tests {
             mouse_h: 0,
             ..PpcInputSnapshot::default()
         });
-        loaded
-            .toolbox_startup
-            .menu_tracking
-            .as_mut()
-            .unwrap()
-            .flash_delay = 0;
+        {
+            let state = loaded.toolbox_startup.menu_tracking.as_mut().unwrap();
+            state.flash_deadline = state.flash_tick.unwrap_or(0);
+        }
         assert!(matches!(
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        loaded
-            .toolbox_startup
-            .menu_tracking
-            .as_mut()
-            .unwrap()
-            .flash_delay = 0;
+        {
+            let state = loaded.toolbox_startup.menu_tracking.as_mut().unwrap();
+            state.flash_deadline = state.flash_tick.unwrap_or(0);
+        }
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (129u32 << 16) | 1);
@@ -166949,15 +167336,21 @@ pub(crate) mod tests {
         let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(
+                ppc_standard_desktop_color(&loaded.gworlds, 0, 0)
+            )))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(
+                ppc_standard_desktop_color(&loaded.gworlds, 1, 0)
+            )))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 21)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(
+                ppc_standard_desktop_color(&loaded.gworlds, 1, 0)
+            )))
         );
     }
 
@@ -172404,7 +172797,8 @@ pub(crate) mod tests {
             highlighted_item: 0,
             definition: None,
             flash_remaining: 0,
-            flash_delay: 0,
+            flash_tick: None,
+            flash_deadline: 0,
             flash_result: 0,
             saved_width: 33,
             saved_height: 21,
@@ -172413,7 +172807,7 @@ pub(crate) mod tests {
                     .unwrap()
                     .into(),
             ),
-            saved_pixels: vec![0; 33 * 21],
+            saved_pixels: vec![0; 33 * 21].into(),
             item_appearances: Vec::new(),
             submenus: Vec::new(),
         };

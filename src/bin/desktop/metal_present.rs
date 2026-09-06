@@ -5,7 +5,7 @@
 //! continuously animating 800x600 game can spend most of a host core in that
 //! conversion path. This presenter keeps a `CAMetalLayer`, command queue,
 //! render pipeline, and two upload textures alive for the window lifetime.
-//! Native guest frames go through a one-slot latest-frame mailbox to a Metal
+//! Native guest and high-resolution raster frames share a latest-frame mailbox to a Metal
 //! worker paced by drawable availability. Thus a full drawable queue never
 //! blocks AppKit input handling or 68k execution.
 
@@ -83,9 +83,18 @@ struct GuestFrameProfile {
     presentation_time: Duration,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum FrameMetadata {
+    Guest(GuestFrameMetadata),
+    Raster {
+        source_size: (u32, u32),
+        drawable_size: (u32, u32),
+    },
+}
+
 struct GuestFrameSubmission {
     framebuffer: Vec<u8>,
-    metadata: GuestFrameMetadata,
+    metadata: FrameMetadata,
 }
 
 #[derive(Default)]
@@ -117,6 +126,10 @@ struct GuestRenderWorker {
     guest_buffers: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
     guest_buffer_size: usize,
     next_guest_buffer: usize,
+    raster_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    upload_textures: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
+    upload_size: (u32, u32),
+    next_upload_texture: usize,
 }
 
 // Metal devices, queues, immutable pipeline states, and CAMetalLayer drawable
@@ -146,7 +159,7 @@ fn replace_pending_guest_frame(
     state: &mut GuestFrameMailboxState,
     framebuffer: &[u8],
     layout: GuestVisibleByteLayout,
-    metadata: GuestFrameMetadata,
+    metadata: FrameMetadata,
 ) {
     let mut pixels = if let Some(previous) = state.pending.take() {
         state.coalesced = state.coalesced.saturating_add(1);
@@ -180,6 +193,38 @@ impl AsyncGuestPresenter {
         framebuffer: &[u8],
         layout: GuestVisibleByteLayout,
         metadata: GuestFrameMetadata,
+    ) -> Result<(), String> {
+        self.enqueue_frame(framebuffer, layout, FrameMetadata::Guest(metadata))
+    }
+
+    fn enqueue_raster(
+        &self,
+        pixels: &[u32],
+        source_size: (u32, u32),
+        drawable_size: (u32, u32),
+    ) -> Result<(), String> {
+        let bytes = argb_bytes(pixels);
+        let row_bytes = source_size.0 as usize * size_of::<u32>();
+        self.enqueue_frame(
+            bytes,
+            GuestVisibleByteLayout {
+                first_row_offset: 0,
+                row_stride: row_bytes,
+                visible_row_bytes: row_bytes,
+                row_count: source_size.1 as usize,
+            },
+            FrameMetadata::Raster {
+                source_size,
+                drawable_size,
+            },
+        )
+    }
+
+    fn enqueue_frame(
+        &self,
+        framebuffer: &[u8],
+        layout: GuestVisibleByteLayout,
+        metadata: FrameMetadata,
     ) -> Result<(), String> {
         let mut state = self
             .mailbox
@@ -275,7 +320,10 @@ impl GuestRenderWorker {
             // This is a raw Rust worker rather than an AppKit-created thread,
             // so it has no ambient Objective-C autorelease pool. Drain the
             // temporary QuartzCore objects created while acquiring a drawable.
-            let drawable = autoreleasepool(|_| unsafe { self.layer.nextDrawable() });
+            let drawable = {
+                let _timing = crate::FramePhaseTimer::new("Metal drawable wait (worker)");
+                autoreleasepool(|_| unsafe { self.layer.nextDrawable() })
+            };
             let drawable_wait = wait_start.elapsed();
 
             let mut state = mailbox
@@ -337,7 +385,32 @@ impl GuestRenderWorker {
         drawable: &ProtocolObject<dyn CAMetalDrawable>,
     ) -> Result<(), String> {
         let framebuffer = &submission.framebuffer;
-        let metadata = &submission.metadata;
+        let metadata = match &submission.metadata {
+            FrameMetadata::Guest(metadata) => metadata,
+            FrameMetadata::Raster {
+                source_size,
+                drawable_size,
+            } => {
+                if self.upload_size != *source_size {
+                    self.upload_textures =
+                        upload_textures(&self.device, source_size.0, source_size.1)?;
+                    self.upload_size = *source_size;
+                    self.next_upload_texture = 0;
+                }
+                let index = self.next_upload_texture;
+                self.next_upload_texture = (index + 1) % self.upload_textures.len();
+                return encode_raster_frame(
+                    &self.command_queue,
+                    &self.raster_pipeline,
+                    &self.upload_textures[index],
+                    drawable,
+                    framebuffer,
+                    *source_size,
+                    *drawable_size,
+                    false,
+                );
+            }
+        };
         self.ensure_guest_buffers(framebuffer.len())?;
 
         let buffer_index = self.next_guest_buffer;
@@ -527,6 +600,10 @@ impl MetalPresenter {
             guest_buffers: Vec::new(),
             guest_buffer_size: 0,
             next_guest_buffer: 0,
+            raster_pipeline: pipeline.clone(),
+            upload_textures: Vec::new(),
+            upload_size: (0, 0),
+            next_upload_texture: 0,
         })?;
 
         Ok(Self {
@@ -567,27 +644,6 @@ impl MetalPresenter {
         unsafe { self.layer.setPresentsWithTransaction(enabled) };
     }
 
-    fn finish_presentation(
-        &self,
-        command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
-        drawable: &ProtocolObject<dyn CAMetalDrawable>,
-    ) {
-        if unsafe { self.layer.presentsWithTransaction() } {
-            // Apple requires the render work to be scheduled before the
-            // drawable itself is presented into the current CA transaction.
-            // Using commandBuffer.presentDrawable here would bypass that
-            // transaction and recreate the one-frame resize bounce.
-            command_buffer.commit();
-            command_buffer.waitUntilScheduled();
-            let drawable: &ProtocolObject<dyn objc2_metal::MTLDrawable> =
-                ProtocolObject::from_ref(drawable);
-            drawable.present();
-        } else {
-            command_buffer.presentDrawable(ProtocolObject::from_ref(drawable));
-            command_buffer.commit();
-        }
-    }
-
     pub fn present(
         &mut self,
         pixels: &[u32],
@@ -596,7 +652,6 @@ impl MetalPresenter {
         drawable_width: u32,
         drawable_height: u32,
     ) -> Result<(), String> {
-        self.async_guest_presenter.pause_and_wait();
         let expected_pixels = source_width as usize * source_height as usize;
         if pixels.len() < expected_pixels || expected_pixels == 0 {
             return Err("framebuffer dimensions do not match its pixel data".to_string());
@@ -605,8 +660,17 @@ impl MetalPresenter {
             return Ok(());
         }
 
-        self.ensure_upload_textures(source_width, source_height)?;
         self.resize_drawable(drawable_width, drawable_height);
+        self.last_guest_metadata = None;
+        if !unsafe { self.layer.presentsWithTransaction() } {
+            return self.async_guest_presenter.enqueue_raster(
+                &pixels[..expected_pixels],
+                (source_width, source_height),
+                (drawable_width, drawable_height),
+            );
+        }
+        self.async_guest_presenter.pause_and_wait();
+        self.ensure_upload_textures(source_width, source_height)?;
 
         // Acquire the drawable before recycling the corresponding upload
         // texture. With a two-drawable layer, nextDrawable blocks until the
@@ -618,64 +682,16 @@ impl MetalPresenter {
         let upload_index = self.next_upload_texture;
         self.next_upload_texture = (upload_index + 1) % self.upload_textures.len();
         let upload = &self.upload_textures[upload_index];
-        let region = MTLRegion {
-            origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
-            size: objc2_metal::MTLSize {
-                width: source_width as usize,
-                height: source_height as usize,
-                depth: 1,
-            },
-        };
-        let pixel_bytes = NonNull::new(pixels.as_ptr().cast_mut().cast::<c_void>())
-            .expect("a non-empty framebuffer has a non-null pointer");
-        unsafe {
-            upload.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
-                region,
-                0,
-                pixel_bytes,
-                source_width as usize * size_of::<u32>(),
-            );
-        }
-
-        let drawable_texture = unsafe { drawable.texture() };
-        let pass = unsafe { MTLRenderPassDescriptor::new() };
-        let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
-        color.setTexture(Some(&drawable_texture));
-        color.setLoadAction(MTLLoadAction::Clear);
-        color.setStoreAction(MTLStoreAction::Store);
-        color.setClearColor(objc2_metal::MTLClearColor {
-            red: 0.0,
-            green: 0.0,
-            blue: 0.0,
-            alpha: 1.0,
-        });
-
-        let command_buffer = self
-            .command_queue
-            .commandBuffer()
-            .ok_or_else(|| "Metal failed to create a command buffer".to_string())?;
-        let encoder = command_buffer
-            .renderCommandEncoderWithDescriptor(&pass)
-            .ok_or_else(|| "Metal failed to create a render encoder".to_string())?;
-        encoder.setRenderPipelineState(&self.pipeline);
-        unsafe { encoder.setFragmentTexture_atIndex(Some(upload), 0) };
-
-        let viewport =
-            aspect_fit_viewport(source_width, source_height, drawable_width, drawable_height);
-        encoder.setViewport(MTLViewport {
-            originX: viewport.0,
-            originY: viewport.1,
-            width: viewport.2,
-            height: viewport.3,
-            znear: 0.0,
-            zfar: 1.0,
-        });
-        unsafe {
-            encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4)
-        };
-        encoder.endEncoding();
-
-        self.finish_presentation(&command_buffer, &drawable);
+        encode_raster_frame(
+            &self.command_queue,
+            &self.pipeline,
+            upload,
+            &drawable,
+            argb_bytes(pixels),
+            (source_width, source_height),
+            (drawable_width, drawable_height),
+            true,
+        )?;
         Ok(())
     }
 
@@ -862,25 +878,7 @@ impl MetalPresenter {
             return Ok(());
         }
 
-        let descriptor = unsafe {
-            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                MTLPixelFormat::BGRA8Unorm,
-                width as usize,
-                height as usize,
-                false,
-            )
-        };
-        descriptor.setStorageMode(MTLStorageMode::Shared);
-        descriptor.setUsage(MTLTextureUsage::ShaderRead);
-
-        let mut textures = Vec::with_capacity(FRAME_RESOURCE_COUNT);
-        for _ in 0..FRAME_RESOURCE_COUNT {
-            textures.push(
-                self.device
-                    .newTextureWithDescriptor(&descriptor)
-                    .ok_or_else(|| "Metal failed to allocate an upload texture".to_string())?,
-            );
-        }
+        let textures = upload_textures(&self.device, width, height)?;
         self.upload_textures = textures;
         self.upload_size = (width, height);
         self.next_upload_texture = 0;
@@ -928,6 +926,132 @@ impl MetalPresenter {
             self.drawable_size = (width, height);
         }
     }
+}
+
+fn argb_bytes(pixels: &[u32]) -> &[u8] {
+    // All byte patterns of u32 are valid and the returned borrow cannot outlive
+    // the source pixels. BGRA8Unorm consumes their native little-endian bytes.
+    unsafe { std::slice::from_raw_parts(pixels.as_ptr().cast(), std::mem::size_of_val(pixels)) }
+}
+
+fn upload_textures(
+    device: &ProtocolObject<dyn MTLDevice>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<Retained<ProtocolObject<dyn MTLTexture>>>, String> {
+    let descriptor = unsafe {
+        MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+            MTLPixelFormat::BGRA8Unorm,
+            width as usize,
+            height as usize,
+            false,
+        )
+    };
+    descriptor.setStorageMode(MTLStorageMode::Shared);
+    descriptor.setUsage(MTLTextureUsage::ShaderRead);
+
+    let mut textures = Vec::with_capacity(FRAME_RESOURCE_COUNT);
+    for _ in 0..FRAME_RESOURCE_COUNT {
+        textures.push(
+            device
+                .newTextureWithDescriptor(&descriptor)
+                .ok_or_else(|| "Metal failed to allocate an upload texture".to_string())?,
+        );
+    }
+    Ok(textures)
+}
+
+fn finish_presentation(
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
+    drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    transactional: bool,
+) {
+    if transactional {
+        // Apple requires the render work to be scheduled before the
+        // drawable itself is presented into the current CA transaction.
+        // Using commandBuffer.presentDrawable here would bypass that
+        // transaction and recreate the one-frame resize bounce.
+        command_buffer.commit();
+        command_buffer.waitUntilScheduled();
+        let drawable: &ProtocolObject<dyn objc2_metal::MTLDrawable> =
+            ProtocolObject::from_ref(drawable);
+        drawable.present();
+    } else {
+        command_buffer.presentDrawable(ProtocolObject::from_ref(drawable));
+        command_buffer.commit();
+    }
+}
+
+fn encode_raster_frame(
+    command_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    pipeline: &ProtocolObject<dyn MTLRenderPipelineState>,
+    upload: &ProtocolObject<dyn MTLTexture>,
+    drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    pixels: &[u8],
+    source_size: (u32, u32),
+    drawable_size: (u32, u32),
+    transactional: bool,
+) -> Result<(), String> {
+    let (source_width, source_height) = source_size;
+    let (drawable_width, drawable_height) = drawable_size;
+    let region = MTLRegion {
+        origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+        size: objc2_metal::MTLSize {
+            width: source_width as usize,
+            height: source_height as usize,
+            depth: 1,
+        },
+    };
+    let pixel_bytes = NonNull::new(pixels.as_ptr().cast_mut().cast::<c_void>())
+        .expect("a non-empty framebuffer has a non-null pointer");
+    unsafe {
+        upload.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+            region,
+            0,
+            pixel_bytes,
+            source_width as usize * size_of::<u32>(),
+        );
+    }
+
+    let drawable_texture = unsafe { drawable.texture() };
+    let pass = unsafe { MTLRenderPassDescriptor::new() };
+    let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+    color.setTexture(Some(&drawable_texture));
+    color.setLoadAction(MTLLoadAction::Clear);
+    color.setStoreAction(MTLStoreAction::Store);
+    color.setClearColor(objc2_metal::MTLClearColor {
+        red: 0.0,
+        green: 0.0,
+        blue: 0.0,
+        alpha: 1.0,
+    });
+
+    let command_buffer = command_queue
+        .commandBuffer()
+        .ok_or_else(|| "Metal failed to create a command buffer".to_string())?;
+    let encoder = command_buffer
+        .renderCommandEncoderWithDescriptor(&pass)
+        .ok_or_else(|| "Metal failed to create a render encoder".to_string())?;
+    encoder.setRenderPipelineState(pipeline);
+    unsafe { encoder.setFragmentTexture_atIndex(Some(upload), 0) };
+
+    let viewport =
+        aspect_fit_viewport(source_width, source_height, drawable_width, drawable_height);
+    encoder.setViewport(MTLViewport {
+        originX: viewport.0,
+        originY: viewport.1,
+        width: viewport.2,
+        height: viewport.3,
+        znear: 0.0,
+        zfar: 1.0,
+    });
+    unsafe {
+        encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4)
+    };
+    encoder.endEncoding();
+
+    finish_presentation(&command_buffer, drawable, transactional);
+    Ok(())
 }
 
 fn encode_guest_frame(
@@ -1232,9 +1356,171 @@ mod tests {
         aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data,
         guest_packed_content_left, guest_visible_byte_layout, guest_visible_pixels_equal,
         replace_pending_guest_frame, GuestCursorData, GuestFrameMailboxState, GuestFrameMetadata,
-        GuestFrameUniforms,
+        GuestFrameUniforms, FrameMetadata,
     };
     use systemless::display::CursorImage;
+
+    /// Exercise the production shader on the GPU, including its final reduction
+    /// to drawable pixels. No AppKit window or unlocked desktop is required.
+    fn render_rgba(source: &image::RgbaImage, width: u32, height: u32) -> image::RgbaImage {
+        use super::*;
+        autoreleasepool(|_| {
+            let device = unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) }
+                .expect("Metal device required");
+            let library = device
+                .newLibraryWithSource_options_error(
+                    ns_string!(include_str!("metal_present.metal")),
+                    None,
+                )
+                .expect("compile presentation shader");
+            let descriptor = MTLRenderPipelineDescriptor::new();
+            descriptor.setVertexFunction(
+                library
+                    .newFunctionWithName(ns_string!("raster_vertex"))
+                    .as_deref(),
+            );
+            descriptor.setFragmentFunction(
+                library
+                    .newFunctionWithName(ns_string!("raster_fragment"))
+                    .as_deref(),
+            );
+            unsafe {
+                descriptor
+                    .colorAttachments()
+                    .objectAtIndexedSubscript(0)
+                    .setPixelFormat(MTLPixelFormat::RGBA8Unorm);
+            }
+            let pipeline = device
+                .newRenderPipelineStateWithDescriptor_error(&descriptor)
+                .unwrap();
+            let texture = |w, h, usage| {
+                let desc = unsafe {
+                    MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                        MTLPixelFormat::RGBA8Unorm,
+                        w as usize,
+                        h as usize,
+                        false,
+                    )
+                };
+                desc.setStorageMode(MTLStorageMode::Shared);
+                desc.setUsage(usage);
+                device.newTextureWithDescriptor(&desc).unwrap()
+            };
+            let input = texture(source.width(), source.height(), MTLTextureUsage::ShaderRead);
+            let output = texture(width, height, MTLTextureUsage::RenderTarget);
+            let region = |w, h| MTLRegion {
+                origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+                size: objc2_metal::MTLSize {
+                    width: w as usize,
+                    height: h as usize,
+                    depth: 1,
+                },
+            };
+            unsafe {
+                input.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region(source.width(), source.height()),
+                    0,
+                    NonNull::new(source.as_ptr().cast_mut().cast()).unwrap(),
+                    source.width() as usize * 4,
+                );
+            }
+            let pass = unsafe { MTLRenderPassDescriptor::new() };
+            let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+            color.setTexture(Some(&output));
+            color.setLoadAction(MTLLoadAction::Clear);
+            color.setStoreAction(MTLStoreAction::Store);
+            let queue = device.newCommandQueue().unwrap();
+            let command = queue.commandBuffer().unwrap();
+            let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+            encoder.setRenderPipelineState(&pipeline);
+            encoder.setViewport(MTLViewport {
+                originX: 0.0,
+                originY: 0.0,
+                width: width as f64,
+                height: height as f64,
+                znear: 0.0,
+                zfar: 1.0,
+            });
+            unsafe {
+                encoder.setFragmentTexture_atIndex(Some(&input), 0);
+                encoder.drawPrimitives_vertexStart_vertexCount(
+                    MTLPrimitiveType::TriangleStrip,
+                    0,
+                    4,
+                );
+            }
+            encoder.endEncoding();
+            command.commit();
+            unsafe {
+                command.waitUntilCompleted();
+            }
+            let mut result = image::RgbaImage::new(width, height);
+            unsafe {
+                output.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                    NonNull::new(result.as_mut_ptr().cast()).unwrap(),
+                    width as usize * 4,
+                    region(width, height),
+                    0,
+                );
+            }
+            result
+        })
+    }
+
+    #[test]
+    fn minification_retains_thin_strokes_between_sample_centers() {
+        let source = image::RgbaImage::from_fn(8, 8, |x, _| {
+            let shade = if x % 2 == 0 { 0 } else { 255 };
+            image::Rgba([shade, shade, shade, 255])
+        });
+        for (width, expected) in [
+            (2, vec![128, 128]),
+            (3, vec![96, 128, 159]),
+            (5, vec![96, 96, 128, 159, 159]),
+        ] {
+            let result = render_rgba(&source, width, 3);
+            let packed: Vec<u32> = source
+                .pixels()
+                .map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]]))
+                .collect();
+            let mut software = Vec::new();
+            systemless::display::resize_argb_coverage(&packed, (8, 8), (width, 3), &mut software);
+            for (gpu, cpu) in result.pixels().zip(software) {
+                let [a, r, g, b] = cpu.to_be_bytes();
+                for (actual, expected) in gpu.0.into_iter().zip([r, g, b, a]) {
+                    assert!(actual.abs_diff(expected) <= 1);
+                }
+            }
+            // Exact area averages retain alternating one-pixel strokes at
+            // integral and fractional reductions; allow UNorm rounding error.
+            for (x, _, pixel) in result.enumerate_pixels() {
+                assert!(
+                    pixel[0].abs_diff(expected[x as usize]) <= 1,
+                    "lost coverage at width {width}, column {x}"
+                );
+                assert_eq!(pixel[3], 255);
+            }
+        }
+        let enlarged = render_rgba(&source, 16, 16);
+        for (x, y, pixel) in enlarged.enumerate_pixels() {
+            assert_eq!(pixel, source.get_pixel(x / 2, y / 2));
+        }
+    }
+
+    #[test]
+    #[ignore = "writes actual Metal output; set SYSTEMLESS_METAL_FONT_CAPTURE"]
+    fn capture_showcase_at_mac_window_size() {
+        let path = std::env::var_os("SYSTEMLESS_METAL_FONT_CAPTURE").expect("capture output path");
+        let source = image::load_from_memory(include_bytes!(
+            "../../../tests/toolbox-showcase/outline-fonts/first-paint/textedit-fresh.png"
+        ))
+        .unwrap()
+        .into_rgba8();
+        // Native menus hide the guest's 20-row menu bar. The reported window
+        // displays the remaining 800x580 guest area at 960x696 physical pixels.
+        let source = image::imageops::crop_imm(&source, 0, 80, 3200, 2320).to_image();
+        render_rgba(&source, 960, 696).save(path).unwrap();
+    }
 
     #[test]
     fn viewport_scales_continuously_and_centers_letterboxing() {
@@ -1293,6 +1579,70 @@ mod tests {
     }
 
     #[test]
+    fn raster_frames_enqueue_while_drawable_is_blocked_and_keep_latest_pixels() {
+        use super::{argb_bytes, AsyncGuestPresenter, GuestFrameMailbox};
+        use std::{sync::Arc, time::Duration};
+        let mailbox = Arc::new(GuestFrameMailbox::default());
+        {
+            let mut state = mailbox.state.lock().unwrap();
+            state.drawable_in_use = true;
+            state.active = true;
+        }
+        let producer_mailbox = Arc::clone(&mailbox);
+        let (sent, received) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let presenter = AsyncGuestPresenter {
+                mailbox: producer_mailbox,
+                thread: None,
+            };
+            let mut pixels = vec![0xff123456; 16];
+            for color in [0xff123456, 0xffabcdef] {
+                pixels.fill(color);
+                presenter.enqueue_raster(&pixels, (4, 4), (8, 8)).unwrap();
+            }
+            pixels.fill(0); // queued pixels must own their storage
+            sent.send(presenter).unwrap();
+        });
+        let presenter = received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("raster enqueue must not wait for a drawable or an active frame");
+        producer.join().unwrap();
+        {
+            let state = mailbox.state.lock().unwrap();
+            assert!(state.drawable_in_use && state.active);
+            assert_eq!(state.coalesced, 1);
+            let frame = state.pending.as_ref().unwrap();
+            assert_eq!(frame.framebuffer, argb_bytes(&[0xffabcdef; 16]));
+            assert!(
+                frame.metadata
+                    == FrameMetadata::Raster {
+                        source_size: (4, 4),
+                        drawable_size: (8, 8),
+                    }
+            );
+        }
+        // A mode switch replaces pending raster work in the same mailbox.
+        let metadata = GuestFrameMetadata {
+            screen_layout: (2, 2, 1, 8),
+            content_rect: (0, 0, 2, 1),
+            palette: [0; 256],
+            uniforms: GuestFrameUniforms::default(),
+            cursor: GuestCursorData::default(),
+            drawable_size: (8, 8),
+        };
+        presenter
+            .enqueue(
+                &[7, 8],
+                guest_visible_byte_layout(2, 8, 0, 0, 2, 1).unwrap(),
+                metadata,
+            )
+            .unwrap();
+        let state = mailbox.state.lock().unwrap();
+        assert_eq!(state.coalesced, 2);
+        assert_eq!(state.pending.as_ref().unwrap().framebuffer, [7, 8]);
+    }
+
+    #[test]
     fn busy_presenter_mailbox_keeps_only_the_latest_complete_frame() {
         let metadata = GuestFrameMetadata {
             screen_layout: (4, 4, 2, 8),
@@ -1305,13 +1655,23 @@ mod tests {
         let mut state = GuestFrameMailboxState::default();
 
         let layout = guest_visible_byte_layout(4, 8, 0, 0, 4, 1).unwrap();
-        replace_pending_guest_frame(&mut state, &[1, 2, 3, 4], layout, metadata.clone());
-        replace_pending_guest_frame(&mut state, &[5, 6, 7, 8], layout, metadata.clone());
+        replace_pending_guest_frame(
+            &mut state,
+            &[1, 2, 3, 4],
+            layout,
+            FrameMetadata::Guest(metadata.clone()),
+        );
+        replace_pending_guest_frame(
+            &mut state,
+            &[5, 6, 7, 8],
+            layout,
+            FrameMetadata::Guest(metadata.clone()),
+        );
 
         assert_eq!(state.coalesced, 1);
         let pending = state.pending.as_ref().unwrap();
         assert_eq!(pending.framebuffer, [5, 6, 7, 8]);
-        assert!(pending.metadata == metadata);
+        assert!(pending.metadata == FrameMetadata::Guest(metadata));
     }
 
     #[test]
@@ -1332,7 +1692,12 @@ mod tests {
         let layout = guest_visible_byte_layout(6, 8, 2, 1, 3, 2).unwrap();
         let mut state = GuestFrameMailboxState::default();
 
-        replace_pending_guest_frame(&mut state, &framebuffer, layout, metadata);
+        replace_pending_guest_frame(
+            &mut state,
+            &framebuffer,
+            layout,
+            FrameMetadata::Guest(metadata),
+        );
 
         assert_eq!(state.pending.unwrap().framebuffer, [8, 9, 10, 14, 15, 16]);
     }

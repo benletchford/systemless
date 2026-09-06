@@ -11,7 +11,7 @@ use crate::menu_manager::{
     standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
     standard_menu_title_advance, TrackedMenuPaneView,
 };
-use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
+use crate::quickdraw::fonts::{style::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
@@ -632,7 +632,7 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+        if pixel_size == 1 {
             Self::fb_fill_pattern_rect(
                 bus,
                 screen_base,
@@ -1574,7 +1574,7 @@ impl super::TrapDispatcher {
     fn refresh_saved_under_with_desktop_pattern(&mut self, bus: &MacMemoryBus, window: u32) {
         let (_, _, _, _, pixel_size) = self.get_screen_params();
         let palette = self.ui_theme().palette();
-        let (black, white) = if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+        let (black, white) = if pixel_size == 1 {
             (
                 Self::logical_black_pixel_index(bus),
                 Self::logical_white_pixel_index(bus),
@@ -1850,9 +1850,35 @@ impl super::TrapDispatcher {
         let clip_left = i32::from(clip_left.max(0));
         let clip_bottom = i32::from(clip_bottom.min(screen_height));
         let clip_right = i32::from(clip_right.min(screen_width));
+        bus.begin_outline_glyph(
+            glyph,
+            data,
+            gx - i16::from(glyph.origin_x),
+            gy - i16::from(glyph.origin_y),
+            false,
+            None,
+            None,
+        );
+        if let Some((top, left, bottom, right)) =
+            bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+        {
+            {
+                for py in top.max(clip_top)..bottom.min(clip_bottom) {
+                    for px in left.max(clip_left)..right.min(clip_right) {
+                        bus.outline_glyph_pixel(
+                            screen_base + py as u32 * row_bytes + px as u32,
+                            px as i16,
+                            py as i16,
+                            index,
+                        );
+                    }
+                }
+            }
+        }
         let col_start = (clip_left - i32::from(gx)).max(0);
         let col_end = (clip_right - i32::from(gx)).min(gw as i32);
         if col_start >= col_end {
+            bus.end_outline_glyph();
             return;
         }
         let width = (col_end - col_start) as usize;
@@ -1876,6 +1902,7 @@ impl super::TrapDispatcher {
             }
             bus.write_bytes(start, &span);
         }
+        bus.end_outline_glyph();
     }
 
     fn fb_draw_glyph_bitmap_with_slant(
@@ -1933,6 +1960,34 @@ impl super::TrapDispatcher {
             None
         };
 
+        if matches!(pixel_size, 16 | 32) && !style.extended() && !style.condensed() {
+            bus.begin_outline_glyph(
+                glyph,
+                data,
+                x,
+                y,
+                false,
+                metrics.as_ref().map(|(_, _, m)| m.descent),
+                None,
+            );
+            if let Some((top, left, bottom, right)) =
+                bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+            {
+                let lanes = u32::from(pixel_size / 8);
+                for py in top.max(0)..bottom.min(i32::from(screen_height)) {
+                    for px in left.max(0)..right.min(i32::from(screen_width)) {
+                        for lane in 0..lanes {
+                            bus.outline_glyph_pixel(
+                                screen_base + py as u32 * row_bytes + px as u32 * lanes + lane,
+                                px as i16,
+                                py as i16,
+                                if black { 0 } else { 255 },
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // Glyph data is 8-bit coverage per pixel (row-major, one byte
         // per pixel). Threshold at >=128 (bitmap glyphs are exclusively
         // 0 or 255).
@@ -1989,6 +2044,7 @@ impl super::TrapDispatcher {
                 }
             }
         }
+        bus.end_outline_glyph();
     }
 
     fn fb_set_styled_text_pixel(
@@ -2129,8 +2185,45 @@ impl super::TrapDispatcher {
                 pixel_index_override,
                 black,
             );
+            bus.end_outline_glyph();
             return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
                 .unwrap_or(i16::MAX);
+        }
+
+        if matches!(pixel_size, 8 | 16 | 32) {
+            let descent = synthetic_italic.map(|(font, size)| get_font_metrics(font, size).descent);
+            bus.begin_outline_glyph(glyph, data, x, y, style.bold(), descent, None);
+            bus.style_outline_glyph(style);
+            if let Some((top, left, bottom, right)) =
+                bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
+            {
+                let index = pixel_index_override.unwrap_or_else(|| {
+                    if black {
+                        Self::logical_black_pixel_index(bus)
+                    } else {
+                        Self::logical_white_pixel_index(bus)
+                    }
+                });
+                for py in top.max(0)..bottom.min(i32::from(screen_height)) {
+                    for px in left.max(0)..right.min(i32::from(screen_width)) {
+                        let lanes = u32::from(pixel_size / 8);
+                        for lane in 0..lanes {
+                            bus.outline_glyph_pixel(
+                                screen_base + py as u32 * row_bytes + px as u32 * lanes + lane,
+                                px as i16,
+                                py as i16,
+                                if pixel_size == 8 {
+                                    index
+                                } else if black {
+                                    0
+                                } else {
+                                    255
+                                },
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         let glyph_y = y.saturating_add(style.glyph_y_offset() as i16);
@@ -2152,6 +2245,7 @@ impl super::TrapDispatcher {
                     black,
                 );
             }
+            bus.end_outline_glyph();
             return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
                 .unwrap_or(i16::MAX);
         };
@@ -2197,6 +2291,7 @@ impl super::TrapDispatcher {
             }
         }
 
+        bus.end_outline_glyph();
         i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX)
     }
 
@@ -3156,6 +3251,15 @@ impl super::TrapDispatcher {
                 for row in 0..bounded_row_count {
                     let src_addr = port_base + (src_y_offset + row) * port_rb + src_x_offset;
                     let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
+                    if bus.has_outline_presentation() {
+                        bus.copy_mapped_ram_bytes(
+                            src_addr,
+                            dst_addr,
+                            bounded_col_count,
+                            &translation,
+                        );
+                        continue;
+                    }
                     bus.read_bytes_into(src_addr, &mut src_row);
                     for (dst, src) in dst_row.iter_mut().zip(src_row.iter()) {
                         *dst = translation[*src as usize];
@@ -3247,6 +3351,17 @@ impl super::TrapDispatcher {
             for row in 0..row_count {
                 let src_row = port_base + (src_y_offset + row) * port_rb;
                 let dst_row = screen_base + (dst_y + row) * screen_rb;
+                if port_pixel_size == 8 && dst_pixel_size == 8 && bus.has_outline_presentation() {
+                    let table = packed_translation
+                        .unwrap_or_else(|| std::array::from_fn(|index| index as u8));
+                    bus.copy_mapped_ram_bytes(
+                        src_row + src_first as u32,
+                        dst_row + dst_first as u32,
+                        col_count,
+                        &table,
+                    );
+                    continue;
+                }
                 bus.read_bytes_into(src_row + src_first as u32, &mut src_buf);
                 if dst_pixel_size != 8 {
                     bus.read_bytes_into(dst_row + dst_first as u32, &mut dst_buf);
@@ -3783,10 +3898,7 @@ impl super::TrapDispatcher {
             for row in 0..row_count {
                 let src_addr = candidate.base + row * candidate.row_bytes;
                 let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
-                for col in 0..col_count {
-                    let src_idx = bus.read_byte(src_addr + col);
-                    bus.write_byte(dst_addr + col, translation[src_idx as usize]);
-                }
+                bus.copy_mapped_ram_bytes(src_addr, dst_addr, col_count, &translation);
             }
             self.manual_cport_screen_witness = Self::manual_cport_screen_witness(
                 bus,
@@ -3999,10 +4111,10 @@ impl super::TrapDispatcher {
         let menu_height = (bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16)
             .clamp(0, height.max(0));
         let saved = (menu_height > 0 && self.window_bounds.0.saturating_sub(23) < menu_height)
-            .then(|| bus.read_bytes(base, row_bytes as usize * menu_height as usize));
+            .then(|| bus.save_pixel_bytes(base, row_bytes as usize * menu_height as usize));
         draw(self, bus);
         if let Some(saved) = saved {
-            bus.write_bytes(base, &saved);
+            bus.restore_saved_pixels(base, &saved, 0, saved.len());
         }
     }
 
@@ -4115,7 +4227,6 @@ impl super::TrapDispatcher {
         let is_movable_modal = self.window_proc_id == 5;
         let has_go_away =
             active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
-        let has_zoom_box = active && matches!(self.window_proc_id, 8 | 12);
 
         // The title bar is part of the standard Window Manager frame and is
         // enclosed by the window outline. Macintosh Toolbox Essentials
@@ -4148,11 +4259,11 @@ impl super::TrapDispatcher {
         Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
         Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
 
-        let (title_clear_left, title_clear_right) = if !self.window_title.is_empty() {
+        let title_clear_left = if !self.window_title.is_empty() {
             let text_x = chrome.title_h;
-            (text_x - 8, text_x + title_width + 8)
+            text_x - 8
         } else {
-            (tb_right, tb_right) // No clear area
+            tb_right // No clear area
         };
 
         let _close_box_width = if has_go_away { 15i16 } else { 0 };
@@ -4258,94 +4369,22 @@ impl super::TrapDispatcher {
                 );
             }
 
-            // Draw horizontal stripe pattern in title bar (classic Mac pinstripes)
-            // Only active windows get stripes; inactive windows have plain white title bars
-            //
-            // System 7.5.3 reserves only 6 px of clear-area on each side of
-            // the title text for stripes (the 16-px `title_clear_left/right`
-            // margin is for text-glyph hit-testing, not for stripes). The
-            // active document WDEF paints pinstripe rows at title-bar offsets
-            // 1, 3, and 5; this row placement is calibrated against the
-            // BasiliskII System 7.5.3 reference.
-            // Inside Macintosh Volume V, V-188 figure 5-3.
-            if active {
-                let stripe_left_edge = tb_left + 2;
-                let stripe_right_end = if has_zoom_box {
-                    // Keep the pinstripes flush with the rightmost 15-pixel
-                    // zoom/scrollbar control column used by the shared WDEF
-                    // geometry. Macintosh Toolbox Essentials (1992), Figure
-                    // 4-2 and Listing 5-17.
-                    wind_right - 15
-                } else {
-                    tb_right - 2
-                };
-                let stripe_text_left = title_clear_left + 2;
-                let stripe_text_right = title_clear_right - 2;
-
-                // Close box region to skip (if present)
-                let (cb_gap_left, cb_gap_right) = if has_go_away {
-                    let cb_left = tb_left + 9;
-                    let cb_right = cb_left + 10; // QD exclusive right
-                    (cb_left - 1, cb_right + 2) // 1px gap left, 2px gap right
-                } else {
-                    (stripe_right_end, stripe_right_end) // no gap
-                };
-
-                for y in (tb_top + 1)..=(tb_bottom - 4) {
-                    if (y - tb_top) % 2 == 1 {
-                        // Draw stripe segments, skipping close box and title text gaps
-                        // Segment 1: left edge to close box (or title text if no close box)
-                        let seg1_end = if has_go_away {
-                            cb_gap_left
-                        } else {
-                            stripe_text_left
-                        };
-                        if stripe_left_edge < seg1_end {
-                            Self::fb_hline(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                y,
-                                stripe_left_edge,
-                                seg1_end,
-                                true,
-                            );
-                        }
-                        // Segment 2: after close box to title text (only if close box exists)
-                        if has_go_away && cb_gap_right < stripe_text_left {
-                            Self::fb_hline(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                y,
-                                cb_gap_right,
-                                stripe_text_left,
-                                true,
-                            );
-                        }
-                        // Segment 3: after title text to right edge
-                        if stripe_text_right < stripe_right_end {
-                            Self::fb_hline(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                y,
-                                stripe_text_right,
-                                stripe_right_end,
-                                true,
-                            );
-                        }
-                    }
-                }
+            // Use the same WDEF pinstripe geometry as PowerPC and themed
+            // frames. Macintosh Toolbox Essentials (1992), Figure 4-2.
+            for (top, left, bottom, right) in chrome.stripe_ink.iter().copied() {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    true,
+                );
             }
 
             // Draw title text centered in title bar. Active windows get
@@ -5289,9 +5328,16 @@ mod redraw_chrome_tests {
 
     #[test]
     fn menu_bar_title_baseline_tracks_live_height() {
-        assert_eq!(TrapDispatcher::menu_bar_title_baseline(12), 11);
-        assert_eq!(TrapDispatcher::menu_bar_title_baseline(20), 14);
-        assert_eq!(TrapDispatcher::menu_bar_title_baseline(30), 19);
+        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+        for height in [12, 20, 30] {
+            let baseline = TrapDispatcher::menu_bar_title_baseline(height);
+            let top = baseline - metrics.ascent;
+            let bottom = height - baseline - metrics.descent;
+            assert!(
+                (top - bottom).abs() <= 1,
+                "title must be vertically centered"
+            );
+        }
     }
 
     fn set_window_structure_rect(
@@ -5368,7 +5414,7 @@ mod redraw_chrome_tests {
         ];
         let root_rect = (20, 10, 38, 100);
         let child_rect = (24, 140, 42, 230);
-        let mut child = tracked_submenu_state(701, 1, child_rect, Vec::new());
+        let mut child = tracked_submenu_state(701, 1, child_rect, Vec::new().into());
         child.highlighted_item = 1;
         let mut tracking = test_tracked_menu_state(700, root_rect, 1);
         tracking.submenus.push(child);
@@ -5417,7 +5463,7 @@ mod redraw_chrome_tests {
             popup_tracking: true,
             active_menu: 0,
             highlighted_item: 1,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             dropdown_rect,
             popup_content_top: dropdown_rect.0,
             popup_scroll_direction: None,
@@ -5484,7 +5530,7 @@ mod redraw_chrome_tests {
             popup_tracking: true,
             active_menu: 0,
             highlighted_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             dropdown_rect,
             popup_content_top: dropdown_rect.0,
             popup_scroll_direction: None,
@@ -5508,8 +5554,8 @@ mod redraw_chrome_tests {
             "precondition: the kiosk pass should fill the exposed left margin"
         );
         assert_eq!(
-            bus.read_byte(screen_base + 108 * row_bytes + 60),
-            0,
+            disp.device_clut[bus.read_byte(screen_base + 108 * row_bytes + 60) as usize],
+            [0xFFFF; 3],
             "the live popup's white interior should remain above the black stage"
         );
         assert_eq!(screen_width, 800, "test fixture assumes an 800px screen");
@@ -5532,15 +5578,19 @@ mod redraw_chrome_tests {
 
         disp.draw_window_chrome(&mut bus, true);
 
-        assert!(screen_pixel_is_black(&disp, &bus, 200, 85));
-        assert!(!screen_pixel_is_black(&disp, &bus, 200, 86));
-        assert!(screen_pixel_is_black(&disp, &bus, 200, 87));
+        for y in 85..100 {
+            assert_eq!(
+                screen_pixel_is_black(&disp, &bus, 200, y),
+                y % 2 == 0,
+                "68K title stripes must match the canonical PowerPC rows at y={y}"
+            );
+        }
         assert!(
-            !screen_pixel_is_black(&disp, &bus, 160, 88),
+            !screen_pixel_is_black(&disp, &bus, 160, 89),
             "movable dialog must omit the close box even when goAwayFlag is set"
         );
         assert!(
-            !screen_pixel_is_black(&disp, &bus, 628, 88),
+            !screen_pixel_is_black(&disp, &bus, 628, 89),
             "movable dialog must omit the zoom box"
         );
     }
@@ -5699,7 +5749,7 @@ mod redraw_chrome_tests {
         let saved = disp
             .save_screen_rect_pixels(&bus, (0, 1, 1, 3))
             .expect("packed screen rectangle");
-        assert_eq!(saved.4, vec![5, 5]);
+        assert_eq!(saved.4, vec![5, 5].into());
         bus.write_byte(screen_base, 0xAA);
         bus.write_byte(screen_base + 1, 0xAA);
         disp.restore_screen_rect_pixels(&mut bus, saved.0, saved.1, saved.2, saved.3, &saved.4);
@@ -6852,19 +6902,19 @@ mod redraw_chrome_tests {
             .insert(PORT_PTR, vec![DialogItem::default()]);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
         disp.window_saved_under_pixels
-            .insert(PORT_PTR, (100, 180, 440, 108, vec![0xFF; 440 * 108]));
+            .insert(PORT_PTR, (100, 180, 440, 108, vec![0xFF; 440 * 108].into()));
 
         disp.redraw_chrome(&mut bus);
 
         assert_eq!(
             bus.read_byte(screen_base),
-            0xFF,
-            "standard gray pattern starts with a black pixel"
+            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_dark),
+            "exposed desktop uses the theme color"
         );
         assert_eq!(
             bus.read_byte(screen_base + 1),
-            0x00,
-            "standard gray pattern should add white desktop pixels"
+            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light),
+            "adjacent desktop pixels use the same solid color"
         );
         assert_eq!(
             bus.read_byte(screen_base + 120 * row_bytes + 200),
@@ -6874,8 +6924,8 @@ mod redraw_chrome_tests {
         let saved = &disp.window_saved_under_pixels[&PORT_PTR].4;
         assert_eq!(
             &saved[..2],
-            &[0xFF, 0x00],
-            "the save-under snapshot must track the synthesized desktop pattern"
+            &[disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light); 2],
+            "the save-under snapshot must retain the themed desktop"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
     }
@@ -7134,6 +7184,57 @@ mod redraw_chrome_tests {
             0x77,
             "visible dialog snapshot should remain composited even when the front port changes"
         );
+    }
+
+    #[test]
+    fn dialog_snapshot_replay_retains_unchanged_outline_detail() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let base = bus.alloc(64 * 64);
+        disp.screen_mode = (base, 64, 64, 64, 8);
+        bus.write_long(0x0824, base);
+        bus.fill_bytes(base, 64 * 64, 0);
+        bus.prepare_outline_presentation(
+            disp.screen_mode,
+            std::array::from_fn(|i| [255 - i as u8; 3]),
+        );
+        TrapDispatcher::fb_draw_string(&mut bus, base, 64, 8, 64, 64, 12, 28, "Pilot", 0, 12);
+        let expected = bus.outline_presentation_rgb().unwrap().2;
+        assert!(expected.iter().any(|&value| value > 0 && value < 255));
+        let bounds = (8, 8, 56, 56);
+        let saved = disp.save_dialog_pixels(&bus, bounds);
+        let (top, left, width, height, occluder) =
+            disp.save_screen_rect_pixels(&bus, bounds).unwrap();
+        // A changing background pixel must still be restored, while unchanged
+        // text must survive the repeated host refresh used by ModalDialog.
+        bus.write_byte(base + 48 * 64 + 48, 77);
+        for _ in 0..3 {
+            disp.restore_screen_rect_pixels(&mut bus, top, left, width, height, &occluder);
+            disp.restore_dialog_pixels(&mut bus, bounds, &saved);
+            assert!(bus.outline_presentation_rgb().unwrap().2 == expected);
+        }
+        // Cover the text completely, then dismiss a menu and a window. Their
+        // owned snapshots must restore detail, not just unchanged guest bytes.
+        let dropdown = disp.save_dropdown_pixels(&bus, bounds);
+        for y in 8..56u32 {
+            bus.fill_bytes(base + y * 64 + 8, 48, 42);
+        }
+        disp.restore_dialog_pixels(&mut bus, bounds, &saved);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+        for y in 8..57u32 {
+            bus.fill_bytes(base + y * 64 + 8, 49, 42);
+        }
+        disp.restore_dropdown_pixels(&mut bus, bounds, &dropdown);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+        for y in 8..56u32 {
+            bus.fill_bytes(base + y * 64 + 8, 48, 42);
+        }
+        disp.restore_screen_rect_pixels(&mut bus, top, left, width, height, &occluder);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+        // Actual guest writes retain their draw/erase semantics even when
+        // their bytes happen to match the existing logical framebuffer.
+        let guest = bus.read_bytes(base, 64 * 64);
+        bus.write_bytes(base, &guest);
+        assert!(bus.outline_presentation_rgb().unwrap().2 != expected);
     }
 
     #[test]

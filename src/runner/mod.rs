@@ -1789,6 +1789,7 @@ pub struct FixtureRunner {
     /// its tick_override to this value so the game clock is frozen — matching
     /// the real Mac where MenuSelect blocks the application event loop.
     frozen_ticks: Option<u32>,
+    menu_presentation_remainder: u64,
     /// Guest-memory address of the Time Manager interrupt trampoline code.
     /// Allocated once on first use and reused for all subsequent timer fires.
     timer_trampoline: u32,
@@ -2016,6 +2017,7 @@ impl FixtureRunner {
             idle_cycle_sites: [IdleCycleSiteRecord::default(); IDLE_CYCLE_SITE_SLOTS],
             idle_cycle_sleep: None,
             frozen_ticks: None,
+            menu_presentation_remainder: 0,
             timer_trampoline: 0,
             vbl_trampoline: 0,
             cursor_task_trampoline: 0,
@@ -2745,6 +2747,36 @@ impl FixtureRunner {
             .application()
             .map(|app| app.cpu.pc)
             .unwrap_or_else(|| self.m68k.cpu.read_reg(Register::PC))
+    }
+
+    /// Advance menu feedback by uncapped elapsed host time, once per frame.
+    /// This remains independent of CPU catch-up limits and frozen app ticks.
+    /// Toolbox Essentials (1992), SetMenuFlash, p. 3-142.
+    pub fn advance_menu_presentation_clock(&mut self, elapsed: std::time::Duration) {
+        let Some(tracking) = self.process_context.menu_tracking() else {
+            self.menu_presentation_remainder = 0;
+            return;
+        };
+        let tick = tracking.flash_tick.unwrap_or(self.guest_tick());
+        let scaled = elapsed.as_nanos() * 60 + u128::from(self.menu_presentation_remainder);
+        self.menu_presentation_remainder = (scaled % 1_000_000_000) as u64;
+        self.process_context
+            .set_menu_presentation_tick(tick.wrapping_add((scaled / 1_000_000_000) as u32));
+    }
+
+    /// Prepare the same sharp text surface for either guest CPU and any frontend.
+    /// Call after initialization and before presenting a frame to track mode changes.
+    pub fn prepare_text_presentation(&mut self) {
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(
+            &self.dispatcher.device_clut,
+            &self.dispatcher.device_gamma,
+        )
+        .map(|word| {
+            let [r, g, b, _] = word.to_le_bytes();
+            [r, g, b]
+        });
+        self.bus
+            .prepare_outline_presentation(self.dispatcher.screen_mode, palette);
     }
 
     /// Synchronize deferred PPC visual/VFS state and composite chrome/dialog overlays.
@@ -8273,13 +8305,34 @@ impl FixtureRunner {
         }
         let matte_byte =
             Self::ppc_indexed_matte_byte(primary_buffer.depth, &ppc_app.screen_clut).unwrap_or(0);
-        let Some(canvas_size) = canvas_row_bytes.checked_mul(canvas_height) else {
+        if canvas_row_bytes.checked_mul(canvas_height).is_none() {
             return;
-        };
-        self.bus
-            .write_bytes(host_base, &vec![matte_byte; canvas_size as usize]);
+        }
         let primary_destination_x = canvas_width.saturating_sub(primary_buffer.width) / 2;
         let primary_destination_y = canvas_height.saturating_sub(primary_buffer.height) / 2;
+        // Only the matte lies outside the incoming image. Clearing the image
+        // itself would discard retained text on every host synchronization.
+        if primary_buffer.depth < 8 {
+            self.bus.write_bytes(
+                host_base,
+                &vec![matte_byte; (canvas_row_bytes * canvas_height) as usize],
+            );
+        } else if canvas_width != primary_buffer.width || canvas_height != primary_buffer.height {
+            let left_bytes = (primary_destination_x * primary_buffer.depth / 8) as usize;
+            let right_byte = ((primary_destination_x + primary_buffer.width) * primary_buffer.depth)
+                .div_ceil(8) as usize;
+            let row = vec![matte_byte; canvas_row_bytes as usize];
+            for y in 0..canvas_height {
+                let address = host_base + y * canvas_row_bytes;
+                if y < primary_destination_y || y >= primary_destination_y + primary_buffer.height {
+                    self.bus.write_bytes(address, &row);
+                } else {
+                    self.bus.write_bytes(address, &row[..left_bytes]);
+                    self.bus
+                        .write_bytes(address + right_byte as u32, &row[right_byte..]);
+                }
+            }
+        }
         if !Self::copy_ppc_front_buffer_rows_to_host(
             &mut self.bus,
             ppc_app,
@@ -8524,10 +8577,23 @@ impl FixtureRunner {
                 let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
                     return false;
                 };
-                bus.write_bytes(
-                    destination_row_addr + destination_x_bytes,
-                    &row[..visible_row_len],
-                );
+                if ppc_app
+                    .draw_sprocket
+                    .last_fade_percent
+                    .is_none_or(|percent| percent == 100)
+                    && ppc_app.draw_sprocket.last_fade_zero_color.is_none()
+                {
+                    bus.sync_presented_bytes(
+                        destination_row_addr + destination_x_bytes,
+                        front_buffer.base_addr + y * front_buffer.row_bytes,
+                        &row[..visible_row_len],
+                    );
+                } else {
+                    bus.write_bytes(
+                        destination_row_addr + destination_x_bytes,
+                        &row[..visible_row_len],
+                    );
+                }
             }
         }
         true
@@ -8608,6 +8674,10 @@ impl FixtureRunner {
         let (base, row_bytes, current_width, current_height, current_depth) =
             self.dispatcher.screen_mode;
         let base_valid = base != 0
+            && self
+                .bus
+                .get_alloc_size(base)
+                .is_some_and(|size| size >= bytes_needed)
             && base
                 .checked_add(bytes_needed)
                 .is_some_and(|end| end <= self.bus.ram_size());
@@ -8830,6 +8900,8 @@ impl FixtureRunner {
     /// runs flat out (up to `max_steps`) until either the tick cap is hit
     /// or the instruction budget is exhausted, at which point the caller
     /// yields to the UI thread for rendering.
+    /// Call [`Self::advance_menu_presentation_clock`] once per host frame with
+    /// uncapped elapsed time; menu feedback must not inherit the CPU tick cap.
     pub fn run_gui_slice_with_audio(
         &mut self,
         max_steps: usize,
@@ -14759,10 +14831,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Vec::new().into(),
             stack_ptr: 0,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Vec::new().into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -15532,6 +15604,7 @@ mod tests {
         runner.push_canonical_mouse_down(10, title_h);
         let root_rect = (0..16)
             .find_map(|_| {
+                runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
                 let (_, running) = runner.run_steps(512, None);
                 assert!(
                     running,
@@ -15550,6 +15623,7 @@ mod tests {
             .set_mouse_position(root_rect.0 + 8, root_rect.1 + 16);
         runner.sync_mouse_position_lowmem();
         let callback_completed = (0..32).any(|_| {
+            runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
             let (_, running) = runner.run_steps(512, None);
             assert!(
                 running,
@@ -15618,6 +15692,7 @@ mod tests {
         runner.dispatcher.set_mouse_position(target_v, target_h);
         runner.sync_mouse_position_lowmem();
         let target_observed = (0..16).any(|_| {
+            runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
             let (_, running) = runner.run_steps(512, None);
             assert!(running, "native MenuSelect halted before the mouse release");
             runner
@@ -15633,6 +15708,7 @@ mod tests {
         );
         runner.push_canonical_mouse_up(target_v, target_h);
         for _ in 0..128 {
+            runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
             let (_, running) = runner.run_steps(512, None);
             if !running {
                 break;
@@ -16376,6 +16452,7 @@ mod tests {
                 runner.push_canonical_mouse_up(28, 20);
             }
             for _ in 0..32 {
+                runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
                 if !runner.run_steps(128, None).1 {
                     break;
                 }
@@ -25825,6 +25902,27 @@ mod tests {
     }
 
     #[test]
+    fn menu_flash_uses_frontend_time_while_application_ticks_are_frozen() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let mut tracking = crate::menu_manager::test_process_menu_tracking(128);
+        tracking.set_flash_tick(100);
+        tracking.begin_flash(3, 0x0080_0002);
+        runner.process_context.set_menu_tracking(Some(tracking));
+        runner.frozen_ticks = Some(100);
+        runner.advance_menu_presentation_clock(std::time::Duration::from_millis(300));
+        runner.run_steps_internal(0, Some(102), 0, true, false, false);
+        assert_eq!(runner.frozen_ticks, Some(100));
+        assert_eq!(
+            runner
+                .process_context
+                .menu_tracking_mut()
+                .unwrap()
+                .advance_flash(),
+            crate::menu_manager::MenuFlashStep::Complete(0x0080_0002)
+        );
+    }
+
+    #[test]
     fn tracking_refire_freeze_policy_keeps_modaldialog_ticks_live() {
         // Menu/control tracking may freeze app-visible ticks while the GUI
         // renders intermediate tracking frames.
@@ -27056,7 +27154,7 @@ mod tests {
             dialog_ptr,
             crate::trap::dispatch::PersistentDialogSnapshot {
                 bounds: (10, 10, 40, 40),
-                pixels: Vec::new(),
+                pixels: Vec::new().into(),
             },
         );
         runner.dispatcher.pending_wait_sleep_ticks = 60;
@@ -27087,7 +27185,7 @@ mod tests {
             dialog_ptr,
             crate::trap::dispatch::PersistentDialogSnapshot {
                 bounds: (10, 10, 40, 40),
-                pixels: Vec::new(),
+                pixels: Vec::new().into(),
             },
         );
         runner.dispatcher.pending_wait_sleep_ticks = 60;
@@ -27117,7 +27215,7 @@ mod tests {
             dialog_ptr,
             crate::trap::dispatch::PersistentDialogSnapshot {
                 bounds: (10, 10, 40, 40),
-                pixels: Vec::new(),
+                pixels: Vec::new().into(),
             },
         );
         runner.dispatcher.dialog_modal_entered.insert(dialog_ptr);
@@ -27230,10 +27328,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Vec::new().into(),
             stack_ptr: 0x007F_FFC0,
             item_hit_ptr: 0x0030_0000,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Vec::new().into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -27514,10 +27612,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Vec::new().into(),
             stack_ptr: interrupted_sp,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Vec::new().into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -27769,10 +27867,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Vec::new().into(),
             stack_ptr: interrupted_sp,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Vec::new().into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -27943,10 +28041,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Vec::new().into(),
             stack_ptr: interrupted_sp,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Vec::new().into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
