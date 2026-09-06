@@ -58,10 +58,33 @@ impl PresentationSlot {
         address: u32,
         len: usize,
     ) {
+        self.restore_copy_detail(pixels, offset, address, len, None);
+    }
+    pub(crate) fn restore_copy_detail<T>(
+        &self,
+        pixels: &SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+        palette: Option<&[u8; 256]>,
+    ) {
         if let Some(mut p) = self.as_mut() {
             for byte in 0..len {
                 if let Some(detail) = pixels.detail.get(&(offset + byte)) {
-                    p.put_detail(address + byte as u32, detail);
+                    if let Some(palette) = palette {
+                        let mut detail = detail.clone();
+                        detail.value = palette[detail.value as usize];
+                        for index in &mut detail.indices {
+                            *index = palette[*index as usize];
+                        }
+                        for ink in detail.ink.values_mut() {
+                            ink.foreground = palette[ink.foreground as usize];
+                            ink.background.map(&mut |index| palette[index as usize]);
+                        }
+                        p.put_detail(address + byte as u32, &detail);
+                    } else {
+                        p.put_detail(address + byte as u32, detail);
+                    }
                 }
             }
         }
@@ -1390,6 +1413,66 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn shared_row_copy_retains_native_detail_in_indexed_and_direct_formats() {
+        use crate::copy_bits::{BytePixmap, RowCopy, RowCopyOutcome};
+        for depth in [8u32, 16, 32] {
+            let mut bus = bus();
+            let lanes = depth / 8;
+            bus.enable_outline_presentation(
+                (0x1000, 8 * lanes, 8, 8, depth as u16),
+                std::array::from_fn(|i| [i as u8; 3]),
+                2,
+            );
+            let mut memory = crate::memory::GuestAddressSpace::new();
+            let source = 0x0100_0000;
+            let destination = source + 32;
+            memory.add_region(source, vec![255; 64]);
+            bus.attach_guest_address_space(memory.shared_view());
+            paint_detail(&mut bus, source);
+            let mut expected = bus.save_pixel_bytes(source, (2 * lanes) as usize);
+            let palette: [u8; 256] = std::array::from_fn(|i| 255 - i as u8);
+            let translation = (depth == 8).then_some(&palette);
+            if let Some(palette) = translation {
+                expected.transform_detail(|_, byte| palette[byte as usize]);
+            }
+            let pixmap = |base| BytePixmap {
+                base,
+                row_bytes: 2 * lanes,
+                depth,
+                bounds: [0, 0, 1, 2],
+            };
+            assert_eq!(
+                RowCopy {
+                    mode: 0,
+                    source: pixmap(source),
+                    destination: pixmap(destination),
+                    source_rect: [0, 0, 1, 2],
+                    destination_rect: [0, 0, 1, 2],
+                    clip: [0, 0, 1, 2],
+                    palette: translation
+                }
+                .execute(&mut memory),
+                RowCopyOutcome::Completed
+            );
+            assert_eq!(
+                bus.presentation
+                    .as_ref()
+                    .unwrap()
+                    .detail(destination)
+                    .as_ref(),
+                expected.detail.get(&0)
+            );
+            memory.write_bytes(destination, &[0]).unwrap();
+            assert!(bus
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail(destination)
+                .is_none());
+        }
     }
 
     #[test]
