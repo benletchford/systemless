@@ -7692,7 +7692,10 @@ impl PpcLoadedApp {
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
                     let mut resource_call = None;
-                    if guest_calls.complete_powerpc_resuming_operation(
+                    if guest_calls
+                        .ready_menu_bar_build(GuestIsa::PowerPc)
+                        .is_some()
+                        || guest_calls.complete_powerpc_resuming_operation(
                         cpu,
                         process_memory_manager,
                         |operation, result| match operation {
@@ -7714,6 +7717,23 @@ impl PpcLoadedApp {
                             },
                         },
                     ) {
+                        if guest_calls.ready_menu_bar_build(GuestIsa::PowerPc).is_some() {
+                            let heap = process_memory_manager.native_heap_state()
+                                .expect("native allocator registered during execution");
+                            let mut cursor = heap.heap_cursor;
+                            let limit =
+                                process_memory_manager.native_allocation_limit(heap.heap_limit);
+                            return ppc_continue_menu_bar_build(
+                                cpu,
+                                process_memory_manager,
+                                memory,
+                                &mut cursor,
+                                limit,
+                                &mut toolbox_startup,
+                                &process_file_system.resource_manager.vfs_resources,
+                                *current_resource_refnum,
+                            );
+                        }
                         if let Some(call) = resource_call {
                             if let Err(error) = ppc_invoke_prepared_resource(
                                 cpu,
@@ -16875,18 +16895,6 @@ fn dispatch_supported_import(
             )))
         }
         PpcImportDispatcherTarget::GetNewMBar => {
-            if toolbox_startup.guest_calls.menu_bar_build().is_some() {
-                return Some(ppc_continue_menu_bar_build(
-                    cpu,
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    toolbox_startup,
-                    vfs_resources,
-                    *current_resource_refnum,
-                ));
-            }
             let result_handle = ppc_get_new_mbar(
                 cpu.gpr[3] as u16 as i16,
                 process_memory_manager,
@@ -76362,6 +76370,11 @@ fn ppc_dispatch_native_menu_definition_with_return(
     return_gpr3: PpcNativeReturnGpr3,
 ) -> Option<PpcImportAction> {
     let menu_build = toolbox_startup.guest_calls.menu_bar_build();
+    let final_pc = if menu_build.is_some() && invocation.message == MenuDefinitionMessage::Size {
+        PPC_GUEST_CALL_RETURN_PC
+    } else {
+        final_pc
+    };
     let target = ppc_menu_definition_target(cpu, memory, resources, invocation.menu_handle)?;
     let manager = process_memory_manager.as_deref_mut()?;
     // The emulated callback owns its wrapper and stack as well as its
@@ -91445,11 +91458,12 @@ pub(crate) mod tests {
                 loaded.process_memory_manager.0.borrow_mut().native_mut(),
             ));
 
-            if loaded.cpu.pc >= loaded.import_trap_base
-                && loaded.cpu.pc
-                    < loaded
-                        .import_trap_base
-                        .saturating_add(loaded.import_count.saturating_mul(4))
+            if loaded.cpu.pc == PPC_GUEST_CALL_RETURN_PC
+                || (loaded.cpu.pc >= loaded.import_trap_base
+                    && loaded.cpu.pc
+                        < loaded
+                            .import_trap_base
+                            .saturating_add(loaded.import_count.saturating_mul(4)))
             {
                 let probe = loaded.run_with_hle_imports(64);
                 assert_eq!(probe.unsupported_import_index, None);
@@ -102316,8 +102330,87 @@ pub(crate) mod tests {
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNewMBar;
         let probe = loaded.run_with_hle_imports(64);
-        assert_eq!(probe.handled_import_count, 3);
+        assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
+
+        let list_handle = loaded.cpu.gpr[3];
+        let menu_handles = ppc_menu_list_definition(&mut loaded.memory, list_handle)
+            .unwrap()
+            .handles()
+            .collect::<Vec<_>>();
+        assert_eq!(menu_handles.len(), 2);
+        for menu_handle in menu_handles {
+            let menu = loaded.memory.read_u32_be(menu_handle).unwrap();
+            assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
+            assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
+        }
+        assert!(!loaded.guest_calls.has_menu_bar_builds());
+    }
+
+    #[test]
+    fn native_getnewmbar_resumes_internally_after_classic_mdefs() {
+        let pef = synthetic_pef_with_import(b"GetNewMBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor_bytes = vec![
+            0x20, 0x6f, 0x00, 0x10, 0x20, 0x50, 0x31, 0x7c, 0x00, 0x7b, 0x00, 0x02, 0x31, 0x7c,
+            0x00, 0x2d, 0x00, 0x04, 0x4e, 0x74, 0x00, 0x12,
+        ];
+        let ref_num = *loaded.process_file_system.current_resource_file;
+        loaded.process_file_system.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MBAR"),
+                res_id: 900,
+                name: Vec::new(),
+                data: vec![0, 2, 2, 89, 2, 90],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 601,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(601, 256, b"First"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 602,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(602, 256, b"Second"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MDEF"),
+                res_id: 256,
+                name: Vec::new(),
+                data: descriptor_bytes,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+        loaded.cpu.gpr[3] = 900;
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewMBar);
+        assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+        assert!(loaded.guest_calls.is_empty());
 
         let list_handle = loaded.cpu.gpr[3];
         let menu_handles = ppc_menu_list_definition(&mut loaded.memory, list_handle)
@@ -102452,7 +102545,7 @@ pub(crate) mod tests {
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNewMBar;
         let probe = loaded.run_with_hle_imports(256);
-        assert_eq!(probe.handled_import_count, 5);
+        assert_eq!(probe.handled_import_count, 3);
         assert_eq!(probe.unsupported_import_index, None);
 
         let inner = loaded.memory.read_u32_be(marker).unwrap();

@@ -17,8 +17,9 @@ pub(crate) struct M68kMenuDefinitionFrame {
 }
 
 impl M68kMenuDefinitionFrame {
-    /// Resume a retained Toolbox operation through a plain trap, without
-    /// repeating the original auto-pop entry's caller-return consumption.
+    /// Emit an internal A-line return boundary inside the live callback frame.
+    /// Execution matches its PC/SP before guest trap routing; the retained
+    /// operation supplies the caller return instead of repeating guest entry.
     pub(crate) fn trap_return(&mut self, opcode: u16) -> u32 {
         self.image[52..54].copy_from_slice(&opcode.to_be_bytes());
         self.entry + 52

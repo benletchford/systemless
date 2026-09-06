@@ -567,7 +567,7 @@ pub(crate) struct MenuBarBuildId(u64);
 /// Caller return placement belongs to execution, not to menu sizing policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MenuBarCallOrigin {
-    M68k { stack_pointer: u32, return_address: Option<u32> },
+    M68k { stack_pointer: u32, return_address: u32 },
     PowerPc { return_address: u32 },
 }
 
@@ -995,14 +995,25 @@ impl SharedGuestCallStack {
             .map(|call| call.id)
     }
 
-    pub(crate) fn menu_bar_build_origin(&self) -> Option<MenuBarCallOrigin> {
-        let id = self.menu_bar_build()?;
-        self.0
-            .borrow()
+    pub(crate) fn ready_menu_bar_build(&self, isa: GuestIsa) -> Option<MenuBarBuildId> {
+        let tasks = self.0.borrow();
+        let task = tasks.kernel.current_task();
+        let parent = tasks.kernel.peek(task).map(|call| call.call_id());
+        tasks
             .menu_bar_calls
             .iter()
-            .find(|call| call.id == id)
-            .map(|call| call.origin)
+            .rev()
+            .find(|call| {
+                let origin_isa = match call.origin {
+                    MenuBarCallOrigin::M68k { .. } => GuestIsa::M68k,
+                    MenuBarCallOrigin::PowerPc { .. } => GuestIsa::PowerPc,
+                };
+                call.task == task
+                    && call.parent == parent
+                    && origin_isa == isa
+                    && call.build.callback_ready()
+            })
+            .map(|call| call.id)
     }
 
     #[cfg(test)]
@@ -2759,7 +2770,7 @@ mod tests {
         let calls = SharedGuestCallStack::default();
         let outer_origin = MenuBarCallOrigin::M68k {
             stack_pointer: 0x3000,
-            return_address: None,
+            return_address: 0x2002,
         };
         let outer = calls
             .begin_menu_bar_build(MenuBarBuild::new(111, vec![5]), outer_origin)
@@ -2782,6 +2793,7 @@ mod tests {
             0x3000
         ));
         assert_eq!(calls.menu_bar_build(), None);
+        assert_eq!(calls.ready_menu_bar_build(GuestIsa::M68k), None);
         let completion = MenuDefinitionCompletion::pending();
         calls.bind_menu_bar_build_completion(outer, 5, completion.clone());
         let inner_origin = MenuBarCallOrigin::PowerPc {
@@ -2812,6 +2824,8 @@ mod tests {
             menu_rect: (0, 0, 0, 0),
             which_item: 0,
         }));
+        assert_eq!(calls.ready_menu_bar_build(GuestIsa::PowerPc), None);
+        assert_eq!(calls.ready_menu_bar_build(GuestIsa::M68k), Some(outer));
         assert_eq!(
             calls.advance_menu_bar_build(GuestIsa::M68k),
             Some(MenuBarBuildResume::Complete {
@@ -2820,6 +2834,7 @@ mod tests {
             })
         );
         assert_eq!(calls.advance_menu_bar_build(GuestIsa::M68k), None);
+        assert_eq!(calls.ready_menu_bar_build(GuestIsa::M68k), None);
         assert!(calls.is_empty());
     }
 
