@@ -58045,7 +58045,7 @@ fn ppc_copy_bits(
         // and 4-27: CopyBits copies bitmap or PixMap pixels between graphics
         // ports and GWorlds, including indexed-color PixMaps. The import
         // resolves records and masks; the shared operation owns pure
-        // byte-aligned srcCopy format, mode, and geometry eligibility.
+        // byte-aligned or packed srcCopy format, mode, and geometry eligibility.
         if mask_storage.is_none() {
             use crate::copy_bits::{BytePixmap, RowCopy, RowCopyOutcome};
 
@@ -151857,6 +151857,273 @@ pub(crate) mod tests {
                 .read_bytes_into(dst_pixels, &mut copied)
                 .unwrap();
             assert_eq!(copied, [packed[0], packed[1], 0x77]);
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_packed_identity_preserves_edges_and_padding() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        for (depth, width, copy_right, source_row, destination_row, expected_row) in [
+            (
+                2,
+                8,
+                17,
+                &[0x1b, 0xe4, 0x91][..],
+                &[0x80, 0x01, 0x5a][..],
+                &[0x9b, 0xe5, 0x5a][..],
+            ),
+            (
+                4,
+                6,
+                15,
+                &[0x01, 0x23, 0x45, 0x92][..],
+                &[0xa0, 0x00, 0x0b, 0x5a][..],
+                &[0xa1, 0x23, 0x4b, 0x5a][..],
+            ),
+        ] {
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_HEAP_BASE + 0x127c0;
+            let source_pixels = scratch;
+            let destination_pixels = scratch + 0x10;
+            let source_pixmap = scratch + 0x20;
+            let destination_pixmap = scratch + 0x60;
+            let rects = scratch + 0xa0;
+            loaded.memory.add_region(scratch, vec![0; 0xc0]);
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                source_pixmap,
+                source_pixels,
+                source_row.len() as u32,
+                -2,
+                10,
+                0,
+                10 + width,
+                depth,
+            )
+            .unwrap();
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                destination_pixmap,
+                destination_pixels,
+                destination_row.len() as u32,
+                20,
+                30,
+                22,
+                30 + width,
+                depth,
+            )
+            .unwrap();
+            for pixmap in [source_pixmap, destination_pixmap] {
+                loaded
+                    .memory
+                    .write_u32_be(pixmap + 42, PPC_MAIN_CTABLE_HANDLE)
+                    .unwrap();
+            }
+            let mut source = source_row.repeat(2);
+            *source.last_mut().unwrap() ^= 1;
+            let mut destination = destination_row.repeat(2);
+            *destination.last_mut().unwrap() ^= 1;
+            loaded.memory.write_bytes(source_pixels, &source).unwrap();
+            loaded
+                .memory
+                .write_bytes(destination_pixels, &destination)
+                .unwrap();
+            ppc_write_rect(&mut loaded.memory, rects, -2, 11, 0, copy_right).unwrap();
+            ppc_write_rect(
+                &mut loaded.memory,
+                rects + 8,
+                20,
+                31,
+                22,
+                31 + (copy_right - 11),
+            )
+            .unwrap();
+            loaded.cpu.gpr[3] = source_pixmap;
+            loaded.cpu.gpr[4] = destination_pixmap;
+            loaded.cpu.gpr[5] = rects;
+            loaded.cpu.gpr[6] = rects + 8;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut actual = vec![0; destination.len()];
+            loaded
+                .memory
+                .read_bytes_into(destination_pixels, &mut actual)
+                .unwrap();
+            let mut expected = expected_row.repeat(2);
+            *expected.last_mut().unwrap() ^= 1;
+            assert_eq!(actual, expected, "depth={depth}");
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded
+                .memory
+                .write_bytes(destination_pixels, &destination)
+                .unwrap();
+            let (unequal_source_right, unequal_destination_right, unequal_expected) = if depth == 2
+            {
+                (17, 36, &[0x6f, 0x91, 0x5a][..])
+            } else {
+                (15, 34, &[0x12, 0x34, 0x0b, 0x5a][..])
+            };
+            ppc_write_rect(&mut loaded.memory, rects, -2, 11, -1, unequal_source_right).unwrap();
+            ppc_write_rect(
+                &mut loaded.memory,
+                rects + 8,
+                20,
+                30,
+                21,
+                unequal_destination_right,
+            )
+            .unwrap();
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut actual = vec![0; destination_row.len()];
+            loaded
+                .memory
+                .read_bytes_into(destination_pixels, &mut actual)
+                .unwrap();
+            assert_eq!(
+                actual, unequal_expected,
+                "unequal field offsets: depth={depth}"
+            );
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_packed_distinct_aliases_snapshot_source() {
+        const SOURCE: u32 = 0x0900_0000;
+        const DESTINATION: u32 = 0x0A00_0000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let backing = crate::memory::bus::SharedRamRegion::from_owned_bytes(vec![
+            0x1b, 0xe4, 0xaa, 0xe4, 0x1b, 0xbb, 0, 0, 0xcc,
+        ]);
+        // SAFETY: the import accesses both aliases serially through one
+        // operation, and no byte slice survives a memory call.
+        unsafe {
+            loaded.memory.add_shared_region(SOURCE, backing.clone());
+            loaded.memory.add_shared_region(DESTINATION, backing);
+        }
+        let records = PPC_HEAP_BASE + 0x16090;
+        let source_pixmap = records;
+        let destination_pixmap = records + 0x40;
+        let rect = records + 0x80;
+        loaded.memory.add_region(records, vec![0; 0x90]);
+        ppc_write_pixmap(&mut loaded.memory, source_pixmap, SOURCE, 3, 0, 0, 2, 8, 2).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            destination_pixmap,
+            DESTINATION + 3,
+            3,
+            0,
+            0,
+            2,
+            8,
+            2,
+        )
+        .unwrap();
+        for pixmap in [source_pixmap, destination_pixmap] {
+            loaded
+                .memory
+                .write_u32_be(pixmap + 42, PPC_MAIN_CTABLE_HANDLE)
+                .unwrap();
+        }
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 8).unwrap();
+        loaded.cpu.gpr[3] = source_pixmap;
+        loaded.cpu.gpr[4] = destination_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 9];
+        loaded.memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+        assert_eq!(
+            actual,
+            [0x1b, 0xe4, 0xaa, 0x1b, 0xe4, 0xbb, 0xe4, 0x1b, 0xcc]
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_packed_failures_do_not_fallback() {
+        const SOURCE: u32 = 0x0900_0000;
+        const DESTINATION: u32 = 0x0A00_0000;
+        for source_failure in [true, false] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+            loaded.memory.add_region(
+                SOURCE,
+                if source_failure {
+                    vec![0x1b, 0xe4, 0xaa]
+                } else {
+                    vec![0x1b, 0xe4, 0xaa, 0xe4, 0x1b, 0xbb]
+                },
+            );
+            loaded
+                .memory
+                .add_region(DESTINATION, vec![0x80, 0x01, 0x5a, 0x81, 0x02, 0x5b]);
+            if !source_failure {
+                loaded
+                    .memory
+                    .add_readonly_region(DESTINATION + 3, vec![0x81, 0x02]);
+            }
+            let records = PPC_HEAP_BASE + 0x16090;
+            let source_pixmap = records;
+            let destination_pixmap = records + 0x40;
+            let rect = records + 0x80;
+            loaded.memory.add_region(records, vec![0; 0x90]);
+            ppc_write_pixmap(&mut loaded.memory, source_pixmap, SOURCE, 3, 0, 0, 2, 8, 2).unwrap();
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                destination_pixmap,
+                DESTINATION,
+                3,
+                0,
+                0,
+                2,
+                8,
+                2,
+            )
+            .unwrap();
+            for pixmap in [source_pixmap, destination_pixmap] {
+                loaded
+                    .memory
+                    .write_u32_be(pixmap + 42, PPC_MAIN_CTABLE_HANDLE)
+                    .unwrap();
+            }
+            ppc_write_rect(&mut loaded.memory, rect, 0, 1, 2, 7).unwrap();
+            loaded.cpu.gpr[3] = source_pixmap;
+            loaded.cpu.gpr[4] = destination_pixmap;
+            loaded.cpu.gpr[5] = rect;
+            loaded.cpu.gpr[6] = rect;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut actual = [0; 6];
+            loaded
+                .memory
+                .read_bytes_into(DESTINATION, &mut actual)
+                .unwrap();
+            let expected = if source_failure {
+                [0x80, 0x01, 0x5a, 0x81, 0x02, 0x5b]
+            } else {
+                [0x9b, 0xe5, 0x5a, 0x81, 0x02, 0x5b]
+            };
+            assert_eq!(actual, expected, "source_failure={source_failure}");
         }
     }
 

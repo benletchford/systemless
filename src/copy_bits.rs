@@ -1,4 +1,4 @@
-//! Shared byte-aligned, unscaled srcCopy transfers.
+//! Shared byte-aligned and packed, unscaled srcCopy transfers.
 //! Imaging With QuickDraw (1994), pp. 3-112–3-117 and 4-27–4-28.
 //! ABI decoding, port/mask resolution and picture recording stay at the callers
 //! until their corresponding operation families migrate.
@@ -71,6 +71,32 @@ impl BytePixmap {
         }
         Some(address)
     }
+
+    fn packed_row_span(self, x: i32, y: i32, width: i32) -> Option<(u32, usize, u32)> {
+        let [top, left, bottom, right] = self.bounds;
+        let end = x.checked_add(width)?;
+        if x < left || end > right || width <= 0 || y < top || y >= bottom {
+            return None;
+        }
+        let first_pixel = u32::try_from(x.checked_sub(left)?).ok()?;
+        let end_pixel = u32::try_from(end.checked_sub(left)?).ok()?;
+        let first_bit = first_pixel.checked_mul(self.depth)?;
+        let end_bit = end_pixel.checked_mul(self.depth)?;
+        let first_byte = first_bit / 8;
+        let end_byte = end_bit.checked_add(7)? / 8;
+        if end_byte > self.row_bytes {
+            return None;
+        }
+        let len = usize::try_from(end_byte.checked_sub(first_byte)?).ok()?;
+        let y_bytes = u32::try_from(y.checked_sub(top)?)
+            .ok()?
+            .checked_mul(self.row_bytes)?;
+        let address = self.base.checked_add(y_bytes)?.checked_add(first_byte)?;
+        if u64::from(address) + len as u64 > 1u64 << 32 {
+            return None;
+        }
+        Some((address, len, first_bit % 8))
+    }
 }
 
 /// One synchronous transfer, consumed before any guest callback can run.
@@ -101,11 +127,10 @@ impl RowCopy<'_> {
     /// already committed; this does not promise rectangle-wide atomicity.
     pub(crate) fn execute(self, memory: &mut impl CopyBitsMemory) -> RowCopyOutcome {
         let depth = self.source.depth;
-        if self.mode != 0
-            || depth != self.destination.depth
-            || !matches!(depth, 8 | 16 | 24 | 32)
-            || (self.palette.is_some() && depth != 8)
-        {
+        let packed = matches!(depth, 2 | 4) && self.palette.is_none();
+        let byte_aligned =
+            matches!(depth, 8 | 16 | 24 | 32) && (self.palette.is_none() || depth == 8);
+        if self.mode != 0 || depth != self.destination.depth || (!packed && !byte_aligned) {
             return RowCopyOutcome::Declined;
         }
         let [st, sl, sb, sr] = self.source_rect;
@@ -171,6 +196,14 @@ impl RowCopy<'_> {
         else {
             return RowCopyOutcome::ReadOrGeometryFailure;
         };
+        if packed {
+            return self.execute_packed(
+                memory,
+                [top, left, bottom, right],
+                [y_delta, x_delta],
+                count,
+            );
+        }
         let mut addresses = Vec::with_capacity(count);
         // Check every row's arithmetic before allocating or reading pixels.
         for y in top..bottom {
@@ -208,6 +241,90 @@ impl RowCopy<'_> {
             .enumerate()
         {
             if memory.write_copy_row(*destination, row).is_none() {
+                return RowCopyOutcome::WriteFailure { rows_written };
+            }
+        }
+        RowCopyOutcome::Completed
+    }
+
+    fn execute_packed(
+        self,
+        memory: &mut impl CopyBitsMemory,
+        rectangle: [i32; 4],
+        delta: [i32; 2],
+        count: usize,
+    ) -> RowCopyOutcome {
+        let [top, left, bottom, right] = rectangle;
+        let [y_delta, x_delta] = delta;
+        let depth = self.source.depth;
+        let Some(width) = right
+            .checked_sub(left)
+            .and_then(|width| usize::try_from(width).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(pixel_count) = count.checked_mul(width) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let mut spans = Vec::with_capacity(count);
+        for y in top..bottom {
+            let Some(source_x) = left.checked_add(x_delta) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(source_y) = y.checked_add(y_delta) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(source) = self
+                .source
+                .packed_row_span(source_x, source_y, right - left)
+            else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(destination) = self.destination.packed_row_span(left, y, right - left) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            spans.push((source, destination));
+        }
+
+        let mut pixels = vec![0; pixel_count];
+        for (((source_address, source_len, source_bit), _), row) in
+            spans.iter().zip(pixels.chunks_exact_mut(width))
+        {
+            let mut source = vec![0; *source_len];
+            if memory.read_copy_row(*source_address, &mut source).is_none() {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            }
+            for (x, pixel) in row.iter_mut().enumerate() {
+                let bit = *source_bit as usize + x * depth as usize;
+                let shift = 8 - depth as usize - bit % 8;
+                *pixel = (source[bit / 8] >> shift) & ((1 << depth) - 1) as u8;
+            }
+        }
+
+        let mut destinations = Vec::with_capacity(count);
+        for (_, (address, len, _)) in &spans {
+            let mut row = vec![0; *len];
+            if memory.read_copy_row(*address, &mut row).is_none() {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            }
+            destinations.push(row);
+        }
+        for (((_, (_, _, destination_bit)), pixels), destination) in spans
+            .iter()
+            .zip(pixels.chunks_exact(width))
+            .zip(destinations.iter_mut())
+        {
+            for (x, pixel) in pixels.iter().copied().enumerate() {
+                let bit = *destination_bit as usize + x * depth as usize;
+                let shift = 8 - depth as usize - bit % 8;
+                let mask = (((1 << depth) - 1) as u8) << shift;
+                destination[bit / 8] = (destination[bit / 8] & !mask) | (pixel << shift);
+            }
+        }
+        for (rows_written, ((_, (address, _, _)), row)) in
+            spans.iter().zip(destinations.iter()).enumerate()
+        {
+            if memory.write_copy_row(*address, row).is_none() {
                 return RowCopyOutcome::WriteFailure { rows_written };
             }
         }
@@ -312,6 +429,286 @@ mod tests {
                 memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
                 assert_eq!(actual, expected, "classic={classic}, depth={depth}");
             }
+        }
+    }
+
+    #[test]
+    fn packed_rows_are_msb_first_and_preserve_edge_fields_and_padding() {
+        for classic in [false, true] {
+            for (depth, source_row, destination_row, expected_row, width) in [
+                (
+                    2,
+                    &[0x1b, 0xe4, 0x91][..],
+                    &[0x80, 0x01, 0x5a][..],
+                    &[0x9b, 0xe5, 0x5a][..],
+                    8,
+                ),
+                (
+                    4,
+                    &[0x01, 0x23, 0x45, 0x92][..],
+                    &[0xa0, 0x00, 0x0b, 0x5a][..],
+                    &[0xa1, 0x23, 0x4b, 0x5a][..],
+                    6,
+                ),
+            ] {
+                let stride = source_row.len() as u32;
+                let mut memory = GuestAddressSpace::new();
+                let mut source = source_row.repeat(2);
+                *source.last_mut().unwrap() ^= 1;
+                let mut destination = destination_row.repeat(2);
+                *destination.last_mut().unwrap() ^= 1;
+                memory.add_region(SOURCE, source);
+                memory.add_region(DESTINATION, destination);
+                assert_eq!(
+                    run(
+                        &mut memory,
+                        classic,
+                        RowCopy {
+                            mode: 0,
+                            source: pixmap(SOURCE, stride, depth, [-2, 10, 0, 10 + width]),
+                            destination: pixmap(
+                                DESTINATION,
+                                stride,
+                                depth,
+                                [20, 30, 22, 30 + width],
+                            ),
+                            source_rect: [-2, 11, 0, 10 + width - 1],
+                            destination_rect: [20, 31, 22, 30 + width - 1],
+                            clip: [20, 31, 22, 30 + width - 1],
+                            palette: None,
+                        },
+                    ),
+                    RowCopyOutcome::Completed
+                );
+                let mut actual = vec![0; destination_row.len() * 2];
+                memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+                let mut expected = expected_row.repeat(2);
+                *expected.last_mut().unwrap() ^= 1;
+                assert_eq!(actual, expected, "classic={classic}, depth={depth}");
+            }
+        }
+    }
+
+    #[test]
+    fn packed_rows_translate_unequal_source_and_destination_field_offsets() {
+        for classic in [false, true] {
+            for (depth, source, destination, expected, source_rect, destination_rect) in [
+                (
+                    2,
+                    &[0x1b, 0xe4][..],
+                    &[0x80, 0x01][..],
+                    &[0x6f, 0x91][..],
+                    [0, 1, 1, 7],
+                    [0, 0, 1, 6],
+                ),
+                (
+                    4,
+                    &[0x01, 0x23, 0x45][..],
+                    &[0xa0, 0x00, 0x0b][..],
+                    &[0x12, 0x34, 0x0b][..],
+                    [0, 1, 1, 5],
+                    [0, 0, 1, 4],
+                ),
+            ] {
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(SOURCE, source.to_vec());
+                memory.add_region(DESTINATION, destination.to_vec());
+                assert_eq!(
+                    run(
+                        &mut memory,
+                        classic,
+                        RowCopy {
+                            mode: 0,
+                            source: pixmap(SOURCE, source.len() as u32, depth, [0, 0, 1, 8]),
+                            destination: pixmap(
+                                DESTINATION,
+                                destination.len() as u32,
+                                depth,
+                                [0, 0, 1, 8],
+                            ),
+                            source_rect,
+                            destination_rect,
+                            clip: destination_rect,
+                            palette: None,
+                        },
+                    ),
+                    RowCopyOutcome::Completed
+                );
+                let mut actual = vec![0; destination.len()];
+                memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+                assert_eq!(actual, expected, "classic={classic}, depth={depth}");
+            }
+        }
+    }
+
+    #[test]
+    fn packed_distinct_aliases_snapshot_later_source_rows() {
+        for classic in [false, true] {
+            let mut memory = GuestAddressSpace::new();
+            let backing = crate::memory::bus::SharedRamRegion::from_owned_bytes(vec![
+                0x1b, 0xe4, 0xaa, 0xe4, 0x1b, 0xbb, 0, 0, 0xcc,
+            ]);
+            // SAFETY: both aliases are accessed serially through one copy.
+            unsafe {
+                memory.add_shared_region(SOURCE, backing.clone());
+                memory.add_shared_region(DESTINATION, backing);
+            }
+            assert_eq!(
+                run(
+                    &mut memory,
+                    classic,
+                    RowCopy {
+                        mode: 0,
+                        source: pixmap(SOURCE, 3, 2, [0, 0, 2, 8]),
+                        destination: pixmap(DESTINATION + 3, 3, 2, [0, 0, 2, 8]),
+                        source_rect: [0, 0, 2, 8],
+                        destination_rect: [0, 0, 2, 8],
+                        clip: [0, 0, 2, 8],
+                        palette: None,
+                    },
+                ),
+                RowCopyOutcome::Completed
+            );
+            let mut actual = [0; 9];
+            memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+            assert_eq!(
+                actual,
+                [0x1b, 0xe4, 0xaa, 0x1b, 0xe4, 0xbb, 0xe4, 0x1b, 0xcc]
+            );
+        }
+    }
+
+    #[test]
+    fn packed_source_failure_is_prewrite_and_later_refusal_is_row_atomic() {
+        for classic in [false, true] {
+            let request = || RowCopy {
+                mode: 0,
+                source: pixmap(SOURCE, 3, 2, [0, 0, 2, 8]),
+                destination: pixmap(DESTINATION, 3, 2, [0, 0, 2, 8]),
+                source_rect: [0, 1, 2, 7],
+                destination_rect: [0, 1, 2, 7],
+                clip: [0, 1, 2, 7],
+                palette: None,
+            };
+
+            let mut missing_source = GuestAddressSpace::new();
+            missing_source.add_region(SOURCE, vec![0x1b, 0xe4, 0xaa]);
+            missing_source.add_region(DESTINATION, vec![0x80, 0x01, 0x5a, 0x81, 0x02, 0x5b]);
+            assert_eq!(
+                run(&mut missing_source, classic, request()),
+                RowCopyOutcome::ReadOrGeometryFailure
+            );
+            let mut unchanged = [0; 6];
+            missing_source
+                .read_bytes_into(DESTINATION, &mut unchanged)
+                .unwrap();
+            assert_eq!(unchanged, [0x80, 0x01, 0x5a, 0x81, 0x02, 0x5b]);
+
+            let mut protected_destination = GuestAddressSpace::new();
+            protected_destination.add_region(SOURCE, vec![0x1b, 0xe4, 0xaa, 0xe4, 0x1b, 0xbb]);
+            protected_destination.add_region(DESTINATION, vec![0x80, 0x01, 0x5a, 0x81, 0x02, 0x5b]);
+            protected_destination.add_readonly_region(DESTINATION + 3, vec![0x81, 0x02]);
+            assert_eq!(
+                run(&mut protected_destination, classic, request()),
+                RowCopyOutcome::WriteFailure { rows_written: 1 }
+            );
+            let mut actual = [0; 6];
+            protected_destination
+                .read_bytes_into(DESTINATION, &mut actual)
+                .unwrap();
+            assert_eq!(actual, [0x9b, 0xe5, 0x5a, 0x81, 0x02, 0x5b]);
+        }
+    }
+
+    #[test]
+    fn packed_destination_read_failure_precedes_all_publication() {
+        for classic in [false, true] {
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(SOURCE, vec![0x1b, 0xe4, 0xaa, 0xe4, 0x1b, 0xbb]);
+            memory.add_region(DESTINATION, vec![0x80, 0x01, 0x5a]);
+            assert_eq!(
+                run(
+                    &mut memory,
+                    classic,
+                    RowCopy {
+                        mode: 0,
+                        source: pixmap(SOURCE, 3, 2, [0, 0, 2, 8]),
+                        destination: pixmap(DESTINATION, 3, 2, [0, 0, 2, 8]),
+                        source_rect: [0, 1, 2, 7],
+                        destination_rect: [0, 1, 2, 7],
+                        clip: [0, 1, 2, 7],
+                        palette: None,
+                    },
+                ),
+                RowCopyOutcome::ReadOrGeometryFailure
+            );
+            let mut actual = [0; 3];
+            memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+            assert_eq!(actual, [0x80, 0x01, 0x5a]);
+        }
+    }
+
+    #[test]
+    fn packed_stride_and_address_overflow_fail_before_memory_access() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("invalid packed geometry reached memory");
+            }
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("invalid packed geometry reached memory");
+            }
+        }
+        for source in [
+            pixmap(SOURCE, 2, 4, [0, 0, 1, 6]),
+            pixmap(u32::MAX, 3, 2, [0, 0, 1, 8]),
+        ] {
+            assert_eq!(
+                RowCopy {
+                    mode: 0,
+                    source,
+                    destination: pixmap(DESTINATION, 3, source.depth, source.bounds),
+                    source_rect: source.bounds,
+                    destination_rect: source.bounds,
+                    clip: source.bounds,
+                    palette: None,
+                }
+                .execute(&mut NoAccess),
+                RowCopyOutcome::ReadOrGeometryFailure
+            );
+        }
+    }
+
+    #[test]
+    fn packed_unmigrated_families_decline_before_memory_access() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("declined request reached memory");
+            }
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("declined request reached memory");
+            }
+        }
+        let palette = [0; 256];
+        for (depth, destination_rect, palette) in [
+            (1, [0, 0, 1, 8], None),
+            (2, [0, 0, 1, 8], Some(&palette)),
+            (4, [0, 0, 1, 4], None),
+        ] {
+            assert_eq!(
+                RowCopy {
+                    mode: 0,
+                    source: pixmap(SOURCE, 2, depth, [0, 0, 1, 8]),
+                    destination: pixmap(DESTINATION, 2, depth, [0, 0, 1, 8]),
+                    source_rect: [0, 0, 1, 8],
+                    destination_rect,
+                    clip: [0, 0, 1, 8],
+                    palette,
+                }
+                .execute(&mut NoAccess),
+                RowCopyOutcome::Declined
+            );
         }
     }
 
