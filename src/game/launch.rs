@@ -2590,12 +2590,13 @@ struct ExecutableCandidate {
 }
 
 impl ExecutableCandidate {
-    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, bool, usize) {
+    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, bool, bool, usize) {
         (
             self.priority,
             self.is_appl,
             !self.is_installer,
             !self.is_documentation,
+            !is_registration_executable(&self.name),
             !self.is_demo,
             !is_system_folder_path(&self.name),
             self.kind.is_powerpc(),
@@ -2710,6 +2711,12 @@ fn is_documentation_executable(name: &str) -> bool {
             "documentation" | "docs" | "help" | "manual" | "readme"
         )
     }) || words.windows(2).any(|words| words == ["read", "me"])
+}
+
+fn is_registration_executable(name: &str) -> bool {
+    ["register", "registration"]
+        .into_iter()
+        .any(|role| executable_name_has_role(name, role))
 }
 
 fn executable_name_has_role(name: &str, role: &str) -> bool {
@@ -3728,6 +3735,50 @@ mod tests {
                 selected.expect("expected an executable candidate").name,
                 "Game Folder/Game Demo"
             );
+        }
+    }
+
+    #[test]
+    fn executable_selection_prefers_powerpc_demo_over_registration_utility() {
+        let game_rsrc = make_single_resource_fork_bytes(*b"cfrg", 0, &make_cfrg(0, 0));
+        let game_data = make_minimal_pef(*b"pwpc");
+        let utility_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+
+        for utility_name in ["Register", "Game Registration"] {
+            for utility_first in [false, true] {
+                for explicit_utility in [false, true] {
+                    let mut selected = None;
+                    let mut candidates = [
+                        ("Game Folder/Game Demo", game_data.as_slice(), &game_rsrc),
+                        (utility_name, &[0][..], &utility_rsrc),
+                    ];
+                    if utility_first {
+                        candidates.reverse();
+                    }
+                    for (name, data, rsrc) in candidates {
+                        maybe_select_executable_with_override_and_preference(
+                            &mut selected,
+                            name,
+                            data,
+                            rsrc,
+                            true,
+                            data.len(),
+                            *b"TEST",
+                            1,
+                            explicit_utility.then_some(utility_name),
+                            false,
+                        );
+                    }
+                    assert_eq!(
+                        selected.unwrap().name,
+                        if explicit_utility {
+                            utility_name
+                        } else {
+                            "Game Folder/Game Demo"
+                        }
+                    );
+                }
+            }
         }
     }
 
