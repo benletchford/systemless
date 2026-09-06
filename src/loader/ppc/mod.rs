@@ -76475,8 +76475,10 @@ fn ppc_begin_m68k_menu_definition(
         .scratch
         .checked_add(PPC_MIXED_MODE_M68K_STACK_SIZE + 96)?;
     let return_pc = PPC_GUEST_CALL_RETURN_PC;
-    let frame = crate::execution_m68k::M68kMenuDefinitionFrame::new(call, target.entry, return_pc, stack_top)?;
+    let frame =
+        crate::execution_m68k::M68kMenuDefinitionFrame::new(call, target.entry, stack_top, false)?;
     memory.write_bytes(frame.entry, &frame.image)?;
+    memory.write_u32_be(frame.entry - 4, return_pc)?;
 
     let mut registers = crate::guest_call::M68kRegisterState::default();
     registers.address[5] = PPC_DATA_BASE;
@@ -76491,8 +76493,8 @@ fn ppc_begin_m68k_menu_definition(
         )
         .with_m68k_request(crate::guest_call::M68kCallRequest {
             entry: frame.entry,
-            initial_sp: frame.entry,
-            final_sp: stack_top,
+            initial_sp: frame.entry - 4,
+            final_sp: frame.entry,
             registers,
             result: None,
         }),

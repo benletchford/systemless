@@ -513,7 +513,7 @@ impl super::TrapDispatcher {
         };
         let scratch = entry + 60;
         let Some(frame) =
-            M68kMenuDefinitionFrame::new(invocation.call(scratch), proc_addr, return_pc, final_sp)
+            M68kMenuDefinitionFrame::new(invocation.call(scratch), proc_addr, final_sp, return_pc == cpu.read_reg(Register::PC))
         else {
             return false;
         };
@@ -525,7 +525,7 @@ impl super::TrapDispatcher {
         if return_pc != cpu.read_reg(Register::PC) {
             if !self.guest_calls.begin_m68k_with_operation(
                 GuestCallTarget { isa: GuestIsa::M68k, entry: proc_addr, rtoc: 0 },
-                return_pc, final_sp,
+                return_pc, final_sp, Some(frame.entry),
                 Some(crate::guest_call::ManagerContinuation::Menu(crate::menu_manager::MenuDefinitionOperation {
                     scratch, completion: completion.clone(),
                 })),
@@ -549,39 +549,22 @@ impl super::TrapDispatcher {
         {
             bus.write_byte(frame.entry + offset as u32, byte);
         }
-        cpu.write_reg(Register::A7, frame.entry);
+        bus.write_long(frame.entry - 4, return_pc);
+        cpu.write_reg(Register::A7, frame.entry - 4);
         cpu.write_reg(Register::PC, frame.entry);
         true
     }
 
-    fn retire_menu_definition<C: CpuOps>(&self, cpu: &C, bus: &MacMemoryBus) -> bool {
-        self.guest_calls.complete_m68k_with_operation(
-            cpu.read_reg(Register::PC),
-            cpu.read_reg(Register::A7),
-            |operation| {
-                let crate::guest_call::ManagerContinuation::Menu(operation) = operation else {
-                    panic!("classic menu return received a non-menu operation");
-                };
-                let result = if bus.is_guest_address_mapped(operation.scratch, 10) {
-                    <[u8; 10]>::try_from(bus.read_bytes(operation.scratch, 10))
-                        .map(SharedMenuDefinitionInvocation::decode_result)
-                        .map_err(|_| ())
-                } else {
-                    Err(())
-                };
-                operation.complete_result(result);
-            },
-        )
+    fn retire_menu_definition<C: CpuOps>(&self, cpu: &mut C, bus: &MacMemoryBus) -> bool {
+        crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus)
     }
 
     fn complete_pending_menu_definition<C: CpuOps>(
         &mut self,
-        cpu: &C,
+        cpu: &mut C,
         bus: &MacMemoryBus,
     ) -> Option<crate::menu_manager::MenuDefinitionMessage> {
-        if !self.retire_menu_definition(cpu, bus) {
-            return None;
-        }
+        self.retire_menu_definition(cpu, bus);
         self.active_menu_definition_mut()?
             .complete_callback()
             .ok()
@@ -7279,9 +7262,9 @@ mod tests {
         let trampoline = cpu.read_reg(Register::PC);
         assert_ne!(trampoline, 0);
         assert_eq!(cpu.read_reg(Register::PC), trampoline);
-        assert_eq!(cpu.read_reg(Register::A7), trampoline);
-        assert_eq!(bus.read_long(trampoline + 50), TEST_SP + 4);
-        assert_eq!(bus.read_long(trampoline + 56), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), trampoline - 4);
+        assert_eq!(bus.read_word(trampoline + 50), 80);
+        assert_eq!(bus.read_long(trampoline - 4), return_pc);
         assert_eq!(bus.read_word(trampoline + 6), 2);
         assert_eq!(bus.read_long(trampoline + 10), handle);
         assert_eq!(bus.read_long(trampoline + 16), trampoline + 60);
@@ -7491,7 +7474,7 @@ mod tests {
 
         let trap_pc = 0x0012_3400;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, 12);
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
@@ -7504,13 +7487,13 @@ mod tests {
             .is_ok());
         let trampoline = cpu.read_reg(Register::PC);
         assert_eq!(bus.read_word(trampoline + 6), 0);
-        assert_eq!(bus.read_long(trampoline + 56), trap_pc);
+        assert_eq!(bus.read_long(trampoline - 4), trap_pc);
         assert!(disp.is_menu_definition_callback_pending());
         assert_eq!(disp.guest_calls.len(), 1);
         assert_eq!(*disp.current_port, disp.window_manager_cport);
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         assert!(disp
             .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
@@ -7527,7 +7510,7 @@ mod tests {
             .unwrap();
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         assert!(disp
             .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
@@ -7537,7 +7520,7 @@ mod tests {
         disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -7554,7 +7537,7 @@ mod tests {
         tracking.flash_remaining = 1;
         tracking.flash_delay = 0;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -7582,7 +7565,7 @@ mod tests {
 
         let trap_pc = 0x0012_3500;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 4);
         bus.write_word(TEST_SP + 2, 30);
         bus.write_word(TEST_SP + 4, 40);
@@ -7603,7 +7586,7 @@ mod tests {
             bus.write_word(trampoline + 60 + offset, value as u16);
         }
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -7614,7 +7597,7 @@ mod tests {
         );
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -7624,7 +7607,7 @@ mod tests {
         bus.write_word(trampoline + 68, 2);
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -7633,7 +7616,7 @@ mod tests {
         disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -7646,7 +7629,7 @@ mod tests {
         tracking.flash_remaining = 1;
         tracking.flash_delay = 0;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -8902,7 +8885,7 @@ mod tests {
         });
         let trap_pc = 0x0012_3600;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 900);
 
         disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
@@ -8917,7 +8900,7 @@ mod tests {
         bus.write_word(bus.read_long(first_handle) + 4, 41);
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -8928,7 +8911,7 @@ mod tests {
         bus.write_word(bus.read_long(second_handle) + 4, 42);
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16108,7 +16091,7 @@ mod tests {
         let title_mid_h = (title.0 + title.1) / 2;
         let trap_pc = 0x0012_3600;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         disp.input_state.mouse_pos = (10, title_mid_h);
@@ -16120,7 +16103,7 @@ mod tests {
         let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.input_state.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16141,14 +16124,14 @@ mod tests {
 
         disp.input_state.mouse_pos = (10, title_mid_h);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_word(trampoline + 6), 1);
         bus.write_word(trampoline + 68, 0);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16157,7 +16140,7 @@ mod tests {
 
         disp.input_state.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16165,7 +16148,7 @@ mod tests {
 
         disp.input_state.mouse_pos = (child_rect.0 + 8, child_rect.1 + 8);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16175,7 +16158,7 @@ mod tests {
         bus.write_word(trampoline + 68, 2);
         disp.input_state.mouse_button = false;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16188,7 +16171,7 @@ mod tests {
         tracking.flash_remaining = 1;
         tracking.flash_delay = 0;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.is_empty() { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();

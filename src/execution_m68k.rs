@@ -18,13 +18,13 @@ pub(crate) struct M68kMenuDefinitionFrame {
 
 impl M68kMenuDefinitionFrame {
     pub(crate) const RESERVATION: u32 = 80;
-    pub(crate) const STACK_PREFIX: u32 = 54;
+    pub(crate) const STACK_PREFIX: u32 = 58;
 
     pub(crate) fn new(
         call: crate::menu_manager::MenuDefinitionCall,
         target: u32,
-        return_pc: u32,
         final_sp: u32,
+        release_stack: bool,
     ) -> Option<Self> {
         let entry = final_sp.checked_sub(Self::RESERVATION)?;
         entry.checked_sub(Self::STACK_PREFIX)?;
@@ -45,8 +45,10 @@ impl M68kMenuDefinitionFrame {
             (38, 0x2e7c), // restore saved-register SP
             (44, 0x4cdf),
             (46, 0x0f0f),
-            (48, 0x2e7c), // restore caller SP
-            (54, 0x4ef9), // JMP return_pc
+            // RTD changes PC and SP in one instruction. An interrupt must
+            // never see SP above code which the foreground will still fetch.
+            (48, 0x4e74),
+            (50, if release_stack { Self::RESERVATION as u16 } else { 0 }),
         ] {
             image[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
         }
@@ -56,13 +58,44 @@ impl M68kMenuDefinitionFrame {
             (22, call.hit_point),
             (28, call.which_item),
             (34, target),
-            (40, entry - 32),
-            (50, final_sp),
-            (56, return_pc),
+            (40, entry - 36),
         ] {
             image[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
         Some(Self { entry, image })
+    }
+}
+
+/// Consume a manager result while its stack reservation is still live, then
+/// restore the caller ABI before trap/vector lookup can invoke more guest code.
+pub(crate) fn complete_classic_manager_return<C: crate::cpu::CpuOps>(
+    calls: &SharedGuestCallStack,
+    cpu: &mut C,
+    bus: &crate::memory::MacMemoryBus,
+) -> bool {
+    use crate::memory::MemoryBus;
+    let restored_sp = calls.complete_m68k_with_operation(
+        cpu.read_reg(Register::PC),
+        cpu.read_reg(Register::A7),
+        |operation| {
+            let crate::guest_call::ManagerContinuation::Menu(operation) = operation else {
+                panic!("classic manager return has no completion consumer");
+            };
+            let result = if bus.is_guest_address_mapped(operation.scratch, 10) {
+                <[u8; 10]>::try_from(bus.read_bytes(operation.scratch, 10))
+                    .map(crate::menu_manager::MenuDefinitionInvocation::decode_result)
+                    .map_err(|_| ())
+            } else {
+                Err(())
+            };
+            operation.complete_result(result);
+        },
+    );
+    if let Some(sp) = restored_sp {
+        cpu.write_reg(Register::A7, sp);
+        true
+    } else {
+        false
     }
 }
 
@@ -77,6 +110,10 @@ impl M68kExecution {
             cpu: M68kCpu::new(),
             calls: calls.shared_handle(),
         }
+    }
+
+    pub(crate) fn complete_manager_return(&mut self, bus: &crate::memory::MacMemoryBus) -> bool {
+        complete_classic_manager_return(&self.calls, &mut self.cpu, bus)
     }
 
     pub(crate) fn apply_task_handoff(&mut self) {

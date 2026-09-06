@@ -196,6 +196,8 @@ impl CooperativeThread {
 struct M68kCallOrigin {
     return_pc: u32,
     final_sp: u32,
+    /// Keep callback storage above SP until execution captures its result.
+    parked_sp: Option<u32>,
     result: Option<M68kResultTarget>,
 }
 
@@ -375,6 +377,7 @@ impl GuestCallEffect {
                 origin: GuestCallOrigin::M68k(M68kCallOrigin {
                     return_pc,
                     final_sp,
+                    parked_sp: None,
                     result,
                 }),
                 native_scratch: None,
@@ -395,6 +398,7 @@ impl GuestCallEffect {
                 origin: GuestCallOrigin::M68k(M68kCallOrigin {
                     return_pc,
                     final_sp,
+                    parked_sp: None,
                     result,
                 }),
                 native_scratch: None,
@@ -1645,7 +1649,7 @@ impl SharedGuestCallStack {
         return_pc: u32,
         final_sp: u32,
     ) -> bool {
-        self.begin_m68k_with_operation(target, return_pc, final_sp, None)
+        self.begin_m68k_with_operation(target, return_pc, final_sp, None, None)
     }
 
     pub(crate) fn begin_m68k_with_operation(
@@ -1653,6 +1657,7 @@ impl SharedGuestCallStack {
         target: GuestCallTarget,
         return_pc: u32,
         final_sp: u32,
+        parked_sp: Option<u32>,
         operation: Option<ManagerContinuation>,
     ) -> bool {
         if target.isa != GuestIsa::M68k {
@@ -1664,12 +1669,13 @@ impl SharedGuestCallStack {
         )) else {
             return false;
         };
-        self.0
-            .borrow_mut()
-            .frames
-            .get_mut(&id)
-            .expect("submitted classic call")
-            .operation = operation;
+        let mut tasks = self.0.borrow_mut();
+        let frame = tasks.frames.get_mut(&id).expect("submitted classic call");
+        let GuestCallOrigin::M68k(origin) = &mut frame.origin else {
+            unreachable!()
+        };
+        origin.parked_sp = parked_sp;
+        frame.operation = operation;
         true
     }
 
@@ -2531,7 +2537,7 @@ impl SharedGuestCallStack {
     /// exact caller PC and stack pointer. A native frame remains untouched.
     #[cfg(test)]
     pub(crate) fn complete_m68k(&self, post_trap_pc: u32, final_sp: u32) -> bool {
-        self.complete_m68k_with_operation(post_trap_pc, final_sp, |_| panic!("unhandled manager completion"))
+        self.complete_m68k_with_operation(post_trap_pc, final_sp, |_| panic!("unhandled manager completion")).is_some()
     }
 
     pub(crate) fn complete_m68k_with_operation(
@@ -2539,27 +2545,26 @@ impl SharedGuestCallStack {
         post_trap_pc: u32,
         final_sp: u32,
         mut resume: impl FnMut(ManagerContinuation),
-    ) -> bool {
-        let (task, call_id) = {
+    ) -> Option<u32> {
+        let (task, call_id, caller_sp) = {
             let tasks = self.0.borrow();
             let task = tasks.kernel.current_task();
             let Some(semantic) = tasks.kernel.peek(task) else {
-                return false;
+                return None;
             };
             let Some(frame) = tasks.frames.get(&semantic.call_id()) else {
-                return false;
+                return None;
+            };
+            let GuestCallOrigin::M68k(origin) = frame.origin else {
+                return None;
             };
             if frame.target.isa != GuestIsa::M68k
-                || !matches!(
-                    frame.origin,
-                    GuestCallOrigin::M68k(origin)
-                        if origin.return_pc.wrapping_add(2) == post_trap_pc
-                            && origin.final_sp == final_sp
-                )
+                || origin.return_pc.wrapping_add(2) != post_trap_pc
+                || origin.parked_sp.unwrap_or(origin.final_sp) != final_sp
             {
-                return false;
+                return None;
             }
-            (task, semantic.call_id())
+            (task, semantic.call_id(), origin.final_sp)
         };
         let mut tasks = self.0.borrow_mut();
         let phase = tasks
@@ -2568,10 +2573,10 @@ impl SharedGuestCallStack {
             .expect("semantic continuation must have an adapter frame")
             .phase();
         if phase == ContinuationPhase::Pending && tasks.kernel.activate(task, call_id).is_err() {
-            return false;
+            return None;
         }
         if tasks.kernel.complete(task, call_id, None).is_err() {
-            return false;
+            return None;
         }
         let _ = tasks
             .kernel
@@ -2585,7 +2590,7 @@ impl SharedGuestCallStack {
         if let Some(operation) = frame.operation {
             resume(operation);
         }
-        true
+        Some(caller_sp)
     }
 }
 
