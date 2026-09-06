@@ -196,6 +196,58 @@ impl Presentation {
 }
 
 impl MacMemoryBus {
+    /// Invert indexed dialog selection pixels without flattening their outline
+    /// coverage. Transform palette indexes, matching the guest's byte inversion.
+    pub(crate) fn invert_screen_byte(&mut self, address: u32) {
+        let value = !self.read_byte(address);
+        let mut presentation = self.presentation.take();
+        self.write_byte(address, value);
+        if let Some(p) = presentation.as_mut() {
+            if let Some((x, y)) = p.position(address) {
+                p.guest_values[(y * p.width + x) as usize] = u16::from(value);
+                for sy in 0..p.scale {
+                    for sx in 0..p.scale {
+                        let pixel =
+                            ((y * p.scale + sy) * p.width * p.scale + x * p.scale + sx) as usize;
+                        p.pixel_indices[pixel] ^= 255;
+                        let color = if let Some(ink) = p.ink.get_mut(&(pixel * 3)) {
+                            ink.foreground ^= 255;
+                            match &mut ink.background {
+                                IndexedColor::Solid(index) => *index ^= 255,
+                                IndexedColor::Blended(layers) => {
+                                    for (index, _) in layers {
+                                        *index ^= 255;
+                                    }
+                                }
+                            }
+                            ink.rgb(&p.palette)
+                        } else {
+                            p.palette[p.pixel_indices[pixel] as usize]
+                        };
+                        p.pixels[pixel * 3..pixel * 3 + 3].copy_from_slice(&color);
+                    }
+                }
+            }
+        }
+        self.presentation = presentation;
+    }
+
+    /// Reconcile a host-maintained screen snapshot. Replaying bytes already on
+    /// screen is not a new QuickDraw operation and must retain outline detail.
+    /// Guest writes still use write_bytes/write_byte, including same-value erases.
+    pub(crate) fn restore_screen_bytes(&mut self, address: u32, bytes: &[u8]) {
+        if self.presentation.is_none() {
+            self.write_bytes(address, bytes);
+            return;
+        }
+        for (offset, &value) in bytes.iter().enumerate() {
+            let address = address.wrapping_add(offset as u32);
+            if self.read_byte(address) != value {
+                self.write_byte(address, value);
+            }
+        }
+    }
+
     /// Maintain a 4x outline surface for an indexed screen. Geometry changes
     /// recreate the surface; palette changes recolor the retained coverage.
     pub fn prepare_outline_presentation(
@@ -476,6 +528,13 @@ mod tests {
         bus.prepare_outline_presentation(screen, palette);
         let (_, _, rgb, _) = bus.outline_presentation_rgb().unwrap();
         assert_eq!(&rgb[..9], &[64, 63, 128, 255, 0, 0, 0, 255, 0]);
+        let original_byte = bus.read_byte(0x1000);
+        bus.invert_screen_byte(0x1000);
+        assert_eq!(bus.read_byte(0x1000), !original_byte);
+        assert_ne!(bus.outline_presentation_rgb().unwrap().2, rgb);
+        bus.invert_screen_byte(0x1000);
+        assert_eq!(bus.read_byte(0x1000), original_byte);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, rgb);
         // A same-value guest erase still discards coverage after recoloring.
         bus.write_byte(0x1000, 255);
         palette[255] = [255; 3];

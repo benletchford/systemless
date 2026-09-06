@@ -1501,7 +1501,7 @@ impl super::TrapDispatcher {
                 let e = (row_base + (x1 - dst_left) as usize).min(pixels.len());
                 if s < e {
                     let addr = screen_base + y as u32 * row_bytes + x0 as u32;
-                    bus.write_bytes(addr, &pixels[s..e]);
+                    bus.restore_screen_bytes(addr, &pixels[s..e]);
                 }
             }
             return;
