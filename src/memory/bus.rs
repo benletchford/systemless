@@ -2923,6 +2923,88 @@ mod tests {
     use super::*;
 
     #[test]
+    fn attached_m68k_trace_observes_hle_rewrite_with_unchanged_head() {
+        use m68k::{BatchExit, CpuCore, StepResult};
+
+        const HEAD: u32 = 0x1000;
+        const LOOP_WORDS: [u16; 5] = [0x5280, 0x5281, 0x5347, 0x66f8, 0xa000];
+
+        fn install_loop(bus: &mut MacMemoryBus) {
+            for (index, word) in LOOP_WORDS.into_iter().enumerate() {
+                MemoryBus::write_word(bus, HEAD + index as u32 * 2, word);
+            }
+        }
+
+        fn new_cpu() -> CpuCore {
+            let mut cpu = CpuCore::new();
+            cpu.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
+            cpu.pc = HEAD;
+            cpu.set_d(7, 10_001);
+            cpu
+        }
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        install_loop(&mut bus);
+        let foreign = crate::memory::GuestAddressSpace::new();
+        bus.attach_guest_address_space(foreign.shared_view());
+        assert!(bus.fast_mem_window().is_none());
+
+        let mut cpu = new_cpu();
+        let warm = cpu.run_batch(&mut bus, 40_000, &[]);
+        assert_eq!(warm.instructions, 40_000);
+        assert_eq!(warm.exit, BatchExit::BudgetExhausted);
+        assert_eq!(cpu.pc, HEAD);
+
+        let mut reference_bus = MacMemoryBus::new(64 * 1024);
+        install_loop(&mut reference_bus);
+        let mut reference = new_cpu();
+        for _ in 0..40_000 {
+            assert!(matches!(
+                reference.step(&mut reference_bus),
+                StepResult::Ok { .. }
+            ));
+        }
+        assert_eq!(reference.pc, HEAD);
+        assert_eq!(cpu.dar, reference.dar);
+        assert_eq!(cpu.get_sr(), reference.get_sr());
+        assert_eq!((cpu.d(0), cpu.d(1)), (10_000, 10_000));
+        assert_eq!((reference.d(0), reference.d(1)), (10_000, 10_000));
+
+        MemoryBus::write_word(&mut bus, HEAD + 2, 0x5481);
+        MemoryBus::write_word(&mut reference_bus, HEAD + 2, 0x5481);
+        assert_eq!(MemoryBus::read_word(&bus, HEAD + 2), 0x5481);
+        cpu.set_d(7, 2);
+        reference.set_d(7, 2);
+
+        let actual = cpu.run_batch(&mut bus, 32, &[]);
+        let mut reference_retired = 0;
+        let mut reference_opcode = None;
+        for _ in 0..32 {
+            match reference.step(&mut reference_bus) {
+                StepResult::Ok { .. } => reference_retired += 1,
+                StepResult::AlineTrap { opcode } => {
+                    reference_opcode = Some(opcode);
+                    break;
+                }
+                other => panic!("unexpected stepped exit: {other:?}"),
+            }
+        }
+        let reference_opcode = reference_opcode.expect("stepped execution did not reach A-line");
+
+        assert_eq!(actual.instructions, reference_retired);
+        assert_eq!(reference_opcode, 0xa000);
+        assert_eq!(actual.exit, BatchExit::AlineTrap { opcode: 0xa000 });
+        assert_eq!((cpu.d(0), cpu.d(1)), (10_002, 10_004));
+        assert_eq!(cpu.dar, reference.dar);
+        assert_eq!(cpu.pc, reference.pc);
+        assert_eq!(cpu.pc, HEAD + 10);
+        assert_eq!(cpu.ppc, reference.ppc);
+        assert_eq!(cpu.ppc, HEAD + 8);
+        assert_eq!(cpu.get_sr(), reference.get_sr());
+        assert_eq!(cpu.ir, reference.ir);
+    }
+
+    #[test]
     fn system_trap_code_lifetime_is_independent_between_memory_owners() {
         let mut first = MacMemoryBus::new(4 * 1024 * 1024);
         let mut second = MacMemoryBus::new(4 * 1024 * 1024);

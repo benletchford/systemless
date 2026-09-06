@@ -1539,8 +1539,271 @@ impl AddressBus for GuestAddressSpace {
 mod tests {
     use super::{GuestAddressSpace, GuestIsa};
     use crate::memory::{MacMemoryBus, MemoryBus};
-    use m68k::{AddressBus, CpuCore, StepResult};
+    use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
+
+    const M68K_TRACE_HEAD: u32 = 0x1000;
+    const M68K_TRACE_WORDS: [u16; 5] = [0x5280, 0x5281, 0x5347, 0x66f8, 0xa000];
+
+    fn install_m68k_trace_loop(bus: &mut MacMemoryBus, head: u32) {
+        for (index, word) in M68K_TRACE_WORDS.into_iter().enumerate() {
+            MemoryBus::write_word(bus, head + index as u32 * 2, word);
+        }
+    }
+
+    fn m68k_trace_cpu(head: u32) -> CpuCore {
+        let mut cpu = CpuCore::new();
+        cpu.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
+        cpu.pc = head;
+        cpu.set_d(7, 10_001);
+        cpu
+    }
+
+    fn warm_m68k_trace_and_step_reference(
+        cpu: &mut CpuCore,
+        bus: &mut MacMemoryBus,
+        reference: &mut CpuCore,
+        reference_bus: &mut MacMemoryBus,
+    ) {
+        let warm = cpu.run_batch(bus, 40_000, &[]);
+        assert_eq!(warm.instructions, 40_000);
+        assert_eq!(warm.exit, BatchExit::BudgetExhausted);
+        for _ in 0..40_000 {
+            assert!(matches!(
+                reference.step(reference_bus),
+                StepResult::Ok { .. }
+            ));
+        }
+        assert_eq!(cpu.pc, reference.pc);
+        assert_eq!(cpu.dar, reference.dar);
+        assert_eq!(cpu.get_sr(), reference.get_sr());
+        assert_eq!((cpu.d(0), cpu.d(1)), (10_000, 10_000));
+        assert_eq!((reference.d(0), reference.d(1)), (10_000, 10_000));
+    }
+
+    fn assert_m68k_trace_matches_step(
+        head: u32,
+        cpu: &mut CpuCore,
+        bus: &mut MacMemoryBus,
+        reference: &mut CpuCore,
+        reference_bus: &mut MacMemoryBus,
+    ) {
+        let expected_d0 = cpu.d(0) + 2;
+        let expected_d1 = cpu.d(1) + 4;
+        cpu.set_d(7, 2);
+        reference.set_d(7, 2);
+        let actual = cpu.run_batch(bus, 32, &[]);
+        let mut reference_retired = 0;
+        let mut reference_opcode = None;
+        for _ in 0..32 {
+            match reference.step(reference_bus) {
+                StepResult::Ok { .. } => reference_retired += 1,
+                StepResult::AlineTrap { opcode } => {
+                    reference_opcode = Some(opcode);
+                    break;
+                }
+                other => panic!("unexpected stepped exit: {other:?}"),
+            }
+        }
+        let reference_opcode = reference_opcode.expect("stepped execution did not reach A-line");
+        assert_eq!(actual.instructions, reference_retired);
+        assert_eq!(reference_opcode, 0xa000);
+        assert_eq!(actual.exit, BatchExit::AlineTrap { opcode: 0xa000 });
+        assert_eq!((cpu.d(0), cpu.d(1)), (expected_d0, expected_d1));
+        assert_eq!(cpu.dar, reference.dar);
+        assert_eq!(cpu.pc, reference.pc);
+        assert_eq!(cpu.pc, head.wrapping_add(10));
+        assert_eq!(cpu.ppc, reference.ppc);
+        assert_eq!(cpu.ppc, head.wrapping_add(8));
+        assert_eq!(cpu.get_sr(), reference.get_sr());
+        assert_eq!(cpu.ir, reference.ir);
+    }
+
+    #[test]
+    fn powerpc_store_rewrites_code_seen_by_warmed_attached_m68k_trace() {
+        const PPC_WRITER: u32 = 0x0100_0000;
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        install_m68k_trace_loop(&mut bus, M68K_TRACE_HEAD);
+        let mut memory = GuestAddressSpace::new();
+        let shared_code = bus
+            .shared_ram_region(M68K_TRACE_HEAD, M68K_TRACE_WORDS.len() as u32 * 2)
+            .unwrap();
+        // SAFETY: CPU execution and every access through either adapter are
+        // serialized in this test.
+        unsafe { memory.add_shared_region(M68K_TRACE_HEAD, shared_code) };
+        memory.add_region(
+            PPC_WRITER,
+            [0xb064_0002u32, 0x4e80_0020]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        bus.attach_guest_address_space(memory.shared_view());
+        assert!(bus.fast_mem_window().is_none());
+
+        let mut reference_bus = MacMemoryBus::new(64 * 1024);
+        install_m68k_trace_loop(&mut reference_bus, M68K_TRACE_HEAD);
+        let mut cpu = m68k_trace_cpu(M68K_TRACE_HEAD);
+        let mut reference = m68k_trace_cpu(M68K_TRACE_HEAD);
+        warm_m68k_trace_and_step_reference(&mut cpu, &mut bus, &mut reference, &mut reference_bus);
+
+        let mut ppc = PpcCpu::new();
+        ppc.pc = PPC_WRITER;
+        ppc.lr = 0;
+        ppc.gpr[3] = 0x5481;
+        ppc.gpr[4] = M68K_TRACE_HEAD;
+        assert_eq!(
+            ppc.run(&mut memory, 8, 0),
+            PpcRunResult::Halted { pc: 0, cycles: 2 }
+        );
+        assert_eq!(MemoryBus::read_word(&bus, M68K_TRACE_HEAD + 2), 0x5481);
+        MemoryBus::write_word(&mut reference_bus, M68K_TRACE_HEAD + 2, 0x5481);
+
+        assert_m68k_trace_matches_step(
+            M68K_TRACE_HEAD,
+            &mut cpu,
+            &mut bus,
+            &mut reference,
+            &mut reference_bus,
+        );
+    }
+
+    #[test]
+    fn m68k_store_rewrites_writable_powerpc_code_before_same_cpu_rerun() {
+        const M68K_WRITER: u32 = 0x1000;
+        const PPC_CODE: u32 = 0x0100_0000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(
+            PPC_CODE,
+            [0x3863_0001u32, 0x4e80_0020]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
+            None
+        );
+
+        let mut ppc = PpcCpu::new();
+        ppc.pc = PPC_CODE;
+        ppc.lr = 0;
+        assert_eq!(
+            ppc.run(&mut memory, 8, 0),
+            PpcRunResult::Halted { pc: 0, cycles: 2 }
+        );
+        assert_eq!(ppc.gpr[3], 1);
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        for (index, word) in [0x23fc, 0x3863, 0x0002, 0x0100, 0x0000]
+            .into_iter()
+            .enumerate()
+        {
+            MemoryBus::write_word(&mut bus, M68K_WRITER + index as u32 * 2, word);
+        }
+        bus.attach_guest_address_space(memory.shared_view());
+        let mut m68k = CpuCore::new();
+        m68k.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
+        m68k.pc = M68K_WRITER;
+        assert!(matches!(m68k.step(&mut bus), StepResult::Ok { .. }));
+        assert_eq!(memory.read_u32_be(PPC_CODE), Some(0x3863_0002));
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
+            None
+        );
+
+        ppc.pc = PPC_CODE;
+        ppc.lr = 0;
+        ppc.gpr[3] = 0;
+        assert_eq!(
+            ppc.run(&mut memory, 8, 0),
+            PpcRunResult::Halted { pc: 0, cycles: 2 }
+        );
+        assert_eq!(ppc.gpr[3], 2);
+    }
+
+    #[test]
+    fn shared_system_code_refuses_guest_write_then_owner_rewrite_matches_step() {
+        const SYSTEM_CODE: u32 = 0x0100_0000;
+
+        fn system_code_memory() -> GuestAddressSpace {
+            let mut memory = GuestAddressSpace::new();
+            memory
+                .publish_system_code(
+                    GuestIsa::M68k,
+                    SYSTEM_CODE,
+                    M68K_TRACE_WORDS
+                        .into_iter()
+                        .flat_map(u16::to_be_bytes)
+                        .collect(),
+                )
+                .unwrap();
+            memory
+        }
+
+        let mut memory = system_code_memory();
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, SYSTEM_CODE),
+            None
+        );
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.attach_guest_address_space(memory.shared_view());
+        assert!(bus.fast_mem_window().is_none());
+
+        let reference_memory = system_code_memory();
+        let mut reference_bus = MacMemoryBus::new(64 * 1024);
+        reference_bus.attach_guest_address_space(reference_memory.shared_view());
+        let mut cpu = m68k_trace_cpu(SYSTEM_CODE);
+        let mut reference = m68k_trace_cpu(SYSTEM_CODE);
+        warm_m68k_trace_and_step_reference(&mut cpu, &mut bus, &mut reference, &mut reference_bus);
+
+        assert!(!bus.try_write_word(SYSTEM_CODE + 2, 0x5481));
+        assert_eq!(MemoryBus::read_word(&bus, SYSTEM_CODE + 2), 0x5281);
+        cpu.set_d(7, 1);
+        reference.set_d(7, 1);
+        let unchanged = cpu.run_batch(&mut bus, 16, &[]);
+        assert_eq!(unchanged.instructions, 4);
+        assert_eq!(unchanged.exit, BatchExit::AlineTrap { opcode: 0xa000 });
+        for _ in 0..4 {
+            assert!(matches!(
+                reference.step(&mut reference_bus),
+                StepResult::Ok { .. }
+            ));
+        }
+        assert!(matches!(
+            reference.step(&mut reference_bus),
+            StepResult::AlineTrap { opcode: 0xa000 }
+        ));
+        assert_eq!((cpu.d(0), cpu.d(1)), (10_001, 10_001));
+        assert_eq!(cpu.dar, reference.dar);
+        assert_eq!(cpu.pc, reference.pc);
+        assert_eq!(cpu.ppc, reference.ppc);
+
+        assert_eq!(
+            bus.with_foreign_address_space(|memory| {
+                memory.write_shared_system_u32_be(SYSTEM_CODE + 2, 0x5481_5347)
+            }),
+            Some(Some(()))
+        );
+        assert_eq!(
+            reference_bus.with_foreign_address_space(|memory| {
+                memory.write_shared_system_u32_be(SYSTEM_CODE + 2, 0x5481_5347)
+            }),
+            Some(Some(()))
+        );
+        cpu.pc = SYSTEM_CODE;
+        reference.pc = SYSTEM_CODE;
+
+        assert_m68k_trace_matches_step(
+            SYSTEM_CODE,
+            &mut cpu,
+            &mut bus,
+            &mut reference,
+            &mut reference_bus,
+        );
+    }
 
     #[test]
     fn system_code_isa_follows_mapping_owner_and_detached_lifetime() {
