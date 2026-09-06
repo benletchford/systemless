@@ -69,14 +69,14 @@ use crate::menu_manager::{
     MenuColorTable, MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane,
     MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
-    MenuSnapshotRecord, MenuTrackingKind, MenuTrackingPane, MenuTrackingSurface,
+    MenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane, MenuTrackingSurface,
     MonochromeMenuIconLayout, ProcessMenuTrackingState, ProcessTrackedMenuPane,
     SharedNativeMenuSelection, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
     StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest,
     TrackedMenuIcon as PpcTrackedMenuIcon,
     TrackedMenuItemAppearance as PpcTrackedMenuItemAppearance, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
-    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
+    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{
@@ -17230,18 +17230,15 @@ fn dispatch_supported_import(
                     *current_resource_refnum,
                 ))
             } else if toolbox_startup.menu_tracking.as_ref().is_some_and(|state| {
-                state.kind == MenuTrackingKind::MenuBar && state.flash_remaining > 0
+                state.kind == MenuTrackingKind::MenuBar && state.is_flashing()
             }) {
                 let mut state = toolbox_startup.menu_tracking.take().unwrap();
-                if state.flash_delay > 0 {
-                    state.flash_delay -= 1;
+                let step = state.advance_flash();
+                if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
                     *toolbox_startup.menu_tracking = Some(state);
                     return Some(PpcImportAction::Yield(u64::MAX));
                 }
-                state.flash_remaining -= 1;
-                state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                let result = state.flash_result;
-                if state.flash_remaining == 0 {
+                if let MenuFlashStep::Complete(result) = step {
                     *toolbox_startup.menu_tracking = Some(state);
                     let result = ppc_complete_menu_bar_tracking_with_colors(
                         memory,
@@ -17262,7 +17259,7 @@ fn dispatch_supported_import(
                         menu_colors,
                         &state,
                         selected,
-                        state.flash_remaining & 1 == 0,
+                        step == MenuFlashStep::Highlight(true),
                     );
                 }
                 *toolbox_startup.menu_tracking = Some(state);
@@ -76763,18 +76760,13 @@ fn ppc_continue_custom_popup_menu_tracking(
     if startup
         .menu_tracking
         .as_ref()
-        .is_some_and(|state| state.flash_remaining > 0)
+        .is_some_and(|state| state.is_flashing())
     {
-        let state = startup.menu_tracking.as_mut().unwrap();
-        if state.flash_delay > 0 {
-            state.flash_delay -= 1;
+        let step = startup.menu_tracking.as_mut().unwrap().advance_flash();
+        if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
-        state.flash_remaining -= 1;
-        state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-        let remaining = state.flash_remaining;
-        let result = state.flash_result;
-        if remaining == 0 {
+        if let MenuFlashStep::Complete(result) = step {
             if let Some(state) = startup.menu_tracking.take() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
@@ -76789,10 +76781,6 @@ fn ppc_continue_custom_popup_menu_tracking(
             cpu.lr = call.return_address;
             return PpcImportAction::Return(result);
         }
-        startup
-            .active_menu_definition_mut()
-            .unwrap()
-            .flash(remaining & 1 == 0);
         let invocation = startup
             .active_menu_definition()
             .and_then(MenuDefinitionTracking::pending_invocation)
@@ -77016,24 +77004,21 @@ fn ppc_dispatch_pop_up_menu_select(
             return PpcImportAction::Return(0);
         }
 
-        if state.flash_remaining > 0 {
+        if state.is_flashing() {
             let Some(mut state) = startup.menu_tracking.take() else {
                 return PpcImportAction::Return(0);
             };
-            if state.flash_delay > 0 {
-                state.flash_delay -= 1;
+            let step = state.advance_flash();
+            if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
                 *startup.menu_tracking = Some(state);
                 return PpcImportAction::Yield(u64::MAX);
             }
-            state.flash_remaining -= 1;
-            if state.flash_remaining == 0 {
-                let result = state.flash_result;
+            if let MenuFlashStep::Complete(result) = step {
                 startup.popup_menu_call = None;
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
-            state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-            let visible_item = if state.flash_remaining & 1 == 0 {
+            let visible_item = if step == MenuFlashStep::Highlight(true) {
                 state.highlighted_item
             } else {
                 0
@@ -78595,18 +78580,13 @@ fn ppc_continue_custom_menu_bar_tracking(
     if startup
         .menu_tracking
         .as_ref()
-        .is_some_and(|state| state.flash_remaining > 0)
+        .is_some_and(|state| state.is_flashing())
     {
-        let state = startup.menu_tracking.as_mut().unwrap();
-        if state.flash_delay > 0 {
-            state.flash_delay -= 1;
+        let step = startup.menu_tracking.as_mut().unwrap().advance_flash();
+        if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
-        state.flash_remaining -= 1;
-        state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-        let remaining = state.flash_remaining;
-        let result = state.flash_result;
-        if remaining == 0 {
+        if let MenuFlashStep::Complete(result) = step {
             if let Some(state) = startup.menu_tracking.take() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
@@ -78632,10 +78612,6 @@ fn ppc_continue_custom_menu_bar_tracking(
             cpu.lr = call.return_address;
             return PpcImportAction::Return(result);
         }
-        startup
-            .active_menu_definition_mut()
-            .unwrap()
-            .flash(remaining & 1 == 0);
         let invocation = startup
             .active_menu_definition()
             .and_then(MenuDefinitionTracking::pending_invocation)
@@ -94420,30 +94396,23 @@ pub(crate) mod tests {
                 .flash_remaining,
             6
         );
-        {
-            let state = loaded.toolbox_startup.menu_tracking.as_mut().unwrap();
-            state.flash_remaining = 2;
-            state.flash_delay = 0;
-        }
-        let probe = loaded.run_with_hle_imports(256);
-        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        assert_eq!(
-            loaded
+        let mut phases = vec![6];
+        for _ in 0..64 {
+            let probe = loaded.run_with_hle_imports(256);
+            let remaining = loaded
                 .toolbox_startup
                 .menu_tracking
                 .as_ref()
-                .unwrap()
-                .flash_remaining,
-            1
-        );
-        loaded
-            .toolbox_startup
-            .menu_tracking
-            .as_mut()
-            .unwrap()
-            .flash_delay = 0;
-        let probe = loaded.run_with_hle_imports(256);
-        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+                .map_or(0, |state| state.flash_remaining);
+            if phases.last() != Some(&remaining) {
+                phases.push(remaining);
+            }
+            if matches!(probe.result, PpcRunResult::Halted { .. }) {
+                break;
+            }
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        assert_eq!(phases, [6, 5, 4, 3, 2, 1, 0]);
         assert_eq!(loaded.cpu.gpr[3], (131u32 << 16) | 2);
         assert_eq!(loaded.cpu.lr, return_address);
         assert_eq!(loaded.toolbox_startup.menu_tracking, None);
@@ -94785,30 +94754,23 @@ pub(crate) mod tests {
                 .flash_remaining,
             6
         );
-        {
-            let state = loaded.toolbox_startup.menu_tracking.as_mut().unwrap();
-            state.flash_remaining = 2;
-            state.flash_delay = 0;
-        }
-        let probe = loaded.run_with_hle_imports(512);
-        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        assert_eq!(
-            loaded
+        let mut phases = vec![6];
+        for _ in 0..64 {
+            let probe = loaded.run_with_hle_imports(512);
+            let remaining = loaded
                 .toolbox_startup
                 .menu_tracking
                 .as_ref()
-                .unwrap()
-                .flash_remaining,
-            1
-        );
-        loaded
-            .toolbox_startup
-            .menu_tracking
-            .as_mut()
-            .unwrap()
-            .flash_delay = 0;
-        let probe = loaded.run_with_hle_imports(512);
-        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+                .map_or(0, |state| state.flash_remaining);
+            if phases.last() != Some(&remaining) {
+                phases.push(remaining);
+            }
+            if matches!(probe.result, PpcRunResult::Halted { .. }) {
+                break;
+            }
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        assert_eq!(phases, [6, 5, 4, 3, 2, 1, 0]);
         assert_eq!(loaded.cpu.gpr[3], (132u32 << 16) | 2);
         assert_eq!(loaded.toolbox_startup.menu_tracking, None);
         assert_eq!(loaded.toolbox_startup.menu_definition_tracking, None);
