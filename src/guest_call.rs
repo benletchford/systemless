@@ -626,9 +626,7 @@ pub(crate) struct NativeMenuSelectOrigin {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NativePopupMenuOrigin {
-    pub(crate) top: i16,
-    pub(crate) left: i16,
-    pub(crate) pop_up_item: i16,
+    pub(crate) request: crate::menu_manager::PopupMenuRequest,
     pub(crate) stack_pointer: u32,
     pub(crate) return_address: u32,
 }
@@ -3279,9 +3277,11 @@ mod tests {
         assert_ne!(main.id, owned.id);
         *tracking = Some(crate::menu_manager::test_process_menu_tracking(222));
         tracking.context_mut().native_popup = Some(NativePopupMenuOrigin {
-            top: 20,
-            left: 30,
-            pop_up_item: 2,
+            request: crate::menu_manager::PopupMenuRequest {
+                menu_handle: 222,
+                anchor: (20, 30),
+                requested_item: 2,
+            },
             stack_pointer: 0x4000,
             return_address: 0x5000,
         });

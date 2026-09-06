@@ -26,7 +26,7 @@ use crate::menu_manager::{
     MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane,
     MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, ProcessMenuTrackingState,
-    ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
+    PopupMenuRequest, ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
     StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
     STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
@@ -2735,10 +2735,12 @@ impl super::TrapDispatcher {
                         self.finish_menu_no_hit(bus, cpu, sp, 10);
                         return Some(Ok(()));
                     }
-                    let popup_item = bus.read_word(sp) as i16;
-                    let left = bus.read_word(sp + 2) as i16;
-                    let top = bus.read_word(sp + 4) as i16;
-                    let menu_handle = bus.read_long(sp + 6);
+                    let request = PopupMenuRequest {
+                        menu_handle: bus.read_long(sp + 6),
+                        anchor: (bus.read_word(sp + 4) as i16, bus.read_word(sp + 2) as i16),
+                        requested_item: bus.read_word(sp) as i16,
+                    };
+                    let menu_handle = request.menu_handle;
                     // Stack: popUpItem(2) + left(2) + top(2) + menu(4) + result(4)
                     // Don't pop yet — store SP for result write later
 
@@ -2762,13 +2764,8 @@ impl super::TrapDispatcher {
                                 Vec::new(),
                             ));
                             self.menu_tracking.context_mut().classic_stack = sp;
-                            let hit_point = (u32::from(top as u16) << 16) | u32::from(left as u16);
                             self.menu_tracking.context_mut().definition =
-                                Some(SharedMenuDefinitionTracking::begin_popup(
-                                    menu_handle,
-                                    hit_point,
-                                    popup_item,
-                                ));
+                                Some(request.begin_definition());
                             self.prepare_menu_definition_port(cpu, bus);
                             if !self.arm_pending_menu_definition(
                                 cpu,
@@ -2787,7 +2784,7 @@ impl super::TrapDispatcher {
                         // taking precedence over the monochrome families.
                         self.preload_menu_item_icon_resources(bus, menu_idx);
                         let Some((dd_rect, highlighted_item, content_top)) =
-                            self.popup_menu_dropdown_rect(bus, menu_idx, top, left, popup_item)
+                            self.popup_menu_dropdown_rect(bus, menu_idx, request)
                         else {
                             self.finish_menu_no_hit(bus, cpu, sp, 10);
                             return Some(Ok(()));
@@ -4363,9 +4360,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         menu_idx: usize,
-        top: i16,
-        left: i16,
-        popup_item: i16,
+        request: PopupMenuRequest,
     ) -> Option<((i16, i16, i16, i16), i16, i16)> {
         let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
             self.get_screen_params();
@@ -4377,8 +4372,8 @@ impl super::TrapDispatcher {
             &rows,
             width,
             (screen_width, screen_height),
-            (top, left),
-            popup_item,
+            request.anchor,
+            request.requested_item,
         )?;
         Some((layout.rect(), layout.highlighted_item, layout.content_top))
     }
@@ -7649,92 +7644,143 @@ mod tests {
 
     #[test]
     fn popup_menu_select_runs_custom_popup_draw_and_choose_sequence() {
-        let (mut disp, mut cpu, mut bus) = setup_with_port();
-        setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
-        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 338, 0x306E80, "Custom");
-        let menu_ptr = bus.read_long(handle);
-        let mdef_ptr = bus.alloc(2);
-        let mdef_handle = bus.alloc(4);
-        bus.write_word(mdef_ptr, 0x4E75);
-        bus.write_long(mdef_handle, mdef_ptr);
-        bus.write_long(menu_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+        for (top, left, requested_item) in [
+            (40i16, 30i16, 4i16),
+            (-40, -30, -1),
+            (i16::MIN, i16::MAX, 0),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+            let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 338, 0x306E80, "Custom");
+            let menu_ptr = bus.read_long(handle);
+            let mdef_ptr = bus.alloc(2);
+            let mdef_handle = bus.alloc(4);
+            bus.write_word(mdef_ptr, 0x4E75);
+            bus.write_long(mdef_handle, mdef_ptr);
+            bus.write_long(menu_ptr + 6, mdef_handle);
+            disp.loaded_handles
+                .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
 
-        let trap_pc = 0x0012_3500;
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
-        bus.write_word(TEST_SP, 4);
-        bus.write_word(TEST_SP + 2, 30);
-        bus.write_word(TEST_SP + 4, 40);
-        bus.write_long(TEST_SP + 6, handle);
-        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
-        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 52);
-        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 45);
+            let trap_pc = 0x0012_3500;
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            bus.write_word(TEST_SP, requested_item as u16);
+            bus.write_word(TEST_SP + 2, left as u16);
+            bus.write_word(TEST_SP + 4, top as u16);
+            bus.write_long(TEST_SP + 6, handle);
+            bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
+            bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 52);
+            bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 45);
 
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        let trampoline = cpu.read_reg(Register::PC);
-        assert_eq!(bus.read_word(trampoline + 6), 3);
-        assert_eq!(bus.read_long(trampoline + 22), 0x0028_001E);
-        assert_eq!(bus.read_word(trampoline + 68), 4);
+            disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let trampoline = cpu.read_reg(Register::PC);
+            assert_eq!(bus.read_word(trampoline + 6), 3);
+            assert_eq!(
+                bus.read_long(trampoline + 22),
+                (u32::from(top as u16) << 16) | u32::from(left as u16)
+            );
+            assert_eq!(bus.read_word(trampoline + 68), requested_item as u16);
 
-        for (offset, value) in [(0, 40i16), (2, 30), (4, 72), (6, 110), (8, 0)] {
-            bus.write_word(trampoline + 60 + offset, value as u16);
+            for (offset, value) in [(0, 40i16), (2, 30), (4, 72), (6, 110), (8, 0)] {
+                bus.write_word(trampoline + 60 + offset, value as u16);
+            }
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(trampoline + 6), 0);
+            assert_eq!(
+                bus.read_bytes(trampoline + 60, 8),
+                [0, 40, 0, 30, 0, 72, 0, 110]
+            );
+
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(trampoline + 6), 1);
+            assert_eq!(bus.read_long(trampoline + 22), 0x0034_002D);
+
+            bus.write_word(trampoline + 68, 2);
+            bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 6);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
+
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(trampoline + 6), 1);
+            assert_eq!(bus.read_long(trampoline + 22), 0x0027_001E);
+            assert_eq!(bus.read_word(trampoline + 68), 2);
+
+            bus.write_word(trampoline + 68, 0);
+            let tracking = disp.menu_tracking.as_mut().unwrap();
+            tracking.flash_remaining = 1;
+            tracking.flash_delay = 0;
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_long(TEST_SP + 10), (338u32 << 16) | 2);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+            assert_eq!(disp.menu_tracking, None);
+            assert_eq!(disp.menu_tracking.context().definition, None);
         }
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_word(trampoline + 6), 0);
-        assert_eq!(
-            bus.read_bytes(trampoline + 60, 8),
-            [0, 40, 0, 30, 0, 72, 0, 110]
-        );
-
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_word(trampoline + 6), 1);
-        assert_eq!(bus.read_long(trampoline + 22), 0x0034_002D);
-
-        bus.write_word(trampoline + 68, 2);
-        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 6);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
-
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_word(trampoline + 6), 1);
-        assert_eq!(bus.read_long(trampoline + 22), 0x0027_001E);
-        assert_eq!(bus.read_word(trampoline + 68), 2);
-
-        bus.write_word(trampoline + 68, 0);
-        let tracking = disp.menu_tracking.as_mut().unwrap();
-        tracking.flash_remaining = 1;
-        tracking.flash_delay = 0;
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_long(TEST_SP + 10), (338u32 << 16) | 2);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-        assert_eq!(disp.menu_tracking, None);
-        assert_eq!(disp.menu_tracking.context().definition, None);
     }
 
     #[test]

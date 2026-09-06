@@ -72,7 +72,7 @@ use crate::menu_manager::{
     MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
     MenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane, MenuTrackingSurface,
-    MonochromeMenuIconLayout, ProcessMenuTrackingState, ProcessTrackedMenuPane,
+    MonochromeMenuIconLayout, PopupMenuRequest, ProcessMenuTrackingState, ProcessTrackedMenuPane,
     SharedNativeMenuSelection, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
     StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest,
     TrackedMenuIcon as PpcTrackedMenuIcon,
@@ -76614,9 +76614,11 @@ fn ppc_menu_selection_result(
 
 fn ppc_popup_menu_call(cpu: &PpcCpu) -> NativePopupMenuOrigin {
     NativePopupMenuOrigin {
-        top: cpu.gpr[4] as u16 as i16,
-        left: cpu.gpr[5] as u16 as i16,
-        pop_up_item: cpu.gpr[6] as u16 as i16,
+        request: PopupMenuRequest {
+            menu_handle: cpu.gpr[3],
+            anchor: (cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u16 as i16),
+            requested_item: cpu.gpr[6] as u16 as i16,
+        },
         stack_pointer: cpu.gpr[1],
         return_address: cpu.lr,
     }
@@ -76636,12 +76638,12 @@ fn ppc_popup_menu_is_inserted(
 
 fn ppc_popup_menu_layout_with_resources(
     memory: &mut PpcSectionMem,
-    menu_handle: u32,
+    request: PopupMenuRequest,
     front: PpcFrontBuffer,
-    call: NativePopupMenuOrigin,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> Option<(i16, i16, i16, i16, i16, i16)> {
+    let menu_handle = request.menu_handle;
     let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
     let count = i16::try_from(ppc_count_menu_items(memory, menu_handle)).ok()?;
     if count <= 0 || front.width <= 1 || front.height <= 1 {
@@ -76659,8 +76661,8 @@ fn ppc_popup_menu_layout_with_resources(
             ppc_u32_to_i16_saturating(front.width),
             ppc_u32_to_i16_saturating(front.height),
         ),
-        (call.top, call.left),
-        call.pop_up_item,
+        request.anchor,
+        request.requested_item,
     )?;
 
     Some((
@@ -76693,12 +76695,7 @@ fn ppc_begin_custom_popup_menu_tracking(
         return None;
     }
     ppc_menu_definition_target(cpu, memory, resources, menu_handle)?;
-    let hit_point = (u32::from(call.top as u16) << 16) | u32::from(call.left as u16);
-    startup.menu_tracking.context_mut().definition = Some(MenuDefinitionTracking::begin_popup(
-        menu_handle,
-        hit_point,
-        call.pop_up_item,
-    ));
+    startup.menu_tracking.context_mut().definition = Some(call.request.begin_definition());
     startup.menu_tracking.context_mut().native_popup = Some(call);
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
@@ -77120,9 +77117,8 @@ fn ppc_dispatch_pop_up_menu_select(
     let Some((popup_left, popup_top, popup_width, popup_height, requested_item, content_top)) =
         ppc_popup_menu_layout_with_resources(
             memory,
-            menu_handle,
+            call.request,
             front,
-            call,
             resources,
             current_resource_refnum,
         )
@@ -94823,137 +94819,161 @@ pub(crate) mod tests {
 
     #[test]
     fn native_popup_menu_select_runs_custom_popup_draw_and_choose_sequence() {
-        let pef = synthetic_pef_with_import(b"PopUpMenuSelect");
-        let mut loaded = load_pef_application(&pef).unwrap();
-        let menu = install_test_popup_menu(
-            &mut loaded,
-            PPC_DATA_BASE + 0x1000,
-            132,
-            b"Custom",
-            b"Opaque definition data",
-        );
-        let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
-        let mdef_handle = PPC_DATA_BASE + 0x7000;
-        let descriptor = PPC_DATA_BASE + 0x7100;
-        let tvector = PPC_DATA_BASE + 0x7180;
-        loaded.memory.add_region(mdef_handle, vec![0; 4]);
-        install_test_powerpc_callback(
-            &mut loaded,
-            descriptor,
-            tvector,
-            PPC_CODE_BASE + 0x4000,
-            PPC_DATA_BASE + 0x7300,
-            test_stack_proc_info(
-                PPC_PROCINFO_SIZE_NONE,
+        for (top, left, requested_item) in [
+            (40i16, 30i16, 4i16),
+            (-40, -30, -1),
+            (i16::MIN, i16::MAX, 0),
+        ] {
+            let pef = synthetic_pef_with_import(b"PopUpMenuSelect");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_popup_menu(
+                &mut loaded,
+                PPC_DATA_BASE + 0x1000,
+                132,
+                b"Custom",
+                b"Opaque definition data",
+            );
+            let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+            let mdef_handle = PPC_DATA_BASE + 0x7000;
+            let descriptor = PPC_DATA_BASE + 0x7100;
+            let tvector = PPC_DATA_BASE + 0x7180;
+            loaded.memory.add_region(mdef_handle, vec![0; 4]);
+            install_test_powerpc_callback(
+                &mut loaded,
+                descriptor,
+                tvector,
+                PPC_CODE_BASE + 0x4000,
+                PPC_DATA_BASE + 0x7300,
+                test_stack_proc_info(
+                    PPC_PROCINFO_SIZE_NONE,
+                    &[
+                        PPC_PROCINFO_SIZE_TWO,
+                        PPC_PROCINFO_SIZE_FOUR,
+                        PPC_PROCINFO_SIZE_FOUR,
+                        PPC_PROCINFO_SIZE_FOUR,
+                        PPC_PROCINFO_SIZE_FOUR,
+                    ],
+                ),
                 &[
-                    PPC_PROCINFO_SIZE_TWO,
-                    PPC_PROCINFO_SIZE_FOUR,
-                    PPC_PROCINFO_SIZE_FOUR,
-                    PPC_PROCINFO_SIZE_FOUR,
-                    PPC_PROCINFO_SIZE_FOUR,
+                    d_form_u(14, 8, 0, 40),
+                    d_form_u(44, 8, 5, 0),
+                    d_form_u(14, 8, 0, 30),
+                    d_form_u(44, 8, 5, 2),
+                    d_form_u(14, 8, 0, 72),
+                    d_form_u(44, 8, 5, 4),
+                    d_form_u(14, 8, 0, 110),
+                    d_form_u(44, 8, 5, 6),
+                    d_form_u(14, 8, 0, 2),
+                    d_form_u(44, 8, 7, 0),
+                    BLR,
                 ],
-            ),
-            &[
-                d_form_u(14, 8, 0, 40),
-                d_form_u(44, 8, 5, 0),
-                d_form_u(14, 8, 0, 30),
-                d_form_u(44, 8, 5, 2),
-                d_form_u(14, 8, 0, 72),
-                d_form_u(44, 8, 5, 4),
-                d_form_u(14, 8, 0, 110),
-                d_form_u(44, 8, 5, 6),
-                d_form_u(14, 8, 0, 2),
-                d_form_u(44, 8, 7, 0),
-                BLR,
-            ],
-        );
-        loaded.memory.write_u32_be(mdef_handle, descriptor).unwrap();
-        loaded
-            .memory
-            .write_u32_be(menu_ptr + 6, mdef_handle)
-            .unwrap();
-        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
-        let framebuffer_len = front.row_bytes * front.height;
-        let before =
-            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len).unwrap();
+            );
+            loaded.memory.write_u32_be(mdef_handle, descriptor).unwrap();
+            loaded
+                .memory
+                .write_u32_be(menu_ptr + 6, mdef_handle)
+                .unwrap();
+            let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+            let framebuffer_len = front.row_bytes * front.height;
+            let before =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len).unwrap();
 
-        loaded.cpu.gpr[3] = menu;
-        loaded.cpu.gpr[4] = 40;
-        loaded.cpu.gpr[5] = 30;
-        loaded.cpu.gpr[6] = 4;
-        loaded.set_input_snapshot(PpcInputSnapshot {
-            mouse_button: true,
-            mouse_v: 52,
-            mouse_h: 45,
-            ..PpcInputSnapshot::default()
-        });
-        let probe = loaded.run_with_hle_imports(512);
-        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        assert_eq!(
-            loaded
-                .toolbox_startup
-                .active_menu_definition()
-                .unwrap()
-                .which_item(),
-            2
-        );
-        assert_eq!(
-            loaded
-                .toolbox_startup
-                .active_menu_definition()
-                .unwrap()
-                .menu_rect(),
-            (40, 30, 72, 110)
-        );
-
-        loaded.set_input_snapshot(PpcInputSnapshot {
-            mouse_button: false,
-            mouse_v: 52,
-            mouse_h: 45,
-            ..PpcInputSnapshot::default()
-        });
-        let probe = loaded.run_with_hle_imports(512);
-        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        assert_eq!(
-            loaded
-                .toolbox_startup
-                .menu_tracking
-                .as_ref()
-                .unwrap()
-                .flash_remaining,
-            6
-        );
-        let mut phases = vec![6];
-        for _ in 0..64 {
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 0x1234_0000 | u32::from(top as u16);
+            loaded.cpu.gpr[5] = 0x5678_0000 | u32::from(left as u16);
+            loaded.cpu.gpr[6] = 0x9ABC_0000 | u32::from(requested_item as u16);
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 52,
+                mouse_h: 45,
+                ..PpcInputSnapshot::default()
+            });
+            for _ in 0..32 {
+                if loaded.cpu.pc == PPC_CODE_BASE + 0x4000 {
+                    break;
+                }
+                let probe = loaded.run_with_hle_imports(1);
+                assert_eq!(probe.unsupported_import_index, None);
+            }
+            assert_eq!(loaded.cpu.pc, PPC_CODE_BASE + 0x4000);
+            assert_eq!(loaded.cpu.gpr[3], 3);
+            assert_eq!(loaded.cpu.gpr[4], menu);
+            assert_eq!(
+                loaded.cpu.gpr[6],
+                (u32::from(top as u16) << 16) | u32::from(left as u16)
+            );
+            assert_eq!(
+                loaded.memory.read_u16_be(loaded.cpu.gpr[7]),
+                Some(requested_item as u16)
+            );
             let probe = loaded.run_with_hle_imports(512);
-            let remaining = loaded
-                .toolbox_startup
-                .menu_tracking
-                .as_ref()
-                .map_or(0, |state| state.flash_remaining);
-            if phases.last() != Some(&remaining) {
-                phases.push(remaining);
-            }
-            if matches!(probe.result, PpcRunResult::Halted { .. }) {
-                break;
-            }
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .active_menu_definition()
+                    .unwrap()
+                    .which_item(),
+                2
+            );
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .active_menu_definition()
+                    .unwrap()
+                    .menu_rect(),
+                (40, 30, 72, 110)
+            );
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 52,
+                mouse_h: 45,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(512);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .menu_tracking
+                    .as_ref()
+                    .unwrap()
+                    .flash_remaining,
+                6
+            );
+            let mut phases = vec![6];
+            for _ in 0..64 {
+                let probe = loaded.run_with_hle_imports(512);
+                let remaining = loaded
+                    .toolbox_startup
+                    .menu_tracking
+                    .as_ref()
+                    .map_or(0, |state| state.flash_remaining);
+                if phases.last() != Some(&remaining) {
+                    phases.push(remaining);
+                }
+                if matches!(probe.result, PpcRunResult::Halted { .. }) {
+                    break;
+                }
+                assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            }
+            assert_eq!(phases, [6, 5, 4, 3, 2, 1, 0]);
+            assert_eq!(loaded.cpu.gpr[3], (132u32 << 16) | 2);
+            assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+            assert_eq!(
+                loaded.toolbox_startup.menu_tracking.context().definition,
+                None
+            );
+            assert_eq!(
+                loaded.toolbox_startup.menu_tracking.context().native_popup,
+                None
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(before)
+            );
         }
-        assert_eq!(phases, [6, 5, 4, 3, 2, 1, 0]);
-        assert_eq!(loaded.cpu.gpr[3], (132u32 << 16) | 2);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
-        assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().definition,
-            None
-        );
-        assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_popup,
-            None
-        );
-        assert_eq!(
-            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
-            Some(before)
-        );
     }
 
     #[test]
@@ -161249,9 +161269,11 @@ pub(crate) mod tests {
         assert_eq!(
             loaded.toolbox_startup.menu_tracking.context().native_popup,
             Some(NativePopupMenuOrigin {
-                top: 100,
-                left: 50,
-                pop_up_item: 2,
+                request: PopupMenuRequest {
+                    menu_handle,
+                    anchor: (100, 50),
+                    requested_item: 2,
+                },
                 stack_pointer: original_sp,
                 return_address: parked_lr,
             })
@@ -171649,9 +171671,11 @@ pub(crate) mod tests {
             .menu_tracking
             .context_mut()
             .native_popup = Some(NativePopupMenuOrigin {
-            top: 100,
-            left: 50,
-            pop_up_item: 1,
+            request: PopupMenuRequest {
+                menu_handle: popup_tracking.menu_handle,
+                anchor: (100, 50),
+                requested_item: 1,
+            },
             stack_pointer: loaded.cpu.gpr[1],
             return_address: loaded.cpu.lr,
         });
