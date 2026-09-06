@@ -1995,6 +1995,23 @@ impl super::TrapDispatcher {
             .unwrap_or_else(|| self.window_port_rect(bus, the_window));
         let old_update_rect = self.window_update_rect(bus, the_window);
         let moved_pixels = old_structure.and_then(|rect| self.save_screen_rect_pixels(bus, rect));
+        // A dialog's saved background belongs to screen coordinates, not
+        // to its movable contents. Expose a visible front dialog's old
+        // background before capturing its destination. A hidden dialog
+        // has not covered anything, so only recapture its destination.
+        // MoveWindow: Inside Macintosh Volume I, I-287..I-289;
+        // CloseDialog: Macintosh Toolbox Essentials 1992, pp. 6-119..6-120.
+        let moved_dialog_background = if old_structure.is_none() || self.front_window == the_window
+        {
+            self.dialog_saved_pixels.remove(&the_window)
+        } else {
+            None
+        };
+        if old_structure.is_some() {
+            if let Some(background) = moved_dialog_background.as_ref() {
+                self.restore_dialog_pixels(bus, old_port_rect, background);
+            }
+        }
         let delta_v = v_global.wrapping_sub(old_port_rect.0);
         let delta_h = h_global.wrapping_sub(old_port_rect.1);
 
@@ -2087,8 +2104,21 @@ impl super::TrapDispatcher {
             self.window_bounds = (v_global, h_global, v_global + port_h, h_global + port_w);
         }
 
-        if let Some((top, left, bottom, right)) = old_structure {
-            self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+        if moved_dialog_background.is_none() {
+            if let Some((top, left, bottom, right)) = old_structure {
+                self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+            }
+        }
+        if moved_dialog_background.is_some() {
+            let background = self.save_dialog_pixels(bus, global_content);
+            self.dialog_saved_pixels
+                .insert(the_window, background.clone());
+            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                if tracking.dialog_ptr == the_window {
+                    tracking.bounds = global_content;
+                    tracking.saved_pixels = background;
+                }
+            }
         }
         if let Some((top, left, width, height, pixels)) = moved_pixels {
             self.restore_screen_rect_pixels(
@@ -2104,6 +2134,18 @@ impl super::TrapDispatcher {
         if self.window_visible(bus, the_window) {
             let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
             self.draw_single_window_chrome_inline(bus, the_window, hilited);
+        }
+        if moved_dialog_background.is_some() && old_structure.is_some() {
+            let pixels = self.save_dialog_pixels(bus, global_content);
+            if let Some(snapshot) = self.dialog_visible_snapshots.get_mut(&the_window) {
+                snapshot.bounds = global_content;
+                snapshot.pixels = pixels.clone();
+            }
+            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                if tracking.dialog_ptr == the_window {
+                    tracking.rendered_pixels = pixels;
+                }
+            }
         }
     }
 
@@ -12260,6 +12302,75 @@ mod tests {
             0,
             "clipRgn.left unchanged"
         );
+    }
+
+    #[test]
+    fn moved_dialog_restores_background_at_its_destination() {
+        check_moved_dialog_background(true);
+    }
+
+    #[test]
+    fn dialog_moved_before_showing_restores_destination_background() {
+        check_moved_dialog_background(false);
+    }
+
+    fn check_moved_dialog_background(visible: bool) {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = bus.alloc(320 * 240);
+        bus.write_long(0x0824, screen);
+        disp.screen_mode = (screen, 320, 320, 240, 8);
+        let back = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus, &mut cpu, back, screen, 20, 20, 220, 300, "Back", 0, true, false, false, 0,
+        );
+        let dialog = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus, &mut cpu, dialog, screen, 100, 80, 170, 200, "", 1, visible, false, false, 0,
+        );
+        bus.write_word(dialog + 108, 2);
+        disp.dialog_items.insert(dialog, Vec::new());
+        disp.front_window = dialog;
+        disp.window_bounds = (100, 80, 170, 200);
+        // Distinct rows expose a background that is accidentally translated
+        // along with the dialog. Keep both positions over the back window.
+        for y in 20..220u32 {
+            for x in 20..300u32 {
+                bus.write_byte(screen + y * 320 + x, y as u8);
+            }
+        }
+        let original = disp.save_dialog_pixels(&bus, (100, 80, 170, 200));
+        disp.dialog_saved_pixels.insert(dialog, original);
+        if visible {
+            for y in 100..170u32 {
+                for x in 80..200u32 {
+                    bus.write_byte(screen + y * 320 + x, 250);
+                }
+            }
+        }
+
+        disp.move_window_to_global(&mut bus, dialog, 100, 60, false);
+        assert_eq!(
+            bus.read_byte(screen + 80 * 320 + 120),
+            if visible { 250 } else { 80 }
+        );
+        // Simulate showing and drawing the dialog after a hidden move.
+        bus.write_byte(dialog + 110, 1);
+        for y in 60..130u32 {
+            for x in 100..220u32 {
+                bus.write_byte(screen + y * 320 + x, 250);
+            }
+        }
+        assert_eq!(bus.read_byte(screen + 155 * 320 + 90), 155);
+        // CloseDialog must restore the row that was underneath the new
+        // location, including the overlap with the old dialog rectangle.
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog);
+        disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(screen + 80 * 320 + 120), 80);
+        assert_eq!(bus.read_byte(screen + 110 * 320 + 120), 110);
+        assert_eq!(bus.read_byte(screen + 155 * 320 + 90), 155);
     }
 
     #[test]
