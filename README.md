@@ -63,6 +63,10 @@ Systemless does not ship applications, games, Mac ROMs, or Apple system software
 Use legally obtained application archives.
 
 For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
+For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
+The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
+phases that take at least 50 ms. During normal gameplay, drawable waits on the
+presentation worker do not block the guest CPU or input handling.
 
 ## Try it in your browser
 
