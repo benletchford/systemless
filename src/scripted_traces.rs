@@ -84,6 +84,8 @@ pub fn scripted_menuselect_enabled_item_input_trace() -> Result<String, String> 
         if dispatcher.menu_tracking.is_none() {
             break;
         }
+        let tick = bus.read_long(addr::TICKS).wrapping_add(1);
+        bus.write_long(addr::TICKS, tick);
         scripted_call_menu_trap(
             &mut dispatcher,
             &mut cpu,
