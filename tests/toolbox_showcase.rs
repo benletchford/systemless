@@ -3170,3 +3170,53 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "37-popup-lists-selected.png");
 }
+
+/// Capture the actual guest Toolbox pages with either fallback renderer.
+/// Intentionally separate from pixel-oracle acceptance: this experiment changes
+/// text metrics, so its output must never overwrite the default references.
+#[test]
+#[ignore = "writes review evidence; see toolbox-showcase/urw-experiment/README.md"]
+fn capture_urw_font_experiment() {
+    let directory = std::env::var_os("SYSTEMLESS_FONT_EVIDENCE_DIR")
+        .expect("set SYSTEMLESS_FONT_EVIDENCE_DIR to an output directory");
+    let directory = PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut runner = new_runner_with_screen_depth(8);
+    let powerpc = prefer_powerpc();
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
+    runner
+        .set_powerpc_screen_depth(if powerpc { 16 } else { 8 })
+        .unwrap();
+    runner.set_app_start_time(3_786_912_000);
+    runner.set_menu_bar_visible(true);
+    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+    assert_eq!(app.is_powerpc(), powerpc);
+    init_game(&mut runner, &app);
+    step_until(&mut runner, "font experiment startup", |r| {
+        r.window_count() >= 1
+            && menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
+    });
+    wait_for_page_event_loop(&mut runner, "initial graphics paint");
+    for (page, filename) in [
+        (ITEM_PAGE_GRAPHICS, "graphics.png"),
+        (ITEM_PAGE_CONTROLS, "controls.png"),
+        (ITEM_PAGE_DRAWING, "drawing.png"),
+        (ITEM_PAGE_TEXTEDIT, "textedit.png"),
+        (ITEM_PAGE_STYLED_TEXT, "styled-text.png"),
+    ] {
+        assert!(runner.select_guest_menu_item(MENU_PAGES, page));
+        step_until(&mut runner, filename, |r| {
+            menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, page)
+        });
+        wait_for_page_event_loop(&mut runner, filename);
+        let (width, height, pixels) = rendered_rgb(&mut runner);
+        write_rgb(&directory.join(filename), width, height, pixels);
+        if page == ITEM_PAGE_STYLED_TEXT {
+            let (top, left, _, _) = runner.window_bounds();
+            assert_styled_text_page_rendered(&mut runner, top, left);
+        }
+        if page == ITEM_PAGE_TEXTEDIT {
+            assert!(!showcase_textedit(&mut runner).text.is_empty());
+        }
+    }
+}

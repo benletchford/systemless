@@ -66,6 +66,9 @@ jobs:
       - name: Run library tests
         run: cargo test --lib --features test-support
 
+      - name: Check experimental URW font contracts
+        run: cargo test --lib --features test-support,experimental-urw-fonts quickdraw::fonts
+
       - name: Run desktop tests
         run: cargo test --locked --bin systemless
 

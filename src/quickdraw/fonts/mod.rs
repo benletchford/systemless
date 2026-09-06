@@ -1,4 +1,9 @@
-//! Original systemless bitmap fonts + Mac font-family routing.
+//! Systemless bitmap fonts, optional URW outlines, and Mac font-family routing.
+//!
+//! The `experimental-urw-fonts` feature replaces the built-in fallback at
+//! 1–96 points with bundled OFL-licensed URW TrueType faces. Application
+//! resources and local overrides still take precedence. The description
+//! below describes the default bitmap catalogue.
 //!
 //! Text renders by blitting pre-computed 8-bit coverage bitmaps out of
 //! the [`pixel_font`] modules — no runtime rasterization, no hinting
@@ -31,6 +36,8 @@
 pub mod heuristics;
 pub mod override_format;
 pub mod pixel_font;
+#[cfg(feature = "experimental-urw-fonts")]
+mod urw;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -672,6 +679,10 @@ pub fn get_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
     if let Some(face) = rasterize_resource_outline_face(font_id, size) {
         return Some(face);
     }
+    #[cfg(feature = "experimental-urw-fonts")]
+    if let Some((face, _)) = urw::face(font_id, size) {
+        return Some(face);
+    }
     get_baked_font_face(font_id, size)
 }
 
@@ -845,6 +856,10 @@ pub fn get_macroman_glyph(
     mac_code: u8,
 ) -> Option<(&'static Glyph, &'static [u8])> {
     let size = if size == 0 { 12 } else { size };
+    // Resolve a guest outline before considering bundled extended glyphs, even
+    // when the first character drawn is non-ASCII.
+    #[cfg(feature = "experimental-urw-fonts")]
+    let _ = get_font_face(font_id, size);
     if let Some(face) = RESOURCE_MACROMAN_FACES
         .lock()
         .expect("resource Mac Roman font cache poisoned")
@@ -853,6 +868,21 @@ pub fn get_macroman_glyph(
     {
         if let Some(hit) = face.glyphs.iter().find(|entry| entry.mac_code == mac_code) {
             return Some((&hit.glyph, face.data));
+        }
+    }
+    #[cfg(feature = "experimental-urw-fonts")]
+    if get_override_font_face(font_id, size).is_none()
+        && !RESOURCE_FACES
+            .lock()
+            .expect("resource font cache poisoned")
+            .contains_key(&(font_id, size))
+    {
+        if let Some((_, face)) = urw::face(font_id, size) {
+            return face
+                .glyphs
+                .iter()
+                .find(|entry| entry.mac_code == mac_code)
+                .map(|entry| (&entry.glyph, face.data));
         }
     }
     let face = MACROMAN_TABLE
@@ -892,7 +922,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn minimal_nfnt() -> Vec<u8> {
+    pub(super) fn minimal_nfnt() -> Vec<u8> {
         // One encoded character plus the missing-character glyph. The bitmap
         // is one row by one word; location and offset/width tables follow it.
         let mut bytes = vec![0u8; 38];
@@ -1000,6 +1030,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "experimental-urw-fonts"))]
     fn implicit_scaling_uses_the_closest_bitmap_strike_and_exact_ratio() {
         let (face, numerator, denominator) = get_font_face_scale_ratio(FONT_CHICAGO, 40);
         assert_eq!(face.font_id, FONT_CHICAGO);
@@ -1008,12 +1039,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "experimental-urw-fonts"))]
     fn fallback_courier_to_monaco() {
         let face = get_font_face_or_default(FONT_COURIER, 12);
         assert_eq!(face.font_id, FONT_MONACO);
     }
 
     #[test]
+    #[cfg(not(feature = "experimental-urw-fonts"))]
     fn palatino_uses_the_original_ironbark_serif_face() {
         assert_eq!(font_id_for_name("Palatino"), Some(FONT_PALATINO));
         assert_eq!(font_name_for_id(FONT_PALATINO), Some("Palatino"));

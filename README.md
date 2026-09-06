@@ -342,10 +342,11 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 
 ## Font Data
 
-Systemless ships its own original bitmap fonts. Every glyph is authored for this
-project — hand-drawn as ASCII art in `src/quickdraw/fonts/pixel_font/` and
+By default, Systemless renders its own original bitmap fonts. Every default
+glyph is authored for this project — hand-drawn as ASCII art in `src/quickdraw/fonts/pixel_font/` and
 lowered to static glyph tables by `const fn` at compile time; there is no
-external font file, no offline baker, and no third-party font data in the crate.
+external font file or offline baker for the default renderer. The crate also
+contains optional URW Core 35 TrueType assets for the experiment below.
 
 The faces are named after Australian native plants. The classic Mac font names
 survive **only as internal compatibility identifiers** so that classic
@@ -371,6 +372,23 @@ those families and substitutes the application font, which Systemless mirrors.
 
 If `SYSTEMLESS_ORIGINAL_FONTS_DIR` is set, Systemless can also load locally
 generated bitmap override blobs ahead of the built-in catalogue.
+
+### Experimental URW TrueType fallback
+
+Build with `--features experimental-urw-fonts` to replace the built-in fallback
+with bundled, unmodified URW Core 35 outlines at 1–96 points. This is an opt-in
+prototype for [#673](https://github.com/benletchford/systemless/issues/673).
+Application font resources and local bitmap overrides retain precedence.
+The optional Swash Rust rasterizer requires no installed host fonts. Outlines
+use their own advances, em-based point sizes, hinting, and Mac Roman to Unicode
+mapping. Coverage is reduced to binary masks for QuickDraw transfer modes.
+Missing characters use the font's missing-glyph shape. Styles continue to use QuickDraw synthesis.
+
+This changes wrapping, menu widths, and dialog spacing. Small sizes need visual
+review, and these substitute designs do not reproduce classic Mac metrics or pixels. Sizes above 96 points retain bitmap fallback
+scaling. It does not implement additional guest Font Manager traps and is not
+ready to become the default. See the [font source record](src/quickdraw/fonts/urw/README.md)
+and [toolbox comparison](tests/toolbox-showcase/urw-experiment/README.md).
 
 ### Trademark / non-affiliation
 
