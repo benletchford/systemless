@@ -15,6 +15,47 @@ pub(crate) struct OutlineGlyph {
     pub top: i32,
 }
 
+// Keep palette indexes through antialiasing so a CLUT change recolors existing
+// coverage without rasterizing the guest's one-bit text again.
+struct Ink {
+    foreground: u8,
+    alpha: u32,
+    background: IndexedColor,
+}
+
+enum IndexedColor {
+    Solid(u8),
+    Blended(Vec<(u8, u32)>),
+}
+
+impl IndexedColor {
+    fn rgb(&self, palette: &[[u8; 3]; 256]) -> [u8; 3] {
+        match self {
+            Self::Solid(index) => palette[*index as usize],
+            Self::Blended(layers) => layers.iter().fold([0; 3], |background, &(index, alpha)| {
+                blend(palette[index as usize], background, alpha)
+            }),
+        }
+    }
+}
+
+fn blend(foreground: [u8; 3], background: [u8; 3], alpha: u32) -> [u8; 3] {
+    std::array::from_fn(|c| {
+        ((u32::from(foreground[c]) * alpha + u32::from(background[c]) * (255 - alpha) + 127) / 255)
+            as u8
+    })
+}
+
+impl Ink {
+    fn rgb(&self, palette: &[[u8; 3]; 256]) -> [u8; 3] {
+        blend(
+            palette[self.foreground as usize],
+            self.background.rgb(palette),
+            self.alpha,
+        )
+    }
+}
+
 pub(crate) struct Presentation {
     base: u32,
     row_bytes: u32,
@@ -23,9 +64,10 @@ pub(crate) struct Presentation {
     pub scale: u32,
     palette: [[u8; 3]; 256],
     pixels: Vec<u8>,
+    pixel_indices: Vec<u8>,
     guest_values: Vec<u16>,
     text_cells: Vec<bool>,
-    ink: HashMap<usize, (u8, u32, [u8; 3])>,
+    ink: HashMap<usize, Ink>,
     run_ink: HashSet<usize>,
     in_text_run: bool,
     pub erasing_text: bool,
@@ -80,6 +122,7 @@ impl Presentation {
                 }
                 self.run_ink.remove(&offset);
                 self.ink.remove(&offset);
+                self.pixel_indices[offset / 3] = value;
                 self.pixels[offset..offset + 3].copy_from_slice(&color);
             }
         }
@@ -117,39 +160,44 @@ impl Presentation {
                 if alpha == 255 {
                     self.pixels[offset..offset + 3].copy_from_slice(&color);
                     self.ink.remove(&offset);
+                    self.pixel_indices[offset / 3] = foreground;
                     continue;
                 }
                 // Inside Macintosh I, "Transfer Modes": srcOr forces source
                 // ink on and leaves other bits alone; repeated ink is idempotent.
                 // Retain coverage rather than
                 // repeatedly blending the same ink into its own antialiased edge.
-                let background = [
-                    self.pixels[offset],
-                    self.pixels[offset + 1],
-                    self.pixels[offset + 2],
-                ];
-                let ink = self
-                    .ink
-                    .entry(offset)
-                    .or_insert((foreground, 0, background));
-                if ink.0 != foreground {
-                    *ink = (foreground, 0, background);
+                let ink = self.ink.entry(offset).or_insert_with(|| Ink {
+                    foreground,
+                    alpha: 0,
+                    background: IndexedColor::Solid(self.pixel_indices[offset / 3]),
+                });
+                if ink.foreground != foreground {
+                    let previous = std::mem::replace(
+                        ink,
+                        Ink {
+                            foreground,
+                            alpha: 0,
+                            background: IndexedColor::Solid(0),
+                        },
+                    );
+                    let mut layers = match previous.background {
+                        IndexedColor::Solid(index) => vec![(index, 255)],
+                        IndexedColor::Blended(layers) => layers,
+                    };
+                    layers.push((previous.foreground, previous.alpha));
+                    ink.background = IndexedColor::Blended(layers);
                 }
-                ink.1 = ink.1.max(alpha);
-                let alpha = ink.1;
-                for c in 0..3 {
-                    self.pixels[offset + c] =
-                        ((u32::from(color[c]) * alpha + u32::from(ink.2[c]) * (255 - alpha) + 127)
-                            / 255) as u8;
-                }
+                ink.alpha = ink.alpha.max(alpha);
+                self.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(&self.palette));
             }
         }
     }
 }
 
 impl MacMemoryBus {
-    /// Maintain a 4x outline surface for an indexed screen. Mode and palette
-    /// changes invalidate the surface before subsequent drawing can reuse it.
+    /// Maintain a 4x outline surface for an indexed screen. Geometry changes
+    /// recreate the surface; palette changes recolor the retained coverage.
     pub fn prepare_outline_presentation(
         &mut self,
         screen: (u32, u32, u16, u16, u16),
@@ -159,13 +207,23 @@ impl MacMemoryBus {
             self.presentation = None;
             return;
         }
-        let matches = self.presentation.as_ref().is_some_and(|p| {
+        if let Some(p) = self.presentation.as_mut().filter(|p| {
             (p.base, p.row_bytes, p.width, p.height)
                 == (screen.0, screen.1, screen.2 as u32, screen.3 as u32)
-                && p.palette == palette
                 && p.scale == 4
-        });
-        if !matches {
+        }) {
+            if p.palette != palette {
+                // Indexed pixels retain their CLUT indexes when the device's
+                // colors change (Imaging With QuickDraw, 1994, 4-5–4-6).
+                p.palette = palette;
+                for (index, pixel) in p.pixel_indices.iter().zip(p.pixels.chunks_exact_mut(3)) {
+                    pixel.copy_from_slice(&palette[*index as usize]);
+                }
+                for (&offset, ink) in &p.ink {
+                    p.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(&palette));
+                }
+            }
+        } else {
             self.enable_outline_presentation(screen, palette, 4);
         }
     }
@@ -231,6 +289,10 @@ impl MacMemoryBus {
             scale,
             palette,
             pixels: vec![0; width as usize * height as usize * scale as usize * scale as usize * 3],
+            pixel_indices: vec![
+                0;
+                width as usize * height as usize * scale as usize * scale as usize
+            ],
             guest_values: vec![256; width as usize * height as usize],
             text_cells: vec![false; width as usize * height as usize],
             ink: HashMap::new(),
@@ -381,6 +443,44 @@ mod tests {
         bus.fill_bytes(0x1000, 64, 255);
         bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), palette, 2);
         bus
+    }
+
+    #[test]
+    fn palette_changes_preserve_coverage_and_distinct_indexes_with_equal_colors() {
+        let mut bus = bus();
+        let mut palette = [[0; 3]; 256];
+        palette[255] = [255; 3];
+        let screen = (0x1000, 8, 8, 8, 8);
+        bus.prepare_outline_presentation(screen, palette);
+        let p = bus.presentation.as_mut().unwrap();
+        p.glyph = Some((
+            OutlineGlyph {
+                pixels: vec![128, 255, 0, 0],
+                width: 4,
+                height: 1,
+                left: 0,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        p.glyph_pixel(0x1000, 0, 0, 0);
+        p.glyph.as_mut().unwrap().0.pixels[1] = 0;
+        p.glyph_pixel(0x1000, 0, 0, 2);
+        p.glyph = None;
+        // Both foreground indexes were black when drawn. Retaining only RGB
+        // cannot distinguish them after the CLUT assigns different colors.
+        palette[0] = [255, 0, 0];
+        palette[2] = [0, 0, 255];
+        palette[255] = [0, 255, 0];
+        bus.prepare_outline_presentation(screen, palette);
+        let (_, _, rgb, _) = bus.outline_presentation_rgb().unwrap();
+        assert_eq!(&rgb[..9], &[64, 63, 128, 255, 0, 0, 0, 255, 0]);
+        // A same-value guest erase still discards coverage after recoloring.
+        bus.write_byte(0x1000, 255);
+        palette[255] = [255; 3];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..12], &[255; 12]);
     }
 
     #[test]
