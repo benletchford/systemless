@@ -6375,7 +6375,6 @@ impl super::TrapDispatcher {
                                 self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                             bus.write_word(sp + 8, refnum);
                             cpu.write_reg(Register::D0, refnum as u32);
-                            bus.write_word(0x0A60, 0); // ResErr = noErr
                             cpu.write_reg(Register::A7, sp + 8);
                             return Some(Ok(()));
                         }
@@ -6400,7 +6399,6 @@ impl super::TrapDispatcher {
                     let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                     bus.write_word(sp + 8, refnum);
                     cpu.write_reg(Register::D0, refnum as u32);
-                    bus.write_word(0x0A60, 0); // ResErr = noErr
                 } else {
                     eprintln!("[TRAP] OpenRFPerm: \"{}\" not found in vfs_rsrc", name);
                     bus.write_word(sp + 8, (-1i16) as u16);
@@ -9467,7 +9465,6 @@ impl super::TrapDispatcher {
                     }
                     let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                     bus.write_word(sp + 12, refnum);
-                    bus.write_word(0x0A60, 0); // ResErr = noErr
                 } else {
                     bus.write_word(sp + 12, (-1i16) as u16);
                     bus.write_word(0x0A60, (-43i16) as u16); // fnfErr
@@ -9596,7 +9593,6 @@ impl super::TrapDispatcher {
                         let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, false);
                         bus.write_word(sp + 4, refnum);
                         cpu.write_reg(Register::D0, refnum as u32);
-                        bus.write_word(0x0A60, 0); // ResErr = noErr
                         cpu.write_reg(Register::A7, sp + 4);
                         return Some(Ok(()));
                     }
@@ -13832,6 +13828,14 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         };
 
+                        if refnum == u16::MAX {
+                            let error = bus.read_word(0x0A60) as i16;
+                            record_movie_error(self, error);
+                            bus.write_word(sp + 10, error as u16);
+                            cpu.write_reg(Register::A7, sp + 10);
+                            cpu.write_reg(Register::D0, error as i32 as u32);
+                            return Some(Ok(()));
+                        }
                         if ref_num_ptr != 0 {
                             bus.write_word(ref_num_ptr, refnum);
                         }
@@ -22449,6 +22453,81 @@ mod tests {
         assert_eq!(disp.current_resource_refnum(), refnum);
         assert_eq!(disp.resource_file_name(refnum), Some("Shapes"));
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
+    fn open_res_file_publishes_a_valid_fcb_and_preserves_other_access_paths() {
+        use crate::memory::globals::addr;
+        let (mut disp, mut cpu, mut bus) = setup();
+        let original_buffer = bus.alloc(96);
+        bus.fill_bytes(original_buffer, 96, 0);
+        bus.write_word(original_buffer, 96);
+        bus.write_long(original_buffer + 2, 1234);
+        bus.write_long(addr::FCB_S_PTR, original_buffer);
+        bus.write_word(addr::FS_FCB_LEN, 94);
+        bus.write_word(addr::CUR_APREF_NUM, 2);
+        disp.open_files.insert(96, "Other Data".to_string());
+        disp.vfs_rsrc.insert("Profiles/Player".to_string(), vec![]);
+        disp.set_vfs_entry_metadata("Profiles/Player", *b"SAVE", *b"TEST", 0);
+        let metadata = disp.vfs_file_metadata("Profiles/Player").unwrap();
+        let name_ptr = 0x200250;
+        bus.write_pstring(name_ptr, b"Profiles:Player");
+        bus.write_long(TEST_SP, name_ptr);
+
+        disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let refnum = bus.read_word(TEST_SP + 4);
+        let buffer = bus.read_long(addr::FCB_S_PTR);
+        // Files 1992, 2-81–2-83: these are the same direct FCB/VCB
+        // lookups used by classic runtime libraries to recover a volume.
+        assert_eq!(refnum, 190, "skip application and data-fork access paths");
+        assert_eq!(refnum % bus.read_word(addr::FS_FCB_LEN), 2);
+        assert!(refnum + 94 <= bus.read_word(buffer));
+        assert_eq!(bus.read_long(buffer + 2), 1234);
+        let fcb = buffer + refnum as u32;
+        assert_eq!(bus.read_long(fcb), metadata.file_id);
+        assert_eq!(bus.read_word(fcb + 4), 0x0200);
+        assert_eq!(bus.read_long(fcb + 50), u32::from_be_bytes(*b"SAVE"));
+        assert_eq!(bus.read_long(fcb + 58), metadata.parent_dir_id);
+        assert_eq!(bus.read_pstring(fcb + 62), b"Player");
+        let vcb = bus.read_long(fcb + 20);
+        assert_ne!(vcb, 0);
+        assert_eq!(bus.read_word(vcb + 78) as i16, -1);
+
+        bus.write_word(TEST_SP, refnum);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_toolbox(true, 0x19A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_bytes(fcb, 94), vec![0; 94]);
+        assert_eq!(bus.read_long(buffer + 2), 1234);
+        bus.write_long(TEST_SP, name_ptr);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 4), refnum, "reuse a closed FCB");
+    }
+
+    #[test]
+    fn open_res_file_reports_exhausted_fcb_table_without_changing_current_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs_rsrc.insert("Player".to_string(), vec![]);
+        for index in 0..342 {
+            disp.open_files
+                .insert(2 + 94 * index, "Occupied".to_string());
+        }
+        let current = disp.current_resource_refnum();
+        bus.write_pstring(0x200250, b"Player");
+        bus.write_long(TEST_SP, 0x200250);
+        disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 4) as i16, -1);
+        assert_eq!(bus.read_word(0x0A60) as i16, -42);
+        assert_eq!(disp.current_resource_refnum(), current);
+        assert_eq!(disp.refnum_for_resource_file_name("Player"), None);
     }
 
     // Inside Macintosh Volume I (1985), p. I-115: reopening an already-open

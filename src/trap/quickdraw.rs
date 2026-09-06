@@ -17098,6 +17098,11 @@ impl super::TrapDispatcher {
             return;
         }
 
+        // Activating a palette can assign its colors to different device
+        // indices than the source ColorTable. DrawPicture must then match
+        // against the destination table, not a preceding GetCTable result.
+        // Imaging With QuickDraw (1994), pp. 3-117, 7-44.
+        self.recent_resource_ctable_fetch = None;
         let palette_entries = usize::from(Self::palette_entry_count(bus, palette_handle)).min(256);
         let current_clut = *self.device_clut;
         // Palette activation changes only the cells claimed by this palette.
@@ -39488,6 +39493,41 @@ mod tests {
         assert_ne!(d.device_clut, before);
         assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
         assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
+    }
+
+    #[test]
+    fn activatepalette_discards_fetched_table_before_picture_color_matching() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4110;
+        let palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_TOLERANT, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        let rgb = [0x1234, 0x5678, 0x9ABC];
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            0,
+            rgb,
+            super::PM_TOLERANT,
+            0,
+        );
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        *d.current_port = window;
+        d.remember_recent_resource_ctable_fetch(250, 0x0020_4500);
+        bus.write_long(TEST_SP, window);
+        d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let device_index = d.palette_device_indices[&(palette, 0)];
+        assert_ne!(
+            device_index, 0,
+            "tolerant color must not replace the white endpoint"
+        );
+        assert_eq!(d.color_manager_clut[device_index as usize], rgb);
+        assert!(d
+            .take_recent_drawpicture_resource_ctable_fetch(window, 0, 0, 8)
+            .is_none());
     }
 
     #[test]
