@@ -21,7 +21,6 @@ include = [
     "/Cargo.toml",
     "/Cargo.lock",
     "/src/**",
-    "/examples/urw_resolution.rs",
     "/*.md",
     "/LICENSE",
     "/OFL.txt",
@@ -127,7 +126,3 @@ debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 incremental = false
-
-[[example]]
-name = "urw_resolution"
-required-features = ["experimental-urw-fonts"]

@@ -3171,99 +3171,102 @@ fn test_toolbox_showcase() {
     assert_reference_frame(&mut runner, "37-popup-lists-selected.png");
 }
 
-/// Capture the actual guest Toolbox pages with either fallback renderer.
-/// Intentionally separate from pixel-oracle acceptance: this experiment changes
-/// text metrics, so its output must never overwrite the default references.
+/// Regenerate the URW review gallery and verify that presentation preserves
+/// guest pixels against a fresh run with presentation disabled.
+#[cfg(feature = "experimental-urw-fonts")]
 #[test]
 #[ignore = "writes review evidence; see toolbox-showcase/urw-experiment/README.md"]
 fn capture_urw_font_experiment() {
-    let directory = std::env::var_os("SYSTEMLESS_FONT_EVIDENCE_DIR")
-        .expect("set SYSTEMLESS_FONT_EVIDENCE_DIR to an output directory");
-    let directory = PathBuf::from(directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    let mut runner = new_runner_with_screen_depth(8);
-    let powerpc = prefer_powerpc();
-    runner.set_ui_theme(UiThemeId::ClassicSystem7);
-    runner
-        .set_powerpc_screen_depth(if powerpc { 16 } else { 8 })
-        .unwrap();
-    runner.set_app_start_time(3_786_912_000);
-    runner.set_menu_bar_visible(true);
-    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
-    assert_eq!(app.is_powerpc(), powerpc);
-    init_game(&mut runner, &app);
-    step_until(&mut runner, "font experiment startup", |r| {
-        r.window_count() >= 1
-            && menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
-    });
-    wait_for_page_event_loop(&mut runner, "initial graphics paint");
-    #[cfg(feature = "experimental-urw-fonts")]
-    if let Ok(scale) = std::env::var("SYSTEMLESS_FONT_PRESENTATION_SCALE") {
-        assert!(
-            !powerpc,
-            "high-resolution capture currently covers the 68k renderer"
-        );
-        let mode = runner.dispatcher().screen_mode;
-        let rgba = systemless::display::rgba_palette_from_clut_with_gamma(
-            &runner.dispatcher().device_clut,
-            &runner.dispatcher().device_gamma,
-        );
-        let palette = rgba.map(|word| {
-            let [r, g, b, _] = word.to_le_bytes();
-            [r, g, b]
-        });
-        runner
-            .bus_mut()
-            .enable_urw_presentation(mode, palette, scale.parse().unwrap());
-    }
-    for (page, filename) in [
+    let directory = PathBuf::from(
+        std::env::var_os("SYSTEMLESS_FONT_EVIDENCE_DIR")
+            .expect("set SYSTEMLESS_FONT_EVIDENCE_DIR to an output directory"),
+    );
+    assert!(
+        !prefer_powerpc(),
+        "presentation capture supports the 68k renderer"
+    );
+    let pages = [
         (ITEM_PAGE_GRAPHICS, "graphics.png"),
         (ITEM_PAGE_CONTROLS, "controls.png"),
         (ITEM_PAGE_DRAWING, "drawing.png"),
         (ITEM_PAGE_TEXTEDIT, "textedit.png"),
         (ITEM_PAGE_STYLED_TEXT, "styled-text.png"),
-    ] {
-        assert!(runner.select_guest_menu_item(MENU_PAGES, page));
-        step_until(&mut runner, filename, |r| {
-            menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, page)
+    ];
+    let mut guest_frames = Vec::new();
+    for scale in [None, Some(2), Some(4)] {
+        let mut runner = new_runner_with_screen_depth(8);
+        runner.set_ui_theme(UiThemeId::ClassicSystem7);
+        runner.set_app_start_time(3_786_912_000);
+        runner.set_menu_bar_visible(true);
+        let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+        assert!(!app.is_powerpc());
+        init_game(&mut runner, &app);
+        step_until(&mut runner, "font experiment startup", |r| {
+            r.window_count() >= 1
+                && menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
         });
-        wait_for_page_event_loop(&mut runner, filename);
-        let (width, height, pixels) = rendered_rgb(&mut runner);
-        write_rgb(&directory.join(filename), width, height, pixels);
-        #[cfg(feature = "experimental-urw-fonts")]
-        if let Some((w, h, pixels, glyphs)) = runner.bus().urw_presentation_rgb() {
-            assert!(glyphs > 0, "capture must execute real outline draws");
-            let guest = image::open(directory.join(filename)).unwrap().to_rgb8();
-            let reference = image::open(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/toolbox-showcase/urw-experiment/after")
-                    .join(filename),
+        wait_for_page_event_loop(&mut runner, "initial graphics paint");
+        if let Some(scale) = scale {
+            let mode = runner.dispatcher().screen_mode;
+            let palette = systemless::display::rgba_palette_from_clut_with_gamma(
+                &runner.dispatcher().device_clut,
+                &runner.dispatcher().device_gamma,
             )
-            .unwrap()
-            .to_rgb8();
-            assert_eq!(
-                guest, reference,
-                "presentation must preserve guest pixels: {filename}"
-            );
-            let enlarged =
-                image::imageops::resize(&guest, w, h, image::imageops::FilterType::Nearest);
-            assert_ne!(
-                pixels,
-                enlarged.as_raw().as_slice(),
-                "must rasterize fresh outlines"
-            );
-            enlarged
-                .save(directory.join(format!("enlarged-{filename}")))
+            .map(|word| {
+                let [r, g, b, _] = word.to_le_bytes();
+                [r, g, b]
+            });
+            runner
+                .bus_mut()
+                .enable_urw_presentation(mode, palette, scale);
+            std::fs::create_dir_all(directory.join(format!("{scale}x"))).unwrap();
+        }
+        for (index, &(page, filename)) in pages.iter().enumerate() {
+            assert!(runner.select_guest_menu_item(MENU_PAGES, page));
+            step_until(&mut runner, filename, |r| {
+                menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, page)
+            });
+            wait_for_page_event_loop(&mut runner, filename);
+            let (width, height, pixels) = rendered_rgb(&mut runner);
+            if let Some(scale) = scale {
+                assert_eq!(
+                    pixels, guest_frames[index],
+                    "presentation changed guest pixels: {filename}"
+                );
+                let (w, h, native, glyphs) = runner.bus().urw_presentation_rgb().unwrap();
+                assert!(glyphs > 0, "capture must execute real outline draws");
+                assert_eq!((w, h), (width * scale, height * scale));
+                let guest = image::RgbImage::from_raw(width, height, pixels).unwrap();
+                let enlarged =
+                    image::imageops::resize(&guest, w, h, image::imageops::FilterType::Nearest);
+                assert_ne!(&native, enlarged.as_raw(), "must rasterize fresh outlines");
+                let file =
+                    std::fs::File::create(directory.join(format!("{scale}x")).join(filename))
+                        .unwrap();
+                let encoder = image::codecs::png::PngEncoder::new_with_quality(
+                    file,
+                    image::codecs::png::CompressionType::Best,
+                    image::codecs::png::FilterType::Adaptive,
+                );
+                image::ImageEncoder::write_image(
+                    encoder,
+                    &native,
+                    w,
+                    h,
+                    image::ExtendedColorType::Rgb8,
+                )
                 .unwrap();
-            eprintln!("{filename}: {glyphs} cumulative native outline draws");
-            write_rgb(&directory.join(format!("native-{filename}")), w, h, pixels);
-        }
-        if page == ITEM_PAGE_STYLED_TEXT {
-            let (top, left, _, _) = runner.window_bounds();
-            assert_styled_text_page_rendered(&mut runner, top, left);
-        }
-        if page == ITEM_PAGE_TEXTEDIT {
-            assert!(!showcase_textedit(&mut runner).text.is_empty());
+                eprintln!("{scale}x/{filename}: {glyphs} cumulative outline draws");
+            } else {
+                guest_frames.push(pixels);
+            }
+            if page == ITEM_PAGE_STYLED_TEXT {
+                let (top, left, _, _) = runner.window_bounds();
+                assert_styled_text_page_rendered(&mut runner, top, left);
+            }
+            if page == ITEM_PAGE_TEXTEDIT {
+                assert!(!showcase_textedit(&mut runner).text.is_empty());
+            }
         }
     }
 }
