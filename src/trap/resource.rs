@@ -2,7 +2,7 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::loader::CodeSegmentHeader;
-use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
+use crate::machine_profile::{REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE};
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -3561,7 +3561,12 @@ impl super::TrapDispatcher {
                     // Inside Macintosh: Operating System Utilities 1994,
                     // p. 1-24: gestalt68k = 1, gestaltPowerPC = 2.
                     b"sysa" => {
-                        cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(
+                            Register::A0,
+                            REFERENCE_M68K_EXECUTION_CAPABILITIES
+                                .system_architecture
+                                .expect("68K Gestalt supports gestaltSysArchitecture"),
+                        );
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltOSTable / gestaltToolboxTable return the bases
@@ -3610,7 +3615,7 @@ impl super::TrapDispatcher {
                     b"cput" => {
                         cpu.write_reg(
                             Register::A0,
-                            REFERENCE_MACHINE_PROFILE.gestalt_native_cpu_type,
+                            REFERENCE_M68K_EXECUTION_CAPABILITIES.native_cpu_type,
                         );
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -3618,7 +3623,7 @@ impl super::TrapDispatcher {
                     b"proc" => {
                         cpu.write_reg(
                             Register::A0,
-                            REFERENCE_MACHINE_PROFILE.gestalt_processor_type,
+                            REFERENCE_M68K_EXECUTION_CAPABILITIES.processor_type,
                         );
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -3684,12 +3689,12 @@ impl super::TrapDispatcher {
                     }
                     // gestaltFPUType ('fpu ') -> 68040 FPU
                     b"fpu " => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_fpu_type);
+                        cpu.write_reg(Register::A0, REFERENCE_M68K_EXECUTION_CAPABILITIES.fpu_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltMMUType ('mmu ') -> 68040 MMU
                     b"mmu " => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_mmu_type);
+                        cpu.write_reg(Register::A0, REFERENCE_M68K_EXECUTION_CAPABILITIES.mmu_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltSoundAttr ('snd ') -> advertise a full late-68k

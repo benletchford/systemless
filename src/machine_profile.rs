@@ -14,7 +14,7 @@ use m68k::CpuType;
 
 /// Bag of constants describing one canonical guest machine: Gestalt
 /// selector responses, screen geometry, RAM size, VBL rate, realtime
-/// CPU MHz target.
+/// guest-advertised CPU MHz.
 ///
 /// Field accessors are field-name-direct (`profile.screen_width`)
 /// since downstream callers compare specific values rather than
@@ -51,14 +51,71 @@ pub struct MachineProfile {
     pub screen_depth: u16,
     /// VBL interrupt rate in Hz. 60.15 matches Compact Mac timing.
     pub vbl_hz: f64,
-    /// Target instruction throughput for realtime frontends, in
-    /// MHz × 1,000,000 instructions/sec equivalent. Used by
-    /// `systemless`'s wall-clock pacing — non-realtime callers
-    /// (scripted harnesses, tests) ignore this.
+    /// Guest-visible effective CPU speed in MHz, returned by
+    /// `GetCPUSpeed`.
     pub realtime_cpu_mhz: f64,
 }
 
+/// Guest-visible processor capabilities for one execution architecture.
+///
+/// This is crate-private so the trap adapters can share one value record
+/// without expanding the public [`MachineProfile`] shape.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuestExecutionCapabilities {
+    /// `gestaltSysArchitecture` response, or `None` when the adapter does not
+    /// support that selector.
+    pub(crate) system_architecture: Option<u32>,
+    pub(crate) native_cpu_type: u32,
+    pub(crate) processor_type: u32,
+    pub(crate) fpu_type: u32,
+    pub(crate) mmu_type: u32,
+}
+
+/// Host-only execution rates. These values control work performed between
+/// guest ticks; they do not describe values returned through guest APIs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HostExecutionPolicy {
+    pub(crate) scripted_instructions_per_tick: u32,
+    pub(crate) realtime_m68k_cpu_mhz: f64,
+    pub(crate) realtime_powerpc_cpu_mhz: f64,
+}
+
+pub(crate) const DEFAULT_HOST_EXECUTION_POLICY: HostExecutionPolicy = HostExecutionPolicy {
+    scripted_instructions_per_tick: 12_000,
+    realtime_m68k_cpu_mhz: 25.0,
+    realtime_powerpc_cpu_mhz: 120.0,
+};
+
 impl MachineProfile {
+    /// 68K guest capabilities derived from this profile's existing fields.
+    pub(crate) const fn m68k_execution_capabilities(self) -> GuestExecutionCapabilities {
+        GuestExecutionCapabilities {
+            // Inside Macintosh: Operating System Utilities (1994), p. 1-24:
+            // gestalt68k = 1.
+            system_architecture: Some(1),
+            native_cpu_type: self.gestalt_native_cpu_type,
+            processor_type: self.gestalt_processor_type,
+            fpu_type: self.gestalt_fpu_type,
+            mmu_type: self.gestalt_mmu_type,
+        }
+    }
+
+    /// Native PowerPC capabilities, preserving the adapter's 604 identity.
+    /// FPU and MMU values intentionally retain the existing shared-profile
+    /// compatibility behavior; this does not claim a corrected native
+    /// hardware profile.
+    pub(crate) const fn powerpc_execution_capabilities(self) -> GuestExecutionCapabilities {
+        GuestExecutionCapabilities {
+            // The native adapter does not currently support the 'sysa'
+            // selector, so keep that absence explicit.
+            system_architecture: None,
+            native_cpu_type: 0x0104,
+            processor_type: 2,
+            fpu_type: self.gestalt_fpu_type,
+            mmu_type: self.gestalt_mmu_type,
+        }
+    }
+
     /// Concrete `m68k::CpuType` corresponding to this profile.
     /// Hardcoded to `M68040` for now — the only shipped profile is
     /// the Basilisk-II play machine, which is a Quadra 900 (68040).
@@ -117,6 +174,11 @@ pub const BASILISK_II_PLAY_PROFILE: MachineProfile = MachineProfile {
 
 pub const REFERENCE_MACHINE_PROFILE: MachineProfile = BASILISK_II_PLAY_PROFILE;
 
+pub(crate) const REFERENCE_M68K_EXECUTION_CAPABILITIES: GuestExecutionCapabilities =
+    REFERENCE_MACHINE_PROFILE.m68k_execution_capabilities();
+pub(crate) const REFERENCE_POWERPC_EXECUTION_CAPABILITIES: GuestExecutionCapabilities =
+    REFERENCE_MACHINE_PROFILE.powerpc_execution_capabilities();
+
 /// Returns the reference machine profile, optionally overridden by
 /// `SYSTEMLESS_SCREEN_WIDTH` and `SYSTEMLESS_SCREEN_HEIGHT` environment variables.
 pub fn reference_machine_profile() -> MachineProfile {
@@ -132,4 +194,73 @@ pub fn reference_machine_profile() -> MachineProfile {
         }
     }
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m68k_capabilities_derive_from_machine_profile_fields() {
+        let profile = MachineProfile {
+            gestalt_native_cpu_type: 0x11,
+            gestalt_processor_type: 0x22,
+            gestalt_fpu_type: 0x33,
+            gestalt_mmu_type: 0x44,
+            ..REFERENCE_MACHINE_PROFILE
+        };
+
+        assert_eq!(
+            profile.m68k_execution_capabilities(),
+            GuestExecutionCapabilities {
+                system_architecture: Some(1),
+                native_cpu_type: 0x11,
+                processor_type: 0x22,
+                fpu_type: 0x33,
+                mmu_type: 0x44,
+            }
+        );
+    }
+
+    #[test]
+    fn host_execution_policy_is_independent_of_guest_cpu_speed() {
+        let guest_profile = MachineProfile {
+            realtime_cpu_mhz: 1.0,
+            ..REFERENCE_MACHINE_PROFILE
+        };
+
+        assert_eq!(DEFAULT_HOST_EXECUTION_POLICY.realtime_m68k_cpu_mhz, 25.0);
+        assert_ne!(
+            DEFAULT_HOST_EXECUTION_POLICY.realtime_m68k_cpu_mhz,
+            guest_profile.realtime_cpu_mhz
+        );
+    }
+
+    #[test]
+    fn m68k_capability_record_preserves_shipped_values() {
+        assert_eq!(
+            REFERENCE_M68K_EXECUTION_CAPABILITIES,
+            GuestExecutionCapabilities {
+                system_architecture: Some(1),
+                native_cpu_type: 4,
+                processor_type: 5,
+                fpu_type: 3,
+                mmu_type: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn powerpc_capability_record_preserves_shipped_values_and_unsupported_sysa() {
+        assert_eq!(
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
+            GuestExecutionCapabilities {
+                system_architecture: None,
+                native_cpu_type: 0x0104,
+                processor_type: 2,
+                fpu_type: 3,
+                mmu_type: 4,
+            }
+        );
+    }
 }

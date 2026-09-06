@@ -51,7 +51,9 @@ use crate::guest_procedure::{
     ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE as PPC_ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE,
     ROUTINE_RECORD_SELECTOR_OFFSET as PPC_ROUTINE_RECORD_SELECTOR_OFFSET,
 };
-use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
+use crate::machine_profile::{
+    REFERENCE_MACHINE_PROFILE, REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
+};
 use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
@@ -445,8 +447,6 @@ const PPC_GUEST_SND_CHANNEL_SIZE: u32 = 1088;
 const PPC_SQUARE_WAVE_SYNTH_ID: i16 = 1;
 const PPC_WAVE_TABLE_SYNTH_ID: i16 = 3;
 const PPC_SAMPLED_SYNTH_ID: i16 = 5;
-const PPC_GESTALT_CPU_604: u32 = 0x0104;
-const PPC_GESTALT_PROCESSOR_POWERPC: u32 = 2;
 const PPC_QUICKTIME_VERSION: u32 = 0x0300_0000;
 const PPC_QD3D_VERSION: u32 = 0x0150_8000;
 const PPC_MAIN_GDEVICE_RECORD: u32 = 0x02f0_0200;
@@ -50598,8 +50598,14 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         b"ostt" => Some((crate::trap::dispatch::OS_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"tbtt" => Some((crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"evnt" => Some((0x0001, PPC_NO_ERR)),
-        b"cput" => Some((PPC_GESTALT_CPU_604, PPC_NO_ERR)),
-        b"proc" => Some((PPC_GESTALT_PROCESSOR_POWERPC, PPC_NO_ERR)),
+        b"cput" => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.native_cpu_type,
+            PPC_NO_ERR,
+        )),
+        b"proc" => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.processor_type,
+            PPC_NO_ERR,
+        )),
         b"mach" => Some((
             u32::from(REFERENCE_MACHINE_PROFILE.gestalt_machine_type),
             PPC_NO_ERR,
@@ -50610,8 +50616,14 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         b"qd  " => Some((0x0230, PPC_NO_ERR)),
         b"qdrw" => Some((0x000F, PPC_NO_ERR)),
         b"ram " => Some((REFERENCE_MACHINE_PROFILE.ram_size_bytes, PPC_NO_ERR)),
-        b"fpu " => Some((REFERENCE_MACHINE_PROFILE.gestalt_fpu_type, PPC_NO_ERR)),
-        b"mmu " => Some((REFERENCE_MACHINE_PROFILE.gestalt_mmu_type, PPC_NO_ERR)),
+        b"fpu " => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.fpu_type,
+            PPC_NO_ERR,
+        )),
+        b"mmu " => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.mmu_type,
+            PPC_NO_ERR,
+        )),
         b"snd " => Some((0x1CFB, PPC_NO_ERR)),
         b"tmgr" => Some((2, PPC_NO_ERR)),
         b"dplv" => Some((0x0002_0006, PPC_NO_ERR)),
@@ -113324,24 +113336,29 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn hle_import_runner_handles_gestalt_powerpc_cpu_type() {
+    fn hle_import_runner_handles_gestalt_powerpc_capabilities_and_rejects_sysa() {
         let pef = synthetic_pef_with_import(b"Gestalt");
         let mut loaded = load_pef_application(&pef).unwrap();
         let response_ptr = PPC_HEAP_BASE;
         loaded.memory.add_region(response_ptr, vec![0; 16]);
-        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"cput");
-        loaded.cpu.gpr[4] = response_ptr;
 
-        let probe = loaded.run_with_hle_imports(64);
+        for (selector, expected_error, expected_response) in [
+            (*b"cput", PPC_NO_ERR, 0x0104),
+            (*b"proc", PPC_NO_ERR, 2),
+            (*b"fpu ", PPC_NO_ERR, 3),
+            (*b"mmu ", PPC_NO_ERR, 4),
+            (*b"sysa", PPC_GESTALT_UNDEF_SELECTOR_ERR, 0),
+        ] {
+            loaded.cpu.gpr[3] = u32::from_be_bytes(selector);
+            loaded.cpu.gpr[4] = response_ptr;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::Gestalt);
 
-        assert_eq!(probe.handled_import_count, 1);
-        assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(
-            loaded.memory.read_u32_be(response_ptr),
-            Some(PPC_GESTALT_CPU_604)
-        );
-        assert_ne!(loaded.memory.read_u32_be(response_ptr), Some(0x0101));
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected_error));
+            assert_eq!(
+                loaded.memory.read_u32_be(response_ptr),
+                Some(expected_response)
+            );
+        }
     }
 
     #[test]
