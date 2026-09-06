@@ -7013,7 +7013,7 @@ impl FixtureRunner {
             return Some((0, true));
         }
         let task = ppc_app.guest_calls.current_task();
-        let pending = self.m68k.activate_pending(&ppc_app.cpu)?;
+        let pending = self.m68k.activate_pending(&mut ppc_app.cpu)?;
 
         // Thread Manager calls are allowed to yield while guest callback code
         // is running. Once that happens, `self.m68k.cpu` belongs to the successor
@@ -11663,6 +11663,216 @@ mod tests {
     }
 
     #[test]
+    fn companion_engine_installs_native_worker_context_and_hands_back_to_classic() {
+        use crate::guest_call::{
+            seed_pending_native_import_context, CooperativeThread, ExecutionTaskId,
+            NativeThreadContext, ThreadStorage,
+        };
+        use crate::guest_procedure::GuestIsa;
+        const ADDRESS: u32 = PPC_DATA_BASE + 0x5000;
+        const A_RETURN: u32 = 0x5678;
+        const A_FINAL: u32 = 0x6678;
+        const B_RETURN: u32 = 0x7678;
+        const B_FINAL: u32 = 0x8678;
+        const LWARX_R12_R4_R5: u32 = (31 << 26) | (12 << 21) | (4 << 16) | (5 << 11) | (20 << 1);
+        let native = halted_ppc_app_with_sound(PpcSoundState::default())
+            .ppc
+            .take()
+            .unwrap();
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_ppc_companion(native);
+        let calls = runner.dispatcher.guest_calls.shared_handle();
+        assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::M68k));
+        let mut classic = CooperativeThread::default();
+        classic.pc = 0x1234;
+        assert!(calls.save_cooperative_context(ExecutionTaskId::APPLICATION, classic));
+        let pending_context = |trap_pc, return_pc, final_pc, rtoc, result| {
+            let mut cpu = PpcCpu::new();
+            let mut memory = PpcSectionMem::new();
+            seed_pending_native_import_context(
+                &mut cpu,
+                &mut memory,
+                trap_pc,
+                return_pc,
+                rtoc ^ 0xffff_0000,
+                return_pc,
+                final_pc,
+                rtoc,
+                PpcNativeReturnGpr3::Set(result),
+            );
+            cpu.capture_execution_context()
+        };
+        let worker_a = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    context: pending_context(0x5000, A_RETURN, A_FINAL, 0xaaaa_0002, 0xaaaa_0003),
+                },
+                ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        let worker_b = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    context: pending_context(0x7000, B_RETURN, B_FINAL, 0xbbbb_0002, 0xbbbb_0003),
+                },
+                ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        assert_eq!(calls.switch_from_classic(worker_a), Some(None));
+        let mut context = runner.native.take(NativeEngineRole::Companion).unwrap();
+        {
+            let companion = context.adapter_mut();
+            assert!(calls.prepare_native_task(&mut companion.cpu));
+            assert_eq!(companion.cpu.pc, A_RETURN);
+            assert!(calls
+                .yield_native_thread(&mut companion.cpu, worker_b.thread_id())
+                .unwrap());
+            assert_eq!(companion.cpu.pc, B_RETURN);
+            assert_eq!(
+                companion.cpu.run_with_imports(
+                    &mut companion.memory,
+                    2,
+                    B_FINAL,
+                    0,
+                    0,
+                    |_, _, _| unreachable!()
+                ),
+                PpcRunResult::Halted {
+                    pc: B_FINAL,
+                    cycles: 1
+                }
+            );
+            assert_eq!(
+                (companion.cpu.gpr[2], companion.cpu.gpr[3]),
+                (0xbbbb_0002, 0xbbbb_0003)
+            );
+            assert!(calls
+                .yield_native_thread(&mut companion.cpu, worker_a.thread_id())
+                .unwrap());
+            assert_eq!(
+                companion.cpu.run_with_imports(
+                    &mut companion.memory,
+                    2,
+                    A_FINAL,
+                    0,
+                    0,
+                    |_, _, _| unreachable!()
+                ),
+                PpcRunResult::Halted {
+                    pc: A_FINAL,
+                    cycles: 1
+                }
+            );
+            assert_eq!(
+                (companion.cpu.gpr[2], companion.cpu.gpr[3]),
+                (0xaaaa_0002, 0xaaaa_0003)
+            );
+            companion
+                .memory
+                .add_region(ADDRESS, 0x5566_7788u32.to_be_bytes().to_vec());
+            companion.cpu.gpr[4] = ADDRESS;
+            assert_eq!(
+                companion.cpu.step(&mut companion.memory, LWARX_R12_R4_R5),
+                ppc::PpcStepResult::Stepped
+            );
+            assert_eq!(companion.cpu.reservation_address(), Some(ADDRESS));
+            assert!(calls
+                .yield_native_thread(&mut companion.cpu, worker_b.thread_id())
+                .unwrap());
+            assert_eq!(
+                companion.cpu.run_with_imports(
+                    &mut companion.memory,
+                    2,
+                    B_FINAL,
+                    0,
+                    0,
+                    |_, _, _| unreachable!()
+                ),
+                PpcRunResult::Halted {
+                    pc: B_FINAL,
+                    cycles: 0
+                }
+            );
+            assert_eq!(companion.cpu.reservation_address(), None);
+            assert!(calls
+                .yield_native_thread(&mut companion.cpu, ExecutionTaskId::APPLICATION.thread_id())
+                .unwrap());
+            assert!(calls.has_classic_task_handoff());
+            assert_eq!(companion.cpu.reservation_address(), None);
+        }
+        assert!(runner.native.restore(context).is_ok());
+        assert!(runner.native.application().is_none());
+        assert!(runner.native.companion().is_some());
+    }
+
+    #[test]
+    fn companion_new_thread_import_installs_a_fresh_worker_on_the_live_engine() {
+        use crate::guest_call::{CooperativeThread, ExecutionTaskId};
+        use crate::guest_procedure::GuestIsa;
+        use crate::loader::ppc::tests::synthetic_pef_with_import;
+        const MADE: u32 = PPC_DATA_BASE + 0x5000;
+        const THREAD_RETURN: u32 = PPC_IMPORT_TRAP_BASE + (4096 + 1) * 4;
+        let native = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        let entry = native.entry_pc;
+        let expected_rtoc = native.cpu.gpr[2];
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_ppc_companion(native);
+        let calls = runner.dispatcher.guest_calls.shared_handle();
+        assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::M68k));
+        let worker;
+        let live_time;
+        {
+            let mut context = runner.native.take(NativeEngineRole::Companion).unwrap();
+            let companion = context.adapter_mut();
+            companion.memory.add_region(MADE, vec![0; 4]);
+            companion.cpu.msr = 0x5060_7080;
+            companion.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+            companion.cpu.set_time_base(0xffff_ffff_0000_0000);
+            companion.cpu.gpr[3] = 1;
+            companion.cpu.gpr[4] = entry;
+            companion.cpu.gpr[5] = 0x1234_5678;
+            companion.cpu.gpr[6] = 4096;
+            companion.cpu.gpr[7] = 0;
+            companion.cpu.gpr[8] = 0;
+            companion.cpu.gpr[9] = MADE;
+            let probe = runner.process_context.with_memory_and_cfm(|mm, cfm| {
+                companion.run_with_process_services(64, false, false, mm, cfm)
+            });
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(companion.cpu.gpr[3], 0);
+            worker = ExecutionTaskId::from_thread_id(companion.memory.read_u32_be(MADE).unwrap());
+            live_time = companion.cpu.time_base();
+            assert!(runner.native.restore(context).is_ok());
+        }
+        let mut classic = CooperativeThread::default();
+        classic.pc = 0x1234;
+        assert!(calls.save_cooperative_context(ExecutionTaskId::APPLICATION, classic));
+        assert_eq!(calls.switch_from_classic(worker), Some(None));
+        let mut context = runner.native.take(NativeEngineRole::Companion).unwrap();
+        {
+            let companion = context.adapter_mut();
+            assert!(calls.prepare_native_task(&mut companion.cpu));
+            assert_eq!(companion.cpu.pc, entry);
+            assert_eq!(companion.cpu.lr, THREAD_RETURN);
+            assert_eq!(companion.cpu.gpr[1] & 15, 0);
+            assert_eq!(companion.cpu.gpr[2], expected_rtoc);
+            assert_eq!(companion.cpu.gpr[3], 0x1234_5678);
+            assert_eq!(companion.cpu.msr, 0x5060_7080);
+            assert_eq!(
+                companion.cpu.alignment_policy,
+                ppc::PpcAlignmentPolicy::EmulateData
+            );
+            assert_eq!(companion.cpu.time_base(), live_time);
+            assert_eq!(companion.cpu.reservation_address(), None);
+        }
+        assert!(runner.native.restore(context).is_ok());
+    }
+
+    #[test]
     fn find_symbol_during_native_to_classic_callback_borrows_the_checked_out_adapter() {
         use crate::guest_call::{GuestCallTarget, M68kRegisterState, M68kResultSource};
         use crate::guest_procedure::GuestIsa;
@@ -12752,7 +12962,7 @@ mod tests {
         use crate::memory::globals::addr;
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner.set_launch_state(4321, 0x7654_3210, 0x8877_6655_4433_2211);
+        runner.set_launch_state(4321, 0x7654_3210, u64::MAX);
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
         app.ppc
             .as_mut()
@@ -12798,7 +13008,7 @@ mod tests {
             .write_u32_be(toolbox_entry, 0x0021_0000)
             .expect("write shared Toolbox trap entry");
         assert_eq!(runner.bus.read_long(toolbox_entry), 0x0021_0000);
-        assert_eq!(ppc_app.cpu.time_base(), 0x8877_6655_4433_2211);
+        assert_eq!(ppc_app.cpu.time_base(), u64::MAX);
     }
 
     #[test]
@@ -17513,7 +17723,9 @@ mod tests {
                     .dispatcher
                     .guest_calls
                     .create_native_thread(
-                        crate::guest_call::NativeThreadContext { cpu: Box::new(cpu) },
+                        crate::guest_call::NativeThreadContext {
+                            context: cpu.capture_execution_context(),
+                        },
                         crate::guest_call::ThreadStorage {
                             result_destination: 0,
                             stack_base: 0,
@@ -18337,6 +18549,7 @@ mod tests {
 
     #[test]
     fn relaunch_with_pending_execution_preserves_the_existing_engine() {
+        use crate::execution_kernel::ExecutionTaskState;
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
@@ -18362,7 +18575,7 @@ mod tests {
         let worker = calls
             .create_native_thread(
                 crate::guest_call::NativeThreadContext {
-                    cpu: Box::new(PpcCpu::new()),
+                    context: PpcCpu::new().capture_execution_context(),
                 },
                 crate::guest_call::ThreadStorage {
                     result_destination: 0,
@@ -18380,6 +18593,52 @@ mod tests {
         assert!(rejected.is_err());
         assert_eq!(runner.native.application().unwrap().cpu.pc, native_pc);
         assert!(calls.scheduling_state(worker).is_some());
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        {
+            let cpu = &mut runner.native.application_mut().unwrap().cpu;
+            assert!(calls.yield_native_thread(cpu, worker.thread_id()).unwrap());
+            assert!(calls
+                .yield_native_thread(cpu, ExecutionTaskId::APPLICATION.thread_id())
+                .unwrap());
+            assert!(calls
+                .retire_native_thread(worker, cpu, false, |_| true)
+                .is_some());
+        }
+        assert_eq!(calls.scheduling_state(worker), None);
+        assert!(!calls.switch_to_task(worker));
+        runner.set_launch_state(41, 1, u64::MAX);
+        runner.init_app(&app);
+        assert_eq!(
+            runner.native.application().unwrap().cpu.time_base(),
+            u64::MAX
+        );
+        {
+            let cpu = &mut runner.native.application_mut().unwrap().cpu;
+            assert_eq!(
+                cpu.step_instruction((31 << 26) | (11 << 21) | (12 << 16) | (8 << 11) | (371 << 1)),
+                ppc::PpcStepResult::Stepped
+            );
+            assert_eq!(cpu.gpr[11], u32::MAX);
+            assert_eq!(cpu.time_base(), 0);
+        }
+        let mut replacement = ppc::PpcExecutionContext::fresh();
+        replacement.architectural_mut().gpr[20] = 0xaabb_ccdd;
+        let replacement = calls
+            .create_native_thread(
+                crate::guest_call::NativeThreadContext {
+                    context: replacement,
+                },
+                crate::guest_call::ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        let cpu = &mut runner.native.application_mut().unwrap().cpu;
+        assert!(calls
+            .yield_native_thread(cpu, replacement.thread_id())
+            .unwrap());
+        assert_eq!(cpu.gpr[20], 0xaabb_ccdd);
+        assert_eq!(cpu.time_base(), 0);
     }
 
     #[test]

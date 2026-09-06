@@ -181,7 +181,7 @@ impl M68kExecution {
     /// Validate and park the outgoing context before installing the callback.
     pub(crate) fn activate_pending(
         &mut self,
-        native: &ppc::PpcCpu,
+        native: &mut ppc::PpcCpu,
     ) -> Option<PendingM68kExecution> {
         if let Some(active) = self.calls.active_m68k() {
             return Some(active);
@@ -542,8 +542,47 @@ impl M68kExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guest_call::GuestCallTarget;
+    use crate::guest_call::{GuestCallTarget, M68kRegisterState};
     use crate::guest_procedure::GuestIsa;
+
+    #[test]
+    fn already_active_callback_preserves_the_live_native_reservation() {
+        const ADDRESS: u32 = 0x1000;
+        const LWARX_R12_R4_R5: u32 = (31 << 26) | (12 << 21) | (4 << 16) | (5 << 11) | (20 << 1);
+        let calls = SharedGuestCallStack::default();
+        assert!(calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x2000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+            0x4000,
+            0x3004,
+            M68kRegisterState::default(),
+            None,
+            0x5000,
+            0x6000,
+            ppc::PpcNativeReturnGpr3::Preserve,
+        ));
+        let mut engine = M68kExecution::new(&calls);
+        let mut native = ppc::PpcCpu::new();
+        native.gpr[1] = 0x7000;
+        assert!(engine.activate_pending(&mut native).is_some());
+        assert_eq!(native.reservation_address(), None);
+
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        memory.add_region(ADDRESS, 0x1122_3344u32.to_be_bytes().to_vec());
+        native.gpr[4] = ADDRESS;
+        assert_eq!(
+            native.step(&mut memory, LWARX_R12_R4_R5),
+            ppc::PpcStepResult::Stepped
+        );
+        assert_eq!(native.reservation_address(), Some(ADDRESS));
+        assert!(engine.activate_pending(&mut native).is_some());
+        assert_eq!(native.reservation_address(), Some(ADDRESS));
+    }
 
     #[test]
     fn native_task_handoff_restores_classic_status_fpu_and_frame_state() {
