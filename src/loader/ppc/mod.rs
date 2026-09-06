@@ -29,11 +29,11 @@ use crate::event_queue::{
 };
 use crate::guest_call::{
     format_ppc_import_action, install_powerpc_call_arguments, GuestCallContinuation,
-    GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall,
-    MenuTrackingOrigin, SharedGuestCallStack,
+    GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall, MenuTrackingOrigin,
+    NativeThreadContext, SharedGuestCallStack, ThreadStorage,
 };
 use crate::guest_procedure::{
-    resolve_guest_procedure, GuestIsa, GuestProcedure,
+    resolve_guest_procedure, resolve_same_isa_thread_entry, GuestIsa, GuestProcedure,
     ROUTINE_DESCRIPTOR_HEADER_SIZE as PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
     ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP as PPC_MIXED_MODE_TRAP,
     ROUTINE_DESCRIPTOR_VERSION as PPC_ROUTINE_DESCRIPTOR_VERSION,
@@ -121,6 +121,7 @@ use crate::trap::manager::{
 };
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, Rect};
 use crate::trap::{pict, TrapDispatcher};
+use crate::thread_manager::{NewThreadCreationEdge, ThreadManager};
 use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcExecutionContext, PpcFetchHistogram,
@@ -15253,6 +15254,118 @@ fn ppc_apply_process_native_allocator(
     ppc_update_zone_free_bytes(memory, *heap_cursor, allocation_limit);
 }
 
+struct PpcNewThreadEdge<'a> {
+    memory: &'a mut PpcSectionMem,
+    memory_manager: &'a mut ProcessNativeMemoryManager,
+    heap_cursor: &'a mut u32,
+    last_mem_error: &'a mut i16,
+    msr: u32,
+    entry_pointer: u32,
+    default_rtoc: u32,
+    parameter: u32,
+    result_destination: u32,
+    thread_made: u32,
+    target: Option<GuestProcedure>,
+}
+
+impl NewThreadCreationEdge for PpcNewThreadEdge<'_> {
+    fn preflight(&mut self, _size: u32) -> std::result::Result<(), i16> {
+        if self.thread_made == 0 || !ppc_memory_can_write_bytes(self.memory, self.thread_made, 4) {
+            return Err(PPC_PARAM_ERR);
+        }
+        self.target = resolve_same_isa_thread_entry(
+            self.memory,
+            self.entry_pointer,
+            self.default_rtoc,
+            GuestIsa::PowerPc,
+        );
+        if self.target.is_some() {
+            Ok(())
+        } else {
+            Err(PPC_PARAM_ERR)
+        }
+    }
+
+    fn allocate_fresh(&mut self, size: u32) -> std::result::Result<ThreadStorage, i16> {
+        let stack = self.memory_manager.new_native_ptr(self.memory, size, true);
+        ppc_apply_process_native_allocator(
+            self.memory_manager,
+            self.memory,
+            self.heap_cursor,
+            self.last_mem_error,
+        );
+        if stack == 0 {
+            return Err(PPC_MEM_FULL_ERR);
+        }
+        let Some(stack_limit) = stack.checked_add(size) else {
+            self.memory_manager.dispose_native_ptr(stack);
+            ppc_apply_process_native_allocator(
+                self.memory_manager,
+                self.memory,
+                self.heap_cursor,
+                self.last_mem_error,
+            );
+            return Err(PPC_MEM_FULL_ERR);
+        };
+        Ok(ThreadStorage {
+            result_destination: self.result_destination,
+            stack_base: stack,
+            stack_limit,
+            managed_pointer: true,
+        })
+    }
+
+    fn prepare_and_publish(
+        &mut self,
+        execution: &SharedGuestCallStack,
+        mut storage: ThreadStorage,
+        suspended: bool,
+    ) -> std::result::Result<Option<crate::guest_call::ExecutionTaskId>, i16> {
+        let target = self.target.expect("successful preflight resolves a target");
+        storage.result_destination = self.result_destination;
+        storage.managed_pointer = true;
+        let Some(stack_pointer) =
+            (storage.stack_limit & !15).checked_sub(PPC_INITIAL_STACK_FRAME_SIZE)
+        else {
+            return Err(PPC_MEM_FULL_ERR);
+        };
+        if stack_pointer < storage.stack_base {
+            return Err(PPC_MEM_FULL_ERR);
+        }
+        let mut context = PpcExecutionContext::fresh();
+        let state = context.architectural_mut();
+        state.msr = self.msr;
+        state.pc = target.entry;
+        state.lr = PPC_THREAD_RETURN_PC;
+        state.gpr[1] = stack_pointer;
+        state.gpr[2] = target.rtoc;
+        state.gpr[3] = self.parameter;
+        Ok(execution.create_native_thread(
+            NativeThreadContext { context },
+            storage,
+            suspended,
+            |task| {
+                self.memory
+                    .write_u32_be(self.thread_made, task.thread_id())
+                    .is_some()
+            },
+        ))
+    }
+
+    fn release_fresh(&mut self, storage: ThreadStorage) {
+        self.memory_manager.dispose_native_ptr(storage.stack_base);
+    }
+
+    fn finish_publication_attempt(&mut self) {
+        ppc_apply_process_native_allocator(
+            self.memory_manager,
+            self.memory,
+            self.heap_cursor,
+            self.last_mem_error,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispose_process_native_handle(
     memory_manager: &mut ProcessNativeMemoryManager,
@@ -23954,105 +24067,31 @@ fn dispatch_supported_import(
             let style = cpu.gpr[3];
             let entry = cpu.gpr[4];
             let param = cpu.gpr[5];
-            let size = if cpu.gpr[6] == 0 {
-                crate::thread_manager::DEFAULT_COOPERATIVE_THREAD_STACK_SIZE
-            } else {
-                cpu.gpr[6]
-            };
+            let size = cpu.gpr[6];
             let options = cpu.gpr[7];
             let result_destination = cpu.gpr[8];
             let made = cpu.gpr[9];
-            let target = ppc_resolve_callback_target(memory, entry, cpu.gpr[2], None);
-            if style != 1
-                || size < 256
-                || size > i32::MAX as u32
-                || made == 0
-                || !ppc_memory_can_write_bytes(memory, made, 4)
-                || target.is_none()
-            {
-                if made != 0 {
-                    let _ = memory.write_u32_be(made, 0);
-                }
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
-            }
-            let target = target.unwrap();
-            let pooled = match toolbox_startup.guest_calls.request_thread_stack(
-                GuestIsa::PowerPc,
-                size,
-                options,
-            ) {
-                Ok(pooled) => pooled,
-                Err(error) => {
-                    let _ = memory.write_u32_be(made, 0);
-                    return Some(PpcImportAction::Return(ppc_i16_result(error)));
-                }
-            };
-            let stack = pooled.map_or_else(
-                || process_memory_manager.new_native_ptr(memory, size, true),
-                |storage| storage.stack_base,
-            );
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
+            let execution = toolbox_startup.guest_calls.shared_handle();
+            let mut edge = PpcNewThreadEdge {
                 memory,
+                memory_manager: process_memory_manager,
                 heap_cursor,
                 last_mem_error,
-            );
-            if stack == 0 {
-                let _ = memory.write_u32_be(made, 0);
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
-            }
-            let Some(top) = pooled
-                .map(|storage| storage.stack_limit)
-                .or_else(|| stack.checked_add(size))
-            else {
-                process_memory_manager.dispose_native_ptr(stack);
-                let _ = memory.write_u32_be(made, 0);
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
+                msr: cpu.msr,
+                entry_pointer: entry,
+                default_rtoc: cpu.gpr[2],
+                parameter: param,
+                result_destination,
+                thread_made: made,
+                target: None,
             };
-            let mut thread_context = PpcExecutionContext::fresh();
-            let thread_state = thread_context.architectural_mut();
-            thread_state.msr = cpu.msr;
-            thread_state.pc = target.entry;
-            thread_state.lr = PPC_THREAD_RETURN_PC;
-            thread_state.gpr[1] = (top & !15) - PPC_INITIAL_STACK_FRAME_SIZE;
-            thread_state.gpr[2] = target.rtoc;
-            thread_state.gpr[3] = param;
-            let created = toolbox_startup.guest_calls.create_native_thread(
-                crate::guest_call::NativeThreadContext {
-                    context: thread_context,
-                },
-                crate::guest_call::ThreadStorage {
-                    result_destination,
-                    stack_base: stack,
-                    stack_limit: top,
-                    managed_pointer: true,
-                },
-                options & 1 != 0,
-                |task| memory.write_u32_be(made, task.thread_id()).is_some(),
-            );
-            if created.is_none() {
-                if let Some(storage) = pooled {
-                    toolbox_startup
-                        .guest_calls
-                        .recycle_thread_stack(GuestIsa::PowerPc, storage);
-                } else {
-                    process_memory_manager.dispose_native_ptr(stack);
-                }
-                let _ = memory.write_u32_be(made, 0);
+            let result = ThreadManager::new(&execution)
+                .create_thread(GuestIsa::PowerPc, style, size, options, &mut edge)
+                .map_or_else(|error| error, |_| PPC_NO_ERR);
+            if result != PPC_NO_ERR && made != 0 {
+                let _ = edge.memory.write_u32_be(made, 0);
             }
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(
-                if created.is_some() {
-                    PPC_NO_ERR
-                } else {
-                    PPC_MEM_FULL_ERR
-                },
-            )))
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::YieldToThread | PpcImportDispatcherTarget::YieldToAnyThread => {
             // OSErr YieldToThread(ThreadID); OSErr YieldToAnyThread(void);
@@ -170532,6 +170571,180 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn native_thread_creation_rejects_descriptors_before_allocation_and_preserves_vector_state() {
+        use crate::guest_call::ExecutionTaskId;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        let made = PPC_DATA_BASE + 0x1000;
+        let descriptor = PPC_DATA_BASE + 0x2000;
+        let target = loaded.entry_pc;
+        let rtoc = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(made, vec![0xaa; 4]);
+        loaded.memory.add_region(descriptor, vec![0; 0x100]);
+        loaded
+            .memory
+            .write_u16_be(descriptor, PPC_MIXED_MODE_TRAP)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(descriptor + 2, PPC_ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        loaded.memory.write_u16_be(descriptor + 10, 0).unwrap();
+        let heap_before = loaded.heap_cursor();
+
+        let invoke = |loaded: &mut PpcLoadedApp| {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = descriptor;
+            loaded.cpu.gpr[5] = 0x1234;
+            loaded.cpu.gpr[6] = 4096;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            loaded.cpu.gpr[9] = made;
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        };
+
+        let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        let tvector = descriptor + 0x40;
+        loaded.memory.write_u32_be(tvector, target).unwrap();
+        loaded.memory.write_u32_be(tvector + 4, rtoc).unwrap();
+        for (isa, procedure) in [
+            (PPC_ROUTINE_RECORD_POWERPC_ISA, tvector),
+            (PPC_ROUTINE_RECORD_M68K_ISA, PPC_CODE_BASE),
+        ] {
+            assert!(ppc_write_routine_record(
+                &mut loaded.memory,
+                record,
+                0,
+                isa,
+                0,
+                procedure,
+            ));
+            let callable = resolve_guest_procedure(
+                &mut loaded.memory,
+                descriptor,
+                loaded.cpu.gpr[2],
+                None,
+                GuestIsa::PowerPc,
+                GuestIsa::PowerPc,
+            )
+            .expect("the test descriptor must be callable through the generic resolver");
+            let (expected_isa, expected_entry) = if isa == PPC_ROUTINE_RECORD_POWERPC_ISA {
+                (GuestIsa::PowerPc, target)
+            } else {
+                (GuestIsa::M68k, PPC_CODE_BASE)
+            };
+            assert_eq!(callable.isa, expected_isa);
+            assert_eq!(callable.entry, expected_entry);
+            loaded.memory.write_u32_be(made, 0xaaaa_aaaa).unwrap();
+            invoke(&mut loaded);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+            assert_eq!(loaded.memory.read_u32_be(made), Some(0));
+            assert_eq!(loaded.heap_cursor(), heap_before);
+            assert!(!loaded.guest_calls.has_live_workers());
+        }
+
+        loaded.memory.write_u32_be(descriptor, target).unwrap();
+        loaded.memory.write_u32_be(descriptor + 4, rtoc).unwrap();
+        invoke(&mut loaded);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(made).unwrap());
+        assert_eq!(worker.thread_id(), 3);
+        assert!(loaded
+            .guest_calls
+            .yield_native_thread(&mut loaded.cpu, worker.thread_id())
+            .unwrap());
+        assert_eq!(loaded.cpu.pc, target);
+        assert_eq!(loaded.cpu.gpr[2], rtoc);
+        assert_eq!(loaded.cpu.gpr[3], 0x1234);
+    }
+
+    #[test]
+    fn native_thread_creation_preflights_output_and_projects_real_allocation_failure() {
+        use crate::guest_call::ExecutionTaskId;
+
+        let invoke = |loaded: &mut PpcLoadedApp, made: u32, size: u32| {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 1;
+            loaded.cpu.gpr[4] = PPC_CODE_BASE;
+            loaded.cpu.gpr[5] = 0x1234;
+            loaded.cpu.gpr[6] = size;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            loaded.cpu.gpr[9] = made;
+            assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
+        };
+
+        let mut protected = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        let partial_made = PPC_DATA_BASE + 0x1000;
+        let valid_made = partial_made + 0x100;
+        protected.memory.add_region(partial_made, vec![0xaa; 4]);
+        protected
+            .memory
+            .add_readonly_region(partial_made + 3, vec![0xaa]);
+        protected.memory.add_region(valid_made, vec![0; 4]);
+        let protected_cursor = protected.heap_cursor();
+        let protected_ptrs = protected.ptrs();
+        let protected_mem_error = protected.last_mem_error();
+        invoke(&mut protected, partial_made, 4096);
+        assert_eq!(protected.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut protected.memory, partial_made, 4),
+            Some(vec![0xaa; 4])
+        );
+        assert_eq!(protected.heap_cursor(), protected_cursor);
+        assert_eq!(protected.ptrs(), protected_ptrs);
+        assert_eq!(protected.last_mem_error(), protected_mem_error);
+        assert!(!protected.guest_calls.has_live_workers());
+        invoke(&mut protected, valid_made, 4096);
+        assert_eq!(protected.cpu.gpr[3], 0);
+        assert_eq!(protected.memory.read_u32_be(valid_made), Some(3));
+
+        let mut exhausted = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+        let made = PPC_DATA_BASE + 0x1000;
+        exhausted.memory.add_region(made, vec![0xaa; 4]);
+        let cursor = exhausted.heap_cursor();
+        let ptrs = exhausted.ptrs();
+        let free_ptrs = exhausted.free_ptr_blocks();
+        let free_bytes = exhausted
+            .memory
+            .read_u32_be(PPC_APPLICATION_ZONE + 12)
+            .unwrap();
+        invoke(&mut exhausted, made, i32::MAX as u32);
+        assert_eq!(exhausted.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+        assert_eq!(exhausted.memory.read_u32_be(made), Some(0));
+        assert_eq!(exhausted.heap_cursor(), cursor);
+        assert_eq!(exhausted.ptrs(), ptrs);
+        assert_eq!(exhausted.free_ptr_blocks(), free_ptrs);
+        assert_eq!(exhausted.last_mem_error(), PPC_MEM_FULL_ERR);
+        assert_eq!(
+            exhausted.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            Some(free_bytes)
+        );
+        assert_eq!(
+            exhausted.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            Some(
+                ppc_heap_free_capacity(
+                    &exhausted.memory,
+                    exhausted.heap_cursor(),
+                    test_heap_limit!(exhausted),
+                )
+                .0
+            )
+        );
+        assert!(!exhausted.guest_calls.has_live_workers());
+
+        invoke(&mut exhausted, made, 4096);
+        assert_eq!(exhausted.cpu.gpr[3], 0);
+        assert_eq!(
+            exhausted.memory.read_u32_be(made),
+            Some(ExecutionTaskId::from_thread_id(3).thread_id())
+        );
+        assert_eq!(exhausted.last_mem_error(), PPC_NO_ERR);
+    }
+
+    #[test]
     fn native_thread_entry_returns_to_its_creator_and_retries_result_delivery() {
         use crate::guest_call::ExecutionTaskId;
         const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
@@ -170575,6 +170788,7 @@ pub(crate) mod tests {
         loaded.run_with_hle_imports(64);
         assert_eq!(loaded.guest_calls.current_task(), worker);
         assert_eq!(loaded.cpu.pc, ENTRY);
+        assert_eq!(loaded.cpu.gpr[2], creator.gpr[2]);
         assert_eq!(loaded.cpu.gpr[3], 17);
         loaded.run_with_hle_imports(64);
         assert_eq!(loaded.guest_calls.current_task(), worker);
