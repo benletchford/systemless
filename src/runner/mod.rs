@@ -1494,16 +1494,17 @@ const DIALOG_FILTER_EVENT_OFFSET: u32 = 0x80;
 const DIALOG_FILTER_RESULT_OFFSET: u32 = 0x96;
 const DIALOG_CALLBACK_SCRATCH_SIZE: u32 = 0xC0;
 /// Compact Mac video hardware refreshes at approximately 60.15 Hz.
-pub const DEFAULT_VBL_HZ: f64 = 60.15;
+pub const DEFAULT_VBL_HZ: f64 = crate::machine_profile::REFERENCE_MACHINE_PROFILE.vbl_hz;
 
-/// Default emulated CPU speed from the canonical machine profile.
+/// Default host execution rate for 68K realtime frontends.
 pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
-    crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz;
-/// PowerPC clock exposed by the native 604 machine profile. The Power
-/// Macintosh 9500/120 paired a 120 MHz clock with the same 604 processor
+    crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY.realtime_m68k_cpu_mhz;
+/// Default host execution rate for native PowerPC realtime frontends. The
+/// Power Macintosh 9500/120 paired a 120 MHz clock with the 604 processor
 /// reported by the PPC Gestalt implementation.
 /// <https://support.apple.com/en-hk/112050>
-pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 = 120.0;
+pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 =
+    crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY.realtime_powerpc_cpu_mhz;
 /// Default direct-color display depth for native PowerPC applications.
 /// Imaging With QuickDraw (1994), p. 6-16, defines 16 bits per pixel as a
 /// supported Color QuickDraw screen and offscreen graphics-world depth.
@@ -1521,11 +1522,6 @@ pub fn default_realtime_instructions_per_tick(powerpc: bool) -> u32 {
     };
     (mhz * 1_000_000.0 / DEFAULT_VBL_HZ).round() as u32
 }
-// Default instructions per VBL tick for non-realtime execution (scripted harnesses, tests).
-// Realtime frontends override this via set_instructions_per_tick() to match the
-// architecture-specific machine profile defined above.
-// This lower value lets scripted harnesses run quickly without being wall-clock-paced.
-const INSTRUCTIONS_PER_TICK: u32 = 12_000;
 const DEFAULT_LAUNCH_TICKS: u32 = 600;
 /// Default double-click interval: 20 VBL ticks, approximately one third of a
 /// second. This is the conventional classic Mac OS setting exposed through
@@ -2008,9 +2004,11 @@ impl FixtureRunner {
             halted_sp: None,
             halted_d0: None,
             total_instructions: 0,
-            instructions_per_tick: INSTRUCTIONS_PER_TICK,
+            instructions_per_tick: crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY
+                .scripted_instructions_per_tick,
             wait_sleep_cap_in_headless: None,
-            tick_budget: INSTRUCTIONS_PER_TICK as i32,
+            tick_budget: crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY
+                .scripted_instructions_per_tick as i32,
             idle_cycle_last_seen: None,
             idle_cycle_probe: None,
             idle_cycle_sites: [IdleCycleSiteRecord::default(); IDLE_CYCLE_SITE_SLOTS],
@@ -19811,9 +19809,11 @@ mod tests {
             assert!(ppc_app.sound.completion_invocations.is_empty());
         }
 
-        let (steps, running) = runner.run_steps_with_audio(INSTRUCTIONS_PER_TICK as usize, None, 0);
+        let default_budget =
+            crate::machine_profile::DEFAULT_HOST_EXECUTION_POLICY.scripted_instructions_per_tick;
+        let (steps, running) = runner.run_steps_with_audio(default_budget as usize, None, 0);
 
-        assert_eq!(steps, INSTRUCTIONS_PER_TICK as usize);
+        assert_eq!(steps, default_budget as usize);
         assert!(running);
         assert!(runner.drain_audio().is_empty());
         assert_eq!(runner.guest_tick(), 1);
@@ -23937,6 +23937,213 @@ mod tests {
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(runner.m68k.cpu.core.get_sr(), 0x2004);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
+    }
+
+    #[test]
+    fn shipped_host_execution_policy_preserves_public_defaults() {
+        let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        assert_eq!(runner.instructions_per_tick(), 12_000);
+        assert_eq!(DEFAULT_VBL_HZ, 60.15);
+        assert_eq!(DEFAULT_REALTIME_CPU_MHZ, 25.0);
+        assert_eq!(DEFAULT_REALTIME_PPC_CPU_MHZ, 120.0);
+        assert_eq!(DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND, 25_000_000.0);
+        assert_eq!(default_realtime_instructions_per_tick(false), 415_628);
+        assert_eq!(default_realtime_instructions_per_tick(true), 1_995_012);
+    }
+
+    #[test]
+    fn host_pacing_override_preserves_m68k_guest_profile_and_canonical_ticks() {
+        const SYS_ENV: u32 = 0x0030_0000;
+        const PROGRAM: u32 = 0x0001_0000;
+
+        fn guest_profile(runner: &mut FixtureRunner) -> ([u32; 5], [u16; 3], u8, u32) {
+            let mut gestalt = [0; 5];
+            for (index, selector) in [*b"sysa", *b"cput", *b"proc", *b"fpu ", *b"mmu "]
+                .into_iter()
+                .enumerate()
+            {
+                runner
+                    .m68k
+                    .cpu
+                    .write_reg(Register::D0, u32::from_be_bytes(selector));
+                runner
+                    .dispatcher
+                    .dispatch(0xA1AD, &mut runner.m68k.cpu, &mut runner.bus)
+                    .unwrap();
+                gestalt[index] = runner.m68k.cpu.read_reg(Register::A0);
+            }
+
+            runner.m68k.cpu.write_reg(Register::A0, SYS_ENV);
+            runner.m68k.cpu.write_reg(Register::D0, 2);
+            runner
+                .dispatcher
+                .dispatch(0xA090, &mut runner.m68k.cpu, &mut runner.bus)
+                .unwrap();
+            let sys_environs = [
+                runner.bus.read_word(SYS_ENV + 2),
+                runner.bus.read_word(SYS_ENV + 4),
+                runner.bus.read_word(SYS_ENV + 6),
+            ];
+            let has_fpu = runner.bus.read_byte(SYS_ENV + 8);
+
+            runner.m68k.cpu.write_reg(Register::D0, u32::MAX);
+            runner
+                .dispatcher
+                .dispatch(0xA485, &mut runner.m68k.cpu, &mut runner.bus)
+                .unwrap();
+            let cpu_speed = runner.m68k.cpu.read_reg(Register::D0);
+            (gestalt, sys_environs, has_fpu, cpu_speed)
+        }
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let default_guest_profile = guest_profile(&mut runner);
+        assert_eq!(
+            default_guest_profile,
+            ([1, 4, 5, 3, 4], [20, 0x0810, 5], 1, 25)
+        );
+
+        runner.set_instructions_per_tick(3);
+        assert_eq!(guest_profile(&mut runner), default_guest_profile);
+
+        for offset in (0..14).step_by(2) {
+            runner.bus.write_word(PROGRAM + offset, 0x4E71);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, PROGRAM);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.set_guest_tick_for_test(0);
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 500);
+        let tick_result = runner.m68k.cpu.read_reg(Register::A7);
+        runner.bus.write_long(tick_result, 0);
+        runner
+            .dispatcher
+            .dispatch(0xA975, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert_eq!(runner.bus.read_long(tick_result), 500);
+
+        let (steps, running) = runner.run_steps(7, None);
+
+        assert!(running);
+        assert_eq!(steps, 7);
+        assert_eq!(
+            runner.bus.read_long(crate::memory::globals::addr::TICKS),
+            502
+        );
+        runner.bus.write_long(tick_result, 0);
+        runner
+            .dispatcher
+            .dispatch(0xA975, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert_eq!(runner.bus.read_long(tick_result), 502);
+    }
+
+    #[test]
+    fn host_pacing_override_preserves_powerpc_guest_profile_and_tick_visibility() {
+        use crate::loader::ppc::tests::synthetic_pef_with_import;
+
+        const RESPONSE: u32 = PPC_HEAP_BASE + 0x1000;
+        const SYS_ENV: u32 = RESPONSE + 0x100;
+
+        fn guest_state(runner: &mut FixtureRunner) -> ([(u32, u32); 5], [u16; 4], [u8; 2], u32) {
+            let mut context = runner
+                .native
+                .take(NativeEngineRole::Companion)
+                .expect("PPC companion installed");
+            let native = context.adapter_mut();
+            let mut capabilities = [(0, 0); 5];
+
+            native.cpu.pc = native.imports[0].trap_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::TickCount;
+            let probe = runner
+                .process_context
+                .with_memory_and_cfm(|memory_manager, cfm| {
+                    native.run_with_process_services(64, false, false, memory_manager, cfm)
+                });
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let tick_count = native.cpu.gpr[3];
+
+            for (index, selector) in [*b"cput", *b"proc", *b"fpu ", *b"mmu ", *b"sysa"]
+                .into_iter()
+                .enumerate()
+            {
+                native.cpu.pc = native.imports[0].trap_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::Gestalt;
+                native.cpu.gpr[3] = u32::from_be_bytes(selector);
+                native.cpu.gpr[4] = RESPONSE;
+                let probe = runner
+                    .process_context
+                    .with_memory_and_cfm(|memory_manager, cfm| {
+                        native.run_with_process_services(64, false, false, memory_manager, cfm)
+                    });
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(probe.unsupported_import_index, None);
+                capabilities[index] = (
+                    native.cpu.gpr[3],
+                    native.memory.read_u32_be(RESPONSE).unwrap(),
+                );
+            }
+
+            native.cpu.pc = native.imports[0].trap_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SysEnvirons;
+            native.cpu.gpr[3] = 2;
+            native.cpu.gpr[4] = SYS_ENV;
+            let probe = runner
+                .process_context
+                .with_memory_and_cfm(|memory_manager, cfm| {
+                    native.run_with_process_services(64, false, false, memory_manager, cfm)
+                });
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(native.cpu.gpr[3], 0);
+            let sys_environs = [
+                native.memory.read_u16_be(SYS_ENV).unwrap(),
+                native.memory.read_u16_be(SYS_ENV + 2).unwrap(),
+                native.memory.read_u16_be(SYS_ENV + 4).unwrap(),
+                native.memory.read_u16_be(SYS_ENV + 6).unwrap(),
+            ];
+            let sys_environs_flags = [
+                native.memory.read_u8(SYS_ENV + 8).unwrap(),
+                native.memory.read_u8(SYS_ENV + 9).unwrap(),
+            ];
+
+            assert!(runner.native.restore(context).is_ok());
+            (capabilities, sys_environs, sys_environs_flags, tick_count)
+        }
+
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"Gestalt")).unwrap();
+        native.memory.add_region(RESPONSE, vec![0; 0x110]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_ppc_companion(native);
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 700);
+
+        let default_guest_state = guest_state(&mut runner);
+        assert_eq!(
+            default_guest_state,
+            (
+                [(0, 0x0104), (0, 2), (0, 3), (0, 4), ((-5551i32) as u32, 0)],
+                [2, 20, 0x0810, 5],
+                [1, 1],
+                700,
+            )
+        );
+
+        runner.set_instructions_per_tick(7);
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 900);
+        let paced_guest_state = guest_state(&mut runner);
+        assert_eq!(paced_guest_state.0, default_guest_state.0);
+        assert_eq!(paced_guest_state.1, default_guest_state.1);
+        assert_eq!(paced_guest_state.2, default_guest_state.2);
+        assert_eq!(paced_guest_state.3, 900);
     }
 
     #[test]
