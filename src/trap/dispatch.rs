@@ -3624,16 +3624,8 @@ impl TrapDispatcher {
     /// tracking loops is active and the trap is the matching routine. Strips
     /// the auto-pop bit (0x0400) so auto-pop variants match too.
     pub fn is_tracking_refire(&self, opcode: u16) -> bool {
-        self.is_tracking_refire_with_menu_tracking(opcode, self.is_menu_tracking())
-    }
 
-    pub(crate) fn is_tracking_refire_with_menu_tracking(
-        &self,
-        opcode: u16,
-        is_menu_tracking: bool,
-    ) -> bool {
         let trap_no_autopop = opcode & !0x0400;
-        let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
         let is_dialog_refire =
             matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
         let is_standard_file_refire = trap_no_autopop == 0xA9EA;
@@ -3643,8 +3635,7 @@ impl TrapDispatcher {
         let is_track_box_refire = trap_no_autopop == 0xA83B;
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
-        (is_menu_refire && is_menu_tracking)
-            || (is_dialog_refire && self.is_dialog_tracking())
+        (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
             || (is_control_refire
@@ -7323,7 +7314,8 @@ impl TrapDispatcher {
         bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
     ) -> Result<()> {
         if crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus)
-            && self.resume_completed_menu_bar_build(cpu, bus)
+            && (self.resume_completed_menu_bar_build(cpu, bus)
+                || self.resume_menu_tracking(cpu, bus).is_some())
         {
             return Ok(());
         }
@@ -7527,7 +7519,7 @@ impl TrapDispatcher {
         let route = raw_trap_route(effective_trap);
         let is_tool = route.is_toolbox;
         // Count game traps: from game code (PC < 0x800000), NOT during
-        // menu/dialog tracking loops (synthetic HLE re-dispatches), and
+        // remaining tracking loops (synthetic HLE re-dispatches), and
         // NOT idle-loop traps (GetNextEvent, WaitNextEvent, EventAvail)
         // which fire at wildly different rates depending on CPU speed.
         let trap_number = route.table_slot;
@@ -7818,7 +7810,7 @@ impl TrapDispatcher {
         }
         // Handle auto-pop return.
         // Only push ret_addr back when the CURRENT trap is one of the
-        // menu/dialog refire traps (matches the runner's is_tracking_refire
+        // remaining refire traps (matches the runner's is_tracking_refire
         // logic). is_tracking_refire is shared so dispatch.rs and runner.rs
         // can never diverge on the match logic.
         if let Some(ret_addr) = saved_return_addr {
@@ -10666,14 +10658,14 @@ mod tests {
     }
 
     #[test]
-    fn is_tracking_refire_true_for_menu_traps_when_menu_tracking() {
+    fn menu_tracking_uses_operation_resumption_instead_of_refiring() {
         let mut disp = TrapDispatcher::new();
         install_menu_tracking(&mut disp);
-        assert!(disp.is_tracking_refire(0xA93D));
-        assert!(disp.is_tracking_refire(0xA80B));
+        assert!(!disp.is_tracking_refire(0xA93D));
+        assert!(!disp.is_tracking_refire(0xA80B));
         // Auto-pop variants share the same predicate.
-        assert!(disp.is_tracking_refire(0xAD3D));
-        assert!(disp.is_tracking_refire(0xAC0B));
+        assert!(!disp.is_tracking_refire(0xAD3D));
+        assert!(!disp.is_tracking_refire(0xAC0B));
     }
 
     #[test]
