@@ -7169,6 +7169,39 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn dialog_snapshot_replay_retains_unchanged_outline_detail() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let base = bus.alloc(64 * 64);
+        disp.screen_mode = (base, 64, 64, 64, 8);
+        bus.write_long(0x0824, base);
+        bus.fill_bytes(base, 64 * 64, 0);
+        bus.prepare_outline_presentation(
+            disp.screen_mode,
+            std::array::from_fn(|i| [255 - i as u8; 3]),
+        );
+        TrapDispatcher::fb_draw_string(&mut bus, base, 64, 8, 64, 64, 12, 28, "Pilot", 0, 12);
+        let expected = bus.outline_presentation_rgb().unwrap().2;
+        assert!(expected.iter().any(|&value| value > 0 && value < 255));
+        let bounds = (8, 8, 56, 56);
+        let saved = disp.save_dialog_pixels(&bus, bounds);
+        let (top, left, width, height, occluder) =
+            disp.save_screen_rect_pixels(&bus, bounds).unwrap();
+        // A changing background pixel must still be restored, while unchanged
+        // text must survive the repeated host refresh used by ModalDialog.
+        bus.write_byte(base + 48 * 64 + 48, 77);
+        for _ in 0..3 {
+            disp.restore_screen_rect_pixels(&mut bus, top, left, width, height, &occluder);
+            disp.restore_dialog_pixels(&mut bus, bounds, &saved);
+            assert!(bus.outline_presentation_rgb().unwrap().2 == expected);
+        }
+        // Actual guest writes retain their draw/erase semantics even when
+        // their bytes happen to match the existing logical framebuffer.
+        let guest = bus.read_bytes(base, 64 * 64);
+        bus.write_bytes(base, &guest);
+        assert!(bus.outline_presentation_rgb().unwrap().2 != expected);
+    }
+
+    #[test]
     fn restore_visible_dialog_snapshots_preserves_application_drawn_pixels() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
 

@@ -5643,14 +5643,14 @@ impl super::TrapDispatcher {
                     y_on_screen && save_left >= 0 && (save_right as u32) <= row_bytes;
                 if on_screen_row && idx + row_width <= saved.len() {
                     let row_addr = screen_base + (y as u32) * row_bytes + (save_left as u32);
-                    bus.write_bytes(row_addr, &saved[idx..idx + row_width]);
+                    bus.restore_screen_bytes(row_addr, &saved[idx..idx + row_width]);
                     idx += row_width;
                 } else if y_on_screen {
                     for x in save_left..save_right {
                         if idx < saved.len() {
                             if x >= 0 && (x as u32) < row_bytes {
                                 let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                                bus.write_byte(addr, saved[idx]);
+                                bus.restore_screen_bytes(addr, &saved[idx..idx + 1]);
                             }
                             idx += 1;
                         }
@@ -5667,7 +5667,7 @@ impl super::TrapDispatcher {
                     let len = (byte_end - byte_left) as usize;
                     if idx + len <= saved.len() {
                         let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
-                        bus.write_bytes(row_addr, &saved[idx..idx + len]);
+                        bus.restore_screen_bytes(row_addr, &saved[idx..idx + len]);
                         idx += len;
                     } else {
                         for bx in byte_left..byte_end {
@@ -9350,8 +9350,7 @@ impl super::TrapDispatcher {
             for x in x_start..x_end {
                 if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                    let b = bus.read_byte(addr);
-                    bus.write_byte(addr, 255 - b);
+                    bus.invert_screen_byte(addr);
                 } else {
                     let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
                     let bit = 7 - (x as u32 % 8);
