@@ -73,6 +73,31 @@ Palette updates now recolor retained coverage through its original palette
 indexes, including antialiased edges and overlapping colors. They no longer
 recreate the display from the lower-resolution guest framebuffer.
 
+## Final Mac window scaling
+
+The full 4× captures above precede the GPU's reduction to the window size.
+Nearest sampling at that last step dropped thin strokes even when the source
+image was correct. The Mac shader now integrates source pixel coverage when
+shrinking; enlargement retains nearest sampling.
+
+These images are read back from the actual Metal presentation shader at
+960 × 696 pixels, matching an 800 × 580 guest area after hiding the menu bar:
+
+| Previous nearest reduction | Coverage-preserving reduction |
+| --- | --- |
+| [Open](mac-window/textedit-before.png) | [Open](mac-window/textedit.png) |
+
+<img src="mac-window/textedit.png" alt="Actual Metal output at the reported Mac window size" width="960">
+
+The GPU regression checks exact coverage at integral and fractional reductions
+and unchanged nearest enlargement. It fails on the previous shader. On macOS:
+
+```sh
+cargo test --bin systemless minification_retains_thin_strokes_between_sample_centers
+SYSTEMLESS_METAL_FONT_CAPTURE=tests/toolbox-showcase/outline-fonts/mac-window/textedit.png \
+cargo test --bin systemless capture_showcase_at_mac_window_size -- --ignored
+```
+
 ## Rendering scope
 
 Bundled URW and Noto outlines replace the hand-drawn font catalogue. Guest

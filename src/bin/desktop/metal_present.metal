@@ -35,7 +35,31 @@ fragment float4 raster_fragment(
         coord::normalized,
         address::clamp_to_edge,
         filter::nearest);
-    return framebuffer.sample(nearest_sampler, in.tex_coord);
+    float2 dimensions = float2(framebuffer.get_width(), framebuffer.get_height());
+    float2 footprint = abs(float2(dfdx(in.tex_coord.x), dfdy(in.tex_coord.y))) * dimensions;
+    if (all(footprint <= 1.0)) {
+        return framebuffer.sample(nearest_sampler, in.tex_coord);
+    }
+
+    // The outline surface is larger than the drawable. Integrate each source
+    // texel's covered area: nearest sampling drops thin strokes, and bilinear
+    // sampling still skips texels when shrinking by more than two times.
+    footprint = max(footprint, float2(1.0));
+    float2 center = in.tex_coord * dimensions;
+    float2 lower = center - footprint * 0.5;
+    float2 upper = center + footprint * 0.5;
+    int2 first = int2(floor(lower));
+    int2 last = int2(ceil(upper));
+    float4 color = float4(0.0);
+    for (int y = first.y; y < last.y; ++y) {
+        float wy = min(upper.y, float(y + 1)) - max(lower.y, float(y));
+        for (int x = first.x; x < last.x; ++x) {
+            float wx = min(upper.x, float(x + 1)) - max(lower.x, float(x));
+            uint2 texel = uint2(clamp(int2(x, y), int2(0), int2(dimensions) - 1));
+            color += framebuffer.read(texel) * (wx * wy);
+        }
+    }
+    return color / (footprint.x * footprint.y);
 }
 
 struct GuestFrameUniforms {
