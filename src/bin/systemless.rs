@@ -66,6 +66,39 @@ use winit::window::Window;
 use winit::window::WindowAttributes;
 use winit::window::WindowId;
 
+/// Opt-in stall diagnostics; disabled runs avoid reading the clock per phase.
+struct FramePhaseTimer {
+    phase: &'static str,
+    start: Option<std::time::Instant>,
+}
+
+impl FramePhaseTimer {
+    fn new(phase: &'static str) -> Self {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled =
+            *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PROFILE_FRAMES").is_some());
+        Self {
+            phase,
+            start: enabled.then(std::time::Instant::now),
+        }
+    }
+}
+
+impl Drop for FramePhaseTimer {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let elapsed = start.elapsed();
+            if elapsed >= std::time::Duration::from_millis(50) {
+                eprintln!(
+                    "[SLOW-FRAME] {}: {:.1} ms",
+                    self.phase,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+            }
+        }
+    }
+}
+
 /// Initial screen dimensions: 800x600 8bpp color mode by default.
 const INITIAL_SCREEN_WIDTH: u32 = 800;
 const INITIAL_SCREEN_HEIGHT: u32 = 600;
@@ -1178,6 +1211,7 @@ impl App {
     }
 
     fn step_frame_with_clock(&mut self, mut host_now: impl FnMut() -> std::time::Instant) {
+        let _timing = FramePhaseTimer::new("CPU and audio frame");
         let Some(runner) = self.runner.as_ref() else {
             return;
         };
@@ -1296,8 +1330,10 @@ impl App {
             } else {
                 remaining_audio.div_ceil(batches_left)
             };
-            let (steps, running) =
-                runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio);
+            let (steps, running) = {
+                let _timing = FramePhaseTimer::new("foreground CPU batch");
+                runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio)
+            };
             total_steps += steps;
             foreground_steps += steps;
             audio_mixed += batch_audio;
@@ -1415,6 +1451,7 @@ impl App {
     }
 
     fn render_frame(&mut self) {
+        let _timing = FramePhaseTimer::new("render frame (main thread)");
         let render_start = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         let force_gpu_present = self.force_gpu_present;
@@ -1432,6 +1469,7 @@ impl App {
             return;
         };
         if !runner.is_powerpc_app() {
+            let _timing = FramePhaseTimer::new("outline palette preparation");
             let dispatcher = runner.dispatcher();
             let screen = dispatcher.screen_mode;
             let palette = display::rgba_palette_from_clut_with_gamma(
@@ -1446,7 +1484,10 @@ impl App {
                 .bus_mut()
                 .prepare_outline_presentation(screen, palette);
         }
-        runner.composite_frame();
+        {
+            let _timing = FramePhaseTimer::new("window compositing");
+            runner.composite_frame();
+        }
         let presented_tick = runner.guest_tick();
 
         let (_, _, scrn_right, scrn_bottom, _) = runner.dispatcher().screen_mode;
@@ -1908,10 +1949,11 @@ impl App {
         }
 
         #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
-        let (game_w, game_h) = if let Some((width, height, presented)) = guest_frame
-            .as_ref()
-            .and_then(|guest| runner.bus().presented_argb(guest, &frame_argb))
-        {
+        let (game_w, game_h) = if let Some((width, height, presented)) =
+            guest_frame.as_ref().and_then(|guest| {
+                let _timing = FramePhaseTimer::new("outline pixel expansion");
+                runner.bus().presented_argb(guest, &frame_argb)
+            }) {
             #[cfg(target_os = "macos")]
             {
                 let scale = width / game_w;
@@ -1933,6 +1975,7 @@ impl App {
                 return;
             };
             crop_argb_frame(&mut frame_argb, game_w, presentation_rect);
+            let _timing = FramePhaseTimer::new("raster presentation submission");
             surface
                 .present(
                     &frame_argb,
