@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.38.0](https://github.com/benletchford/systemless/compare/v0.37.0...v0.38.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove the classic trap startup shadow map
+* move runner CFM ownership into the process context
+
+### Features
+
+* play QuickTime piano music tracks ([49b4392](https://github.com/benletchford/systemless/commit/49b4392d29b878a5c1bd3a8e81829f061d97caf7))
+* share CFM symbol enumeration across classic and native calls ([c412407](https://github.com/benletchford/systemless/commit/c412407d5bd46479036318ec9868a9f7c11023ff))
+* share CFM symbol lookup across classic and native calls ([c75db1e](https://github.com/benletchford/systemless/commit/c75db1eea4e9693ff26d055aeede0cc0c17bb986))
+
+
+### Bug Fixes
+
+* clip and restore dialog picture items ([d6db3ce](https://github.com/benletchford/systemless/commit/d6db3ce7adecf8588959d5e28f31056446d018aa))
+* clip window frames below the menu bar ([ac018d3](https://github.com/benletchford/systemless/commit/ac018d3ca49e451c9d21c229bd39fd8fee789cda))
+* distinguish system-code ISA from mapping protection ([f439830](https://github.com/benletchford/systemless/commit/f4398306abfc735d664ac20508f6477ba24ead87))
+* erase full-screen windows through the resolved screen address ([6ba5e75](https://github.com/benletchford/systemless/commit/6ba5e75b3077921c0cbcb4b689283c2fafef10a7))
+* establish trap tables before runner execution ([51a7f4c](https://github.com/benletchford/systemless/commit/51a7f4cdcbcb3e82ae86f2b783aea4a02fa87989))
+* isolate menu definition callback workspaces ([40a3fa8](https://github.com/benletchford/systemless/commit/40a3fa81f23b6360a8efa1d67ca1b2658cc86394))
+* preflight native arguments before changing caller state ([c80136b](https://github.com/benletchford/systemless/commit/c80136b6d06a69b6a74b93abcdff6383f2e4a041))
+* preflight shared trap construction before publication ([cdaef9e](https://github.com/benletchford/systemless/commit/cdaef9ed6af08b107a594cae95a10145caa713df))
+* preserve CFM connections when close publication fails ([762f1a2](https://github.com/benletchford/systemless/commit/762f1a23a2cac37da7642ae9e5cfa33fd283a409))
+* preserve dialog backgrounds when redrawing items ([109c508](https://github.com/benletchford/systemless/commit/109c5080d51db1d70ea747733161d24fba14428d))
+* restore Odyssey profile creation and picture colors ([5fa5cee](https://github.com/benletchford/systemless/commit/5fa5ceea81bbf340f6aefcc1b132ae2ae958dc2f))
+* resume menu bar builds without repeating guest dispatch ([5840f4a](https://github.com/benletchford/systemless/commit/5840f4a6aaefb9b2f811e8cdf05cdad02e56da36))
+* retain menu bar builds by task and enclosing call ([d0a27a9](https://github.com/benletchford/systemless/commit/d0a27a9ceef89e2fb964fbff4f13a419e9b6dca6))
+* share CopyBits row transfers across CPU routes ([c9938da](https://github.com/benletchford/systemless/commit/c9938dacc1f0ddb1b33a1d5e3da5224ec2c9eb8b))
+* share stack-local menu callbacks and retire menu-bar sizing ([c77311a](https://github.com/benletchford/systemless/commit/c77311a9278c2584d42f25469880c7d4e59a8330))
+
+
+### Code Refactoring
+
+* keep system trap identities with their code owner ([fff74ba](https://github.com/benletchford/systemless/commit/fff74bab8ead67c4838879fa3f791219c0bfe12e))
+* move runner CFM ownership into the process context ([09ec2ce](https://github.com/benletchford/systemless/commit/09ec2cebde47f2feeb9a8d6a27741d3cf8131167))
+* publish native generated code with system provenance ([0e3529b](https://github.com/benletchford/systemless/commit/0e3529bede0197679f679efcf3f72ebdaa1e9c7d))
+* remove the classic trap startup shadow map ([11508a0](https://github.com/benletchford/systemless/commit/11508a001309664b89b7e93ff6de30c363fc7c17))
+* return prepared resource invocations from shared CFM ([1738727](https://github.com/benletchford/systemless/commit/1738727c26cebdf84f527b6f7ec61e1131f5402d))
+* share CFM fragment layout and relocation planning ([0ebed8a](https://github.com/benletchford/systemless/commit/0ebed8a2f7c74d042e44d488ee7510eaaeacecee))
+* share CFM initialization records and invocation policy ([095a0fb](https://github.com/benletchford/systemless/commit/095a0fba60305293b0c81e9930258bb40ebbd811))
+* share menu release blink transitions ([8a31ea7](https://github.com/benletchford/systemless/commit/8a31ea703969d656ba4023904ea2ce01c58abc1a))
+* share trap gateway construction independently of CPU adapters ([f140a75](https://github.com/benletchford/systemless/commit/f140a75371cac2b07a8fe3ea2ac9c2c42bb0956d))
+
 ## [0.37.0](https://github.com/benletchford/systemless/compare/v0.36.0...v0.37.0) (2026-09-05)
 
 
