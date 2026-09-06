@@ -1538,17 +1538,17 @@ impl super::TrapDispatcher {
                     let dx = (left - bounds_left) as u32;
                     let width = (right - left) as u32;
                     if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
-                        let mut row = vec![solid_fill_idx.unwrap_or(0); width as usize];
+                        let row = vec![solid_fill_idx.unwrap_or(0); width as usize];
                         for y in top..bottom {
                             let dy = (y - bounds_top) as u32;
                             let addr = pix_base + dy * pix_row_bytes + dx;
                             if invert_rows {
-                                bus.read_bytes_into(addr, &mut row);
-                                for pixel in row.iter_mut() {
-                                    *pixel = invert_indexed_pixel(*pixel);
+                                for offset in 0..width {
+                                    bus.invert_screen_byte(addr + offset);
                                 }
+                            } else {
+                                bus.write_bytes(addr, &row);
                             }
-                            bus.write_bytes(addr, &row);
                         }
                         let screen_rect = (
                             top.saturating_sub(bounds_top),
@@ -1694,11 +1694,9 @@ impl super::TrapDispatcher {
                 // establishes local coordinates; visRgn and clipRgn limit drawing.
                 // Feed only these already-clipped cells to the presentation plane.
                 if pixel_size == 8 && matches!(op, ShapeOp::Glyph(0 | 1)) {
-                    if let Some(p) = &mut bus.presentation {
-                        let dx = (x - bounds_left) as u32;
-                        if dx < pix_row_bytes {
-                            p.glyph_pixel(pix_base + dy * pix_row_bytes + dx, x, y, fg_idx);
-                        }
+                    let dx = (x - bounds_left) as u32;
+                    if dx < pix_row_bytes {
+                        bus.outline_glyph_pixel(pix_base + dy * pix_row_bytes + dx, x, y, fg_idx);
                     }
                 }
                 let alpha = coverage_at(y, x);
@@ -1777,9 +1775,7 @@ impl super::TrapDispatcher {
                             let new = apply_boolean_transfer_8(old, mode, true, fg_idx, bg_idx);
                             bus.write_byte(addr, new);
                         }
-                        ShapeOp::Invert => {
-                            bus.write_byte(addr, invert_indexed_pixel(bus.read_byte(addr)))
-                        }
+                        ShapeOp::Invert => bus.invert_screen_byte(addr),
                     }
                 } else if matches!(pixel_size, 2 | 4) {
                     let bits = u32::from(pixel_size);

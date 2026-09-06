@@ -1160,6 +1160,9 @@ impl MacMemoryBus {
         if (count as i32) <= 0 {
             return;
         }
+        if self.presentation_active() && self.copy_ram_bytes(src, dst, count) {
+            return;
+        }
         let count_usize = count as usize;
         let flat_route = self.route(src, count_usize) == GuestMemoryRoute::Flat
             && self.route(dst, count_usize) == GuestMemoryRoute::Flat;
@@ -2031,6 +2034,13 @@ impl MacMemoryBus {
         {
             return false;
         }
+        if self.presentation_active() {
+            let pixels = self.save_pixel_bytes(src, len as usize);
+            for offset in 0..len {
+                self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| index);
+            }
+            return true;
+        }
         if self.presentation_active()
             || self.route(src, len as usize) != GuestMemoryRoute::Flat
             || self.route(dst, len as usize) != GuestMemoryRoute::Flat
@@ -2092,6 +2102,15 @@ impl MacMemoryBus {
             || !self.is_guest_address_writable(dst, len as usize)
         {
             return false;
+        }
+        if self.presentation_active() {
+            let pixels = self.save_pixel_bytes(src, len as usize);
+            for offset in 0..len {
+                self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| {
+                    map[index as usize]
+                });
+            }
+            return true;
         }
         if self.presentation_active()
             || self.route(src, len as usize) != GuestMemoryRoute::Flat
