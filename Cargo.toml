@@ -38,7 +38,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ab_glyph = "0.2.32"
 ttf-parser = "0.25.1"
-swash = { version = "0.2.10", optional = true, default-features = false, features = ["std", "scale", "render"] }
+skrifa = { version = "0.43.2", optional = true }
+zeno = { version = "0.3.3", optional = true }
 
 # Windowing (optional, for graphical runner)
 winit = { version = "0.30", optional = true }
@@ -55,7 +56,7 @@ libm = "0.2"
 
 [features]
 # Opt-in prototype for issue #673; changes fallback glyphs and text metrics.
-experimental-urw-fonts = ["dep:swash"]
+experimental-urw-fonts = ["dep:skrifa", "dep:zeno"]
 default = ["gui", "jit"]
 gui = [
     "winit",

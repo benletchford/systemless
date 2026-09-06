@@ -37,33 +37,68 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
     Some(faces)
 }
 
+#[derive(Default)]
+struct OutlinePath(Vec<zeno::Command>);
+
+impl skrifa::outline::OutlinePen for OutlinePath {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.0.push(zeno::Command::MoveTo((x, y).into()));
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.0.push(zeno::Command::LineTo((x, y).into()));
+    }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.0
+            .push(zeno::Command::QuadTo((cx, cy).into(), (x, y).into()));
+    }
+    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+        self.0.push(zeno::Command::CurveTo(
+            (cx0, cy0).into(),
+            (cx1, cy1).into(),
+            (x, y).into(),
+        ));
+    }
+    fn close(&mut self) {
+        self.0.push(zeno::Command::Close);
+    }
+}
+
 // Inside Macintosh: Text (1993), pp. 4-7–4-9 and 4-18–4-19:
 // outline fonts generate a strike at the requested point size. At the logical
 // 72-dpi screen, one point is one em pixel. Keep QuickDraw's binary masks and
 // boolean transfer modes; hint before thresholding to retain small stems.
 fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
-    use swash::scale::{Render, ScaleContext, Source};
-    let font = swash::FontRef::from_index(bytes, 0)?;
-    let metrics = font.metrics(&[]).scale(f32::from(size));
-    let advances = font.glyph_metrics(&[]).scale(f32::from(size));
-    let charmap = font.charmap();
-    let mut context = ScaleContext::new();
-    let mut scaler = context
-        .builder(font)
-        .size(f32::from(size))
-        .hint(true)
-        .build();
-    // Darken regular and monospaced strokes enough to survive monochrome
-    // quantization, while keeping already-bold faces' counters open.
-    let ink_expansion = match font_id {
-        FONT_CHICAGO | FONT_LONDON | FONT_CAIRO => 0.10,
-        FONT_MONACO | FONT_COURIER => 0.35,
-        _ => 0.25,
+    use skrifa::{
+        instance::{LocationRef, Size},
+        outline::{DrawSettings, HintingInstance, Target},
+        FontRef, MetadataProvider,
     };
+    let font = FontRef::new(bytes).ok()?;
+    let ppem = Size::new(f32::from(size));
+    let location = LocationRef::default();
+    let metrics = font.metrics(ppem, location);
+    let advances = font.glyph_metrics(ppem, location);
+    let charmap = font.charmap();
+    let outlines = font.outline_glyphs();
+    // The output is a one-bit QuickDraw mask. LCD hinting preserves fractional
+    // stem positions and therefore loses strokes when thresholded. Mono fits
+    // both axes to the pixel grid and returns matching adjusted advances.
+    let hinter = HintingInstance::new(&outlines, ppem, location, Target::Mono).ok()?;
     let mut data = Vec::new();
     let mut glyph = |ch: char| {
-        let id = charmap.map(ch);
-        let advance = advances.advance_width(id).round().clamp(0.0, 255.0) as u8;
+        let id = charmap.map(ch).unwrap_or_default();
+        let mut path = OutlinePath::default();
+        let adjusted = outlines.get(id).and_then(|outline| {
+            outline
+                .draw(DrawSettings::hinted(&hinter, false), &mut path)
+                .ok()
+        });
+        let advance = adjusted
+            .and_then(|metrics| metrics.advance_width)
+            .or_else(|| advances.advance_width(id))
+            .unwrap_or(0.0)
+            .round()
+            .clamp(0.0, 255.0) as u8;
         let mut result = Glyph {
             width: 0,
             height: 0,
@@ -72,18 +107,19 @@ fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
             origin_y: 0,
             data_offset: data.len(),
         };
-        if let Some(image) = Render::new(&[Source::Outline])
-            // A subpixel ink expansion keeps thin stems from falling below
-            // the binary-mask threshold on the logical pixel grid. This is
-            // rasterization only: the font data and advances are unchanged.
-            .embolden(ink_expansion)
-            .render(&mut scaler, id)
-        {
-            result.width = u8::try_from(image.placement.width).expect("bounded URW glyph width");
-            result.height = u8::try_from(image.placement.height).expect("bounded URW glyph height");
-            result.origin_x = i8::try_from(image.placement.left).expect("bounded URW left bearing");
-            result.origin_y = i8::try_from(-image.placement.top).expect("bounded URW top bearing");
-            data.extend(image.data.iter().map(|&alpha| {
+        if !path.0.is_empty() {
+            let mut coverage = Vec::new();
+            let placement = zeno::Mask::new(path.0.as_slice())
+                .origin(zeno::Origin::BottomLeft)
+                .inspect(|format, width, height| {
+                    coverage.resize(format.buffer_size(width, height), 0)
+                })
+                .render_into(&mut coverage, None);
+            result.width = u8::try_from(placement.width).expect("bounded URW glyph width");
+            result.height = u8::try_from(placement.height).expect("bounded URW glyph height");
+            result.origin_x = i8::try_from(placement.left).expect("bounded URW left bearing");
+            result.origin_y = i8::try_from(-placement.top).expect("bounded URW top bearing");
+            data.extend(coverage.iter().map(|&alpha| {
                 if alpha >= MONO_COVERAGE_THRESHOLD {
                     255
                 } else {
@@ -114,7 +150,7 @@ fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
     };
     let ascent = (metrics.ascent.ceil() as i16)
         .max(all().map(|g| -i16::from(g.origin_y)).max().unwrap_or(0));
-    let descent = (metrics.descent.ceil() as i16).max(
+    let descent = ((-metrics.descent).ceil() as i16).max(
         all()
             .map(|g| i16::from(g.origin_y) + i16::from(g.height))
             .max()
@@ -185,6 +221,68 @@ mod tests {
             ..accent.data_offset + usize::from(accent.width) * usize::from(accent.height)]
             .iter()
             .any(|&v| v > 0));
+    }
+
+    #[test]
+    fn monochrome_small_text_keeps_stems_counters_and_baselines() {
+        for family in [FONT_GENEVA, FONT_MONACO] {
+            for size in 9..=12 {
+                let (face, _) = super::face(family, size).unwrap();
+                let h = &face.glyphs[(b'H' - b' ') as usize];
+                let w = usize::from(h.width);
+                let pixels = &face.data[h.data_offset..h.data_offset + w * usize::from(h.height)];
+                let rows = pixels
+                    .chunks_exact(w)
+                    .filter(|row| row.iter().any(|&v| v != 0))
+                    .collect::<Vec<_>>();
+                let stems = (0..w)
+                    .filter(|&x| rows.iter().all(|row| row[x] == 255))
+                    .count();
+                assert!(
+                    stems >= 2,
+                    "{family}/{size}: H must have two unbroken stems"
+                );
+                assert!(h.origin_y < 0);
+                assert!(
+                    i16::from(h.origin_y) + i16::from(h.height) <= 1,
+                    "H must sit above the baseline"
+                );
+
+                let o = &face.glyphs[(b'o' - b' ') as usize];
+                let w = usize::from(o.width);
+                let h = usize::from(o.height);
+                let pixels = &face.data[o.data_offset..o.data_offset + w * h];
+                let mut outside = vec![false; pixels.len()];
+                let mut queue = (0..pixels.len())
+                    .filter(|&i| i < w || i >= w * (h - 1) || i % w == 0 || i % w == w - 1)
+                    .collect::<Vec<_>>();
+                while let Some(i) = queue.pop() {
+                    if outside[i] || pixels[i] != 0 {
+                        continue;
+                    }
+                    outside[i] = true;
+                    if i >= w {
+                        queue.push(i - w);
+                    }
+                    if i + w < pixels.len() {
+                        queue.push(i + w);
+                    }
+                    if i % w != 0 {
+                        queue.push(i - 1);
+                    }
+                    if i % w + 1 < w {
+                        queue.push(i + 1);
+                    }
+                }
+                assert!(
+                    pixels
+                        .iter()
+                        .zip(outside)
+                        .any(|(&ink, outside)| ink == 0 && !outside),
+                    "{family}/{size}: o must retain its enclosed counter"
+                );
+            }
+        }
     }
 
     #[test]
