@@ -2034,15 +2034,16 @@ impl MacMemoryBus {
         {
             return false;
         }
-        if self.presentation_active() {
+        if self.presentation_observes(src, len as usize)
+            || self.presentation_observes(dst, len as usize)
+        {
             let pixels = self.save_pixel_bytes(src, len as usize);
             for offset in 0..len {
                 self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| index);
             }
             return true;
         }
-        if self.presentation_active()
-            || self.route(src, len as usize) != GuestMemoryRoute::Flat
+        if self.route(src, len as usize) != GuestMemoryRoute::Flat
             || self.route(dst, len as usize) != GuestMemoryRoute::Flat
         {
             // Routed aliases can overlap the same backing through unrelated
@@ -2054,12 +2055,9 @@ impl MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none()
-            && !self.presentation_active();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let translated_src = self.range_translates_contiguously(src, len as usize);
         let translated_dst = self.range_translates_contiguously(dst, len as usize);
         let src = translated_src.unwrap_or(src);
@@ -2103,7 +2101,9 @@ impl MacMemoryBus {
         {
             return false;
         }
-        if self.presentation_active() {
+        if self.presentation_observes(src, len as usize)
+            || self.presentation_observes(dst, len as usize)
+        {
             let pixels = self.save_pixel_bytes(src, len as usize);
             for offset in 0..len {
                 self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| {
@@ -2112,8 +2112,7 @@ impl MacMemoryBus {
             }
             return true;
         }
-        if self.presentation_active()
-            || self.route(src, len as usize) != GuestMemoryRoute::Flat
+        if self.route(src, len as usize) != GuestMemoryRoute::Flat
             || self.route(dst, len as usize) != GuestMemoryRoute::Flat
         {
             let mut bytes = self.read_bytes(src, len as usize);
@@ -2123,12 +2122,9 @@ impl MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none()
-            && !self.presentation_active();
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let translated_src = self.range_translates_contiguously(src, len as usize);
         let translated_dst = self.range_translates_contiguously(dst, len as usize);
         let src = translated_src.unwrap_or(src);
@@ -2260,6 +2256,14 @@ impl MacMemoryBus {
             0x0100_0000
         };
         ((translated as u64).saturating_add(len as u64) <= address_space_end).then_some(translated)
+    }
+
+    #[inline]
+    fn presentation_observes(&self, address: u32, len: usize) -> bool {
+        self.presentation.as_ref().is_some_and(|p| {
+            self.range_translates_contiguously(address, len)
+                .is_none_or(|address| p.observes_range(address, len))
+        })
     }
 
     #[inline]
@@ -2627,12 +2631,12 @@ impl MemoryBus for MacMemoryBus {
             && !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, 2);
         #[cfg(not(debug_assertions))]
         let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, 2);
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 2 <= self.ram_size as u64)
         {
@@ -2693,12 +2697,12 @@ impl MemoryBus for MacMemoryBus {
             && !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, 4);
         #[cfg(not(debug_assertions))]
         let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, 4);
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 4 <= self.ram_size as u64)
         {
@@ -2790,11 +2794,11 @@ impl MemoryBus for MacMemoryBus {
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, data.len());
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, data.len());
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(data.len() as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
@@ -2830,11 +2834,11 @@ impl MemoryBus for MacMemoryBus {
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, len as usize);
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, len as usize);
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
@@ -2921,11 +2925,11 @@ impl MemoryBus for MacMemoryBus {
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, len as usize);
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
-            && !self.presentation_active();
+            && !self.presentation_observes(address, len as usize);
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
