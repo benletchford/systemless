@@ -13,7 +13,7 @@ use super::pef::{
     apply_pef_relocations_detailed, instantiate_pef_sections, parse_pef_header,
     parse_pef_imported_symbols, parse_pef_loader_header, parse_pef_reloc_headers,
     parse_pef_sections, pef_reloc_chunk_stream, resolve_pef_imports, PefRelocApplyError,
-    PefRelocContext, PefResolvedImport, SECTION_KIND_CODE, SECTION_KIND_CONSTANT,
+    PefRelocContext, SECTION_KIND_CODE, SECTION_KIND_CONSTANT,
 };
 use super::ApplicationSizeResource;
 use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
@@ -152,6 +152,65 @@ pub use quicktime::*;
 pub use sound::*;
 pub use sprockets::*;
 pub use vfs::*;
+
+#[derive(Debug, Clone, Copy)]
+struct SystemlessPpcImportBindingPolicy;
+
+impl PpcImportBindingPolicy for SystemlessPpcImportBindingPolicy {
+    fn dispatcher_target(&self, library: &str, symbol: &str) -> PpcImportDispatcherTarget {
+        dispatcher_target_for_import(library, symbol)
+    }
+
+    fn fixed_data_address(&self, library: &str, symbol: &str) -> Option<u32> {
+        import_data_address_for(library, symbol)
+    }
+
+    fn is_explicit_hle_library(&self, library: &str) -> bool {
+        ppc_is_explicit_hle_cfm_library(library)
+    }
+}
+
+fn ppc_import_layout() -> PpcImportLayout {
+    PpcImportLayout {
+        capacity: PPC_IMPORT_CAPACITY,
+        tvector_base: PPC_IMPORT_TVECTOR_BASE,
+        trap_base: PPC_IMPORT_TRAP_BASE,
+    }
+}
+
+fn ppc_initial_import_error(error: PpcImportBindingError) -> PpcLoadError {
+    match error {
+        PpcImportBindingError::SymbolIndexOutOfRange {
+            symbol_index,
+            import_count,
+        } => PpcLoadError::ImportBindingOutOfRange {
+            symbol_index,
+            import_count,
+        },
+        PpcImportBindingError::CapacityExceeded {
+            import_count,
+            capacity,
+        } => PpcLoadError::ImportCapacityExceeded {
+            import_count,
+            capacity,
+        },
+        PpcImportBindingError::CountOverflow
+        | PpcImportBindingError::BindingAddressOverflow
+        | PpcImportBindingError::AddressTableOutOfRange => PpcLoadError::AddressOverflow,
+        PpcImportBindingError::RegistryChanged => unreachable!("fresh import plan has no registry"),
+    }
+}
+
+fn ppc_dynamic_import_error(error: PpcImportBindingError) -> i16 {
+    match error {
+        PpcImportBindingError::CountOverflow
+        | PpcImportBindingError::CapacityExceeded { .. }
+        | PpcImportBindingError::AddressTableOutOfRange => PPC_FRAG_NO_MEM,
+        PpcImportBindingError::SymbolIndexOutOfRange { .. }
+        | PpcImportBindingError::BindingAddressOverflow
+        | PpcImportBindingError::RegistryChanged => PPC_FRAG_CORRUPT_ERR,
+    }
+}
 
 pub(crate) fn ppc_initial_process_file_system() -> SharedProcessFileSystem {
     let mut state = ProcessFileSystemState::default();
@@ -3570,25 +3629,6 @@ impl std::ops::DerefMut for PpcLoadedApp {
     }
 }
 
-fn ppc_import_binding_indices(
-    imports: &[PpcImportBinding],
-    import_count: u32,
-) -> Vec<Option<usize>> {
-    let Ok(import_count) = usize::try_from(import_count) else {
-        return Vec::new();
-    };
-    let mut indices = vec![None; import_count];
-    for (binding_index, binding) in imports.iter().enumerate() {
-        let Ok(symbol_index) = usize::try_from(binding.symbol_index) else {
-            continue;
-        };
-        if let Some(slot) = indices.get_mut(symbol_index) {
-            slot.get_or_insert(binding_index);
-        }
-    }
-    indices
-}
-
 fn ppc_hle_import_trace_same_run(
     left: &PpcHleImportTraceEntry,
     right: &PpcHleImportTraceEntry,
@@ -3619,13 +3659,15 @@ fn ppc_set_current_resource_refnum(
 }
 
 impl PpcLoadedApp {
-    pub(crate) fn cfm_symbol_bindings(&mut self) -> PpcCfmSymbolBindings<'_> {
-        PpcCfmSymbolBindings {
-            imports: &mut self.imports,
-            import_count: &mut self.import_count,
-            indices: None,
-            pending: None,
-        }
+    pub(crate) fn cfm_symbol_bindings(
+        &mut self,
+    ) -> impl crate::cfm::CfmSymbolBindings + '_ {
+        PpcPersistedSymbolBindings::new(
+            &mut self.imports,
+            &mut self.import_count,
+            ppc_import_layout(),
+            &SystemlessPpcImportBindingPolicy,
+        )
     }
 
     #[cfg(test)]
@@ -7481,16 +7523,20 @@ impl PpcLoadedApp {
             );
             &mut standalone_memory_manager_borrow
         };
-        let mut imports = std::mem::take(&mut self.imports);
-        let mut import_count = self.import_count;
-        let mut import_binding_indices = ppc_import_binding_indices(&imports, import_count);
-        let q3_start_rendering_import_index = imports
+        let mut import_run_state = PpcImportRunState::from_parts(
+            std::mem::take(&mut self.imports),
+            self.import_count,
+            ppc_import_layout(),
+        );
+        let q3_start_rendering_import_index = import_run_state
+            .bindings()
             .iter()
             .find(|binding| {
                 binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewStartRendering
             })
             .map(|binding| binding.symbol_index);
-        let q3_end_rendering_import_index = imports
+        let q3_end_rendering_import_index = import_run_state
+            .bindings()
             .iter()
             .find(|binding| {
                 binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewEndRendering
@@ -7789,10 +7835,8 @@ impl PpcLoadedApp {
                     clock_cycle_phase,
                     elapsed,
                 );
-                let is_tick_count_import = usize::try_from(index)
-                    .ok()
-                    .and_then(|index| import_binding_indices.get(index).copied().flatten())
-                    .and_then(|binding_index| imports.get(binding_index))
+                let is_tick_count_import = import_run_state
+                    .binding_cloned(index)
                     .is_some_and(|binding| {
                         binding.dispatcher_target == PpcImportDispatcherTarget::TickCount
                     });
@@ -7844,11 +7888,7 @@ impl PpcLoadedApp {
                         );
                     }
                 }
-                let binding = usize::try_from(index)
-                    .ok()
-                    .and_then(|index| import_binding_indices.get(index).copied().flatten())
-                    .and_then(|binding_index| imports.get(binding_index))
-                    .cloned();
+                let binding = import_run_state.binding_cloned(index);
                 let Some(binding) = binding else {
                     unsupported_import_index = Some(index);
                     if trace_ppc {
@@ -8230,9 +8270,7 @@ impl PpcLoadedApp {
                         &mut cfm_connections,
                         &mut cfm_library_fragments,
                         &mut next_cfm_connection_id,
-                        &mut imports,
-                        &mut import_count,
-                        &mut import_binding_indices,
+                        &mut import_run_state,
                         &mut controls,
                         &mut aliases,
                         &mut gworlds,
@@ -8613,8 +8651,7 @@ impl PpcLoadedApp {
         self.dialog_callback_stack = dialog_callback_stack;
         self.apple_events = apple_events;
         self.cfm = standalone_cfm;
-        self.imports = imports;
-        self.import_count = import_count;
+        (self.imports, self.import_count) = import_run_state.into_parts();
         self.controls = controls;
         self.aliases = aliases;
         self.gworlds = gworlds;
@@ -12653,14 +12690,16 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     let loader = parse_pef_loader_header(data).ok_or(PpcLoadError::PefParse)?;
     let resolved_imports = resolve_pef_imports(data).unwrap_or_default();
     let imported_symbols = parse_pef_imported_symbols(data).unwrap_or_default();
-    if imported_symbols.len() > PPC_IMPORT_CAPACITY as usize {
-        return Err(PpcLoadError::ImportCapacityExceeded {
-            import_count: u32::try_from(imported_symbols.len()).unwrap_or(u32::MAX),
-            capacity: PPC_IMPORT_CAPACITY,
-        });
-    }
-    let imports = bind_imports(resolved_imports, imported_symbols.len())?;
-    let import_addrs = import_addresses(&imports, imported_symbols.len())?;
+    let import_plan = PpcImportBindingPlan::prepare(
+        resolved_imports,
+        imported_symbols.len(),
+        0,
+        ppc_import_layout(),
+        &SystemlessPpcImportBindingPolicy,
+    )
+    .map_err(ppc_initial_import_error)?;
+    let import_addrs = import_plan.relocation_addresses().to_vec();
+    let imports = import_plan.into_initial_bindings();
     let mut mapped_sections = map_instantiated_sections(data)?;
     let section_bases = section_bases(&mapped_sections);
     let code_base = first_base_for_kind(&mapped_sections, SECTION_KIND_CODE)
@@ -13188,76 +13227,6 @@ fn map_instantiated_sections(data: &[u8]) -> Result<Vec<MappedSection>, PpcLoadE
     }
 
     Ok(mapped)
-}
-
-fn bind_imports(
-    imports: Vec<PefResolvedImport>,
-    import_count: usize,
-) -> Result<Vec<PpcImportBinding>, PpcLoadError> {
-    bind_imports_at_base(imports, import_count, 0)
-}
-
-fn bind_imports_at_base(
-    imports: Vec<PefResolvedImport>,
-    import_count: usize,
-    symbol_index_base: u32,
-) -> Result<Vec<PpcImportBinding>, PpcLoadError> {
-    let mut bindings = Vec::with_capacity(imports.len());
-    for import in imports {
-        let local_index =
-            usize::try_from(import.symbol_index).map_err(|_| PpcLoadError::AddressOverflow)?;
-        if local_index >= import_count {
-            return Err(PpcLoadError::ImportBindingOutOfRange {
-                symbol_index: import.symbol_index,
-                import_count: u32::try_from(import_count).unwrap_or(u32::MAX),
-            });
-        }
-        let symbol_index = symbol_index_base
-            .checked_add(import.symbol_index)
-            .ok_or(PpcLoadError::AddressOverflow)?;
-        let trap_pc = import_trap_pc(symbol_index)?;
-        let mut dispatcher_target =
-            dispatcher_target_for_import(&import.library_name, &import.symbol_name);
-        // Inside Macintosh: PowerPC System Software (1994), pp. 1-25--1-26:
-        // CFM writes kUnresolvedSymbolAddress (zero) into a soft import's TOC
-        // slot when the symbol is unavailable. A synthetic callable thunk here
-        // incorrectly makes presence checks succeed and lets optional-library
-        // calls fall through to Systemless's unsupported-import halt.
-        let unresolved_weak =
-            import.weak && dispatcher_target == PpcImportDispatcherTarget::Unsupported;
-        let import_data_address =
-            import_data_address_for(&import.library_name, &import.symbol_name);
-        let address = if unresolved_weak {
-            dispatcher_target = PpcImportDispatcherTarget::UnresolvedWeak;
-            0
-        } else if let Some(address) = import_data_address {
-            address
-        } else if import.class == 1 {
-            0
-        } else {
-            import_address_for(symbol_index, import.class)?
-        };
-        bindings.push(PpcImportBinding {
-            library_index: import.library_index,
-            symbol_index,
-            library_name: import.library_name,
-            symbol_name: import.symbol_name,
-            class: import.class,
-            weak: import.weak,
-            address,
-            tvector_address: if import.class == 2
-                && !unresolved_weak
-                && import_data_address.is_none()
-            {
-                Some(address)
-            } else {
-                None
-            },
-            trap_pc,
-            dispatcher_target,
-        });
-    }
-    Ok(bindings)
 }
 
 fn relocation_import_symbol(
@@ -15343,9 +15312,7 @@ fn dispatch_supported_import(
     cfm_connections: &mut Vec<PpcCfmConnection>,
     cfm_library_fragments: &mut Vec<PpcCfmLibraryFragment>,
     next_cfm_connection_id: &mut u32,
-    imports: &mut Vec<PpcImportBinding>,
-    import_count: &mut u32,
-    import_binding_indices: &mut Vec<Option<usize>>,
+    import_run_state: &mut PpcImportRunState,
     controls: &mut Vec<PpcControlRecord>,
     aliases: &mut Vec<PpcAliasRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
@@ -20458,17 +20425,13 @@ fn dispatch_supported_import(
             cfm_connections,
             cfm_library_fragments,
             next_cfm_connection_id,
-            imports,
-            import_count,
-            import_binding_indices,
+            import_run_state,
         )),
         PpcImportDispatcherTarget::FindSymbol => Some(ppc_find_symbol(
             cpu,
             memory,
             cfm_connections,
-            imports,
-            import_count,
-            import_binding_indices,
+            import_run_state,
         )),
         PpcImportDispatcherTarget::CountSymbols | PpcImportDispatcherTarget::GetIndSymbol => {
             // PowerPC System Software (1994), pp. 3-25–3-26. Only the ABI
@@ -20514,9 +20477,7 @@ fn dispatch_supported_import(
             heap_limit,
             cfm_connections,
             next_cfm_connection_id,
-            imports,
-            import_count,
-            import_binding_indices,
+            import_run_state,
         )),
         PpcImportDispatcherTarget::FindFolder => {
             let folder_type = cpu.gpr[4];
@@ -26928,9 +26889,7 @@ fn dispatch_supported_import(
                     heap_limit,
                     cfm_connections,
                     next_cfm_connection_id,
-                    imports,
-                    import_count,
-                    import_binding_indices,
+                    import_run_state,
                     request,
                     selector,
                 ));
@@ -44257,9 +44216,7 @@ fn ppc_prepare_resource_call(
     heap_limit: u32,
     connections: &mut Vec<PpcCfmConnection>,
     next_id: &mut u32,
-    imports: &mut Vec<PpcImportBinding>,
-    import_count: &mut u32,
-    import_indices: &mut Vec<Option<usize>>,
+    import_run_state: &mut PpcImportRunState,
     request: CfmResourcePreparation,
     selector: Option<u32>,
 ) -> PpcImportAction {
@@ -44332,9 +44289,7 @@ fn ppc_prepare_resource_call(
             memory,
             heap_cursor,
             heap_limit,
-            imports,
-            import_count,
-            import_indices,
+            import_run_state,
         )?;
         if prepared.main_addr == 0 {
             return Err(PPC_FRAG_CORRUPT_ERR);
@@ -50404,9 +50359,7 @@ fn ppc_get_shared_library(
     cfm_connections: &mut Vec<PpcCfmConnection>,
     cfm_library_fragments: &mut Vec<PpcCfmLibraryFragment>,
     next_cfm_connection_id: &mut u32,
-    imports: &mut Vec<PpcImportBinding>,
-    import_count: &mut u32,
-    import_binding_indices: &mut Vec<Option<usize>>,
+    import_run_state: &mut PpcImportRunState,
 ) -> PpcImportAction {
     let return_error = |error| PpcImportAction::Return(ppc_i16_result(error));
     let lib_name_ptr = cpu.gpr[3];
@@ -50495,9 +50448,7 @@ fn ppc_get_shared_library(
                     memory,
                     heap_cursor,
                     heap_limit,
-                    imports,
-                    import_count,
-                    import_binding_indices,
+                    import_run_state,
                 ) {
                     Ok(prepared) => prepared,
                     Err(error) => return return_error(error),
@@ -50575,85 +50526,11 @@ fn ppc_get_shared_library(
     PpcImportAction::Return(ppc_complete_cfm_load(operation, 0, memory, cfm_connections))
 }
 
-/// Borrowed native gateway staging; the process CFM service owns lookup policy.
-pub(crate) struct PpcCfmSymbolBindings<'a> {
-    imports: &'a mut Vec<PpcImportBinding>,
-    import_count: &'a mut u32,
-    indices: Option<&'a mut Vec<Option<usize>>>,
-    pending: Option<PpcImportBinding>,
-}
-
-impl crate::cfm::CfmSymbolBindings for PpcCfmSymbolBindings<'_> {
-    fn prepare(
-        &mut self,
-        library: &str,
-        symbol: &str,
-    ) -> Result<(u32, u8), crate::cfm::CfmSymbolError> {
-        use crate::cfm::CfmSymbolError;
-        self.pending = None;
-        if !ppc_is_explicit_hle_cfm_library(library) {
-            return Err(CfmSymbolError::SymbolNotFound);
-        }
-        if let Some(address) = import_data_address_for(library, symbol) {
-            return Ok((address, 1));
-        }
-        if let Some(binding) = self.imports.iter().find(|binding| {
-            binding.library_name == library
-                && binding.symbol_name == symbol
-                && binding.class == 2
-                && binding.dispatcher_target != PpcImportDispatcherTarget::Unsupported
-        }) {
-            return Ok((binding.address, binding.class));
-        }
-        let target = dispatcher_target_for_import(library, symbol);
-        if target == PpcImportDispatcherTarget::Unsupported
-            || *self.import_count >= PPC_IMPORT_CAPACITY
-        {
-            return Err(CfmSymbolError::SymbolNotFound);
-        }
-        let symbol_index = *self.import_count;
-        let address =
-            import_address_for(symbol_index, 2).map_err(|_| CfmSymbolError::NoAddressSpace)?;
-        let trap_pc = import_trap_pc(symbol_index).map_err(|_| CfmSymbolError::NoAddressSpace)?;
-        self.pending = Some(PpcImportBinding {
-            library_index: u32::MAX,
-            symbol_index,
-            library_name: library.into(),
-            symbol_name: symbol.into(),
-            class: 2,
-            weak: false,
-            address,
-            tvector_address: Some(address),
-            trap_pc,
-            dispatcher_target: target,
-        });
-        Ok((address, 2))
-    }
-
-    fn commit(&mut self) {
-        let Some(binding) = self.pending.take() else {
-            return;
-        };
-        let symbol_index = binding.symbol_index as usize;
-        let binding_index = self.imports.len();
-        self.imports.push(binding);
-        if let Some(indices) = self.indices.as_deref_mut() {
-            if indices.len() <= symbol_index {
-                indices.resize(symbol_index + 1, None);
-            }
-            indices[symbol_index] = Some(binding_index);
-        }
-        *self.import_count += 1;
-    }
-}
-
 fn ppc_find_symbol(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     cfm_connections: &[PpcCfmConnection],
-    imports: &mut Vec<PpcImportBinding>,
-    import_count: &mut u32,
-    import_binding_indices: &mut Vec<Option<usize>>,
+    import_run_state: &mut PpcImportRunState,
 ) -> PpcImportAction {
     use crate::cfm::{CfmFindSymbol, CfmMemory};
     // PowerPC System Software (1994), pp. 3-24–3-25: decode the native ABI
@@ -50664,16 +50541,12 @@ fn ppc_find_symbol(
         address: cpu.gpr[5],
         class: cpu.gpr[6],
     };
-    let mut bindings = PpcCfmSymbolBindings {
-        imports,
-        import_count,
-        indices: Some(import_binding_indices),
-        pending: None,
-    };
+    let mut operation =
+        import_run_state.symbol_binding_operation(&SystemlessPpcImportBindingPolicy);
     let result = request.complete(
         cfm_connections,
         memory,
-        Some(&mut bindings),
+        Some(&mut operation),
         |memory, writes| memory.publish_cfm_outputs(writes),
     );
     PpcImportAction::Return(ppc_i16_result(
@@ -50690,9 +50563,7 @@ fn ppc_get_mem_fragment(
     heap_limit: u32,
     cfm_connections: &mut Vec<PpcCfmConnection>,
     next_cfm_connection_id: &mut u32,
-    imports: &mut Vec<PpcImportBinding>,
-    import_count: &mut u32,
-    import_binding_indices: &mut Vec<Option<usize>>,
+    import_run_state: &mut PpcImportRunState,
 ) -> PpcImportAction {
     // Inside Macintosh: PowerPC System Software (1994), pp. 3-21--3-22:
     // GetMemFragment binds an in-memory PEF and returns a connection ID plus
@@ -50773,9 +50644,7 @@ fn ppc_get_mem_fragment(
                 memory,
                 heap_cursor,
                 heap_limit,
-                imports,
-                import_count,
-                import_binding_indices,
+                import_run_state,
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => return PpcImportAction::Return(ppc_i16_result(error)),
@@ -50789,7 +50658,7 @@ fn ppc_get_mem_fragment(
                     prepared.term_addr,
                     memory.read_u32_be(prepared.main_addr).unwrap_or(0),
                     memory.read_u32_be(prepared.main_addr.wrapping_add(4)).unwrap_or(0),
-                    *import_count,
+                    import_run_state.total_count(),
                 );
             }
             let connection = PpcCfmConnection {
@@ -50969,29 +50838,24 @@ fn ppc_prepare_mem_fragment(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
-    imports: &mut Vec<PpcImportBinding>,
-    import_count: &mut u32,
-    import_binding_indices: &mut Vec<Option<usize>>,
+    import_run_state: &mut PpcImportRunState,
 ) -> Result<crate::cfm::fragment::CfmPreparedFragment, i16> {
     let imported_symbols = parse_pef_imported_symbols(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
     let resolved_imports = resolve_pef_imports(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
-    let local_import_count = u32::try_from(imported_symbols.len()).map_err(|_| PPC_FRAG_NO_MEM)?;
-    let next_import_count = import_count
-        .checked_add(local_import_count)
-        .ok_or(PPC_FRAG_NO_MEM)?;
-    if next_import_count > PPC_IMPORT_CAPACITY {
-        return Err(PPC_FRAG_NO_MEM);
-    }
-
-    let new_bindings =
-        bind_imports_at_base(resolved_imports, imported_symbols.len(), *import_count)
-            .map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-    let import_addrs =
-        import_addresses(&new_bindings, imported_symbols.len()).map_err(|_| PPC_FRAG_NO_MEM)?;
+    let import_plan = import_run_state
+        .plan_resolved(
+            resolved_imports,
+            imported_symbols.len(),
+            &SystemlessPpcImportBindingPolicy,
+        )
+        .map_err(ppc_dynamic_import_error)?;
+    let pending = import_run_state
+        .stage_append(import_plan)
+        .map_err(ppc_dynamic_import_error)?;
 
     let plan = crate::cfm::fragment::CfmFragmentPlan::prepare(
         fragment,
-        &import_addrs,
+        pending.relocation_addresses(),
         *heap_cursor,
         heap_limit,
         PPC_HEAP_ALIGNMENT,
@@ -51010,9 +50874,7 @@ fn ppc_prepare_mem_fragment(
         return Err(PPC_FRAG_NO_ADDR_SPACE);
     }
     *heap_cursor = next_heap_cursor;
-    imports.extend(new_bindings);
-    *import_count = next_import_count;
-    *import_binding_indices = ppc_import_binding_indices(imports, *import_count);
+    pending.commit();
     Ok(plan.into_fragment())
 }
 
@@ -91005,36 +90867,6 @@ fn ppc_resolve_callback_target(
     })
 }
 
-fn import_addresses(
-    bindings: &[PpcImportBinding],
-    import_count: usize,
-) -> Result<Vec<u32>, PpcLoadError> {
-    let mut addrs = vec![0; import_count];
-    let symbol_index_base = bindings.first().map_or(0, |binding| binding.symbol_index);
-    for binding in bindings {
-        let local_index = binding
-            .symbol_index
-            .checked_sub(symbol_index_base)
-            .and_then(|index| usize::try_from(index).ok())
-            .ok_or(PpcLoadError::AddressOverflow)?;
-        let slot = addrs
-            .get_mut(local_index)
-            .ok_or(PpcLoadError::AddressOverflow)?;
-        *slot = binding.address;
-    }
-    Ok(addrs)
-}
-
-fn import_address_for(index: u32, class: u8) -> Result<u32, PpcLoadError> {
-    match class {
-        2 => PPC_IMPORT_TVECTOR_BASE
-            .checked_add(index.checked_mul(8).ok_or(PpcLoadError::AddressOverflow)?)
-            .ok_or(PpcLoadError::AddressOverflow),
-        0 | 4 => import_trap_pc(index),
-        _ => Ok(0),
-    }
-}
-
 fn import_data_address_for(library_name: &str, symbol_name: &str) -> Option<u32> {
     match (library_name, symbol_name) {
         ("StdCLib", "_IntEnv") => Some(PPC_IMPORT_DATA_BASE),
@@ -91116,12 +90948,6 @@ pub(crate) fn ppc_initial_stdio_streams() -> HashMap<u32, PpcStdioStreamRecord> 
             )
         })
         .collect()
-}
-
-fn import_trap_pc(index: u32) -> Result<u32, PpcLoadError> {
-    PPC_IMPORT_TRAP_BASE
-        .checked_add(index.checked_mul(4).ok_or(PpcLoadError::AddressOverflow)?)
-        .ok_or(PpcLoadError::AddressOverflow)
 }
 
 fn import_tvector_bytes(count: usize) -> Vec<u8> {
@@ -91207,6 +91033,7 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::loader::pef::PefResolvedImport;
 
     // Low-level allocator tests borrow adapter fields independently. Keep the
     // cursor canonical by publishing the temporary value when each call ends.
@@ -104287,7 +104114,7 @@ pub(crate) mod tests {
 
     #[test]
     fn import_bindings_preserve_symbol_metadata_and_synthetic_addresses() {
-        let bindings = bind_imports(
+        let bindings = PpcImportBindingPlan::prepare(
             vec![
                 PefResolvedImport {
                     library_index: 0,
@@ -104307,8 +104134,12 @@ pub(crate) mod tests {
                 },
             ],
             2,
+            0,
+            ppc_import_layout(),
+            &SystemlessPpcImportBindingPolicy,
         )
-        .unwrap();
+        .unwrap()
+        .into_initial_bindings();
 
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings[0].library_name, "InterfaceLib");
@@ -105092,7 +104923,7 @@ pub(crate) mod tests {
 
     #[test]
     fn import_bindings_classify_supported_memory_manager_imports() {
-        let bindings = bind_imports(
+        let bindings = PpcImportBindingPlan::prepare(
             vec![
                 PefResolvedImport {
                     library_index: 0,
@@ -105224,8 +105055,12 @@ pub(crate) mod tests {
                 },
             ],
             16,
+            0,
+            ppc_import_layout(),
+            &SystemlessPpcImportBindingPolicy,
         )
-        .unwrap();
+        .unwrap()
+        .into_initial_bindings();
 
         assert_eq!(
             bindings[0].dispatcher_target,
@@ -105359,7 +105194,7 @@ pub(crate) mod tests {
 
     #[test]
     fn import_bindings_reject_symbol_indexes_outside_import_table() {
-        let error = bind_imports(
+        let error = PpcImportBindingPlan::prepare(
             vec![PefResolvedImport {
                 library_index: 0,
                 symbol_index: 3,
@@ -105369,7 +105204,11 @@ pub(crate) mod tests {
                 weak: false,
             }],
             1,
+            0,
+            ppc_import_layout(),
+            &SystemlessPpcImportBindingPolicy,
         )
+        .map_err(ppc_initial_import_error)
         .unwrap_err();
 
         assert_eq!(
@@ -105379,6 +105218,105 @@ pub(crate) mod tests {
                 import_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn initial_import_plan_preserves_reachable_loader_errors() {
+        let result = load_pef_application(&synthetic_pef_with_loader(
+            synthetic_loader_with_repeated_imports(PPC_IMPORT_CAPACITY + 1),
+        ));
+        let error = match result {
+            Ok(_) => panic!("over-capacity launch unexpectedly returned an app"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error,
+            PpcLoadError::ImportCapacityExceeded {
+                import_count: PPC_IMPORT_CAPACITY + 1,
+                capacity: PPC_IMPORT_CAPACITY,
+            }
+        );
+    }
+
+    #[test]
+    fn overlapping_library_ranges_preserve_duplicate_import_projection() {
+        let pef = synthetic_pef_with_loader_and_data(
+            synthetic_loader_with_overlapping_library_ranges(),
+            &[0; 8],
+        );
+        let resolved = resolve_pef_imports(&pef).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].symbol_index, 0);
+        assert_eq!(resolved[1].symbol_index, 0);
+        assert_ne!(resolved[0].library_name, resolved[1].library_name);
+
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(loaded.imports.len(), 2);
+        let first = loaded.import_binding(0).unwrap();
+        assert_eq!(first.library_name, "InterfaceLib");
+        assert_eq!(first.address, PPC_IMPORT_TVECTOR_BASE);
+        assert_eq!(loaded.imports[1].address, PPC_IMPORT_STD_ERRNO);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(PPC_IMPORT_STD_ERRNO)
+        );
+    }
+
+    #[test]
+    fn import_binding_error_maps_preserve_loader_and_fragment_results() {
+        assert_eq!(
+            ppc_initial_import_error(PpcImportBindingError::SymbolIndexOutOfRange {
+                symbol_index: 3,
+                import_count: 1,
+            }),
+            PpcLoadError::ImportBindingOutOfRange {
+                symbol_index: 3,
+                import_count: 1,
+            }
+        );
+        assert_eq!(
+            ppc_initial_import_error(PpcImportBindingError::CapacityExceeded {
+                import_count: 9,
+                capacity: 8,
+            }),
+            PpcLoadError::ImportCapacityExceeded {
+                import_count: 9,
+                capacity: 8,
+            }
+        );
+        for error in [
+            PpcImportBindingError::CountOverflow,
+            PpcImportBindingError::BindingAddressOverflow,
+            PpcImportBindingError::AddressTableOutOfRange,
+        ] {
+            assert_eq!(ppc_initial_import_error(error), PpcLoadError::AddressOverflow);
+        }
+        for (error, expected) in [
+            (PpcImportBindingError::CountOverflow, PPC_FRAG_NO_MEM),
+            (
+                PpcImportBindingError::CapacityExceeded {
+                    import_count: 9,
+                    capacity: 8,
+                },
+                PPC_FRAG_NO_MEM,
+            ),
+            (PpcImportBindingError::AddressTableOutOfRange, PPC_FRAG_NO_MEM),
+            (
+                PpcImportBindingError::SymbolIndexOutOfRange {
+                    symbol_index: 3,
+                    import_count: 1,
+                },
+                PPC_FRAG_CORRUPT_ERR,
+            ),
+            (
+                PpcImportBindingError::BindingAddressOverflow,
+                PPC_FRAG_CORRUPT_ERR,
+            ),
+            (PpcImportBindingError::RegistryChanged, PPC_FRAG_CORRUPT_ERR),
+        ] {
+            assert_eq!(ppc_dynamic_import_error(error), expected);
+        }
     }
 
     #[test]
@@ -107484,7 +107422,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ppc_import_binding_indices_preserve_sparse_first_match_lookup() {
+    fn import_run_state_preserves_sparse_first_match_lookup() {
         let first = PpcImportBinding {
             library_index: 0,
             symbol_index: 52,
@@ -107503,13 +107441,16 @@ pub(crate) mod tests {
         let mut out_of_range = first.clone();
         out_of_range.symbol_index = 999;
 
-        let imports = vec![first, duplicate, out_of_range];
-        let indices = ppc_import_binding_indices(&imports, 64);
+        let state = PpcImportRunState::from_parts(
+            vec![first.clone(), duplicate, out_of_range],
+            64,
+            ppc_import_layout(),
+        );
 
-        assert_eq!(indices.len(), 64);
-        assert_eq!(indices[52], Some(0));
-        assert!(indices.iter().take(52).all(Option::is_none));
-        assert!(indices.iter().skip(53).all(Option::is_none));
+        assert_eq!(state.binding_cloned(52), Some(first));
+        assert_eq!(state.binding_cloned(51), None);
+        assert_eq!(state.binding_cloned(53), None);
+        assert_eq!(state.binding_cloned(999), None);
     }
 
     #[test]
@@ -113393,9 +113334,8 @@ pub(crate) mod tests {
             }];
             let mut connections = Vec::new();
             let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
-            let mut imports = Vec::new();
-            let mut import_count = 0;
-            let mut indices = Vec::new();
+            let mut import_run_state =
+                PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
             let mut cursor = PPC_HEAP_BASE;
             let mut cpu = PpcCpu::new();
             cpu.gpr[1] = 0x8000;
@@ -113429,9 +113369,7 @@ pub(crate) mod tests {
                             PPC_HEAP_BASE + 0x10000,
                             &mut connections,
                             &mut next_connection,
-                            &mut imports,
-                            &mut import_count,
-                            &mut indices,
+                            &mut import_run_state,
                         )
                     } else {
                         ppc_get_shared_library(
@@ -113444,9 +113382,7 @@ pub(crate) mod tests {
                             &mut connections,
                             &mut libraries,
                             &mut next_connection,
-                            &mut imports,
-                            &mut import_count,
-                            &mut indices,
+                            &mut import_run_state,
                         )
                     }
                 };
@@ -113454,6 +113390,11 @@ pub(crate) mod tests {
             assert_eq!(load!(&mut cpu), PpcImportAction::Continue);
             let id = connections[0].id;
             assert!(calls.is_cfm_load_pending(CfmLoadId(id)));
+            assert_eq!(import_run_state.total_count(), 1);
+            assert_eq!(
+                import_run_state.binding_cloned(0).unwrap().symbol_name,
+                "TestImport"
+            );
             assert_eq!(memory.read_u32_be(0x6000), Some(0xa5a5_a5a5));
             assert_eq!(memory.read_u32_be(0x6004), Some(0xa5a5_a5a5));
             let mut recursive = request.clone();
@@ -113461,6 +113402,7 @@ pub(crate) mod tests {
                 load!(&mut recursive),
                 PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP))
             );
+            assert_eq!(import_run_state.total_count(), 1);
             assert_eq!(connections.len(), 1);
             assert_eq!(manager.native_ptr_records().len(), 1);
             memory.add_region(0x5100, b"\x05inner".to_vec());
@@ -113474,6 +113416,15 @@ pub(crate) mod tests {
             let inner_id = connections[1].id;
             assert_ne!(inner_id, id);
             assert!(calls.is_cfm_load_pending(CfmLoadId(inner_id)));
+            assert_eq!(import_run_state.total_count(), 2);
+            assert_eq!(
+                import_run_state.binding_cloned(0).unwrap().symbol_name,
+                "TestImport"
+            );
+            assert_eq!(
+                import_run_state.binding_cloned(1).unwrap().symbol_name,
+                "TestImport"
+            );
             inner.pc = PPC_GUEST_CALL_RETURN_PC;
             inner.gpr[3] = 1;
             assert!(calls.complete_powerpc_resuming_load(
@@ -113519,6 +113470,7 @@ pub(crate) mod tests {
                     &mut connections
                 )
             ));
+            assert_eq!(import_run_state.total_count(), 2);
             assert_eq!((cpu.pc, cpu.gpr[2]), (0x4000, 0x2200));
             assert!(!calls.is_cfm_load_pending(CfmLoadId(id)));
             assert!(manager.native_ptr_records().is_empty());
@@ -113528,6 +113480,7 @@ pub(crate) mod tests {
                 assert_eq!(memory.read_u32_be(0x6000), Some(0xa5a5_a5a5));
                 cpu = request.clone();
                 assert_eq!(load!(&mut cpu), PpcImportAction::Continue);
+                assert_eq!(import_run_state.total_count(), 3);
                 assert!(connections[0].id > id);
                 cpu.pc = PPC_GUEST_CALL_RETURN_PC;
                 cpu.gpr[3] = 1;
@@ -113542,8 +113495,12 @@ pub(crate) mod tests {
                     )
                 ));
                 assert!(connections.is_empty());
+                assert_eq!(import_run_state.total_count(), 3);
             } else {
                 assert_eq!(cpu.gpr[3], 0);
+                assert_eq!(import_run_state.total_count(), 2);
+                assert!(import_run_state.binding_cloned(0).is_some());
+                assert!(import_run_state.binding_cloned(1).is_some());
                 assert_eq!(memory.read_u32_be(0x6000), Some(id));
                 assert_eq!(memory.read_u32_be(0x6004), Some(connections[0].main_addr));
                 cpu = request.clone();
@@ -113593,6 +113550,8 @@ pub(crate) mod tests {
             let mut cursor = PPC_HEAP_BASE;
             let mut connections = Vec::new();
             let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+            let mut import_run_state =
+                PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
             assert_eq!(
                 ppc_get_shared_library(
                     &mut cpu,
@@ -113604,9 +113563,7 @@ pub(crate) mod tests {
                     &mut connections,
                     &mut libraries,
                     &mut next_connection,
-                    &mut Vec::new(),
-                    &mut 0,
-                    &mut Vec::new()
+                    &mut import_run_state
                 ),
                 PpcImportAction::Continue
             );
@@ -114085,7 +114042,7 @@ pub(crate) mod tests {
             loaded.cpu.gpr[3] = pointer + 8;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.unsupported_import_index, None);
-            assert_eq!(loaded.cpu.gpr[3], 0);
+                assert_eq!(loaded.cpu.gpr[3], 0);
             assert_eq!(loaded.memory.read_u32_be(pointer + 8), Some(0));
             let mut expected = before.unwrap();
             expected.connections.remove(0);
@@ -114125,17 +114082,19 @@ pub(crate) mod tests {
         loaded.cpu.gpr[5] = address_ptr;
         loaded.cpu.gpr[6] = class_ptr;
         let import_len_before = loaded.imports.len();
-        let mut import_binding_indices =
-            ppc_import_binding_indices(&loaded.imports, loaded.import_count);
+        let mut import_run_state = PpcImportRunState::from_parts(
+            std::mem::take(&mut loaded.imports),
+            loaded.import_count,
+            ppc_import_layout(),
+        );
 
         let action = ppc_find_symbol(
             &loaded.cpu,
             &mut loaded.memory,
             &loaded.cfm.as_ref().unwrap().connections,
-            &mut loaded.imports,
-            &mut loaded.import_count,
-            &mut import_binding_indices,
+            &mut import_run_state,
         );
+        (loaded.imports, loaded.import_count) = import_run_state.into_parts();
 
         assert_eq!(action, PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)));
         assert_eq!(loaded.memory.read_u32_be(address_ptr), Some(0x0312_3456));
@@ -114183,6 +114142,21 @@ pub(crate) mod tests {
                         }]
                     },
                 });
+            if dynamic {
+                loaded
+                    .cfm
+                    .as_mut()
+                    .unwrap()
+                    .connections
+                    .push(PpcCfmConnection {
+                        id: 8,
+                        library_name: "StdCLib".into(),
+                        main_addr: 0,
+                        init_addr: 0,
+                        term_addr: 0,
+                        exports: vec![],
+                    });
+            }
             let original_count = loaded.import_count;
             let original_len = loaded.imports.len();
             let mut returned = None;
@@ -114201,6 +114175,26 @@ pub(crate) mod tests {
                     assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0xa5a5_a5a5));
                     assert_eq!(loaded.import_count, original_count);
                     assert_eq!(loaded.imports.len(), original_len);
+                    if dynamic {
+                        write_ppc_pstring(&mut loaded.memory, OUTPUT + 32, b"errno");
+                        loaded.cpu.pc = loaded.entry_pc;
+                        loaded.cpu.lr = PPC_HALT_PC;
+                        loaded.cpu.gpr[3] = 8;
+                        loaded.cpu.gpr[4] = OUTPUT + 32;
+                        loaded.cpu.gpr[5] = OUTPUT + 16;
+                        loaded.cpu.gpr[6] = OUTPUT + 24;
+                        let unrelated = loaded.run_with_hle_imports(128);
+                        assert_eq!(unrelated.handled_import_count, 1);
+                        assert_eq!(unrelated.unsupported_import_index, None);
+                        assert_eq!(loaded.cpu.gpr[3], 0);
+                        assert_eq!(
+                            loaded.memory.read_u32_be(OUTPUT + 16),
+                            Some(PPC_IMPORT_STD_ERRNO)
+                        );
+                        assert_eq!(loaded.import_count, original_count);
+                        assert_eq!(loaded.imports.len(), original_len);
+                        write_ppc_pstring(&mut loaded.memory, OUTPUT + 32, b"TickCount");
+                    }
                 } else {
                     assert_eq!(loaded.cpu.gpr[3], 0);
                     let address = loaded.memory.read_u32_be(OUTPUT).unwrap();
@@ -114236,6 +114230,7 @@ pub(crate) mod tests {
                     Ok((vector, 2))
                 );
                 crate::cfm::CfmSymbolBindings::commit(&mut bindings);
+                drop(bindings);
                 assert_eq!(loaded.import_count, PPC_IMPORT_CAPACITY);
                 assert_eq!(loaded.imports.len(), original_len + 1);
             }
@@ -114270,22 +114265,23 @@ pub(crate) mod tests {
         loaded.cpu.gpr[6] = class_ptr;
         let import_len_before = loaded.imports.len();
         let import_count_before = loaded.import_count;
-        let mut import_binding_indices =
-            ppc_import_binding_indices(&loaded.imports, loaded.import_count);
-
         for (symbol, expected_address) in [
             (b"errno".as_slice(), PPC_IMPORT_STD_ERRNO),
             (b"MacOSErr".as_slice(), PPC_IMPORT_STD_MAC_OS_ERR),
         ] {
             write_ppc_pstring(&mut loaded.memory, symbol_ptr, symbol);
+            let mut import_run_state = PpcImportRunState::from_parts(
+                std::mem::take(&mut loaded.imports),
+                loaded.import_count,
+                ppc_import_layout(),
+            );
             let action = ppc_find_symbol(
                 &loaded.cpu,
                 &mut loaded.memory,
                 &loaded.cfm.as_ref().unwrap().connections,
-                &mut loaded.imports,
-                &mut loaded.import_count,
-                &mut import_binding_indices,
+                &mut import_run_state,
             );
+            (loaded.imports, loaded.import_count) = import_run_state.into_parts();
 
             assert_eq!(action, PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)));
             assert_eq!(
@@ -114345,9 +114341,8 @@ pub(crate) mod tests {
             let before_allocator = manager.native_allocator_snapshot();
             let before_update = manager.native_allocator_update();
             let mut cursor = HEAP;
-            let mut imports = Vec::new();
-            let mut import_count = 0;
-            let mut indices = Vec::new();
+            let mut import_run_state =
+                PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
             assert_eq!(
                 ppc_prepare_mem_fragment(
                     &fragment,
@@ -114355,9 +114350,7 @@ pub(crate) mod tests {
                     &mut memory,
                     &mut cursor,
                     LIMIT,
-                    &mut imports,
-                    &mut import_count,
-                    &mut indices
+                    &mut import_run_state
                 ),
                 Err(PPC_FRAG_NO_ADDR_SPACE),
                 "refusal {refusal}"
@@ -114373,9 +114366,9 @@ pub(crate) mod tests {
             assert_eq!(manager.native_allocator_snapshot(), before_allocator);
             assert_eq!(manager.native_allocator_update(), before_update);
             assert_eq!(cursor, HEAP);
-            assert!(imports.is_empty());
-            assert_eq!(import_count, 0);
-            assert!(indices.is_empty());
+            assert!(import_run_state.bindings().is_empty());
+            assert_eq!(import_run_state.total_count(), 0);
+            assert_eq!(import_run_state.binding_cloned(0), None);
 
             memory.add_region(HEAP, vec![0xa5; 0x1000]);
             manager.publish_native_allocator(heap_state(HEAP, LIMIT), &[], &[], &[]);
@@ -114385,17 +114378,17 @@ pub(crate) mod tests {
                 &mut memory,
                 &mut cursor,
                 LIMIT,
-                &mut imports,
-                &mut import_count,
-                &mut indices,
+                &mut import_run_state,
             )
             .unwrap();
             assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor);
             assert!(cursor > HEAP);
-            assert_eq!(import_count, 1);
-            assert_eq!(imports.len(), 1);
-            assert_eq!(indices, vec![Some(0)]);
-            assert_eq!(imports[0].symbol_name, "TickCount");
+            assert_eq!(import_run_state.total_count(), 1);
+            assert_eq!(import_run_state.bindings().len(), 1);
+            assert_eq!(
+                import_run_state.binding_cloned(0).unwrap().symbol_name,
+                "TickCount"
+            );
             assert_eq!(memory.read_u32_be(prepared.main_addr), Some(HEAP));
             assert_eq!(classic.read_long(prepared.main_addr), HEAP);
             assert_eq!(
@@ -114498,6 +114491,30 @@ pub(crate) mod tests {
                 ..
             }
         ));
+
+        let committed_imports = loaded.imports.clone();
+        let committed_count = loaded.import_count;
+        let assert_registry = |loaded: &PpcLoadedApp| {
+            assert_eq!(loaded.imports, committed_imports);
+            assert_eq!(loaded.import_count, committed_count);
+            assert_eq!(loaded.import_binding(1).unwrap().symbol_name, "TickCount");
+        };
+        assert_registry(&loaded);
+
+        loaded.cpu.pc = PPC_IMPORT_TRAP_BASE + committed_count * 4;
+        let unsupported = loaded.run_with_hle_imports(1);
+        assert_eq!(unsupported.unsupported_import_index, Some(committed_count));
+        assert_registry(&loaded);
+
+        install_test_unmapped_load(&mut loaded);
+        let fault = loaded.run_with_hle_imports(64);
+        assert!(matches!(fault.result, PpcRunResult::MemoryFault { .. }));
+        assert_registry(&loaded);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        let cycle_limit = loaded.run_with_hle_imports(0);
+        assert_eq!(cycle_limit.result, PpcRunResult::CycleLimit { cycles: 0 });
+        assert_registry(&loaded);
     }
 
     #[test]
@@ -178971,8 +178988,11 @@ pub(crate) mod tests {
                 let mut recursive_cpu = loaded.cpu.clone();
                 let before_cpu = recursive_cpu.clone();
                 let mut cursor = loaded.heap_cursor();
-                let mut binding_indices =
-                    ppc_import_binding_indices(&loaded.imports, loaded.import_count);
+                let mut import_run_state = PpcImportRunState::from_parts(
+                    std::mem::take(&mut loaded.imports),
+                    loaded.import_count,
+                    ppc_import_layout(),
+                );
                 let mut manager = loaded.process_memory_manager.0.borrow_mut();
                 let limit = manager.native_heap_state().unwrap().heap_limit;
                 let cfm = loaded.cfm.as_mut().unwrap();
@@ -178986,14 +179006,13 @@ pub(crate) mod tests {
                         limit,
                         &mut cfm.connections,
                         &mut cfm.next_connection_id,
-                        &mut loaded.imports,
-                        &mut loaded.import_count,
-                        &mut binding_indices,
+                        &mut import_run_state,
                         request,
                         None
                     ),
                     PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP))
                 );
+                (loaded.imports, loaded.import_count) = import_run_state.into_parts();
                 assert_eq!(recursive_cpu.gpr, before_cpu.gpr);
                 assert_eq!(recursive_cpu.pc, before_cpu.pc);
                 assert!(loaded.guest_calls.is_resource_preparation_pending(record));
@@ -180146,6 +180165,63 @@ pub(crate) mod tests {
             write_u16(&mut bytes, reloc_instr_offset + index * 2, *chunk);
         }
 
+        bytes[strings_offset..].copy_from_slice(&strings);
+        bytes
+    }
+
+    fn synthetic_loader_with_repeated_imports(import_count: u32) -> Vec<u8> {
+        let mut strings = Vec::new();
+        let library_name = push_c_string(&mut strings, b"InterfaceLib");
+        let symbol_name = push_c_string(&mut strings, b"TickCount");
+        let symbol_count = usize::try_from(import_count).unwrap();
+        let strings_offset = 56 + 24 + symbol_count * 4;
+        let mut bytes = vec![0u8; strings_offset + strings.len()];
+
+        write_i32(&mut bytes, 0, 1);
+        write_i32(&mut bytes, 8, -1);
+        write_i32(&mut bytes, 16, -1);
+        write_u32(&mut bytes, 24, 1);
+        write_u32(&mut bytes, 28, import_count);
+        write_u32(&mut bytes, 36, strings_offset as u32);
+        write_u32(&mut bytes, 40, strings_offset as u32);
+        write_u32(&mut bytes, 56, library_name);
+        write_u32(&mut bytes, 56 + 12, import_count);
+        for index in 0..symbol_count {
+            write_symbol(&mut bytes, 56 + 24 + index * 4, 2, symbol_name);
+        }
+        bytes[strings_offset..].copy_from_slice(&strings);
+        bytes
+    }
+
+    fn synthetic_loader_with_overlapping_library_ranges() -> Vec<u8> {
+        let mut strings = Vec::new();
+        let first_library = push_c_string(&mut strings, b"InterfaceLib");
+        let second_library = push_c_string(&mut strings, b"StdCLib");
+        let symbol = push_c_string(&mut strings, b"errno");
+        let reloc_header_offset = 56 + 2 * 24 + 4;
+        let reloc_instr_offset = reloc_header_offset + 12;
+        let strings_offset = reloc_instr_offset + 2;
+        let mut bytes = vec![0u8; strings_offset + strings.len()];
+
+        write_i32(&mut bytes, 0, 1);
+        write_i32(&mut bytes, 8, -1);
+        write_i32(&mut bytes, 16, -1);
+        write_u32(&mut bytes, 24, 2);
+        write_u32(&mut bytes, 28, 1);
+        write_u32(&mut bytes, 32, 1);
+        write_u32(&mut bytes, 36, reloc_instr_offset as u32);
+        write_u32(&mut bytes, 40, strings_offset as u32);
+
+        write_u32(&mut bytes, 56, first_library);
+        write_u32(&mut bytes, 56 + 12, 1);
+        write_u32(&mut bytes, 56 + 24, second_library);
+        write_u32(&mut bytes, 56 + 24 + 12, 1);
+        write_symbol(&mut bytes, 56 + 2 * 24, 2, symbol);
+
+        write_u16(&mut bytes, reloc_header_offset, 1);
+        write_u32(&mut bytes, reloc_header_offset + 4, 1);
+        write_u32(&mut bytes, reloc_header_offset + 8, 0);
+        write_u16(&mut bytes, reloc_instr_offset, sm_index_reloc(0x30, 0));
         bytes[strings_offset..].copy_from_slice(&strings);
         bytes
     }
