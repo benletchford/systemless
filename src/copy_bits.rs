@@ -35,6 +35,36 @@ pub(crate) trait CopyBitsMemory {
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
+    fn capture_copy_detail(
+        &self,
+        address: u32,
+        pixels: &mut SavedPixels,
+        offset: usize,
+        len: usize,
+    ) {
+        self.presentation()
+            .capture_detail(pixels, offset, address, len);
+    }
+    fn write_copy_pixels(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels,
+        offset: usize,
+        len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> Option<()> {
+        let mut row = pixels[offset..offset + len].to_vec();
+        if let Some(palette) = palette {
+            for pixel in &mut row {
+                *pixel = palette[*pixel as usize];
+            }
+        }
+        self.write_bytes(address, &row)?;
+        self.presentation()
+            .restore_copy_detail(pixels, offset, address, len, palette);
+        Some(())
+    }
+
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()> {
         self.read_bytes_into(address, bytes)
     }
@@ -259,7 +289,7 @@ impl RowCopy<'_> {
             }
         }
         let mut pixels: SavedPixels = pixels.into();
-        if depth == 8 {
+        if matches!(depth, 8 | 16 | 32) {
             for (row, (source, _)) in addresses.iter().enumerate() {
                 memory.capture_copy_detail(*source, &mut pixels, row * row_len, row_len);
             }
