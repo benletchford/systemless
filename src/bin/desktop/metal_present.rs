@@ -1236,6 +1236,156 @@ mod tests {
     };
     use systemless::display::CursorImage;
 
+    /// Exercise the production shader on the GPU, including its final reduction
+    /// to drawable pixels. No AppKit window or unlocked desktop is required.
+    fn render_rgba(source: &image::RgbaImage, width: u32, height: u32) -> image::RgbaImage {
+        use super::*;
+        autoreleasepool(|_| {
+            let device = unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) }
+                .expect("Metal device required");
+            let library = device
+                .newLibraryWithSource_options_error(
+                    ns_string!(include_str!("metal_present.metal")),
+                    None,
+                )
+                .expect("compile presentation shader");
+            let descriptor = MTLRenderPipelineDescriptor::new();
+            descriptor.setVertexFunction(
+                library
+                    .newFunctionWithName(ns_string!("raster_vertex"))
+                    .as_deref(),
+            );
+            descriptor.setFragmentFunction(
+                library
+                    .newFunctionWithName(ns_string!("raster_fragment"))
+                    .as_deref(),
+            );
+            unsafe {
+                descriptor
+                    .colorAttachments()
+                    .objectAtIndexedSubscript(0)
+                    .setPixelFormat(MTLPixelFormat::RGBA8Unorm);
+            }
+            let pipeline = device
+                .newRenderPipelineStateWithDescriptor_error(&descriptor)
+                .unwrap();
+            let texture = |w, h, usage| {
+                let desc = unsafe {
+                    MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                        MTLPixelFormat::RGBA8Unorm,
+                        w as usize,
+                        h as usize,
+                        false,
+                    )
+                };
+                desc.setStorageMode(MTLStorageMode::Shared);
+                desc.setUsage(usage);
+                device.newTextureWithDescriptor(&desc).unwrap()
+            };
+            let input = texture(source.width(), source.height(), MTLTextureUsage::ShaderRead);
+            let output = texture(width, height, MTLTextureUsage::RenderTarget);
+            let region = |w, h| MTLRegion {
+                origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+                size: objc2_metal::MTLSize {
+                    width: w as usize,
+                    height: h as usize,
+                    depth: 1,
+                },
+            };
+            unsafe {
+                input.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    region(source.width(), source.height()),
+                    0,
+                    NonNull::new(source.as_ptr().cast_mut().cast()).unwrap(),
+                    source.width() as usize * 4,
+                );
+            }
+            let pass = unsafe { MTLRenderPassDescriptor::new() };
+            let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+            color.setTexture(Some(&output));
+            color.setLoadAction(MTLLoadAction::Clear);
+            color.setStoreAction(MTLStoreAction::Store);
+            let queue = device.newCommandQueue().unwrap();
+            let command = queue.commandBuffer().unwrap();
+            let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+            encoder.setRenderPipelineState(&pipeline);
+            encoder.setViewport(MTLViewport {
+                originX: 0.0,
+                originY: 0.0,
+                width: width as f64,
+                height: height as f64,
+                znear: 0.0,
+                zfar: 1.0,
+            });
+            unsafe {
+                encoder.setFragmentTexture_atIndex(Some(&input), 0);
+                encoder.drawPrimitives_vertexStart_vertexCount(
+                    MTLPrimitiveType::TriangleStrip,
+                    0,
+                    4,
+                );
+            }
+            encoder.endEncoding();
+            command.commit();
+            unsafe {
+                command.waitUntilCompleted();
+            }
+            let mut result = image::RgbaImage::new(width, height);
+            unsafe {
+                output.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                    NonNull::new(result.as_mut_ptr().cast()).unwrap(),
+                    width as usize * 4,
+                    region(width, height),
+                    0,
+                );
+            }
+            result
+        })
+    }
+
+    #[test]
+    fn minification_retains_thin_strokes_between_sample_centers() {
+        let source = image::RgbaImage::from_fn(8, 8, |x, _| {
+            let shade = if x % 2 == 0 { 0 } else { 255 };
+            image::Rgba([shade, shade, shade, 255])
+        });
+        for (width, expected) in [
+            (2, vec![128, 128]),
+            (3, vec![96, 128, 159]),
+            (5, vec![96, 96, 128, 159, 159]),
+        ] {
+            let result = render_rgba(&source, width, 3);
+            // Exact area averages retain alternating one-pixel strokes at
+            // integral and fractional reductions; allow UNorm rounding error.
+            for (x, _, pixel) in result.enumerate_pixels() {
+                assert!(
+                    pixel[0].abs_diff(expected[x as usize]) <= 1,
+                    "lost coverage at width {width}, column {x}"
+                );
+                assert_eq!(pixel[3], 255);
+            }
+        }
+        let enlarged = render_rgba(&source, 16, 16);
+        for (x, y, pixel) in enlarged.enumerate_pixels() {
+            assert_eq!(pixel, source.get_pixel(x / 2, y / 2));
+        }
+    }
+
+    #[test]
+    #[ignore = "writes actual Metal output; set SYSTEMLESS_METAL_FONT_CAPTURE"]
+    fn capture_showcase_at_mac_window_size() {
+        let path = std::env::var_os("SYSTEMLESS_METAL_FONT_CAPTURE").expect("capture output path");
+        let source = image::load_from_memory(include_bytes!(
+            "../../../tests/toolbox-showcase/outline-fonts/first-paint/textedit-fresh.png"
+        ))
+        .unwrap()
+        .into_rgba8();
+        // Native menus hide the guest's 20-row menu bar. The reported window
+        // displays the remaining 800x580 guest area at 960x696 physical pixels.
+        let source = image::imageops::crop_imm(&source, 0, 80, 3200, 2320).to_image();
+        render_rgba(&source, 960, 696).save(path).unwrap();
+    }
+
     #[test]
     fn viewport_scales_continuously_and_centers_letterboxing() {
         assert_eq!(
