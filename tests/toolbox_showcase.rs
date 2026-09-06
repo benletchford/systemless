@@ -388,7 +388,22 @@ fn assert_resource_browser_snapshot(runner: &mut FixtureRunner, loaded_id: Optio
     }
 }
 
+fn prepare_review_presentation(runner: &mut FixtureRunner) {
+    let d = runner.dispatcher();
+    let mode = d.screen_mode;
+    let palette =
+        systemless::display::rgba_palette_from_clut_with_gamma(&d.device_clut, &d.device_gamma)
+            .map(|word| {
+                let [r, g, b, _] = word.to_le_bytes();
+                [r, g, b]
+            });
+    runner.bus_mut().prepare_outline_presentation(mode, palette);
+}
+
 fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
+    if std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some() && !runner.is_powerpc_app() {
+        prepare_review_presentation(runner);
+    }
     runner.composite_frame();
     let screen_mode = runner.dispatcher().screen_mode;
     let (_, _, width, height, _) = screen_mode;
@@ -419,6 +434,24 @@ fn write_rgb(path: &Path, width: u32, height: u32, rgb: Vec<u8>) {
 
 fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
     let (width, height, actual) = rendered_rgb(runner);
+    if let Some(directory) = std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR") {
+        assert!(
+            !runner.is_powerpc_app(),
+            "4× presentation requires the 68k slice"
+        );
+        let (w, h, rgb, glyphs) = runner.bus().outline_presentation_rgb().unwrap();
+        assert_eq!((w, h), (width * 4, height * 4));
+        assert!(glyphs > 0, "review capture must contain real outline draws");
+        let guest = image::RgbImage::from_raw(width, height, actual.clone()).unwrap();
+        assert_ne!(
+            &rgb,
+            image::imageops::resize(&guest, w, h, image::imageops::FilterType::Nearest).as_raw(),
+            "review capture must not merely enlarge guest pixels: {filename}"
+        );
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        write_rgb(&directory.join(filename), w, h, rgb);
+    }
     let reference = reference_path(runner.is_powerpc_app(), filename);
 
     if update_references() {
@@ -1062,6 +1095,10 @@ fn test_toolbox_showcase() {
     );
 
     init_game(&mut runner, &app);
+    if std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some() {
+        assert!(!powerpc, "4× review gallery requires the 68k slice");
+        prepare_review_presentation(&mut runner);
+    }
     assert_eq!(
         runner.is_powerpc_app(),
         powerpc,
