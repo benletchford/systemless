@@ -1109,6 +1109,18 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
             })
     }
 
+    /// MenuSelect calls its no-argument hook repeatedly while held. A pending
+    /// definition must return before another callback can take execution.
+    /// Macintosh Toolbox Essentials (1992), p. 3-116.
+    pub(crate) fn should_invoke_menu_hook(&self, mouse_down: bool) -> bool {
+        self.kind == MenuTrackingKind::MenuBar
+            && mouse_down
+            && self
+                .active_definition()
+                .and_then(MenuDefinitionTracking::pending_invocation)
+                .is_none()
+    }
+
     pub(crate) fn active_definition(&self) -> Option<&MenuDefinitionTracking> {
         match self.active_definition_pane()? {
             MenuDefinitionPane::Root => self.definition.as_ref(),

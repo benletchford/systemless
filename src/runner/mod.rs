@@ -1492,7 +1492,6 @@ const DIALOG_FILTER_TRAMPOLINE_OFFSET: u32 = 0x40;
 const DIALOG_FILTER_EVENT_OFFSET: u32 = 0x80;
 // 2-byte scratch where the filter trampoline writes its Boolean return value.
 const DIALOG_FILTER_RESULT_OFFSET: u32 = 0x96;
-const MENU_HOOK_TRAMPOLINE_OFFSET: u32 = 0xA0;
 const DIALOG_CALLBACK_SCRATCH_SIZE: u32 = 0xC0;
 /// Compact Mac video hardware refreshes at approximately 60.15 Hz.
 pub const DEFAULT_VBL_HZ: f64 = 60.15;
@@ -1833,7 +1832,7 @@ pub struct FixtureRunner {
     /// Guest-memory trampoline used to invoke File Manager asynchronous
     /// completion procedures.
     file_completion_trampoline: u32,
-    /// Systemless-owned storage for dialog and MenuHook callback trampolines.
+    /// Systemless-owned storage for dialog callback trampolines.
     /// This must not overlap the architectural low-memory trap tables.
     dialog_callback_scratch_base: u32,
     /// Guest-memory address of the dialog userItem draw proc trampoline (26 bytes).
@@ -1842,9 +1841,6 @@ pub struct FixtureRunner {
     /// Guest-memory address of the ModalDialog filter proc trampoline.
     /// Allocated once on first use and reused for all callback invocations.
     dialog_filter_trampoline: u32,
-    /// Guest-memory address of the MenuSelect MenuHook trampoline.
-    /// Allocated once on first use and reused for all callback invocations.
-    menu_hook_trampoline: u32,
     /// Guest-memory address of a scratch EventRecord passed to ModalDialog filters.
     dialog_filter_event: u32,
     /// Last dialog/tick pair that received a synthetic ModalDialog null event.
@@ -2037,7 +2033,6 @@ impl FixtureRunner {
             dialog_callback_scratch_base,
             dialog_draw_trampoline: 0,
             dialog_filter_trampoline: 0,
-            menu_hook_trampoline: 0,
             dialog_filter_event: 0,
             dialog_filter_last_null_event_tick: None,
             dialog_filter_last_update_event_tick: None,
@@ -10363,86 +10358,69 @@ impl FixtureRunner {
     }
 
     fn fire_menu_hook_proc(&mut self, opcode: u16) -> bool {
-        if self.active_interrupt_callback.is_some() || (opcode & !0x0400) != 0xA93D {
+        if self.active_interrupt_callback.is_some() || (opcode & !0x0400) != 0xa93d {
             return false;
         }
-        if self.process_context.menu_tracking().is_none() || self.bus.read_byte(0x0172) != 0x00 {
+        if !self
+            .process_context
+            .menu_tracking()
+            .as_ref()
+            .is_some_and(|tracking| {
+                tracking.should_invoke_menu_hook(self.bus.read_byte(0x0172) == 0)
+            })
+        {
             return false;
         }
-
-        // MenuHook ($0A30)
-        // Address of a no-argument routine that MenuSelect calls repeatedly
-        // while the mouse button is down.
-        // PROCEDURE MyMenuHook;
-        // Inside Macintosh Volume I, I-356; Inside Macintosh Volume III, III-446
-        let hook_addr = self.bus.read_long(0x0A30);
-        let Some(call_addr) = self.resolve_dialog_draw_proc_addr(hook_addr) else {
+        let pointer = self.bus.read_long(0x0a30);
+        let Some(procedure) = crate::guest_procedure::resolve_guest_procedure(
+            &mut self.bus,
+            pointer,
+            0,
+            None,
+            GuestIsa::M68k,
+            GuestIsa::M68k,
+        ) else {
             return false;
         };
-
-        // Trampoline (22 bytes):
-        //   +0:  MOVEM.L D0-D3/A0-A3,-(SP)   ; 48E7 F0F0
-        //   +4:  JSR     hook_addr            ; 4EB9 xxxx xxxx
-        //   +10: MOVEA.L #savedRegsSP,A7      ; 4FF9 xxxx xxxx
-        //   +16: MOVEM.L (SP)+,D0-D3/A0-A3   ; 4CDF 0F0F
-        //   +20: RTS                          ; 4E75
-        if self.menu_hook_trampoline == 0 {
-            let tramp = self.dialog_callback_scratch_base() + MENU_HOOK_TRAMPOLINE_OFFSET;
-            self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
-            self.bus.write_word(tramp + 2, 0xF0F0); // D0-D3/A0-A3
-            self.bus.write_word(tramp + 4, 0x4EB9); // JSR abs.L
-                                                    // +6..+9: hook_addr
-            self.bus.write_word(tramp + 10, 0x4FF9); // MOVEA.L #imm,A7
-                                                     // +12..+15: savedRegsSP
-            self.bus.write_word(tramp + 16, 0x4CDF); // MOVEM.L (SP)+,regs
-            self.bus.write_word(tramp + 18, 0x0F0F); // D0-D3/A0-A3
-            self.bus.write_word(tramp + 20, 0x4E75); // RTS
-            self.menu_hook_trampoline = tramp;
+        if procedure.proc_info != 0 {
+            return false;
         }
-
-        let tramp = self.menu_hook_trampoline;
-        self.bus.write_long(tramp + 6, call_addr);
-
-        let current_pc = self.m68k.cpu.read_reg(Register::PC);
+        let target = crate::guest_call::GuestCallTarget {
+            isa: procedure.isa,
+            entry: procedure.entry,
+            rtoc: procedure.rtoc,
+        };
+        self.dispatcher.preserve_menu_callback_port(&self.bus);
         let sp = self.m68k.cpu.read_reg(Register::A7);
-        let d_regs = [
-            self.m68k.cpu.read_reg(Register::D0),
-            self.m68k.cpu.read_reg(Register::D1),
-            self.m68k.cpu.read_reg(Register::D2),
-            self.m68k.cpu.read_reg(Register::D3),
-            self.m68k.cpu.read_reg(Register::D4),
-            self.m68k.cpu.read_reg(Register::D5),
-            self.m68k.cpu.read_reg(Register::D6),
-            self.m68k.cpu.read_reg(Register::D7),
-        ];
-        let a_regs = [
-            self.m68k.cpu.read_reg(Register::A0),
-            self.m68k.cpu.read_reg(Register::A1),
-            self.m68k.cpu.read_reg(Register::A2),
-            self.m68k.cpu.read_reg(Register::A3),
-            self.m68k.cpu.read_reg(Register::A4),
-            self.m68k.cpu.read_reg(Register::A5),
-            self.m68k.cpu.read_reg(Register::A6),
+        if procedure.isa == GuestIsa::PowerPc {
+            return self.dispatcher.guest_calls.begin_m68k_to_powerpc(
+                target,
+                crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
+                self.m68k.cpu.read_reg(Register::PC),
+                sp,
+                None,
+            );
+        }
+        let Some(frame) = crate::execution_m68k::M68kMenuHookFrame::new(procedure.entry, sp) else {
+            return false;
+        };
+        if !self.bus.is_guest_address_mapped(frame.entry - 66, 114) {
+            return false;
+        }
+        let return_pc = frame.entry + 28;
+        if !self.dispatcher.guest_calls.begin_m68k_with_operation(
+            target,
+            return_pc,
             sp,
-        ];
-        let ccr = self.m68k.cpu.core.get_ccr();
-        let sr = self.m68k.cpu.core.get_sr();
-        let new_sp = sp.wrapping_sub(4);
-        let saved_regs_sp = new_sp.wrapping_sub(32);
-        self.bus.write_long(tramp + 12, saved_regs_sp);
-        self.bus.write_long(new_sp, current_pc);
-        self.m68k.cpu.write_reg(Register::A7, new_sp);
-        self.active_interrupt_callback = Some(ActiveInterruptCallback {
-            source: ActiveInterruptCallbackSource::MenuHook,
-            resume_pc: current_pc,
-            resume_sp: sp,
-            d_regs,
-            a_regs,
-            sr,
-            ccr,
-            restore_port: None,
-        });
-        self.m68k.cpu.write_reg(Register::PC, tramp);
+            Some(frame.entry),
+            None,
+        ) {
+            return false;
+        }
+        self.bus.write_bytes(frame.entry, &frame.image);
+        self.bus.write_long(frame.entry - 4, return_pc);
+        self.m68k.cpu.write_reg(Register::A7, frame.entry - 4);
+        self.m68k.cpu.write_reg(Register::PC, frame.entry);
         true
     }
 
@@ -16336,12 +16314,92 @@ mod tests {
     fn classic_menu_wait_resumes_without_refiring_new_trap_patch() {
         for auto_pop in [false, true] {
             for custom in [false, true] {
-                run_menu_patch_during_tracking(auto_pop, custom);
+                run_menu_patch_during_tracking(auto_pop, custom, false, false);
             }
         }
     }
 
-    fn run_menu_patch_during_tracking(auto_pop: bool, custom: bool) {
+    #[test]
+    fn native_menu_hook_runs_classic_guest_code_and_releases_ownership() {
+        use crate::loader::ppc::tests::native_menu_hook_fixture;
+        use crate::memory::globals::addr;
+        for cancel in [false, true] {
+            let (mut native, _) = native_menu_hook_fixture();
+            native.cpu.gpr[3] = (10 << 16) | 12;
+            native.memory.write_u16_be(addr::MENU_FLASH, 0).unwrap();
+            let original_sp = native.cpu.gpr[1];
+            let original_return = native.cpu.lr;
+            let app = LoadedApp::from_ppc(native);
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.set_ui_theme(UiThemeId::ClassicSystem7);
+            runner.init_app(&app);
+            let code = 0x0030_8000;
+            let marker = code + 0x100;
+            for (index, word) in [
+                0x42a7, // CLR.L -(SP): inner result
+                0x2f3c,
+                0x01f4,
+                0x01f4, // inner MenuSelect outside the menu bar
+                0xa93d,
+                0x23df,
+                ((marker + 4) >> 16) as u16,
+                (marker + 4) as u16,
+                0x52b9,
+                (marker >> 16) as u16,
+                marker as u16,
+                0x4e75,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                runner.bus.write_word(code + index as u32 * 2, word);
+            }
+            runner.bus.write_long(marker + 4, u32::MAX);
+            runner.bus.write_long(0x0a30, code);
+            runner.push_canonical_mouse_down(10, 12);
+            for _ in 0..8 {
+                assert!(runner.run_steps(128, None).1);
+            }
+            assert!(
+                runner.bus.read_long(marker) > 0,
+                "native MenuSelect invoked the classic hook"
+            );
+            assert!(runner.process_context.menu_tracking().is_some());
+            assert_eq!(
+                runner.bus.read_long(marker + 4),
+                0,
+                "nested no-hit MenuSelect returned independently"
+            );
+            if cancel {
+                runner.push_canonical_mouse_up(500, 500);
+            } else {
+                runner.push_canonical_mouse_up(28, 20);
+            }
+            for _ in 0..32 {
+                if !runner.run_steps(128, None).1 {
+                    break;
+                }
+            }
+            assert!(runner.is_halted());
+            assert!(runner.process_context.menu_tracking().is_none());
+            assert!(runner.dispatcher.guest_calls.is_empty());
+            let native = runner.native.application_mut().unwrap();
+            assert_eq!(native.cpu.pc, original_return);
+            assert_eq!(native.cpu.gpr[1], original_sp);
+            assert_eq!(native.cpu.gpr[3], if cancel { 0 } else { (128 << 16) | 1 });
+        }
+    }
+
+    #[test]
+    fn classic_menu_hook_uses_owned_stack_frame_and_restores_registers() {
+        for auto_pop in [false, true] {
+            for native_hook in [false, true] {
+                run_menu_patch_during_tracking(auto_pop, false, true, native_hook);
+            }
+        }
+    }
+
+    fn run_menu_patch_during_tracking(auto_pop: bool, custom: bool, hook: bool, native_hook: bool) {
         use crate::memory::globals::addr;
         let ClassicPowerPcMdefFixture {
             mut runner,
@@ -16393,6 +16451,65 @@ mod tests {
         runner.bus.write_word(parameters + 2, 16);
         runner.bus.write_long(parameters + 4, 0);
         runner.m68k.cpu.write_reg(Register::A7, stack);
+        let hook_marker = runner.bus.alloc(4);
+        if hook {
+            let code = runner.bus.alloc(24);
+            runner.bus.write_word(code, 0x7e63); // MOVEQ #99,D7
+            runner.bus.write_word(code + 2, 0x2c7c); // MOVEA.L #value,A6
+            runner.bus.write_long(code + 4, 0x12345678);
+            runner.bus.write_word(code + 8, 0x52b9); // ADDQ.L #1,marker
+            runner.bus.write_long(code + 10, hook_marker);
+            runner.bus.write_word(code + 14, 0x4e75);
+            runner.bus.write_long(0x0a30, code);
+            if native_hook {
+                use crate::guest_procedure::{
+                    ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+                    ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA,
+                    ROUTINE_RECORD_FLAGS_OFFSET, ROUTINE_RECORD_ISA_OFFSET,
+                    ROUTINE_RECORD_POWERPC_ISA, ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+                };
+                let native_code = runner.bus.alloc(28);
+                for (index, word) in [
+                    0x3d00_0000 | (hook_marker >> 16),
+                    0x6108_0000 | (hook_marker & 0xffff),
+                    0x8128_0000,
+                    0x3929_0001,
+                    0x9128_0000,
+                    0x4e80_0020,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    runner.bus.write_long(native_code + index as u32 * 4, word);
+                }
+                let descriptor = runner.bus.alloc(64);
+                let tvector = descriptor + 48;
+                let record = descriptor + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+                runner
+                    .bus
+                    .write_word(descriptor, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP);
+                runner
+                    .bus
+                    .write_byte(descriptor + 2, ROUTINE_DESCRIPTOR_VERSION);
+                runner.bus.write_byte(
+                    record + ROUTINE_RECORD_ISA_OFFSET,
+                    ROUTINE_RECORD_POWERPC_ISA,
+                );
+                runner.bus.write_word(
+                    record + ROUTINE_RECORD_FLAGS_OFFSET,
+                    ROUTINE_FLAG_USE_NATIVE_ISA,
+                );
+                runner
+                    .bus
+                    .write_long(record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, tvector);
+                runner.bus.write_long(tvector, native_code);
+                runner.bus.write_long(tvector + 4, 0);
+                runner.bus.write_long(0x0a30, descriptor);
+            }
+
+            runner.m68k.cpu.write_reg(Register::D7, 0x77777777);
+            runner.m68k.cpu.write_reg(Register::A6, 0x66666666);
+        }
         runner.push_canonical_mouse_down(10, 16);
 
         for _ in 0..8 {
@@ -16457,6 +16574,14 @@ mod tests {
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), parameters + 4);
         assert_eq!(*runner.dispatcher.current_port, original_port);
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
+        if hook {
+            assert!(runner.bus.read_long(hook_marker) > 0, "the guest hook ran");
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D7), 0x77777777);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A6), 0x66666666);
+            assert!(runner.dispatcher.guest_calls.is_empty());
+            assert!(runner.active_interrupt_callback.is_none());
+        }
+
         if auto_pop {
             runner.bus.write_long(stack, return_pc);
         }
