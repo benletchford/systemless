@@ -1453,6 +1453,27 @@ fn draw_debug_text_rgba(
     }
 }
 
+fn debug_glyph_pixels(ch: char, mut paint: impl FnMut(i32, i32)) {
+    use crate::quickdraw::fonts::{get_font_face_or_default, style::FONT_MONACO};
+    let face = get_font_face_or_default(FONT_MONACO, 9);
+    let code = if ch.is_ascii() && !ch.is_ascii_control() {
+        ch as usize
+    } else {
+        b'?' as usize
+    };
+    let glyph = &face.glyphs[code - 32];
+    for row in 0..glyph.height as usize {
+        for col in 0..glyph.width as usize {
+            if face.data[glyph.data_offset + row * glyph.width as usize + col] != 0 {
+                paint(
+                    col as i32 + glyph.origin_x as i32,
+                    row as i32 + glyph.origin_y as i32 + 7,
+                );
+            }
+        }
+    }
+}
+
 fn draw_debug_char_argb(
     pixels: &mut [u32],
     width: usize,
@@ -1462,22 +1483,12 @@ fn draw_debug_char_argb(
     ch: char,
     color: u32,
 ) {
-    let glyph = debug_glyph(ch.to_ascii_uppercase());
-    for (row, bits) in glyph.iter().enumerate() {
-        let gy = y + row;
-        if gy >= height {
-            break;
+    debug_glyph_pixels(ch, |dx, dy| {
+        let (gx, gy) = (x as i32 + dx, y as i32 + dy);
+        if gx >= 0 && gy >= 0 && gx < width as i32 && gy < height as i32 {
+            pixels[gy as usize * width + gx as usize] = color;
         }
-        for col in 0..5 {
-            let gx = x + col;
-            if gx >= width {
-                continue;
-            }
-            if ((bits >> (4 - col)) & 1) != 0 {
-                pixels[gy * width + gx] = color;
-            }
-        }
-    }
+    });
 }
 
 fn draw_debug_char_rgba(
@@ -1489,153 +1500,13 @@ fn draw_debug_char_rgba(
     ch: char,
     color: [u8; 4],
 ) {
-    let glyph = debug_glyph(ch.to_ascii_uppercase());
-    for (row, bits) in glyph.iter().enumerate() {
-        let gy = y + row;
-        if gy >= height {
-            break;
+    debug_glyph_pixels(ch, |dx, dy| {
+        let (gx, gy) = (x as i32 + dx, y as i32 + dy);
+        if gx >= 0 && gy >= 0 && gx < width as i32 && gy < height as i32 {
+            let idx = (gy as usize * width + gx as usize) * 4;
+            pixels[idx..idx + 4].copy_from_slice(&color);
         }
-        for col in 0..5 {
-            let gx = x + col;
-            if gx >= width {
-                continue;
-            }
-            if ((bits >> (4 - col)) & 1) != 0 {
-                let idx = (gy * width + gx) * 4;
-                pixels[idx..idx + 4].copy_from_slice(&color);
-            }
-        }
-    }
-}
-
-fn debug_glyph(ch: char) -> [u8; 7] {
-    match ch {
-        'A' => [
-            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'B' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
-        ],
-        'C' => [
-            0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
-        ],
-        'D' => [
-            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
-        ],
-        'E' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
-        ],
-        'F' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'G' => [
-            0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
-        ],
-        'H' => [
-            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
-        ],
-        'I' => [
-            0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        'J' => [
-            0b00001, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110,
-        ],
-        'K' => [
-            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
-        ],
-        'L' => [
-            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
-        ],
-        'M' => [
-            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
-        ],
-        'N' => [
-            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
-        ],
-        'O' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'P' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
-        ],
-        'Q' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
-        ],
-        'R' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
-        ],
-        'S' => [
-            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        'T' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'U' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
-        ],
-        'V' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
-        ],
-        'W' => [
-            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
-        ],
-        'X' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
-        ],
-        'Y' => [
-            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
-        ],
-        'Z' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
-        ],
-        '0' => [
-            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
-        ],
-        '1' => [
-            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
-        ],
-        '2' => [
-            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
-        ],
-        '3' => [
-            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
-        ],
-        '4' => [
-            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
-        ],
-        '5' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
-        ],
-        '6' => [
-            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
-        ],
-        '7' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
-        ],
-        '8' => [
-            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
-        ],
-        '9' => [
-            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
-        ],
-        ' ' => [0, 0, 0, 0, 0, 0, 0],
-        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
-        ',' => [0, 0, 0, 0, 0b01100, 0b01100, 0b01000],
-        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
-        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
-        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
-        '/' => [
-            0b00001, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b10000,
-        ],
-        '[' => [
-            0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110,
-        ],
-        ']' => [
-            0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110,
-        ],
-        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
-        _ => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
-    }
+    });
 }
 
 /// Convert a 16-bit Mac CLUT entry to 0xAARRGGBB.

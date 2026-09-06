@@ -11,7 +11,7 @@ use crate::menu_manager::{
     standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
     standard_menu_title_advance, TrackedMenuPaneView,
 };
-use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
+use crate::quickdraw::fonts::{style::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
@@ -1850,15 +1850,15 @@ impl super::TrapDispatcher {
         let clip_left = i32::from(clip_left.max(0));
         let clip_bottom = i32::from(clip_bottom.min(screen_height));
         let clip_right = i32::from(clip_right.min(screen_width));
-        #[cfg(feature = "experimental-urw-fonts")]
         bus.begin_outline_glyph(
             glyph,
             data,
             gx - i16::from(glyph.origin_x),
             gy - i16::from(glyph.origin_y),
             false,
+            None,
+            None,
         );
-        #[cfg(feature = "experimental-urw-fonts")]
         if let Some(p) = &mut bus.presentation {
             if let Some((top, left, bottom, right)) = p.glyph_bounds() {
                 for py in top.max(clip_top)..bottom.min(clip_bottom) {
@@ -1876,7 +1876,6 @@ impl super::TrapDispatcher {
         let col_start = (clip_left - i32::from(gx)).max(0);
         let col_end = (clip_right - i32::from(gx)).min(gw as i32);
         if col_start >= col_end {
-            #[cfg(feature = "experimental-urw-fonts")]
             bus.end_outline_glyph();
             return;
         }
@@ -1901,7 +1900,6 @@ impl super::TrapDispatcher {
             }
             bus.write_bytes(start, &span);
         }
-        #[cfg(feature = "experimental-urw-fonts")]
         bus.end_outline_glyph();
     }
 
@@ -5316,9 +5314,16 @@ mod redraw_chrome_tests {
 
     #[test]
     fn menu_bar_title_baseline_tracks_live_height() {
-        assert_eq!(TrapDispatcher::menu_bar_title_baseline(12), 11);
-        assert_eq!(TrapDispatcher::menu_bar_title_baseline(20), 14);
-        assert_eq!(TrapDispatcher::menu_bar_title_baseline(30), 19);
+        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+        for height in [12, 20, 30] {
+            let baseline = TrapDispatcher::menu_bar_title_baseline(height);
+            let top = baseline - metrics.ascent;
+            let bottom = height - baseline - metrics.descent;
+            assert!(
+                (top - bottom).abs() <= 1,
+                "title must be vertically centered"
+            );
+        }
     }
 
     fn set_window_structure_rect(
@@ -5535,8 +5540,8 @@ mod redraw_chrome_tests {
             "precondition: the kiosk pass should fill the exposed left margin"
         );
         assert_eq!(
-            bus.read_byte(screen_base + 108 * row_bytes + 60),
-            0,
+            disp.device_clut[bus.read_byte(screen_base + 108 * row_bytes + 60) as usize],
+            [0xFFFF; 3],
             "the live popup's white interior should remain above the black stage"
         );
         assert_eq!(screen_width, 800, "test fixture assumes an 800px screen");

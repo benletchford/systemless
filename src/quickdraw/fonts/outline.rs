@@ -1,25 +1,22 @@
-//! Experimental bundled outlines. See urw/README.md for provenance.
+//! Shared rasterization and caching for bundled and guest TrueType outlines.
+use super::bundled::bytes;
 use super::*;
 
 type Faces = (&'static FontFace, &'static MacRomanFace);
 static FACES: LazyLock<Mutex<HashMap<(i16, i16), Faces>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn bytes(font_id: i16) -> Option<&'static [u8]> {
-    Some(match font_id {
-        FONT_CHICAGO => include_bytes!("urw/NimbusSans-Bold.ttf"),
-        FONT_APPLICATION | FONT_GENEVA | FONT_HELVETICA => {
-            include_bytes!("urw/NimbusSans-Regular.ttf")
-        }
-        FONT_MONACO | FONT_COURIER => include_bytes!("urw/NimbusMonoPS-Regular.ttf"),
-        FONT_NEWYORK | FONT_TIMES => include_bytes!("urw/NimbusRoman-Regular.ttf"),
-        FONT_PALATINO => include_bytes!("urw/P052-Roman.ttf"),
-        FONT_VENICE => include_bytes!("urw/Z003-MediumItalic.ttf"),
-        FONT_LONDON => include_bytes!("urw/C059-Bold.ttf"),
-        FONT_CAIRO => include_bytes!("urw/URWGothic-Demi.ttf"),
-        _ => return None,
-    })
+// Stable glyph descriptors identify their outline source without scanning faces.
+#[derive(Clone, Copy)]
+struct Source {
+    bytes: &'static [u8],
+    size: i16,
+    id: skrifa::GlyphId,
 }
+static SOURCES: LazyLock<Mutex<HashMap<usize, Source>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static MASKS: LazyLock<Mutex<HashMap<(usize, u32), crate::memory::presentation::OutlineGlyph>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
     // Bound permanent cached storage and keep bearings within Glyph's i8
@@ -67,7 +64,7 @@ impl skrifa::outline::OutlinePen for OutlinePath {
 // outline fonts generate a strike at the requested point size. At the logical
 // 72-dpi screen, one point is one em pixel. Keep QuickDraw's binary masks and
 // boolean transfer modes; hint before thresholding to retain small stems.
-fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
+pub(super) fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
     use skrifa::{
         instance::{LocationRef, Size},
         outline::{DrawSettings, HintingInstance, Target},
@@ -79,14 +76,29 @@ fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
     let metrics = font.metrics(ppem, location);
     let advances = font.glyph_metrics(ppem, location);
     let charmap = font.charmap();
+    let parsed = ttf_parser::Face::parse(bytes, 0).ok()?;
+    let macintosh_cmap = parsed.tables().cmap.and_then(|cmap| {
+        cmap.subtables
+            .into_iter()
+            .find(|table| table.platform_id == ttf_parser::PlatformId::Macintosh)
+    });
     let outlines = font.outline_glyphs();
     // The output is a one-bit QuickDraw mask. LCD hinting preserves fractional
     // stem positions and therefore loses strokes when thresholded. Mono fits
     // both axes to the pixel grid and returns matching adjusted advances.
     let hinter = HintingInstance::new(&outlines, ppem, location, Target::Mono).ok()?;
     let mut data = Vec::new();
+    let mut ids = Vec::new();
     let mut glyph = |ch: char| {
-        let id = charmap.map(ch).unwrap_or_default();
+        let id = charmap
+            .map(ch)
+            .or_else(|| {
+                let code = crate::mac_roman::encode_mac_roman_char(ch)?;
+                let mapped = macintosh_cmap?.glyph_index(u32::from(code))?;
+                Some(skrifa::GlyphId::new(u32::from(mapped.0)))
+            })
+            .unwrap_or_default();
+        ids.push(id);
         let mut path = OutlinePath::default();
         let adjusted = outlines.get(id).and_then(|outline| {
             outline
@@ -115,10 +127,10 @@ fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
                     coverage.resize(format.buffer_size(width, height), 0)
                 })
                 .render_into(&mut coverage, None);
-            result.width = u8::try_from(placement.width).expect("bounded URW glyph width");
-            result.height = u8::try_from(placement.height).expect("bounded URW glyph height");
-            result.origin_x = i8::try_from(placement.left).expect("bounded URW left bearing");
-            result.origin_y = i8::try_from(-placement.top).expect("bounded URW top bearing");
+            result.width = u8::try_from(placement.width).ok()?;
+            result.height = u8::try_from(placement.height).ok()?;
+            result.origin_x = i8::try_from(placement.left).ok()?;
+            result.origin_y = i8::try_from(-placement.top).ok()?;
             data.extend(coverage.iter().map(|&alpha| {
                 if alpha >= MONO_COVERAGE_THRESHOLD {
                     255
@@ -127,22 +139,24 @@ fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
                 }
             }));
         }
-        result
+        Some(result)
     };
     let ascii = (0x20u8..=0x7e)
         .map(|code| glyph(char::from(code)))
-        .collect::<Vec<_>>();
+        .collect::<Option<Vec<_>>>()?;
     let extended = (0x80u8..=0xff)
-        .map(|code| MacRomanGlyph {
-            mac_code: code,
-            glyph: glyph(
-                crate::mac_roman::decode_mac_roman(&[code])
-                    .chars()
-                    .next()
-                    .unwrap(),
-            ),
+        .map(|code| {
+            Some(MacRomanGlyph {
+                mac_code: code,
+                glyph: glyph(
+                    crate::mac_roman::decode_mac_roman(&[code])
+                        .chars()
+                        .next()
+                        .unwrap(),
+                )?,
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Option<Vec<_>>>()?;
     let all = || {
         ascii
             .iter()
@@ -176,6 +190,15 @@ fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
         glyphs: Box::leak(extended.into_boxed_slice()),
         data,
     }));
+    let mut sources = SOURCES.lock().ok()?;
+    for (glyph, id) in face
+        .glyphs
+        .iter()
+        .chain(extended.glyphs.iter().map(|g| &g.glyph))
+        .zip(ids)
+    {
+        sources.insert(glyph as *const Glyph as usize, Source { bytes, size, id });
+    }
     Some((face, extended))
 }
 
@@ -185,66 +208,137 @@ pub(crate) fn presentation_glyph(
     data: &[u8],
     scale: u32,
 ) -> Option<crate::memory::presentation::OutlineGlyph> {
-    let cache = FACES.lock().ok()?;
-    for (&(family, size), &(face, extended)) in cache.iter() {
-        if face.data.as_ptr() != data.as_ptr() {
-            continue;
-        }
-        let ch = face
-            .glyphs
-            .iter()
-            .position(|g| std::ptr::eq(g, glyph))
-            .map(|i| char::from(i as u8 + 32))
-            .or_else(|| {
-                extended
-                    .glyphs
-                    .iter()
-                    .find(|g| std::ptr::eq(&g.glyph, glyph))
-                    .map(|g| {
-                        crate::mac_roman::decode_mac_roman(&[g.mac_code])
-                            .chars()
-                            .next()
-                            .unwrap()
-                    })
-            })?;
-        use skrifa::{
-            instance::{LocationRef, Size},
-            outline::{DrawSettings, HintingInstance, SmoothMode, Target},
-            FontRef, MetadataProvider,
-        };
-        let font = FontRef::new(bytes(family)?).ok()?;
-        let outlines = font.outline_glyphs();
-        let hint = HintingInstance::new(
-            &outlines,
-            Size::new(size as f32 * scale as f32),
-            LocationRef::default(),
-            Target::from(SmoothMode::Normal),
-        )
-        .ok()?;
-        let mut path = OutlinePath::default();
-        outlines
-            .get(font.charmap().map(ch)?)?
-            .draw(DrawSettings::hinted(&hint, false), &mut path)
-            .ok()?;
-        let mut pixels = Vec::new();
-        let placement = zeno::Mask::new(path.0.as_slice())
-            .origin(zeno::Origin::BottomLeft)
-            .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
-            .render_into(&mut pixels, None);
-        return Some(crate::memory::presentation::OutlineGlyph {
-            pixels,
-            width: placement.width as i32,
-            height: placement.height as i32,
-            left: placement.left,
-            top: -placement.top,
-        });
+    let key = (glyph as *const Glyph as usize, scale);
+    let _ = data;
+    let mut masks = MASKS.lock().ok()?;
+    if let Some(mask) = masks.get(&key) {
+        return Some(mask.clone());
     }
-    None
+    let source = *SOURCES.lock().ok()?.get(&key.0)?;
+    use skrifa::{
+        instance::{LocationRef, Size},
+        outline::{DrawSettings, HintingInstance, SmoothMode, Target},
+        FontRef, MetadataProvider,
+    };
+    let font = FontRef::new(source.bytes).ok()?;
+    let outlines = font.outline_glyphs();
+    let hint = HintingInstance::new(
+        &outlines,
+        Size::new(source.size as f32 * scale as f32),
+        LocationRef::default(),
+        Target::from(SmoothMode::Normal),
+    )
+    .ok()?;
+    let mut path = OutlinePath::default();
+    outlines
+        .get(source.id)?
+        .draw(DrawSettings::hinted(&hint, false), &mut path)
+        .ok()?;
+    let mut pixels = Vec::new();
+    let placement = zeno::Mask::new(path.0.as_slice())
+        .origin(zeno::Origin::BottomLeft)
+        .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
+        .render_into(&mut pixels, None);
+    let mask = crate::memory::presentation::OutlineGlyph {
+        pixels,
+        width: placement.width as i32,
+        height: placement.height as i32,
+        left: placement.left,
+        top: -placement.top,
+    };
+    masks.insert(key, mask.clone());
+    Some(mask)
+}
+
+type UnicodeGlyph = (&'static Glyph, &'static [u8]);
+static UNICODE_GLYPHS: LazyLock<Mutex<HashMap<(i16, i16, char), UnicodeGlyph>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// UI symbols not present in the Roman face use the bundled Noto symbol font.
+pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<UnicodeGlyph> {
+    use skrifa::{
+        instance::{LocationRef, Size},
+        outline::{DrawSettings, HintingInstance, Target},
+        FontRef, MetadataProvider,
+    };
+    let size = size.clamp(1, 96);
+    let mut cache = UNICODE_GLYPHS.lock().ok()?;
+    if let Some(glyph) = cache.get(&(font_id, size, ch)) {
+        return Some(*glyph);
+    }
+    let primary = bytes(font_id).unwrap_or(bytes(FONT_APPLICATION)?);
+    let primary_font = FontRef::new(primary).ok()?;
+    let source_bytes: &'static [u8] = if primary_font.charmap().map(ch).is_some() {
+        primary
+    } else {
+        include_bytes!("noto/NotoSansSymbols2-Regular.ttf")
+    };
+    let font = FontRef::new(source_bytes).ok()?;
+    let id = font.charmap().map(ch)?;
+    let outlines = font.outline_glyphs();
+    let size_px = Size::new(size as f32);
+    let hint =
+        HintingInstance::new(&outlines, size_px, LocationRef::default(), Target::Mono).ok()?;
+    let mut path = OutlinePath::default();
+    let adjusted = outlines
+        .get(id)?
+        .draw(DrawSettings::hinted(&hint, false), &mut path)
+        .ok()?;
+    let advance = adjusted
+        .advance_width
+        .or_else(|| {
+            font.glyph_metrics(size_px, LocationRef::default())
+                .advance_width(id)
+        })
+        .unwrap_or(0.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    let mut pixels = Vec::new();
+    let placement = zeno::Mask::new(path.0.as_slice())
+        .origin(zeno::Origin::BottomLeft)
+        .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
+        .render_into(&mut pixels, None);
+    pixels.iter_mut().for_each(|p| {
+        *p = if *p >= MONO_COVERAGE_THRESHOLD {
+            255
+        } else {
+            0
+        }
+    });
+    let data: &'static [u8] = Box::leak(pixels.into_boxed_slice());
+    let glyph: &'static Glyph = Box::leak(Box::new(Glyph {
+        width: placement.width.try_into().ok()?,
+        height: placement.height.try_into().ok()?,
+        origin_x: placement.left.try_into().ok()?,
+        origin_y: (-placement.top).try_into().ok()?,
+        advance,
+        data_offset: 0,
+    }));
+    SOURCES.lock().ok()?.insert(
+        glyph as *const Glyph as usize,
+        Source {
+            bytes: source_bytes,
+            size,
+            id,
+        },
+    );
+    cache.insert((font_id, size, ch), (glyph, data));
+    Some((glyph, data))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_symbols_have_outline_coverage_at_both_resolutions() {
+        for ch in ['\u{2318}', '\u{2713}', '\u{2122}'] {
+            let (glyph, data) = unicode_glyph(FONT_CHICAGO, 12, ch).expect("bundled menu symbol");
+            assert!(glyph.advance > 0 && data.iter().any(|p| *p == 255));
+            let high = presentation_glyph(glyph, data, 4).expect("symbol outline source");
+            assert!(high.pixels.iter().any(|p| *p > 0 && *p < 255));
+        }
+    }
 
     #[test]
     fn outlines_supply_exact_sizes_and_extended_mac_roman() {

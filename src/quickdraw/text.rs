@@ -6,8 +6,8 @@
 //! is plain Rust glyph blitting, used by every QuickDraw text op
 //! after argument decode.
 //!
-//! Glyph data lives in [`crate::quickdraw::fonts`] (original systemless
-//! bitmap art, `const fn`-decoded at compile time). Italic faces are
+//! Glyph data lives in [`crate::quickdraw::fonts`], rasterized from bundled
+//! or guest-supplied fonts. Italic faces are
 //! synthesised by the runtime shear-blit at draw time.
 
 use crate::quickdraw::fonts::{
@@ -169,7 +169,7 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
         {
             return Some(hit);
         }
-        if let Some(hit) = crate::quickdraw::fonts::pixel_font::menu_symbols::get_glyph(ch) {
+        if let Some(hit) = crate::quickdraw::fonts::outline::unicode_glyph(font_id, size, ch) {
             return Some(hit);
         }
         return get_macroman_glyph(font_id, size, 0x11);
@@ -180,7 +180,7 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
         {
             return Some(hit);
         }
-        if let Some(hit) = crate::quickdraw::fonts::pixel_font::menu_symbols::get_glyph(ch) {
+        if let Some(hit) = crate::quickdraw::fonts::outline::unicode_glyph(font_id, size, ch) {
             return Some(hit);
         }
         return get_macroman_glyph(font_id, size, 0x12);
@@ -226,7 +226,7 @@ fn macroman_or_ascii_fallback(
         return Some(hit);
     }
     if mac_code == 0xAA {
-        return crate::quickdraw::fonts::pixel_font::menu_symbols::get_glyph('\u{2122}');
+        return crate::quickdraw::fonts::outline::unicode_glyph(font_id, size, '\u{2122}');
     }
     // ASCII fallback for extended characters that have a close ASCII
     // equivalent. Better to render a slightly-wrong glyph than silently

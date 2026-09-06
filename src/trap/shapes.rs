@@ -1693,7 +1693,6 @@ impl super::TrapDispatcher {
                 // Inside Macintosh I, "The GrafPort" (QuickDraw): portBits.bounds
                 // establishes local coordinates; visRgn and clipRgn limit drawing.
                 // Feed only these already-clipped cells to the presentation plane.
-                #[cfg(feature = "experimental-urw-fonts")]
                 if pixel_size == 8 && matches!(op, ShapeOp::Glyph(0 | 1)) {
                     if let Some(p) = &mut bus.presentation {
                         let dx = (x - bounds_left) as u32;

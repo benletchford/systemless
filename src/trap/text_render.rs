@@ -3,7 +3,7 @@
 use super::types::{Rect, ShapeOp, UnderlineInfo};
 use crate::cpu::CpuOps;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::quickdraw::fonts::heuristics::{
+use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_slant_for_underline,
     get_italic_underline_extend_left, get_italic_underline_extend_right, get_underline_offset,
     use_baseline_analysis, use_smart_underline_break,
@@ -355,13 +355,11 @@ impl super::TrapDispatcher {
 
         if !is_underline {
             // No underline, no outline/shadow: simple per-character drawing
-            #[cfg(feature = "experimental-urw-fonts")]
             bus.begin_presentation_text_run(self.tx_mode == 0);
             for i in 0..len {
                 let ch = bus.read_byte(s_ptr + 1 + i as u32);
                 self.draw_char(cpu, bus, ch as char);
             }
-            #[cfg(feature = "experimental-urw-fonts")]
             bus.end_presentation_text_run();
             return;
         }
@@ -839,12 +837,10 @@ impl super::TrapDispatcher {
                     bottom: v + scaled_descent,
                     right: h + glyph.advance as i16 * fs,
                 };
-                #[cfg(feature = "experimental-urw-fonts")]
                 if let Some(p) = &mut bus.presentation {
                     p.erasing_text = true;
                 }
                 self.draw_rect(cpu, bus, &copy_rect, ShapeOp::Erase);
-                #[cfg(feature = "experimental-urw-fonts")]
                 if let Some(p) = &mut bus.presentation {
                     p.erasing_text = false;
                 }
@@ -859,11 +855,17 @@ impl super::TrapDispatcher {
             let tx_size = self.tx_size;
             let tx_mode = self.tx_mode;
 
-            #[cfg(feature = "experimental-urw-fonts")]
-            if self.tx_face & !1 == 0 && matches!(tx_mode, 0 | 1) && fs == 1 {
-                bus.begin_outline_glyph(glyph, data, h, v, is_bold);
+            if self.tx_face & !7 == 0 && matches!(tx_mode, 0 | 1) && fs == 1 {
+                bus.begin_outline_glyph(
+                    glyph,
+                    data,
+                    h,
+                    v,
+                    is_bold,
+                    is_italic.then_some(metrics.descent),
+                    is_underline.then_some((i16::from(glyph.advance) + bold_extra, ul_thick)),
+                );
             }
-            #[cfg(feature = "experimental-urw-fonts")]
             let r = if let Some((top, left, bottom, right)) =
                 bus.presentation.as_ref().and_then(|p| p.glyph_bounds())
             {
@@ -1116,7 +1118,6 @@ impl super::TrapDispatcher {
 
                 pixel
             });
-            #[cfg(feature = "experimental-urw-fonts")]
             bus.end_outline_glyph();
 
             // Update Pen (Advance). Apply font scale, plus port.spExtra
