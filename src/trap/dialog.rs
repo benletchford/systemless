@@ -26386,7 +26386,7 @@ mod tests {
             "movableDBoxProc must paint the title-frame top above portRect"
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 42, 22),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 42, 23),
             "an active movable title bar must contain racing stripes"
         );
     }

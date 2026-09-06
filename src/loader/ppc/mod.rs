@@ -76773,7 +76773,11 @@ fn ppc_step_menu_tracking_body(
                 .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar && state.is_flashing())
             {
                 let mut state = toolbox_startup.execution.take_menu_state().unwrap();
-                let step = state.advance_flash();
+                let step = state.advance_flash_at(
+                    memory
+                        .read_u32_be(crate::memory::globals::addr::TICKS)
+                        .unwrap_or(0),
+                );
                 if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
                     *toolbox_startup.execution.menu_state_mut() = Some(state);
                     return Some(PpcImportAction::Yield(u64::MAX));
@@ -76993,6 +76997,11 @@ fn ppc_step_menu_tracking_body(
                         let result = (u32::from(menu_id) << 16) | u32::from(item as u16);
                         if result != 0 {
                             let state = toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
+                            state.set_flash_tick(
+                                memory
+                                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                                    .unwrap_or(0),
+                            );
                             if state.begin_flash(
                                 memory
                                     .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -77207,12 +77216,11 @@ fn ppc_continue_custom_popup_menu_tracking(
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup
-            .execution
-            .menu_state_mut()
-            .as_mut()
-            .unwrap()
-            .advance_flash();
+        let step = startup.execution.menu_state_mut().as_mut().unwrap().advance_flash_at(
+            memory
+                .read_u32_be(crate::memory::globals::addr::TICKS)
+                .unwrap_or(0),
+        );
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
@@ -77351,6 +77359,11 @@ fn ppc_continue_custom_popup_menu_tracking(
             };
             if result != 0 {
                 let state = startup.execution.menu_state_mut().as_mut().unwrap();
+                state.set_flash_tick(
+                    memory
+                        .read_u32_be(crate::memory::globals::addr::TICKS)
+                        .unwrap_or(0),
+                );
                 let flash_enabled = state.begin_flash(
                     memory
                         .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -77458,7 +77471,11 @@ fn ppc_dispatch_pop_up_menu_select(
             let Some(mut state) = startup.execution.take_menu_state() else {
                 return PpcImportAction::Return(0);
             };
-            let step = state.advance_flash();
+            let step = state.advance_flash_at(
+                memory
+                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                    .unwrap_or(0),
+            );
             if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
                 *startup.execution.menu_state_mut() = Some(state);
                 return PpcImportAction::Yield(u64::MAX);
@@ -77516,6 +77533,11 @@ fn ppc_dispatch_pop_up_menu_select(
                 .and_then(|menu| memory.read_u16_be(menu))
                 .unwrap_or(0);
             let result = (u32::from(menu_id) << 16) | u32::from(highlighted_item as u16);
+            state.set_flash_tick(
+                memory
+                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                    .unwrap_or(0),
+            );
             let flash_enabled = state.begin_flash(
                 memory
                     .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -77825,7 +77847,8 @@ fn ppc_begin_tracked_menu_with_appearances(
         highlighted_item,
         definition: None,
         flash_remaining: 0,
-        flash_delay: 0,
+        flash_tick: None,
+        flash_deadline: 0,
         flash_result: 0,
         saved_width,
         saved_height,
@@ -79065,12 +79088,11 @@ fn ppc_continue_custom_menu_bar_tracking(
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup
-            .execution
-            .menu_state_mut()
-            .as_mut()
-            .unwrap()
-            .advance_flash();
+        let step = startup.execution.menu_state_mut().as_mut().unwrap().advance_flash_at(
+            memory
+                .read_u32_be(crate::memory::globals::addr::TICKS)
+                .unwrap_or(0),
+        );
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
@@ -79182,6 +79204,11 @@ fn ppc_continue_custom_menu_bar_tracking(
     };
     if result != 0 {
         let state = startup.execution.menu_state_mut().as_mut().unwrap();
+        state.set_flash_tick(
+            memory
+                .read_u32_be(crate::memory::globals::addr::TICKS)
+                .unwrap_or(0),
+        );
         let flash_enabled = state.begin_flash(
             memory
                 .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -95025,6 +95052,8 @@ pub(crate) mod tests {
             ..PpcInputSnapshot::default()
         });
 
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(256);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert_eq!(
@@ -95049,8 +95078,13 @@ pub(crate) mod tests {
             mouse_h: 20,
             ..PpcInputSnapshot::default()
         });
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(256);
-        assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
+        assert_eq!(
+            probe.handled_import_count, 0,
+            "retained custom tracking bypasses public entry"
+        );
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert_eq!(
             loaded
@@ -95063,6 +95097,8 @@ pub(crate) mod tests {
         );
         let mut phases = vec![6];
         for _ in 0..64 {
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(256);
             assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
             let remaining = loaded
@@ -95315,7 +95351,7 @@ pub(crate) mod tests {
             let state = loaded.toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
             assert_eq!(state.flash_result, (141u32 << 16) | 2);
             state.flash_remaining = 1;
-            state.flash_delay = 0;
+            state.flash_deadline = state.flash_tick.unwrap_or(0);
         }
         let probe = loaded.run_with_hle_imports(256);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
@@ -95405,6 +95441,8 @@ pub(crate) mod tests {
                 if loaded.cpu.pc == PPC_CODE_BASE + 0x4000 {
                     break;
                 }
+                let tick = loaded.current_tick().wrapping_add(1);
+                loaded.set_tick_count(tick);
                 let probe = loaded.run_with_hle_imports(1);
                 assert_eq!(probe.unsupported_import_index, None);
             }
@@ -95419,6 +95457,8 @@ pub(crate) mod tests {
                 loaded.memory.read_u16_be(loaded.cpu.gpr[7]),
                 Some(requested_item as u16)
             );
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(512);
             assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
@@ -95445,6 +95485,8 @@ pub(crate) mod tests {
                 mouse_h: 45,
                 ..PpcInputSnapshot::default()
             });
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(512);
             assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
@@ -95459,8 +95501,13 @@ pub(crate) mod tests {
             );
             let mut phases = vec![6];
             for _ in 0..64 {
+                let tick = loaded.current_tick().wrapping_add(1);
+                loaded.set_tick_count(tick);
                 let probe = loaded.run_with_hle_imports(512);
-                assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
+                assert_eq!(
+                    probe.handled_import_count, 0,
+                    "retained custom tracking bypasses public entry"
+                );
                 let remaining = loaded
                     .toolbox_startup
                     .execution.menu()
@@ -163780,6 +163827,8 @@ pub(crate) mod tests {
             ..PpcInputSnapshot::default()
         });
 
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(64);
 
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
@@ -163842,6 +163891,8 @@ pub(crate) mod tests {
             ..PpcInputSnapshot::default()
         };
         loaded.set_input_snapshot(item_one);
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert_eq!(loaded.cpu.lr, parked_lr);
@@ -163867,6 +163918,8 @@ pub(crate) mod tests {
             .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 1)
             .unwrap();
         loaded.set_input_snapshot(item_two_release);
+        let tick = loaded.current_tick().wrapping_add(1);
+        loaded.set_tick_count(tick);
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         let flash = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
@@ -163882,6 +163935,8 @@ pub(crate) mod tests {
             vec![ppc_quickdraw_read_pixel(&mut loaded.memory, front, flash_probe).unwrap()];
         let mut final_probe = None;
         for _ in 0..32 {
+            let tick = loaded.current_tick().wrapping_add(1);
+            loaded.set_tick_count(tick);
             let probe = loaded.run_with_hle_imports(64);
             if loaded.toolbox_startup.execution.menu().is_some() {
                 flash_pixels.push(
@@ -164909,24 +164964,18 @@ pub(crate) mod tests {
             mouse_h: 0,
             ..PpcInputSnapshot::default()
         });
-        loaded
-            .toolbox_startup
-            .execution
-            .menu_state_mut()
-            .as_mut()
-            .unwrap()
-            .flash_delay = 0;
+        {
+            let state = loaded.toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
+            state.flash_deadline = state.flash_tick.unwrap_or(0);
+        }
         assert!(matches!(
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        loaded
-            .toolbox_startup
-            .execution
-            .menu_state_mut()
-            .as_mut()
-            .unwrap()
-            .flash_delay = 0;
+        {
+            let state = loaded.toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
+            state.flash_deadline = state.flash_tick.unwrap_or(0);
+        }
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (129u32 << 16) | 1);
@@ -174772,7 +174821,8 @@ pub(crate) mod tests {
             highlighted_item: 0,
             definition: None,
             flash_remaining: 0,
-            flash_delay: 0,
+            flash_tick: None,
+            flash_deadline: 0,
             flash_result: 0,
             saved_width: 33,
             saved_height: 21,

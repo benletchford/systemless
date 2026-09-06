@@ -1255,12 +1255,12 @@ impl App {
             .unwrap_or(now);
 
         let slice_budget = game::MAX_INSTRUCTIONS_PER_FRAME;
-        let audio_interval = self
+        let presentation_interval = self
             .last_audio_mix_time
             .replace(now)
             .map(|previous| now.saturating_duration_since(previous))
-            .unwrap_or(FRAME_DURATION)
-            .min(MAX_AUDIO_MIX_INTERVAL);
+            .unwrap_or(FRAME_DURATION);
+        let audio_interval = presentation_interval.min(MAX_AUDIO_MIX_INTERVAL);
         let audio_samples =
             Self::audio_samples_for_duration(audio_interval, &mut self.audio_sample_remainder);
         if std::env::var_os("SYSTEMLESS_TRACE_AUDIO").is_some()
@@ -1274,6 +1274,7 @@ impl App {
         }
 
         let runner = self.runner.as_mut().expect("runner checked above");
+        runner.advance_menu_presentation_clock(presentation_interval);
         // A PPC HLE slice currently borrows its large mutable state by moving
         // collections into a dispatch closure and restoring them afterward.
         // Yield once per guest VBL rather than paying that boundary thousands
