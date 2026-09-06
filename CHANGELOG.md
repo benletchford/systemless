@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.38.1](https://github.com/benletchford/systemless/compare/v0.38.0...v0.38.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* execute MenuHook through task-owned guest calls ([0bb7deb](https://github.com/benletchford/systemless/commit/0bb7deb2089e8fafed247174ca6ea45bb8c15d91))
+* prefer games over bundled registration utilities ([828d0c6](https://github.com/benletchford/systemless/commit/828d0c6d4d356d98626760f6f8f69bae642f2fbc))
+* resume classic menu tracking without repeating public traps ([ed4fda6](https://github.com/benletchford/systemless/commit/ed4fda674c499875dd45f4ff08b7d0daac9bcb69))
+* resume native menu tracking without repeating public imports ([95daf56](https://github.com/benletchford/systemless/commit/95daf564f2dc6af5d8251526544dfde275087b20))
+* retain menu tracking by task and enclosing call ([b47802e](https://github.com/benletchford/systemless/commit/b47802ef0769f00a3516b9179a05ef1f49481f64))
+
+
+### Code Refactoring
+
+* retain explicit menu tracking callers ([634c660](https://github.com/benletchford/systemless/commit/634c660e026d65866842f777b9ed1033b148d54d))
+* share logical popup menu requests ([fc707dc](https://github.com/benletchford/systemless/commit/fc707dc765918d805df648cea1065f05cbbbb900))
+
 ## [0.38.0](https://github.com/benletchford/systemless/compare/v0.37.0...v0.38.0) (2026-09-06)
 
 
