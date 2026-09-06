@@ -3159,7 +3159,10 @@ impl PpcToolboxStartupState {
                 .as_mut()
                 .and_then(PpcMenuTracking::active_definition_mut);
         }
-        self.menu_tracking.context_mut().definition.as_mut()
+        self.menu_tracking
+            .existing_context_mut()?
+            .definition
+            .as_mut()
     }
 
     fn clear_active_menu_definition(&mut self) {
@@ -3168,7 +3171,9 @@ impl PpcToolboxStartupState {
                 return;
             }
         }
-        self.menu_tracking.context_mut().definition = None;
+        if let Some(context) = self.menu_tracking.existing_context_mut() {
+            context.definition = None;
+        }
     }
 }
 
@@ -3189,7 +3194,11 @@ fn ppc_restore_menu_definition_port(
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
 ) {
-    if let Some((gworld, gdevice)) = startup.menu_tracking.context_mut().native_port.take() {
+    if let Some((gworld, gdevice)) = startup
+        .menu_tracking
+        .existing_context_mut()
+        .and_then(|context| context.native_port.take())
+    {
         *current_gworld = gworld;
         *current_gdevice = gdevice;
     }
@@ -59813,8 +59822,10 @@ fn ppc_set_depth(
         .menu_tracking
         .as_ref()
         .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar);
-    *toolbox_startup.menu_tracking = None;
-    toolbox_startup.menu_tracking.context_mut().native_popup = None;
+    if let Some(context) = toolbox_startup.menu_tracking.existing_context_mut() {
+        context.tracking = None;
+        context.native_popup = None;
+    }
     toolbox_startup.go_away_tracking = None;
     toolbox_startup.drag_window_tracking = None;
     toolbox_startup.grow_window_tracking = None;
@@ -94298,6 +94309,30 @@ pub(crate) mod tests {
             .native_ptr_records()
             .iter()
             .all(|record| record.ptr != scratch));
+    }
+
+    #[test]
+    fn configured_native_startup_keeps_empty_menu_ownership_pristine() {
+        let pef = synthetic_pef_with_import(b"InitMenus");
+        for screen_depth in [1, 2, 4, 8, 16] {
+            let mut loaded = load_pef_application_with_config(
+                &pef,
+                PpcLoadConfig {
+                    screen_depth,
+                    ..PpcLoadConfig::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                loaded.toolbox_startup.guest_calls.is_pristine(),
+                "depth {screen_depth}"
+            );
+            let mut context = crate::process_context::ProcessContext::default();
+            loaded.attach_process_context(&mut context);
+            assert!(loaded.toolbox_startup.menu_tracking.is_none());
+            assert!(loaded.guest_calls.is_pristine());
+            assert!(context.menu_tracking().is_none());
+        }
     }
 
     #[test]

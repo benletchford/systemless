@@ -743,6 +743,19 @@ impl SharedMenuTracking {
             })
             .unwrap_or(&self.empty)
     }
+    pub(crate) fn existing_context_mut(&mut self) -> Option<&mut MenuTrackingContext> {
+        let index = self.active_index()?;
+        match &mut self.calls.calls[index].operation {
+            MenuOperation::Tracking(context) => Some(context),
+            _ => None,
+        }
+    }
+    pub(crate) fn as_mut(&mut self) -> Option<&mut crate::menu_manager::ProcessMenuTrackingState> {
+        self.existing_context_mut()?.tracking.as_mut()
+    }
+    pub(crate) fn take(&mut self) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
+        self.existing_context_mut()?.tracking.take()
+    }
     pub(crate) fn context_mut(&mut self) -> &mut MenuTrackingContext {
         let index = match self.active_index() {
             Some(index) => index,
@@ -3208,6 +3221,19 @@ mod tests {
         drop(outer);
         assert!(calls.is_empty());
         assert!(calls.0.borrow().menu_calls.calls.is_empty());
+    }
+
+    #[test]
+    fn empty_menu_queries_do_not_create_root_operations() {
+        let calls = SharedGuestCallStack::default();
+        let mut view = calls.menu_tracking_view();
+        assert!(view.as_mut().is_none());
+        assert!(view.take().is_none());
+        assert!(view.existing_context_mut().is_none());
+        assert!(calls.is_pristine());
+        let other = SharedGuestCallStack::default();
+        view.attach_to(&other.menu_tracking_view());
+        assert!(other.is_pristine());
     }
 
     #[test]

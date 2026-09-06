@@ -603,7 +603,10 @@ impl super::TrapDispatcher {
                 .as_mut()
                 .and_then(MenuTrackingState::active_definition_mut);
         }
-        self.menu_tracking.context_mut().definition.as_mut()
+        self.menu_tracking
+            .existing_context_mut()?
+            .definition
+            .as_mut()
     }
 
     fn clear_active_menu_definition(&mut self) {
@@ -612,7 +615,9 @@ impl super::TrapDispatcher {
                 return;
             }
         }
-        self.menu_tracking.context_mut().definition = None;
+        if let Some(context) = self.menu_tracking.existing_context_mut() {
+            context.definition = None;
+        }
     }
 
     fn prepare_menu_definition_port<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
@@ -625,7 +630,11 @@ impl super::TrapDispatcher {
     }
 
     fn restore_menu_definition_port<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
-        if let Some(snapshot) = self.menu_tracking.context_mut().classic_port.take() {
+        if let Some(snapshot) = self
+            .menu_tracking
+            .existing_context_mut()
+            .and_then(|context| context.classic_port.take())
+        {
             self.restore_current_port_state(bus, cpu, &snapshot);
         }
     }
