@@ -2387,6 +2387,22 @@ const STANDARD_POPUP_SCREEN_MARGIN: i16 = 4;
 const STANDARD_POPUP_BOTTOM_RESERVE: i16 = 20;
 const STANDARD_POPUP_SCROLL_STEP: i16 = 16;
 
+/// Logical PopUpMenuSelect arguments, independent of the caller's return ABI.
+/// Macintosh Toolbox Essentials (1992), pp. 3-119--3-120.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PopupMenuRequest {
+    pub(crate) menu_handle: u32,
+    pub(crate) anchor: (i16, i16),
+    pub(crate) requested_item: i16,
+}
+
+impl PopupMenuRequest {
+    pub(crate) fn begin_definition(self) -> MenuDefinitionTracking {
+        let hit_point = (u32::from(self.anchor.0 as u16) << 16) | u32::from(self.anchor.1 as u16);
+        MenuDefinitionTracking::begin_popup(self.menu_handle, hit_point, self.requested_item)
+    }
+}
+
 /// Position the standard Mac OS 8.1 pop-up menu and its uncropped content.
 ///
 /// The standard MDEF's `mPopUpMsg` aligns the requested item's top-left with
