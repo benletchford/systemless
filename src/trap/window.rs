@@ -8750,7 +8750,7 @@ mod tests {
 
         let content_probe = screen_base + 250 * 800 + 460;
         let right_frame_probe = screen_base + 300 * 800 + 651;
-        let title_frame_probe = screen_base + 222 * 800 + 627;
+        let title_frame_probe = screen_base + 223 * 800 + 628;
         let desktop_content = bus.read_byte(content_probe);
         let desktop_right_frame = bus.read_byte(right_frame_probe);
         let desktop_title_frame = bus.read_byte(title_frame_probe);

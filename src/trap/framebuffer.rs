@@ -4227,7 +4227,6 @@ impl super::TrapDispatcher {
         let is_movable_modal = self.window_proc_id == 5;
         let has_go_away =
             active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
-        let has_zoom_box = active && matches!(self.window_proc_id, 8 | 12);
 
         // The title bar is part of the standard Window Manager frame and is
         // enclosed by the window outline. Macintosh Toolbox Essentials
@@ -4260,11 +4259,11 @@ impl super::TrapDispatcher {
         Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
         Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
 
-        let (title_clear_left, title_clear_right) = if !self.window_title.is_empty() {
+        let title_clear_left = if !self.window_title.is_empty() {
             let text_x = chrome.title_h;
-            (text_x - 8, text_x + title_width + 8)
+            text_x - 8
         } else {
-            (tb_right, tb_right) // No clear area
+            tb_right // No clear area
         };
 
         let _close_box_width = if has_go_away { 15i16 } else { 0 };
@@ -4370,94 +4369,22 @@ impl super::TrapDispatcher {
                 );
             }
 
-            // Draw horizontal stripe pattern in title bar (classic Mac pinstripes)
-            // Only active windows get stripes; inactive windows have plain white title bars
-            //
-            // System 7.5.3 reserves only 6 px of clear-area on each side of
-            // the title text for stripes (the 16-px `title_clear_left/right`
-            // margin is for text-glyph hit-testing, not for stripes). The
-            // active document WDEF paints pinstripe rows at title-bar offsets
-            // 1, 3, and 5; this row placement is calibrated against the
-            // BasiliskII System 7.5.3 reference.
-            // Inside Macintosh Volume V, V-188 figure 5-3.
-            if active {
-                let stripe_left_edge = tb_left + 2;
-                let stripe_right_end = if has_zoom_box {
-                    // Keep the pinstripes flush with the rightmost 15-pixel
-                    // zoom/scrollbar control column used by the shared WDEF
-                    // geometry. Macintosh Toolbox Essentials (1992), Figure
-                    // 4-2 and Listing 5-17.
-                    wind_right - 15
-                } else {
-                    tb_right - 2
-                };
-                let stripe_text_left = title_clear_left + 2;
-                let stripe_text_right = title_clear_right - 2;
-
-                // Close box region to skip (if present)
-                let (cb_gap_left, cb_gap_right) = if has_go_away {
-                    let cb_left = tb_left + 9;
-                    let cb_right = cb_left + 10; // QD exclusive right
-                    (cb_left - 1, cb_right + 2) // 1px gap left, 2px gap right
-                } else {
-                    (stripe_right_end, stripe_right_end) // no gap
-                };
-
-                for y in (tb_top + 1)..=(tb_bottom - 4) {
-                    if (y - tb_top) % 2 == 1 {
-                        // Draw stripe segments, skipping close box and title text gaps
-                        // Segment 1: left edge to close box (or title text if no close box)
-                        let seg1_end = if has_go_away {
-                            cb_gap_left
-                        } else {
-                            stripe_text_left
-                        };
-                        if stripe_left_edge < seg1_end {
-                            Self::fb_hline(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                y,
-                                stripe_left_edge,
-                                seg1_end,
-                                true,
-                            );
-                        }
-                        // Segment 2: after close box to title text (only if close box exists)
-                        if has_go_away && cb_gap_right < stripe_text_left {
-                            Self::fb_hline(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                y,
-                                cb_gap_right,
-                                stripe_text_left,
-                                true,
-                            );
-                        }
-                        // Segment 3: after title text to right edge
-                        if stripe_text_right < stripe_right_end {
-                            Self::fb_hline(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                y,
-                                stripe_text_right,
-                                stripe_right_end,
-                                true,
-                            );
-                        }
-                    }
-                }
+            // Use the same WDEF pinstripe geometry as PowerPC and themed
+            // frames. Macintosh Toolbox Essentials (1992), Figure 4-2.
+            for (top, left, bottom, right) in chrome.stripe_ink.iter().copied() {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    top,
+                    left,
+                    bottom,
+                    right,
+                    true,
+                );
             }
 
             // Draw title text centered in title bar. Active windows get
@@ -5651,15 +5578,19 @@ mod redraw_chrome_tests {
 
         disp.draw_window_chrome(&mut bus, true);
 
-        assert!(screen_pixel_is_black(&disp, &bus, 200, 85));
-        assert!(!screen_pixel_is_black(&disp, &bus, 200, 86));
-        assert!(screen_pixel_is_black(&disp, &bus, 200, 87));
+        for y in 85..100 {
+            assert_eq!(
+                screen_pixel_is_black(&disp, &bus, 200, y),
+                y % 2 == 0,
+                "68K title stripes must match the canonical PowerPC rows at y={y}"
+            );
+        }
         assert!(
-            !screen_pixel_is_black(&disp, &bus, 160, 88),
+            !screen_pixel_is_black(&disp, &bus, 160, 89),
             "movable dialog must omit the close box even when goAwayFlag is set"
         );
         assert!(
-            !screen_pixel_is_black(&disp, &bus, 628, 88),
+            !screen_pixel_is_black(&disp, &bus, 628, 89),
             "movable dialog must omit the zoom box"
         );
     }

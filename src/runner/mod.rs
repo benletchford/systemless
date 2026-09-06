@@ -1789,6 +1789,7 @@ pub struct FixtureRunner {
     /// its tick_override to this value so the game clock is frozen — matching
     /// the real Mac where MenuSelect blocks the application event loop.
     frozen_ticks: Option<u32>,
+    menu_presentation_remainder: u64,
     /// Guest-memory address of the Time Manager interrupt trampoline code.
     /// Allocated once on first use and reused for all subsequent timer fires.
     timer_trampoline: u32,
@@ -2016,6 +2017,7 @@ impl FixtureRunner {
             idle_cycle_sites: [IdleCycleSiteRecord::default(); IDLE_CYCLE_SITE_SLOTS],
             idle_cycle_sleep: None,
             frozen_ticks: None,
+            menu_presentation_remainder: 0,
             timer_trampoline: 0,
             vbl_trampoline: 0,
             cursor_task_trampoline: 0,
@@ -2745,6 +2747,21 @@ impl FixtureRunner {
             .application()
             .map(|app| app.cpu.pc)
             .unwrap_or_else(|| self.m68k.cpu.read_reg(Register::PC))
+    }
+
+    /// Advance menu feedback by uncapped elapsed host time, once per frame.
+    /// This remains independent of CPU catch-up limits and frozen app ticks.
+    /// Toolbox Essentials (1992), SetMenuFlash, p. 3-142.
+    pub fn advance_menu_presentation_clock(&mut self, elapsed: std::time::Duration) {
+        let Some(tracking) = self.process_context.menu_tracking() else {
+            self.menu_presentation_remainder = 0;
+            return;
+        };
+        let tick = tracking.flash_tick.unwrap_or(self.guest_tick());
+        let scaled = elapsed.as_nanos() * 60 + u128::from(self.menu_presentation_remainder);
+        self.menu_presentation_remainder = (scaled % 1_000_000_000) as u64;
+        self.process_context
+            .set_menu_presentation_tick(tick.wrapping_add((scaled / 1_000_000_000) as u32));
     }
 
     /// Prepare the same sharp text surface for either guest CPU and any frontend.
@@ -8883,6 +8900,8 @@ impl FixtureRunner {
     /// runs flat out (up to `max_steps`) until either the tick cap is hit
     /// or the instruction budget is exhausted, at which point the caller
     /// yields to the UI thread for rendering.
+    /// Call [`Self::advance_menu_presentation_clock`] once per host frame with
+    /// uncapped elapsed time; menu feedback must not inherit the CPU tick cap.
     pub fn run_gui_slice_with_audio(
         &mut self,
         max_steps: usize,
@@ -15585,6 +15604,7 @@ mod tests {
         runner.push_canonical_mouse_down(10, title_h);
         let root_rect = (0..16)
             .find_map(|_| {
+                runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
                 let (_, running) = runner.run_steps(512, None);
                 assert!(
                     running,
@@ -15603,6 +15623,7 @@ mod tests {
             .set_mouse_position(root_rect.0 + 8, root_rect.1 + 16);
         runner.sync_mouse_position_lowmem();
         let callback_completed = (0..32).any(|_| {
+            runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
             let (_, running) = runner.run_steps(512, None);
             assert!(
                 running,
@@ -15671,6 +15692,7 @@ mod tests {
         runner.dispatcher.set_mouse_position(target_v, target_h);
         runner.sync_mouse_position_lowmem();
         let target_observed = (0..16).any(|_| {
+            runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
             let (_, running) = runner.run_steps(512, None);
             assert!(running, "native MenuSelect halted before the mouse release");
             runner
@@ -15686,6 +15708,7 @@ mod tests {
         );
         runner.push_canonical_mouse_up(target_v, target_h);
         for _ in 0..128 {
+            runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
             let (_, running) = runner.run_steps(512, None);
             if !running {
                 break;
@@ -16429,6 +16452,7 @@ mod tests {
                 runner.push_canonical_mouse_up(28, 20);
             }
             for _ in 0..32 {
+                runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
                 if !runner.run_steps(128, None).1 {
                     break;
                 }
@@ -25875,6 +25899,27 @@ mod tests {
         // uncapped GUI caller that defaults to disabled.
         assert!(spin_wait_fastfwd_gate(true, false, false, false));
         assert!(spin_wait_fastfwd_gate(true, false, true, false));
+    }
+
+    #[test]
+    fn menu_flash_uses_frontend_time_while_application_ticks_are_frozen() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let mut tracking = crate::menu_manager::test_process_menu_tracking(128);
+        tracking.set_flash_tick(100);
+        tracking.begin_flash(3, 0x0080_0002);
+        runner.process_context.set_menu_tracking(Some(tracking));
+        runner.frozen_ticks = Some(100);
+        runner.advance_menu_presentation_clock(std::time::Duration::from_millis(300));
+        runner.run_steps_internal(0, Some(102), 0, true, false, false);
+        assert_eq!(runner.frozen_ticks, Some(100));
+        assert_eq!(
+            runner
+                .process_context
+                .menu_tracking_mut()
+                .unwrap()
+                .advance_flash(),
+            crate::menu_manager::MenuFlashStep::Complete(0x0080_0002)
+        );
     }
 
     #[test]

@@ -99,7 +99,8 @@ fn tracked_menu_state_with_content_top(
         highlighted_item: 0,
         definition: None,
         flash_remaining: 0,
-        flash_delay: 0,
+        flash_tick: None,
+        flash_deadline: 0,
         flash_result: 0,
         saved_width: popup_right.saturating_sub(popup_left),
         saved_height: popup_bottom.saturating_sub(popup_top),
@@ -1791,6 +1792,13 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        // One fixture step models a presentation tick, independently of
+        // the amount of guest code exercised by the ABI call below.
+        bus.write_long(
+            crate::memory::globals::addr::TICKS,
+            bus.read_long(crate::memory::globals::addr::TICKS)
+                .wrapping_add(1),
+        );
         let tracking_call = self.menu_tracking.context().call.filter(|call| {
             call.origin.isa() == GuestIsa::M68k
                 && is_tool
@@ -2327,8 +2335,12 @@ impl super::TrapDispatcher {
                             .as_ref()
                             .is_some_and(|tracking| tracking.is_flashing())
                         {
-                            match self.menu_tracking.as_mut().unwrap().advance_flash() {
-                                MenuFlashStep::Wait | MenuFlashStep::Inactive => return Some(Ok(())),
+                            match self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            ) {
+                                MenuFlashStep::Wait | MenuFlashStep::Inactive => {
+                                    return Some(Ok(()))
+                                }
                                 MenuFlashStep::Complete(result) => {
                                     self.finish_custom_menu_tracking(cpu, bus, 4, result);
                                     return Some(Ok(()));
@@ -2403,6 +2415,9 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 4, 0);
                             } else {
                                 let tracking = self.menu_tracking.as_mut().unwrap();
+                                tracking.set_flash_tick(
+                                    bus.read_long(crate::memory::globals::addr::TICKS),
+                                );
                                 let flash_enabled = tracking.begin_flash(
                                     bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                     result,
@@ -2417,7 +2432,9 @@ impl super::TrapDispatcher {
                     // Re-fire: we're in tracking mode
                     if self.menu_tracking.as_ref().unwrap().is_flashing() {
                         if let MenuFlashStep::Complete(result) =
-                            self.menu_tracking.as_mut().unwrap().advance_flash()
+                            self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            )
                         {
                             // Flash complete — finish up
                             let sp = self.menu_tracking.context().classic_stack();
@@ -2494,6 +2511,8 @@ impl super::TrapDispatcher {
                             // MenuFlash stores the caller-selected blink count;
                             // each blink has one hidden and one visible phase.
                             let tracking = self.menu_tracking.as_mut().unwrap();
+                            tracking
+                                .set_flash_tick(bus.read_long(crate::memory::globals::addr::TICKS));
                             let flash_enabled = tracking.begin_flash(
                                 bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                 result,
@@ -2738,8 +2757,12 @@ impl super::TrapDispatcher {
                             .as_ref()
                             .is_some_and(|tracking| tracking.is_flashing())
                         {
-                            match self.menu_tracking.as_mut().unwrap().advance_flash() {
-                                MenuFlashStep::Wait | MenuFlashStep::Inactive => return Some(Ok(())),
+                            match self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            ) {
+                                MenuFlashStep::Wait | MenuFlashStep::Inactive => {
+                                    return Some(Ok(()))
+                                }
                                 MenuFlashStep::Complete(result) => {
                                     self.finish_custom_menu_tracking(cpu, bus, 10, result);
                                     return Some(Ok(()));
@@ -2785,6 +2808,9 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 10, 0);
                             } else {
                                 let tracking = self.menu_tracking.as_mut().unwrap();
+                                tracking.set_flash_tick(
+                                    bus.read_long(crate::memory::globals::addr::TICKS),
+                                );
                                 let flash_enabled = tracking.begin_flash(
                                     bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                     result,
@@ -2799,7 +2825,9 @@ impl super::TrapDispatcher {
                     // Re-fire: popup tracking is active
                     if self.menu_tracking.as_ref().unwrap().is_flashing() {
                         if let MenuFlashStep::Complete(result) =
-                            self.menu_tracking.as_mut().unwrap().advance_flash()
+                            self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            )
                         {
                             let sp = self.menu_tracking.context().classic_stack();
                             let saved = self.menu_tracking.take().unwrap();
@@ -2818,6 +2846,8 @@ impl super::TrapDispatcher {
                         let result = self.menu_tracking_selection_result(bus);
                         if result != 0 {
                             let tracking = self.menu_tracking.as_mut().unwrap();
+                            tracking
+                                .set_flash_tick(bus.read_long(crate::memory::globals::addr::TICKS));
                             let flash_enabled = tracking.begin_flash(
                                 bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                 result,
@@ -7805,7 +7835,10 @@ mod tests {
             .is_ok());
         assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 2);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
+        {
+            let tracking = disp.menu_tracking.as_mut().unwrap();
+            tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
+        }
 
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
@@ -7823,7 +7856,7 @@ mod tests {
         bus.write_word(trampoline + 68, 0);
         let tracking = disp.menu_tracking.as_mut().unwrap();
         tracking.flash_remaining = 1;
-        tracking.flash_delay = 0;
+        tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
@@ -7937,7 +7970,10 @@ mod tests {
                 .unwrap();
             assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 6);
             assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-            disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
+            {
+                let tracking = disp.menu_tracking.as_mut().unwrap();
+                tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
+            }
 
             cpu.write_reg(Register::PC, trap_pc + 2);
             cpu.write_reg(
@@ -7958,7 +7994,7 @@ mod tests {
             bus.write_word(trampoline + 68, 0);
             let tracking = disp.menu_tracking.as_mut().unwrap();
             tracking.flash_remaining = 1;
-            tracking.flash_delay = 0;
+            tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
             cpu.write_reg(Register::PC, trap_pc + 2);
             cpu.write_reg(
                 Register::A7,
@@ -16780,7 +16816,7 @@ mod tests {
 
         let tracking = disp.menu_tracking.as_mut().unwrap();
         tracking.flash_remaining = 1;
-        tracking.flash_delay = 0;
+        tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
