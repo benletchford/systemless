@@ -8734,19 +8734,7 @@ mod tests {
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
         disp.menu_bar_hidden = false;
-        super::super::TrapDispatcher::fb_fill_pattern_rect(
-            &mut bus,
-            screen_base,
-            800,
-            8,
-            800,
-            600,
-            0,
-            0,
-            600,
-            800,
-            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
-        );
+        disp.fill_theme_desktop_rect(&mut bus, 0, 0, 600, 800);
 
         let content_probe = screen_base + 250 * 800 + 460;
         let right_frame_probe = screen_base + 300 * 800 + 651;
@@ -12436,8 +12424,8 @@ mod tests {
 
         assert_eq!(
             bus.read_byte(old_content_probe),
-            255,
-            "host menu suppression must not turn the exposed desktop black"
+            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light),
+            "host menu suppression must preserve the themed desktop"
         );
         let new_content_probe = screen_base + 250 * 800 + 460;
         assert_eq!(

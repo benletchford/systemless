@@ -632,7 +632,7 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+        if pixel_size == 1 {
             Self::fb_fill_pattern_rect(
                 bus,
                 screen_base,
@@ -1574,7 +1574,7 @@ impl super::TrapDispatcher {
     fn refresh_saved_under_with_desktop_pattern(&mut self, bus: &MacMemoryBus, window: u32) {
         let (_, _, _, _, pixel_size) = self.get_screen_params();
         let palette = self.ui_theme().palette();
-        let (black, white) = if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+        let (black, white) = if pixel_size == 1 {
             (
                 Self::logical_black_pixel_index(bus),
                 Self::logical_white_pixel_index(bus),
@@ -6908,13 +6908,13 @@ mod redraw_chrome_tests {
 
         assert_eq!(
             bus.read_byte(screen_base),
-            0xFF,
-            "standard gray pattern starts with a black pixel"
+            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_dark),
+            "exposed desktop uses the theme color"
         );
         assert_eq!(
             bus.read_byte(screen_base + 1),
-            0x00,
-            "standard gray pattern should add white desktop pixels"
+            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light),
+            "adjacent desktop pixels use the same solid color"
         );
         assert_eq!(
             bus.read_byte(screen_base + 120 * row_bytes + 200),
@@ -6924,8 +6924,8 @@ mod redraw_chrome_tests {
         let saved = &disp.window_saved_under_pixels[&PORT_PTR].4;
         assert_eq!(
             &saved[..2],
-            &[0xFF, 0x00],
-            "the save-under snapshot must track the synthesized desktop pattern"
+            &[disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light); 2],
+            "the save-under snapshot must retain the themed desktop"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
     }
