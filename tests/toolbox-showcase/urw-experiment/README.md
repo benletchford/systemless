@@ -6,6 +6,15 @@ Toolbox Showcase guest application, using Classic System 7 chrome, a fixed
 startup clock, the 68K executable, and an 800 × 600, 8-bit screen. Both runs use
 the same fixture and capture routine. Images are unmodified framebuffer exports.
 
+## Higher-resolution direction
+
+Both one-bit URW versions failed visual review. The next experiment is an
+[isolated 1×/2×/3× text proof](resolution/README.md) using the same logical
+spacing and freshly rasterized outlines at higher physical resolution. It also
+preserves grayscale edge coverage. This specimen is not a guest screenshot or
+a completed high-resolution display backend. The captures below remain evidence
+of the low-resolution runtime's current output, not visual acceptance.
+
 | Page | Default bitmap fallback | Experimental URW fallback |
 | --- | --- | --- |
 | Graphics | ![Before graphics](before/graphics.png) | ![After graphics](after/graphics.png) |
@@ -14,7 +23,7 @@ the same fixture and capture routine. Images are unmodified framebuffer exports.
 | TextEdit | ![Before TextEdit](before/textedit.png) | ![After TextEdit](after/textedit.png) |
 | Styled text and measurements | ![Before styled text](before/styled-text.png) | ![After styled text](after/styled-text.png) |
 
-## Correcting the rejected renderer
+## Monochrome correction (still not visually accepted)
 
 The initial URW experiment used Swash 0.2.10, whose hinting configuration uses
 LCD smoothing with `preserve_linear_metrics: true`. Thresholding those outlines
