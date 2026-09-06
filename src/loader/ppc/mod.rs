@@ -76312,6 +76312,104 @@ fn ppc_step_menu_tracking(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> Option<PpcImportAction> {
+    let action = ppc_step_menu_tracking_body(
+        cpu,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        gworlds,
+        screen_clut,
+        toolbox_startup,
+        current_gworld,
+        current_gdevice,
+        input,
+        vfs_resources,
+        current_resource_refnum,
+    )?;
+    if matches!(action, PpcImportAction::Yield(_))
+        && toolbox_startup
+            .menu_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.should_invoke_menu_hook(input.mouse_button))
+    {
+        let pointer = memory.read_u32_be(0x0a30).unwrap_or(0);
+        if let Some(target) = resolve_guest_procedure(
+            memory,
+            pointer,
+            cpu.gpr[2],
+            None,
+            GuestIsa::PowerPc,
+            GuestIsa::M68k,
+        ) {
+            if target.proc_info == 0 {
+                let return_value = PpcNativeReturnGpr3::Set(cpu.gpr[3]);
+                let callback = match target.isa {
+                    GuestIsa::PowerPc => {
+                        let effect = GuestCallEffect::call_guest(
+                            GuestCallRequest::for_task(
+                                toolbox_startup.guest_calls.current_task(),
+                                GuestCallTarget {
+                                    isa: target.isa,
+                                    entry: target.entry,
+                                    rtoc: target.rtoc,
+                                },
+                            )
+                            .with_powerpc_arguments(
+                                crate::guest_call::PowerPcArguments::from_slice(&[])?,
+                            ),
+                            GuestCallContinuation::to_powerpc(
+                                PPC_GUEST_CALL_RETURN_PC,
+                                PPC_GUEST_CALL_RETURN_PC,
+                                cpu.gpr[2],
+                                return_value,
+                            ),
+                        );
+                        toolbox_startup
+                            .guest_calls
+                            .activate_powerpc_effect_with_operation(cpu, memory, effect, None, None)
+                            .then_some(PpcImportAction::Continue)
+                    }
+                    GuestIsa::M68k => ppc_begin_m68k_universal_proc(
+                        cpu,
+                        Some(process_memory_manager),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        toolbox_startup,
+                        target,
+                        0,
+                        None,
+                        Vec::new(),
+                        PPC_GUEST_CALL_RETURN_PC,
+                        return_value,
+                    ),
+                };
+                if let Some(callback) = callback {
+                    return Some(callback);
+                }
+            }
+        }
+    }
+    Some(action)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_step_menu_tracking_body(
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    current_gworld: &mut u32,
+    current_gdevice: &mut u32,
+    input: PpcInputSnapshot,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+) -> Option<PpcImportAction> {
     let call = toolbox_startup.menu_tracking.context().call?;
     let MenuTrackingOrigin::PowerPc {
         stack_pointer,
@@ -161823,6 +161921,85 @@ pub(crate) mod tests {
                 Some(expected_bottom),
             );
         }
+    }
+
+    pub(crate) fn native_menu_hook_fixture() -> (PpcLoadedApp, u32) {
+        let pef = synthetic_pef_with_import(b"MenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"File",
+            b"Open;Close",
+        );
+        let descriptor = PPC_DATA_BASE + 0x7100;
+        let tvector = PPC_DATA_BASE + 0x7180;
+        let marker = PPC_DATA_BASE + 0x7400;
+        loaded.memory.add_region(marker, vec![0; 4]);
+        install_test_powerpc_callback(
+            &mut loaded,
+            descriptor,
+            tvector,
+            PPC_CODE_BASE + 0x4000,
+            PPC_DATA_BASE + 0x7300,
+            test_stack_proc_info(PPC_PROCINFO_SIZE_NONE, &[]),
+            &[
+                d_form_u(15, 8, 0, (marker >> 16) as u16),
+                d_form_u(24, 8, 8, marker as u16),
+                d_form_u(32, 9, 8, 0),
+                d_form_u(14, 9, 9, 1),
+                d_form_u(36, 9, 8, 0),
+                BLR,
+            ],
+        );
+        loaded.memory.write_u32_be(0x0a30, descriptor).unwrap();
+        (loaded, marker)
+    }
+
+    #[test]
+    fn native_menu_tracking_invokes_menu_hook_while_held() {
+        let (mut loaded, marker) = native_menu_hook_fixture();
+        let original_sp = loaded.cpu.gpr[1];
+        let original_return = loaded.cpu.lr;
+        loaded
+            .memory
+            .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 0)
+            .unwrap();
+        loaded.cpu.gpr[3] =
+            (10u32 << 16) | u32::from((STANDARD_MENU_BAR_FIRST_TITLE_LEFT + 2) as u16);
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: 28,
+            mouse_h: 20,
+            ..PpcInputSnapshot::default()
+        });
+        for _ in 0..4 {
+            let probe = loaded.run_with_hle_imports(128);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        assert!(loaded.toolbox_startup.menu_tracking.is_some());
+        assert!(
+            loaded.memory.read_u32_be(marker).unwrap() > 0,
+            "MenuSelect must invoke MenuHook while held"
+        );
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: false,
+            mouse_v: 28,
+            mouse_h: 20,
+            ..PpcInputSnapshot::default()
+        });
+        for _ in 0..8 {
+            let probe = loaded.run_with_hle_imports(128);
+            if matches!(probe.result, PpcRunResult::Halted { .. }) {
+                break;
+            }
+        }
+        assert_eq!(loaded.cpu.pc, original_return);
+        assert_eq!(loaded.cpu.gpr[1], original_sp);
+        assert_eq!(loaded.cpu.gpr[3], (128 << 16) | 1);
+        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.toolbox_startup.menu_tracking.is_none());
     }
 
     #[test]

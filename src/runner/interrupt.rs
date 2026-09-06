@@ -12,7 +12,6 @@ pub(crate) enum ActiveInterruptCallbackSource {
     FileCompletion,
     DialogDrawProc,
     DialogFilterProc,
-    MenuHook,
 }
 
 #[derive(Clone, Copy, Debug)]

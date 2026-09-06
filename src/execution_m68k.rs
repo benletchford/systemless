@@ -74,6 +74,45 @@ impl M68kMenuDefinitionFrame {
     }
 }
 
+/// Stack-local no-argument callback frame. Saved registers and code remain
+/// below the caller SP until execution retires the exact internal return.
+/// MenuHook's Pascal no-argument contract: Macintosh Toolbox Essentials
+/// (1992), p. 3-116.
+pub(crate) struct M68kMenuHookFrame {
+    pub(crate) entry: u32,
+    pub(crate) image: [u8; 32],
+}
+
+impl M68kMenuHookFrame {
+    pub(crate) fn new(target: u32, caller_sp: u32) -> Option<Self> {
+        let entry = caller_sp.checked_sub(48)?;
+        let saved_sp = entry.checked_sub(66)?;
+        if entry & 1 != 0 {
+            return None;
+        }
+        let mut image = [0; 32];
+        for (offset, word) in [
+            (0, 0x40e7u16), // MOVE SR,-(SP)
+            (2, 0x48e7),
+            (4, 0xfffe),  // MOVEM all D/A except SP
+            (6, 0x4eb9),  // JSR target
+            (12, 0x2e7c), // MOVEA.L #saved-register SP,A7
+            (18, 0x4cdf),
+            (20, 0x7fff), // restore all D/A except SP
+            (22, 0x46df), // MOVE (SP)+,SR
+            (24, 0x4e74),
+            (26, 0), // RTD into the internal boundary
+            (28, 0xa93d),
+            (30, 0x4e71),
+        ] {
+            image[offset..offset + 2].copy_from_slice(&word.to_be_bytes());
+        }
+        image[8..12].copy_from_slice(&target.to_be_bytes());
+        image[14..18].copy_from_slice(&saved_sp.to_be_bytes());
+        Some(Self { entry, image })
+    }
+}
+
 /// Consume a manager result while its stack reservation is still live, then
 /// restore the caller ABI before trap/vector lookup can invoke more guest code.
 pub(crate) fn complete_classic_manager_return<C: crate::cpu::CpuOps>(

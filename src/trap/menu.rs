@@ -626,6 +626,13 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn preserve_menu_callback_port(&mut self, bus: &MacMemoryBus) {
+        if self.menu_tracking.context().classic_port.is_none() {
+            self.menu_tracking.context_mut().classic_port =
+                Some(self.capture_current_port_state(bus));
+        }
+    }
+
     fn prepare_menu_definition_port<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         if self.menu_tracking.context().classic_port.is_none() {
             self.menu_tracking.context_mut().classic_port =
@@ -1831,6 +1838,9 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, stack_pointer);
         cpu.write_reg(Register::PC, return_address);
         self.dispatch_menu_body(true, trap_num, cpu, bus)?.ok()?;
+        if self.menu_tracking.is_none() && self.active_menu_definition().is_none() {
+            self.restore_menu_definition_port(cpu, bus);
+        }
         Some(0xa800 | trap_num)
     }
 
