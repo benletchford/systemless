@@ -16,7 +16,7 @@ use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::sound::SoundManager;
 use crate::text_edit::ProcessTextEditManagerState;
 use ppc::PpcMemory;
-use std::cell::{RefCell, RefMut, UnsafeCell};
+use std::cell::{Cell, RefCell, RefMut, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
@@ -1272,7 +1272,99 @@ pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState
 /// share the most recently observed guest value across CPU adapters; it is
 /// never a competing source of guest time. Inside Macintosh Volume I (1985),
 /// p. I-260; Volume II (1985), pp. II-349--II-350.
-pub(crate) type SharedProcessTickState = SharedProcessValue<u32>;
+#[derive(Debug)]
+pub(crate) struct SharedProcessTickState(Rc<Cell<u32>>);
+
+impl Default for SharedProcessTickState {
+    fn default() -> Self {
+        Self::from_value(0)
+    }
+}
+
+impl Clone for SharedProcessTickState {
+    fn clone(&self) -> Self {
+        self.detached_snapshot()
+    }
+}
+
+impl PartialEq for SharedProcessTickState {
+    fn eq(&self, other: &Self) -> bool {
+        self.current_tick() == other.current_tick()
+    }
+}
+
+impl Eq for SharedProcessTickState {}
+
+impl SharedProcessTickState {
+    pub(crate) fn from_value(tick: u32) -> Self {
+        Self(Rc::new(Cell::new(tick)))
+    }
+
+    /// Copy the current host-pacing value into an independent process snapshot.
+    pub(crate) fn detached_snapshot(&self) -> Self {
+        Self::from_value(self.current_tick())
+    }
+
+    /// Share the same process clock projection with another serialized adapter.
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Import the guest-visible low-memory value into the host pacing
+    /// snapshot for the architecture-neutral `TickCount` operation.
+    /// `Ticks` is writable guest state, so a direct store must be observed by
+    /// the next Toolbox trap or native import. Both ABI adapters call this
+    /// operation rather than implementing their own TickCount semantics; the
+    /// low-memory bytes remain authoritative after the observation.
+    ///
+    /// The value is the number of ticks since startup as exposed by the
+    /// low-memory `Ticks` global. Macintosh Toolbox Essentials (1992),
+    /// pp. 2-111--2-112; Inside Macintosh Volume I (1985), p. I-260.
+    pub(crate) fn read_tick_count(&self, guest_ticks: u32) -> u32 {
+        self.set_tick(guest_ticks);
+        guest_ticks
+    }
+
+    /// Read the host pacing snapshot as a copied scalar. A Mixed Mode
+    /// callback may enter the other adapter after this operation returns.
+    pub(crate) fn current_tick(&self) -> u32 {
+        self.0.get()
+    }
+
+    /// Set the process clock for an explicit runner/launch synchronization.
+    /// Ordinary native slice teardown must use `publish_tick` so a stale
+    /// snapshot cannot regress a callback's newer value.
+    pub(crate) fn set_tick(&self, tick: u32) {
+        self.0.set(tick);
+    }
+
+    /// Publish a candidate clock value without allowing an older native
+    /// snapshot to move process time backwards. Wrapping subtraction follows
+    /// the Event Manager's documented tick arithmetic: a candidate less than
+    /// half the u32 space ahead is newer, including MAX-to-zero wraparound.
+    /// Inside Macintosh Volume I (1985), p. I-260.
+    pub(crate) fn publish_tick(&self, candidate: u32) -> u32 {
+        let current = self.current_tick();
+        let delta = candidate.wrapping_sub(current);
+        if delta != 0 && delta < 0x8000_0000 {
+            self.set_tick(candidate);
+            candidate
+        } else {
+            current
+        }
+    }
+
+    /// Advance process time by a wrapping number of ticks.
+    pub(crate) fn advance_ticks(&self, ticks: u32) -> u32 {
+        let current = self.current_tick().wrapping_add(ticks);
+        self.set_tick(current);
+        current
+    }
+}
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 pub(crate) type SharedProcessMenuTracking = crate::guest_call::SharedMenuTracking;
 pub(crate) type SharedProcessWindowList = SharedProcessValue<Vec<u32>>;
@@ -1521,67 +1613,6 @@ impl<T> SharedProcessValue<T> {
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl SharedProcessValue<u32> {
-    /// Import the guest-visible low-memory value into the host pacing
-    /// snapshot for the architecture-neutral `TickCount` operation.
-    /// `Ticks` is writable guest state, so a direct store must be observed by
-    /// the next Toolbox trap or native import. Both ABI adapters call this
-    /// operation rather than implementing their own TickCount semantics; the
-    /// low-memory bytes remain authoritative after the observation.
-    ///
-    /// The value is the number of ticks since startup as exposed by the
-    /// low-memory `Ticks` global. Macintosh Toolbox Essentials (1992),
-    /// pp. 2-111--2-112; Inside Macintosh Volume I (1985), p. I-260.
-    pub(crate) fn read_tick_count(&self, guest_ticks: u32) -> u32 {
-        self.set_tick(guest_ticks);
-        guest_ticks
-    }
-
-    /// Read the process clock without exposing a reference into the
-    /// `UnsafeCell`-backed value. A Mixed Mode callback may enter the other
-    /// adapter after this operation returns.
-    pub(crate) fn current_tick(&self) -> u32 {
-        // SAFETY: attached adapters are serialized by the owning runner and
-        // this method returns a copied scalar rather than a reference.
-        unsafe { *self.0.get() }
-    }
-
-    /// Set the process clock for an explicit runner/launch synchronization.
-    /// Ordinary native slice teardown must use `publish_tick` so a stale
-    /// snapshot cannot regress a callback's newer value.
-    pub(crate) fn set_tick(&self, tick: u32) {
-        // SAFETY: see `current_tick`.
-        unsafe { *self.0.get() = tick }
-    }
-
-    /// Publish a candidate clock value without allowing an older native
-    /// snapshot to move process time backwards. Wrapping subtraction follows
-    /// the Event Manager's documented tick arithmetic: a candidate less than
-    /// half the u32 space ahead is newer, including MAX-to-zero wraparound.
-    /// Inside Macintosh Volume I (1985), p. I-260.
-    pub(crate) fn publish_tick(&self, candidate: u32) -> u32 {
-        // SAFETY: see `current_tick`.
-        unsafe {
-            let current = &mut *self.0.get();
-            let delta = candidate.wrapping_sub(*current);
-            if delta != 0 && delta < 0x8000_0000 {
-                *current = candidate;
-            }
-            *current
-        }
-    }
-
-    /// Advance process time by a wrapping number of ticks.
-    pub(crate) fn advance_ticks(&self, ticks: u32) -> u32 {
-        // SAFETY: see `current_tick`.
-        unsafe {
-            let current = &mut *self.0.get();
-            *current = current.wrapping_add(ticks);
-            *current
-        }
     }
 }
 
@@ -6301,7 +6332,19 @@ impl ProcessContext {
     /// Inside Macintosh Volume I (1985), p. I-260; Volume II (1985),
     /// pp. II-349--II-350.
     pub(crate) fn attach_tick_state(&self, adapter: &mut SharedProcessTickState) {
-        adapter.attach_copy_to(&self.tick_state, |tick| *tick == 0);
+        if adapter.ptr_eq(&self.tick_state) {
+            return;
+        }
+        let adapter_value = adapter.current_tick();
+        let process_value = self.tick_state.current_tick();
+        assert!(
+            adapter_value == 0 || process_value == 0 || adapter_value == process_value,
+            "cannot attach two populated process manager values"
+        );
+        if process_value == 0 && adapter_value != 0 {
+            self.tick_state.set_tick(adapter_value);
+        }
+        *adapter = self.tick_state.shared_handle();
     }
 
     pub(crate) fn attach_callback_tasks(
@@ -9183,14 +9226,14 @@ mod tests {
     }
 
     #[test]
-    fn attached_tick_states_share_wrapping_clock_while_clones_detach() {
+    fn attached_tick_states_share_wrapping_clock_while_snapshot_detaches() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessTickState::from_value(41);
         let mut native = SharedProcessTickState::default();
 
         context.attach_tick_state(&mut classic);
         context.attach_tick_state(&mut native);
-        let detached = native.clone();
+        let detached = native.detached_snapshot();
 
         assert!(classic.ptr_eq(&native));
         assert_eq!(classic.current_tick(), 41);
@@ -9207,6 +9250,25 @@ mod tests {
         native.set_tick(u32::MAX);
         assert_eq!(native.publish_tick(0), 0);
         assert_eq!(classic.current_tick(), 0);
+    }
+
+    #[test]
+    fn conflicting_tick_attachment_preserves_both_detached_values() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessTickState::from_value(41);
+        context.attach_tick_state(&mut classic);
+        let mut native = SharedProcessTickState::from_value(42);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            context.attach_tick_state(&mut native);
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(classic.current_tick(), 41);
+        assert_eq!(native.current_tick(), 42);
+        assert!(!classic.ptr_eq(&native));
     }
 
     #[test]
