@@ -175,6 +175,61 @@ pub(crate) fn default_arrow_cursor_image() -> CursorImage {
     CursorImage::mono(data, mask, hot_v, hot_h)
 }
 
+/// Resize presentation pixels with area coverage on shrinking axes and nearest
+/// sampling on enlarging axes. Shared by software desktop and browser output.
+pub fn resize_argb_coverage(
+    source: &[u32],
+    source_size: (u32, u32),
+    size: (u32, u32),
+    output: &mut Vec<u32>,
+) {
+    let (sw, sh) = source_size;
+    let (dw, dh) = size;
+    assert!(sw > 0 && sh > 0 && dw > 0 && dh > 0);
+    assert_eq!(source.len(), (sw as usize) * sh as usize);
+    output.resize(dw as usize * dh as usize, 0);
+    if source_size == size {
+        output.copy_from_slice(source);
+        return;
+    }
+    let interval = |position: u32, source: u32, destination: u32| -> (u64, u64, u64) {
+        if source > destination {
+            (
+                u64::from(position) * u64::from(source),
+                u64::from(position + 1) * u64::from(source),
+                u64::from(destination),
+            )
+        } else {
+            let cell = ((u64::from(position) * 2 + 1) * u64::from(source)
+                / (u64::from(destination) * 2))
+                .min(u64::from(source - 1));
+            (cell, cell + 1, 1)
+        }
+    };
+    for y in 0..dh {
+        let (top, bottom, uy) = interval(y, sh, dh);
+        for x in 0..dw {
+            let (left, right, ux) = interval(x, sw, dw);
+            let mut sum = [0u64; 4];
+            let total = (right - left) * (bottom - top);
+            for sy in top / uy..bottom.div_ceil(uy) {
+                let wy = bottom.min((sy + 1) * uy) - top.max(sy * uy);
+                for sx in left / ux..right.div_ceil(ux) {
+                    let weight = wy * (right.min((sx + 1) * ux) - left.max(sx * ux));
+                    let pixel = source[sy as usize * sw as usize + sx as usize];
+                    for (channel, sum) in sum.iter_mut().enumerate() {
+                        *sum += u64::from((pixel >> (channel * 8)) & 255) * weight;
+                    }
+                }
+            }
+            output[y as usize * dw as usize + x as usize] =
+                sum.iter().enumerate().fold(0, |pixel, (channel, sum)| {
+                    pixel | ((((sum + total / 2) / total) as u32) << (channel * 8))
+                });
+        }
+    }
+}
+
 /// Render the current screen to an RGBA pixel buffer (4 bytes per pixel).
 ///
 /// Uses `ram_slice()` for bulk memory access. Supports 1bpp, 2bpp, 4bpp,
@@ -1582,6 +1637,31 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn software_minification_preserves_fractional_stroke_coverage() {
+        let source: Vec<u32> = (0..64)
+            .map(|i| if i % 2 == 0 { 0xff000000 } else { 0xffffffff })
+            .collect();
+        let mut output = Vec::new();
+        for (width, expected) in [
+            (2, vec![128, 128]),
+            (3, vec![96, 128, 159]),
+            (5, vec![96, 96, 128, 159, 159]),
+        ] {
+            super::resize_argb_coverage(&source, (8, 8), (width, 3), &mut output);
+            for (i, pixel) in output.iter().enumerate() {
+                assert_eq!((pixel & 255) as u8, expected[i % width as usize]);
+                assert_eq!(pixel >> 24, 255);
+            }
+        }
+        super::resize_argb_coverage(&source, (8, 8), (16, 16), &mut output);
+        for y in 0..16 {
+            for x in 0..16 {
+                assert_eq!(output[y * 16 + x], source[(y / 2) * 8 + x / 2]);
+            }
+        }
+    }
+
     use super::{
         argb_palette_from_clut, argb_palette_from_clut_with_gamma, classic_depth_mode,
         classic_pixel_size, clut_component_to_u8, clut_to_argb,

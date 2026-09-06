@@ -2747,6 +2747,21 @@ impl FixtureRunner {
             .unwrap_or_else(|| self.m68k.cpu.read_reg(Register::PC))
     }
 
+    /// Prepare the same sharp text surface for either guest CPU and any frontend.
+    /// Call after initialization and before presenting a frame to track mode changes.
+    pub fn prepare_text_presentation(&mut self) {
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(
+            &self.dispatcher.device_clut,
+            &self.dispatcher.device_gamma,
+        )
+        .map(|word| {
+            let [r, g, b, _] = word.to_le_bytes();
+            [r, g, b]
+        });
+        self.bus
+            .prepare_outline_presentation(self.dispatcher.screen_mode, palette);
+    }
+
     /// Synchronize deferred PPC visual/VFS state and composite chrome/dialog overlays.
     /// Call before reading raw pixels for screenshots.
     pub fn composite_frame(&mut self) {
@@ -8273,13 +8288,34 @@ impl FixtureRunner {
         }
         let matte_byte =
             Self::ppc_indexed_matte_byte(primary_buffer.depth, &ppc_app.screen_clut).unwrap_or(0);
-        let Some(canvas_size) = canvas_row_bytes.checked_mul(canvas_height) else {
+        if canvas_row_bytes.checked_mul(canvas_height).is_none() {
             return;
-        };
-        self.bus
-            .write_bytes(host_base, &vec![matte_byte; canvas_size as usize]);
+        }
         let primary_destination_x = canvas_width.saturating_sub(primary_buffer.width) / 2;
         let primary_destination_y = canvas_height.saturating_sub(primary_buffer.height) / 2;
+        // Only the matte lies outside the incoming image. Clearing the image
+        // itself would discard retained text on every host synchronization.
+        if primary_buffer.depth < 8 {
+            self.bus.write_bytes(
+                host_base,
+                &vec![matte_byte; (canvas_row_bytes * canvas_height) as usize],
+            );
+        } else if canvas_width != primary_buffer.width || canvas_height != primary_buffer.height {
+            let left_bytes = (primary_destination_x * primary_buffer.depth / 8) as usize;
+            let right_byte = ((primary_destination_x + primary_buffer.width) * primary_buffer.depth)
+                .div_ceil(8) as usize;
+            let row = vec![matte_byte; canvas_row_bytes as usize];
+            for y in 0..canvas_height {
+                let address = host_base + y * canvas_row_bytes;
+                if y < primary_destination_y || y >= primary_destination_y + primary_buffer.height {
+                    self.bus.write_bytes(address, &row);
+                } else {
+                    self.bus.write_bytes(address, &row[..left_bytes]);
+                    self.bus
+                        .write_bytes(address + right_byte as u32, &row[right_byte..]);
+                }
+            }
+        }
         if !Self::copy_ppc_front_buffer_rows_to_host(
             &mut self.bus,
             ppc_app,
@@ -8524,10 +8560,23 @@ impl FixtureRunner {
                 let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
                     return false;
                 };
-                bus.write_bytes(
-                    destination_row_addr + destination_x_bytes,
-                    &row[..visible_row_len],
-                );
+                if ppc_app
+                    .draw_sprocket
+                    .last_fade_percent
+                    .is_none_or(|percent| percent == 100)
+                    && ppc_app.draw_sprocket.last_fade_zero_color.is_none()
+                {
+                    bus.sync_presented_bytes(
+                        destination_row_addr + destination_x_bytes,
+                        front_buffer.base_addr + y * front_buffer.row_bytes,
+                        &row[..visible_row_len],
+                    );
+                } else {
+                    bus.write_bytes(
+                        destination_row_addr + destination_x_bytes,
+                        &row[..visible_row_len],
+                    );
+                }
             }
         }
         true
@@ -8608,6 +8657,10 @@ impl FixtureRunner {
         let (base, row_bytes, current_width, current_height, current_depth) =
             self.dispatcher.screen_mode;
         let base_valid = base != 0
+            && self
+                .bus
+                .get_alloc_size(base)
+                .is_some_and(|size| size >= bytes_needed)
             && base
                 .checked_add(bytes_needed)
                 .is_some_and(|end| end <= self.bus.ram_size());

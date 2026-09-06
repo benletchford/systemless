@@ -401,7 +401,7 @@ fn prepare_review_presentation(runner: &mut FixtureRunner) {
 }
 
 fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
-    if std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some() && !runner.is_powerpc_app() {
+    if std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some() {
         prepare_review_presentation(runner);
     }
     runner.composite_frame();
@@ -435,10 +435,6 @@ fn write_rgb(path: &Path, width: u32, height: u32, rgb: Vec<u8>) {
 fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
     let (width, height, actual) = rendered_rgb(runner);
     if let Some(directory) = std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR") {
-        assert!(
-            !runner.is_powerpc_app(),
-            "4× presentation requires the 68k slice"
-        );
         let (w, h, rgb, glyphs) = runner.bus().outline_presentation_rgb().unwrap();
         assert_eq!((w, h), (width * 4, height * 4));
         assert!(glyphs > 0, "review capture must contain real outline draws");
@@ -1096,7 +1092,6 @@ fn test_toolbox_showcase() {
 
     init_game(&mut runner, &app);
     if std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some() {
-        assert!(!powerpc, "4× review gallery requires the 68k slice");
         prepare_review_presentation(&mut runner);
     }
     assert_eq!(
@@ -3310,9 +3305,6 @@ fn capture_outline_font_showcase() {
 /// A fresh page must retain the same outlines as a later full window update.
 #[test]
 fn first_page_outlines_survive_palette_changes() {
-    if prefer_powerpc() {
-        return;
-    }
     fn prepare(runner: &mut FixtureRunner) {
         let d = runner.dispatcher();
         let mode = d.screen_mode;
@@ -3387,7 +3379,7 @@ fn first_page_outlines_survive_palette_changes() {
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner.set_menu_bar_policy(systemless::runner::MenuBarPolicy::ForceHidden);
     runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
-        false,
+        prefer_powerpc(),
     ));
     runner.set_app_start_time(3_786_912_000);
     let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
@@ -3409,12 +3401,14 @@ fn first_page_outlines_survive_palette_changes() {
         runner.bus_mut().block_move(base, scratch, len);
         systemless::memory::MemoryBus::fill_bytes(runner.bus_mut(), base, len, 0);
         runner.bus_mut().block_move(scratch, base, len);
-        assert_eq!(
-            runner.bus().outline_presentation_rgb().unwrap().2,
-            before_copy,
-            "{name} must retain sharp pixels through an offscreen round trip without repainting"
-        );
+        let restored = runner.bus().outline_presentation_rgb().unwrap().2;
         capture(&runner, &format!("{name}-after-copy.png"));
+        assert!(
+            restored == before_copy,
+            "{name} must retain sharp pixels through an offscreen round trip without repainting; first differing byte: {:?}",
+            restored.iter().zip(&before_copy).position(|(a, b)| a != b)
+        );
+        runner.bus_mut().free(scratch);
 
         let (top, left, _, _) = runner.window_bounds();
         drag_mouse(&mut runner, top - 10, left + 100, top - 5, left + 100);
