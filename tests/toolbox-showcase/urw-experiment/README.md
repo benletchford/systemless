@@ -14,30 +14,50 @@ the same fixture and capture routine. Images are unmodified framebuffer exports.
 | TextEdit | ![Before TextEdit](before/textedit.png) | ![After TextEdit](after/textedit.png) |
 | Styled text and measurements | ![Before styled text](before/styled-text.png) | ![After styled text](after/styled-text.png) |
 
+## Correcting the rejected renderer
+
+The initial URW experiment used Swash 0.2.10, whose hinting configuration uses
+LCD smoothing with `preserve_linear_metrics: true`. Thresholding those outlines
+to one-bit pixels loses fractional strokes. Expanding the outlines to recover
+those strokes made the small text heavy and cramped. That version failed visual
+review; its narrower wrapping was not evidence of better typography.
+
+The corrected renderer uses Skrifa's `Target::Mono` to grid-fit both axes for
+one-bit output, uses the hinter's adjusted advances, and passes the resulting
+outlines to Zeno. All family-specific ink expansion is removed. The TTF files,
+family mapping, logical point sizes, and QuickDraw style synthesis are unchanged.
+The screenshots isolate that rendering correction.
+
+| Rejected LCD hinting + ink expansion | Corrected monochrome grid fitting |
+| --- | --- |
+| ![Rejected TextEdit](rejected/textedit.png) | ![Corrected TextEdit](after/textedit.png) |
+| ![Rejected drawing](rejected/drawing.png) | ![Corrected drawing](after/drawing.png) |
+| ![Rejected styled text](rejected/styled-text.png) | ![Corrected styled text](after/styled-text.png) |
+
+Inspect the 9-point body text and the 10-point styled-text legend: the corrected
+renderer has clean individual stems and open counters without the artificial
+weight. The original rejected images are from public commit
+[`6ebb85490`](https://github.com/benletchford/systemless/commit/6ebb85490).
+
 ## What the comparison establishes
 
-The baseline is public `master` commit
+The default bitmap baseline is public `master` commit
 [`e2772dfd4a7fc8890c69bffeea6f9991f21427ae`](https://github.com/benletchford/systemless/commit/e2772dfd4a7fc8890c69bffeea6f9991f21427ae)
-with the capture helper added. The experimental run enables the feature on
-the same source and fixture.
+with the same capture helper added.
 
-- The TextEdit page's right-hand headings fit inside their wells instead of
-  crowding the right edge. The 208-byte live buffer wraps to five lines instead
-  of six. The centered callout also occupies fewer lines.
-- The drawing page's sample measures 77 pixels instead of 82. This is an
-  observable change in font advances, not a claim of better classic fidelity.
-- The font tests show exact 17- and 40-point strikes instead of scaling a nearby
-  hand-authored bitmap, binary glyph masks, and extended
-  Mac Roman lookup. Courier's 20-point advances remain uniformly 12 pixels.
-- All five pages complete on both 68K (8-bit) and PowerPC (16-bit). The styled
-  text probe verifies colored runs and three measurement bars on both.
+- The drawing sample measures 79 pixels with monochrome grid fitting, 77 in
+  the rejected renderer, and 82 with the default bitmaps. This documents the
+  effect of adjusted advances; it is not an appearance score.
+- The 208-byte TextEdit buffer remains five lines in both URW runs (six in the
+  bitmap baseline). The improvement here is the stroke rendering.
+- Font regressions check uninterrupted H stems, open o counters, and baseline
+  placement at 9–12 points in the sans and monospaced families. The other font
+  tests cover exact requested sizes, binary masks, Mac Roman, and resource
+  precedence.
 
-The visual benefit is a consistent outline-derived fallback with more compact
-layout in these examples. It is **not a universal visual improvement**: small
-monospaced text is still coarse, letter shapes differ from the original Mac
-faces, and narrower advances can change layouts that already fit correctly.
-Core 35 does not provide exact Chicago, Geneva, Monaco, London, or Cairo designs.
-This experiment is not native-Mac pixel approval.
+Substitute letterforms and spacing still differ from classic Mac fonts. Core 35
+provides no exact Chicago, Geneva, Monaco, London, or Cairo designs. This remains
+an experimental fallback and does not constitute native-Mac pixel approval.
 
 ## Acceptance limits
 
@@ -51,9 +71,10 @@ Validation on the final experimental renderer:
 
 | Check | Result |
 | --- | --- |
-| Default library suite (`--no-default-features --lib`) | 5,117 passed; 3 ignored |
-| Experimental font contracts (`--features experimental-urw-fonts --lib quickdraw::fonts`) | 25 passed |
-| Full experimental library suite | 5,107 passed; 11 failed; 3 ignored |
+| Default library suite (unchanged baseline validation) | 5,117 passed; 3 ignored |
+| Default font contracts, rerun for this correction | 24 passed |
+| Experimental font contracts (`--features experimental-urw-fonts --lib quickdraw::fonts`) | 26 passed |
+| Full experimental library suite | 5,112 passed; 7 failed; 3 ignored |
 | Showcase captures: 68K before/after and PowerPC after | Passed |
 | `wasm32-unknown-unknown` check with the experimental feature | Passed |
 | Package file inventory | All eight fonts, source record, and OFL notices included; screenshots excluded |
@@ -61,15 +82,11 @@ Validation on the final experimental renderer:
 Remaining failures with the experimental feature:
 
 ```
-loader::ppc::tests::hle_import_runner_builds_and_draws_mbar_resources
 loader::ppc::tests::menu_bar_title_baseline_tracks_the_live_menu_bar_height
-loader::ppc::tests::menu_tracking_round_trips_unaligned_popup_boundaries_at_supported_depths
 loader::ppc::tests::short_menu_bar_system_mark_does_not_bleed_below_the_bar
-loader::ppc::tests::tracked_menu_draws_standard_item_chrome_and_dims_disabled_rows
 menu_manager::tests::standard_menu_text_measurement_is_shared_between_gateways
-trap::menu::tests::drawmenubar_4bpp_keeps_the_color_system_mark_through_title_reversals
-trap::menu::tests::drawmenubar_keeps_the_retro_computer_mark_legible_in_monochrome
-trap::menu::tests::drawmenubar_uses_retro_computer_art_for_the_system_mark_without_layout_drift
+trap::framebuffer::redraw_chrome_tests::menu_bar_title_baseline_tracks_live_height
+trap::framebuffer::redraw_chrome_tests::redraw_chrome_places_live_popup_over_the_kiosk_stage
 trap::menu::tests::systemless_theme_does_not_change_popupmenuselect_geometry_and_result
 trap::quickdraw::tests::stringwidth_scales_monotonically_with_textsize
 ```
@@ -102,9 +119,7 @@ CharWidth/TextWidth/MeasureText bars. Successful execution proves that these
 pages render and their semantic probes pass; it does not establish pixel or
 metric equivalence to classic fonts.
 
-The optional backend uses unmodified OFL-licensed URW fonts and Swash hinting,
-with 0.10/0.25/0.35-pixel ink expansion for bold/regular/monospaced faces
-before 50% thresholding. This retains thin strokes
-when QuickDraw uses binary masks. Advances are taken from the font, so ink
-expansion does not silently alter measurement. The guest sfnt renderer is
-unchanged. See [source and license details](../../../src/quickdraw/fonts/urw/README.md).
+The optional backend uses unmodified OFL-licensed URW fonts, Skrifa monochrome
+hinting, and Zeno rasterization. The matching hinted advances are used for both
+measurement and drawing. The guest sfnt renderer is unchanged. See
+[source and license details](../../../src/quickdraw/fonts/urw/README.md).
