@@ -1638,17 +1638,39 @@ impl SharedGuestCallStack {
         self.submit_effect(effect).is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_m68k(
         &self,
         target: GuestCallTarget,
         return_pc: u32,
         final_sp: u32,
     ) -> bool {
-        debug_assert_eq!(target.isa, GuestIsa::M68k);
-        self.push_effect(GuestCallEffect::call_guest(
+        self.begin_m68k_with_operation(target, return_pc, final_sp, None)
+    }
+
+    pub(crate) fn begin_m68k_with_operation(
+        &self,
+        target: GuestCallTarget,
+        return_pc: u32,
+        final_sp: u32,
+        operation: Option<ManagerContinuation>,
+    ) -> bool {
+        if target.isa != GuestIsa::M68k {
+            return false;
+        }
+        let Some(id) = self.submit_effect(GuestCallEffect::call_guest(
             GuestCallRequest::for_task(self.current_task(), target),
             GuestCallContinuation::to_m68k(return_pc, final_sp, None),
-        ))
+        )) else {
+            return false;
+        };
+        self.0
+            .borrow_mut()
+            .frames
+            .get_mut(&id)
+            .expect("submitted classic call")
+            .operation = operation;
+        true
     }
 
     pub(crate) fn begin_m68k_to_powerpc(
@@ -2507,7 +2529,17 @@ impl SharedGuestCallStack {
 
     /// Complete the top classic frame only after its trampoline restored the
     /// exact caller PC and stack pointer. A native frame remains untouched.
+    #[cfg(test)]
     pub(crate) fn complete_m68k(&self, post_trap_pc: u32, final_sp: u32) -> bool {
+        self.complete_m68k_with_operation(post_trap_pc, final_sp, |_| panic!("unhandled manager completion"))
+    }
+
+    pub(crate) fn complete_m68k_with_operation(
+        &self,
+        post_trap_pc: u32,
+        final_sp: u32,
+        mut resume: impl FnMut(ManagerContinuation),
+    ) -> bool {
         let (task, call_id) = {
             let tasks = self.0.borrow();
             let task = tasks.kernel.current_task();
@@ -2545,10 +2577,14 @@ impl SharedGuestCallStack {
             .kernel
             .retire(task, call_id)
             .expect("completed 68k continuation must retire transactionally");
-        tasks
+        let frame = tasks
             .frames
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
+        drop(tasks);
+        if let Some(operation) = frame.operation {
+            resume(operation);
+        }
         true
     }
 }

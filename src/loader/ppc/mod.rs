@@ -76375,7 +76375,7 @@ fn ppc_dispatch_native_menu_definition_with_return(
     // by-reference arguments. Nested calls must not reuse a live gateway.
     let workspace_size = match target.isa {
         GuestIsa::PowerPc => 10,
-        GuestIsa::M68k => PPC_MIXED_MODE_M68K_STACK_SIZE + 80,
+        GuestIsa::M68k => PPC_MIXED_MODE_M68K_STACK_SIZE + 96,
     };
     let scratch = manager.new_native_scratch(memory, workspace_size);
     if scratch == 0 {
@@ -76441,7 +76441,14 @@ fn ppc_dispatch_native_menu_definition_with_return(
         return None;
     }
     if let Some(definition) = toolbox_startup.active_menu_definition_mut() {
-        definition.bind_completion(invocation, completion);
+        definition.bind_completion(invocation, completion.clone());
+    }
+    if invocation.message == MenuDefinitionMessage::Size {
+        if let Some(pending) = toolbox_startup.pending_menu_bar_build.as_mut() {
+            pending
+                .build
+                .bind_completion(invocation.menu_handle, completion);
+        }
     }
     prepared
 }
@@ -76464,38 +76471,12 @@ fn ppc_begin_m68k_menu_definition(
     if target.proc_info != 0 && target.proc_info != MenuDefinitionInvocation::PASCAL_PROC_INFO {
         return None;
     }
-    let gateway = operation.scratch.checked_add(16)?;
     let stack_top = operation
         .scratch
-        .checked_add(PPC_MIXED_MODE_M68K_STACK_SIZE + 80)?;
-
-    let return_slot = stack_top - 4;
-    let saved_register_sp = return_slot - 32;
-    let return_pc = gateway + PPC_MIXED_MODE_M68K_RETURN_OFFSET;
-    let write_word = |memory: &mut PpcSectionMem, offset: u32, value: u16| {
-        memory.write_u16_be(gateway + offset, value)
-    };
-    write_word(memory, 0, 0x48e7)?; // MOVEM.L D0-D3/A0-A3,-(SP)
-    write_word(memory, 2, 0xf0f0)?;
-    write_word(memory, 4, 0x3f3c)?; // MOVE.W #message,-(SP)
-    write_word(memory, 6, call.message as i16 as u16)?;
-    for (offset, value) in [
-        (8, call.menu_handle),
-        (14, call.menu_rect),
-        (20, call.hit_point),
-        (26, call.which_item),
-    ] {
-        write_word(memory, offset, 0x2f3c)?; // MOVE.L #value,-(SP)
-        memory.write_u32_be(gateway + offset + 2, value)?;
-    }
-    write_word(memory, 32, 0x4eb9)?; // JSR abs.L
-    memory.write_u32_be(gateway + 34, target.entry)?;
-    write_word(memory, 38, 0x2e7c)?; // MOVEA.L #savedRegisters,A7
-    memory.write_u32_be(gateway + 40, saved_register_sp)?;
-    write_word(memory, 44, 0x4cdf)?; // MOVEM.L (SP)+,D0-D3/A0-A3
-    write_word(memory, 46, 0x0f0f)?;
-    write_word(memory, 48, 0x4e75)?; // RTS
-    memory.write_u32_be(return_slot, return_pc)?;
+        .checked_add(PPC_MIXED_MODE_M68K_STACK_SIZE + 96)?;
+    let return_pc = PPC_GUEST_CALL_RETURN_PC;
+    let frame = crate::execution_m68k::M68kMenuDefinitionFrame::new(call, target.entry, return_pc, stack_top)?;
+    memory.write_bytes(frame.entry, &frame.image)?;
 
     let mut registers = crate::guest_call::M68kRegisterState::default();
     registers.address[5] = PPC_DATA_BASE;
@@ -76509,8 +76490,8 @@ fn ppc_begin_m68k_menu_definition(
             },
         )
         .with_m68k_request(crate::guest_call::M68kCallRequest {
-            entry: gateway,
-            initial_sp: return_slot,
+            entry: frame.entry,
+            initial_sp: frame.entry,
             final_sp: stack_top,
             registers,
             result: None,

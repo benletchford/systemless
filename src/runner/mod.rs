@@ -16065,6 +16065,48 @@ mod tests {
     }
 
     #[test]
+    fn nested_classic_mdef_preserves_its_wrapper_arguments_and_caller_stack() {
+        let ClassicPowerPcMdefFixture { mut runner, menu, record, marker, entry, stack } = classic_powerpc_mdef_fixture();
+        let inner = menu + 0x1000;
+        let inner_record = inner + 0x100;
+        let inner_handle = inner + 0x200;
+        let outer_code = menu + 0x2000;
+        let inner_code = outer_code + 0x200;
+        let outer_handle = runner.bus.read_long(record + 6);
+        runner.bus.write_long(outer_handle, outer_code);
+        runner.bus.write_long(inner, inner_record);
+        runner.bus.write_word(inner_record, 141);
+        runner.bus.write_long(inner_record + 6, inner_handle);
+        runner.bus.write_long(inner_record + 10, u32::MAX);
+        runner.bus.write_long(inner_handle, inner_code);
+        for (address, words) in [
+            (outer_code, vec![
+                0x206f, 12, // MOVEA.L menuRect(SP),A0
+                0x30bc, 0x1122, // MOVE.W #$1122,(A0)
+                0x2f08, // retain outer rectangle pointer
+                0x2f3c, (inner >> 16) as u16, inner as u16,
+                0xa948, // nested CalcMenuSize
+                0x205f, // restore outer pointer
+                0x33d0, (marker >> 16) as u16, marker as u16,
+                0x4e74, 18, // RTD #18
+            ]),
+            (inner_code, vec![0x206f, 12, 0x30bc, 0x3344, 0x4e74, 18]),
+        ] {
+            for (index, word) in words.into_iter().enumerate() {
+                runner.bus.write_word(address + index as u32 * 2, word);
+            }
+        }
+        for _ in 0..8 {
+            let (_, running) = runner.run_steps(128, None);
+            assert!(running);
+        }
+        assert_eq!(runner.bus.read_word(marker), 0x1122);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), stack + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 2);
+        assert!(runner.dispatcher.guest_calls.is_empty());
+    }
+
+    #[test]
     fn classic_calc_menu_size_executes_powerpc_mdef_and_resumes_once() {
         let ClassicPowerPcMdefFixture {
             mut runner,

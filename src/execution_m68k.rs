@@ -8,6 +8,64 @@ use crate::guest_call::{PendingM68kExecution, SharedGuestCallStack};
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use ppc::PpcMemory;
 
+/// Stack-local Pascal MDEF lowering shared by classic and native callers.
+/// Code lives above the callback SP, so nested calls cannot overwrite it.
+/// Macintosh Toolbox Essentials (1992), pp. 3-148--3-151.
+pub(crate) struct M68kMenuDefinitionFrame {
+    pub(crate) entry: u32,
+    pub(crate) image: [u8; 60],
+}
+
+impl M68kMenuDefinitionFrame {
+    pub(crate) const RESERVATION: u32 = 80;
+    pub(crate) const STACK_PREFIX: u32 = 54;
+
+    pub(crate) fn new(
+        call: crate::menu_manager::MenuDefinitionCall,
+        target: u32,
+        return_pc: u32,
+        final_sp: u32,
+    ) -> Option<Self> {
+        let entry = final_sp.checked_sub(Self::RESERVATION)?;
+        entry.checked_sub(Self::STACK_PREFIX)?;
+        if entry & 1 != 0 {
+            return None;
+        }
+        let mut image = [0; 60];
+        for (offset, value) in [
+            (0, 0x48e7u16),
+            (2, 0xf0f0), // MOVEM D0-D3/A0-A3,-(SP)
+            (4, 0x3f3c),
+            (6, call.message as i16 as u16),
+            (8, 0x2f3c),
+            (14, 0x2f3c),
+            (20, 0x2f3c),
+            (26, 0x2f3c),
+            (32, 0x4eb9), // JSR target
+            (38, 0x2e7c), // restore saved-register SP
+            (44, 0x4cdf),
+            (46, 0x0f0f),
+            (48, 0x2e7c), // restore caller SP
+            (54, 0x4ef9), // JMP return_pc
+        ] {
+            image[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        for (offset, value) in [
+            (10, call.menu_handle),
+            (16, call.menu_rect),
+            (22, call.hit_point),
+            (28, call.which_item),
+            (34, target),
+            (40, entry - 32),
+            (50, final_sp),
+            (56, return_pc),
+        ] {
+            image[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        Some(Self { entry, image })
+    }
+}
+
 pub(crate) struct M68kExecution {
     pub(crate) cpu: M68kCpu,
     calls: SharedGuestCallStack,
