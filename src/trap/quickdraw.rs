@@ -29,6 +29,50 @@ pub(super) struct CopyBitmapInfo {
     pub(super) ctab_handle: u32,
 }
 
+fn resolved_row_copy<'a>(
+    mode: u16,
+    source: CopyBitmapInfo,
+    destination: CopyBitmapInfo,
+    source_rect: [i32; 4],
+    destination_rect: [i32; 4],
+    clip: [i32; 4],
+    palette: Option<&'a [u8; 256]>,
+) -> crate::copy_bits::RowCopy<'a> {
+    use crate::copy_bits::{BytePixmap, RowCopy};
+
+    RowCopy {
+        mode,
+        source: BytePixmap {
+            base: source.base,
+            row_bytes: source.row_bytes,
+            depth: source.pixel_size,
+            bounds: [
+                source.bounds_top,
+                source.bounds_left,
+                source.bounds_bottom,
+                source.bounds_right,
+            ]
+            .map(i32::from),
+        },
+        destination: BytePixmap {
+            base: destination.base,
+            row_bytes: destination.row_bytes,
+            depth: destination.pixel_size,
+            bounds: [
+                destination.bounds_top,
+                destination.bounds_left,
+                destination.bounds_bottom,
+                destination.bounds_right,
+            ]
+            .map(i32::from),
+        },
+        source_rect,
+        destination_rect,
+        clip,
+        palette,
+    }
+}
+
 /// Resolved location of an individual pixel in a CGrafPort/GrafPort
 /// pixmap. Produced by `resolve_pixel_target` and consumed by
 /// `read_cpixel` / `write_cpixel` for SetCPixel and GetCPixel.
@@ -3597,16 +3641,11 @@ impl super::TrapDispatcher {
                 ));
                 let (copy_fg_rgb, copy_bg_rgb) = self.copy_bits_port_draw_colors(bus, port);
 
-                // Rectangular, byte-aligned srcCopy uses the common transfer
-                // operation. It snapshots the source before any destination
-                // write, including overlapping or differently mapped aliases.
-                // Port/region resolution and picture/screen effects remain here.
-                let pixel_size_ok = src_info.pixel_size == dst_info.pixel_size
-                    && matches!(src_info.pixel_size, 8 | 16 | 24 | 32);
-                let identity_blit = mode_base == 0
-                    && no_scaling
-                    && pixel_size_ok
-                    && !Self::region_is_complex(bus, vis_rgn_handle)
+                // Port/region resolution, diagnostics, and picture/screen
+                // effects remain at this edge. The shared operation decides
+                // whether the resolved format, mode, and geometry belong to
+                // its rectangular byte-aligned srcCopy family.
+                let row_copy_edge_eligible = !Self::region_is_complex(bus, vis_rgn_handle)
                     && !Self::region_is_complex(bus, clip_rgn_handle)
                     && !Self::region_is_complex(bus, mask_rgn)
                     && trace_copybits_hud_probe().is_none()
@@ -3614,58 +3653,50 @@ impl super::TrapDispatcher {
                     && !trace_copybits_all_enabled()
                     && !trace_menu_redraw_enabled()
                     && trace_probes.is_empty();
-                if identity_blit {
-                    use crate::copy_bits::{BytePixmap, RowCopy};
-                    let _ = RowCopy {
-                        source: BytePixmap {
-                            base: src_info.base,
-                            row_bytes: src_info.row_bytes,
-                            depth: src_info.pixel_size,
-                            bounds: [
-                                src_info.bounds_top,
-                                src_info.bounds_left,
-                                src_info.bounds_bottom,
-                                src_info.bounds_right,
-                            ]
-                            .map(i32::from),
-                        },
-                        destination: BytePixmap {
-                            base: dst_info.base,
-                            row_bytes: dst_info.row_bytes,
-                            depth: dst_info.pixel_size,
-                            bounds: [
-                                dst_info.bounds_top,
-                                dst_info.bounds_left,
-                                dst_info.bounds_bottom,
-                                dst_info.bounds_right,
-                            ]
-                            .map(i32::from),
-                        },
-                        source_rect: [src_top, src_left, src_bottom, src_right].map(i32::from),
-                        destination_rect: [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
-                        clip: [clip_t, clip_l, clip_b, clip_r].map(i32::from),
-                        palette: palette_translation,
-                    }
+                if row_copy_edge_eligible {
+                    use crate::copy_bits::RowCopyOutcome;
+
+                    let outcome = resolved_row_copy(
+                        mode_base,
+                        src_info,
+                        dst_info,
+                        [src_top, src_left, src_bottom, src_right].map(i32::from),
+                        [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
+                        [clip_t, clip_l, clip_b, clip_r].map(i32::from),
+                        palette_translation,
+                    )
                     .execute(bus);
-                    if let Some(rect) = screen_copybits_rect {
-                        self.fill_kiosk_letterbox_for_copybits(bus, rect);
-                        self.refresh_dialog_saved_pixels_after_screen_draw(
-                            bus,
-                            *self.current_port,
-                            (
-                                clip_t.saturating_sub(dst_info.bounds_top),
-                                clip_l.saturating_sub(dst_info.bounds_left),
-                                clip_b.saturating_sub(dst_info.bounds_top),
-                                clip_r.saturating_sub(dst_info.bounds_left),
-                            ),
-                        );
-                        self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
-                            bus,
-                            *self.current_port,
-                            (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
-                        );
+                    let wrote_rows = match outcome {
+                        RowCopyOutcome::Completed => true,
+                        RowCopyOutcome::WriteFailure { rows_written } => rows_written != 0,
+                        RowCopyOutcome::NoOp | RowCopyOutcome::ReadOrGeometryFailure => {
+                            return Some(Ok(()));
+                        }
+                        RowCopyOutcome::Declined => false,
+                    };
+                    if outcome != RowCopyOutcome::Declined {
+                        if wrote_rows {
+                            if let Some(rect) = screen_copybits_rect {
+                                self.fill_kiosk_letterbox_for_copybits(bus, rect);
+                                self.refresh_dialog_saved_pixels_after_screen_draw(
+                                    bus,
+                                    *self.current_port,
+                                    (
+                                        clip_t.saturating_sub(dst_info.bounds_top),
+                                        clip_l.saturating_sub(dst_info.bounds_left),
+                                        clip_b.saturating_sub(dst_info.bounds_top),
+                                        clip_r.saturating_sub(dst_info.bounds_left),
+                                    ),
+                                );
+                                self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+                                    bus,
+                                    *self.current_port,
+                                    (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
+                                );
+                            }
+                        }
+                        return Some(Ok(()));
                     }
-                    return Some(Ok(()));
                 }
 
                 // SYSTEMLESS_TRACE_COPYBITS logs "interesting" CopyBits (mask,
@@ -20593,7 +20624,39 @@ impl super::TrapDispatcher {
             transformed_blit,
         ));
 
-        let source_snapshot = if src_info.base == dst_info.base {
+        // StdBits resolves the current-port destination at this edge, then
+        // submits the same pure rectangular request as CopyBits. Complex
+        // region spans and diagnostic probes remain on the legacy path.
+        let row_copy_edge_eligible = !Self::region_is_complex(bus, vis_rgn_handle)
+            && !Self::region_is_complex(bus, clip_rgn_handle)
+            && !Self::region_is_complex(bus, mask_rgn)
+            && trace_probes.is_empty();
+        let shared_rows_written = if row_copy_edge_eligible {
+            use crate::copy_bits::RowCopyOutcome;
+
+            match resolved_row_copy(
+                mode_base,
+                src_info,
+                dst_info,
+                [src_top, src_left, src_bottom, src_right].map(i32::from),
+                [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
+                [clip_t, clip_l, clip_b, clip_r].map(i32::from),
+                palette_translation,
+            )
+            .execute(bus)
+            {
+                RowCopyOutcome::Completed => true,
+                RowCopyOutcome::WriteFailure { rows_written } if rows_written != 0 => true,
+                RowCopyOutcome::WriteFailure { .. }
+                | RowCopyOutcome::NoOp
+                | RowCopyOutcome::ReadOrGeometryFailure => return Ok(()),
+                RowCopyOutcome::Declined => false,
+            }
+        } else {
+            false
+        };
+
+        let source_snapshot = if !shared_rows_written && src_info.base == dst_info.base {
             let mut row_start = u32::MAX;
             let mut row_end = 0u32;
             for dy in clip_t..clip_b {
@@ -20659,41 +20722,43 @@ impl super::TrapDispatcher {
         // preconditions for that shape; the table comes from the function the
         // (8, 8) arm below calls per pixel, with the arguments it passes. The
         // area floor keeps blits smaller than the table from paying for it.
-        let rows_copied = mode_base == 0
-            && no_scaling
-            && src_info.pixel_size == 8
-            && dst_info.pixel_size == 8
-            && source_snapshot.is_none()
-            && trace_probes.is_empty()
-            && (i32::from(clip_b) - i32::from(clip_t)) * (i32::from(clip_r) - i32::from(clip_l))
-                >= COPY_BITS_ROW_PATH_MIN_PIXELS
-            && self
-                .copy_bits_src_copy_table(
-                    bus,
-                    dst_ctab_handle,
-                    src_clut,
-                    dst_clut,
-                    palette_translation,
-                    None,
-                    copy_fg_rgb,
-                    copy_bg_rgb,
-                )
-                .is_some_and(|table| {
-                    Self::copy_bits_src_copy_rows_8bpp(
+        let rows_copied = shared_rows_written
+            || (mode_base == 0
+                && no_scaling
+                && src_info.pixel_size == 8
+                && dst_info.pixel_size == 8
+                && source_snapshot.is_none()
+                && trace_probes.is_empty()
+                && (i32::from(clip_b) - i32::from(clip_t))
+                    * (i32::from(clip_r) - i32::from(clip_l))
+                    >= COPY_BITS_ROW_PATH_MIN_PIXELS
+                && self
+                    .copy_bits_src_copy_table(
                         bus,
-                        &src_info,
-                        &dst_info,
-                        (src_top, src_left),
-                        (dst_top, dst_left, dst_w, dst_h),
-                        (clip_t, clip_l, clip_b, clip_r),
-                        [
-                            (vis_test, vis_membership.as_ref()),
-                            (clip_test, clip_membership.as_ref()),
-                            (mask_test, mask_membership.as_ref()),
-                        ],
-                        &table,
+                        dst_ctab_handle,
+                        src_clut,
+                        dst_clut,
+                        palette_translation,
+                        None,
+                        copy_fg_rgb,
+                        copy_bg_rgb,
                     )
-                });
+                    .is_some_and(|table| {
+                        Self::copy_bits_src_copy_rows_8bpp(
+                            bus,
+                            &src_info,
+                            &dst_info,
+                            (src_top, src_left),
+                            (dst_top, dst_left, dst_w, dst_h),
+                            (clip_t, clip_l, clip_b, clip_r),
+                            [
+                                (vis_test, vis_membership.as_ref()),
+                                (clip_test, clip_membership.as_ref()),
+                                (mask_test, mask_membership.as_ref()),
+                            ],
+                            &table,
+                        )
+                    }));
         // With the rows already written the loop has nothing left to do; the
         // screen bookkeeping after it still runs.
         let pixel_rows = if rows_copied {
@@ -25183,7 +25248,8 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::display::CursorImage;
-    use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::memory::bus::SharedRamRegion;
+    use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::{
         DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap, ScreenCopyBitsRect,
     };
@@ -35918,6 +35984,182 @@ mod tests {
             bus.read_bytes(pixels, 16),
             vec![1, 2, 3, 90, 1, 2, 3, 91, 4, 5, 6, 92, 7, 8, 9, 93]
         );
+    }
+
+    #[test]
+    fn copybits_and_stdbits_snapshot_distinct_guest_aliases() {
+        const SOURCE: u32 = 0x00D0_0000;
+        const DESTINATION: u32 = 0x00E0_0000;
+        for trap in [0x0EC, 0x0EB] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let mut memory = GuestAddressSpace::new();
+            let backing = SharedRamRegion::from_owned_bytes((0..16).collect());
+            // SAFETY: the trap accesses both aliases serially through one
+            // attached bus, and no byte slice survives a memory call.
+            unsafe {
+                memory.add_shared_region(SOURCE, backing.clone());
+                memory.add_shared_region(DESTINATION, backing);
+            }
+            bus.attach_guest_address_space(memory.shared_view());
+
+            let port = 0x181000;
+            let src_pixmap = bus.alloc(50);
+            let dst_pixmap = bus.alloc(50);
+            let dst_handle = bus.alloc(4);
+            let rect = bus.alloc(8);
+            write_pixmap_8(&mut bus, src_pixmap, SOURCE, 4, 3, 0);
+            write_pixmap_8(&mut bus, dst_pixmap, DESTINATION + 4, 4, 3, 0);
+            bus.write_long(dst_handle, dst_pixmap);
+            bus.write_long(port + 2, dst_handle);
+            bus.write_word(port + 6, 0xC000);
+            bus.write_long(port + 24, 0);
+            bus.write_long(port + 28, 0);
+            let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
+            bus.write_long(global_ptr, port);
+            *d.current_port = port;
+            write_rect(&mut bus, rect, 0, 0, 3, 3);
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, 0x40); // ditherCopy flag, srcCopy base mode
+            bus.write_long(TEST_SP + 6, rect);
+            bus.write_long(TEST_SP + 10, rect);
+            bus.write_long(
+                TEST_SP + 14,
+                if trap == 0x0EC {
+                    dst_pixmap
+                } else {
+                    src_pixmap
+                },
+            );
+            if trap == 0x0EC {
+                bus.write_long(TEST_SP + 18, src_pixmap);
+            }
+            let result = d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+
+            let mut actual = [0; 16];
+            memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+            assert_eq!(
+                actual,
+                [0, 1, 2, 3, 0, 1, 2, 7, 4, 5, 6, 11, 8, 9, 10, 15],
+                "trap=${trap:03X}"
+            );
+        }
+    }
+
+    #[test]
+    fn copybits_and_stdbits_do_not_fallback_after_later_row_write_failure() {
+        const SOURCE: u32 = 0x00D0_0000;
+        const DESTINATION: u32 = 0x00E0_0000;
+        for trap in [0x0EC, 0x0EB] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(SOURCE, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+            memory.add_region(DESTINATION, vec![0xAA; 8]);
+            memory.add_readonly_region(DESTINATION + 6, vec![0xAA]);
+            bus.attach_guest_address_space(memory.shared_view());
+
+            let port = 0x181000;
+            let src_pixmap = bus.alloc(50);
+            let dst_pixmap = bus.alloc(50);
+            let dst_handle = bus.alloc(4);
+            let rect = bus.alloc(8);
+            write_pixmap_8(&mut bus, src_pixmap, SOURCE, 4, 2, 0);
+            write_pixmap_8(&mut bus, dst_pixmap, DESTINATION, 4, 2, 0);
+            bus.write_long(dst_handle, dst_pixmap);
+            bus.write_long(port + 2, dst_handle);
+            bus.write_word(port + 6, 0xC000);
+            bus.write_long(port + 24, 0);
+            bus.write_long(port + 28, 0);
+            let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
+            bus.write_long(global_ptr, port);
+            *d.current_port = port;
+            write_rect(&mut bus, rect, 0, 0, 2, 4);
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 6, rect);
+            bus.write_long(TEST_SP + 10, rect);
+            bus.write_long(
+                TEST_SP + 14,
+                if trap == 0x0EC {
+                    dst_pixmap
+                } else {
+                    src_pixmap
+                },
+            );
+            if trap == 0x0EC {
+                bus.write_long(TEST_SP + 18, src_pixmap);
+            }
+            let result = d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+
+            let mut actual = [0; 8];
+            memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+            assert_eq!(
+                actual,
+                [1, 2, 3, 4, 0xAA, 0xAA, 0xAA, 0xAA],
+                "a fallback would partially overwrite the refused row for trap=${trap:03X}"
+            );
+        }
+    }
+
+    #[test]
+    fn copybits_and_stdbits_do_not_fallback_after_source_read_failure() {
+        const SOURCE: u32 = 0x00D0_0000;
+        const DESTINATION: u32 = 0x00E0_0000;
+        for trap in [0x0EC, 0x0EB] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(SOURCE, vec![1, 2, 3, 4]);
+            memory.add_region(DESTINATION, vec![0xAA; 8]);
+            bus.attach_guest_address_space(memory.shared_view());
+
+            let port = 0x181000;
+            let src_pixmap = bus.alloc(50);
+            let dst_pixmap = bus.alloc(50);
+            let dst_handle = bus.alloc(4);
+            let rect = bus.alloc(8);
+            write_pixmap_8(&mut bus, src_pixmap, SOURCE, 4, 2, 0);
+            write_pixmap_8(&mut bus, dst_pixmap, DESTINATION, 4, 2, 0);
+            bus.write_long(dst_handle, dst_pixmap);
+            bus.write_long(port + 2, dst_handle);
+            bus.write_word(port + 6, 0xC000);
+            bus.write_long(port + 24, 0);
+            bus.write_long(port + 28, 0);
+            let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
+            bus.write_long(global_ptr, port);
+            *d.current_port = port;
+            write_rect(&mut bus, rect, 0, 0, 2, 4);
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 6, rect);
+            bus.write_long(TEST_SP + 10, rect);
+            bus.write_long(
+                TEST_SP + 14,
+                if trap == 0x0EC {
+                    dst_pixmap
+                } else {
+                    src_pixmap
+                },
+            );
+            if trap == 0x0EC {
+                bus.write_long(TEST_SP + 18, src_pixmap);
+            }
+            let result = d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+
+            let mut actual = [0; 8];
+            memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+            assert_eq!(
+                actual, [0xAA; 8],
+                "a fallback would write after the failed snapshot for trap=${trap:03X}"
+            );
+        }
     }
 
     fn write_pixmap_8(

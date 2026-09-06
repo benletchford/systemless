@@ -75,6 +75,7 @@ impl BytePixmap {
 
 /// One synchronous transfer, consumed before any guest callback can run.
 pub(crate) struct RowCopy<'a> {
+    pub(crate) mode: u16,
     pub(crate) source: BytePixmap,
     pub(crate) destination: BytePixmap,
     pub(crate) source_rect: [i32; 4],
@@ -83,71 +84,134 @@ pub(crate) struct RowCopy<'a> {
     pub(crate) palette: Option<&'a [u8; 256]>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "only Declined permits a caller to try another raster path"]
+pub(crate) enum RowCopyOutcome {
+    Completed,
+    NoOp,
+    Declined,
+    ReadOrGeometryFailure,
+    WriteFailure { rows_written: usize },
+}
+
 impl RowCopy<'_> {
     /// Snapshot all source rows before writing, including across different
     /// addresses that alias the same backing. Geometry/read failures write
     /// nothing. A destination failure preserves that row but may follow rows
     /// already committed; this does not promise rectangle-wide atomicity.
-    pub(crate) fn execute(self, memory: &mut impl CopyBitsMemory) -> Option<()> {
+    pub(crate) fn execute(self, memory: &mut impl CopyBitsMemory) -> RowCopyOutcome {
         let depth = self.source.depth;
-        if depth != self.destination.depth
+        if self.mode != 0
+            || depth != self.destination.depth
             || !matches!(depth, 8 | 16 | 24 | 32)
             || (self.palette.is_some() && depth != 8)
         {
-            return None;
+            return RowCopyOutcome::Declined;
         }
         let [st, sl, sb, sr] = self.source_rect;
         let [dt, dl, db, dr] = self.destination_rect;
-        let width = sr.checked_sub(sl)?;
-        let height = sb.checked_sub(st)?;
-        if width <= 0
-            || height <= 0
-            || dr.checked_sub(dl)? != width
-            || db.checked_sub(dt)? != height
-        {
-            return None;
+        let Some(width) = sr.checked_sub(sl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(height) = sb.checked_sub(st) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_width) = dr.checked_sub(dl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_height) = db.checked_sub(dt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if width <= 0 || height <= 0 || destination_width <= 0 || destination_height <= 0 {
+            return RowCopyOutcome::NoOp;
         }
-        let x_delta = sl.checked_sub(dl)?;
-        let y_delta = st.checked_sub(dt)?;
+        if destination_width != width || destination_height != height {
+            return RowCopyOutcome::Declined;
+        }
+        let Some(x_delta) = sl.checked_sub(dl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(y_delta) = st.checked_sub(dt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
         let [sbt, sbl, sbb, sbr] = self.source.bounds;
         let [dbt, dbl, dbb, dbr] = self.destination.bounds;
         let [ct, cl, cb, cr] = self.clip;
-        let top = dt.max(dbt).max(ct).max(sbt.checked_sub(y_delta)?);
-        let left = dl.max(dbl).max(cl).max(sbl.checked_sub(x_delta)?);
-        let bottom = db.min(dbb).min(cb).min(sbb.checked_sub(y_delta)?);
-        let right = dr.min(dbr).min(cr).min(sbr.checked_sub(x_delta)?);
+        let Some(source_top) = sbt.checked_sub(y_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_left) = sbl.checked_sub(x_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_bottom) = sbb.checked_sub(y_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_right) = sbr.checked_sub(x_delta) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let top = dt.max(dbt).max(ct).max(source_top);
+        let left = dl.max(dbl).max(cl).max(source_left);
+        let bottom = db.min(dbb).min(cb).min(source_bottom);
+        let right = dr.min(dbr).min(cr).min(source_right);
         if top >= bottom || left >= right {
-            return None;
+            return RowCopyOutcome::NoOp;
         }
-        let row_len = usize::try_from(right.checked_sub(left)?)
-            .ok()?
-            .checked_mul((depth / 8) as usize)?;
-        let count = usize::try_from(bottom.checked_sub(top)?).ok()?;
+        let Some(pixel_width) = right.checked_sub(left) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(row_len) = usize::try_from(pixel_width)
+            .ok()
+            .and_then(|width| width.checked_mul((depth / 8) as usize))
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(count) = bottom
+            .checked_sub(top)
+            .and_then(|count| usize::try_from(count).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
         let mut addresses = Vec::with_capacity(count);
         // Check every row's arithmetic before allocating or reading pixels.
         for y in top..bottom {
-            addresses.push((
-                self.source.row_address(
-                    left.checked_add(x_delta)?,
-                    y.checked_add(y_delta)?,
-                    row_len,
-                )?,
-                self.destination.row_address(left, y, row_len)?,
-            ));
+            let Some(source_x) = left.checked_add(x_delta) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(source_y) = y.checked_add(y_delta) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(source_address) = self.source.row_address(source_x, source_y, row_len) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(destination_address) = self.destination.row_address(left, y, row_len) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            addresses.push((source_address, destination_address));
         }
-        let mut pixels = vec![0; count.checked_mul(row_len)?];
+        let Some(pixel_count) = count.checked_mul(row_len) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let mut pixels = vec![0; pixel_count];
         for ((source, _), row) in addresses.iter().zip(pixels.chunks_exact_mut(row_len)) {
-            memory.read_copy_row(*source, row)?;
+            if memory.read_copy_row(*source, row).is_none() {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            }
             if let Some(palette) = self.palette {
                 for pixel in row {
                     *pixel = palette[usize::from(*pixel)];
                 }
             }
         }
-        for ((_, destination), row) in addresses.iter().zip(pixels.chunks_exact(row_len)) {
-            memory.write_copy_row(*destination, row)?;
+        for (rows_written, ((_, destination), row)) in addresses
+            .iter()
+            .zip(pixels.chunks_exact(row_len))
+            .enumerate()
+        {
+            if memory.write_copy_row(*destination, row).is_none() {
+                return RowCopyOutcome::WriteFailure { rows_written };
+            }
         }
-        Some(())
+        RowCopyOutcome::Completed
     }
 }
 
@@ -158,7 +222,7 @@ mod tests {
     const SOURCE: u32 = 0x0100_0000;
     const DESTINATION: u32 = 0x0200_0000;
 
-    fn run(memory: &mut GuestAddressSpace, classic: bool, copy: RowCopy<'_>) -> Option<()> {
+    fn run(memory: &mut GuestAddressSpace, classic: bool, copy: RowCopy<'_>) -> RowCopyOutcome {
         if classic {
             let mut bus = MacMemoryBus::new(0x10000);
             bus.set_addressing_32_bit(true);
@@ -179,6 +243,46 @@ mod tests {
     }
 
     #[test]
+    fn no_op_and_decline_are_distinct_prewrite_outcomes() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("prewrite outcome reached source memory");
+            }
+
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("prewrite outcome reached destination memory");
+            }
+        }
+
+        let request = |mode, source_rect, destination_rect, clip| RowCopy {
+            mode,
+            source: pixmap(SOURCE, 4, 8, [0, 0, 2, 4]),
+            destination: pixmap(DESTINATION, 4, 8, [0, 0, 2, 4]),
+            source_rect,
+            destination_rect,
+            clip,
+            palette: None,
+        };
+        assert_eq!(
+            request(0, [0, 0, 0, 4], [0, 0, 0, 4], [0, 0, 2, 4]).execute(&mut NoAccess),
+            RowCopyOutcome::NoOp
+        );
+        assert_eq!(
+            request(0, [0, 0, 2, 4], [0, 0, 2, 4], [3, 0, 4, 4]).execute(&mut NoAccess),
+            RowCopyOutcome::NoOp
+        );
+        assert_eq!(
+            request(1, [0, 0, 2, 4], [0, 0, 2, 4], [0, 0, 2, 4]).execute(&mut NoAccess),
+            RowCopyOutcome::Declined
+        );
+        assert_eq!(
+            request(0, [0, 0, 2, 4], [0, 0, 1, 4], [0, 0, 2, 4]).execute(&mut NoAccess),
+            RowCopyOutcome::Declined
+        );
+    }
+
+    #[test]
     fn clipped_offset_rows_preserve_padding_in_both_memory_views() {
         for classic in [false, true] {
             for depth in [8, 16, 24, 32] {
@@ -189,6 +293,7 @@ mod tests {
                 memory.add_region(SOURCE, source.clone());
                 memory.add_region(DESTINATION, vec![0xAA; (stride * 3) as usize]);
                 let copy = RowCopy {
+                    mode: 0,
                     source: pixmap(SOURCE, stride, depth, [-2, -3, 1, 1]),
                     destination: pixmap(DESTINATION, stride, depth, [10, 20, 13, 24]),
                     source_rect: [-3, -4, 1, 1],
@@ -196,7 +301,7 @@ mod tests {
                     clip: [11, 21, 13, 23],
                     palette: None,
                 };
-                assert_eq!(run(&mut memory, classic, copy), Some(()));
+                assert_eq!(run(&mut memory, classic, copy), RowCopyOutcome::Completed);
                 let mut expected = vec![0xAA; (stride * 3) as usize];
                 for row in 1..3 {
                     let start = (row * stride + bytes) as usize;
@@ -227,6 +332,7 @@ mod tests {
                         &mut memory,
                         classic,
                         RowCopy {
+                            mode: 0,
                             source: pixmap(source, 4, 8, [0, 0, 3, 3]),
                             destination: pixmap(destination, 4, 8, [0, 0, 3, 3]),
                             source_rect: [0, 0, 3, 3],
@@ -235,7 +341,7 @@ mod tests {
                             palette: Some(&palette),
                         }
                     ),
-                    Some(())
+                    RowCopyOutcome::Completed
                 );
                 let mut expected: Vec<u8> = (0..16).collect();
                 for row in 0..3 {
@@ -267,6 +373,7 @@ mod tests {
                     &mut memory,
                     classic,
                     RowCopy {
+                        mode: 0,
                         source: pixmap(SOURCE, 4, 8, [0, 0, 3, 3]),
                         destination: pixmap(DESTINATION + 4, 4, 8, [0, 0, 3, 3]),
                         source_rect: [0, 0, 3, 3],
@@ -275,7 +382,7 @@ mod tests {
                         palette: None,
                     }
                 ),
-                Some(())
+                RowCopyOutcome::Completed
             );
             let mut actual = [0; 16];
             memory.read_bytes_into(SOURCE, &mut actual).unwrap();
@@ -306,6 +413,7 @@ mod tests {
         ] {
             assert_eq!(
                 RowCopy {
+                    mode: 0,
                     source: pixmap(base, stride, 8, bounds),
                     destination: pixmap(DESTINATION, stride, 8, bounds),
                     source_rect: rect,
@@ -314,7 +422,7 @@ mod tests {
                     palette: None,
                 }
                 .execute(&mut NoAccess),
-                None
+                RowCopyOutcome::ReadOrGeometryFailure
             );
         }
     }
@@ -331,6 +439,7 @@ mod tests {
                         &mut memory,
                         classic,
                         RowCopy {
+                            mode: 0,
                             source: pixmap(SOURCE, if bad_stride { 3 } else { 4 }, 8, [0, 0, 2, 4]),
                             destination: pixmap(DESTINATION, 4, 8, [0, 0, 2, 4]),
                             source_rect: [0, 0, 2, 4],
@@ -339,7 +448,7 @@ mod tests {
                             palette: None,
                         }
                     ),
-                    None
+                    RowCopyOutcome::ReadOrGeometryFailure
                 );
                 let mut actual = [0; 8];
                 memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
@@ -360,6 +469,7 @@ mod tests {
                     &mut memory,
                     classic,
                     RowCopy {
+                        mode: 0,
                         source: pixmap(SOURCE, 4, 8, [0, 0, 2, 4]),
                         destination: pixmap(DESTINATION, 4, 8, [0, 0, 2, 4]),
                         source_rect: [0, 0, 2, 4],
@@ -368,7 +478,7 @@ mod tests {
                         palette: None,
                     }
                 ),
-                None
+                RowCopyOutcome::WriteFailure { rows_written: 1 }
             );
             let mut actual = [0; 8];
             memory.read_bytes_into(DESTINATION, &mut actual).unwrap();

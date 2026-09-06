@@ -58043,18 +58043,14 @@ fn ppc_copy_bits(
 
         // Inside Macintosh: Imaging With QuickDraw (1994), pp. 3-112–3-116
         // and 4-27: CopyBits copies bitmap or PixMap pixels between graphics
-        // ports and GWorlds, including indexed-color PixMaps. Keep the common
-        // unscaled copy row-based so an 8-bit full-screen blit remains native
-        // host memory bandwidth rather than 307,200 scalar HLE writes.
-        if mode == 0
-            && src_bits.depth == dst_bits.depth
-            && matches!(src_bits.depth, 8 | 16)
-            && mask_storage.is_none()
-            && src_width == dst_width
-            && src_height == dst_height
-        {
-            use crate::copy_bits::{BytePixmap, RowCopy};
-            return RowCopy {
+        // ports and GWorlds, including indexed-color PixMaps. The import
+        // resolves records and masks; the shared operation owns pure
+        // byte-aligned srcCopy format, mode, and geometry eligibility.
+        if mask_storage.is_none() {
+            use crate::copy_bits::{BytePixmap, RowCopy, RowCopyOutcome};
+
+            let outcome = RowCopy {
+                mode,
                 source: BytePixmap {
                     base: src_bits.base_addr,
                     row_bytes: src_bits.row_bytes,
@@ -58075,6 +58071,22 @@ fn ppc_copy_bits(
                 palette: palette_map.as_ref(),
             }
             .execute(memory);
+            match outcome {
+                RowCopyOutcome::Completed => return Some(()),
+                RowCopyOutcome::NoOp => {
+                    reason = "row-copy-no-op";
+                    return Some(());
+                }
+                RowCopyOutcome::Declined => {}
+                RowCopyOutcome::ReadOrGeometryFailure => {
+                    reason = "row-copy-read-or-geometry";
+                    return None;
+                }
+                RowCopyOutcome::WriteFailure { .. } => {
+                    reason = "row-copy-write";
+                    return None;
+                }
+            }
         }
 
         let transparent_back_pixel = match src_bits.depth {
@@ -150959,6 +150971,155 @@ pub(crate) mod tests {
         let mut actual = [0; 16];
         loaded.memory.read_bytes_into(pixels, &mut actual).unwrap();
         assert_eq!(actual, [1, 2, 3, 90, 1, 2, 3, 91, 4, 5, 6, 92, 7, 8, 9, 93]);
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_snapshots_distinct_guest_aliases() {
+        const SOURCE: u32 = 0x0900_0000;
+        const DESTINATION: u32 = 0x0A00_0000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let backing = crate::memory::bus::SharedRamRegion::from_owned_bytes((0..16).collect());
+        // SAFETY: the import accesses both aliases serially through one
+        // operation, and no borrowed byte slice survives a memory call.
+        unsafe {
+            loaded.memory.add_shared_region(SOURCE, backing.clone());
+            loaded.memory.add_shared_region(DESTINATION, backing);
+        }
+        let records = PPC_HEAP_BASE + 0x16000;
+        let src_pixmap = records;
+        let dst_pixmap = records + 0x40;
+        let rect = records + 0x80;
+        loaded.memory.add_region(records, vec![0; 0x90]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, SOURCE, 4, 0, 0, 3, 4, 8).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            DESTINATION + 4,
+            4,
+            0,
+            0,
+            3,
+            4,
+            8,
+        )
+        .unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 3, 3).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0x40; // ditherCopy flag, srcCopy base mode
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 16];
+        loaded.memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+        assert_eq!(actual, [0, 1, 2, 3, 0, 1, 2, 7, 4, 5, 6, 11, 8, 9, 10, 15]);
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_does_not_fallback_after_later_row_write_failure() {
+        const SOURCE: u32 = 0x0900_0000;
+        const DESTINATION: u32 = 0x0A00_0000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        loaded
+            .memory
+            .add_region(SOURCE, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        loaded.memory.add_region(DESTINATION, vec![0xAA; 8]);
+        loaded
+            .memory
+            .add_readonly_region(DESTINATION + 6, vec![0xAA]);
+        let records = PPC_HEAP_BASE + 0x16000;
+        let src_pixmap = records;
+        let dst_pixmap = records + 0x40;
+        let rect = records + 0x80;
+        loaded.memory.add_region(records, vec![0; 0x90]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, SOURCE, 4, 0, 0, 2, 4, 8).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            DESTINATION,
+            4,
+            0,
+            0,
+            2,
+            4,
+            8,
+        )
+        .unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 4).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 8];
+        loaded
+            .memory
+            .read_bytes_into(DESTINATION, &mut actual)
+            .unwrap();
+        assert_eq!(
+            actual,
+            [1, 2, 3, 4, 0xAA, 0xAA, 0xAA, 0xAA],
+            "a fallback would partially overwrite the refused row"
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_does_not_fallback_after_source_read_failure() {
+        const SOURCE: u32 = 0x0900_0000;
+        const DESTINATION: u32 = 0x0A00_0000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        loaded.memory.add_region(SOURCE, vec![1, 2, 3, 4]);
+        loaded.memory.add_region(DESTINATION, vec![0xAA; 8]);
+        let records = PPC_HEAP_BASE + 0x16000;
+        let src_pixmap = records;
+        let dst_pixmap = records + 0x40;
+        let rect = records + 0x80;
+        loaded.memory.add_region(records, vec![0; 0x90]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, SOURCE, 4, 0, 0, 2, 4, 8).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            DESTINATION,
+            4,
+            0,
+            0,
+            2,
+            4,
+            8,
+        )
+        .unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 4).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 8];
+        loaded
+            .memory
+            .read_bytes_into(DESTINATION, &mut actual)
+            .unwrap();
+        assert_eq!(
+            actual, [0xAA; 8],
+            "a fallback would write after the failed source snapshot"
+        );
     }
 
     #[test]
