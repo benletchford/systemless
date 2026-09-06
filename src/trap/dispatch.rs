@@ -2151,6 +2151,9 @@ pub(crate) struct MovieState {
     pub active: bool,
     /// Parsed video track (sample tables + codec), if the movie carries one.
     pub media: Option<super::movie_media::VideoTrack>,
+    pub music: Option<Vec<super::movie_media::MusicNote>>,
+    pub audio_time: f64,
+    pub time_base_flags: u32,
     /// The movie's data-fork bytes; `media` sample offsets index into this.
     pub data_fork: Vec<u8>,
     /// Lazily-created Cinepak decoder, retained so inter frames composite on
@@ -2188,6 +2191,9 @@ impl MovieState {
             time_scale: time_scale.max(1),
             active: true,
             media: None,
+            music: None,
+            audio_time: 0.0,
+            time_base_flags: 0,
             data_fork: Vec::new(),
             decoder: None,
             rle_decoder: None,

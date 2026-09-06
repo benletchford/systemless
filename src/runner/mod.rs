@@ -4489,7 +4489,8 @@ impl FixtureRunner {
                 .map(|samples| samples.max(1).min(remaining_samples))
                 .unwrap_or(remaining_samples);
 
-            let samples = self.dispatcher.sound_manager.mix_frame_stereo(chunk);
+            let mut samples = self.dispatcher.sound_manager.mix_frame_stereo(chunk);
+            self.dispatcher.mix_movie_music(&mut samples, chunk);
             if samples.is_empty() {
                 self.queue_host_silence_audio(remaining_samples);
                 self.dispatcher
