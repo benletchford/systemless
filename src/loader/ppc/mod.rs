@@ -29,8 +29,8 @@ use crate::event_queue::{
 };
 use crate::guest_call::{
     format_ppc_import_action, install_powerpc_call_arguments, GuestCallContinuation,
-    GuestCallEffect, GuestCallRequest, GuestCallTarget, NativeMenuSelectOrigin,
-    NativePopupMenuOrigin, SharedGuestCallStack,
+    GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall,
+    MenuTrackingOrigin, SharedGuestCallStack,
 };
 use crate::guest_procedure::{
     resolve_guest_procedure, GuestIsa, GuestProcedure,
@@ -71,7 +71,7 @@ use crate::menu_manager::{
     MenuColorTable, MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane,
     MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
-    MenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane, MenuTrackingSurface,
+    MenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane, MenuTrackingRequest, MenuTrackingSurface,
     MonochromeMenuIconLayout, PopupMenuRequest, ProcessMenuTrackingState, ProcessTrackedMenuPane,
     SharedNativeMenuSelection, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
     StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest,
@@ -15680,7 +15680,13 @@ fn dispatch_supported_import(
         binding.dispatcher_target,
         PpcImportDispatcherTarget::MenuSelect | PpcImportDispatcherTarget::PopUpMenuSelect
     ))
-    .then(|| toolbox_startup.menu_tracking.enter());
+    .then(|| {
+        let call = match binding.dispatcher_target {
+            PpcImportDispatcherTarget::PopUpMenuSelect => ppc_popup_menu_call(cpu),
+            _ => ppc_menu_select_call(cpu, cpu.gpr[3]),
+        };
+        toolbox_startup.menu_tracking.enter_call(call)
+    });
     // The process registry is authoritative. Refresh the legacy vector
     // booleans at each native boundary so rendering/debugging code that still
     // reads them sees any classic-side transition before this import runs.
@@ -16668,10 +16674,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::PopUpMenuSelect => {
             let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
             let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            if toolbox_startup
-                .menu_tracking
-                .as_ref()
-                .is_some_and(|state| state.front_buffer.is_none())
+            if toolbox_startup.menu_tracking.context().caller_isa() == Some(GuestIsa::M68k)
             {
                 // A classic MenuSelect owns this process continuation. A
                 // nested native call must not consume its origin ABI frame.
@@ -16680,7 +16683,7 @@ fn dispatch_supported_import(
                 if toolbox_startup
                     .menu_tracking
                     .context()
-                    .native_popup
+                    .native_popup()
                     .is_some()
                 {
                     Some(ppc_continue_custom_popup_menu_tracking(
@@ -17204,10 +17207,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::MenuSelect => {
             let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
             let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            if toolbox_startup
-                .menu_tracking
-                .as_ref()
-                .is_some_and(|state| state.front_buffer.is_none())
+            if toolbox_startup.menu_tracking.context().caller_isa() == Some(GuestIsa::M68k)
             {
                 // A classic MenuSelect owns this process continuation. A
                 // nested native call must not consume its origin ABI frame.
@@ -17322,11 +17322,8 @@ fn dispatch_supported_import(
                     .active_menu_definition()
                     .and_then(MenuDefinitionTracking::pending_invocation)
                 {
-                    toolbox_startup.menu_tracking.context_mut().native_menu =
-                        Some(NativeMenuSelectOrigin {
-                            initial_point: cpu.gpr[3],
-                            return_address: cpu.lr,
-                        });
+                    toolbox_startup.menu_tracking.context_mut().call
+                        .get_or_insert(ppc_menu_select_call(cpu, cpu.gpr[3]));
                     ppc_prepare_menu_definition_port(
                         toolbox_startup,
                         current_gworld,
@@ -17349,7 +17346,7 @@ fn dispatch_supported_import(
                         ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                     }
                     toolbox_startup.clear_active_menu_definition();
-                    toolbox_startup.menu_tracking.context_mut().native_menu = None;
+                    toolbox_startup.menu_tracking.context_mut().clear_native_menu();
                     ppc_restore_menu_definition_port(
                         toolbox_startup,
                         current_gworld,
@@ -59824,7 +59821,7 @@ fn ppc_set_depth(
         .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar);
     if let Some(context) = toolbox_startup.menu_tracking.existing_context_mut() {
         context.tracking = None;
-        context.native_popup = None;
+        context.clear_native_popup();
     }
     toolbox_startup.go_away_tracking = None;
     toolbox_startup.drag_window_tracking = None;
@@ -76612,15 +76609,27 @@ fn ppc_menu_selection_result(
     ppc_guest_menu_snapshot(memory, menu_list_handle).selectable_result(menu_id, item_number)
 }
 
-fn ppc_popup_menu_call(cpu: &PpcCpu) -> NativePopupMenuOrigin {
-    NativePopupMenuOrigin {
-        request: PopupMenuRequest {
+fn ppc_menu_select_call(cpu: &PpcCpu, initial_point: u32) -> MenuTrackingCall {
+    MenuTrackingCall {
+        request: MenuTrackingRequest::MenuSelect { initial_point },
+        origin: MenuTrackingOrigin::PowerPc {
+            stack_pointer: cpu.gpr[1],
+            return_address: cpu.lr,
+        },
+    }
+}
+
+fn ppc_popup_menu_call(cpu: &PpcCpu) -> MenuTrackingCall {
+    MenuTrackingCall {
+        request: MenuTrackingRequest::PopUp(PopupMenuRequest {
             menu_handle: cpu.gpr[3],
             anchor: (cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u16 as i16),
             requested_item: cpu.gpr[6] as u16 as i16,
+        }),
+        origin: MenuTrackingOrigin::PowerPc {
+            stack_pointer: cpu.gpr[1],
+            return_address: cpu.lr,
         },
-        stack_pointer: cpu.gpr[1],
-        return_address: cpu.lr,
     }
 }
 
@@ -76695,8 +76704,8 @@ fn ppc_begin_custom_popup_menu_tracking(
         return None;
     }
     ppc_menu_definition_target(cpu, memory, resources, menu_handle)?;
-    startup.menu_tracking.context_mut().definition = Some(call.request.begin_definition());
-    startup.menu_tracking.context_mut().native_popup = Some(call);
+    startup.menu_tracking.context_mut().definition = Some(call.popup_request().unwrap().begin_definition());
+    startup.menu_tracking.context_mut().call.get_or_insert(call);
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
         .active_menu_definition()
@@ -76714,7 +76723,7 @@ fn ppc_begin_custom_popup_menu_tracking(
     );
     if action.is_none() {
         startup.clear_active_menu_definition();
-        startup.menu_tracking.context_mut().native_popup = None;
+        startup.menu_tracking.context_mut().clear_native_popup();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
     }
     action
@@ -76736,7 +76745,7 @@ fn ppc_continue_custom_popup_menu_tracking(
     input: PpcInputSnapshot,
     resources: &[PpcVfsResourceRecord],
 ) -> PpcImportAction {
-    let Some(call) = startup.menu_tracking.context().native_popup else {
+    let Some(call) = startup.menu_tracking.context().native_popup() else {
         startup.clear_active_menu_definition();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
@@ -76757,9 +76766,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
         }
     };
@@ -76783,9 +76792,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
         }
         let invocation = startup
@@ -76810,9 +76819,9 @@ fn ppc_continue_custom_popup_menu_tracking(
     if completed == Some(MenuDefinitionMessage::PopUp) {
         let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
         };
         let definition = startup.active_menu_definition().unwrap().clone();
@@ -76831,9 +76840,9 @@ fn ppc_continue_custom_popup_menu_tracking(
             Vec::new(),
         ) else {
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
         };
         if ppc_draw_tracked_menu_chrome(
@@ -76848,9 +76857,9 @@ fn ppc_continue_custom_popup_menu_tracking(
         {
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
         }
         state.definition = startup.menu_tracking.context_mut().definition.take();
@@ -76924,9 +76933,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                         }
                     }
                     startup.clear_active_menu_definition();
-                    startup.menu_tracking.context_mut().native_popup = None;
+                    startup.menu_tracking.context_mut().clear_native_popup();
                     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-                    cpu.lr = call.return_address;
+                    cpu.lr = call.origin.return_address();
                     return PpcImportAction::Return(result);
                 }
                 return PpcImportAction::Yield(u64::MAX);
@@ -76940,9 +76949,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
         }
     }
@@ -76956,9 +76965,9 @@ fn ppc_continue_custom_popup_menu_tracking(
         }
     }
     startup.clear_active_menu_definition();
-    startup.menu_tracking.context_mut().native_popup = None;
+    startup.menu_tracking.context_mut().clear_native_popup();
     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-    cpu.lr = call.return_address;
+    cpu.lr = call.origin.return_address();
     PpcImportAction::Return(0)
 }
 
@@ -76979,13 +76988,13 @@ fn ppc_dispatch_pop_up_menu_select(
     let current_menu_list = ppc_current_menu_list(memory);
 
     if let Some(state) = startup.menu_tracking.as_ref() {
-        if state.front_buffer.is_none() {
+        if startup.menu_tracking.context().caller_isa() == Some(GuestIsa::M68k) {
             // A classic MenuSelect owns this process continuation. A nested
             // native call must not consume its save-under or origin ABI frame.
             return PpcImportAction::Return(0);
         }
         if state.kind != MenuTrackingKind::PopUp
-            || startup.menu_tracking.context().native_popup != Some(call)
+            || startup.menu_tracking.context().native_popup() != Some(call)
             || state.menu_handle != menu_handle
         {
             // A callback may enter a different modal menu routine while an
@@ -76999,14 +77008,14 @@ fn ppc_dispatch_pop_up_menu_select(
             // A changed PixMap/depth makes the saved coordinates unsafe to
             // write. Abandon the overlay without touching either buffer.
             *startup.menu_tracking = None;
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             return PpcImportAction::Return(0);
         }
         if !ppc_popup_menu_is_inserted(memory, current_menu_list, menu_handle) {
             let Some(state) = startup.menu_tracking.take() else {
                 return PpcImportAction::Return(0);
             };
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
             return PpcImportAction::Return(0);
         }
@@ -77021,7 +77030,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 return PpcImportAction::Yield(u64::MAX);
             }
             if let MenuFlashStep::Complete(result) = step {
-                startup.menu_tracking.context_mut().native_popup = None;
+                startup.menu_tracking.context_mut().clear_native_popup();
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
@@ -77063,7 +77072,7 @@ fn ppc_dispatch_pop_up_menu_select(
         let highlighted_item = state.highlighted_item;
         if !input.mouse_button {
             if highlighted_item == 0 {
-                startup.menu_tracking.context_mut().native_popup = None;
+                startup.menu_tracking.context_mut().clear_native_popup();
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(0);
             }
@@ -77080,7 +77089,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 result,
             );
             if !flash_enabled {
-                startup.menu_tracking.context_mut().native_popup = None;
+                startup.menu_tracking.context_mut().clear_native_popup();
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
@@ -77117,7 +77126,7 @@ fn ppc_dispatch_pop_up_menu_select(
     let Some((popup_left, popup_top, popup_width, popup_height, requested_item, content_top)) =
         ppc_popup_menu_layout_with_resources(
             memory,
-            call.request,
+            call.popup_request().unwrap(),
             front,
             resources,
             current_resource_refnum,
@@ -77159,7 +77168,7 @@ fn ppc_dispatch_pop_up_menu_select(
         highlighted_item,
     );
     *startup.menu_tracking = Some(state);
-    startup.menu_tracking.context_mut().native_popup = Some(call);
+    startup.menu_tracking.context_mut().call.get_or_insert(call);
     PpcImportAction::Yield(u64::MAX)
 }
 
@@ -78435,10 +78444,8 @@ fn ppc_begin_custom_menu_bar_tracking(
         &state,
     )?;
     *startup.menu_tracking = Some(state);
-    startup.menu_tracking.context_mut().native_menu = Some(NativeMenuSelectOrigin {
-        initial_point,
-        return_address: cpu.lr,
-    });
+    startup.menu_tracking.context_mut().call
+        .get_or_insert(ppc_menu_select_call(cpu, initial_point));
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
         .active_menu_definition()
@@ -78459,7 +78466,7 @@ fn ppc_begin_custom_menu_bar_tracking(
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
         }
         startup.clear_active_menu_definition();
-        startup.menu_tracking.context_mut().native_menu = None;
+        startup.menu_tracking.context_mut().clear_native_menu();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         ppc_set_menu_command_highlight_with_colors(
             memory,
@@ -78492,14 +78499,14 @@ fn ppc_continue_custom_menu_bar_tracking(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> PpcImportAction {
-    let Some(call) = startup.menu_tracking.context().native_menu else {
+    let Some(call) = startup.menu_tracking.context().native_menu() else {
         startup.clear_active_menu_definition();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
     let Some(definition) = startup.active_menu_definition_mut() else {
-        cpu.lr = call.return_address;
-        startup.menu_tracking.context_mut().native_menu = None;
+        cpu.lr = call.origin.return_address();
+        startup.menu_tracking.context_mut().clear_native_menu();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
@@ -78515,9 +78522,9 @@ fn ppc_continue_custom_menu_bar_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_menu = None;
+            startup.menu_tracking.context_mut().clear_native_menu();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
         }
     };
@@ -78556,9 +78563,9 @@ fn ppc_continue_custom_menu_bar_tracking(
                     *startup.menu_tracking = Some(state);
                 }
                 if startup.active_menu_definition().is_none() {
-                    startup.menu_tracking.context_mut().native_menu = None;
+                    startup.menu_tracking.context_mut().clear_native_menu();
                     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-                    cpu.lr = call.return_address;
+                    cpu.lr = call.origin.return_address();
                     return PpcImportAction::Yield(u64::MAX);
                 }
                 if let Some(invocation) = startup
@@ -78613,9 +78620,9 @@ fn ppc_continue_custom_menu_bar_tracking(
                 startup.host_menu_bar_hidden,
             );
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_menu = None;
+            startup.menu_tracking.context_mut().clear_native_menu();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
         }
         let invocation = startup
@@ -78666,7 +78673,7 @@ fn ppc_continue_custom_menu_bar_tracking(
             }
         }
         startup.clear_active_menu_definition();
-        startup.menu_tracking.context_mut().native_menu = None;
+        startup.menu_tracking.context_mut().clear_native_menu();
         ppc_set_menu_command_highlight_with_colors(
             memory,
             gworlds,
@@ -78678,7 +78685,7 @@ fn ppc_continue_custom_menu_bar_tracking(
             startup.host_menu_bar_hidden,
         );
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-        cpu.lr = call.return_address;
+        cpu.lr = call.origin.return_address();
         return PpcImportAction::Return(0);
     }
     if input.mouse_button {
@@ -78727,9 +78734,9 @@ fn ppc_continue_custom_menu_bar_tracking(
                 startup.host_menu_bar_hidden,
             );
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().native_menu = None;
+            startup.menu_tracking.context_mut().clear_native_menu();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-            cpu.lr = call.return_address;
+            cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
         }
         return PpcImportAction::Yield(u64::MAX);
@@ -78754,9 +78761,9 @@ fn ppc_continue_custom_menu_bar_tracking(
         startup.host_menu_bar_hidden,
     );
     startup.clear_active_menu_definition();
-    startup.menu_tracking.context_mut().native_menu = None;
+    startup.menu_tracking.context_mut().clear_native_menu();
     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-    cpu.lr = call.return_address;
+    cpu.lr = call.origin.return_address();
     PpcImportAction::Return(result)
 }
 
@@ -78844,7 +78851,7 @@ fn ppc_track_menu_while_held_with_resources(
                 resources,
                 current_resource_refnum,
             );
-            startup.menu_tracking.context_mut().native_popup = None;
+            startup.menu_tracking.context_mut().clear_native_popup();
         } else {
             *startup.menu_tracking = Some(previous);
         }
@@ -78865,7 +78872,7 @@ fn ppc_track_menu_while_held_with_resources(
             return;
         };
         *startup.menu_tracking = Some(state);
-        startup.menu_tracking.context_mut().native_popup = None;
+        startup.menu_tracking.context_mut().clear_native_popup();
     }
     let active_menu_id = startup.menu_tracking.as_ref().and_then(|state| {
         memory
@@ -94574,7 +94581,7 @@ pub(crate) mod tests {
             None
         );
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_menu,
+            loaded.toolbox_startup.menu_tracking.context().native_menu(),
             None
         );
         assert_eq!(*loaded.current_gworld, 0x1234_0000);
@@ -94749,7 +94756,7 @@ pub(crate) mod tests {
             .submenus
             .is_empty());
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_menu,
+            loaded.toolbox_startup.menu_tracking.context().native_menu(),
             None
         );
         assert_eq!(*loaded.current_gworld, 0x1234_0000);
@@ -94810,7 +94817,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.lr, return_address);
         assert_eq!(loaded.toolbox_startup.menu_tracking, None);
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_menu,
+            loaded.toolbox_startup.menu_tracking.context().native_menu(),
             None
         );
         assert_eq!(*loaded.current_gworld, 0x1234_0000);
@@ -94966,7 +94973,7 @@ pub(crate) mod tests {
                 None
             );
             assert_eq!(
-                loaded.toolbox_startup.menu_tracking.context().native_popup,
+                loaded.toolbox_startup.menu_tracking.context().native_popup(),
                 None
             );
             assert_eq!(
@@ -96768,6 +96775,16 @@ pub(crate) mod tests {
         let mut tracking = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
         tracking.highlighted_item = 2;
         context.set_menu_tracking(Some(tracking));
+        classic.menu_tracking.context_mut().call = Some(MenuTrackingCall {
+            request: MenuTrackingRequest::MenuSelect { initial_point: 0 },
+            origin: MenuTrackingOrigin::M68k {
+                stack_pointer: TEST_SP,
+                return_address: 0x1234,
+            },
+        });
+        // A drawing surface cannot turn a classic operation into a native one.
+        let native_front = native.current_front_buffer().unwrap();
+        context.menu_tracking_mut().unwrap().front_buffer = Some(native_front.into());
         assert_eq!(
             classic
                 .menu_tracking
@@ -96798,8 +96815,10 @@ pub(crate) mod tests {
             Some(4)
         );
 
-        let native_front = native.current_front_buffer().unwrap();
-        context.menu_tracking_mut().unwrap().front_buffer = Some(native_front.into());
+        native.toolbox_startup.menu_tracking.context_mut().call =
+            Some(ppc_menu_select_call(&native.cpu, 0));
+        // Nor can an absent native surface turn its caller into a classic one.
+        context.menu_tracking_mut().unwrap().front_buffer = None;
         classic_cpu.write_reg(Register::A7, TEST_SP);
         classic_bus.write_long(TEST_SP, 0);
         classic_bus.write_long(TEST_SP + 4, u32::MAX);
@@ -104997,7 +105016,7 @@ pub(crate) mod tests {
                         .toolbox_startup
                         .menu_tracking
                         .context()
-                        .native_popup
+                        .native_popup()
                         .is_some(),
                     "{label}"
                 );
@@ -105018,7 +105037,7 @@ pub(crate) mod tests {
             );
             assert_eq!(loaded.toolbox_startup.menu_tracking, None, "{label}");
             assert_eq!(
-                loaded.toolbox_startup.menu_tracking.context().native_popup,
+                loaded.toolbox_startup.menu_tracking.context().native_popup(),
                 None,
                 "{label}"
             );
@@ -161267,15 +161286,14 @@ pub(crate) mod tests {
         let parked_lr = loaded.cpu.lr;
         assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_popup,
-            Some(NativePopupMenuOrigin {
-                request: PopupMenuRequest {
+            loaded.toolbox_startup.menu_tracking.context().native_popup(),
+            Some(MenuTrackingCall {
+                request: MenuTrackingRequest::PopUp(PopupMenuRequest {
                     menu_handle,
                     anchor: (100, 50),
                     requested_item: 2,
-                },
-                stack_pointer: original_sp,
-                return_address: parked_lr,
+                }),
+                origin: MenuTrackingOrigin::PowerPc { stack_pointer: original_sp, return_address: parked_lr },
             })
         );
         assert_eq!(tracking.popup_left, 50);
@@ -161584,7 +161602,7 @@ pub(crate) mod tests {
             let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
             assert_eq!(
-                loaded.toolbox_startup.menu_tracking.context().native_popup,
+                loaded.toolbox_startup.menu_tracking.context().native_popup(),
                 Some(ppc_popup_menu_call(&loaded.cpu))
             );
             assert_eq!(
@@ -171670,14 +171688,13 @@ pub(crate) mod tests {
             .toolbox_startup
             .menu_tracking
             .context_mut()
-            .native_popup = Some(NativePopupMenuOrigin {
-            request: PopupMenuRequest {
+            .call = Some(MenuTrackingCall {
+            request: MenuTrackingRequest::PopUp(PopupMenuRequest {
                 menu_handle: popup_tracking.menu_handle,
                 anchor: (100, 50),
                 requested_item: 1,
-            },
-            stack_pointer: loaded.cpu.gpr[1],
-            return_address: loaded.cpu.lr,
+            }),
+            origin: MenuTrackingOrigin::PowerPc { stack_pointer: loaded.cpu.gpr[1], return_address: loaded.cpu.lr },
         });
         *loaded.toolbox_startup.menu_tracking = Some(popup_tracking);
         loaded
