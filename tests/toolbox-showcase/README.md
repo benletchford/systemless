@@ -392,6 +392,13 @@ emulator or replace behavioral review. ROMs and system disks are not distributed
 
 ## Reference screenshots
 
+For the current sharp desktop output, see the [outline font gallery](outline-fonts/README.md),
+including 4× captures, first-paint checks and the final Mac GPU output below.
+The comparison tables in this section show the **800×600 guest framebuffer**;
+they test guest drawing and do not include the desktop's higher-resolution text.
+
+<img src="outline-fonts/mac-window/textedit.png" alt="Current Toolbox Showcase TextEdit through the Mac presentation shader" width="960">
+
 These full-frame 800×600 captures compare the shared fat fixture across implementations.
 Capture manifests record the archive revision used for refreshed oracle series.
 The Systemless images are exact RGB baselines checked by the integration test;

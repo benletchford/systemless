@@ -5,6 +5,20 @@ TrueType fonts, Classic System 7 theme and a fixed startup clock. The guest
 screen remains 800 × 600 at 8-bit depth. The desktop uses the same 4× surface
 initialization as the capture test.
 
+Refreshed on 6 September 2026 against renderer revision
+[`c1c95e3`](https://github.com/benletchford/systemless/commit/c1c95e3cb47d539bae1cd9a8a20dc5602ff4c52d):
+116 guest-reference frames across 68k and PowerPC, ten enlarged page captures,
+six first-paint/restore captures and one final Metal capture. All 133 regenerated
+images retain the previous decoded pixels; the performance fixes preserve their
+appearance. Both architecture suites also passed against the regenerated references
+with update mode disabled.
+
+Images labelled **before** are archived regression evidence and intentionally
+remain unchanged, as do the BasiliskII/SheepShaver oracle captures. The Escape
+Velocity comparison below is retained from its separate dialog investigation.
+For the final Mac window appearance, use the [Metal output](#final-mac-window-scaling);
+the guest-resolution reference tables do not show the desktop's sharp text layer.
+
 | Page | 2× (1600 × 1200) | 4× (3200 × 2400) |
 | --- | --- | --- |
 | TextEdit | [Open](2x/textedit.png) | [Open](4x/textedit.png) |
