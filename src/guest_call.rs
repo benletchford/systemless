@@ -1079,6 +1079,21 @@ impl Default for ExecutionTaskCalls {
 }
 
 impl ExecutionTaskCalls {
+    fn pending_powerpc_from_m68k(&self, task: ExecutionTaskId) -> Option<PendingPowerPcExecution> {
+        let semantic = self.kernel.peek(task)?;
+        let frame = self.frames.get(&semantic.call_id())?;
+        let GuestCallOrigin::M68k(_) = frame.origin else {
+            return None;
+        };
+        let execution = frame.powerpc_execution.as_ref()?;
+        (execution.return_pc.is_none() && execution.completed.is_none()).then_some(
+            PendingPowerPcExecution {
+                target: frame.target,
+                arguments: execution.arguments,
+            },
+        )
+    }
+
     fn saved_context(&self, task: ExecutionTaskId) -> Option<TaskResumeContext> {
         let isa = self
             .kernel
@@ -1898,12 +1913,24 @@ impl SharedGuestCallStack {
             return false;
         }
         let pending_native = matches!(tasks.handoff, Some((_, TaskResumeContext::Native(_))));
+        let replacing_owner = tasks.native_cpu_task != Some(current);
+        let initial_application_install =
+            tasks.native_cpu_task.is_none() && current == ExecutionTaskId::APPLICATION;
+        let pending_mixed_mode_activation = tasks.pending_powerpc_from_m68k(current).is_some();
+        if replacing_owner
+            && !initial_application_install
+            && !pending_native
+            && !pending_mixed_mode_activation
+            && tasks.native_threads.get(current).is_none()
+        {
+            return false;
+        }
         let next = if pending_native {
             match tasks.handoff.take().unwrap().1 {
                 TaskResumeContext::Native(cpu) => Some(cpu),
                 _ => unreachable!(),
             }
-        } else if tasks.native_cpu_task != Some(current) {
+        } else if replacing_owner {
             tasks
                 .native_threads
                 .get(current)
@@ -1911,7 +1938,7 @@ impl SharedGuestCallStack {
         } else {
             None
         };
-        if tasks.native_cpu_task != Some(current) {
+        if replacing_owner {
             if let Some(previous) = tasks.native_cpu_task {
                 tasks.save_native_cpu(previous, cpu);
             }
@@ -2320,17 +2347,8 @@ impl SharedGuestCallStack {
     }
 
     pub(crate) fn pending_powerpc_from_m68k(&self) -> Option<PendingPowerPcExecution> {
-        let (_, frame) = self.top_frame()?;
-        let GuestCallOrigin::M68k(_) = frame.origin else {
-            return None;
-        };
-        let execution = frame.powerpc_execution.as_ref()?;
-        (execution.return_pc.is_none() && execution.completed.is_none()).then_some(
-            PendingPowerPcExecution {
-                target: frame.target,
-                arguments: execution.arguments,
-            },
-        )
+        let tasks = self.0.borrow();
+        tasks.pending_powerpc_from_m68k(tasks.kernel.current_task())
     }
 
     #[cfg(test)]
@@ -3803,6 +3821,71 @@ mod tests {
         assert_eq!(cpu.pc, 0x1234);
         assert_eq!(cpu.gpr[20], 0x1122_3344);
         assert!(!calls.has_pending_task_handoff());
+    }
+
+    #[test]
+    fn native_installation_refuses_missing_snapshot_before_saving_or_relabeling() {
+        let calls = SharedGuestCallStack::default();
+        assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+        let mut cpu = PpcCpu::new();
+        cpu.gpr = std::array::from_fn(|index| 0x1000_0000 | index as u32);
+        cpu.fpr = std::array::from_fn(|index| 0x4000_0000_0000_0000 | index as u64);
+        cpu.cr = 0x1234_5678;
+        cpu.lr = 0x2345_6789;
+        cpu.ctr = 0x3456_789a;
+        cpu.xer = 0x4567_89ab;
+        cpu.fpscr = 0x5678_9abc;
+        cpu.msr = 0x6789_abcd;
+        cpu.pc = 0x789a_bcde;
+        cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+        cpu.set_time_base(0x1234_5678_9abc_def0);
+
+        let initial = cpu.clone();
+        assert!(calls.prepare_native_task(&mut cpu));
+        assert_eq!(
+            calls.0.borrow().native_cpu_task,
+            Some(ExecutionTaskId::APPLICATION)
+        );
+        assert_eq!(cpu.gpr, initial.gpr);
+        assert_eq!(cpu.fpr, initial.fpr);
+        assert_eq!(cpu.cr, initial.cr);
+        assert_eq!(cpu.lr, initial.lr);
+        assert_eq!(cpu.ctr, initial.ctr);
+        assert_eq!(cpu.xer, initial.xer);
+        assert_eq!(cpu.fpscr, initial.fpscr);
+        assert_eq!(cpu.msr, initial.msr);
+        assert_eq!(cpu.pc, initial.pc);
+        assert_eq!(cpu.alignment_policy, initial.alignment_policy);
+        assert_eq!(cpu.reservation_address(), initial.reservation_address());
+        assert_eq!(cpu.time_base(), initial.time_base());
+
+        let missing = ExecutionTaskId::from_thread_id(3);
+        assert!(calls.register_task(missing));
+        assert!(calls.bind_task_entry_isa(missing, GuestIsa::PowerPc));
+        assert!(calls.set_scheduling_state(missing, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(missing));
+        let before = calls.clone();
+        assert!(!calls.prepare_native_task(&mut cpu));
+        assert_eq!(calls, before);
+        assert_eq!(calls.current_task(), missing);
+        assert_eq!(
+            calls.0.borrow().native_cpu_task,
+            Some(ExecutionTaskId::APPLICATION)
+        );
+        assert!(calls.0.borrow().handoff.is_none());
+        assert!(calls.0.borrow().native_threads.is_empty());
+        assert_eq!(cpu.gpr, initial.gpr);
+        assert_eq!(cpu.fpr, initial.fpr);
+        assert_eq!(cpu.cr, initial.cr);
+        assert_eq!(cpu.lr, initial.lr);
+        assert_eq!(cpu.ctr, initial.ctr);
+        assert_eq!(cpu.xer, initial.xer);
+        assert_eq!(cpu.fpscr, initial.fpscr);
+        assert_eq!(cpu.msr, initial.msr);
+        assert_eq!(cpu.pc, initial.pc);
+        assert_eq!(cpu.alignment_policy, initial.alignment_policy);
+        assert_eq!(cpu.reservation_address(), initial.reservation_address());
+        assert_eq!(cpu.time_base(), initial.time_base());
     }
 
     #[test]
