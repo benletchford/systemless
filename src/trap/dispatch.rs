@@ -1949,6 +1949,13 @@ pub struct TrapDispatcher {
     /// positions, so Entry2Index must consult this allocation rather than
     /// treating the entry number as a pixel value.
     pub(crate) palette_device_indices: HashMap<(u32, u16), u8>,
+    /// The menu mark's device indices for the current main-device colour
+    /// table; see `MenuMarkIndexCache`.
+    pub(crate) menu_mark_indices: std::cell::Cell<Option<super::framebuffer::MenuMarkIndexCache>>,
+    /// Host-side copy of the main device's colour table; see `ColorTableMirror`.
+    pub(crate) color_mirror: std::cell::RefCell<super::framebuffer::ColorTableMirror>,
+    /// Set for the duration of a chrome pass, whose lookups reuse the mirror.
+    pub(crate) color_mirror_fresh: std::cell::Cell<bool>,
     /// Color tables produced from palettes whose entries are all pmExplicit.
     /// Their pixel values are literal device indices, so indexed CopyBits
     /// must preserve those values instead of color-matching duplicate RGBs.
@@ -3474,6 +3481,9 @@ impl TrapDispatcher {
             window_palettes: HashMap::new(),
             palette_updates: HashMap::new(),
             palette_device_indices: HashMap::new(),
+            menu_mark_indices: std::cell::Cell::new(None),
+            color_mirror: std::cell::RefCell::new(Default::default()),
+            color_mirror_fresh: std::cell::Cell::new(false),
             explicit_palette_ctabs: HashSet::new(),
             icon_transform_override: 0,
             printing_error: 0,
