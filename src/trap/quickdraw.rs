@@ -4881,15 +4881,20 @@ impl super::TrapDispatcher {
             }
 
             // NewPixMap ($AA03)
+            // Allocates an initialized PixMap with its own color-table handle.
             // FUNCTION NewPixMap: PixMapHandle;
-            // Inside Macintosh Volume V 1986, p. V-57
-            // NewPixMap ($AA03): Allocates PixMap struct in guest memory
+            // Inside Macintosh Volume V (1986), p. V-57.
             (true, 0x203) => {
                 let gd_handle = self.ensure_main_gdevice(bus);
                 let gd_ptr = bus.read_long(gd_handle);
                 let gd_pmap_handle = bus.read_long(gd_ptr + 22);
                 let gd_pmap = bus.read_long(gd_pmap_handle);
+                // Native Mac OS allocates the PixMap handle before its nested
+                // color-table handle (verified on Mac OS 8.1 in BasiliskII).
+                // Preserve that order when recycling master-pointer storage.
                 let pm_ptr = bus.alloc(50);
+                let handle = bus.alloc(4);
+                bus.write_long(handle, pm_ptr);
                 for i in 0..50u32 {
                     bus.write_byte(pm_ptr + i, bus.read_byte(gd_pmap + i));
                 }
@@ -4904,8 +4909,6 @@ impl super::TrapDispatcher {
                     self.allocate_color_table_handle(bus, depth, source_ctab_handle, 0x8000)
                 };
                 bus.write_long(pm_ptr + 42, ctab_handle);
-                let handle = bus.alloc(4);
-                bus.write_long(handle, pm_ptr);
                 let sp = cpu.read_reg(Register::A7);
                 bus.write_long(sp, handle);
                 Ok(())
@@ -38683,6 +38686,38 @@ mod tests {
         let handle = bus.read_long(TEST_SP);
         assert_ne!(handle, 0);
         assert_ne!(bus.read_long(handle), 0);
+    }
+
+    #[test]
+    fn newpixmap_allocates_pixmap_handle_before_color_table_handle() {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.dispatch_quickdraw(true, 0x203, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let first = bus.read_long(TEST_SP);
+        let first_pm = bus.read_long(first);
+        let first_ctab = bus.read_long(first_pm + 42);
+
+        // Native Mac OS 8.1 reuses this disposed PixMap master pointer for
+        // the next PixMap, not its nested color table. Keep the table alive
+        // as DisposeHandle does (Memory 1992, pp. 2-34--2-35).
+        cpu.write_reg(Register::A0, first);
+        d.dispatch_memory(false, 0x23, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x203, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let second = bus.read_long(TEST_SP);
+        let second_pm = bus.read_long(second);
+        let second_ctab = bus.read_long(second_pm + 42);
+        assert_eq!(second, first);
+        assert_ne!(second_ctab, second);
+        assert_ne!(second_ctab, first_ctab);
+        assert_eq!(bus.get_alloc_size(second_pm), Some(50));
+        assert!(bus.get_alloc_size(bus.read_long(first_ctab)).is_some());
+        assert!(bus.get_alloc_size(bus.read_long(second_ctab)).is_some());
     }
 
     #[test]
