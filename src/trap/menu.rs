@@ -23,13 +23,12 @@ use crate::menu_manager::{
     MenuDefinitionTracking as SharedMenuDefinitionTracking, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
-    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind, MenuTrackingPane,
+    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane,
     MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, ProcessMenuTrackingState,
     ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
     StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
-    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM,
-    STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
@@ -2171,24 +2170,16 @@ impl super::TrapDispatcher {
                         if self
                             .menu_tracking
                             .as_ref()
-                            .is_some_and(|tracking| tracking.flash_remaining > 0)
+                            .is_some_and(|tracking| tracking.is_flashing())
                         {
-                            let tracking = self.menu_tracking.as_mut().unwrap();
-                            if tracking.flash_delay > 0 {
-                                tracking.flash_delay -= 1;
-                                return Some(Ok(()));
+                            match self.menu_tracking.as_mut().unwrap().advance_flash() {
+                                MenuFlashStep::Wait | MenuFlashStep::Inactive => return Some(Ok(())),
+                                MenuFlashStep::Complete(result) => {
+                                    self.finish_custom_menu_tracking(cpu, bus, 4, result);
+                                    return Some(Ok(()));
+                                }
+                                MenuFlashStep::Highlight(_) => {}
                             }
-                            tracking.flash_remaining -= 1;
-                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                            let remaining = tracking.flash_remaining;
-                            let result = tracking.flash_result;
-                            if remaining == 0 {
-                                self.finish_custom_menu_tracking(cpu, bus, 4, result);
-                                return Some(Ok(()));
-                            }
-                            self.active_menu_definition_mut()
-                                .unwrap()
-                                .flash(remaining & 1 == 0);
                             if !self.arm_pending_menu_definition(
                                 cpu,
                                 bus,
@@ -2270,23 +2261,10 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                     // Re-fire: we're in tracking mode
-                    if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
-                        // Flashing phase: hold each toggle for 3 frames (~50ms),
-                        // matching the real Mac's ~3-tick delay per phase.
-                        // redraw_chrome handles the visual state based on
-                        // whether flash_remaining is even or odd.
-                        let result = self.menu_tracking.as_ref().unwrap().flash_result;
-                        let t = self.menu_tracking.as_mut().unwrap();
-                        if t.flash_delay > 0 {
-                            t.flash_delay -= 1;
-                            return Some(Ok(()));
-                        }
-                        // Advance to next toggle
-                        t.flash_remaining -= 1;
-                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                        let new_remaining = t.flash_remaining;
-
-                        if new_remaining == 0 {
+                    if self.menu_tracking.as_ref().unwrap().is_flashing() {
+                        if let MenuFlashStep::Complete(result) =
+                            self.menu_tracking.as_mut().unwrap().advance_flash()
+                        {
                             // Flash complete — finish up
                             let sp = self.menu_tracking_stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
@@ -2607,24 +2585,16 @@ impl super::TrapDispatcher {
                         if self
                             .menu_tracking
                             .as_ref()
-                            .is_some_and(|tracking| tracking.flash_remaining > 0)
+                            .is_some_and(|tracking| tracking.is_flashing())
                         {
-                            let tracking = self.menu_tracking.as_mut().unwrap();
-                            if tracking.flash_delay > 0 {
-                                tracking.flash_delay -= 1;
-                                return Some(Ok(()));
+                            match self.menu_tracking.as_mut().unwrap().advance_flash() {
+                                MenuFlashStep::Wait | MenuFlashStep::Inactive => return Some(Ok(())),
+                                MenuFlashStep::Complete(result) => {
+                                    self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                                    return Some(Ok(()));
+                                }
+                                MenuFlashStep::Highlight(_) => {}
                             }
-                            tracking.flash_remaining -= 1;
-                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                            let remaining = tracking.flash_remaining;
-                            let result = tracking.flash_result;
-                            if remaining == 0 {
-                                self.finish_custom_menu_tracking(cpu, bus, 10, result);
-                                return Some(Ok(()));
-                            }
-                            self.active_menu_definition_mut()
-                                .unwrap()
-                                .flash(remaining & 1 == 0);
                             if !self.arm_pending_menu_definition(
                                 cpu,
                                 bus,
@@ -2676,18 +2646,10 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                     // Re-fire: popup tracking is active
-                    if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
-                        let result = self.menu_tracking.as_ref().unwrap().flash_result;
-                        let t = self.menu_tracking.as_mut().unwrap();
-                        if t.flash_delay > 0 {
-                            t.flash_delay -= 1;
-                            return Some(Ok(()));
-                        }
-                        t.flash_remaining -= 1;
-                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                        let new_remaining = t.flash_remaining;
-
-                        if new_remaining == 0 {
+                    if self.menu_tracking.as_ref().unwrap().is_flashing() {
+                        if let MenuFlashStep::Complete(result) =
+                            self.menu_tracking.as_mut().unwrap().advance_flash()
+                        {
                             let sp = self.menu_tracking_stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);

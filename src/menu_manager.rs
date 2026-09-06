@@ -439,7 +439,7 @@ impl MenuDefinitionTracking {
     /// contract unhighlights on an outside point and highlights on the saved
     /// selection point; repeated `mChooseMsg` calls produce the blink.
     /// Inside Macintosh Volume I (1985), p. I-366.
-    pub(crate) fn flash(&mut self, visible: bool) -> Option<MenuDefinitionInvocation> {
+    fn flash(&mut self, visible: bool) -> Option<MenuDefinitionInvocation> {
         if self.pending_invocation.is_some() {
             return None;
         }
@@ -796,6 +796,15 @@ pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) item_appearances: Vec<Appearance>,
 }
 
+/// The next presentation or completion step of the shared release blink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuFlashStep {
+    Inactive,
+    Wait,
+    Highlight(bool),
+    Complete(u32),
+}
+
 /// One retained Menu Manager tracking continuation.
 ///
 /// `Surface` and `Appearance` are presentation snapshots supplied by an
@@ -1036,6 +1045,40 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
         };
         self.flash_result = result;
         self.flash_remaining != 0
+    }
+
+    pub(crate) fn is_flashing(&self) -> bool {
+        self.flash_remaining != 0
+    }
+
+    /// Advance one presentation pulse, retaining the release result throughout
+    /// the blink. Custom panes receive the same phases through their MDEF.
+    /// A pending guest call must complete before another phase can be issued.
+    /// Macintosh Toolbox Essentials (1992), SetMenuFlash; Inside Macintosh
+    /// Volume I (1985), p. I-366, menu definition blinking protocol.
+    pub(crate) fn advance_flash(&mut self) -> MenuFlashStep {
+        if !self.is_flashing() {
+            return MenuFlashStep::Inactive;
+        }
+        if self.active_definition().is_some_and(|definition| {
+            definition.pending_invocation().is_some()
+        }) {
+            return MenuFlashStep::Wait;
+        }
+        if self.flash_delay > 0 {
+            self.flash_delay -= 1;
+            return MenuFlashStep::Wait;
+        }
+        self.flash_remaining -= 1;
+        if self.flash_remaining == 0 {
+            return MenuFlashStep::Complete(self.flash_result);
+        }
+        self.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
+        let visible = self.flash_remaining & 1 == 0;
+        if let Some(definition) = self.active_definition_mut() {
+            definition.flash(visible);
+        }
+        MenuFlashStep::Highlight(visible)
     }
 
     pub(crate) fn active_definition_pane(&self) -> Option<MenuDefinitionPane> {
@@ -3765,6 +3808,107 @@ mod tests {
         assert_eq!(tracking.flash_remaining, 0);
         assert_eq!(tracking.flash_delay, 0);
         assert_eq!(tracking.flash_result, 0x0080_0003);
+    }
+
+    #[test]
+    fn menu_flash_completes_each_blink_before_returning_the_release_result_once() {
+        for kind in [MenuTrackingKind::MenuBar, MenuTrackingKind::PopUp] {
+            for count in [0, 1, 3] {
+                let mut tracking = test_process_menu_tracking(128);
+                tracking.kind = kind;
+                let result = 0x0080_0002;
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Inactive);
+                assert_eq!(tracking.begin_flash(count, result), count != 0);
+                for phase in 0..u32::from(count) * 2 {
+                    for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
+                        assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                    }
+                    let expected = if phase + 1 == u32::from(count) * 2 {
+                        MenuFlashStep::Complete(result)
+                    } else {
+                        MenuFlashStep::Highlight(phase & 1 != 0)
+                    };
+                    assert_eq!(tracking.advance_flash(), expected);
+                }
+                assert!(!tracking.is_flashing());
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Inactive);
+            }
+        }
+    }
+
+    #[test]
+    fn menu_flash_waits_for_the_active_definition_and_keeps_its_release_point() {
+        for child in [false, true] {
+            let mut tracking = tracking_with_child(128u32, 129);
+            let rect = (20, 30, 60, 90);
+            let point = (40 << 16) | 50;
+            let selected = MenuDefinitionResult {
+                menu_rect: rect,
+                which_item: 2,
+            };
+            let mut definition = MenuDefinitionTracking::begin_draw(129, rect);
+            definition.complete_pending(selected);
+            definition.choose(point).unwrap();
+            definition.complete_pending(selected);
+            if child {
+                tracking.submenus[0].definition = Some(definition);
+            } else {
+                tracking.definition = Some(definition);
+            }
+            assert!(tracking.begin_flash(2, 0x0081_0002));
+            for visible in [false, true, false] {
+                for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
+                    assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                }
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Highlight(visible));
+                let invocation = tracking
+                    .active_definition()
+                    .unwrap()
+                    .pending_invocation()
+                    .unwrap();
+                assert_eq!(invocation.message, MenuDefinitionMessage::Choose);
+                assert_eq!(
+                    invocation.hit_point,
+                    if visible { point } else { (19 << 16) | 30 }
+                );
+                let completion = MenuDefinitionCompletion::pending();
+                tracking
+                    .active_definition_mut()
+                    .unwrap()
+                    .bind_completion(invocation, completion.clone());
+                let before = (tracking.flash_remaining, tracking.flash_delay);
+                for _ in 0..10 {
+                    assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                }
+                assert_eq!((tracking.flash_remaining, tracking.flash_delay), before);
+                MenuDefinitionOperation {
+                    scratch: 0,
+                    completion,
+                }
+                .complete_result(Ok(MenuDefinitionResult {
+                    which_item: if visible { 2 } else { 0 },
+                    ..selected
+                }));
+                // Publication alone must not permit a phase to replace the
+                // invocation whose result has not yet been consumed.
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                assert_eq!(
+                    tracking
+                        .active_definition_mut()
+                        .unwrap()
+                        .complete_callback(),
+                    Ok(Some(MenuDefinitionMessage::Choose))
+                );
+            }
+            for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+            }
+            assert_eq!(
+                tracking.advance_flash(),
+                MenuFlashStep::Complete(0x0081_0002)
+            );
+            assert_eq!(tracking.advance_flash(), MenuFlashStep::Inactive);
+        }
     }
 
     #[test]
