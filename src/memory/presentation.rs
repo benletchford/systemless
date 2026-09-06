@@ -4,6 +4,7 @@
 //! to guest pixels. This is a capture prototype, not a retained display backend.
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{urw, Glyph};
+use std::collections::{HashMap, HashSet};
 
 pub(crate) struct OutlineGlyph {
     pub pixels: Vec<u8>,
@@ -21,6 +22,10 @@ pub(crate) struct Presentation {
     pub scale: u32,
     palette: [[u8; 3]; 256],
     pixels: Vec<u8>,
+    ink: HashMap<usize, (u8, u32, [u8; 3])>,
+    run_ink: HashSet<usize>,
+    in_text_run: bool,
+    pub erasing_text: bool,
     glyph: Option<(OutlineGlyph, i16, i16)>,
     pub glyph_count: usize,
 }
@@ -56,6 +61,13 @@ impl Presentation {
                 let offset =
                     (((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx) * 3)
                         as usize;
+                // A following character's opaque background must not shave off
+                // an outline overhang already painted by this same text run.
+                if self.erasing_text && self.run_ink.contains(&offset) {
+                    continue;
+                }
+                self.run_ink.remove(&offset);
+                self.ink.remove(&offset);
                 self.pixels[offset..offset + 3].copy_from_slice(&color);
             }
         }
@@ -80,14 +92,42 @@ impl Presentation {
                     continue;
                 }
                 let alpha = u32::from(glyph.pixels[(gy * glyph.width + gx) as usize]);
+                if alpha == 0 {
+                    continue;
+                }
                 let offset =
                     (((py * self.scale + sy) * self.width * self.scale + px * self.scale + sx) * 3)
                         as usize;
+                if self.in_text_run {
+                    self.run_ink.insert(offset);
+                }
+                if alpha == 255 {
+                    self.pixels[offset..offset + 3].copy_from_slice(&color);
+                    self.ink.remove(&offset);
+                    continue;
+                }
+                // Inside Macintosh I, "Transfer Modes": srcOr forces source
+                // ink on and leaves other bits alone; repeated ink is idempotent.
+                // Retain coverage rather than
+                // repeatedly blending the same ink into its own antialiased edge.
+                let background = [
+                    self.pixels[offset],
+                    self.pixels[offset + 1],
+                    self.pixels[offset + 2],
+                ];
+                let ink = self
+                    .ink
+                    .entry(offset)
+                    .or_insert((foreground, 0, background));
+                if ink.0 != foreground {
+                    *ink = (foreground, 0, background);
+                }
+                ink.1 = ink.1.max(alpha);
+                let alpha = ink.1;
                 for c in 0..3 {
-                    self.pixels[offset + c] = ((u32::from(color[c]) * alpha
-                        + u32::from(self.pixels[offset + c]) * (255 - alpha)
-                        + 127)
-                        / 255) as u8;
+                    self.pixels[offset + c] =
+                        ((u32::from(color[c]) * alpha + u32::from(ink.2[c]) * (255 - alpha) + 127)
+                            / 255) as u8;
                 }
             }
         }
@@ -95,7 +135,7 @@ impl Presentation {
 }
 
 impl MacMemoryBus {
-    /// Start an experimental, fixed-palette 8-bit capture at 2x or 3x resolution.
+    /// Start an experimental, fixed-palette 8-bit capture at 2x through 4x resolution.
     /// Enable after screen/palette setup. Does not enable high DPI in a frontend.
     pub fn enable_urw_presentation(
         &mut self,
@@ -108,7 +148,7 @@ impl MacMemoryBus {
             depth, 8,
             "presentation experiment supports 8-bit screens only"
         );
-        assert!((2..=3).contains(&scale));
+        assert!((2..=4).contains(&scale));
         assert!(width > 0 && height > 0 && row_bytes >= u32::from(width));
         assert!(
             u64::from(base) + u64::from(row_bytes) * u64::from(height)
@@ -122,6 +162,10 @@ impl MacMemoryBus {
             scale,
             palette,
             pixels: vec![0; width as usize * height as usize * scale as usize * scale as usize * 3],
+            ink: HashMap::new(),
+            run_ink: HashSet::new(),
+            in_text_run: false,
+            erasing_text: false,
             glyph: None,
             glyph_count: 0,
         };
@@ -143,6 +187,20 @@ impl MacMemoryBus {
             p.pixels.clone(),
             p.glyph_count,
         ))
+    }
+
+    pub(crate) fn begin_presentation_text_run(&mut self, opaque: bool) {
+        if let Some(p) = &mut self.presentation {
+            p.run_ink.clear();
+            p.in_text_run = opaque;
+        }
+    }
+
+    pub(crate) fn end_presentation_text_run(&mut self) {
+        if let Some(p) = &mut self.presentation {
+            p.run_ink.clear();
+            p.in_text_run = false;
+        }
     }
 
     pub(crate) fn begin_outline_glyph(
@@ -214,6 +272,7 @@ mod tests {
         assert_eq!(p.glyph_bounds(), Some((0, 0, 1, 2)));
         // Only the first logical cell survives the caller's clipping region.
         p.glyph_pixel(0x1000, 0, 0, 0);
+        p.glyph_pixel(0x1000, 0, 0, 0); // Repainting must not darken the edge.
         bus.write_byte(0x1000, 0); // Guest ink must not replace the blended plane.
         bus.end_outline_glyph();
         let (_, _, rgb, _) = bus.urw_presentation_rgb().unwrap();
@@ -222,6 +281,42 @@ mod tests {
         assert_eq!(bus.read_byte(0x1000), 0);
         bus.write_byte(0x1000, 0); // Even a same-value later write invalidates ink.
         assert_eq!(&bus.urw_presentation_rgb().unwrap().2[0..6], &[0; 6]);
+    }
+
+    #[test]
+    fn text_run_overhang_survives_adjacent_erase_but_not_a_new_run() {
+        let mut bus = bus();
+        bus.begin_presentation_text_run(true);
+        let p = bus.presentation.as_mut().unwrap();
+        p.glyph = Some((
+            OutlineGlyph {
+                pixels: vec![128; 4],
+                width: 2,
+                height: 2,
+                left: 2,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        p.glyph_pixel(0x1001, 1, 0, 0);
+        bus.end_outline_glyph();
+        bus.presentation.as_mut().unwrap().erasing_text = true;
+        bus.write_byte(0x1001, 255);
+        assert_eq!(&bus.urw_presentation_rgb().unwrap().2[6..12], &[127; 6]);
+        assert_eq!(bus.read_byte(0x1001), 255);
+        bus.end_presentation_text_run();
+        bus.begin_presentation_text_run(true);
+        bus.write_byte(0x1001, 255);
+        assert_eq!(&bus.urw_presentation_rgb().unwrap().2[6..12], &[255; 6]);
+    }
+
+    #[test]
+    fn four_times_capture_has_four_times_the_linear_resolution() {
+        let mut bus = bus();
+        bus.enable_urw_presentation((0x1000, 8, 8, 8, 8), [[255; 3]; 256], 4);
+        let (w, h, pixels, _) = bus.urw_presentation_rgb().unwrap();
+        assert_eq!((w, h, pixels.len()), (32, 32, 32 * 32 * 3));
     }
 
     #[test]

@@ -2196,10 +2196,14 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
+                #[cfg(feature = "experimental-urw-fonts")]
+                bus.begin_presentation_text_run(self.tx_mode == 0);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
+                #[cfg(feature = "experimental-urw-fonts")]
+                bus.end_presentation_text_run();
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
             }
@@ -2259,10 +2263,14 @@ impl super::TrapDispatcher {
                 }
 
                 // Render text using draw_char
+                #[cfg(feature = "experimental-urw-fonts")]
+                bus.begin_presentation_text_run(self.tx_mode == 0);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(text_buf + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
+                #[cfg(feature = "experimental-urw-fonts")]
+                bus.end_presentation_text_run();
                 self.tx_size = saved_tx_size;
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())

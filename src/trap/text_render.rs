@@ -355,10 +355,14 @@ impl super::TrapDispatcher {
 
         if !is_underline {
             // No underline, no outline/shadow: simple per-character drawing
+            #[cfg(feature = "experimental-urw-fonts")]
+            bus.begin_presentation_text_run(self.tx_mode == 0);
             for i in 0..len {
                 let ch = bus.read_byte(s_ptr + 1 + i as u32);
                 self.draw_char(cpu, bus, ch as char);
             }
+            #[cfg(feature = "experimental-urw-fonts")]
+            bus.end_presentation_text_run();
             return;
         }
 
@@ -835,7 +839,15 @@ impl super::TrapDispatcher {
                     bottom: v + scaled_descent,
                     right: h + glyph.advance as i16 * fs,
                 };
+                #[cfg(feature = "experimental-urw-fonts")]
+                if let Some(p) = &mut bus.presentation {
+                    p.erasing_text = true;
+                }
                 self.draw_rect(cpu, bus, &copy_rect, ShapeOp::Erase);
+                #[cfg(feature = "experimental-urw-fonts")]
+                if let Some(p) = &mut bus.presentation {
+                    p.erasing_text = false;
+                }
             }
 
             // Extract underline info for continuous underline (if set by draw_string)

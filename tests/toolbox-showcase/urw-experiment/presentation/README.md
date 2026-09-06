@@ -1,5 +1,7 @@
 # Real Toolbox Showcase at 2× text resolution
 
+For the updated compositor and 4× comparison, see the [latest captures](../presentation-4x/README.md). The images here record the initial 2× revision.
+
 These captures come from the running 68k Toolbox Showcase, with its original
 800 × 600, 8-bit guest framebuffer. The experimental presentation plane produces
 1600 × 1200 RGB images. The guest executes its own drawing, TextEdit, menus, and
@@ -61,7 +63,7 @@ cargo test --no-default-features --features experimental-urw-fonts \
   --test toolbox_showcase capture_urw_font_experiment -- --ignored --nocapture
 ```
 
-The scale can also be set to 3 and a separate output directory chosen. Files
+The scale can also be set to 3 or 4 and a separate output directory chosen. Files
 without a prefix are the untouched 1× guest exports; `enlarged-` uses nearest
 pixel enlargement; `native-` exports the parallel presentation plane.
 
