@@ -532,7 +532,7 @@ fn persist_content_rect(
 #[cfg(target_os = "macos")]
 fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
     attrs
-        .with_disallow_hidpi(true)
+        .with_disallow_hidpi(false)
         .with_accepts_first_mouse(true)
 }
 
@@ -990,6 +990,21 @@ impl App {
             );
         }
         game::init_game(&mut runner, &app);
+        if !runner.is_powerpc_app() {
+            let dispatcher = runner.dispatcher();
+            let screen = dispatcher.screen_mode;
+            let palette = display::rgba_palette_from_clut_with_gamma(
+                &dispatcher.device_clut,
+                &dispatcher.device_gamma,
+            )
+            .map(|word| {
+                let [r, g, b, _] = word.to_le_bytes();
+                [r, g, b]
+            });
+            runner
+                .bus_mut()
+                .prepare_outline_presentation(screen, palette);
+        }
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
         // Configure the wall-clock-paced GUI from the loaded architecture's
@@ -1416,6 +1431,21 @@ impl App {
         let Some(runner) = self.runner.as_mut() else {
             return;
         };
+        if !runner.is_powerpc_app() {
+            let dispatcher = runner.dispatcher();
+            let screen = dispatcher.screen_mode;
+            let palette = display::rgba_palette_from_clut_with_gamma(
+                &dispatcher.device_clut,
+                &dispatcher.device_gamma,
+            )
+            .map(|word| {
+                let [r, g, b, _] = word.to_le_bytes();
+                [r, g, b]
+            });
+            runner
+                .bus_mut()
+                .prepare_outline_presentation(screen, palette);
+        }
         runner.composite_frame();
         let presented_tick = runner.guest_tick();
 
@@ -1821,7 +1851,11 @@ impl App {
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
             presentation_rect = content;
             let palette = display::argb_palette_from_clut_with_gamma(&device_clut, &device_gamma);
-            if let Some(surface) = self.surface.as_mut() {
+            if let Some(surface) = self
+                .surface
+                .as_mut()
+                .filter(|_| !runner.bus().has_outline_presentation())
+            {
                 let presented_directly = surface
                     .present_guest_frame(
                         framebuffer,
@@ -1855,6 +1889,10 @@ impl App {
             &device_gamma,
             &mut frame_argb,
         );
+        let guest_frame = runner
+            .bus()
+            .has_outline_presentation()
+            .then(|| frame_argb.clone());
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
         }
@@ -1868,6 +1906,25 @@ impl App {
                 .lines();
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
+
+        #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
+        let (game_w, game_h) = if let Some((width, height, presented)) = guest_frame
+            .as_ref()
+            .and_then(|guest| runner.bus().presented_argb(guest, &frame_argb))
+        {
+            #[cfg(target_os = "macos")]
+            {
+                let scale = width / game_w;
+                presentation_rect.left *= scale;
+                presentation_rect.top *= scale;
+                presentation_rect.width *= scale;
+                presentation_rect.height *= scale;
+            }
+            frame_argb = presented;
+            (width, height)
+        } else {
+            (game_w, game_h)
+        };
 
         #[cfg(target_os = "macos")]
         {

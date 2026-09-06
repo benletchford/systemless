@@ -103,7 +103,7 @@ use crate::process_context::{
     SharedProcessQuickDrawPixelStates, SharedProcessTickState,
     SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
 };
-use crate::quickdraw::fonts::heuristics::{
+use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
 };
 use crate::quickdraw::fonts::{
@@ -93340,9 +93340,16 @@ pub(crate) mod tests {
 
     #[test]
     fn menu_bar_title_baseline_tracks_the_live_menu_bar_height() {
-        assert_eq!(ppc_menu_bar_title_baseline(12), 11);
-        assert_eq!(ppc_menu_bar_title_baseline(20), 14);
-        assert_eq!(ppc_menu_bar_title_baseline(30), 19);
+        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+        for height in [12, 20, 30] {
+            let baseline = ppc_menu_bar_title_baseline(height);
+            let top = baseline - metrics.ascent;
+            let bottom = height - baseline - metrics.descent;
+            assert!(
+                (top - bottom).abs() <= 1,
+                "title must be vertically centered"
+            );
+        }
         assert_eq!(ppc_menu_bar_system_mark_top(12), 0);
         assert_eq!(ppc_menu_bar_system_mark_top(20), 3);
         assert_eq!(ppc_menu_bar_system_mark_top(30), 8);

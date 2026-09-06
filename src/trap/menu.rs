@@ -14000,7 +14000,7 @@ mod tests {
         // Command-key chrome is right-aligned; sample the SICN item's
         // command zone near the right edge (re-baselined from the old
         // left+8 sample, which landed on the second item's menu text and
-        // became a false tripwire after the Jarrah/Chicago 12 glyph
+        // became a false tripwire after a system-font glyph
         // redraw — glyph appearance changed, menu logic did not).
         assert!(
             !screen_pixel_is_set(&bus, base, row_bytes, rect.1 + 8, rect.2 - 8),
@@ -16405,19 +16405,15 @@ mod tests {
         let classic = popupmenuselect_theme_snapshot(UiThemeId::ClassicSystem7);
         let themed = popupmenuselect_theme_snapshot(UiThemeId::SystemlessDefault);
 
-        // Width comes from the widest item "Three" measured in Chicago 12.
-        // Our strike reproduces the original per-glyph advances exactly
-        // (T6 h8 r6 e8 e8 = 36), so the Mac OS 8.1 standard MDEF makes the
-        // box 36 + 32 = 68 pixels wide. The clamped case preserves the
-        // captured four-pixel standard MDEF screen margin.
-        assert_eq!(classic.rect, (26, 30, 90, 98));
+        let width = crate::menu_manager::standard_menu_text_advance(b"Three") + 32;
+        assert_eq!(classic.rect, (26, 30, 90, 30 + width));
         assert_eq!(classic.highlighted_item, 3);
         assert_eq!(classic.item_at_requested_point, 3);
         assert_eq!(classic.first_stack_after, TEST_SP);
         assert_eq!(classic.result, 0x02DA_0003);
         assert_eq!(classic.final_stack_after, TEST_SP + 10);
         assert!(classic.tracking_finished);
-        assert_eq!(classic.clamped_rect, (95, 168, 159, 236));
+        assert_eq!(classic.clamped_rect, (95, 236 - width, 159, 236));
         assert_eq!(classic.clamped_highlighted_item, 4);
         assert_eq!(classic.uninserted_result, 0);
         assert_eq!(classic.uninserted_stack_after, TEST_SP + 10);

@@ -342,71 +342,29 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 
 ## Font Data
 
-By default, Systemless renders its own original bitmap fonts. Every default
-glyph is authored for this project — hand-drawn as ASCII art in `src/quickdraw/fonts/pixel_font/` and
-lowered to static glyph tables by `const fn` at compile time; there is no
-external font file or offline baker for the default renderer. The crate also
-contains optional URW Core 35 TrueType assets for the experiment below.
+Systemless uses bundled URW Core 35 TrueType fonts by default. Skrifa hints
+outlines at the requested point size and Zeno rasterizes them, without relying
+on fonts installed on the host. Noto Sans Symbols 2 supplies missing menu symbols.
+Guest FONT/NFNT/sfnt resources and explicit local bitmap overrides take precedence.
 
-The faces are named after Australian native plants. The classic Mac font names
-survive **only as internal compatibility identifiers** so that classic
-applications requesting a family by name or ID still resolve to a sensible face
-— this is nominative use, not branding.
+The old hand-drawn font catalogue has been removed. Classic family names remain
+compatibility identifiers; the substitutes have their own metrics, so text widths
+and wrapping can differ from Apple's fonts. See the
+[family mapping and URW provenance](src/quickdraw/fonts/urw/README.md) and
+[Noto provenance](src/quickdraw/fonts/noto/README.md).
 
-| systemless face | Kind                   | Stands in for (compat family, font ID) |
-|-----------------|------------------------|----------------------------------------|
-| **Jarrah**      | Heavy system / UI sans | Chicago (0) |
-| **Kurrajong**   | Humanist body sans     | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
-| **Mallee**    | Monospace              | Monaco (4), Courier (22) |
-| **Ironbark**    | Serif                  | New York (2), Palatino (16), Times (20) |
+QuickDraw retains binary glyph masks for guest framebuffer operations. The
+[Toolbox Showcase gallery](tests/toolbox-showcase/outline-fonts/README.md)
+exercises a separate 2×–4× outline presentation surface, preserving guest pixels.
+The desktop uses 4× presentation for 68k 8-bit screens by default. Other screen
+depths and native PowerPC drawing use the logical font raster.
 
-Sizes: Jarrah 9/12; Kurrajong 9/10/12/14/18/24 (+ Application 12, Helvetica 12);
-Mallee 9/10/12; Ironbark 12/14/18 (with 2× scaling for 24).
+### Font licences
 
-Every face is hand-drawn glyph by glyph in a consistent house style, with
-advances, side-bearings and x-height / cap height conformed to the original Mac
-strike so classic text lays out identically. Kurrajong 24 and Ironbark 18 are
-heavy display cuts matching their originals' bold weight. Venice (5), London (6)
-and Cairo (11) render as Kurrajong — the reference System has no strike for
-those families and substitutes the application font, which Systemless mirrors.
-
-If `SYSTEMLESS_ORIGINAL_FONTS_DIR` is set, Systemless can also load locally
-generated bitmap override blobs ahead of the built-in catalogue.
-
-### Experimental URW TrueType fallback
-
-The opt-in `experimental-urw-fonts` feature substitutes bundled URW Core 35
-TrueType faces at 1–96 points. Guest font resources and local overrides retain
-precedence. Skrifa/Zeno rasterizes the outlines without installed host fonts.
-
-The substitutes change logical widths and wrapping. A separate experimental
-8-bit presentation API renders supported text at 2×–4× while preserving guest
-pixels; desktop and browser frontends do not enable it automatically. See the
-[font source and licences](src/quickdraw/fonts/urw/README.md) and
-[Toolbox Showcase gallery](tests/toolbox-showcase/urw-experiment/README.md)
-for reproduction, supported paths, and review limitations. Tracks
-[#673](https://github.com/benletchford/systemless/issues/673).
-
-### Trademark / non-affiliation
-
-Systemless is not affiliated with, authorized by, or endorsed by Apple Inc.
-Macintosh, Mac OS, QuickDraw, and the classic font family names (Chicago,
-Geneva, Monaco, New York, Venice, London, Cairo, etc.) are trademarks of Apple
-Inc. "Times" / "Helvetica" / "Courier" are trademarks of their respective
-owners. These names appear here solely as compatibility identifiers to
-interoperate with classic Macintosh software; the systemless faces themselves
-are original works, distributed under their own botanical names.
-
-### Font license
-
-The systemless bitmap faces are original artwork and are licensed separately
-from the crate's GPL code. The glyph sources in
-`src/quickdraw/fonts/pixel_font/` are additionally available under the **SIL
-Open Font License 1.1** (see [OFL.txt](./OFL.txt)), with **"Systemless"** as
-the Reserved Font Name. This lets the faces be reused outside this project —
-including in software that is not GPL — while the emulator code itself stays
-GPL-3.0-or-later. Under the OFL, a modified font must not use the reserved
-name.
+The bundled fonts are distributed under the SIL Open Font License 1.1;
+their original licence and copyright notices are included beside each font.
+The emulator code remains GPL-3.0-or-later. Systemless is not affiliated with
+Apple Inc.; classic font names identify compatibility requests only.
 
 ## Useful Environment Variables
 

@@ -639,15 +639,14 @@ pub(crate) fn standard_menu_bar_title_baseline(
         + ascent
 }
 
-/// Align the replacement system-menu artwork to the standard title baseline.
+/// Center the system-menu artwork independently of the selected font metrics.
 pub(crate) fn standard_menu_bar_system_mark_top(
     menu_bar_height: i16,
-    ascent: i16,
-    descent: i16,
+    _ascent: i16,
+    _descent: i16,
 ) -> i16 {
-    standard_menu_bar_title_baseline(menu_bar_height, ascent, descent)
-        .saturating_sub(ascent)
-        .saturating_add(1)
+    let height = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS.len() as i16;
+    (menu_bar_height.saturating_sub(1).saturating_sub(height) / 2).max(0)
 }
 
 /// Result of one standard scrolling-menu pointer update.
@@ -4613,17 +4612,19 @@ mod tests {
 
     #[test]
     fn standard_menu_text_measurement_is_shared_between_gateways() {
-        // The frozen 68040 and 604 profiles both measure "Three" as
-        // T6+h8+r6+e8+e8 = 36 pixels in the Roman system font. The standard
-        // MDEF then adds its 32-pixel non-indicator columns.
-        assert_eq!(standard_menu_text_advance(b"Three"), 36);
+        let face = crate::quickdraw::fonts::get_font_face_or_default(0, 12);
+        let expected: i16 = b"Three"
+            .iter()
+            .map(|c| i16::from(face.glyphs[(c - 32) as usize].advance))
+            .sum();
+        assert_eq!(standard_menu_text_advance(b"Three"), expected);
         assert_eq!(
             standard_menu_width([StandardMenuItemWidth {
-                text: standard_menu_text_advance(b"Three"),
+                text: expected,
                 icon: 0,
-                command: 0,
+                command: 0
             }]),
-            68
+            expected + 32
         );
 
         assert!(is_standard_system_menu_title(&[0x14]));
@@ -5463,7 +5464,7 @@ mod tests {
         assert_eq!(region.title_origin(), 18);
         assert_eq!(region.highlighted_rect(20), (1, 9, 19, 48));
         assert_eq!(standard_menu_bar_title_baseline(20, 11, 2), 14);
-        assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 4);
+        assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 3);
     }
 
     #[test]

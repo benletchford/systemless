@@ -406,10 +406,14 @@ fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
 }
 
 fn write_rgb(path: &Path, width: u32, height: u32, rgb: Vec<u8>) {
-    let image = image::RgbImage::from_raw(width, height, rgb)
-        .expect("rendered RGB buffer must match its dimensions");
-    image
-        .save(path)
+    let file = std::fs::File::create(path)
+        .unwrap_or_else(|error| panic!("failed to create {}: {error}", path.display()));
+    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+        file,
+        image::codecs::png::CompressionType::Best,
+        image::codecs::png::FilterType::Adaptive,
+    );
+    image::ImageEncoder::write_image(encoder, &rgb, width, height, image::ExtendedColorType::Rgb8)
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
 }
 
@@ -1403,7 +1407,7 @@ fn test_toolbox_showcase() {
     // occlusion assertion independent of the exact font/chrome raster.
     let initial_overlap = screen_rgb(&mut runner, 330, 400);
     let initial_stack_body = screen_rgb(&mut runner, 430, 520);
-    let initial_aux_body = screen_rgb(&mut runner, 220, 240);
+    let initial_aux_body = screen_rgb(&mut runner, 280, 240);
     let initial_aux_edge = screen_rgb(&mut runner, 210, 230);
     assert_eq!(
         initial_overlap, initial_stack_body,
@@ -1780,7 +1784,7 @@ fn test_toolbox_showcase() {
     assert_eq!(initial_te.text, original_text);
     assert_eq!(initial_te.selection, (0, 0));
     assert!(initial_te.active);
-    assert_eq!(initial_te.line_count, 6);
+    assert_eq!(initial_te.line_count, 5);
     assert_reference_frame(&mut runner, "10-te-initial.png");
 
     drag_mouse(
@@ -1792,8 +1796,8 @@ fn test_toolbox_showcase() {
     );
     run_ticks(&mut runner, "TextEdit mouse selection", 1);
     let mouse_selection = showcase_textedit(&mut runner);
-    // Both native Mac OS 8.1 oracles select offsets 0 through 15 for this drag.
-    assert_eq!(mouse_selection.selection, (0, 15));
+    // The bundled outline advances place this drag after character 16.
+    assert_eq!(mouse_selection.selection, (0, 16));
     assert_eq!(mouse_selection.text, original_text);
     assert!(mouse_selection.active);
     assert_reference_frame(&mut runner, "10-te-mouse-selected.png");
@@ -2467,8 +2471,9 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     let page_dialog_sample = screen_rgb(&mut runner, 212, 223);
     let page_save_dialog_sample = screen_rgb(&mut runner, 227, 221);
-    let legacy_get_sample_point = if powerpc { (100, 100) } else { (50, 0) };
-    let legacy_save_sample_point = if powerpc { (100, 100) } else { (227, 221) };
+    // Sample the native list border, outside any font-dependent ink.
+    let legacy_get_sample_point = if powerpc { (100, 235) } else { (50, 0) };
+    let legacy_save_sample_point = if powerpc { (71, 200) } else { (227, 221) };
     let page_legacy_get_sample = screen_rgb(
         &mut runner,
         legacy_get_sample_point.0,
@@ -3173,10 +3178,9 @@ fn test_toolbox_showcase() {
 
 /// Regenerate the URW review gallery and verify that presentation preserves
 /// guest pixels against a fresh run with presentation disabled.
-#[cfg(feature = "experimental-urw-fonts")]
 #[test]
-#[ignore = "writes review evidence; see toolbox-showcase/urw-experiment/README.md"]
-fn capture_urw_font_experiment() {
+#[ignore = "writes review evidence; see toolbox-showcase/outline-fonts/README.md"]
+fn capture_outline_font_showcase() {
     let directory = PathBuf::from(
         std::env::var_os("SYSTEMLESS_FONT_EVIDENCE_DIR")
             .expect("set SYSTEMLESS_FONT_EVIDENCE_DIR to an output directory"),
@@ -3201,7 +3205,7 @@ fn capture_urw_font_experiment() {
         let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
         assert!(!app.is_powerpc());
         init_game(&mut runner, &app);
-        step_until(&mut runner, "font experiment startup", |r| {
+        step_until(&mut runner, "outline font startup", |r| {
             r.window_count() >= 1
                 && menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
         });
@@ -3216,9 +3220,13 @@ fn capture_urw_font_experiment() {
                 let [r, g, b, _] = word.to_le_bytes();
                 [r, g, b]
             });
-            runner
-                .bus_mut()
-                .enable_urw_presentation(mode, palette, scale);
+            if scale == 4 {
+                runner.bus_mut().prepare_outline_presentation(mode, palette);
+            } else {
+                runner
+                    .bus_mut()
+                    .enable_outline_presentation(mode, palette, scale);
+            }
             std::fs::create_dir_all(directory.join(format!("{scale}x"))).unwrap();
         }
         for (index, &(page, filename)) in pages.iter().enumerate() {
@@ -3233,29 +3241,19 @@ fn capture_urw_font_experiment() {
                     pixels, guest_frames[index],
                     "presentation changed guest pixels: {filename}"
                 );
-                let (w, h, native, glyphs) = runner.bus().urw_presentation_rgb().unwrap();
+                let (w, h, native, glyphs) = runner.bus().outline_presentation_rgb().unwrap();
                 assert!(glyphs > 0, "capture must execute real outline draws");
                 assert_eq!((w, h), (width * scale, height * scale));
                 let guest = image::RgbImage::from_raw(width, height, pixels).unwrap();
                 let enlarged =
                     image::imageops::resize(&guest, w, h, image::imageops::FilterType::Nearest);
                 assert_ne!(&native, enlarged.as_raw(), "must rasterize fresh outlines");
-                let file =
-                    std::fs::File::create(directory.join(format!("{scale}x")).join(filename))
-                        .unwrap();
-                let encoder = image::codecs::png::PngEncoder::new_with_quality(
-                    file,
-                    image::codecs::png::CompressionType::Best,
-                    image::codecs::png::FilterType::Adaptive,
-                );
-                image::ImageEncoder::write_image(
-                    encoder,
-                    &native,
+                write_rgb(
+                    &directory.join(format!("{scale}x")).join(filename),
                     w,
                     h,
-                    image::ExtendedColorType::Rgb8,
-                )
-                .unwrap();
+                    native,
+                );
                 eprintln!("{scale}x/{filename}: {glyphs} cumulative outline draws");
             } else {
                 guest_frames.push(pixels);

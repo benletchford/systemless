@@ -1,11 +1,12 @@
-//! Opt-in 8-bit presentation experiment. Guest memory and text metrics stay unchanged.
+//! Indexed-screen outline presentation. Guest memory and text metrics stay unchanged.
 //! Ordinary framebuffer writes replace enlarged pixels in drawing order; supported
 //! outline glyphs blend into a separate RGB plane. Copies intentionally fall back
-//! to guest pixels. This is a capture prototype, not a retained display backend.
+//! to guest pixels. Frontends consume the presentation at its physical dimensions.
 use super::{MacMemoryBus, MemoryBus};
-use crate::quickdraw::fonts::{urw, Glyph};
+use crate::quickdraw::fonts::{outline, Glyph};
 use std::collections::{HashMap, HashSet};
 
+#[derive(Clone)]
 pub(crate) struct OutlineGlyph {
     pub pixels: Vec<u8>,
     pub width: i32,
@@ -22,6 +23,8 @@ pub(crate) struct Presentation {
     pub scale: u32,
     palette: [[u8; 3]; 256],
     pixels: Vec<u8>,
+    guest_values: Vec<u16>,
+    text_cells: Vec<bool>,
     ink: HashMap<usize, (u8, u32, [u8; 3])>,
     run_ink: HashSet<usize>,
     in_text_run: bool,
@@ -49,12 +52,20 @@ impl Presentation {
     }
 
     pub fn write(&mut self, address: u32, value: u8) {
-        if self.glyph.is_some() {
-            return;
-        }
         let Some((x, y)) = self.position(address) else {
             return;
         };
+        let cell = (y * self.width + x) as usize;
+        if self.glyph.is_some() {
+            self.guest_values[cell] = u16::from(value);
+            self.text_cells[cell] = true;
+            return;
+        }
+        if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
+            return;
+        }
+        self.guest_values[cell] = u16::from(value);
+        self.text_cells[cell] = false;
         let color = self.palette[value as usize];
         for sy in 0..self.scale {
             for sx in 0..self.scale {
@@ -64,6 +75,7 @@ impl Presentation {
                 // A following character's opaque background must not shave off
                 // an outline overhang already painted by this same text run.
                 if self.erasing_text && self.run_ink.contains(&offset) {
+                    self.text_cells[cell] = true;
                     continue;
                 }
                 self.run_ink.remove(&offset);
@@ -82,6 +94,7 @@ impl Presentation {
         let Some((glyph, h, v)) = &self.glyph else {
             return;
         };
+        self.text_cells[(py * self.width + px) as usize] = true;
         let color = self.palette[foreground as usize];
         for sy in 0..self.scale {
             for sx in 0..self.scale {
@@ -135,19 +148,75 @@ impl Presentation {
 }
 
 impl MacMemoryBus {
-    /// Start an experimental, fixed-palette 8-bit capture at 2x through 4x resolution.
-    /// Enable after screen/palette setup. Does not enable high DPI in a frontend.
-    pub fn enable_urw_presentation(
+    /// Maintain a 4x outline surface for an indexed screen. Mode and palette
+    /// changes invalidate the surface before subsequent drawing can reuse it.
+    pub fn prepare_outline_presentation(
+        &mut self,
+        screen: (u32, u32, u16, u16, u16),
+        palette: [[u8; 3]; 256],
+    ) {
+        if screen.4 != 8 {
+            self.presentation = None;
+            return;
+        }
+        let matches = self.presentation.as_ref().is_some_and(|p| {
+            (p.base, p.row_bytes, p.width, p.height)
+                == (screen.0, screen.1, screen.2 as u32, screen.3 as u32)
+                && p.palette == palette
+                && p.scale == 4
+        });
+        if !matches {
+            self.enable_outline_presentation(screen, palette, 4);
+        }
+    }
+
+    /// Whether an outline presentation surface is available to a frontend.
+    pub fn has_outline_presentation(&self) -> bool {
+        self.presentation.is_some()
+    }
+
+    /// Composite host overlays onto the outline surface. Overlay positions stay
+    /// in guest coordinates; only the returned presentation dimensions change.
+    pub fn presented_argb(
+        &self,
+        guest: &[u32],
+        with_overlays: &[u32],
+    ) -> Option<(u32, u32, Vec<u32>)> {
+        let p = self.presentation.as_ref()?;
+        if guest.len() != (p.width * p.height) as usize || with_overlays.len() != guest.len() {
+            return None;
+        }
+        let width = p.width * p.scale;
+        let height = p.height * p.scale;
+        let mut pixels: Vec<u32> = p
+            .pixels
+            .chunks_exact(3)
+            .map(|c| 0xff000000 | ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32)
+            .collect();
+        for (index, (&before, &after)) in guest.iter().zip(with_overlays).enumerate() {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % p.width;
+            let y = index as u32 / p.width;
+            for dy in 0..p.scale {
+                let start = ((y * p.scale + dy) * width + x * p.scale) as usize;
+                pixels[start..start + p.scale as usize].fill(after);
+            }
+        }
+        Some((width, height, pixels))
+    }
+
+    /// Start an indexed outline surface at 2x through 4x resolution.
+    /// Frontends normally use `prepare_outline_presentation` to track mode changes.
+    pub fn enable_outline_presentation(
         &mut self,
         screen: (u32, u32, u16, u16, u16),
         palette: [[u8; 3]; 256],
         scale: u32,
     ) {
         let (base, row_bytes, width, height, depth) = screen;
-        assert_eq!(
-            depth, 8,
-            "presentation experiment supports 8-bit screens only"
-        );
+        assert_eq!(depth, 8, "outline presentation supports 8-bit screens only");
         assert!((2..=4).contains(&scale));
         assert!(width > 0 && height > 0 && row_bytes >= u32::from(width));
         assert!(
@@ -162,6 +231,8 @@ impl MacMemoryBus {
             scale,
             palette,
             pixels: vec![0; width as usize * height as usize * scale as usize * scale as usize * 3],
+            guest_values: vec![256; width as usize * height as usize],
+            text_cells: vec![false; width as usize * height as usize],
             ink: HashMap::new(),
             run_ink: HashSet::new(),
             in_text_run: false,
@@ -179,7 +250,7 @@ impl MacMemoryBus {
     }
 
     /// Return the real guest's presentation capture and number of outline draws.
-    pub fn urw_presentation_rgb(&self) -> Option<(u32, u32, Vec<u8>, usize)> {
+    pub fn outline_presentation_rgb(&self) -> Option<(u32, u32, Vec<u8>, usize)> {
         let p = self.presentation.as_ref()?;
         Some((
             p.width * p.scale,
@@ -210,11 +281,29 @@ impl MacMemoryBus {
         x: i16,
         y: i16,
         bold: bool,
+        italic_descent: Option<i16>,
+        underline: Option<(i16, i16)>,
     ) {
         let Some(p) = &mut self.presentation else {
             return;
         };
-        if let Some(mut outline) = urw::presentation_glyph(glyph, data, p.scale) {
+        if let Some(mut outline) = outline::presentation_glyph(glyph, data, p.scale) {
+            if let Some(descent) = italic_descent {
+                // Apply the shared QuickDraw shear on the physical grid rather
+                // than enlarging the already sheared one-bit strike.
+                let bottom = (i32::from(descent) - 1) * p.scale as i32;
+                let shift = |row: i32| (bottom - outline.top - row).max(0) / 2;
+                let width = outline.width + shift(0);
+                let mut pixels = vec![0; (width * outline.height) as usize];
+                for row in 0..outline.height {
+                    let src = (row * outline.width) as usize;
+                    let dst = (row * width + shift(row)) as usize;
+                    pixels[dst..dst + outline.width as usize]
+                        .copy_from_slice(&outline.pixels[src..src + outline.width as usize]);
+                }
+                outline.width = width;
+                outline.pixels = pixels;
+            }
             if bold && outline.width > 0 {
                 let width = outline.width + p.scale as i32;
                 let mut pixels = vec![0; (width * outline.height) as usize];
@@ -229,6 +318,46 @@ impl MacMemoryBus {
                 }
                 outline.width = width;
                 outline.pixels = pixels;
+            }
+            if let Some((advance, thickness)) = underline {
+                let scale = p.scale as i32;
+                let left = outline.left.min(0);
+                let top = outline.top.min(scale);
+                let right = (outline.left + outline.width).max(i32::from(advance) * scale);
+                let bottom = (outline.top + outline.height).max((1 + i32::from(thickness)) * scale);
+                let width = right - left;
+                let height = bottom - top;
+                let mut pixels = vec![0; (width * height) as usize];
+                // Underlines break around descenders. Measure their coverage at
+                // the physical resolution, keeping a one-guest-pixel clearance.
+                let mut descenders = vec![false; width as usize];
+                for row in 0..outline.height {
+                    for col in 0..outline.width {
+                        let alpha = outline.pixels[(row * outline.width + col) as usize];
+                        let px = outline.left + col - left;
+                        let py = outline.top + row - top;
+                        pixels[(py * width + px) as usize] = alpha;
+                        if outline.top + row >= 0 && alpha >= 128 {
+                            for nearby in (px - scale).max(0)..=(px + scale).min(width - 1) {
+                                descenders[nearby as usize] = true;
+                            }
+                        }
+                    }
+                }
+                for px in -left..i32::from(advance) * scale - left {
+                    if !descenders[px as usize] {
+                        for py in scale - top..(1 + i32::from(thickness)) * scale - top {
+                            pixels[(py * width + px) as usize] = 255;
+                        }
+                    }
+                }
+                outline = OutlineGlyph {
+                    pixels,
+                    width,
+                    height,
+                    left,
+                    top,
+                };
             }
             p.glyph = Some((outline, x, y));
             p.glyph_count += 1;
@@ -250,8 +379,28 @@ mod tests {
         let mut bus = MacMemoryBus::new(1024 * 1024);
         let palette = std::array::from_fn(|i| [i as u8; 3]);
         bus.fill_bytes(0x1000, 64, 255);
-        bus.enable_urw_presentation((0x1000, 8, 8, 8, 8), palette, 2);
+        bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), palette, 2);
         bus
+    }
+
+    #[test]
+    fn default_surface_preserves_overlay_coordinates_and_invalidates_changed_modes() {
+        let mut bus = bus();
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation((0x1000, 8, 8, 8, 8), palette);
+        // The default path replaces an explicitly configured 2x surface.
+        let guest = vec![0xffffffff; 64];
+        let mut overlay = guest.clone();
+        overlay[10] = 0xff123456;
+        let (width, height, pixels) = bus.presented_argb(&guest, &overlay).unwrap();
+        assert_eq!((width, height), (32, 32));
+        assert_eq!(pixels[4 * 32 + 8], 0xff123456);
+        assert_eq!(pixels[7 * 32 + 11], 0xff123456);
+        assert_eq!(pixels[4 * 32 + 12], 0xffffffff);
+        bus.prepare_outline_presentation((0x1000, 8, 8, 8, 1), palette);
+        assert!(!bus.has_outline_presentation());
+        bus.prepare_outline_presentation((0x1000, 8, 8, 8, 8), palette);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().0, 32);
     }
 
     #[test]
@@ -275,12 +424,12 @@ mod tests {
         p.glyph_pixel(0x1000, 0, 0, 0); // Repainting must not darken the edge.
         bus.write_byte(0x1000, 0); // Guest ink must not replace the blended plane.
         bus.end_outline_glyph();
-        let (_, _, rgb, _) = bus.urw_presentation_rgb().unwrap();
+        let (_, _, rgb, _) = bus.outline_presentation_rgb().unwrap();
         assert_eq!(&rgb[0..6], &[127; 6]);
         assert_eq!(&rgb[6..12], &[255; 6]);
         assert_eq!(bus.read_byte(0x1000), 0);
         bus.write_byte(0x1000, 0); // Even a same-value later write invalidates ink.
-        assert_eq!(&bus.urw_presentation_rgb().unwrap().2[0..6], &[0; 6]);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[0..6], &[0; 6]);
     }
 
     #[test]
@@ -303,19 +452,19 @@ mod tests {
         bus.end_outline_glyph();
         bus.presentation.as_mut().unwrap().erasing_text = true;
         bus.write_byte(0x1001, 255);
-        assert_eq!(&bus.urw_presentation_rgb().unwrap().2[6..12], &[127; 6]);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[6..12], &[127; 6]);
         assert_eq!(bus.read_byte(0x1001), 255);
         bus.end_presentation_text_run();
         bus.begin_presentation_text_run(true);
         bus.write_byte(0x1001, 255);
-        assert_eq!(&bus.urw_presentation_rgb().unwrap().2[6..12], &[255; 6]);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[6..12], &[255; 6]);
     }
 
     #[test]
     fn four_times_capture_has_four_times_the_linear_resolution() {
         let mut bus = bus();
-        bus.enable_urw_presentation((0x1000, 8, 8, 8, 8), [[255; 3]; 256], 4);
-        let (w, h, pixels, _) = bus.urw_presentation_rgb().unwrap();
+        bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), [[255; 3]; 256], 4);
+        let (w, h, pixels, _) = bus.outline_presentation_rgb().unwrap();
         assert_eq!((w, h, pixels.len()), (32, 32, 32 * 32 * 3));
     }
 
@@ -328,14 +477,14 @@ mod tests {
         assert!(bus.copy_ram_bytes(0x1000, 0x1001, 7));
         let expected = [0x10, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70];
         assert_eq!(bus.read_bytes(0x1000, 8), expected);
-        let rgb = bus.urw_presentation_rgb().unwrap().2;
+        let rgb = bus.outline_presentation_rgb().unwrap().2;
         for (i, value) in expected.iter().enumerate() {
             assert_eq!(&rgb[i * 6..i * 6 + 6], &[*value; 6]);
         }
         bus.fill_bytes_strided(0x1000, 2, 4, 42);
         bus.fill_zeros(0x1008, 8);
         bus.fill_bytes(0x1010, 8, 99);
-        let rgb = bus.urw_presentation_rgb().unwrap().2;
+        let rgb = bus.outline_presentation_rgb().unwrap().2;
         assert_eq!(&rgb[..6], &[42; 6]);
         assert_eq!(&rgb[16 * 2 * 3..16 * 3 * 3], &[0; 48]);
         assert_eq!(&rgb[16 * 4 * 3..16 * 5 * 3], &[99; 48]);
@@ -348,11 +497,17 @@ mod tests {
         let mut bus = bus();
         let (glyph, data) = get_glyph(FONT_GENEVA, 9, 'a').unwrap();
         let advance = glyph.advance;
-        bus.begin_outline_glyph(glyph, data, 0, 7, false);
+        bus.begin_outline_glyph(glyph, data, 0, 7, false, None, None);
         let p = bus.presentation.as_ref().unwrap();
         let native = &p.glyph.as_ref().unwrap().0;
         assert!(native.pixels.iter().any(|&a| a > 0 && a < 255));
         assert!(native.height > i32::from(glyph.height));
+        let plain_width = native.width;
+        bus.begin_outline_glyph(glyph, data, 0, 7, false, Some(2), Some((advance as i16, 1)));
+        let styled = &bus.presentation.as_ref().unwrap().glyph.as_ref().unwrap().0;
+        assert!(styled.width > plain_width);
+        assert!(styled.top + styled.height >= 4);
+        assert!(styled.pixels.iter().any(|&a| a > 0 && a < 255));
         assert_eq!(get_glyph(FONT_GENEVA, 9, 'a').unwrap().0.advance, advance);
     }
 }

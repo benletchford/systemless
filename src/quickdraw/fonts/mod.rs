@@ -1,43 +1,17 @@
-//! Systemless bitmap fonts, optional URW outlines, and Mac font-family routing.
-//!
-//! The `experimental-urw-fonts` feature replaces the built-in fallback at
-//! 1–96 points with bundled OFL-licensed URW TrueType faces. Application
-//! resources and local overrides still take precedence. The description
-//! below describes the default bitmap catalogue.
-//!
-//! Text renders by blitting pre-computed 8-bit coverage bitmaps out of
-//! the [`pixel_font`] modules — no runtime rasterization, no hinting
-//! decisions, no threshold knobs, no CLUT-closest-match. Every glyph
-//! pixel is exactly 0 or 255, so the downstream `ShapeOp::Glyph`
-//! partial-alpha branch never fires.
-//!
-//! Each face is authored as hand-editable ASCII art in a `pixel_font`
-//! module and lowered to static glyph tables by `const fn` at compile
-//! time — no offline baker, no external font asset. The systemless
-//! faces are named after Australian native plants and stand in for the
-//! classic Mac families, which survive only as internal compatibility
-//! identifiers:
-//!
-//! | Mac font family (compat ID)                        | systemless face |
-//! |----------------------------------------------------|-----------------|
-//! | Chicago                                            | Jarrah          |
-//! | Geneva / Application / Helvetica                   | Kurrajong       |
-//! | Monaco / Courier                                   | Mallee        |
-//! | New York / Palatino / Times                        | Ironbark        |
-//! | Venice                                             | Wattle           |
-//! | London                                             | Karri           |
-//! | Cairo                                              | Grevillea          |
-//!
-//! All glyphs are original artwork authored for systemless; no
-//! third-party font data is used. See the "Font Data" section of the
-//! crate README for the full mapping and trademark / non-affiliation
-//! notice.
+//! Font routing, guest resources, and bundled TrueType outlines.
+//! Guest FONT/NFNT/sfnt resources and explicit local overrides take precedence.
 
-pub mod heuristics;
+mod bundled;
+pub mod families;
+mod resources;
+pub mod style;
+use resources::*;
+pub(crate) use resources::{
+    parse_fond_associations, register_resource_font_strike,
+    register_resource_font_strike_for_family, register_resource_outline_font, FondAssociation,
+};
+pub(crate) mod outline;
 pub mod override_format;
-pub mod pixel_font;
-#[cfg(feature = "experimental-urw-fonts")]
-pub(crate) mod urw;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -45,18 +19,13 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
-use ab_glyph::{point, Font, FontRef, ScaleFont};
-
-pub use self::heuristics::{
+pub use self::families::{
     FONT_APPLICATION, FONT_ATHENS, FONT_CAIRO, FONT_CHICAGO, FONT_COURIER, FONT_GENEVA,
     FONT_HELVETICA, FONT_LONDON, FONT_LOSANGELES, FONT_MOBILE, FONT_MONACO, FONT_NEWYORK,
     FONT_PALATINO, FONT_SANFRAN, FONT_SEATTLE, FONT_SYMBOL, FONT_TIMES, FONT_TORONTO, FONT_VENICE,
 };
 
-/// Single-character bitmap descriptor: dimensions + offset into the
-/// shared `data` byte buffer. Coverage bytes are always exactly 0 or
-/// 255 — the ASCII-art source is `const fn`-decoded to a binary mask,
-/// so the `ShapeOp::Glyph` partial-alpha branch never fires.
+/// Rasterized glyph dimensions and offset into a shared coverage buffer.
 #[derive(Clone, Copy)]
 pub struct Glyph {
     pub width: u8,
@@ -77,7 +46,7 @@ pub struct FontMetrics {
     pub leading: i16,
 }
 
-/// One baked (font_id, size) face: metrics plus a slice of glyph
+/// One rasterized (font_id, size) face: metrics plus a slice of glyph
 /// descriptors and a shared coverage-byte buffer that the descriptors'
 /// `data_offset` fields index into.
 pub struct FontFace {
@@ -88,18 +57,13 @@ pub struct FontFace {
     pub data: &'static [u8],
 }
 
-/// Mac Roman extended glyph (code 0x80..=0xFF). Preserved for callers
-/// that expect the type; the built-in faces don't populate Mac Roman
-/// extended tables yet so `get_macroman_glyph` returns None.
+/// Glyph for a Mac Roman extended character (code 0x80..=0xFF).
 pub struct MacRomanGlyph {
     pub mac_code: u8,
     pub glyph: Glyph,
 }
 
-/// `FontFace` analogue covering Mac Roman extended characters
-/// (codes 0x80..=0xFF). Currently has no entries — the built-in faces
-/// don't populate these yet — but the type stays so the
-/// `get_macroman_glyph` API surface is stable.
+/// Rasterized Mac Roman extension of a face.
 pub struct MacRomanFace {
     pub font_id: i16,
     pub size: i16,
@@ -107,499 +71,8 @@ pub struct MacRomanFace {
     pub data: &'static [u8],
 }
 
-/// `FontFace` analogue with pre-baked italic strikes. Synthesised
-/// at draw time today via shear-blit (no italic strikes baked yet),
-/// but the type is in place so a future bake step can plug in.
-pub struct ItalicFace {
-    pub font_id: i16,
-    pub size: i16,
-    pub glyphs: &'static [Glyph],
-    pub data: &'static [u8],
-}
-
-/// Threshold at which coverage is treated as "fully set" when
-/// collapsing to a 1-bit destination. Baked glyph data is exclusively
-/// 0 or 255 so this is effectively inert for the glyph path; kept for
-/// shape-op callers that share the threshold constant.
+/// Coverage threshold used by QuickDraw binary transfer modes.
 pub const MONO_COVERAGE_THRESHOLD: u8 = 128;
-
-// --- Static catalogue ----------------------------------------------------
-
-struct PackedFace {
-    font_id: i16,
-    size: i16,
-    metrics: FontMetrics,
-    glyphs: &'static [Glyph],
-    data: &'static [u8],
-}
-
-const HELVETICA_12_FALLBACK_METRICS: FontMetrics = FontMetrics {
-    ascent: 10,
-    descent: 3,
-    wid_max: 12,
-    leading: 1,
-};
-
-// Every face is sourced from hand-editable ASCII art in `pixel_font`,
-// decoded to these tables at compile time — no offline baker, no
-// external font asset. `pf!` maps a Mac-compat (font_id, size) onto its
-// `pixel_font` module.
-macro_rules! pf {
-    ($fid:expr, $size:expr, $module:ident) => {
-        PackedFace {
-            font_id: $fid,
-            size: $size,
-            metrics: pixel_font::$module::FACE.metrics,
-            glyphs: pixel_font::$module::FACE.glyphs,
-            data: pixel_font::$module::FACE.data,
-        }
-    };
-}
-
-const PACKED_FACES: &[PackedFace] = &[
-    pf!(FONT_CHICAGO, 9, chicago9),
-    pf!(FONT_CHICAGO, 12, chicago12),
-    pf!(FONT_APPLICATION, 12, application12),
-    pf!(FONT_NEWYORK, 12, newyork12),
-    pf!(FONT_NEWYORK, 14, newyork14),
-    pf!(FONT_NEWYORK, 18, newyork18),
-    pf!(FONT_GENEVA, 9, geneva9),
-    pf!(FONT_GENEVA, 10, geneva10),
-    PackedFace {
-        // Text 1993, pp. 1-61 and 3-65: font family 21 is Helvetica,
-        // and QuickDraw measurements come from the current font/size.
-        // Systemless cannot ship Apple's Helvetica NFNTs, so the
-        // fallback uses the narrower Geneva 10 strike for Helvetica 12
-        // instead of same-size Geneva. That keeps classic app-owned
-        // Helvetica dialog text from overflowing fixed rects.
-        font_id: FONT_HELVETICA,
-        size: 12,
-        metrics: HELVETICA_12_FALLBACK_METRICS,
-        glyphs: pixel_font::geneva10::FACE.glyphs,
-        data: pixel_font::geneva10::FACE.data,
-    },
-    pf!(FONT_GENEVA, 12, geneva12),
-    pf!(FONT_GENEVA, 14, geneva14),
-    pf!(FONT_GENEVA, 18, geneva18),
-    pf!(FONT_GENEVA, 24, geneva24),
-    pf!(FONT_MONACO, 9, monaco9),
-    pf!(FONT_MONACO, 10, monaco10),
-    pf!(FONT_MONACO, 12, monaco12),
-    pf!(FONT_VENICE, 14, venice14),
-    pf!(FONT_LONDON, 18, london18),
-    pf!(FONT_CAIRO, 18, cairo18),
-];
-
-pub static FONT_TABLE: LazyLock<&'static [FontFace]> = LazyLock::new(|| {
-    let faces: Vec<FontFace> = PACKED_FACES
-        .iter()
-        .map(|pf| FontFace {
-            font_id: pf.font_id,
-            size: pf.size,
-            metrics: pf.metrics,
-            glyphs: pf.glyphs,
-            data: pf.data,
-        })
-        .collect();
-    Box::leak(faces.into_boxed_slice())
-});
-
-static MACROMAN_TABLE: LazyLock<&'static [MacRomanFace]> =
-    LazyLock::new(|| Box::leak(Vec::<MacRomanFace>::new().into_boxed_slice()));
-
-static ITALIC_TABLE: LazyLock<&'static [ItalicFace]> =
-    LazyLock::new(|| Box::leak(Vec::<ItalicFace>::new().into_boxed_slice()));
-
-/// Bitmap strikes supplied by the currently loaded Classic Mac application.
-/// The decoded storage is leaked deliberately: font resources are tiny and
-/// glyph references are handed through the renderer as `'static` slices.
-/// A Systemless process hosts one guest application, while replacement lets a
-/// later resource fork with the same family/size take precedence.
-static RESOURCE_FACES: LazyLock<Mutex<HashMap<(i16, i16), &'static FontFace>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static RESOURCE_MACROMAN_FACES: LazyLock<Mutex<HashMap<(i16, i16), &'static MacRomanFace>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static RESOURCE_OUTLINE_FONTS: LazyLock<Mutex<HashMap<i16, &'static [u8]>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn resource_word(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([
-        *data.get(offset)?,
-        *data.get(offset + 1)?,
-    ]))
-}
-
-/// One entry from a font family (`FOND`) resource's association table.
-///
-/// `font_resource_id` identifies an `NFNT`, `FONT`, or `sfnt` resource;
-/// unlike old-style `FONT` IDs, an `NFNT` ID does not encode its family or
-/// point size. *Inside Macintosh: Text* (1993), pp. 4-47–4-48 and 4-95–4-96.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct FondAssociation {
-    pub family_id: i16,
-    pub size: i16,
-    pub style: u16,
-    pub font_resource_id: i16,
-}
-
-/// Decode the mandatory association table that immediately follows a
-/// `FOND` resource's 52-byte `FamRec` header.
-pub(crate) fn parse_fond_associations(
-    fond_resource_id: i16,
-    bytes: &[u8],
-) -> Option<Vec<FondAssociation>> {
-    const FAM_REC_LEN: usize = 52;
-    const ASSOCIATION_LEN: usize = 6;
-    let count_minus_one = resource_word(bytes, FAM_REC_LEN)? as i16;
-    if count_minus_one < -1 {
-        return None;
-    }
-    let count = usize::try_from(i32::from(count_minus_one) + 1).ok()?;
-    let table_len = count.checked_mul(ASSOCIATION_LEN)?;
-    let table_end = FAM_REC_LEN.checked_add(2)?.checked_add(table_len)?;
-    if table_end > bytes.len() {
-        return None;
-    }
-
-    let mut associations = Vec::with_capacity(count);
-    for index in 0..count {
-        let offset = FAM_REC_LEN + 2 + index * ASSOCIATION_LEN;
-        associations.push(FondAssociation {
-            // The family number used by Font Manager clients is the FOND
-            // resource ID. FamRec.ffFamID redundantly records that value.
-            family_id: fond_resource_id,
-            size: resource_word(bytes, offset)? as i16,
-            style: resource_word(bytes, offset + 2)?,
-            font_resource_id: resource_word(bytes, offset + 4)? as i16,
-        });
-    }
-    Some(associations)
-}
-
-/// Decode a classic `FONT` bitmap strike whose resource ID uses the original
-/// `family * 128 + pointSize` encoding. `NFNT` resources normally use the
-/// arbitrary IDs recorded by a `FOND` association table and should call
-/// [`register_resource_font_strike_for_family`] instead.
-pub(crate) fn register_resource_font_strike(resource_id: i16, bytes: &[u8]) -> bool {
-    if resource_id <= 0 {
-        return false;
-    }
-    let family_id = resource_id / 128;
-    let size = resource_id % 128;
-    if size <= 0 {
-        return false;
-    }
-    register_resource_font_strike_for_family(family_id, size, bytes)
-}
-
-/// Decode and register a bitmap strike under the family and point size from
-/// its `FOND` association entry. The resource bytes stay in the user's
-/// application; Systemless expands their 1-bit glyph bitmap into the same
-/// runtime coverage representation used by its built-in faces.
-pub(crate) fn register_resource_font_strike_for_family(
-    family_id: i16,
-    size: i16,
-    bytes: &[u8],
-) -> bool {
-    const HEADER_LEN: usize = 26;
-    if family_id < 0 || size <= 0 || bytes.len() < HEADER_LEN {
-        return false;
-    }
-
-    let first_char = resource_word(bytes, 2)
-        .map(usize::from)
-        .unwrap_or(usize::MAX);
-    let last_char = resource_word(bytes, 4).map(usize::from).unwrap_or(0);
-    let wid_max = resource_word(bytes, 6).map(|v| v as i16).unwrap_or(0);
-    let kern_max = resource_word(bytes, 8).map(|v| v as i16).unwrap_or(0);
-    let f_rect_height = resource_word(bytes, 14).map(usize::from).unwrap_or(0);
-    let ow_t_loc = resource_word(bytes, 16).map(usize::from).unwrap_or(0);
-    let ascent = resource_word(bytes, 18).map(|v| v as i16).unwrap_or(0);
-    let descent = resource_word(bytes, 20).map(|v| v as i16).unwrap_or(0);
-    let leading = resource_word(bytes, 22).map(|v| v as i16).unwrap_or(0);
-    let row_words = resource_word(bytes, 24).map(usize::from).unwrap_or(0);
-    if first_char > last_char
-        || last_char > 255
-        || f_rect_height == 0
-        || f_rect_height > u8::MAX as usize
-        || row_words == 0
-    {
-        return false;
-    }
-
-    let bitmap_len = match row_words
-        .checked_mul(2)
-        .and_then(|row_bytes| row_bytes.checked_mul(f_rect_height))
-    {
-        Some(len) => len,
-        None => return false,
-    };
-    let location_offset = HEADER_LEN + bitmap_len;
-    // One glyph per encoded character plus the missing-character glyph; the
-    // location table has one additional terminal entry.
-    let glyph_count = last_char - first_char + 2;
-    let location_count = glyph_count + 1;
-    let location_end = match location_offset.checked_add(location_count * 2) {
-        Some(end) => end,
-        None => return false,
-    };
-    // FontRec.owTLoc is measured in words from the owTLoc field itself
-    // (byte offset 16), not from the start of the resource.
-    let ow_offset = match 16usize.checked_add(ow_t_loc * 2) {
-        Some(offset) => offset,
-        None => return false,
-    };
-    if HEADER_LEN + bitmap_len > bytes.len()
-        || location_end > bytes.len()
-        || ow_offset < location_end
-        || ow_offset.saturating_add(glyph_count * 2) > bytes.len()
-    {
-        return false;
-    }
-    let bitmap_width = row_words * 16;
-    let missing_index = last_char - first_char + 1;
-    let mut coverage = Vec::new();
-
-    let mut decode_index = |mut index: usize| -> Option<Glyph> {
-        if index >= glyph_count {
-            index = missing_index;
-        }
-        let mut ow = resource_word(bytes, ow_offset + index * 2)?;
-        if ow == 0xFFFF && index != missing_index {
-            index = missing_index;
-            ow = resource_word(bytes, ow_offset + index * 2)?;
-        }
-        if ow == 0xFFFF {
-            return None;
-        }
-        let start = resource_word(bytes, location_offset + index * 2)? as usize;
-        let end = resource_word(bytes, location_offset + (index + 1) * 2)? as usize;
-        if end < start || end > bitmap_width || end - start > u8::MAX as usize {
-            return None;
-        }
-        let width = end - start;
-        let data_offset = coverage.len();
-        coverage.reserve(width.saturating_mul(f_rect_height));
-        let row_bytes = row_words * 2;
-        for row in 0..f_rect_height {
-            let row_start = HEADER_LEN + row * row_bytes;
-            for column in start..end {
-                let byte = *bytes.get(row_start + column / 8)?;
-                let mask = 0x80 >> (column & 7);
-                coverage.push(if byte & mask != 0 { 255 } else { 0 });
-            }
-        }
-        // The offset byte is unsigned; adding the (normally negative)
-        // kernMax converts it to the signed displacement from the pen.
-        let origin_x = kern_max.saturating_add(i16::from((ow >> 8) as u8));
-        Some(Glyph {
-            width: width as u8,
-            height: f_rect_height as u8,
-            advance: (ow & 0x00FF) as u8,
-            origin_x: origin_x.clamp(i8::MIN as i16, i8::MAX as i16) as i8,
-            origin_y: (-ascent).clamp(i8::MIN as i16, i8::MAX as i16) as i8,
-            data_offset,
-        })
-    };
-
-    let mut ascii = Vec::with_capacity(95);
-    for code in 0x20usize..=0x7E {
-        let index = code
-            .checked_sub(first_char)
-            .filter(|_| code <= last_char)
-            .unwrap_or(missing_index);
-        ascii.push(decode_index(index).unwrap_or(Glyph {
-            width: 0,
-            height: 0,
-            advance: wid_max.clamp(0, u8::MAX as i16) as u8,
-            origin_x: 0,
-            origin_y: 0,
-            data_offset: 0,
-        }));
-    }
-    let mut macroman = Vec::new();
-    for code in 0x80usize..=0xFF {
-        if code < first_char || code > last_char {
-            continue;
-        }
-        if let Some(glyph) = decode_index(code - first_char) {
-            macroman.push(MacRomanGlyph {
-                mac_code: code as u8,
-                glyph,
-            });
-        }
-    }
-
-    let coverage: &'static [u8] = Box::leak(coverage.into_boxed_slice());
-    let ascii: &'static [Glyph] = Box::leak(ascii.into_boxed_slice());
-    let face = Box::leak(Box::new(FontFace {
-        font_id: family_id,
-        size,
-        metrics: FontMetrics {
-            ascent,
-            descent,
-            wid_max,
-            leading,
-        },
-        glyphs: ascii,
-        data: coverage,
-    }));
-    RESOURCE_FACES
-        .lock()
-        .expect("resource font cache poisoned")
-        .insert((family_id, size), face);
-    if !macroman.is_empty() {
-        let glyphs: &'static [MacRomanGlyph] = Box::leak(macroman.into_boxed_slice());
-        let face = Box::leak(Box::new(MacRomanFace {
-            font_id: family_id,
-            size,
-            glyphs,
-            data: coverage,
-        }));
-        RESOURCE_MACROMAN_FACES
-            .lock()
-            .expect("resource Mac Roman font cache poisoned")
-            .insert((family_id, size), face);
-    }
-    true
-}
-
-/// Register a scalable `sfnt` resource for lazy rasterization at the point
-/// size requested by QuickDraw. Inside Macintosh: Text (1993), pp. 4-47–4-48
-/// and 4-97–4-98, describes `sfnt` resources as the outline data associated
-/// with a FOND and specifies that the Font Manager scales outline fonts.
-pub(crate) fn register_resource_outline_font(family_id: i16, bytes: &[u8]) -> bool {
-    if family_id < 0 || FontRef::try_from_slice(bytes).is_err() {
-        return false;
-    }
-    let bytes = Box::leak(bytes.to_vec().into_boxed_slice());
-    RESOURCE_OUTLINE_FONTS
-        .lock()
-        .expect("resource outline font cache poisoned")
-        .insert(family_id, bytes);
-    true
-}
-
-fn rasterize_resource_outline_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
-    if size <= 0 {
-        return None;
-    }
-    let bytes = RESOURCE_OUTLINE_FONTS
-        .lock()
-        .expect("resource outline font cache poisoned")
-        .get(&font_id)
-        .copied()?;
-    let font = FontRef::try_from_slice(bytes).ok()?;
-    let parsed = ttf_parser::Face::parse(bytes, 0).ok()?;
-    let macintosh_cmap = parsed.tables().cmap.and_then(|cmap| {
-        cmap.subtables
-            .into_iter()
-            .find(|subtable| subtable.platform_id == ttf_parser::PlatformId::Macintosh)
-    });
-    let scaled = font.as_scaled(size as f32);
-    let ascent = scaled.ascent().ceil() as i16;
-    let descent = (-scaled.descent()).ceil().max(0.0) as i16;
-    let leading = scaled.line_gap().round().max(0.0) as i16;
-    let mut coverage = Vec::new();
-
-    let mut rasterize = |mac_code: u8, ch: char| {
-        let mut glyph_id = scaled.glyph_id(ch);
-        if glyph_id.0 == 0 {
-            if let Some(mapped) = macintosh_cmap.and_then(|cmap| cmap.glyph_index(mac_code.into()))
-            {
-                glyph_id = ab_glyph::GlyphId(mapped.0);
-            }
-        }
-        let advance = scaled
-            .h_advance(glyph_id)
-            .round()
-            .clamp(0.0, u8::MAX as f32) as u8;
-        let Some(outlined) =
-            scaled.outline_glyph(glyph_id.with_scale_and_position(size as f32, point(0.0, 0.0)))
-        else {
-            return Glyph {
-                width: 0,
-                height: 0,
-                advance,
-                origin_x: 0,
-                origin_y: 0,
-                data_offset: coverage.len(),
-            };
-        };
-        let bounds = outlined.px_bounds();
-        let width = bounds.width().round().clamp(0.0, u8::MAX as f32) as u8;
-        let height = bounds.height().round().clamp(0.0, u8::MAX as f32) as u8;
-        let data_offset = coverage.len();
-        coverage.resize(data_offset + usize::from(width) * usize::from(height), 0);
-        outlined.draw(|x, y, value| {
-            let index = data_offset + y as usize * usize::from(width) + x as usize;
-            if let Some(pixel) = coverage.get_mut(index) {
-                *pixel = (value * 255.0).round().clamp(0.0, 255.0) as u8;
-            }
-        });
-        Glyph {
-            width,
-            height,
-            advance,
-            origin_x: (bounds.min.x.round() as i16).clamp(i8::MIN as i16, i8::MAX as i16) as i8,
-            origin_y: (bounds.min.y.round() as i16).clamp(i8::MIN as i16, i8::MAX as i16) as i8,
-            data_offset,
-        }
-    };
-
-    let ascii = (0x20u8..=0x7e)
-        .map(|code| rasterize(code, char::from(code)))
-        .collect::<Vec<_>>();
-    let macroman = (0x80u8..=0xff)
-        .map(|code| {
-            let ch = crate::mac_roman::decode_mac_roman(&[code])
-                .chars()
-                .next()
-                .unwrap_or('?');
-            MacRomanGlyph {
-                mac_code: code,
-                glyph: rasterize(code, ch),
-            }
-        })
-        .collect::<Vec<_>>();
-    let wid_max = ascii
-        .iter()
-        .chain(macroman.iter().map(|entry| &entry.glyph))
-        .map(|glyph| i16::from(glyph.advance))
-        .max()
-        .unwrap_or(0);
-
-    let coverage = Box::leak(coverage.into_boxed_slice());
-    let ascii = Box::leak(ascii.into_boxed_slice());
-    let face = Box::leak(Box::new(FontFace {
-        font_id,
-        size,
-        metrics: FontMetrics {
-            ascent,
-            descent,
-            wid_max,
-            leading,
-        },
-        glyphs: ascii,
-        data: coverage,
-    }));
-    RESOURCE_FACES
-        .lock()
-        .expect("resource font cache poisoned")
-        .insert((font_id, size), face);
-    let macroman = Box::leak(macroman.into_boxed_slice());
-    let macroman_face = Box::leak(Box::new(MacRomanFace {
-        font_id,
-        size,
-        glyphs: macroman,
-        data: coverage,
-    }));
-    RESOURCE_MACROMAN_FACES
-        .lock()
-        .expect("resource Mac Roman font cache poisoned")
-        .insert((font_id, size), macroman_face);
-    Some(face)
-}
 
 // --- Font ID ↔ name lookup -----------------------------------------------
 
@@ -679,11 +152,7 @@ pub fn get_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
     if let Some(face) = rasterize_resource_outline_face(font_id, size) {
         return Some(face);
     }
-    #[cfg(feature = "experimental-urw-fonts")]
-    if let Some((face, _)) = urw::face(font_id, size) {
-        return Some(face);
-    }
-    get_baked_font_face(font_id, size)
+    outline::face(font_id, size).map(|(face, _)| face)
 }
 
 #[cfg(test)]
@@ -696,7 +165,7 @@ fn get_font_face_with_overrides(
     if let Some(face) = overrides.get(&(font_id, size)) {
         return Some(*face);
     }
-    get_baked_font_face(font_id, size)
+    outline::face(font_id, size).map(|(face, _)| face)
 }
 
 /// Re-read `SYSTEMLESS_ORIGINAL_FONTS_DIR` on the next font lookup.
@@ -737,116 +206,45 @@ fn get_override_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> 
     cache.faces.get(&(font_id, size)).copied()
 }
 
-fn get_baked_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
-    FONT_TABLE
-        .iter()
-        .find(|face| face.font_id == font_id && face.size == size)
-}
-
-fn fallback_font_id(font_id: i16) -> Option<i16> {
-    match font_id {
-        1 => Some(FONT_GENEVA),
-        FONT_PALATINO | FONT_TIMES => Some(FONT_NEWYORK),
-        FONT_HELVETICA => Some(FONT_GENEVA),
-        FONT_COURIER => Some(FONT_MONACO),
-        _ => None,
-    }
-}
-
 fn closest_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
-    let requested_size = if size == 0 { 12 } else { size };
-    let resource_faces = RESOURCE_FACES.lock().expect("resource font cache poisoned");
-    resource_faces
+    RESOURCE_FACES
+        .lock()
+        .expect("resource font cache poisoned")
         .values()
         .copied()
-        .chain(FONT_TABLE.iter())
         .filter(|face| face.font_id == font_id)
         .min_by_key(|face| {
             (
-                (i32::from(face.size) - i32::from(requested_size)).unsigned_abs(),
+                (i32::from(face.size) - i32::from(size)).unsigned_abs(),
                 std::cmp::Reverse(face.size),
             )
         })
 }
 
 pub fn get_font_face_or_default(font_id: i16, size: i16) -> &'static FontFace {
+    let size = if size == 0 { 12 } else { size.max(1) };
     if let Some(face) = get_font_face(font_id, size) {
         return face;
-    }
-    if let Some(fb) = fallback_font_id(font_id) {
-        if let Some(face) = get_font_face(fb, size) {
-            return face;
-        }
-        for scale in [2i16, 3] {
-            let base_size = size / scale;
-            if base_size * scale == size {
-                if let Some(face) = get_font_face(fb, base_size) {
-                    return face;
-                }
-            }
-        }
-        if let Some(face) = closest_font_face(fb, size) {
-            return face;
-        }
-    }
-    for scale in [2i16, 3] {
-        let base_size = size / scale;
-        if base_size * scale == size {
-            if let Some(face) = get_font_face(font_id, base_size) {
-                return face;
-            }
-        }
     }
     if let Some(face) = closest_font_face(font_id, size) {
         return face;
     }
-    if let Some(default_face) = get_font_face(FONT_CHICAGO, 12) {
-        return default_face;
-    }
-    &FONT_TABLE[0]
+    // Rasterize bounded strikes; extreme sizes use the same outline face with
+    // the scale ratio below rather than falling back to handwritten bitmaps.
+    outline::face(font_id, size.min(96))
+        .or_else(|| outline::face(FONT_APPLICATION, size.min(96)))
+        .expect("bundled font must be valid")
+        .0
 }
 
 pub fn get_font_face_scaled(font_id: i16, size: i16) -> (&'static FontFace, i16) {
-    get_font_face_scaled_impl(font_id, size)
-}
-
-fn get_font_face_scaled_impl(font_id: i16, size: i16) -> (&'static FontFace, i16) {
-    if let Some(face) = get_font_face(font_id, size) {
-        return (face, 1);
-    }
-    if let Some(fb) = fallback_font_id(font_id) {
-        if let Some(face) = get_font_face(fb, size) {
-            return (face, 1);
-        }
-        for scale in [2i16, 3] {
-            let base_size = size / scale;
-            if base_size * scale == size {
-                if let Some(face) = get_font_face(fb, base_size) {
-                    return (face, scale);
-                }
-            }
-        }
-        if let Some(face) = closest_font_face(fb, size) {
-            return (face, 1);
-        }
-    }
-    for scale in [2i16, 3] {
-        let base_size = size / scale;
-        if base_size * scale == size {
-            if let Some(face) = get_font_face(font_id, base_size) {
-                return (face, scale);
-            }
-        }
-    }
-    if let Some(face) = closest_font_face(font_id, size) {
-        return (face, 1);
-    }
-    (get_font_face_or_default(font_id, size), 1)
+    let face = get_font_face_or_default(font_id, size);
+    (face, (size.max(1) / face.size.max(1)).max(1))
 }
 
 pub fn get_font_face_scale_ratio(font_id: i16, size: i16) -> (&'static FontFace, i32, i32) {
     let requested_size = if size == 0 { 12 } else { size }.max(1);
-    let (face, _) = get_font_face_scaled_impl(font_id, requested_size);
+    let (face, _) = get_font_face_scaled(font_id, requested_size);
     (face, i32::from(requested_size), i32::from(face.size.max(1)))
 }
 
@@ -855,11 +253,8 @@ pub fn get_macroman_glyph(
     size: i16,
     mac_code: u8,
 ) -> Option<(&'static Glyph, &'static [u8])> {
-    let size = if size == 0 { 12 } else { size };
-    // Resolve a guest outline before considering bundled extended glyphs, even
-    // when the first character drawn is non-ASCII.
-    #[cfg(feature = "experimental-urw-fonts")]
-    let _ = get_font_face(font_id, size);
+    let resolved = get_font_face_or_default(font_id, size);
+    let (font_id, size) = (resolved.font_id, resolved.size);
     if let Some(face) = RESOURCE_MACROMAN_FACES
         .lock()
         .expect("resource Mac Roman font cache poisoned")
@@ -870,14 +265,13 @@ pub fn get_macroman_glyph(
             return Some((&hit.glyph, face.data));
         }
     }
-    #[cfg(feature = "experimental-urw-fonts")]
     if get_override_font_face(font_id, size).is_none()
         && !RESOURCE_FACES
             .lock()
             .expect("resource font cache poisoned")
             .contains_key(&(font_id, size))
     {
-        if let Some((_, face)) = urw::face(font_id, size) {
+        if let Some((_, face)) = outline::face(font_id, size) {
             return face
                 .glyphs
                 .iter()
@@ -885,36 +279,17 @@ pub fn get_macroman_glyph(
                 .map(|entry| (&entry.glyph, face.data));
         }
     }
-    let face = MACROMAN_TABLE
-        .iter()
-        .find(|f| f.font_id == font_id && f.size == size)?;
-    face.glyphs
-        .iter()
-        .find(|e| e.mac_code == mac_code)
-        .map(|e| (&e.glyph, face.data))
+    None
 }
 
+/// No separate bitmap italic strikes are bundled. QuickDraw callers synthesize
+/// the requested style from the selected font.
 pub fn get_italic_glyph(
-    font_id: i16,
-    size: i16,
-    ch: char,
+    _font_id: i16,
+    _size: i16,
+    _ch: char,
 ) -> Option<(&'static Glyph, &'static [u8])> {
-    let size = if size == 0 { 12 } else { size };
-    let face = ITALIC_TABLE
-        .iter()
-        .find(|f| f.font_id == font_id && f.size == size)?;
-    if !(' '..='~').contains(&ch) {
-        return None;
-    }
-    let idx = (ch as usize) - 32;
-    if idx >= face.glyphs.len() {
-        return None;
-    }
-    let glyph = &face.glyphs[idx];
-    if glyph.width == 0 && glyph.height == 0 && glyph.advance == 0 {
-        return None;
-    }
-    Some((glyph, face.data))
+    None
 }
 
 #[cfg(test)]
@@ -1014,76 +389,22 @@ mod tests {
     }
 
     #[test]
-    fn every_packed_face_is_accessible() {
-        for pf in PACKED_FACES {
-            let face = get_font_face(pf.font_id, pf.size)
-                .unwrap_or_else(|| panic!("missing ({}, {})", pf.font_id, pf.size));
-            assert_eq!(face.glyphs.len(), 95);
+    fn bundled_families_rasterize_requested_sizes() {
+        for id in [
+            FONT_CHICAGO,
+            FONT_GENEVA,
+            FONT_MONACO,
+            FONT_PALATINO,
+            FONT_HELVETICA,
+            FONT_COURIER,
+        ] {
+            for size in [9, 12, 17, 40, 96] {
+                let (face, numerator, denominator) = get_font_face_scale_ratio(id, size);
+                assert_eq!((face.font_id, face.size), (id, size));
+                assert_eq!(numerator, denominator);
+                assert_eq!(face.glyphs.len(), 95);
+            }
         }
-    }
-
-    #[test]
-    fn default_face_is_chicago_12() {
-        let face = get_font_face_or_default(FONT_CHICAGO, 12);
-        assert_eq!(face.font_id, FONT_CHICAGO);
-        assert_eq!(face.size, 12);
-    }
-
-    #[test]
-    #[cfg(not(feature = "experimental-urw-fonts"))]
-    fn implicit_scaling_uses_the_closest_bitmap_strike_and_exact_ratio() {
-        let (face, numerator, denominator) = get_font_face_scale_ratio(FONT_CHICAGO, 40);
-        assert_eq!(face.font_id, FONT_CHICAGO);
-        assert_eq!(face.size, 12);
-        assert_eq!((numerator, denominator), (40, 12));
-    }
-
-    #[test]
-    #[cfg(not(feature = "experimental-urw-fonts"))]
-    fn fallback_courier_to_monaco() {
-        let face = get_font_face_or_default(FONT_COURIER, 12);
-        assert_eq!(face.font_id, FONT_MONACO);
-    }
-
-    #[test]
-    #[cfg(not(feature = "experimental-urw-fonts"))]
-    fn palatino_uses_the_original_ironbark_serif_face() {
-        assert_eq!(font_id_for_name("Palatino"), Some(FONT_PALATINO));
-        assert_eq!(font_name_for_id(FONT_PALATINO), Some("Palatino"));
-
-        for size in [12, 14, 18, 24] {
-            let (face, scale) = get_font_face_scaled(FONT_PALATINO, size);
-            assert_eq!(face.font_id, FONT_NEWYORK);
-            assert_eq!(i16::from(face.size) * scale, size);
-        }
-    }
-
-    #[test]
-    fn baked_helvetica_12_fallback_is_narrower_than_geneva_12() {
-        let overrides = HashMap::new();
-        let helvetica = get_font_face_with_overrides(&overrides, FONT_HELVETICA, 12)
-            .expect("baked Helvetica 12 fallback should resolve directly");
-        let geneva = get_font_face_with_overrides(&overrides, FONT_GENEVA, 12)
-            .expect("baked Geneva 12 should resolve");
-        assert_eq!(helvetica.font_id, FONT_HELVETICA);
-        assert_eq!(helvetica.size, 12);
-        assert_eq!(
-            helvetica.metrics.ascent + helvetica.metrics.descent + helvetica.metrics.leading,
-            14
-        );
-
-        fn width(face: &FontFace, text: &str) -> u16 {
-            text.bytes()
-                .map(|byte| face.glyphs[(byte - b' ') as usize].advance as u16)
-                .sum()
-        }
-
-        let notice_line = "Please note that EV Override is not a free product.";
-        assert!(width(helvetica, notice_line) < width(geneva, notice_line));
-        assert!(
-            width(helvetica, "Register...") <= 56,
-            "fallback Helvetica 12 should fit classic 90px dialog buttons"
-        );
     }
 
     #[test]
@@ -1105,303 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn alphanumerics_rest_on_the_baseline() {
-        // Regression guard for the hand-authored faces: a glyph's bottom edge
-        // is `origin_y + height` (0 = the baseline; positive descends below
-        // it). Letters and digits must never *float above* the baseline — that
-        // is the "bouncing text" bug you get when redrawn art is shorter than
-        // the original but keeps the original (cap-height) origin_y. Digits and
-        // capitals rest exactly on the baseline; lowercase may descend, but no
-        // further than the face's descent.
-        for pf in PACKED_FACES {
-            for byte in (b'0'..=b'9').chain(b'A'..=b'Z').chain(b'a'..=b'z') {
-                let g = &pf.glyphs[(byte - b' ') as usize];
-                if g.height == 0 {
-                    continue;
-                }
-                let bottom = g.origin_y as i32 + g.height as i32;
-                assert!(
-                    bottom >= 0,
-                    "({}, {}) glyph {:?} floats {}px above the baseline",
-                    pf.font_id,
-                    pf.size,
-                    byte as char,
-                    -bottom
-                );
-                assert!(
-                    bottom <= pf.metrics.descent as i32,
-                    "({}, {}) glyph {:?} sinks {}px below the {}px descent",
-                    pf.font_id,
-                    pf.size,
-                    byte as char,
-                    bottom,
-                    pf.metrics.descent
-                );
-                // Digits, capitals and J/Q tails are only held to the
-                // >=0 / <=descent bounds above: the authentic originals give
-                // some digits a 1px rounded overshoot below the baseline (e.g.
-                // New York's '3'), so an exact rest-on-baseline rule would
-                // reject faithful metrics.
-            }
-        }
-    }
-
-    // --- generic font-family invariants ----------------------------------
-    // These run over every PACKED_FACE and derive their expectations from the
-    // face's own glyphs (no per-face magic numbers), so any hand-authored face
-    // is held to the same alignment/height contract.
-
-    /// Lowercase letters that occupy exactly the x-height band (no ascender,
-    /// no descender).
-    const PLAIN_X_HEIGHT: &[u8] = b"acemnorsuvwxz";
-    /// Lowercase letters whose stems rise to the ascender line (`f` and `t`
-    /// are intentionally excluded — their reach differs by design).
-    const ASCENDER_LETTERS: &[u8] = b"bdhkl";
-    /// Lowercase letters with a descender below the baseline.
-    const DESCENDER_LETTERS: &[u8] = b"gpqy";
-
-    fn packed_glyph(pf: &PackedFace, byte: u8) -> &'static Glyph {
-        &pf.glyphs[(byte - b' ') as usize]
-    }
-
-    /// Glyphs in `letters` must share a top line within `tol` px. A small
-    /// tolerance is required because the authentic strikes give round-topped
-    /// letters (b/d/h, the digit 6) a 1–2px optical overshoot above the flat
-    /// tops; the guard still catches a glyph drawn a whole band off (the
-    /// "bouncing text" / cap-height mistake).
-    fn assert_shared_top(group: &str, letters: &[u8], tol: i8) {
-        for pf in PACKED_FACES {
-            let tops: Vec<(u8, i8)> = letters
-                .iter()
-                .map(|&b| (b, packed_glyph(pf, b)))
-                .filter(|(_, g)| g.height != 0)
-                .map(|(b, g)| (b, g.origin_y))
-                .collect();
-            if let (Some(lo), Some(hi)) = (
-                tops.iter().map(|(_, t)| *t).min(),
-                tops.iter().map(|(_, t)| *t).max(),
-            ) {
-                assert!(
-                    hi - lo <= tol,
-                    "({}, {}) {group} letters span {}px of top-line variation (>{}px): {:?}",
-                    pf.font_id,
-                    pf.size,
-                    hi - lo,
-                    tol,
-                    tops
-                );
-            }
-        }
-    }
-
-    /// Glyphs in `letters` must share a bottom line within `tol` px. The
-    /// tolerance covers authentic descender depth differences (Geneva's g/y
-    /// reach 1–2px below p/q) while still catching a floating glyph.
-    fn assert_shared_bottom(group: &str, letters: &[u8], tol: i32) {
-        for pf in PACKED_FACES {
-            let bottoms: Vec<(u8, i32)> = letters
-                .iter()
-                .map(|&b| (b, packed_glyph(pf, b)))
-                .filter(|(_, g)| g.height != 0)
-                .map(|(b, g)| (b, g.origin_y as i32 + g.height as i32))
-                .collect();
-            if let (Some(lo), Some(hi)) = (
-                bottoms.iter().map(|(_, b)| *b).min(),
-                bottoms.iter().map(|(_, b)| *b).max(),
-            ) {
-                assert!(
-                    hi - lo <= tol,
-                    "({}, {}) {group} letters span {}px of bottom-line variation (>{}px): {:?}",
-                    pf.font_id,
-                    pf.size,
-                    hi - lo,
-                    tol,
-                    bottoms
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn ascender_letters_share_one_top_line() {
-        assert_shared_top("ascender", ASCENDER_LETTERS, 1);
-    }
-
-    #[test]
-    fn descender_bowls_sit_on_the_x_height_line() {
-        // The bowl of g/p/q/y occupies the x-height band; its top (origin_y)
-        // must match the plain x-height letters. If a descender is drawn from
-        // the cap line instead, its bowl towers over its neighbours and reads
-        // like a capital (e.g. a monospace 'p' that looks like 'P').
-        for pf in PACKED_FACES {
-            let x_top = packed_glyph(pf, b'o').origin_y;
-            for &byte in DESCENDER_LETTERS {
-                let g = packed_glyph(pf, byte);
-                if g.height == 0 {
-                    continue;
-                }
-                // The bowl top must sit on the x-height line, give or take a
-                // 2px optical overshoot above it (New York's 'g' bowl rides
-                // 1px high). It must never drop below the x-height line, nor
-                // rise toward the cap line — that is the "'p' looks like 'P'"
-                // bug this guard exists to catch.
-                let above = x_top as i32 - g.origin_y as i32;
-                assert!(
-                    (0..=2).contains(&above),
-                    "({}, {}) descender {:?} bowl starts at row {} but x-height is at {}",
-                    pf.font_id,
-                    pf.size,
-                    byte as char,
-                    g.origin_y,
-                    x_top
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn descender_letters_share_one_bottom_line() {
-        assert_shared_bottom("descender", DESCENDER_LETTERS, 2);
-    }
-
-    /// Original per-glyph box metrics (advance, origin_x, origin_y, width,
-    /// height) for the classic families, keyed by `@ font_id size`. Test-only
-    /// compatibility data — see the file header.
-    const ORIGINAL_CELLS: &str = include_str!("original_cells.txt");
-
-    type Cell = (i32, i32, i32, i32, i32);
-
-    fn parse_original_cells() -> std::collections::HashMap<(i16, i16), Vec<Cell>> {
-        let mut map = std::collections::HashMap::new();
-        let mut cur: Option<(i16, i16)> = None;
-        for line in ORIGINAL_CELLS.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some(rest) = line.strip_prefix("@ ") {
-                let mut it = rest.split_whitespace();
-                let f = it.next().unwrap().parse().unwrap();
-                let s = it.next().unwrap().parse().unwrap();
-                cur = Some((f, s));
-                map.insert((f, s), Vec::new());
-            } else {
-                let v: Vec<i32> = line
-                    .split_whitespace()
-                    .map(|x| x.parse().unwrap())
-                    .collect();
-                map.get_mut(&cur.unwrap())
-                    .unwrap()
-                    .push((v[0], v[1], v[2], v[3], v[4]));
-            }
-        }
-        map
-    }
-
-    #[test]
-    fn advances_match_original_cells() {
-        // Every face that has a true original strike must reproduce that
-        // strike's per-glyph ADVANCE and left bearing (origin_x). Those two
-        // numbers are what govern text layout, so matching them makes classic
-        // app text lay out at the exact original width and never overflow the
-        // fixed rects it was designed for (e.g. Escape Velocity's status
-        // panel). Our bitmaps deliberately keep their own clean, hand-drawn
-        // width/height/origin_y rather than resizing to the originals' pixel
-        // boxes (which warps the letterforms), so those fields are reported
-        // informationally only.
-        let refs = parse_original_cells();
-        for pf in PACKED_FACES {
-            let Some(exp) = refs.get(&(pf.font_id, pf.size)) else {
-                continue;
-            };
-            let mut layout_off = Vec::new();
-            let mut box_off = 0;
-            for (i, g) in pf.glyphs.iter().enumerate() {
-                let (adv, ox, oy, w, h) = exp[i];
-                if g.advance as i32 != adv || (i != 0 && g.origin_x as i32 != ox) {
-                    layout_off.push((b' ' + i as u8) as char);
-                }
-                if i != 0
-                    && (g.origin_y as i32 != oy || g.width as i32 != w || g.height as i32 != h)
-                {
-                    box_off += 1;
-                }
-            }
-            eprintln!(
-                "({:2},{:2}): advances {:2}/95 exact, {:2}/95 own bitmap box",
-                pf.font_id,
-                pf.size,
-                95 - layout_off.len(),
-                box_off
-            );
-            assert!(
-                layout_off.is_empty(),
-                "({}, {}) advance/bearing off original — text will misalign: {}",
-                pf.font_id,
-                pf.size,
-                layout_off.iter().collect::<String>()
-            );
-        }
-    }
-
-    #[test]
-    fn descender_letters_actually_descend() {
-        // A descender must drop below the baseline (bottom > 0) but no further
-        // than the face's declared descent.
-        for pf in PACKED_FACES {
-            for &byte in DESCENDER_LETTERS {
-                let g = packed_glyph(pf, byte);
-                if g.height == 0 {
-                    continue;
-                }
-                let bottom = g.origin_y as i32 + g.height as i32;
-                assert!(
-                    bottom > 0 && bottom <= pf.metrics.descent as i32,
-                    "({}, {}) descender {:?} bottom {} outside 1..={}",
-                    pf.font_id,
-                    pf.size,
-                    byte as char,
-                    bottom,
-                    pf.metrics.descent
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn digits_are_uniform_height() {
-        // All ten digits are drawn to one common top and bottom (they never
-        // ascend or descend), so a run of numbers never bounces.
-        // New York gives '6' a 1px taller hook and rounds '3'/'5'/'8' with a
-        // 1–2px overshoot below the baseline, so allow that optical slack.
-        assert_shared_top("digit", b"0123456789", 1);
-        assert_shared_bottom("digit", b"0123456789", 2);
-    }
-
-    #[test]
-    fn x_height_letters_share_one_top_line() {
-        // Regression guard: the plain x-height lowercase letters (no ascender,
-        // no descender) must all start at the same row (`origin_y`). If one is
-        // drawn a pixel taller than its siblings it pokes above the x-height
-        // line and the word visibly "bounces" — e.g. an `a` sitting higher than
-        // the surrounding `n o c e ...`.
-        assert_shared_top("x-height", PLAIN_X_HEIGHT, 0);
-    }
-
-    #[test]
-    fn baked_data_is_binary() {
-        // The `const fn` decoder emits a binary mask — every pixel must
-        // be exactly 0 or 255. Enforces the invariant the `ShapeOp::Glyph`
-        // partial-alpha branch depends on to stay dormant.
-        for pf in PACKED_FACES {
-            for &b in pf.data {
-                assert!(b == 0 || b == 255, "baked pixel 0x{b:02X} not binary");
-            }
-        }
-    }
-
-    #[test]
-    fn override_directory_entries_win_over_baked_faces() {
+    fn override_directory_entries_win_over_bundled_faces() {
         let dir = std::env::temp_dir().join(format!(
             "systemless-font-override-{}-{}",
             std::process::id(),
@@ -1420,7 +445,7 @@ mod tests {
         let overrides = override_format::load_directory(&dir);
         let face = get_font_face_with_overrides(&overrides, FONT_CHICAGO, 12)
             .expect("chicago 12 should resolve");
-        assert_eq!(face.metrics.ascent, 99, "override should win over baked");
+        assert_eq!(face.metrics.ascent, 99, "override should win over bundled");
         assert_eq!(face.metrics.descent, 11);
         assert_eq!(face.glyphs.len(), override_format::GLYPH_COUNT as usize);
         assert!(
@@ -1429,7 +454,7 @@ mod tests {
         );
 
         let geneva = get_font_face_with_overrides(&overrides, FONT_GENEVA, 12)
-            .expect("baked geneva 12 still there");
+            .expect("bundled geneva 12 still there");
         assert_ne!(
             geneva.metrics.ascent, 99,
             "non-overridden face must keep built-in systemless metrics"

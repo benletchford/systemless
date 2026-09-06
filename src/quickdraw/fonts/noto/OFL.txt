@@ -1,12 +1,9 @@
-Copyright (c) 2026, Ben Letchford (https://systemless.org),
-with Reserved Font Name "Systemless".
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/symbols)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
-https://openfontlicense.org
+https://scripts.sil.org/OFL
 
-This covers the bitmap font artwork in src/quickdraw/fonts/pixel_font/. The
-rest of the systemless crate is licensed under GPL-3.0-or-later (see LICENSE).
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
@@ -21,7 +18,7 @@ with others.
 
 The OFL allows the licensed fonts to be used, studied, modified and
 redistributed freely as long as they are not sold by themselves. The
-fonts, including any derivative works, can be bundled, embedded,
+fonts, including any derivative works, can be bundled, embedded, 
 redistributed and/or sold with any software provided that any reserved
 names are not used by derivative works. The fonts and derivatives,
 however, cannot be released under any other type of license. The

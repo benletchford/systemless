@@ -1,14 +1,8 @@
 //! Stable on-disk schema for runtime font overrides.
 //!
-//! `systemless` ships with its own original bitmap glyphs in the
-//! `pixel_font` modules. For higher-fidelity rendering an opt-in runtime override
-//! path lets a host substitute authentic Mac bitmap fonts (Chicago,
-//! Geneva, Monaco, …) without committing Apple-copyrighted data into
-//! this repo. The override directory is one `.bin` per
-//! `(font_id, size, style)` tuple in the format described below; the
-//! consumer is [`load_directory`], called once at fonts/mod.rs
-//! `LazyLock` init when `SYSTEMLESS_ORIGINAL_FONTS_DIR` points at the
-//! directory.
+//! A local override directory can supply bitmap strikes ahead of bundled
+//! outlines. Each `.bin` represents a `(font_id, size, style)` tuple in the
+//! format below. `SYSTEMLESS_ORIGINAL_FONTS_DIR` selects the directory.
 //!
 //! The schema is deliberately minimal: little-endian, `#[repr(C)]`, no
 //! `serde`, no compression. Bumping `VERSION` is a hard reset.
@@ -219,7 +213,7 @@ pub fn write_blob<W: Write>(w: &mut W, blob: &Blob) -> io::Result<()> {
 
 /// Read every `*.bin` blob in `dir`, decode, and convert to leak-allocated
 /// [`FontFace`]s keyed on `(font_id, size)`. Style != [`STYLE_PLAIN`] entries
-/// are skipped (italic synthesis still goes through `ITALIC_TABLE`); they
+/// are skipped (styles are synthesized by QuickDraw); they
 /// remain reserved for a future bump that wires styled blobs directly.
 ///
 /// Returns an empty map if the directory does not exist; per-file errors

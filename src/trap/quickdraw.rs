@@ -2196,13 +2196,11 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
-                #[cfg(feature = "experimental-urw-fonts")]
                 bus.begin_presentation_text_run(self.tx_mode == 0);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
-                #[cfg(feature = "experimental-urw-fonts")]
                 bus.end_presentation_text_run();
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
@@ -2263,13 +2261,11 @@ impl super::TrapDispatcher {
                 }
 
                 // Render text using draw_char
-                #[cfg(feature = "experimental-urw-fonts")]
                 bus.begin_presentation_text_run(self.tx_mode == 0);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(text_buf + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
-                #[cfg(feature = "experimental-urw-fonts")]
                 bus.end_presentation_text_run();
                 self.tx_size = saved_tx_size;
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
@@ -30097,15 +30093,19 @@ mod tests {
                 widths
             );
         }
-        // Exact 2x-face parity: the doubled size doubles the width
-        // (within a rounding pixel), pinning the previously-correct
-        // integer-scale answers.
-        let w12 = widths[(12 - 9) as usize] as i32;
-        let w24 = widths[(24 - 9) as usize] as i32;
-        assert!(
-            (w24 - 2 * w12).abs() <= 1,
-            "24pt width {w24} must be twice the 12pt width {w12}"
-        );
+        // Hinting rounds each advance at the requested size; it need not
+        // equal twice the rounded advance at half the size (IM: Text 3-27).
+        for (size, width) in (9i16..=36).zip(widths) {
+            let face = crate::quickdraw::fonts::get_font_face_or_default(d.tx_font, size);
+            let expected: i16 = text
+                .iter()
+                .map(|c| i16::from(face.glyphs[(c - 32) as usize].advance))
+                .sum();
+            assert_eq!(
+                width, expected,
+                "StringWidth must use the drawn strike at {size}pt"
+            );
+        }
     }
 
     #[test]

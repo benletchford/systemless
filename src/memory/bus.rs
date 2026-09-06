@@ -497,7 +497,6 @@ pub struct MacMemoryBus {
     /// guest memory unchanged, while still allowing temporary stack writes
     /// that are restored before the cycle closes.
     write_probe_original: Option<WriteProbeJournal>,
-    #[cfg(feature = "experimental-urw-fonts")]
     pub(crate) presentation: Option<super::presentation::Presentation>,
     /// The journal's allocation between probes. Probes start more than a
     /// million times in a long SimCity 2000 session; reusing one map keeps
@@ -1240,7 +1239,6 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
-            #[cfg(feature = "experimental-urw-fonts")]
             presentation: None,
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
@@ -1336,7 +1334,6 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
-            #[cfg(feature = "experimental-urw-fonts")]
             presentation: None,
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
@@ -2248,14 +2245,7 @@ impl MacMemoryBus {
 
     #[inline]
     fn presentation_active(&self) -> bool {
-        #[cfg(feature = "experimental-urw-fonts")]
-        {
-            self.presentation.is_some()
-        }
-        #[cfg(not(feature = "experimental-urw-fonts"))]
-        {
-            false
-        }
+        self.presentation.is_some()
     }
 
     /// Raw window over guest RAM for the m68k fastmem path, or `None`
@@ -2409,7 +2399,6 @@ impl MemoryBus for MacMemoryBus {
         if self.readonly_code_overlaps(address, 1) {
             return;
         }
-        #[cfg(feature = "experimental-urw-fonts")]
         if let Some(p) = &mut self.presentation {
             p.write(address, value);
         }

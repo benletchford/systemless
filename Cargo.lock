@@ -2250,7 +2250,6 @@ dependencies = [
 name = "systemless"
 version = "0.38.2"
 dependencies = [
- "ab_glyph",
  "clap",
  "cpal",
  "flate2",
