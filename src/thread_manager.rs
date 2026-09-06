@@ -13,6 +13,27 @@ pub(crate) const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
 pub(crate) const THREAD_NOT_FOUND_ERR: i16 = -618;
 pub(crate) const THREAD_PROTOCOL_ERR: i16 = -619;
 
+pub(crate) trait NewThreadCreationEdge {
+    /// Validate and prepare ABI-local state before storage selection. Edge
+    /// operations are sequential, and no borrow may survive guest execution.
+    fn preflight(&mut self, size: u32) -> Result<(), i16>;
+
+    fn allocate_fresh(&mut self, size: u32) -> Result<ThreadStorage, i16>;
+
+    /// Publish ABI state and the execution task together. `None` means the
+    /// execution owner refused publication without consuming a task identity.
+    fn prepare_and_publish(
+        &mut self,
+        execution: &SharedGuestCallStack,
+        storage: ThreadStorage,
+        suspended: bool,
+    ) -> Result<Option<ExecutionTaskId>, i16>;
+
+    fn release_fresh(&mut self, storage: ThreadStorage);
+
+    fn finish_publication_attempt(&mut self);
+}
+
 pub(crate) struct ThreadManager<'a> {
     execution: &'a SharedGuestCallStack,
 }
@@ -39,6 +60,40 @@ impl<'a> ThreadManager<'a> {
         } else {
             Ok(size)
         }
+    }
+
+    /// Apply the common NewThread policy while leaving ABI frame construction,
+    /// allocation, and output publication at the calling edge.
+    pub(crate) fn create_thread<E: NewThreadCreationEdge>(
+        &self,
+        isa: GuestIsa,
+        style: u32,
+        requested_size: u32,
+        options: u32,
+        edge: &mut E,
+    ) -> Result<ExecutionTaskId, i16> {
+        let size = Self::stack_size(isa, style, requested_size)?;
+        edge.preflight(size)?;
+
+        let pooled = self.execution.request_thread_stack(isa, size, options)?;
+        let (storage, came_from_pool) = match pooled {
+            Some(storage) => (storage, true),
+            None => (edge.allocate_fresh(size)?, false),
+        };
+        let result = match edge.prepare_and_publish(self.execution, storage, options & 1 != 0) {
+            Ok(Some(task)) => Ok(task),
+            Ok(None) => Err(-108),
+            Err(error) => Err(error),
+        };
+        if result.is_err() {
+            if came_from_pool {
+                self.execution.recycle_thread_stack(isa, storage);
+            } else {
+                edge.release_fresh(storage);
+            }
+        }
+        edge.finish_publication_attempt();
+        result
     }
 
     /// Prepare every allocation before publishing any pool entry. On failure,
@@ -200,6 +255,215 @@ impl<'a> ThreadManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guest_call::CooperativeThread;
+
+    #[derive(Clone, Copy)]
+    enum PublicationResult {
+        Accept,
+        Refuse,
+        Error(i16),
+    }
+
+    struct RecordingNewThreadEdge {
+        preflight_error: Option<i16>,
+        allocation: Result<ThreadStorage, i16>,
+        publication: PublicationResult,
+        preflight_sizes: Vec<u32>,
+        allocated_sizes: Vec<u32>,
+        published_storage: Vec<ThreadStorage>,
+        suspended: Vec<bool>,
+        released: Vec<ThreadStorage>,
+        finish_count: usize,
+    }
+
+    impl RecordingNewThreadEdge {
+        fn accepting(storage: ThreadStorage) -> Self {
+            Self {
+                preflight_error: None,
+                allocation: Ok(storage),
+                publication: PublicationResult::Accept,
+                preflight_sizes: Vec::new(),
+                allocated_sizes: Vec::new(),
+                published_storage: Vec::new(),
+                suspended: Vec::new(),
+                released: Vec::new(),
+                finish_count: 0,
+            }
+        }
+    }
+
+    impl NewThreadCreationEdge for RecordingNewThreadEdge {
+        fn preflight(&mut self, size: u32) -> Result<(), i16> {
+            self.preflight_sizes.push(size);
+            self.preflight_error.map_or(Ok(()), Err)
+        }
+
+        fn allocate_fresh(&mut self, size: u32) -> Result<ThreadStorage, i16> {
+            self.allocated_sizes.push(size);
+            self.allocation
+        }
+
+        fn prepare_and_publish(
+            &mut self,
+            execution: &SharedGuestCallStack,
+            storage: ThreadStorage,
+            suspended: bool,
+        ) -> Result<Option<ExecutionTaskId>, i16> {
+            self.published_storage.push(storage);
+            self.suspended.push(suspended);
+            match self.publication {
+                PublicationResult::Accept => Ok(execution.create_classic_thread(
+                    CooperativeThread::default(),
+                    storage,
+                    suspended,
+                    |_| true,
+                )),
+                PublicationResult::Refuse => Ok(execution.create_classic_thread(
+                    CooperativeThread::default(),
+                    storage,
+                    suspended,
+                    |_| false,
+                )),
+                PublicationResult::Error(error) => Err(error),
+            }
+        }
+
+        fn release_fresh(&mut self, storage: ThreadStorage) {
+            self.released.push(storage);
+        }
+
+        fn finish_publication_attempt(&mut self) {
+            self.finish_count += 1;
+        }
+    }
+
+    fn storage(base: u32, size: u32) -> ThreadStorage {
+        ThreadStorage {
+            stack_base: base,
+            stack_limit: base + size,
+            result_destination: base + 4,
+            managed_pointer: false,
+        }
+    }
+
+    #[test]
+    fn new_thread_creation_validates_before_selecting_or_allocating_storage() {
+        let execution = SharedGuestCallStack::default();
+        let manager = ThreadManager::new(&execution);
+        let mut edge = RecordingNewThreadEdge::accepting(storage(0x1000, 1024));
+
+        assert_eq!(
+            manager.create_thread(GuestIsa::M68k, 0, 1024, 4, &mut edge),
+            Err(-50)
+        );
+        assert!(edge.preflight_sizes.is_empty());
+        assert!(edge.allocated_sizes.is_empty());
+
+        edge.preflight_error = Some(-37);
+        assert_eq!(
+            manager.create_thread(GuestIsa::M68k, 1, 1024, 4, &mut edge),
+            Err(-37)
+        );
+        assert_eq!(edge.preflight_sizes, [1024]);
+        assert!(edge.allocated_sizes.is_empty());
+        assert_eq!(edge.finish_count, 0);
+
+        edge.preflight_error = None;
+        assert_eq!(
+            manager.create_thread(GuestIsa::M68k, 1, 1024, 2, &mut edge),
+            Err(-617)
+        );
+        assert!(edge.allocated_sizes.is_empty());
+        assert_eq!(edge.finish_count, 0);
+
+        edge.allocation = Err(-108);
+        assert_eq!(
+            manager.create_thread(GuestIsa::M68k, 1, 1024, 4, &mut edge),
+            Err(-108)
+        );
+        assert_eq!(edge.allocated_sizes, [1024]);
+        assert!(edge.published_storage.is_empty());
+        assert!(edge.released.is_empty());
+        assert_eq!(edge.finish_count, 0);
+
+        edge.allocation = Ok(storage(0x1000, 1024));
+        let task = manager
+            .create_thread(GuestIsa::M68k, 1, 1024, 4, &mut edge)
+            .unwrap();
+        assert_eq!(task.thread_id(), 3);
+    }
+
+    #[test]
+    fn new_thread_creation_uses_and_recycles_pool_without_fresh_allocation() {
+        let execution = SharedGuestCallStack::default();
+        let manager = ThreadManager::new(&execution);
+        let pooled = storage(0x2000, 1024);
+        execution.publish_thread_pool(GuestIsa::M68k, vec![pooled]);
+        let mut edge = RecordingNewThreadEdge::accepting(storage(0x8000, 1024));
+        edge.publication = PublicationResult::Refuse;
+
+        assert_eq!(
+            manager.create_thread(GuestIsa::M68k, 1, 1024, 3, &mut edge),
+            Err(-108)
+        );
+        assert!(edge.allocated_sizes.is_empty());
+        assert!(edge.released.is_empty());
+        assert_eq!(edge.finish_count, 1);
+        assert_eq!(manager.free_count(GuestIsa::M68k, 1, 1024), Ok(1));
+
+        edge.publication = PublicationResult::Accept;
+        let task = manager
+            .create_thread(GuestIsa::M68k, 1, 1024, 3, &mut edge)
+            .unwrap();
+        assert_eq!(task.thread_id(), 3);
+        assert_eq!(edge.published_storage[0], pooled);
+        assert_eq!(
+            edge.published_storage[1],
+            ThreadStorage {
+                result_destination: 0,
+                ..pooled
+            }
+        );
+        assert!(edge.allocated_sizes.is_empty());
+        assert_eq!(
+            execution.scheduling_state(task),
+            Some(ExecutionTaskState::Stopped)
+        );
+    }
+
+    #[test]
+    fn new_thread_creation_releases_fresh_storage_on_every_publication_failure() {
+        for publication in [PublicationResult::Error(-50), PublicationResult::Refuse] {
+            let execution = SharedGuestCallStack::default();
+            let manager = ThreadManager::new(&execution);
+            let fresh = storage(0x3000, 1024);
+            let mut edge = RecordingNewThreadEdge::accepting(fresh);
+            edge.publication = publication;
+
+            let expected = match publication {
+                PublicationResult::Error(error) => error,
+                PublicationResult::Refuse => -108,
+                PublicationResult::Accept => unreachable!(),
+            };
+            assert_eq!(
+                manager.create_thread(GuestIsa::M68k, 1, 1024, 4, &mut edge),
+                Err(expected)
+            );
+            assert_eq!(edge.allocated_sizes, [1024]);
+            assert_eq!(edge.released, [fresh]);
+            assert_eq!(edge.finish_count, 1);
+
+            edge.publication = PublicationResult::Accept;
+            let task = manager
+                .create_thread(GuestIsa::M68k, 1, 1024, 4, &mut edge)
+                .unwrap();
+            assert_eq!(task.thread_id(), 3);
+            assert_eq!(
+                execution.scheduling_state(task),
+                Some(ExecutionTaskState::Ready)
+            );
+        }
+    }
 
     #[test]
     fn thread_pool_preparation_preserves_existing_entries_and_returns_every_reserved_stack() {
