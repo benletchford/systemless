@@ -6355,6 +6355,40 @@ impl super::TrapDispatcher {
                 }
             }
         }
+        self.draw_dialog_items(
+            bus,
+            bounds,
+            proc_id,
+            items,
+            default_item,
+            edit_text,
+            edit_item,
+            skip_pictures,
+            dialog_ptr,
+        );
+    }
+
+    /// DrawDialog paints items in the existing window; creating or erasing
+    /// that window belongs to the Window Manager (MTE 1992, 6-142).
+    fn draw_dialog_items(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        items: &[DialogItem],
+        default_item: i16,
+        edit_text: &str,
+        edit_item: i16,
+        skip_pictures: bool,
+        dialog_ptr: u32,
+    ) {
+        if dialog_ptr != 0 {
+            let vis = bus.read_long(dialog_ptr + 24);
+            if vis != 0 && Self::region_handle_rect(bus, vis).is_none() {
+                return;
+            }
+        }
+        let (top, left, bottom, right) = bounds;
         // Optional per-iteration trace: gate SYSTEMLESS_TRACE_DIALOG_ITEMS=1
         // logs each item's type + relative rect + computed absolute rect.
         // Use to localize artifact-producing items in modal dialog rendering.
@@ -11430,44 +11464,17 @@ impl super::TrapDispatcher {
                     let (edit_text, edit_item, default_item) =
                         Self::dialog_edit_state(bus, dialog_ptr, &items);
                     self.dialog_initial_draw_deferred.remove(&dialog_ptr);
-                    if self.dialogs_drawn_by_app.contains(&dialog_ptr) {
-                        // DrawDialog draws the DITL items; it does not erase
-                        // application drawing already present in the dialog
-                        // port. A complete bulk composition can precede a
-                        // final DrawDialog call that adds standard controls.
-                        // MTE 1992, 6-142: DrawDialog redraws picture items
-                        // as well as controls over the application's background.
-                        for item in &items {
-                            if item.item_type & 0x7F == 64 && item.resource_id != 0 {
-                                self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
-                            }
-                        }
-                        self.redraw_standard_dialog_items(
-                            bus,
-                            bounds,
-                            &items,
-                            default_item,
-                            &edit_text,
-                            edit_item,
-                            dialog_ptr,
-                        );
-                    } else {
-                        self.draw_dialog_preserving_user_items(
-                            bus,
-                            bounds,
-                            proc_id,
-                            "",
-                            &items,
-                            default_item,
-                            &edit_text,
-                            edit_item,
-                            false,
-                            dialog_ptr,
-                            true,
-                            false,
-                            false,
-                        );
-                    }
+                    self.draw_dialog_items(
+                        bus,
+                        bounds,
+                        proc_id,
+                        &items,
+                        default_item,
+                        &edit_text,
+                        edit_item,
+                        false,
+                        dialog_ptr,
+                    );
                     self.dialog_items.insert(dialog_ptr, items);
                     // Record that the application painted this dialog itself.
                     // ModalDialog must not repaint it on entry, or anything the
@@ -24877,6 +24884,38 @@ mod tests {
     }
 
     #[test]
+    fn drawdialog_preserves_background_and_frame_outside_items() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let port = bus.alloc(170);
+        bus.write_word(port + 20, 60);
+        bus.write_word(port + 22, 100);
+        let (base, stride, _, _, _) = disp.screen_mode;
+        bus.write_bytes(base, &vec![0x77; (stride * 80) as usize]);
+        disp.install_test_resource(&mut bus, *b"PICT", 423, &solid_fill_pict_resource(16, 16));
+        disp.dialog_items.insert(
+            port,
+            vec![DialogItem {
+                item_type: 64,
+                rect: (8, 8, 24, 24),
+                text: String::new(),
+                resource_id: 423,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        bus.write_long(TEST_SP, port);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(base + 16 * stride + 16), 255);
+        for (x, y) in [(0, 0), (50, 30), (99, 59), (100, 60)] {
+            assert_eq!(bus.read_byte(base + y * stride + x), 0x77);
+        }
+    }
+
+    #[test]
     fn dialog_picture_items_clip_without_rescaling_the_destination() {
         for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
             let (mut disp, _cpu, mut bus) = setup();
@@ -25278,9 +25317,9 @@ mod tests {
     }
 
     #[test]
-    fn draw_dialog_repaints_dialog_background_for_known_dialog() {
-        // Inside Macintosh Volume I, I-417: DrawDialog draws the contents of
-        // the given dialog box.
+    fn draw_dialog_preserves_background_for_known_dialog() {
+        // MTE 1992, 6-142: DrawDialog redraws items, controls and text.
+        // Pixels outside their rectangles belong to the existing window.
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
         let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
@@ -25322,9 +25361,9 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         if pixel_size == 8 {
-            assert_eq!(bus.read_byte(probe_addr), 0); // white in 8bpp CLUT
+            assert_eq!(bus.read_byte(probe_addr), 0xFF);
         } else {
-            assert_eq!(bus.read_byte(probe_addr) & probe_bit, 0);
+            assert_ne!(bus.read_byte(probe_addr) & probe_bit, 0);
         }
     }
 
@@ -25388,10 +25427,9 @@ mod tests {
     }
 
     #[test]
-    fn draw_dialog_repaints_document_proc_title_chrome() {
-        // DrawDialog is also valid for modeless documentProc dialogs. It must
-        // redraw the WDEF title bar from the WindowRecord title instead of
-        // falling back to modal-box border chrome (IM:I I-299/I-417).
+    fn draw_dialog_leaves_document_title_chrome_to_window_manager() {
+        // DrawDialog is valid for documentProc dialogs, but the title bar
+        // belongs to the Window Manager, not the DITL (MTE 1992, 6-142).
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
         let (mut disp, mut cpu, mut bus) = setup();
@@ -25419,12 +25457,12 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 85, 24),
-            "documentProc DrawDialog should redraw active title-bar stripes"
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 85, 24),
+            "DrawDialog must not paint title-bar stripes"
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 79, 21),
-            "documentProc DrawDialog should redraw the title-bar border"
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 79, 21),
+            "DrawDialog must not paint the title-bar border"
         );
     }
 
@@ -26419,8 +26457,8 @@ mod tests {
             );
             assert_eq!(
                 bus.read_byte(screen_base + background_y * row_bytes + background_x),
-                0,
-                "DrawDialog should still repaint normal dialog background"
+                0xFF,
+                "DrawDialog must preserve pixels outside its items too"
             );
         } else {
             let user_addr = screen_base + user_y * row_bytes + (user_x / 8);
@@ -26428,7 +26466,7 @@ mod tests {
             let background_addr = screen_base + background_y * row_bytes + (background_x / 8);
             let background_bit = 1 << (7 - (background_x % 8));
             assert_ne!(bus.read_byte(user_addr) & user_bit, 0);
-            assert_eq!(bus.read_byte(background_addr) & background_bit, 0);
+            assert_ne!(bus.read_byte(background_addr) & background_bit, 0);
         }
     }
 
