@@ -47,6 +47,32 @@ backgrounds rather than relying on the old font's ink at a particular pixel.
 The archive rebuilt byte-for-byte with the cached pinned toolchain image;
 Docker's registry metadata lookup was unavailable.
 
+## First paint after palette changes
+
+The desktop refreshes the display palette between CPU slices. The regression
+visits the palette page before opening Lists and TextEdit, then compares their
+fresh text pixels with a full repaint after dragging the window. TextEdit is
+also checked after inserting and deleting a character. Both comparisons must
+be byte-identical. The regression fails against the previous implementation
+(`d86e44e6`); [its fresh Lists capture](first-paint/lists-before-fix.png)
+reproduces the patchy text. These fixed captures are taken before the drag or typing:
+
+<img src="first-paint/lists-fresh.png" alt="Fresh Lists page after a palette change, before dragging" width="800">
+<img src="first-paint/textedit-fresh.png" alt="Fresh TextEdit page after a palette change, before typing" width="800">
+
+[Lists after dragging](first-paint/lists-after-drag.png) ·
+[TextEdit after dragging](first-paint/textedit-after-drag.png)
+
+```sh
+SYSTEMLESS_FIRST_PAINT_EVIDENCE_DIR=tests/toolbox-showcase/outline-fonts/first-paint \
+cargo test --no-default-features --test toolbox_showcase \
+  first_page_outlines_survive_palette_changes -- --exact
+```
+
+Palette updates now recolor retained coverage through its original palette
+indexes, including antialiased edges and overlapping colors. They no longer
+recreate the display from the lower-resolution guest framebuffer.
+
 ## Rendering scope
 
 Bundled URW and Noto outlines replace the hand-drawn font catalogue. Guest
