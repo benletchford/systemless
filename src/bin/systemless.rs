@@ -607,7 +607,7 @@ fn service_pending_sound_work(
     };
 
     // This slice services audio interrupts, not a presentation frame. The
-    // outer GUI/headless composition pass restores native chrome once.
+    // outer presentation pass restores native chrome once.
     let (steps, _running) = runner.run_gui_pending_sound_work(callback_budget);
     if using_reserved_slice {
         *reserved_sound_steps = reserved_sound_steps.saturating_add(steps);
