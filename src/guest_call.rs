@@ -1722,6 +1722,7 @@ impl SharedGuestCallStack {
         self.request_classic_thread_stack(size, 2).ok().flatten()
     }
 
+    #[cfg(test)]
     pub(crate) fn request_classic_thread_stack(
         &self,
         size: u32,
@@ -1774,6 +1775,7 @@ impl SharedGuestCallStack {
         ));
     }
 
+    #[cfg(test)]
     pub(crate) fn recycle_classic_thread_stack(&self, stack: (u32, u32)) {
         self.recycle_thread_stack(
             GuestIsa::M68k,
