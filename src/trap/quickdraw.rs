@@ -3157,6 +3157,11 @@ impl super::TrapDispatcher {
                 let dst_bottom = bus.read_word(dst_rect_ptr + 4) as i16;
                 let dst_right = bus.read_word(dst_rect_ptr + 6) as i16;
                 let mode_base = (mode & 0x3F) as u16;
+                let source_bounds_are_original = src_info.bounds_bottom > src_info.bounds_top
+                    && src_info.bounds_right > src_info.bounds_left;
+                let destination_bounds_are_authoritative = dst_info.bounds_bottom
+                    > dst_info.bounds_top
+                    && dst_info.bounds_right > dst_info.bounds_left;
                 Self::sanitize_copy_bitmap_bounds(
                     &mut src_info,
                     src_top,
@@ -3433,14 +3438,16 @@ impl super::TrapDispatcher {
                 };
 
                 let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
-                let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
-                    .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let dst_clut = self.read_indexed_destination_clut(
+                let src_clut_resolution = matches!(src_info.pixel_size, 2 | 4 | 8)
+                    .then(|| self.read_port_clut_with_provenance(bus, src_info.ctab_handle));
+                let src_clut = src_clut_resolution.as_ref().map(|(clut, _)| *clut);
+                let dst_clut_resolution = self.read_indexed_destination_clut_with_provenance(
                     bus,
                     dst_ctab_handle,
                     dst_info.pixel_size,
                     screen_copybits_rect.is_some(),
                 );
+                let dst_clut = dst_clut_resolution.as_ref().map(|(clut, _)| *clut);
                 let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
                 // Executor's translation gate compares the source PixMap's
                 // CTab seed against `CTAB_SEED(PIXMAP_TABLE(GD_PMAP(the_gd)))` —
@@ -3595,6 +3602,16 @@ impl super::TrapDispatcher {
                     (Some(src_clut), Some(dst_clut)) => src_clut != dst_clut,
                     _ => src_ctab_seed != dst_ctab_seed,
                 };
+                let indexed_palette_identity_known = src_info.pixel_size == 8
+                    && dst_info.pixel_size == 8
+                    && (src_info.ctab_handle == dst_info.ctab_handle
+                        || matches!(
+                            (src_clut_resolution.as_ref(), dst_clut_resolution.as_ref()),
+                            (Some((src_clut, true)), Some((dst_clut, true)))
+                                if src_clut == dst_clut
+                        )
+                        || skip_device_translation_to_screen
+                        || skip_explicit_palette_translation);
                 let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && matches!(dst_info.pixel_size, 2 | 4 | 8)
                     && src_info.ctab_handle != dst_info.ctab_handle
@@ -3654,7 +3671,15 @@ impl super::TrapDispatcher {
                     && !trace_menu_redraw_enabled()
                     && trace_probes.is_empty();
                 if row_copy_edge_eligible {
-                    use crate::copy_bits::RowCopyOutcome;
+                    use crate::copy_bits::{Indexed8HorizontalSelection, RowCopyOutcome};
+
+                    let indexed8_horizontal = Indexed8HorizontalSelection::from_adapter_facts(
+                        mask_rgn == 0,
+                        source_bounds_are_original,
+                        destination_bounds_are_authoritative,
+                        indexed_palette_identity_known,
+                        mode as u16,
+                    );
 
                     let outcome = resolved_row_copy(
                         mode_base,
@@ -3665,7 +3690,7 @@ impl super::TrapDispatcher {
                         [clip_t, clip_l, clip_b, clip_r].map(i32::from),
                         palette_translation,
                     )
-                    .execute(bus);
+                    .execute_with_indexed8_horizontal(bus, indexed8_horizontal);
                     let wrote_rows = match outcome {
                         RowCopyOutcome::Completed => true,
                         RowCopyOutcome::WriteFailure { rows_written } => rows_written != 0,
@@ -17569,9 +17594,13 @@ impl super::TrapDispatcher {
     /// Read a 256-entry CLUT from a CTabHandle in guest memory.
     /// Falls back to the device CLUT if the handle is NULL.
     /// Imaging With QuickDraw 1994, p. 4-82
-    pub(crate) fn read_port_clut(&self, bus: &MacMemoryBus, ctab_handle: u32) -> [[u16; 3]; 256] {
+    fn read_port_clut_with_provenance(
+        &self,
+        bus: &MacMemoryBus,
+        ctab_handle: u32,
+    ) -> ([[u16; 3]; 256], bool) {
         if ctab_handle == 0 {
-            return *self.color_manager_clut;
+            return (*self.color_manager_clut, true);
         }
         let screen_ctab_handle = if self.main_gdevice_handle != 0 {
             Self::gdevice_ctab_handle(bus, self.main_gdevice_handle)
@@ -17579,13 +17608,25 @@ impl super::TrapDispatcher {
             0
         };
         if ctab_handle == screen_ctab_handle {
-            return *self.color_manager_clut;
+            return (*self.color_manager_clut, true);
         }
+        let handle_is_mapped = bus.is_guest_address_mapped(ctab_handle, 4);
         let ctab_ptr = bus.read_long(ctab_handle);
         if ctab_ptr == 0 {
-            return *self.color_manager_clut;
+            return (*self.color_manager_clut, false);
         }
-        self.read_color_table_ptr_clut(bus, ctab_ptr)
+        // Preserve the legacy total-read result even for a malformed or
+        // partially mapped table. Provenance qualifies only whether that
+        // result may establish raw index identity for the new reducer.
+        let clut = self.read_color_table_ptr_clut(bus, ctab_ptr);
+        let entry_count = u32::from(bus.read_word(ctab_ptr.wrapping_add(6)).min(255)) + 1;
+        let table_len = 8usize + entry_count as usize * 8;
+        let known = handle_is_mapped && bus.is_guest_address_mapped(ctab_ptr, table_len);
+        (clut, known)
+    }
+
+    pub(crate) fn read_port_clut(&self, bus: &MacMemoryBus, ctab_handle: u32) -> [[u16; 3]; 256] {
+        self.read_port_clut_with_provenance(bus, ctab_handle).0
     }
 
     fn read_indexed_destination_clut(
@@ -17595,13 +17636,29 @@ impl super::TrapDispatcher {
         pixel_size: u32,
         screen_destination: bool,
     ) -> Option<[[u16; 3]; 256]> {
+        self.read_indexed_destination_clut_with_provenance(
+            bus,
+            ctab_handle,
+            pixel_size,
+            screen_destination,
+        )
+        .map(|(clut, _)| clut)
+    }
+
+    fn read_indexed_destination_clut_with_provenance(
+        &self,
+        bus: &MacMemoryBus,
+        ctab_handle: u32,
+        pixel_size: u32,
+        screen_destination: bool,
+    ) -> Option<([[u16; 3]; 256], bool)> {
         if !matches!(pixel_size, 1 | 2 | 4 | 8) {
             return None;
         }
-        let mut clut = if pixel_size == 1 {
-            let mut clut = [[0u16; 3]; 256];
-            clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
-            clut
+        let (mut clut, known) = if pixel_size == 1 {
+            let mut monochrome = [[0u16; 3]; 256];
+            monochrome[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+            (monochrome, true)
         } else if screen_destination {
             // CopyBits uses the current GDevice's ColorTable for an indexed
             // destination because the Color Manager needs that table's
@@ -17610,16 +17667,16 @@ impl super::TrapDispatcher {
             // logical GDevice table; `device_clut` is the transient physical
             // hardware view used while fades are in progress. Imaging With
             // QuickDraw (1994), p. 3-117.
-            *self.color_manager_clut
+            (*self.color_manager_clut, true)
         } else {
-            self.read_port_clut(bus, ctab_handle)
+            self.read_port_clut_with_provenance(bus, ctab_handle)
         };
         if pixel_size < 8 {
             let entry_count = 1usize << pixel_size;
             let terminal = clut[entry_count - 1];
             clut[entry_count..].fill(terminal);
         }
-        Some(clut)
+        Some((clut, known))
     }
 
     pub(super) fn read_ctab_handle_clut(
@@ -20327,6 +20384,10 @@ impl super::TrapDispatcher {
         let dst_bottom = bus.read_word(dst_rect_ptr + 4) as i16;
         let dst_right = bus.read_word(dst_rect_ptr + 6) as i16;
         let mode_base = (mode & 0x3F) as u16;
+        let source_bounds_are_original = src_info.bounds_bottom > src_info.bounds_top
+            && src_info.bounds_right > src_info.bounds_left;
+        let destination_bounds_are_authoritative = dst_info.bounds_bottom > dst_info.bounds_top
+            && dst_info.bounds_right > dst_info.bounds_left;
         Self::sanitize_copy_bitmap_bounds(&mut src_info, src_top, src_left, src_bottom, src_right);
         Self::sanitize_copy_bitmap_bounds(&mut dst_info, dst_top, dst_left, dst_bottom, dst_right);
 
@@ -20499,23 +20560,32 @@ impl super::TrapDispatcher {
         };
 
         let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
-        let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
-            .then(|| self.read_port_clut(bus, src_info.ctab_handle));
+        let src_clut_resolution = matches!(src_info.pixel_size, 2 | 4 | 8)
+            .then(|| self.read_port_clut_with_provenance(bus, src_info.ctab_handle));
+        let src_clut = src_clut_resolution.as_ref().map(|(clut, _)| *clut);
         let screen_destination = dst_info.base == self.screen_mode.0
             && dst_info.row_bytes == self.screen_mode.1
             && dst_info.pixel_size == u32::from(self.screen_mode.4);
-        let dst_clut = self.read_indexed_destination_clut(
+        let dst_clut_resolution = self.read_indexed_destination_clut_with_provenance(
             bus,
             dst_ctab_handle,
             dst_info.pixel_size,
             screen_destination,
         );
+        let dst_clut = dst_clut_resolution.as_ref().map(|(clut, _)| *clut);
         let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
         let dst_ctab_seed = Self::ctab_seed(bus, dst_ctab_handle);
         let indexed_tables_differ = match (src_clut.as_ref(), dst_clut.as_ref()) {
             (Some(src_clut), Some(dst_clut)) => src_clut != dst_clut,
             _ => src_ctab_seed != dst_ctab_seed,
         };
+        let indexed_palette_identity_known = src_info.pixel_size == 8
+            && dst_info.pixel_size == 8
+            && (src_info.ctab_handle == dst_info.ctab_handle
+                || matches!(
+                    (src_clut_resolution.as_ref(), dst_clut_resolution.as_ref()),
+                    (Some((src_clut, true)), Some((dst_clut, true))) if src_clut == dst_clut
+                ));
         let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
             && matches!(dst_info.pixel_size, 2 | 4 | 8)
             && src_info.ctab_handle != dst_info.ctab_handle
@@ -20632,7 +20702,15 @@ impl super::TrapDispatcher {
             && !Self::region_is_complex(bus, mask_rgn)
             && trace_probes.is_empty();
         let shared_rows_written = if row_copy_edge_eligible {
-            use crate::copy_bits::RowCopyOutcome;
+            use crate::copy_bits::{Indexed8HorizontalSelection, RowCopyOutcome};
+
+            let indexed8_horizontal = Indexed8HorizontalSelection::from_adapter_facts(
+                mask_rgn == 0,
+                source_bounds_are_original,
+                destination_bounds_are_authoritative,
+                indexed_palette_identity_known,
+                mode as u16,
+            );
 
             match resolved_row_copy(
                 mode_base,
@@ -20643,7 +20721,7 @@ impl super::TrapDispatcher {
                 [clip_t, clip_l, clip_b, clip_r].map(i32::from),
                 palette_translation,
             )
-            .execute(bus)
+            .execute_with_indexed8_horizontal(bus, indexed8_horizontal)
             {
                 RowCopyOutcome::Completed => true,
                 RowCopyOutcome::WriteFailure { rows_written } if rows_written != 0 => true,
@@ -27256,6 +27334,69 @@ mod tests {
         bus.write_word(entry + 6, 0xCCCC);
         let updated_clut = d.read_port_clut(&bus, ctab_handle);
         assert_eq!(updated_clut[5], [0xAAAA, 0xBBBB, 0xCCCC]);
+    }
+
+    #[test]
+    fn read_port_clut_provenance_preserves_partial_table_legacy_bytes() {
+        const TABLE: u32 = 0x00d5_0000;
+        let (d, _cpu, mut bus) = setup();
+        let mut memory = GuestAddressSpace::new();
+        let mut partial = vec![0; 16];
+        partial[6..8].copy_from_slice(&1u16.to_be_bytes());
+        partial[8..10].copy_from_slice(&5u16.to_be_bytes());
+        partial[10..12].copy_from_slice(&0x1111u16.to_be_bytes());
+        partial[12..14].copy_from_slice(&0x2222u16.to_be_bytes());
+        partial[14..16].copy_from_slice(&0x3333u16.to_be_bytes());
+        memory.add_region(TABLE, partial);
+        bus.attach_guest_address_space(memory.shared_view());
+        let handle = bus.alloc(4);
+        bus.write_long(handle, TABLE);
+
+        let legacy = d.read_port_clut(&bus, handle);
+        let (qualified, known) = d.read_port_clut_with_provenance(&bus, handle);
+
+        assert_eq!(qualified, legacy);
+        assert!(!known);
+        // The missing second ColorSpec retains the old total-read behavior:
+        // its zero value overwrites index zero, while the mapped first entry
+        // remains visible at index five.
+        assert_eq!(qualified[0], [0, 0, 0]);
+        assert_eq!(qualified[5], [0x1111, 0x2222, 0x3333]);
+    }
+
+    #[test]
+    fn read_port_clut_provenance_accepts_complete_sparse_table() {
+        const TABLE: u32 = 0x00d6_0000;
+        let (d, _cpu, mut bus) = setup();
+        let mut memory = GuestAddressSpace::new();
+        let mut table = vec![0; 16];
+        table[6..8].copy_from_slice(&0u16.to_be_bytes());
+        table[8..10].copy_from_slice(&7u16.to_be_bytes());
+        table[10..12].copy_from_slice(&0x4444u16.to_be_bytes());
+        table[12..14].copy_from_slice(&0x5555u16.to_be_bytes());
+        table[14..16].copy_from_slice(&0x6666u16.to_be_bytes());
+        memory.add_region(TABLE, table);
+        bus.attach_guest_address_space(memory.shared_view());
+        let handle = bus.alloc(4);
+        bus.write_long(handle, TABLE);
+
+        let (clut, known) = d.read_port_clut_with_provenance(&bus, handle);
+
+        assert!(known);
+        assert_eq!(clut[7], [0x4444, 0x5555, 0x6666]);
+    }
+
+    #[test]
+    fn read_port_clut_provenance_preserves_wrapping_legacy_read_without_qualifying_it() {
+        let (d, _cpu, mut bus) = setup();
+        let handle = bus.alloc(4);
+        bus.write_long(handle, u32::MAX - 3);
+
+        let legacy = d.read_port_clut(&bus, handle);
+        let (qualified, known) = d.read_port_clut_with_provenance(&bus, handle);
+
+        assert_eq!(qualified, legacy);
+        assert!(!known);
     }
 
     #[test]
@@ -35369,6 +35510,496 @@ mod tests {
     fn std_bits_packed_identity_preserves_edges_and_padding() {
         for depth in [2, 4] {
             run_packed_identity_route(depth, true);
+        }
+    }
+
+    fn run_indexed_horizontal_shrink_route(
+        std_bits: bool,
+        raw_mode: u16,
+        clip_left_column: bool,
+        palette_case: u8,
+    ) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_allocation = bus.alloc(16);
+        let source_base = source_allocation + 2;
+        // Four-byte allocations are movable-memory handles in the PixMap
+        // resolver, so use an ordinary direct pixel allocation here.
+        let destination_base = bus.alloc(8);
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+
+        write_pixmap_8(&mut bus, source_pixmap, source_base, 8, 1, 0);
+        // The submitted seven-pixel source starts two pixels before the declared
+        // image. The normal QuickDraw oracle consumes the initialized physical
+        // pixels while retaining the original three reduction groups.
+        bus.write_word(source_pixmap + 8, 2);
+        bus.write_word(source_pixmap + 12, 7);
+        write_pixmap_8(&mut bus, destination_pixmap, destination_base, 3, 1, 0);
+        if palette_case == 1 {
+            let source_ctable_handle = bus.alloc(4);
+            let destination_ctable_handle = bus.alloc(4);
+            bus.write_long(source_pixmap + 42, source_ctable_handle);
+            bus.write_long(destination_pixmap + 42, destination_ctable_handle);
+        } else if palette_case == 2 {
+            let source_ctable_handle = bus.alloc(4);
+            let source_ctable = bus.alloc(8 + 11 * 8);
+            bus.write_long(source_pixmap + 42, source_ctable_handle);
+            bus.write_long(source_ctable_handle, source_ctable);
+            bus.write_long(source_ctable, 0x1234_5678);
+            bus.write_word(source_ctable + 4, 0);
+            bus.write_word(source_ctable + 6, 10);
+            for index in 0..=10u32 {
+                let color_index = if index == 10 { 200 } else { index as usize };
+                let [red, green, blue] = d.color_manager_clut[color_index];
+                let entry = source_ctable + 8 + index * 8;
+                bus.write_word(entry, index as u16);
+                bus.write_word(entry + 2, red);
+                bus.write_word(entry + 4, green);
+                bus.write_word(entry + 6, blue);
+            }
+        }
+        if clip_left_column {
+            bus.write_word(destination_pixmap + 8, 1);
+        }
+        bus.write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0]);
+        bus.write_bytes(destination_base, &[0xa5; 4]);
+        write_rect(&mut bus, source_rect, 0, 0, 1, 7);
+        write_rect(&mut bus, destination_rect, 0, 0, 1, 3);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, raw_mode);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        if std_bits {
+            const PORT: u32 = 0x181000;
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(PORT + 2, destination_handle);
+            bus.write_word(PORT + 6, 0xc000);
+            *d.current_port = PORT;
+            bus.write_long(TEST_SP + 14, source_pixmap);
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+        }
+
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        bus.read_bytes(destination_base, 4)
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_share_indexed_horizontal_source_crossing() {
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_horizontal_shrink_route(std_bits, 0, false, 0),
+                vec![241, 30, 50, 0xa5],
+                "std_bits={std_bits}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_keep_global_groups_after_destination_clip() {
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_horizontal_shrink_route(std_bits, 0, true, 0),
+                vec![30, 50, 0xa5, 0xa5],
+                "std_bits={std_bits}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_keep_dither_flag_on_legacy_scaler() {
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_horizontal_shrink_route(std_bits, 0x40, false, 0),
+                vec![0xa5, 10, 30, 0xa5],
+                "std_bits={std_bits}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_do_not_select_equal_fallback_from_distinct_unreadable_tables() {
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_horizontal_shrink_route(std_bits, 0, false, 1),
+                vec![0xa5, 10, 30, 0xa5],
+                "std_bits={std_bits}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_keep_valid_nonidentity_palette_on_legacy_scaler() {
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_horizontal_shrink_route(std_bits, 0, false, 2),
+                vec![0xa5, 200, 30, 0xa5],
+                "std_bits={std_bits}"
+            );
+        }
+    }
+
+    fn run_indexed_horizontal_height_gate(std_bits: bool, bounds_bottom: i16) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_base = bus.alloc(8);
+        let destination_base = bus.alloc(8);
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+        write_pixmap_8(&mut bus, source_pixmap, source_base, 8, 1, 0);
+        bus.write_word(source_pixmap + 6, (-1i16) as u16);
+        bus.write_word(source_pixmap + 10, bounds_bottom as u16);
+        write_pixmap_8(&mut bus, destination_pixmap, destination_base, 3, 1, 0);
+        bus.write_bytes(source_base, &[10, 20, 30, 40, 50, 60, 70, 0]);
+        bus.write_bytes(destination_base, &[0xa5; 4]);
+        write_rect(&mut bus, source_rect, -1, 0, 0, 7);
+        write_rect(&mut bus, destination_rect, 0, 0, 1, 3);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        if std_bits {
+            const PORT: u32 = 0x181000;
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(PORT + 2, destination_handle);
+            bus.write_word(PORT + 6, 0xc000);
+            *d.current_port = PORT;
+            bus.write_long(TEST_SP + 14, source_pixmap);
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+        }
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        bus.read_bytes(destination_base, 4)
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_share_signed_source_height_gate() {
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_horizontal_height_gate(std_bits, 32_766),
+                vec![20, 50, 70, 0xa5],
+                "32767, std_bits={std_bits}"
+            );
+            assert_eq!(
+                run_indexed_horizontal_height_gate(std_bits, 32_767),
+                vec![0xa5; 4],
+                "32768, std_bits={std_bits}"
+            );
+        }
+    }
+
+    fn run_indexed_horizontal_oracle_route(
+        std_bits: bool,
+        source_width: u16,
+        destination_width: u16,
+        source_left: u16,
+        source_row: &[u8],
+    ) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_stride = u16::try_from((source_row.len() + 1) & !1).unwrap();
+        let destination_stride = (destination_width + 4 + 1) & !1;
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_base = bus.alloc(u32::from(source_stride));
+        let destination_base = bus.alloc(u32::from(destination_stride));
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+
+        write_pixmap_8(&mut bus, source_pixmap, source_base, source_stride, 1, 0);
+        bus.write_word(source_pixmap + 12, source_left + source_width);
+        write_pixmap_8(
+            &mut bus,
+            destination_pixmap,
+            destination_base,
+            destination_stride,
+            1,
+            0,
+        );
+        bus.write_word(destination_pixmap + 12, destination_width);
+        bus.write_bytes(source_base, source_row);
+        bus.write_bytes(
+            destination_base,
+            &vec![0xa5; usize::from(destination_stride)],
+        );
+        write_rect(
+            &mut bus,
+            source_rect,
+            0,
+            source_left as i16,
+            1,
+            (source_left + source_width) as i16,
+        );
+        write_rect(
+            &mut bus,
+            destination_rect,
+            0,
+            0,
+            1,
+            destination_width as i16,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        if std_bits {
+            const PORT: u32 = 0x181000;
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(PORT + 2, destination_handle);
+            bus.write_word(PORT + 6, 0xc000);
+            *d.current_port = PORT;
+            bus.write_long(TEST_SP + 14, source_pixmap);
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+        }
+
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        bus.read_bytes(destination_base, usize::from(destination_stride))
+    }
+
+    fn indexed_horizontal_tail_low(source_width: usize) -> Vec<u8> {
+        let mut row = vec![200; (source_width + 3) & !3];
+        row[source_width - 1] = 0;
+        row[source_width] = 254;
+        row
+    }
+
+    fn indexed_horizontal_nonmonotonic(source_width: usize, case_index: usize) -> Vec<u8> {
+        let mut row = vec![0; (source_width + 3) & !3];
+        for (position, value) in row[..source_width].iter_mut().enumerate() {
+            *value = ((position * 73 + case_index * 19) % 251 + 1) as u8;
+        }
+        row[source_width] = 254;
+        row
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_match_large_indexed_horizontal_oracles() {
+        // Literal results from controlled Mac OS 8.1 CopyBits and StdBits
+        // captures. The tail-low rows isolate the staged physical tail; the
+        // nonmonotonic rows use the captured position encoding verbatim.
+        for std_bits in [false, true] {
+            for source_left in 0..4u16 {
+                let mut row = vec![0x11; usize::from(source_left) + 194];
+                row[..usize::from(source_left)].fill(250);
+                row[usize::from(source_left)..usize::from(source_left) + 190].fill(20);
+                row[usize::from(source_left) + 189] = 30;
+                row[usize::from(source_left) + 190..usize::from(source_left) + 193]
+                    .copy_from_slice(&[200, 150, 140]);
+                let actual =
+                    run_indexed_horizontal_oracle_route(std_bits, 190, 1, source_left, &row);
+                assert_eq!(actual[0], 200);
+                assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+
+                row.fill(0x11);
+                row[..usize::from(source_left)].fill(250);
+                row[usize::from(source_left)..usize::from(source_left) + 191].fill(20);
+                row[usize::from(source_left) + 190] = 30;
+                row[usize::from(source_left) + 191..usize::from(source_left) + 194]
+                    .copy_from_slice(&[240, 150, 140]);
+                let actual =
+                    run_indexed_horizontal_oracle_route(std_bits, 191, 1, source_left, &row);
+                assert_eq!(actual[0], 30);
+                assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+            }
+
+            for (source_width, destination_width, source, expected) in [
+                (285, 2, indexed_horizontal_tail_low(285), &[200, 254][..]),
+                (
+                    285,
+                    2,
+                    indexed_horizontal_nonmonotonic(285, 1),
+                    &[251, 254][..],
+                ),
+                (
+                    511,
+                    3,
+                    indexed_horizontal_tail_low(511),
+                    &[200, 200, 254][..],
+                ),
+                (
+                    511,
+                    3,
+                    indexed_horizontal_nonmonotonic(511, 7),
+                    &[251, 249, 254][..],
+                ),
+            ] {
+                let actual = run_indexed_horizontal_oracle_route(
+                    std_bits,
+                    source_width,
+                    destination_width,
+                    0,
+                    &source,
+                );
+                assert_eq!(&actual[..expected.len()], expected);
+                assert!(actual[expected.len()..].iter().all(|&byte| byte == 0xa5));
+            }
+
+            for (source_width, expected) in [(4_097, 65), (5_000, 8), (5_001, 7), (10_924, u8::MAX)]
+            {
+                let source = vec![0; (source_width + 3) & !3];
+                let actual = run_indexed_horizontal_oracle_route(
+                    std_bits,
+                    source_width as u16,
+                    1,
+                    0,
+                    &source,
+                );
+                assert_eq!(
+                    actual[0], expected,
+                    "{source_width}->1, std_bits={std_bits}"
+                );
+                assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+            }
+        }
+    }
+    #[test]
+    fn copy_bits_and_std_bits_do_not_fallback_after_selected_failure() {
+        const SOURCE: u32 = 0x00d2_0000;
+        const DESTINATION: u32 = 0x00e2_0000;
+        for trap in [0x0ec, 0x0eb] {
+            for source_failure in [true, false] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(
+                    SOURCE,
+                    if source_failure {
+                        vec![10, 20, 30, 40, 50, 60]
+                    } else {
+                        vec![10, 20, 30, 40, 50, 60, 70, 0]
+                    },
+                );
+                memory.add_region(DESTINATION, vec![0xa5; 4]);
+                if !source_failure {
+                    memory.add_readonly_region(DESTINATION, vec![0xa5; 3]);
+                }
+                bus.attach_guest_address_space(memory.shared_view());
+                let source_pixmap = bus.alloc(50);
+                let destination_pixmap = bus.alloc(50);
+                let destination_handle = bus.alloc(4);
+                let source_rect = bus.alloc(8);
+                let destination_rect = bus.alloc(8);
+                write_pixmap_8(&mut bus, source_pixmap, SOURCE, 8, 1, 0);
+                write_pixmap_8(&mut bus, destination_pixmap, DESTINATION, 3, 1, 0);
+                write_rect(&mut bus, source_rect, 0, 0, 1, 7);
+                write_rect(&mut bus, destination_rect, 0, 0, 1, 3);
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 0);
+                bus.write_long(TEST_SP + 6, destination_rect);
+                bus.write_long(TEST_SP + 10, source_rect);
+                if trap == 0x0eb {
+                    const PORT: u32 = 0x181000;
+                    bus.write_long(destination_handle, destination_pixmap);
+                    bus.write_long(PORT + 2, destination_handle);
+                    bus.write_word(PORT + 6, 0xc000);
+                    *d.current_port = PORT;
+                    bus.write_long(TEST_SP + 14, source_pixmap);
+                } else {
+                    bus.write_long(TEST_SP + 14, destination_pixmap);
+                    bus.write_long(TEST_SP + 18, source_pixmap);
+                }
+
+                assert!(d
+                    .dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+                let mut actual = [0; 4];
+                memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+                assert_eq!(
+                    actual, [0xa5; 4],
+                    "trap={trap:03x}, source_failure={source_failure}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_publish_only_complete_rows_before_selected_refusal() {
+        const SOURCE: u32 = 0x00d3_0000;
+        const DESTINATION: u32 = 0x00e3_0000;
+        for trap in [0x0ec, 0x0eb] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(
+                SOURCE,
+                vec![
+                    10, 20, 30, 40, 50, 60, 70, 0, 80, 90, 100, 110, 120, 130, 140, 0,
+                ],
+            );
+            memory.add_region(DESTINATION, vec![0xa5; 6]);
+            memory.add_readonly_region(DESTINATION + 3, vec![0xa5; 3]);
+            bus.attach_guest_address_space(memory.shared_view());
+            let source_pixmap = bus.alloc(50);
+            let destination_pixmap = bus.alloc(50);
+            let destination_handle = bus.alloc(4);
+            let source_rect = bus.alloc(8);
+            let destination_rect = bus.alloc(8);
+            write_pixmap_8(&mut bus, source_pixmap, SOURCE, 8, 2, 0);
+            write_pixmap_8(&mut bus, destination_pixmap, DESTINATION, 3, 2, 0);
+            write_rect(&mut bus, source_rect, 0, 0, 2, 7);
+            write_rect(&mut bus, destination_rect, 0, 0, 2, 3);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 6, destination_rect);
+            bus.write_long(TEST_SP + 10, source_rect);
+            if trap == 0x0eb {
+                const PORT: u32 = 0x181000;
+                bus.write_long(destination_handle, destination_pixmap);
+                bus.write_long(PORT + 2, destination_handle);
+                bus.write_word(PORT + 6, 0xc000);
+                *d.current_port = PORT;
+                bus.write_long(TEST_SP + 14, source_pixmap);
+            } else {
+                bus.write_long(TEST_SP + 14, destination_pixmap);
+                bus.write_long(TEST_SP + 18, source_pixmap);
+            }
+
+            assert!(d
+                .dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+            let mut actual = [0; 6];
+            memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+            assert_eq!(actual, [20, 50, 70, 0xa5, 0xa5, 0xa5], "trap={trap:03x}");
         }
     }
 

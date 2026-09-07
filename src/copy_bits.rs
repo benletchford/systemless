@@ -3,7 +3,147 @@
 //! ABI decoding, port/mask resolution and picture recording stay at the callers
 //! until their corresponding operation families migrate.
 
+use std::ops::Range;
+
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
+
+const INDEXED_8_GUARD_BYTES: usize = 4;
+const INDEXED_8_MAP_ENTRIES: usize = 256;
+
+/// Pure horizontal plan for the indexed 8-bit identity-palette shrink path.
+/// Destination indices are relative to the complete, unclipped destination
+/// rectangle. `source_range` is relative to the submitted source pixel.
+///
+/// Imaging With QuickDraw defines rectangle scaling, but not the indexed
+/// reducer. The truncated fixed-point carry and rounded source/guard/map
+/// prefix are measured compatibility behavior; the finite-prefix saturation
+/// follows from unsigned-byte maximum and the complete identity map.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Indexed8HorizontalShrink {
+    groups: Vec<Range<usize>>,
+    source_range: Range<usize>,
+    staged_len: usize,
+}
+
+impl Indexed8HorizontalShrink {
+    pub(crate) fn new(
+        source_width: usize,
+        destination_width: usize,
+        visible: Range<usize>,
+    ) -> Option<Self> {
+        if !(1..=i16::MAX as usize).contains(&source_width)
+            || destination_width == 0
+            || destination_width >= source_width
+            || visible.start > visible.end
+            || visible.end > destination_width
+        {
+            return None;
+        }
+
+        let source = i64::try_from(source_width).ok()?;
+        let destination = i64::try_from(destination_width).ok()?;
+        let step = destination.checked_mul(1 << 16)?.checked_div(source)?;
+        if step <= 0 {
+            return None;
+        }
+        let phase = step / 2;
+        let boundary = |index: usize| {
+            let numerator = i64::try_from(index)
+                .ok()?
+                .checked_mul(1 << 16)?
+                .checked_sub(phase)?;
+            let quotient = numerator.div_euclid(step);
+            let rounded = quotient.checked_add(i64::from(numerator.rem_euclid(step) != 0))?;
+            usize::try_from(rounded).ok()
+        };
+
+        let endpoint_count = visible.end.checked_sub(visible.start)?.checked_add(1)?;
+        let mut endpoints = Vec::new();
+        endpoints.try_reserve_exact(endpoint_count).ok()?;
+        for index in visible.start..=visible.end {
+            endpoints.push(boundary(index)?);
+        }
+        let mut groups = Vec::new();
+        groups
+            .try_reserve_exact(endpoint_count.saturating_sub(1))
+            .ok()?;
+        groups.extend(endpoints.windows(2).map(|pair| pair[0]..pair[1]));
+        if groups.iter().any(|group| group.is_empty()) {
+            return None;
+        }
+
+        let staged_len = source_width.checked_add(3)? & !3;
+        let source_range = match (groups.first(), groups.last()) {
+            (Some(first), Some(last)) => first.start.min(staged_len)..last.end.min(staged_len),
+            (None, None) => 0..0,
+            _ => return None,
+        };
+        Some(Self {
+            groups,
+            source_range,
+            staged_len,
+        })
+    }
+
+    pub(crate) fn groups(&self) -> &[Range<usize>] {
+        &self.groups
+    }
+
+    pub(crate) fn source_range(&self) -> Range<usize> {
+        self.source_range.clone()
+    }
+
+    /// Reduces an exact snapshot of `source_range`. The remaining arena is the
+    /// operation-owned zero guard followed by big-endian identity-map entries.
+    pub(crate) fn reduce(&self, staged_source: &[u8]) -> Option<Vec<u8>> {
+        if staged_source.len() != self.source_range.len() {
+            return None;
+        }
+        let map_start = self.staged_len.checked_add(INDEXED_8_GUARD_BYTES)?;
+        let prefix_end = map_start.checked_add(INDEXED_8_MAP_ENTRIES.checked_mul(4)?)?;
+        let mut output = Vec::new();
+        output.try_reserve_exact(self.groups.len()).ok()?;
+
+        for group in &self.groups {
+            let mut maximum = None;
+            for index in group.start..group.end.min(prefix_end) {
+                let value = if index < self.staged_len {
+                    let source_index = index.checked_sub(self.source_range.start)?;
+                    *staged_source.get(source_index)?
+                } else if index < map_start {
+                    0
+                } else {
+                    let map_offset = index - map_start;
+                    let entry = u32::try_from(map_offset / 4).ok()?;
+                    entry.to_be_bytes()[map_offset % 4]
+                };
+                maximum = Some(maximum.map_or(value, |current: u8| current.max(value)));
+            }
+            let maximum = maximum?;
+            if group.end > prefix_end && maximum != u8::MAX {
+                return None;
+            }
+            output.push(maximum);
+        }
+        Some(output)
+    }
+
+    fn reduce_rows(&self, snapshots: &[u8], row_count: usize) -> Option<Vec<u8>> {
+        let row_len = self.source_range.len();
+        if snapshots.len() != row_count.checked_mul(row_len)? {
+            return None;
+        }
+        let output_len = row_count.checked_mul(self.groups.len())?;
+        let mut output = Vec::new();
+        output.try_reserve_exact(output_len).ok()?;
+        for row_index in 0..row_count {
+            let start = row_index.checked_mul(row_len)?;
+            let end = start.checked_add(row_len)?;
+            output.extend_from_slice(&self.reduce(snapshots.get(start..end)?)?);
+        }
+        Some(output)
+    }
+}
 
 pub(crate) trait CopyBitsMemory {
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()>;
@@ -120,7 +260,265 @@ pub(crate) enum RowCopyOutcome {
     WriteFailure { rows_written: usize },
 }
 
+/// Adapter facts which are not retained in [`RowCopy`]. Callers must keep
+/// using their existing path unless the request had no mask, its source bounds
+/// are original guest bounds rather than sanitized substitutes, its destination
+/// bounds are authoritative, its missing palette map means known index identity,
+/// and its raw mode is exactly `srcCopy` without the separately defined dither
+/// flag.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Indexed8HorizontalSelection(());
+
+impl Indexed8HorizontalSelection {
+    pub(crate) fn from_adapter_facts(
+        mask_free: bool,
+        source_bounds_are_original: bool,
+        destination_bounds_are_authoritative: bool,
+        indexed_palette_identity_known: bool,
+        raw_mode: u16,
+    ) -> Option<Self> {
+        (mask_free
+            && source_bounds_are_original
+            && destination_bounds_are_authoritative
+            && indexed_palette_identity_known
+            && raw_mode == 0)
+            .then_some(Self(()))
+    }
+}
+
 impl RowCopy<'_> {
+    /// Adds the indexed horizontal family ahead of the existing shared paths.
+    /// The adapters still receive one final outcome and therefore cannot
+    /// accidentally fall back after a selected family has touched memory.
+    pub(crate) fn execute_with_indexed8_horizontal(
+        self,
+        memory: &mut impl CopyBitsMemory,
+        selection: Option<Indexed8HorizontalSelection>,
+    ) -> RowCopyOutcome {
+        if let Some(selection) = selection {
+            let outcome = self.execute_indexed8_horizontal(memory, selection);
+            if outcome != RowCopyOutcome::Declined {
+                return outcome;
+            }
+        }
+        self.execute(memory)
+    }
+
+    /// Executes the measured indexed 8-bit horizontal shrink family.
+    ///
+    /// Only [`RowCopyOutcome::Declined`] permits the adapter to try its old
+    /// path. Once this method selects the family, address/read failures and
+    /// partial writes remain terminal. Source spans for every visible row are
+    /// snapshotted before the first destination write, including physical
+    /// bytes beyond the declared source bounds and row stride.
+    fn execute_indexed8_horizontal(
+        &self,
+        memory: &mut impl CopyBitsMemory,
+        _selection: Indexed8HorizontalSelection,
+    ) -> RowCopyOutcome {
+        if self.mode != 0
+            || self.source.depth != 8
+            || self.destination.depth != 8
+            || self.palette.is_some()
+        {
+            return RowCopyOutcome::Declined;
+        }
+
+        if self
+            .source_rect
+            .iter()
+            .chain(self.destination_rect.iter())
+            .chain(self.source.bounds.iter())
+            .chain(self.destination.bounds.iter())
+            .chain(self.clip.iter())
+            .any(|&coordinate| i16::try_from(coordinate).is_err())
+        {
+            return RowCopyOutcome::Declined;
+        }
+
+        let [st, sl, sb, sr] = self.source_rect;
+        let [dt, dl, db, dr] = self.destination_rect;
+        let Some(source_width) = sr.checked_sub(sl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_height) = sb.checked_sub(st) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_width) = dr.checked_sub(dl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_height) = db.checked_sub(dt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if source_width <= 0
+            || source_height <= 0
+            || destination_width <= 0
+            || destination_height <= 0
+        {
+            return RowCopyOutcome::NoOp;
+        }
+        if destination_width >= source_width || destination_height != source_height {
+            return RowCopyOutcome::Declined;
+        }
+        if source_width > i32::from(i16::MAX) || source_height > i32::from(i16::MAX) {
+            return RowCopyOutcome::Declined;
+        }
+
+        let [sbt, sbl, sbb, _] = self.source.bounds;
+        let Some(source_bounds_height) = sbb.checked_sub(sbt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if source_bounds_height <= 0 {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        if st < sbt || sb > sbb {
+            return RowCopyOutcome::Declined;
+        }
+        let Some(source_x_delta) = sl.checked_sub(sbl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if i16::try_from(source_x_delta).is_err() {
+            return RowCopyOutcome::Declined;
+        }
+        // Classic QuickDraw's signed source-bounds-height gate is observed at
+        // 32767/32768 for this otherwise-selected family.
+        if source_bounds_height > i32::from(i16::MAX) {
+            return RowCopyOutcome::NoOp;
+        }
+
+        let [dbt, dbl, dbb, dbr] = self.destination.bounds;
+        let [ct, cl, cb, cr] = self.clip;
+        let top = dt.max(dbt).max(ct);
+        let left = dl.max(dbl).max(cl);
+        let bottom = db.min(dbb).min(cb);
+        let right = dr.min(dbr).min(cr);
+        if top >= bottom || left >= right {
+            return RowCopyOutcome::NoOp;
+        }
+
+        let Some(visible_start) = left
+            .checked_sub(dl)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(visible_end) = right
+            .checked_sub(dl)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(plan) = Indexed8HorizontalShrink::new(
+            source_width as usize,
+            destination_width as usize,
+            visible_start..visible_end,
+        ) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let source_range = plan.source_range();
+        let Some(row_count) = bottom
+            .checked_sub(top)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(output_len) = right
+            .checked_sub(left)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+
+        let mut addresses = Vec::new();
+        if addresses.try_reserve_exact(row_count).is_err() {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        for destination_y in top..bottom {
+            let Some(source_y) = destination_y
+                .checked_sub(dt)
+                .and_then(|offset| st.checked_add(offset))
+            else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let source_address = if source_range.is_empty() {
+                None
+            } else {
+                let Some(row_delta) = source_y.checked_sub(sbt).map(i64::from) else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                let Some(submitted_origin) = row_delta
+                    .checked_mul(i64::from(self.source.row_bytes))
+                    .and_then(|offset| i64::from(self.source.base).checked_add(offset))
+                    .and_then(|address| address.checked_add(i64::from(source_x_delta)))
+                else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                let Some(source_start) = i64::try_from(source_range.start)
+                    .ok()
+                    .and_then(|offset| submitted_origin.checked_add(offset))
+                else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                let Some(source_end) = i64::try_from(source_range.end)
+                    .ok()
+                    .and_then(|offset| submitted_origin.checked_add(offset))
+                else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                if source_start < 0 || source_end < source_start || source_end > (1i64 << 32) {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                }
+                Some(source_start as u32)
+            };
+            let Some(destination_address) =
+                self.destination
+                    .row_address(left, destination_y, output_len)
+            else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            addresses.push((source_address, destination_address));
+        }
+
+        let Some(snapshot_len) = row_count.checked_mul(source_range.len()) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let mut snapshots = Vec::new();
+        if snapshots.try_reserve_exact(snapshot_len).is_err() {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        snapshots.resize(snapshot_len, 0);
+        for (row_index, (source, _)) in addresses.iter().enumerate() {
+            let Some(start) = row_index.checked_mul(source_range.len()) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(end) = start.checked_add(source_range.len()) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            if let Some(source) = source {
+                if memory
+                    .read_copy_row(*source, &mut snapshots[start..end])
+                    .is_none()
+                {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                }
+            }
+        }
+
+        let Some(output) = plan.reduce_rows(&snapshots, row_count) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        for (rows_written, ((_, destination), row)) in addresses
+            .iter()
+            .zip(output.chunks_exact(output_len))
+            .enumerate()
+        {
+            if memory.write_copy_row(*destination, row).is_none() {
+                return RowCopyOutcome::WriteFailure { rows_written };
+            }
+        }
+        RowCopyOutcome::Completed
+    }
+
     /// Snapshot all source rows before writing, including across different
     /// addresses that alias the same backing. Geometry/read failures write
     /// nothing. A destination failure preserves that row but may follow rows
@@ -339,6 +737,187 @@ mod tests {
     const SOURCE: u32 = 0x0100_0000;
     const DESTINATION: u32 = 0x0200_0000;
 
+    #[test]
+    fn indexed_horizontal_groups_match_independent_oracle_boundaries() {
+        for (source, destination, expected) in [
+            (3, 2, &[0..2, 2..3][..]),
+            (5, 3, &[0..2, 2..3, 3..5][..]),
+            (
+                17,
+                7,
+                &[0..2, 2..5, 5..7, 7..10, 10..12, 12..15, 15..17][..],
+            ),
+            (
+                17,
+                16,
+                &[
+                    0..1,
+                    1..2,
+                    2..3,
+                    3..4,
+                    4..5,
+                    5..6,
+                    6..7,
+                    7..9,
+                    9..10,
+                    10..11,
+                    11..12,
+                    12..13,
+                    13..14,
+                    14..15,
+                    15..16,
+                    16..17,
+                ][..],
+            ),
+        ] {
+            let plan = Indexed8HorizontalShrink::new(source, destination, 0..destination)
+                .expect("oracle geometry is supported");
+            assert_eq!(plan.groups(), expected);
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_boundaries_match_independent_carry_loop() {
+        for source in 2usize..=32 {
+            for destination in 1usize..source {
+                let step = (destination * (1 << 16) / source) as u16;
+                let mut error = step / 2;
+                let mut source_index = 0;
+                let mut expected = Vec::with_capacity(destination);
+                for _ in 0..destination {
+                    let start = source_index;
+                    loop {
+                        source_index += 1;
+                        let (next, carry) = error.overflowing_add(step);
+                        error = next;
+                        if carry {
+                            break;
+                        }
+                    }
+                    expected.push(start..source_index);
+                }
+                let plan = Indexed8HorizontalShrink::new(source, destination, 0..destination)
+                    .expect("small positive shrink is supported");
+                assert_eq!(
+                    plan.groups(),
+                    expected,
+                    "source={source}, destination={destination}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_plan_uses_signed_zero_boundary_and_visible_groups() {
+        let first = Indexed8HorizontalShrink::new(285, 2, 0..1).unwrap();
+        assert_eq!(first.groups(), &[0..143]);
+        assert_eq!(first.source_range(), 0..143);
+
+        let last = Indexed8HorizontalShrink::new(285, 2, 1..2).unwrap();
+        assert_eq!(last.groups(), &[143..286]);
+        assert_eq!(last.source_range(), 143..286);
+
+        let clipped_away = Indexed8HorizontalShrink::new(190, 1, 0..0).unwrap();
+        assert!(clipped_away.groups().is_empty());
+        assert_eq!(clipped_away.source_range(), 0..0);
+        assert_eq!(clipped_away.reduce(&[]), Some(vec![]));
+    }
+
+    #[test]
+    fn indexed_horizontal_origin_residues_use_only_submitted_pixels() {
+        for residue in 0..4 {
+            let mut row = vec![0x11; 256];
+            row[..residue].fill(250);
+            row[residue..residue + 190].fill(20);
+            row[residue + 189] = 30;
+            row[residue + 190..residue + 193].copy_from_slice(&[200, 150, 140]);
+            let plan = Indexed8HorizontalShrink::new(190, 1, 0..1).unwrap();
+            assert_eq!(plan.groups(), &[0..191]);
+            assert_eq!(plan.source_range(), 0..191);
+            let range = plan.source_range();
+            assert_eq!(
+                plan.reduce(&row[residue + range.start..residue + range.end]),
+                Some(vec![200])
+            );
+
+            row.fill(0x11);
+            row[..residue].fill(250);
+            row[residue..residue + 191].fill(20);
+            row[residue + 190] = 30;
+            row[residue + 191..residue + 194].copy_from_slice(&[240, 150, 140]);
+            let plan = Indexed8HorizontalShrink::new(191, 1, 0..1).unwrap();
+            assert_eq!(plan.groups(), &[0..191]);
+            assert_eq!(plan.source_range(), 0..191);
+            let range = plan.source_range();
+            assert_eq!(
+                plan.reduce(&row[residue + range.start..residue + range.end]),
+                Some(vec![30])
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_owned_map_matches_large_trace_pixels() {
+        for (source_width, endpoint, expected) in [
+            (4_097, 4_369, 65),
+            (5_000, 5_041, 8),
+            (5_001, 5_041, 7),
+            (10_924, 13_107, u8::MAX),
+        ] {
+            let plan = Indexed8HorizontalShrink::new(source_width, 1, 0..1).unwrap();
+            assert_eq!(plan.groups(), &[0..endpoint]);
+            let range = plan.source_range();
+            assert_eq!(range.start, 0);
+            assert_eq!(
+                plan.reduce(&vec![0; range.len()]),
+                Some(vec![expected]),
+                "source_width={source_width}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_final_column_stays_bounded_near_signed_limit() {
+        let guarded = Indexed8HorizontalShrink::new(32_761, 2, 1..2).unwrap();
+        assert_eq!(guarded.groups(), &[16_384..32_768]);
+        assert_eq!(guarded.source_range(), 16_384..32_764);
+        let mut guarded_source = vec![0; guarded.source_range().len()];
+        *guarded_source.last_mut().unwrap() = 77;
+        assert_eq!(guarded.reduce(&guarded_source), Some(vec![77]));
+
+        let unrounded = Indexed8HorizontalShrink::new(32_767, 2, 1..2).unwrap();
+        assert_eq!(unrounded.groups(), &[16_384..32_768]);
+        assert_eq!(unrounded.source_range(), 16_384..32_768);
+        let mut unrounded_source = vec![0; unrounded.source_range().len()];
+        *unrounded_source.last_mut().unwrap() = 88;
+        assert_eq!(unrounded.reduce(&unrounded_source), Some(vec![88]));
+
+        let saturated = Indexed8HorizontalShrink::new(31_736, 2, 1..2).unwrap();
+        assert_eq!(saturated.groups(), &[16_384..32_768]);
+        assert_eq!(saturated.source_range(), 16_384..31_736);
+        assert_eq!(
+            saturated.reduce(&vec![0; saturated.source_range().len()]),
+            Some(vec![u8::MAX])
+        );
+    }
+
+    #[test]
+    fn indexed_horizontal_plan_rejects_unproved_domains_and_wrong_snapshot() {
+        for (source, destination, visible) in [
+            (0, 1, 0..1),
+            (1, 1, 0..1),
+            (1, 2, 0..2),
+            (i16::MAX as usize + 1, 1, 0..1),
+            (5, 3, std::ops::Range { start: 2, end: 1 }),
+            (5, 3, 0..4),
+        ] {
+            assert!(Indexed8HorizontalShrink::new(source, destination, visible).is_none());
+        }
+        let plan = Indexed8HorizontalShrink::new(190, 1, 0..1).unwrap();
+        assert_eq!(plan.reduce(&vec![0; 190]), None);
+        assert_eq!(plan.reduce(&vec![0; 192]), None);
+    }
+
     fn run(memory: &mut GuestAddressSpace, classic: bool, copy: RowCopy<'_>) -> RowCopyOutcome {
         if classic {
             let mut bus = MacMemoryBus::new(0x10000);
@@ -357,6 +936,349 @@ mod tests {
             depth,
             bounds,
         }
+    }
+
+    fn indexed_selection() -> Indexed8HorizontalSelection {
+        Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0).unwrap()
+    }
+
+    #[derive(Default)]
+    struct SparseMemory {
+        bytes: std::collections::BTreeMap<u32, u8>,
+        fail_read: Option<u32>,
+        fail_write: Option<u32>,
+        writes: Vec<u32>,
+    }
+
+    impl SparseMemory {
+        fn insert(&mut self, address: u32, bytes: &[u8]) {
+            for (offset, byte) in bytes.iter().copied().enumerate() {
+                self.bytes.insert(address + offset as u32, byte);
+            }
+        }
+
+        fn bytes(&self, address: u32, len: usize) -> Vec<u8> {
+            (0..len)
+                .map(|offset| self.bytes[&(address + offset as u32)])
+                .collect()
+        }
+    }
+
+    impl CopyBitsMemory for SparseMemory {
+        fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()> {
+            if self.fail_read == Some(address) {
+                return None;
+            }
+            for (offset, byte) in bytes.iter_mut().enumerate() {
+                *byte = *self.bytes.get(&address.checked_add(offset as u32)?)?;
+            }
+            Some(())
+        }
+
+        fn write_copy_row(&mut self, address: u32, bytes: &[u8]) -> Option<()> {
+            if self.fail_write == Some(address) {
+                return None;
+            }
+            self.writes.push(address);
+            for (offset, byte) in bytes.iter().copied().enumerate() {
+                self.bytes.insert(address.checked_add(offset as u32)?, byte);
+            }
+            Some(())
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_selection_requires_all_adapter_provenance() {
+        assert!(
+            Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0).is_some()
+        );
+        for facts in [
+            (false, true, true, true, 0),
+            (true, false, true, true, 0),
+            (true, true, false, true, 0),
+            (true, true, true, false, 0),
+            (true, true, true, true, 0x40),
+        ] {
+            assert!(Indexed8HorizontalSelection::from_adapter_facts(
+                facts.0, facts.1, facts.2, facts.3, facts.4
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_raw_dither_flag_keeps_existing_unscaled_route() {
+        let mut memory = SparseMemory::default();
+        memory.insert(SOURCE, &[1, 2, 3, 0xaa]);
+        memory.insert(DESTINATION, &[0xaa; 4]);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 4, 8, [0, 0, 1, 3]),
+            destination: pixmap(DESTINATION, 4, 8, [0, 0, 1, 3]),
+            source_rect: [0, 0, 1, 3],
+            destination_rect: [0, 0, 1, 3],
+            clip: [0, 0, 1, 3],
+            palette: None,
+        };
+        let selection =
+            Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0x40);
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut memory, selection),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(memory.bytes(DESTINATION, 4), [1, 2, 3, 0xaa]);
+    }
+
+    #[test]
+    fn indexed_horizontal_global_clip_reads_only_final_physical_ranges() {
+        let mut memory = SparseMemory::default();
+        // The submitted row origins are -1 and 7. Clipping away destination
+        // column zero makes the required physical starts 1 and 9, both valid.
+        memory.insert(1, &[22, 23, 24, 25, 26]);
+        memory.insert(9, &[32, 33, 34, 35, 36]);
+        memory.insert(DESTINATION, &[0xaa; 8]);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(1, 8, 8, [0, 8, 2, 13]),
+            destination: pixmap(DESTINATION, 4, 8, [0, 20, 2, 23]),
+            source_rect: [0, 6, 2, 13],
+            destination_rect: [0, 20, 2, 23],
+            clip: [0, 21, 2, 23],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(
+            memory.bytes(DESTINATION, 8),
+            [0xaa, 24, 26, 0xaa, 0xaa, 34, 36, 0xaa]
+        );
+    }
+
+    #[test]
+    fn indexed_horizontal_snapshots_all_aliasing_rows_before_writes() {
+        let mut memory = SparseMemory::default();
+        memory.insert(
+            SOURCE,
+            &[
+                1, 9, 2, 3, 4, 0xaa, 0xaa, 0xaa, 5, 1, 6, 0, 7, 0xaa, 0xaa, 0xaa,
+            ],
+        );
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [0, 0, 2, 5]),
+            destination: pixmap(SOURCE + 8, 3, 8, [0, 0, 2, 3]),
+            source_rect: [0, 0, 2, 5],
+            destination_rect: [0, 0, 2, 3],
+            clip: [0, 0, 2, 3],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(memory.bytes(SOURCE + 8, 6), [9, 2, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn indexed_horizontal_snapshots_declared_same_row_overlap() {
+        let mut memory = SparseMemory::default();
+        memory.insert(SOURCE, &[1, 9, 2, 3, 4, 0xaa, 0xaa, 0xaa]);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [0, 0, 1, 5]),
+            destination: pixmap(SOURCE + 1, 3, 8, [0, 0, 1, 3]),
+            source_rect: [0, 0, 1, 5],
+            destination_rect: [0, 0, 1, 3],
+            clip: [0, 0, 1, 3],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(memory.bytes(SOURCE, 5), [1, 9, 2, 4, 4]);
+    }
+
+    #[test]
+    fn indexed_horizontal_snapshots_rounded_tail_overlap() {
+        let mut memory = SparseMemory::default();
+        let mut backing = vec![10; 381];
+        backing[0] = 100;
+        backing[190..380].fill(20);
+        backing[190] = 80;
+        backing[380] = 90;
+        memory.insert(SOURCE, &backing);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 190, 8, [0, 0, 2, 190]),
+            destination: pixmap(SOURCE + 190, 1, 8, [0, 0, 2, 1]),
+            source_rect: [0, 0, 2, 190],
+            destination_rect: [0, 0, 2, 1],
+            clip: [0, 0, 2, 1],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(memory.bytes(SOURCE + 190, 2), [100, 90]);
+    }
+
+    #[test]
+    fn indexed_horizontal_read_failure_is_prewrite_and_write_failure_is_partial() {
+        let request = || RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [0, 0, 2, 5]),
+            destination: pixmap(DESTINATION, 3, 8, [0, 0, 2, 3]),
+            source_rect: [0, 0, 2, 5],
+            destination_rect: [0, 0, 2, 3],
+            clip: [0, 0, 2, 3],
+            palette: None,
+        };
+
+        let mut read_failure = SparseMemory::default();
+        read_failure.insert(SOURCE, &[1, 2, 3, 4, 5]);
+        read_failure.insert(SOURCE + 8, &[6, 7, 8, 9, 10]);
+        read_failure.insert(DESTINATION, &[0xaa; 6]);
+        read_failure.fail_read = Some(SOURCE + 8);
+        assert_eq!(
+            request()
+                .execute_with_indexed8_horizontal(&mut read_failure, Some(indexed_selection()),),
+            RowCopyOutcome::ReadOrGeometryFailure
+        );
+        assert!(read_failure.writes.is_empty());
+        assert_eq!(read_failure.bytes(DESTINATION, 6), [0xaa; 6]);
+
+        let mut write_failure = SparseMemory::default();
+        write_failure.insert(SOURCE, &[1, 2, 3, 4, 5]);
+        write_failure.insert(SOURCE + 8, &[6, 7, 8, 9, 10]);
+        write_failure.insert(DESTINATION, &[0xaa; 6]);
+        write_failure.fail_write = Some(DESTINATION + 3);
+        assert_eq!(
+            request()
+                .execute_with_indexed8_horizontal(&mut write_failure, Some(indexed_selection()),),
+            RowCopyOutcome::WriteFailure { rows_written: 1 }
+        );
+        assert_eq!(write_failure.writes, [DESTINATION]);
+        assert_eq!(
+            write_failure.bytes(DESTINATION, 6),
+            [2, 3, 5, 0xaa, 0xaa, 0xaa]
+        );
+
+        let mut first_write_failure = SparseMemory::default();
+        first_write_failure.insert(SOURCE, &[1, 2, 3, 4, 5]);
+        first_write_failure.insert(SOURCE + 8, &[6, 7, 8, 9, 10]);
+        first_write_failure.insert(DESTINATION, &[0xaa; 6]);
+        first_write_failure.fail_write = Some(DESTINATION);
+        assert_eq!(
+            request().execute_with_indexed8_horizontal(
+                &mut first_write_failure,
+                Some(indexed_selection()),
+            ),
+            RowCopyOutcome::WriteFailure { rows_written: 0 }
+        );
+        assert!(first_write_failure.writes.is_empty());
+        assert_eq!(first_write_failure.bytes(DESTINATION, 6), [0xaa; 6]);
+    }
+
+    #[test]
+    fn indexed_horizontal_signed_source_height_is_noop_without_memory_access() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("signed-height no-op reached source memory");
+            }
+
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("signed-height no-op reached destination memory");
+            }
+        }
+
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [-1, 0, 32_767, 7]),
+            destination: pixmap(DESTINATION, 3, 8, [0, 0, 1, 3]),
+            source_rect: [-1, 0, 0, 7],
+            destination_rect: [0, 0, 1, 3],
+            clip: [0, 0, 1, 3],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            RowCopyOutcome::NoOp
+        );
+    }
+
+    #[test]
+    fn indexed_horizontal_wide_relative_origin_declines_without_memory_access() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("declined wide origin reached source memory");
+            }
+
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("declined wide origin reached destination memory");
+            }
+        }
+
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [0, i16::MIN.into(), 1, -32_760]),
+            destination: pixmap(DESTINATION, 3, 8, [0, 0, 1, 3]),
+            source_rect: [0, 1, 1, 6],
+            destination_rect: [0, 0, 1, 3],
+            clip: [0, 0, 1, 3],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            RowCopyOutcome::Declined
+        );
+
+        let tall_copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [-1, i16::MIN.into(), 32_767, -32_760]),
+            destination: pixmap(DESTINATION, 3, 8, [0, 0, 1, 3]),
+            source_rect: [-1, 1, 0, 6],
+            destination_rect: [0, 0, 1, 3],
+            clip: [0, 0, 1, 3],
+            palette: None,
+        };
+        assert_eq!(
+            tall_copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            RowCopyOutcome::Declined
+        );
+    }
+
+    #[test]
+    fn indexed_horizontal_invalid_final_range_fails_before_memory_access() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("invalid final range reached source memory");
+            }
+
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("invalid final range reached destination memory");
+            }
+        }
+
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(u32::MAX - 1, 8, 8, [0, 0, 1, 5]),
+            destination: pixmap(DESTINATION, 3, 8, [0, 0, 1, 3]),
+            source_rect: [0, 0, 1, 5],
+            destination_rect: [0, 0, 1, 3],
+            clip: [0, 0, 1, 3],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            RowCopyOutcome::ReadOrGeometryFailure
+        );
     }
 
     #[test]
