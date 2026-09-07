@@ -25280,19 +25280,31 @@ mod tests {
         runner.dispatcher.screen_mode = (screen_base, 256, 256, 64, 8);
         runner.bus.write_long(0x0824, screen_base);
         runner.bus.write_word(0x0BAA, 20);
-        runner.dispatcher.menus.push(crate::trap::menu::Menu {
-            id: 1,
-            title: String::from("Apple"),
-            items: Vec::new(),
-            enabled: true,
-            handle: 0,
-            in_menu_bar: true,
-            hierarchical: false,
-            visible_in_menu_bar: true,
-        });
+        // Menu titles come from the guest MenuList, not just the host cache.
+        // Install a real menu so this oracle actually paints outline glyphs.
+        let title = runner.bus.alloc(5);
+        runner.bus.write_bytes(title, b"\x04File");
+        let sp = 0x007F_FF80;
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_long(sp, title);
+        runner.bus.write_word(sp + 4, 128);
+        runner
+            .dispatcher
+            .dispatch(0xA931, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap(); // NewMenu
+        let menu = runner.bus.read_long(sp + 6);
+        assert_ne!(menu, 0);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_word(sp, 0);
+        runner.bus.write_long(sp + 2, menu);
+        runner
+            .dispatcher
+            .dispatch(0xA935, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap(); // InsertMenu
         runner.dispatcher.menu_bar_hidden = false;
         runner.prepare_text_presentation();
         runner.composite_frame();
+        assert!(runner.bus.has_visible_outline_detail());
         let pixel = screen_base + 5 * 256 + 100;
         assert_ne!(runner.bus.read_byte(pixel), 0xAA);
         runner.bus.write_byte(pixel, 0xAA);
