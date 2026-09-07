@@ -559,6 +559,7 @@ pub struct DialogTrackingState {
     pub draw_procs_done: bool,
     /// Whether rendered_pixels has been re-snapshotted after draw procs completed.
     pub rendered_pixels_final: bool,
+    pub(crate) filter_presentation_epoch: Option<u64>,
     /// Optional ModalDialog filter procedure pointer.
     /// FUNCTION MyFilter(dialog: DialogPtr; VAR event: EventRecord; VAR itemHit: INTEGER): BOOLEAN;
     /// Inside Macintosh Volume I, I-417
@@ -10237,6 +10238,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,

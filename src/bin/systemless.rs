@@ -711,6 +711,7 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
+    presentation_argb: Vec<u32>,
     #[cfg(target_os = "macos")]
     content_rect: Option<ContentRect>,
     #[cfg(target_os = "macos")]
@@ -871,6 +872,7 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
             frame_argb: Vec::new(),
+            presentation_argb: Vec::new(),
             #[cfg(target_os = "macos")]
             content_rect: cached_content.as_ref().map(|cache| cache.content),
             #[cfg(target_os = "macos")]
@@ -1923,11 +1925,20 @@ impl App {
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
 
+        let mut presented = std::mem::take(&mut self.presentation_argb);
+        #[cfg(target_os = "macos")]
+        let logical_size = (presentation_rect.width, presentation_rect.height);
+        #[cfg(not(target_os = "macos"))]
+        let logical_size = (game_w, game_h);
+        let output_scale = display::outline_output_scale(logical_size, (buf_w, buf_h));
+        let mut used_outlines = false;
         #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
-        let (game_w, game_h) = if let Some((width, height, presented)) =
+        let (game_w, game_h) = if let Some((width, height)) =
             guest_frame.as_ref().and_then(|guest| {
                 let _timing = FramePhaseTimer::new("outline pixel expansion");
-                runner.bus().presented_argb(guest, &frame_argb)
+                runner
+                    .bus()
+                    .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
             }) {
             #[cfg(target_os = "macos")]
             {
@@ -1937,7 +1948,8 @@ impl App {
                 presentation_rect.width *= scale;
                 presentation_rect.height *= scale;
             }
-            frame_argb = presented;
+            std::mem::swap(&mut frame_argb, &mut presented);
+            used_outlines = true;
             (width, height)
         } else {
             (game_w, game_h)
@@ -1946,6 +1958,10 @@ impl App {
         #[cfg(target_os = "macos")]
         {
             let Some(surface) = self.surface.as_mut() else {
+                if used_outlines {
+                    std::mem::swap(&mut frame_argb, &mut presented);
+                }
+                self.presentation_argb = presented;
                 self.frame_argb = frame_argb;
                 return;
             };
@@ -1973,6 +1989,10 @@ impl App {
             let mut scaled_frame = std::mem::take(&mut self.scaled_frame);
 
             let Some(surface) = self.surface.as_mut() else {
+                if used_outlines {
+                    std::mem::swap(&mut frame_argb, &mut presented);
+                }
+                self.presentation_argb = presented;
                 self.frame_argb = frame_argb;
                 self.scaled_frame = scaled_frame;
                 return;
@@ -2018,6 +2038,10 @@ impl App {
             buffer.present().expect("Failed to present buffer");
         }
 
+        if used_outlines {
+            std::mem::swap(&mut frame_argb, &mut presented);
+        }
+        self.presentation_argb = presented;
         self.frame_argb = frame_argb;
         self.last_presented_guest_tick = Some(presented_tick);
         self.force_next_render = false;

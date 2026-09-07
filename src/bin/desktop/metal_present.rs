@@ -1518,7 +1518,25 @@ mod tests {
         .into_rgba8();
         // Native menus hide the guest's 20-row menu bar. The reported window
         // displays the remaining 800x580 guest area at 960x696 physical pixels.
-        let source = image::imageops::crop_imm(&source, 0, 80, 3200, 2320).to_image();
+        let scale = systemless::display::outline_output_scale((800, 580), (960, 696));
+        let pixels = source
+            .pixels()
+            .map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]]))
+            .collect::<Vec<_>>();
+        let mut resolved = Vec::new();
+        systemless::display::resize_argb_coverage(
+            &pixels,
+            source.dimensions(),
+            (800 * scale, 600 * scale),
+            &mut resolved,
+        );
+        let bytes = resolved
+            .into_iter()
+            .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8])
+            .collect();
+        let source = image::RgbaImage::from_raw(800 * scale, 600 * scale, bytes).unwrap();
+        let source =
+            image::imageops::crop_imm(&source, 0, 20 * scale, 800 * scale, 580 * scale).to_image();
         render_rgba(&source, 960, 696).save(path).unwrap();
     }
 

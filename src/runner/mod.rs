@@ -10824,6 +10824,10 @@ impl FixtureRunner {
         // framebuffer output). After the filter returns and ModalDialog refires,
         // the re-snapshot path captures the filter's drawing into rendered_pixels.
         if let Some(tracking) = self.dispatcher.dialog_tracking.as_mut() {
+            tracking.filter_presentation_epoch = tracking
+                .rendered_pixels_final
+                .then(|| self.bus.presentation_epoch())
+                .flatten();
             tracking.rendered_pixels_final = false;
         }
         true
@@ -15789,6 +15793,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc,
             game_managed: false,
             last_filter_event: None,
@@ -28991,6 +28996,7 @@ mod tests {
             draw_proc_queue: std::collections::VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc,
             game_managed: true,
             last_filter_event: None,
@@ -29275,6 +29281,7 @@ mod tests {
             draw_proc_queue: VecDeque::from([(proc_addr, item_no)]),
             draw_procs_done: false,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -29530,6 +29537,7 @@ mod tests {
             draw_proc_queue: VecDeque::from([(proc_addr, item_no)]),
             draw_procs_done: false,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -29704,6 +29712,7 @@ mod tests {
             draw_proc_queue: VecDeque::from([(proc_addr, item_no)]),
             draw_procs_done: false,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,

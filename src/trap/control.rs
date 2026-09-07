@@ -1696,8 +1696,67 @@ impl super::TrapDispatcher {
 
         // Erase first so a re-draw (e.g. from SetCTitle) overwrites the old title
         // instead of overlapping the new one. Checkbox / radio CDEFs already do this.
+        let slot = bus.presentation.clone();
+        let (base, row_bytes, width, height, pixel_size) = self.get_screen_params();
+        let foreground = Self::fb_main_screen_pixel_index_for_rgb(
+            bus,
+            [self.fg_color.0, self.fg_color.1, self.fg_color.2],
+        )
+        .unwrap_or(255);
+        let background = Self::fb_main_screen_pixel_index_for_rgb(
+            bus,
+            [self.bg_color.0, self.bg_color.1, self.bg_color.2],
+        )
+        .unwrap_or(0);
+        let color_pixel = |color: (u16, u16, u16), index: u8| match pixel_size {
+            16 => {
+                (u32::from(color.0 >> 11) << 10)
+                    | (u32::from(color.1 >> 11) << 5)
+                    | u32::from(color.2 >> 11)
+            }
+            32 => {
+                (u32::from(color.0 >> 8) << 16)
+                    | (u32::from(color.1 >> 8) << 8)
+                    | u32::from(color.2 >> 8)
+            }
+            _ => u32::from(index),
+        };
+        let foreground = color_pixel(self.fg_color, foreground);
+        let background = color_pixel(self.bg_color, background);
+        let port = *self.current_port;
+        let vis = bus.read_long(port + 24);
+        let clip = bus.read_long(port + 28);
+        let detail = slot.rounded_control_corners(
+            (
+                abs_top.into(),
+                abs_left.into(),
+                abs_bottom.into(),
+                abs_right.into(),
+            ),
+            oval.into(),
+            1,
+            pixel_size,
+            Some(background),
+            foreground,
+            |x, y, lane| {
+                if x < 0 || y < 0 || x >= i32::from(width) || y >= i32::from(height) {
+                    return None;
+                }
+                let local_y = y as i16 - abs_top + r.top;
+                let local_x = x as i16 - abs_left + r.left;
+                if (vis != 0 && !Self::region_contains_point(bus, vis, local_y, local_x))
+                    || (clip != 0 && !Self::region_contains_point(bus, clip, local_y, local_x))
+                {
+                    return None;
+                }
+                let address =
+                    base + y as u32 * row_bytes + x as u32 * u32::from(pixel_size / 8) + lane;
+                Some((address, bus.read_byte(address)))
+            },
+        );
         self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Erase);
         self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Frame);
+        slot.finish_rounded_control(detail, |address| bus.read_byte(address));
 
         self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
 

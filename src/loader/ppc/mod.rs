@@ -68197,6 +68197,40 @@ fn ppc_frame_front_round_rect(
     thickness: i16,
     color: PpcRgbColor,
 ) -> bool {
+    let slot = memory.presentation();
+    let detail = if matches!(front.depth, 8 | 16) {
+        let fallback = TrapDispatcher::standard_mac_8bpp_clut();
+        let clut = if front.base_addr == PPC_MAIN_SCREEN_BASE {
+            ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback)
+        } else {
+            fallback
+        };
+        let foreground = if front.depth == 16 {
+            u32::from(ppc_rgb_color_to_rgb555(color))
+        } else {
+            u32::from(ppc_rgb_color_to_index_in_clut(color, &clut, 256))
+        };
+        slot.rounded_control_corners(
+            (rect.0.into(), rect.1.into(), rect.2.into(), rect.3.into()),
+            oval.into(),
+            thickness.into(),
+            front.depth as u16,
+            None,
+            foreground,
+            |x, y, lane| {
+                if x < 0 || y < 0 || x >= front.width as i32 || y >= front.height as i32 {
+                    return None;
+                }
+                let address = front.base_addr
+                    + y as u32 * front.row_bytes
+                    + x as u32 * (front.depth / 8)
+                    + lane;
+                Some((address, memory.read_u8(address)?))
+            },
+        )
+    } else {
+        None
+    };
     let outer = Rect {
         top: rect.0,
         left: rect.1,
@@ -68244,6 +68278,7 @@ fn ppc_frame_front_round_rect(
             color,
         );
     }
+    slot.finish_rounded_control(detail, |address| memory.read_u8(address).unwrap_or(0));
     wrote
 }
 
@@ -70043,6 +70078,60 @@ fn ppc_draw_control_inner(
     } else {
         match proc_id {
             0 => {
+                let slot = memory.presentation();
+                let detail =
+                    ppc_live_quickdraw_surface(memory, gworlds, owner).and_then(|surface| {
+                        if !matches!(surface.front_buffer.depth, 8 | 16) {
+                            return None;
+                        }
+                        let foreground = ppc_quickdraw_surface_fore_pixel(
+                            memory,
+                            surface,
+                            ppc_theme_rgb(palette.frame_dark),
+                            None,
+                        )? as u32;
+                        let background = ppc_quickdraw_surface_fore_pixel(
+                            memory,
+                            surface,
+                            ppc_theme_rgb(palette.window_background),
+                            None,
+                        )? as u32;
+                        let clip = memory
+                            .read_u32_be(owner + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+                            .and_then(|rgn| ppc_region_storage(memory, rgn));
+                        let vis = memory
+                            .read_u32_be(owner + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+                            .and_then(|rgn| ppc_region_storage(memory, rgn));
+                        let fb = surface.front_buffer;
+                        slot.rounded_control_corners(
+                            surface.local_rect((top, left, bottom, right)),
+                            crate::control_manager::STANDARD_BUTTON_OVAL.into(),
+                            1,
+                            fb.depth as u16,
+                            Some(background),
+                            foreground,
+                            |x, y, lane| {
+                                if x < 0
+                                    || y < 0
+                                    || x >= fb.width as i32
+                                    || y >= fb.height as i32
+                                    || !ppc_local_point_in_port_regions(
+                                        surface,
+                                        (x, y),
+                                        vis.as_deref(),
+                                        clip.as_deref(),
+                                    )
+                                {
+                                    return None;
+                                }
+                                let address = fb.base_addr
+                                    + y as u32 * fb.row_bytes
+                                    + x as u32 * (fb.depth / 8)
+                                    + lane;
+                                Some((address, memory.read_u8(address)?))
+                            },
+                        )
+                    });
                 frame_cpu.gpr[4] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
                 frame_cpu.gpr[5] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
                 let _ = ppc_paint_round_rect(
@@ -70053,14 +70142,16 @@ fn ppc_draw_control_inner(
                     ppc_theme_rgb(palette.window_background),
                     None,
                 );
-                ppc_frame_round_rect(
+                let framed = ppc_frame_round_rect(
                     &frame_cpu,
                     memory,
                     gworlds,
                     owner,
                     ppc_theme_rgb(palette.frame_dark),
                     None,
-                )
+                );
+                slot.finish_rounded_control(detail, |address| memory.read_u8(address).unwrap_or(0));
+                framed
             }
             1 => {
                 // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the

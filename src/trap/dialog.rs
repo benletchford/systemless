@@ -1368,7 +1368,7 @@ impl super::TrapDispatcher {
             }
             let advance = if uses_styled_runs {
                 let style = Self::te_style_at_offset(&styled_runs, index);
-                self.te_char_width(style.font, style.size, *byte)
+                Self::te_styled_char_width(style, *byte)
             } else {
                 self.te_char_width(font, Self::font_lookup_size(size), *byte)
             };
@@ -1912,7 +1912,7 @@ impl super::TrapDispatcher {
         let mut width = 0i16;
         for (offset, &byte) in text_bytes[start..end].iter().enumerate() {
             let style = Self::te_style_at_offset(runs, start + offset);
-            width = width.saturating_add(self.te_char_width(style.font, style.size, byte));
+            width = width.saturating_add(Self::te_styled_char_width(style, byte));
         }
         width
     }
@@ -1925,7 +1925,7 @@ impl super::TrapDispatcher {
     ) -> Vec<(usize, usize)> {
         crate::quickdraw::text::wrap_classic_text(text_bytes, box_width, |index, byte| {
             let style = Self::te_style_at_offset(runs, index);
-            self.te_char_width(style.font, style.size, byte)
+            Self::te_styled_char_width(style, byte)
         })
         .into_iter()
         .map(|line| (line.start, line.next))
@@ -2745,6 +2745,18 @@ impl super::TrapDispatcher {
         self.te_commit_edit_buffer(bus, te_handle, &buffer);
     }
 
+    // TextEdit measures each run with its own font, size and face, independent
+    // of the caller's current port style. Inside Macintosh: Text (1993), 2-20.
+    fn te_styled_char_width(style: TeResolvedStyle, byte: u8) -> i16 {
+        let size = Self::font_lookup_size(style.size);
+        let (_, scale) = get_font_face_scaled(style.font, size);
+        let advance = crate::quickdraw::text::get_glyph(style.font, size, byte as char)
+            .map_or(6, |(glyph, _)| i16::from(glyph.advance));
+        advance * scale
+            + crate::quickdraw::text::QuickDrawTextStyle::from_bits(style.face as u8)
+                .advance_extra() as i16
+    }
+
     fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
         let size = Self::font_lookup_size(size);
         let (_face, scale) = get_font_face_scaled(font, size);
@@ -3187,6 +3199,7 @@ impl super::TrapDispatcher {
                 }
                 self.draw_char(cpu, bus, byte as char);
             }
+
             top = line_bottom;
         }
 
@@ -4120,6 +4133,7 @@ impl super::TrapDispatcher {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -5646,6 +5660,9 @@ impl super::TrapDispatcher {
         rect: (i16, i16, i16, i16),
         saved: &SavedPixels,
     ) {
+        if bus.dialog_snapshot_is_current(saved, rect) {
+            return;
+        }
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (save_top, save_left, save_bottom, save_right) = Self::dialog_saved_pixel_rect(rect);
         // Mirror save_dialog_pixels y-bounds guard — saved bytes for off-screen
@@ -5702,6 +5719,7 @@ impl super::TrapDispatcher {
             // Packed off-screen: save produced no bytes for this row,
             // so there's nothing to advance idx over here.
         }
+        bus.remember_dialog_snapshot(saved, rect);
     }
 
     fn restore_dialog_pixels_outside_rect(
@@ -8018,6 +8036,31 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let slot = bus.presentation.clone();
+        let black = Self::fb_main_screen_pixel_index_for_rgb(bus, [0; 3]).unwrap_or(255);
+        let detail = (oval_width == oval_height)
+            .then(|| {
+                slot.rounded_control_corners(
+                    (top.into(), left.into(), bottom.into(), right.into()),
+                    oval_width.into(),
+                    pen_size.into(),
+                    if pixel_size == 8 { 8 } else { 0 },
+                    None,
+                    black.into(),
+                    |x, y, _| {
+                        if x < 0
+                            || y < 0
+                            || x >= i32::from(screen_width)
+                            || y >= i32::from(screen_height)
+                        {
+                            return None;
+                        }
+                        let address = screen_base + y as u32 * row_bytes + x as u32;
+                        Some((address, bus.read_byte(address)))
+                    },
+                )
+            })
+            .flatten();
         let r = Rect {
             top,
             left,
@@ -8082,6 +8125,7 @@ impl super::TrapDispatcher {
                 );
             }
         }
+        slot.finish_rounded_control(detail, |address| bus.read_byte(address));
     }
 
     /// Draw a button with optional default (thick) border.
@@ -8131,8 +8175,28 @@ impl super::TrapDispatcher {
         if !self.draw_theme_push_button_chrome(
             bus, top, left, bottom, right, enabled, false, is_default,
         ) {
+            let slot = bus.presentation.clone();
+            let (base, row_bytes, width, height, pixel_size) = self.get_screen_params();
+            let white = Self::fb_main_screen_pixel_index_for_rgb(bus, [0xffff; 3]).unwrap_or(0);
+            let black = Self::fb_main_screen_pixel_index_for_rgb(bus, [0; 3]).unwrap_or(255);
+            let detail = slot.rounded_control_corners(
+                (top.into(), left.into(), bottom.into(), right.into()),
+                crate::control_manager::STANDARD_BUTTON_OVAL.into(),
+                1,
+                if pixel_size == 8 { 8 } else { 0 },
+                Some(white.into()),
+                black.into(),
+                |x, y, _| {
+                    if x < 0 || y < 0 || x >= i32::from(width) || y >= i32::from(height) {
+                        return None;
+                    }
+                    let address = base + y as u32 * row_bytes + x as u32;
+                    Some((address, bus.read_byte(address)))
+                },
+            );
             self.fill_classic_button_shape(bus, top, left, bottom, right);
             self.draw_classic_button_outline(bus, top, left, bottom, right);
+            slot.finish_rounded_control(detail, |address| bus.read_byte(address));
 
             // Default button: rounded bold outline (3px thick)
             // Macintosh Toolbox Essentials 1992, Listing 6-17
@@ -11976,6 +12040,15 @@ impl super::TrapDispatcher {
                     .is_some_and(|dialog_ptr| {
                         self.dialog_cdef_draw_pending_snapshot.remove(&dialog_ptr)
                     });
+                if !cdef_draw_pending_snapshot {
+                    if let Some(tracking) = self.dialog_tracking.as_mut() {
+                        if let Some(epoch) = tracking.filter_presentation_epoch.take() {
+                            if bus.presentation_epoch() == Some(epoch) {
+                                tracking.rendered_pixels_final = true;
+                            }
+                        }
+                    }
+                }
                 if let Some(ref tracking) = self.dialog_tracking {
                     if !tracking.rendered_pixels_final {
                         let bounds = tracking.bounds;
@@ -13254,6 +13327,7 @@ impl super::TrapDispatcher {
                             draw_proc_queue,
                             draw_procs_done: !has_draw_procs,
                             rendered_pixels_final: !has_draw_procs,
+                            filter_presentation_epoch: None,
                             filter_proc,
                             game_managed,
                             last_filter_event: None,
@@ -16851,6 +16925,41 @@ mod tests {
     use crate::ui_theme::UiThemeId;
     use std::collections::VecDeque;
 
+    #[test]
+    fn styled_text_layout_uses_run_faces_independently_of_port_face() {
+        let (mut disp, _, _) = setup();
+        let text = b"A condensed heading\rPlain text should wrap using its own font metrics and remain inside the view.";
+        let runs = vec![
+            super::TeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: TrapDispatcher::te_resolved_style_from_parts(0, 0x20, 12, (0, 0, 0), 0, 0),
+            },
+            super::TeStyleRun {
+                start: 20,
+                style_index: 1,
+                style: TrapDispatcher::te_resolved_style_from_parts(3, 0, 9, (0, 0, 0), 0, 0),
+            },
+        ];
+        let expected = disp.te_wrap_lines_styled(&runs, text, 150);
+        let width = disp.te_measure_text_width_styled(&runs, text, 20, text.len());
+        for face in [0, 1, 0x20, 0x40] {
+            disp.tx_face = face;
+            assert_eq!(disp.te_wrap_lines_styled(&runs, text, 150), expected);
+            assert_eq!(
+                disp.te_measure_text_width_styled(&runs, text, 20, text.len()),
+                width
+            );
+            for &(start, end) in &expected {
+                let mut end = end;
+                while end > start && text[end - 1].is_ascii_whitespace() {
+                    end -= 1;
+                }
+                assert!(disp.te_measure_text_width_styled(&runs, text, start, end) <= 150);
+            }
+        }
+    }
+
     fn screen_pixel_is_set(bus: &MacMemoryBus, base: u32, row_bytes: u32, x: i16, y: i16) -> bool {
         let byte = bus.read_byte(base + (y as u32 * row_bytes) + ((x as u32) / 8));
         byte & (0x80u8 >> ((x as u8) & 7)) != 0
@@ -17802,6 +17911,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -17855,6 +17965,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -21822,6 +21933,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -21931,6 +22043,7 @@ mod tests {
                 draw_proc_queue: VecDeque::new(),
                 draw_procs_done: true,
                 rendered_pixels_final: true,
+                filter_presentation_epoch: None,
                 filter_proc: 0,
                 game_managed: false,
                 last_filter_event: None,
@@ -22077,6 +22190,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -23189,6 +23303,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -26904,6 +27019,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -28374,6 +28490,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -30864,6 +30981,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31283,6 +31401,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31348,6 +31467,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31441,6 +31561,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31514,6 +31635,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31581,6 +31703,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: false,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31636,6 +31759,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: None,
@@ -31711,6 +31835,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31775,6 +31900,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31847,6 +31973,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: None,
@@ -31949,6 +32076,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: None,
@@ -32004,6 +32132,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32104,6 +32233,7 @@ mod tests {
             item_hit_ptr,
             rendered_pixels: disp.save_dialog_pixels(&bus, bounds),
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             draw_procs_done: true,
             filter_proc: 0x149F0,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32203,6 +32333,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: None,
@@ -32354,6 +32485,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32431,6 +32563,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32499,6 +32632,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {

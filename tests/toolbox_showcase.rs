@@ -388,6 +388,11 @@ fn assert_resource_browser_snapshot(runner: &mut FixtureRunner, loaded_id: Optio
     }
 }
 
+fn review_presentation_enabled() -> bool {
+    std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some()
+        || std::env::var_os("SYSTEMLESS_VERIFY_REVIEW_GALLERY").is_some()
+}
+
 fn prepare_review_presentation(runner: &mut FixtureRunner) {
     let d = runner.dispatcher();
     let mode = d.screen_mode;
@@ -401,7 +406,7 @@ fn prepare_review_presentation(runner: &mut FixtureRunner) {
 }
 
 fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
-    if std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some() {
+    if review_presentation_enabled() {
         prepare_review_presentation(runner);
     }
     runner.composite_frame();
@@ -448,6 +453,19 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         std::fs::create_dir_all(&directory).unwrap();
         write_rgb(&directory.join(filename), w, h, rgb);
     }
+    if std::env::var_os("SYSTEMLESS_VERIFY_REVIEW_GALLERY").is_some() {
+        let (w, h, rgb, _) = runner.bus().outline_presentation_rgb().unwrap();
+        let profile = if runner.is_powerpc_app() {
+            "systemless-classic-ppc"
+        } else {
+            "systemless-classic-68k"
+        };
+        let reference = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/toolbox-showcase/review")
+            .join(profile)
+            .join(filename);
+        compare_reference_rgb(&reference, filename, runner.is_powerpc_app(), w, h, rgb, 4);
+    }
     let reference = reference_path(runner.is_powerpc_app(), filename);
 
     if update_references() {
@@ -458,6 +476,26 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         return;
     }
 
+    compare_reference_rgb(
+        &reference,
+        filename,
+        runner.is_powerpc_app(),
+        width,
+        height,
+        actual,
+        1,
+    );
+}
+
+fn compare_reference_rgb(
+    reference: &Path,
+    filename: &str,
+    powerpc: bool,
+    width: u32,
+    height: u32,
+    actual: Vec<u8>,
+    scale: u32,
+) {
     let expected = image::open(&reference)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", reference.display()))
         .to_rgb8();
@@ -479,8 +517,8 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
             (136, 430, 150, 492),
             (198, 174, 211, 252),
         ] {
-            for v in top..bottom {
-                for h in left..right {
+            for v in top * scale..bottom * scale {
+                for h in left * scale..right * scale {
                     let offset = ((v * width + h) * 3) as usize;
                     comparison_actual[offset..offset + 3]
                         .copy_from_slice(&expected.as_raw()[offset..offset + 3]);
@@ -499,12 +537,8 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         .filter(|(expected, actual)| expected != actual)
         .count();
     let actual_path = std::env::temp_dir().join(format!(
-        "systemless-toolbox-showcase-{}-{filename}",
-        if runner.is_powerpc_app() {
-            "ppc"
-        } else {
-            "68k"
-        }
+        "systemless-toolbox-showcase-{}-{scale}x-{filename}",
+        if powerpc { "ppc" } else { "68k" }
     ));
     write_rgb(&actual_path, width, height, actual);
     panic!(
@@ -1057,9 +1091,8 @@ fn assert_popup_selected_title_pixels(
     let title_left = 247;
     for v in (win_top + 140)..(win_top + 157) {
         for h in (win_left + title_left)..(win_left + 390) {
-            let offset = (usize::try_from(v).unwrap() * width as usize
-                + usize::try_from(h).unwrap())
-                * 3;
+            let offset =
+                (usize::try_from(v).unwrap() * width as usize + usize::try_from(h).unwrap()) * 3;
             let pixel = &rgb[offset..offset + 3];
             if pixel.iter().all(|channel| *channel < 200) {
                 dark_pixels += 1;
@@ -1091,7 +1124,7 @@ fn test_toolbox_showcase() {
     );
 
     init_game(&mut runner, &app);
-    if std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some() {
+    if review_presentation_enabled() {
         prepare_review_presentation(&mut runner);
     }
     assert_eq!(

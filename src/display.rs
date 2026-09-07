@@ -175,6 +175,22 @@ pub(crate) fn default_arrow_cursor_image() -> CursorImage {
     CursorImage::mono(data, mask, hot_v, hot_h)
 }
 
+/// Smallest integer sampling scale that covers the aspect-fitted drawable.
+/// The retained font coverage may use more samples than the output texture.
+pub fn outline_output_scale(logical: (u32, u32), drawable: (u32, u32)) -> u32 {
+    let (w, h) = logical;
+    let (dw, dh) = drawable;
+    if w == 0 || h == 0 {
+        return 1;
+    }
+    let scale = if u64::from(dw) * u64::from(h) <= u64::from(dh) * u64::from(w) {
+        dw.div_ceil(w)
+    } else {
+        dh.div_ceil(h)
+    };
+    scale.clamp(1, 4)
+}
+
 /// Resize presentation pixels with area coverage on shrinking axes and nearest
 /// sampling on enlarging axes. Shared by software desktop and browser output.
 pub fn resize_argb_coverage(
@@ -1637,6 +1653,22 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn output_scale_covers_aspect_fitted_drawable() {
+        for (drawable, expected) in [
+            ((800, 600), 1),
+            ((1600, 1200), 2),
+            ((1200, 900), 2),
+            ((2400, 1200), 2),
+            ((2400, 1800), 3),
+            ((4000, 3000), 4),
+            ((0, 0), 1),
+        ] {
+            assert_eq!(super::outline_output_scale((800, 600), drawable), expected);
+        }
+        assert_eq!(super::outline_output_scale((0, 0), (800, 600)), 1);
+    }
+
     #[test]
     fn software_minification_preserves_fractional_stroke_coverage() {
         let source: Vec<u32> = (0..64)

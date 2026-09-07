@@ -2,8 +2,10 @@
 
 These captures run the actual 68k Toolbox Showcase with the default bundled
 TrueType fonts, Classic System 7 theme and a fixed startup clock. The guest
-screen remains 800 × 600 at 8-bit depth. The desktop uses the same 4× surface
-initialization as the capture test.
+screen remains 800 × 600 at 8-bit depth. The capture test retains 4× glyph coverage. Desktop output selects the
+smallest integer scale covering the drawable (1×–4×), composing directly into
+a reused output buffer, caching resolved pixels until drawing or the palette
+changes. A 2× window no longer expands a full 4× output frame.
 
 The complete review galleries now cover both 68K and PowerPC through the shared
 4× presentation surface: 58 interaction checkpoints per architecture. Guest
@@ -19,7 +21,7 @@ For the final Mac window appearance, use the [Metal output](#final-mac-window-sc
 the guest-resolution reference tables do not show the desktop's sharp text layer.
 
 The [complete review galleries](../README.md#68k-desktop-presentation)
-also captures every window, menu, dialog, selection and page transition through
+also capture every window, menu, dialog, selection and page transition through
 the 4× presentation surface. The five-page table here is a scale comparison.
 
 | Page | 2× (1600 × 1200) | 4× (3200 × 2400) |
@@ -59,7 +61,7 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo test --no-default-features \
 The [guest-resolution reference gallery](../README.md#reference-screenshots)
 was regenerated for both architectures. Changed metrics intentionally affect
 wrapping and selection: this TextEdit sample wraps into five lines, and its
-fixed mouse drag selects 16 characters. Layout probes sample borders and
+fixed mouse drag selects 14 characters. Layout probes sample borders and
 backgrounds rather than relying on the old font's ink at a particular pixel.
 The archive rebuilt byte-for-byte with the cached pinned toolchain image;
 Docker's registry metadata lookup was unavailable.
@@ -96,7 +98,8 @@ recreate the display from the lower-resolution guest framebuffer.
 
 ## Final Mac window scaling
 
-The full 4× captures above precede the GPU's reduction to the window size.
+The full 4× captures above show retained coverage. The desktop first resolves
+that coverage to the output scale, then the GPU handles any fractional reduction.
 Nearest sampling at that last step dropped thin strokes even when the source
 image was correct. The Mac shader now integrates source pixel coverage when
 shrinking; enlargement retains nearest sampling.
@@ -153,8 +156,8 @@ bitmap/outline resources and explicit local overrides retain precedence.
 See [URW provenance](../../../src/quickdraw/fonts/urw/README.md) and
 [Noto provenance](../../../src/quickdraw/fonts/noto/README.md).
 
-The 4× desktop surface handles 68k srcCopy/srcOr outline text on 8-bit
-screens and offscreen buffers, including synthesized bold, italic, underline,
+The shared presentation retains 68K and PowerPC outline text on indexed and
+direct-color screens and offscreen buffers, including synthesized bold, italic, underline,
 outline and shadow styles, plus shared chrome and menu symbols. The guest's binary framebuffer and text advances remain unchanged
 by presentation. Visibility and clipping regions constrain the enlarged ink;
 repeated coverage does not darken edges, and opaque text runs preserve
@@ -165,10 +168,15 @@ Indexed CopyBits, ScrollRect, BlockMove, palette translation and selection
 inversions carry that coverage through their operations. Palette changes
 recolor the retained indexes. Ordinary guest erases still replace coverage.
 
-Native PowerPC drawing, other pixel depths, non-srcCopy/srcOr text drawing
-and browser output use the logical raster.
-Substituted font metrics can also overflow fixed layouts in guest applications;
-increasing presentation resolution does not change those layouts.
+Desktop ARGB and browser RGBA use the same coverage resolver. Monochrome and
+unsupported drawing modes keep their logical raster. Standard push button
+corners retain the same curved coverage on both CPU architectures; bitmap
+artwork and custom controls retain their original pixels.
+
+Styled TextEdit measures each run using its own font, size and face. A condensed
+heading no longer causes later plain text to wrap using underestimated widths.
+Font substitutions can still change layout compared with the original fonts;
+presentation resolution does not change those metrics.
 
 ## Preservation regressions
 
@@ -183,3 +191,60 @@ cargo test --no-default-features --lib outline_detail_survives
 cargo test --no-default-features --lib memory::presentation::tests
 cargo test --no-default-features --lib dialog_snapshot_replay_retains_unchanged_outline_detail
 ```
+
+## Dialog performance
+
+An unchanged modal filter no longer redraws and snapshots standard items on
+return. Snapshots share immutable detail until a write changes it; a drawing
+revision also skips a repeated restore of the same snapshot. An unchanged
+palette refresh does not invalidate a filter or the resolved output. Ordinary writes,
+including same-byte writes over text, invalidate this reuse.
+
+The opt-in timing test accepts a locally obtained archive; it commits no game
+assets. It reaches the first modal dialog, settles it, and reports execution,
+additional composition, and presentation separately. These phase timings do
+not measure host audio underruns or displayed FPS, and execution can already
+include composition. Use the same build profile and machine for comparisons.
+
+```sh
+SYSTEMLESS_PROFILE_ARCHIVE=/path/to/game.sit \
+SYSTEMLESS_PROFILE_OUTPUT_SCALE=2 SYSTEMLESS_PROFILE_FRAMES=300 \
+cargo test --profile ci-test --no-default-features --test presentation_performance \
+  -- --ignored --nocapture
+```
+
+`SYSTEMLESS_PROFILE_IMAGE` optionally saves a retained-resolution screenshot.
+`SYSTEMLESS_PROFILE_BOOT_SLICES` profiles a fixed number of boot slices instead
+of waiting for a modal dialog. Output scaling does not require discarding
+already-retained 4× glyph detail when the window moves between displays.
+
+### EV Override review measurements
+
+On the same Apple M1 host, using `ci-test`, 50,000 instructions per slice,
+735 requested audio samples and 1,000 warm slices:
+
+| EV Override modal phase | `master` (`241d021f6`), logical output | Revised renderer, 2× output |
+| --- | --- | --- |
+| Execution mean / p95 | 0.30 / 0.41 ms | 0.62 / 0.90 ms |
+| Additional composition mean | 0.006 ms | 0.0005 ms |
+| Presentation mean / p95 | 0.21 / 0.24 ms | 0.82 / 0.89 ms |
+
+The earlier font PR revision (`f4d85c094`) averaged 29.19 ms for execution,
+13.65 ms for additional composition and 8.85 ms for full 4× output in its
+warm modal probe. The revised path keeps cached 4× detail but resolves only the
+requested output size, reusing the result until it changes. Output formats
+and font quality differ from `master`; these are cost comparisons, not an
+assertion of identical images. Execution includes some composition, so adding
+the phases does not give a displayed frame rate.
+
+A separate 1,000-slice Marathon demo probe, after 5,000 boot slices, averaged
+0.36 ms execution and 1.34 ms presentation (p95: 0.49 and 3.95 ms). It exercises
+an animated viewport with retained HUD text. These tests do not establish
+live audio continuity or FPS on the reviewer's Intel Mac.
+
+The registration text now wraps using each style run's own metrics. The
+condensed heading cannot change the width used for following plain paragraphs:
+
+| Previous layout on `master` | Corrected layout and sharp control corners |
+| --- | --- |
+| [Open](ev/override-registration-before.png) | [Open](ev/override-registration.png) |

@@ -7064,6 +7064,7 @@ mod redraw_chrome_tests {
         disp.dialog_tracking = Some(super::super::dispatch::DialogTrackingState {
             game_managed: false,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             ..Default::default()
         });
 
@@ -7110,6 +7111,7 @@ mod redraw_chrome_tests {
             draw_procs_done: true,
             rendered_pixels: stale_pixels,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             ..Default::default()
         });
 

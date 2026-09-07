@@ -88,23 +88,13 @@ impl QuickDrawTextStyle {
     /// Advance one synthesized glyph using the frozen Roman system-font
     /// metrics shared by both guest adapters.
     pub(crate) fn glyph_advance(self, glyph_advance: i32) -> i32 {
-        let mut advance = glyph_advance;
-        if self.bold() {
-            advance += 1;
-        }
-        if self.outline() {
-            advance += 1;
-        }
-        if self.shadow() {
-            advance += 2;
-        }
-        if self.condensed() && advance >= 6 {
-            advance -= 1;
-        }
-        if self.extended() {
-            advance += 1;
-        }
-        advance.max(1)
+        (glyph_advance + self.advance_extra()).max(1)
+    }
+
+    pub(crate) fn advance_extra(self) -> i32 {
+        i32::from(self.bold()) + i32::from(self.outline()) + 2 * i32::from(self.shadow())
+            - i32::from(self.condensed())
+            + i32::from(self.extended())
     }
 
     /// Vertical source-bitmap offset used before synthesizing a shadow.

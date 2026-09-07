@@ -2,9 +2,12 @@
 //! Ordinary framebuffer writes replace enlarged pixels in drawing order; supported
 //! outline glyphs retain indexed coverage through snapshots and pixel transfers.
 //! Frontends consume the presentation at its physical dimensions.
+mod controls;
+
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
@@ -43,6 +46,7 @@ impl PresentationSlot {
         address: u32,
         len: usize,
     ) {
+        pixels.identity = next_snapshot_identity();
         if let Some(p) = self.as_ref() {
             for byte in 0..len {
                 if let Some(detail) = p.detail(address + byte as u32) {
@@ -73,11 +77,12 @@ impl PresentationSlot {
                 if let Some(detail) = pixels.detail.get(&(offset + byte)) {
                     if let Some(palette) = palette {
                         let mut detail = detail.clone();
-                        detail.value = palette[detail.value as usize];
-                        for index in &mut detail.indices {
+                        let mapped = Arc::make_mut(&mut detail);
+                        mapped.value = palette[mapped.value as usize];
+                        for index in &mut mapped.indices {
                             *index = palette[*index as usize];
                         }
-                        for ink in detail.ink.values_mut() {
+                        for ink in mapped.ink.values_mut() {
                             ink.foreground = palette[ink.foreground as usize];
                             ink.background.map(&mut |index| palette[index as usize]);
                         }
@@ -187,10 +192,11 @@ impl Ink {
 
 /// An owned pixel snapshot carries the indexed subpixels with the guest bytes.
 /// Cloning a snapshot preserves its coverage even after its source is erased.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SavedPixels<T = u8> {
     values: Vec<T>,
-    detail: HashMap<usize, DetailCell>,
+    identity: u64,
+    detail: HashMap<usize, Arc<DetailCell>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,10 +206,22 @@ struct DetailCell {
     ink: HashMap<usize, Ink>,
 }
 
+fn next_snapshot_identity() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+impl<T: PartialEq> PartialEq for SavedPixels<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values && self.detail == other.detail
+    }
+}
+impl<T: Eq> Eq for SavedPixels<T> {}
+
 impl<T> From<Vec<T>> for SavedPixels<T> {
     fn from(values: Vec<T>) -> Self {
         Self {
             values,
+            identity: next_snapshot_identity(),
             detail: HashMap::new(),
         }
     }
@@ -219,6 +237,7 @@ impl<T> std::ops::DerefMut for SavedPixels<T> {
         // Raw logical edits cannot retain stale coverage. Region refreshes use
         // replace_range so unrelated parts of a snapshot retain their detail.
         self.detail.clear();
+        self.identity = next_snapshot_identity();
         &mut self.values
     }
 }
@@ -231,7 +250,9 @@ impl<'a, T> IntoIterator for &'a SavedPixels<T> {
 }
 impl<T> SavedPixels<T> {
     pub(crate) fn transform_detail(&mut self, mut map: impl FnMut(usize, u8) -> u8) {
+        self.identity = next_snapshot_identity();
         for (&offset, cell) in &mut self.detail {
+            let cell = Arc::make_mut(cell);
             cell.value = map(offset, cell.value);
             for value in &mut cell.indices {
                 *value = map(offset, *value);
@@ -245,6 +266,7 @@ impl<T> SavedPixels<T> {
     pub fn map<U>(self, map: impl FnMut(T) -> U) -> SavedPixels<U> {
         SavedPixels {
             values: self.values.into_iter().map(map).collect(),
+            identity: next_snapshot_identity(),
             detail: self.detail,
         }
     }
@@ -257,6 +279,7 @@ impl<T> SavedPixels<T> {
     {
         Self {
             values: self.values[range.clone()].to_vec(),
+            identity: next_snapshot_identity(),
             detail: self
                 .detail
                 .iter()
@@ -269,6 +292,7 @@ impl<T> SavedPixels<T> {
     where
         T: Clone,
     {
+        self.identity = next_snapshot_identity();
         let end = offset + values.len();
         self.detail.retain(|i, _| *i < offset || *i >= end);
         self.values[offset..end].clone_from_slice(values);
@@ -276,7 +300,10 @@ impl<T> SavedPixels<T> {
 }
 
 pub(crate) struct Presentation {
-    offscreen: BTreeMap<u32, DetailCell>,
+    revision: u64,
+    restored_dialog: Option<(u64, (i16, i16, i16, i16), u64)>,
+    output_cache: std::cell::RefCell<Option<(u64, u32, Vec<u32>)>>,
+    offscreen: BTreeMap<u32, Arc<DetailCell>>,
     base: u32,
     row_bytes: u32,
     width: u32,
@@ -289,6 +316,7 @@ pub(crate) struct Presentation {
     pixel_indices: Vec<u8>,
     guest_values: Vec<u16>,
     text_cells: Vec<bool>,
+    detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
     ink: HashMap<usize, Ink>,
     run_ink: HashSet<usize>,
     offscreen_run_ink: HashSet<(u32, usize)>,
@@ -339,6 +367,147 @@ impl Presentation {
         let offset = address.checked_sub(self.base)?;
         let (x, y) = (offset % self.row_bytes, offset / self.row_bytes);
         (x < self.width && y < self.height).then_some((x, y))
+    }
+
+    fn resolved_argb(&self, scale: u32) -> std::cell::Ref<'_, [u32]> {
+        if !self
+            .output_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|(revision, cached_scale, _)| {
+                *revision == self.revision && *cached_scale == scale
+            })
+        {
+            let mut cache = self.output_cache.borrow_mut();
+            let (_, _, pixels) = cache.get_or_insert_with(|| (0, 0, Vec::new()));
+            pixels.clear();
+            pixels.reserve((self.logical_width() * self.height * scale * scale) as usize);
+            self.render_scaled(scale, |rgb, count| {
+                let pixel = 0xff000000
+                    | (u32::from(rgb[0]) << 16)
+                    | (u32::from(rgb[1]) << 8)
+                    | u32::from(rgb[2]);
+                pixels.extend(std::iter::repeat_n(pixel, count as usize));
+            });
+            let (revision, cached_scale, _) = cache.as_mut().unwrap();
+            *revision = self.revision;
+            *cached_scale = scale;
+        }
+        std::cell::Ref::map(self.output_cache.borrow(), |cache| {
+            cache.as_ref().unwrap().2.as_slice()
+        })
+    }
+
+    fn render_scaled(&self, scale: u32, mut emit: impl FnMut([u8; 3], u32)) {
+        if self.depth == 8 && self.scale % scale == 0 {
+            let factor = self.scale / scale;
+            let count = factor * factor;
+            let stride = self.width as usize * self.scale as usize * 3;
+            for y in 0..self.height {
+                for dy in 0..scale {
+                    for x in 0..self.width {
+                        let cell = (y * self.width + x) as usize;
+                        if !self.text_cells[cell] {
+                            emit(self.palette[self.guest_values[cell] as u8 as usize], scale);
+                            continue;
+                        }
+                        for dx in 0..scale {
+                            let mut sum = [0u32; 3];
+                            let start = (y * self.scale + dy * factor) as usize * stride
+                                + (x * self.scale + dx * factor) as usize * 3;
+                            for sy in 0..factor as usize {
+                                for rgb in self.pixels
+                                    [start + sy * stride..start + sy * stride + factor as usize * 3]
+                                    .chunks_exact(3)
+                                {
+                                    for c in 0..3 {
+                                        sum[c] += u32::from(rgb[c]);
+                                    }
+                                }
+                            }
+                            emit(sum.map(|v| ((v + count / 2) / count) as u8), 1);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let lanes = self.bytes_per_pixel();
+        let width = self.logical_width();
+        // Integrate each retained coverage cell directly into the requested
+        // integer output scale, without materializing a larger RGB frame.
+        for y in 0..self.height {
+            for dy in 0..scale {
+                for x in 0..width {
+                    let first = (y * self.width + x * lanes) as usize;
+                    if !self.text_cells[first..first + lanes as usize]
+                        .iter()
+                        .any(|&v| v)
+                    {
+                        let mut rgb = [0u8; 3];
+                        for lane in 0..lanes {
+                            let color = self.palette_at(x * lanes + lane)
+                                [self.guest_values[first + lane as usize] as u8 as usize];
+                            for c in 0..3 {
+                                rgb[c] = rgb[c].saturating_add(color[c]);
+                            }
+                        }
+                        emit(rgb, scale);
+                        continue;
+                    }
+                    for dx in 0..scale {
+                        let (left, right, top, bottom, total) = if scale > self.scale {
+                            let left = ((dx * 2 + 1) * self.scale / (scale * 2)) * scale;
+                            let top = ((dy * 2 + 1) * self.scale / (scale * 2)) * scale;
+                            (left, left + scale, top, top + scale, scale * scale)
+                        } else {
+                            (
+                                dx * self.scale,
+                                (dx + 1) * self.scale,
+                                dy * self.scale,
+                                (dy + 1) * self.scale,
+                                self.scale * self.scale,
+                            )
+                        };
+                        let mut sum = [0u32; 3];
+                        for sy in top / scale..bottom.div_ceil(scale) {
+                            let wy = bottom.min((sy + 1) * scale) - top.max(sy * scale);
+                            for sx in left / scale..right.div_ceil(scale) {
+                                let weight =
+                                    wy * (right.min((sx + 1) * scale) - left.max(sx * scale));
+                                let mut rgb = [0u8; 3];
+                                for lane in 0..lanes {
+                                    let bx = x * lanes + lane;
+                                    let cell = first + lane as usize;
+                                    let color = if self.text_cells[cell] {
+                                        let index =
+                                            (((y * self.scale + sy) * self.width * self.scale
+                                                + bx * self.scale
+                                                + sx)
+                                                * 3)
+                                                as usize;
+                                        [
+                                            self.pixels[index],
+                                            self.pixels[index + 1],
+                                            self.pixels[index + 2],
+                                        ]
+                                    } else {
+                                        self.palette_at(bx)[self.guest_values[cell] as u8 as usize]
+                                    };
+                                    for c in 0..3 {
+                                        rgb[c] = rgb[c].saturating_add(color[c]);
+                                    }
+                                }
+                                for c in 0..3 {
+                                    sum[c] += u32::from(rgb[c]) * weight;
+                                }
+                            }
+                        }
+                        emit(sum.map(|v| ((v + total / 2) / total) as u8), 1);
+                    }
+                }
+            }
+        }
     }
 
     fn render_pixels<T: Copy>(&self, map: impl Fn([u8; 3]) -> T) -> Vec<T> {
@@ -424,12 +593,16 @@ impl Presentation {
         output
     }
 
-    fn detail(&self, address: u32) -> Option<DetailCell> {
+    fn detail(&self, address: u32) -> Option<Arc<DetailCell>> {
         let Some((x, y)) = self.position(address) else {
             return self.offscreen.get(&address).cloned();
         };
         if !self.text_cells[(y * self.width + x) as usize] {
             return None;
+        }
+        let index = (y * self.width + x) as usize;
+        if let Some(cell) = &self.detail_cache.borrow()[index] {
+            return Some(cell.clone());
         }
         let mut cell = DetailCell {
             value: self.guest_values[(y * self.width + x) as usize] as u8,
@@ -447,10 +620,12 @@ impl Presentation {
                 }
             }
         }
+        let cell = Arc::new(cell);
+        self.detail_cache.borrow_mut()[index] = Some(cell.clone());
         Some(cell)
     }
 
-    fn matches_detail(&self, address: u32, detail: Option<&DetailCell>) -> bool {
+    fn matches_detail(&self, address: u32, detail: Option<&Arc<DetailCell>>) -> bool {
         let Some((x, y)) = self.position(address) else {
             return self.offscreen.get(&address) == detail;
         };
@@ -458,9 +633,16 @@ impl Presentation {
             return !self.text_cells[(y * self.width + x) as usize];
         };
         if !self.text_cells[(y * self.width + x) as usize]
+            || self.guest_values[(y * self.width + x) as usize] != u16::from(cell.value)
             || cell.indices.len() != (self.scale * self.scale) as usize
         {
             return false;
+        }
+        if self.detail_cache.borrow()[(y * self.width + x) as usize]
+            .as_ref()
+            .is_some_and(|cached| Arc::ptr_eq(cached, cell))
+        {
+            return true;
         }
         for sy in 0..self.scale {
             for sx in 0..self.scale {
@@ -477,7 +659,11 @@ impl Presentation {
         true
     }
 
-    fn put_detail(&mut self, address: u32, cell: &DetailCell) {
+    fn put_detail(&mut self, address: u32, cell: &Arc<DetailCell>) {
+        if self.matches_detail(address, Some(cell)) {
+            return;
+        }
+        self.revision = self.revision.wrapping_add(1);
         let Some((x, y)) = self.position(address) else {
             self.offscreen.insert(address, cell.clone());
             return;
@@ -486,6 +672,7 @@ impl Presentation {
             return;
         }
         self.text_cells[(y * self.width + x) as usize] = true;
+        self.detail_cache.get_mut()[(y * self.width + x) as usize] = Some(cell.clone());
         self.guest_values[(y * self.width + x) as usize] = cell.value.into();
         for sy in 0..self.scale {
             for sx in 0..self.scale {
@@ -521,6 +708,7 @@ impl Presentation {
     }
 
     fn prepare_text_cell(&mut self, x: u32, y: u32) {
+        self.detail_cache.get_mut()[(y * self.width + x) as usize] = None;
         let cell = (y * self.width + x) as usize;
         if !self.text_cells[cell] {
             let index = self.guest_values[cell] as u8;
@@ -541,8 +729,12 @@ impl Presentation {
 
     pub fn write(&mut self, address: u32, value: u8) {
         let Some((x, y)) = self.position(address) else {
+            if self.offscreen.contains_key(&address) || self.glyph.is_some() {
+                self.revision = self.revision.wrapping_add(1);
+            }
             if self.glyph.is_some() {
                 if let Some(cell) = self.offscreen.get_mut(&address) {
+                    let cell = Arc::make_mut(cell);
                     cell.value = value;
                 }
             } else if self.erasing_text
@@ -552,6 +744,7 @@ impl Presentation {
                     .any(|(addr, _)| *addr == address)
             {
                 if let Some(cell) = self.offscreen.get_mut(&address) {
+                    let cell = Arc::make_mut(cell);
                     cell.value = value;
                     for i in 0..cell.indices.len() {
                         if !self.offscreen_run_ink.contains(&(address, i)) {
@@ -566,7 +759,9 @@ impl Presentation {
             return;
         };
         let cell = (y * self.width + x) as usize;
+        self.detail_cache.get_mut()[cell] = None;
         if self.glyph.is_some() {
+            self.revision = self.revision.wrapping_add(1);
             // The logical mask can extend beyond the native glyph bounds.
             // Such cells still need their current background preserved.
             self.prepare_text_cell(x, y);
@@ -576,6 +771,7 @@ impl Presentation {
         if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
             return;
         }
+        self.revision = self.revision.wrapping_add(1);
         self.guest_values[cell] = u16::from(value);
         if !self.text_cells[cell] {
             // Ordinary game pixels stay indexed until presentation. Expanding
@@ -607,15 +803,19 @@ impl Presentation {
     /// Called for every visible glyph cell, including cells with zero 1x ink.
     /// QuickDraw has already applied both the visibility and clipping regions.
     pub fn glyph_pixel(&mut self, address: u32, x: i16, y: i16, foreground: u8, background: u8) {
+        self.revision = self.revision.wrapping_add(1);
         let Some((px, py)) = self.position(address) else {
             let Some((glyph, h, v)) = &self.glyph else {
                 return;
             };
-            let cell = self.offscreen.entry(address).or_insert_with(|| DetailCell {
-                value: background,
-                indices: vec![background; (self.scale * self.scale) as usize],
-                ink: HashMap::new(),
+            let cell = self.offscreen.entry(address).or_insert_with(|| {
+                Arc::new(DetailCell {
+                    value: background,
+                    indices: vec![background; (self.scale * self.scale) as usize],
+                    ink: HashMap::new(),
+                })
             });
+            let cell = Arc::make_mut(cell);
             for sy in 0..self.scale {
                 for sx in 0..self.scale {
                     let gx =
@@ -724,6 +924,27 @@ impl Presentation {
 }
 
 impl MacMemoryBus {
+    pub(crate) fn dialog_snapshot_is_current(
+        &self,
+        saved: &SavedPixels,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        self.presentation
+            .as_ref()
+            .is_some_and(|p| p.restored_dialog == Some((saved.identity, rect, p.revision)))
+    }
+    pub(crate) fn remember_dialog_snapshot(&self, saved: &SavedPixels, rect: (i16, i16, i16, i16)) {
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.restored_dialog = Some((saved.identity, rect, p.revision));
+        }
+    }
+
+    // Only actual drawing invalidates an idle modal filter. Borrowing the store
+    // to refresh an unchanged palette or save a snapshot is not a drawing event.
+    pub(crate) fn presentation_epoch(&self) -> Option<u64> {
+        self.presentation.as_ref().map(|p| p.revision)
+    }
+
     /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
     pub(crate) fn sync_presented_bytes(&mut self, destination: u32, source: u32, bytes: &[u8]) {
         if destination == source {
@@ -816,8 +1037,8 @@ impl MacMemoryBus {
             })
         };
         for i in 0..cell.indices.len() {
-            let src_color = color(src, i, source[offset]);
-            let dst_color = color(dst.as_ref(), i, old);
+            let src_color = color(src.map(AsRef::as_ref), i, source[offset]);
+            let dst_color = color(dst.as_deref(), i, old);
             let output = if src_color == dst_color {
                 let mut same = src_color;
                 same.map(&mut |index| map(self, index, index));
@@ -841,7 +1062,7 @@ impl MacMemoryBus {
         }
         self.write_byte(address, value);
         if let Some(mut p) = self.presentation.as_mut() {
-            p.put_detail(address, &cell);
+            p.put_detail(address, &Arc::new(cell));
         }
         true
     }
@@ -857,11 +1078,12 @@ impl MacMemoryBus {
         self.write_byte(address, value);
         if let Some(cell) = pixels.detail.get(&offset) {
             let mut cell = cell.clone();
-            cell.value = value;
-            for index in &mut cell.indices {
+            let mapped = Arc::make_mut(&mut cell);
+            mapped.value = value;
+            for index in &mut mapped.indices {
                 *index = map(*index);
             }
-            for ink in cell.ink.values_mut() {
+            for ink in mapped.ink.values_mut() {
                 ink.foreground = map(ink.foreground);
                 ink.background.map(&mut map);
             }
@@ -878,6 +1100,7 @@ impl MacMemoryBus {
         address: u32,
         len: usize,
     ) {
+        pixels.identity = next_snapshot_identity();
         if let Some(p) = self.presentation.as_ref() {
             if len == 0 {
                 return;
@@ -949,11 +1172,12 @@ impl MacMemoryBus {
         let value = map(self.read_byte(address));
         self.write_byte(address, value);
         if let Some(cell) = &mut cell {
-            cell.value = value;
-            for index in &mut cell.indices {
+            let mapped = Arc::make_mut(cell);
+            mapped.value = value;
+            for index in &mut mapped.indices {
                 *index = map(*index);
             }
-            for ink in cell.ink.values_mut() {
+            for ink in mapped.ink.values_mut() {
                 ink.foreground = map(ink.foreground);
                 ink.background.map(&mut map);
             }
@@ -995,6 +1219,7 @@ impl MacMemoryBus {
             let mut guard = slot.as_mut().unwrap();
             let p = &mut *guard;
             if p.depth == 8 && p.palette != palette {
+                p.revision = p.revision.wrapping_add(1);
                 // Indexed pixels retain their CLUT indexes when the device's
                 // colors change (Imaging With QuickDraw, 1994, 4-5–4-6).
                 p.palette = palette;
@@ -1069,6 +1294,86 @@ impl MacMemoryBus {
         Some((width, height, pixels))
     }
 
+    /// Render retained coverage into a reusable output buffer at the scale
+    /// needed by the drawable, independently of the internal sampling scale.
+    pub fn presented_argb_scaled(
+        &self,
+        guest: &[u32],
+        with_overlays: &[u32],
+        scale: u32,
+        output: &mut Vec<u32>,
+    ) -> Option<(u32, u32)> {
+        let p = self.presentation.as_ref()?;
+        if !(1..=4).contains(&scale)
+            || guest.len() != (p.logical_width() * p.height) as usize
+            || with_overlays.len() != guest.len()
+        {
+            return None;
+        }
+        output.clear();
+        output.extend_from_slice(&p.resolved_argb(scale));
+        let width = p.logical_width() * scale;
+        for (index, (&before, &after)) in guest.iter().zip(with_overlays).enumerate() {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % p.logical_width();
+            let y = index as u32 / p.logical_width();
+            for dy in 0..scale {
+                let start = ((y * scale + dy) * width + x * scale) as usize;
+                output[start..start + scale as usize].fill(after);
+            }
+        }
+        Some((width, p.height * scale))
+    }
+
+    /// RGBA version of `presented_argb_scaled`, using the same coverage rules.
+    pub fn presented_rgba_scaled(
+        &self,
+        guest: &[u8],
+        with_overlays: &[u8],
+        scale: u32,
+        output: &mut Vec<u8>,
+    ) -> Option<(u32, u32)> {
+        let p = self.presentation.as_ref()?;
+        if !(1..=4).contains(&scale)
+            || guest.len() != (p.logical_width() * p.height * 4) as usize
+            || with_overlays.len() != guest.len()
+        {
+            return None;
+        }
+        output.clear();
+        let pixels = p.resolved_argb(scale);
+        output.reserve(pixels.len() * 4);
+        for pixel in pixels.iter() {
+            output.extend_from_slice(&[
+                (*pixel >> 16) as u8,
+                (*pixel >> 8) as u8,
+                *pixel as u8,
+                255,
+            ]);
+        }
+        let width = p.logical_width() * scale;
+        for (index, (before, after)) in guest
+            .chunks_exact(4)
+            .zip(with_overlays.chunks_exact(4))
+            .enumerate()
+        {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % p.logical_width();
+            let y = index as u32 / p.logical_width();
+            for dy in 0..scale {
+                let start = ((y * scale + dy) * width + x * scale) as usize * 4;
+                for pixel in output[start..start + scale as usize * 4].chunks_exact_mut(4) {
+                    pixel.copy_from_slice(after);
+                }
+            }
+        }
+        Some((width, p.height * scale))
+    }
+
     /// RGBA counterpart of `presented_argb` for browser and image frontends.
     pub fn presented_rgba(
         &self,
@@ -1134,6 +1439,9 @@ impl MacMemoryBus {
             })
         });
         let mut presentation = Presentation {
+            revision: 0,
+            restored_dialog: None,
+            output_cache: std::cell::RefCell::new(None),
             offscreen: BTreeMap::new(),
             base,
             row_bytes,
@@ -1163,6 +1471,7 @@ impl MacMemoryBus {
             ],
             guest_values: vec![256; width as usize * height as usize],
             text_cells: vec![false; width as usize * height as usize],
+            detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
             ink: HashMap::new(),
             run_ink: HashSet::new(),
             offscreen_run_ink: HashSet::new(),
@@ -1390,7 +1699,7 @@ impl PresentationSlot {
 mod tests {
     use super::*;
 
-    fn bus() -> MacMemoryBus {
+    pub(super) fn bus() -> MacMemoryBus {
         let mut bus = MacMemoryBus::new(1024 * 1024);
         let palette = std::array::from_fn(|i| [i as u8; 3]);
         bus.fill_bytes(0x1000, 64, 255);
@@ -1413,6 +1722,158 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn output_scales_match_full_coverage_resampling_for_both_pixel_orders() {
+        for (depth, retained) in [8u16, 16, 32]
+            .into_iter()
+            .flat_map(|depth| (2..=4).map(move |retained| (depth, retained)))
+        {
+            let mut bus = bus();
+            let lanes = u32::from(depth / 8);
+            bus.enable_outline_presentation(
+                (0x1000, 8 * lanes, 8, 8, depth),
+                std::array::from_fn(|i| [i as u8; 3]),
+                retained,
+            );
+            paint_detail(&mut bus, 0x1000);
+            let guest = vec![0xff123456; 64];
+            let mut overlay = guest.clone();
+            overlay[7] = 0xffabcdef;
+            let (w, h, full) = bus.presented_argb(&guest, &overlay).unwrap();
+            let rgba = |pixels: &[u32]| {
+                pixels
+                    .iter()
+                    .flat_map(|p| {
+                        [
+                            (*p >> 16) as u8,
+                            (*p >> 8) as u8,
+                            *p as u8,
+                            (*p >> 24) as u8,
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for scale in 1..=4 {
+                let mut expected = Vec::new();
+                crate::display::resize_argb_coverage(
+                    &full,
+                    (w, h),
+                    (8 * scale, 8 * scale),
+                    &mut expected,
+                );
+                let mut actual = Vec::new();
+                assert_eq!(
+                    bus.presented_argb_scaled(&guest, &overlay, scale, &mut actual),
+                    Some((8 * scale, 8 * scale))
+                );
+                assert_eq!(actual, expected, "depth={depth} scale={scale}");
+                let mut actual_rgba = Vec::new();
+                bus.presented_rgba_scaled(&rgba(&guest), &rgba(&overlay), scale, &mut actual_rgba)
+                    .unwrap();
+                assert_eq!(actual_rgba, rgba(&expected));
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_output_cache_tracks_writes_restores_palette_and_overlay_removal() {
+        let mut bus = bus();
+        let screen = (0x1000, 8, 8, 8, 8);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation(screen, palette);
+        paint_detail(&mut bus, 0x1000);
+        let saved = bus.save_pixel_bytes(0x1000, 64);
+        let guest = [0; 64];
+        let mut output = Vec::new();
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        let expected = output.clone();
+        let mut overlay = guest;
+        overlay[0] = 0xffabcdef;
+        bus.presented_argb_scaled(&guest, &overlay, 2, &mut output)
+            .unwrap();
+        assert_ne!(output, expected);
+        output.clear();
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_eq!(output, expected);
+        bus.write_byte(0x1000, bus.read_byte(0x1000));
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_ne!(output, expected);
+        bus.restore_saved_pixels(0x1000, &saved, 0, 64);
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_eq!(output, expected);
+        let mut changed_palette = palette;
+        changed_palette[0] = [255, 0, 0];
+        bus.prepare_outline_presentation(screen, changed_palette);
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_ne!(output, expected);
+    }
+
+    #[test]
+    fn unchanged_palette_and_snapshot_preserve_modal_filter_epoch() {
+        let mut bus = bus();
+        let screen = (0x1000, 8, 8, 8, 8);
+        let mut palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation(screen, palette);
+        paint_detail(&mut bus, 0x1000);
+        let epoch = bus.presentation_epoch();
+        for _ in 0..10 {
+            bus.prepare_outline_presentation(screen, palette);
+            let saved = bus.save_pixel_bytes(0x1000, 2);
+            bus.remember_dialog_snapshot(&saved, (0, 0, 1, 2));
+            assert_eq!(bus.presentation_epoch(), epoch);
+        }
+        palette[0] = [200, 0, 0];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_ne!(bus.presentation_epoch(), epoch);
+    }
+
+    #[test]
+    fn dialog_snapshot_reuse_observes_drawing_and_snapshot_mutation() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let saved = bus.save_pixel_bytes(0x1000, 2);
+        let rect = (0, 0, 1, 2);
+        bus.remember_dialog_snapshot(&saved, rect);
+        assert!(bus.dialog_snapshot_is_current(&saved.clone(), rect));
+        assert!(!bus.dialog_snapshot_is_current(&saved, (1, 0, 2, 2)));
+        let _ = bus.save_pixel_bytes(0x1000, 2);
+        bus.write_byte(0x1001, 255);
+        assert!(bus.dialog_snapshot_is_current(&saved, rect));
+        let mut changed = saved.clone();
+        changed[0] = 1;
+        assert!(!bus.dialog_snapshot_is_current(&changed, rect));
+        // Even a same-byte write over a glyph discards its subpixel coverage.
+        bus.write_byte(0x1000, bus.read_byte(0x1000));
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect));
+        bus.restore_saved_pixels(0x1000, &saved, 0, 2);
+        bus.remember_dialog_snapshot(&saved, rect);
+        paint_detail(&mut bus, 0x1000);
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect));
+    }
+
+    #[test]
+    fn snapshots_share_detail_until_drawing_changes_the_cell() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let before = bus.save_pixel_bytes(0x1000, 2);
+        let repeated = bus.save_pixel_bytes(0x1000, 2);
+        assert!(Arc::ptr_eq(&before.detail[&0], &repeated.detail[&0]));
+        bus.restore_saved_pixels(0x1000, &before, 0, 2);
+        let restored = bus.save_pixel_bytes(0x1000, 2);
+        assert!(Arc::ptr_eq(&before.detail[&0], &restored.detail[&0]));
+        bus.write_byte(0x1000, 255);
+        assert!(bus.save_pixel_bytes(0x1000, 2).detail.get(&0).is_none());
+        paint_detail(&mut bus, 0x1000);
+        let repainted = bus.save_pixel_bytes(0x1000, 2);
+        assert!(!Arc::ptr_eq(&before.detail[&0], &repainted.detail[&0]));
+        assert_eq!(before.detail[&0], repeated.detail[&0]);
     }
 
     #[test]
