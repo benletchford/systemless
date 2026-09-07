@@ -153024,6 +153024,172 @@ pub(crate) mod tests {
         );
     }
 
+    fn run_ppc_indexed_horizontal_oracle_case(
+        source_width: u16,
+        destination_width: u16,
+        source_left: u16,
+        source_row: &[u8],
+    ) -> Vec<u8> {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x16800;
+        let source_stride = (source_row.len() + 1) & !1;
+        let destination_stride = (usize::from(destination_width) + 5) & !1;
+        let dst_pixels = scratch + u32::try_from((source_stride + 0x3f) & !0x3f).unwrap();
+        let records = dst_pixels + u32::try_from(destination_stride).unwrap() + 0x20;
+        let src_pixmap = records;
+        let dst_pixmap = records + 0x40;
+        let rects = records + 0x80;
+        let allocation_size = usize::try_from(rects + 0x10 - scratch).unwrap();
+        loaded.memory.add_region(scratch, vec![0; allocation_size]);
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            src_pixmap,
+            scratch,
+            source_stride as u32,
+            0,
+            0,
+            1,
+            (source_left + source_width) as i16,
+            8,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            dst_pixels,
+            destination_stride as u32,
+            0,
+            0,
+            1,
+            destination_width as i16,
+            8,
+        )
+        .unwrap();
+        loaded.memory.write_bytes(scratch, source_row).unwrap();
+        loaded
+            .memory
+            .write_bytes(dst_pixels, &vec![0xa5; destination_stride])
+            .unwrap();
+        ppc_write_rect(
+            &mut loaded.memory,
+            rects,
+            0,
+            source_left as i16,
+            1,
+            (source_left + source_width) as i16,
+        )
+        .unwrap();
+        ppc_write_rect(
+            &mut loaded.memory,
+            rects + 8,
+            0,
+            0,
+            1,
+            destination_width as i16,
+        )
+        .unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = vec![0; destination_stride];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        copied
+    }
+
+    fn ppc_indexed_horizontal_tail_low(source_width: usize) -> Vec<u8> {
+        let mut row = vec![200; (source_width + 3) & !3];
+        row[source_width - 1] = 0;
+        row[source_width] = 254;
+        row
+    }
+
+    fn ppc_indexed_horizontal_nonmonotonic(source_width: usize, case_index: usize) -> Vec<u8> {
+        let mut row = vec![0; (source_width + 3) & !3];
+        for (position, value) in row[..source_width].iter_mut().enumerate() {
+            *value = ((position * 73 + case_index * 19) % 251 + 1) as u8;
+        }
+        row[source_width] = 254;
+        row
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_matches_large_indexed_horizontal_oracles() {
+        // Literal results from controlled Mac OS 8.1 CopyBits and StdBits
+        // captures. The tail-low rows isolate the staged physical tail; the
+        // nonmonotonic rows use the captured position encoding verbatim.
+        for source_left in 0..4u16 {
+            let mut row = vec![0x11; usize::from(source_left) + 194];
+            row[..usize::from(source_left)].fill(250);
+            row[usize::from(source_left)..usize::from(source_left) + 190].fill(20);
+            row[usize::from(source_left) + 189] = 30;
+            row[usize::from(source_left) + 190..usize::from(source_left) + 193]
+                .copy_from_slice(&[200, 150, 140]);
+            let actual = run_ppc_indexed_horizontal_oracle_case(190, 1, source_left, &row);
+            assert_eq!(actual[0], 200, "190->1, source_left={source_left}");
+            assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+
+            row.fill(0x11);
+            row[..usize::from(source_left)].fill(250);
+            row[usize::from(source_left)..usize::from(source_left) + 191].fill(20);
+            row[usize::from(source_left) + 190] = 30;
+            row[usize::from(source_left) + 191..usize::from(source_left) + 194]
+                .copy_from_slice(&[240, 150, 140]);
+            let actual = run_ppc_indexed_horizontal_oracle_case(191, 1, source_left, &row);
+            assert_eq!(actual[0], 30, "191->1, source_left={source_left}");
+            assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+        }
+
+        for (source_width, destination_width, source, expected) in [
+            (
+                285,
+                2,
+                ppc_indexed_horizontal_tail_low(285),
+                &[200, 254][..],
+            ),
+            (
+                285,
+                2,
+                ppc_indexed_horizontal_nonmonotonic(285, 1),
+                &[251, 254][..],
+            ),
+            (
+                511,
+                3,
+                ppc_indexed_horizontal_tail_low(511),
+                &[200, 200, 254][..],
+            ),
+            (
+                511,
+                3,
+                ppc_indexed_horizontal_nonmonotonic(511, 7),
+                &[251, 249, 254][..],
+            ),
+        ] {
+            let actual =
+                run_ppc_indexed_horizontal_oracle_case(source_width, destination_width, 0, &source);
+            assert_eq!(&actual[..expected.len()], expected);
+            assert!(actual[expected.len()..].iter().all(|&byte| byte == 0xa5));
+        }
+
+        for (source_width, expected) in [(4_097, 65), (5_000, 8), (5_001, 7), (10_924, u8::MAX)] {
+            let source = vec![0; (source_width + 3) & !3];
+            let actual = run_ppc_indexed_horizontal_oracle_case(source_width as u16, 1, 0, &source);
+            assert_eq!(actual[0], expected, "{source_width}->1");
+            assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+        }
+    }
     #[test]
     fn hle_import_runner_copybits_does_not_select_unresolved_equal_fallback_cluts() {
         let pef = synthetic_pef_with_import(b"CopyBits");

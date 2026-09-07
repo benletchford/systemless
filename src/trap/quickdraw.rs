@@ -35714,6 +35714,182 @@ mod tests {
         }
     }
 
+    fn run_indexed_horizontal_oracle_route(
+        std_bits: bool,
+        source_width: u16,
+        destination_width: u16,
+        source_left: u16,
+        source_row: &[u8],
+    ) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_stride = u16::try_from((source_row.len() + 1) & !1).unwrap();
+        let destination_stride = (destination_width + 4 + 1) & !1;
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_base = bus.alloc(u32::from(source_stride));
+        let destination_base = bus.alloc(u32::from(destination_stride));
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+
+        write_pixmap_8(&mut bus, source_pixmap, source_base, source_stride, 1, 0);
+        bus.write_word(source_pixmap + 12, source_left + source_width);
+        write_pixmap_8(
+            &mut bus,
+            destination_pixmap,
+            destination_base,
+            destination_stride,
+            1,
+            0,
+        );
+        bus.write_word(destination_pixmap + 12, destination_width);
+        bus.write_bytes(source_base, source_row);
+        bus.write_bytes(
+            destination_base,
+            &vec![0xa5; usize::from(destination_stride)],
+        );
+        write_rect(
+            &mut bus,
+            source_rect,
+            0,
+            source_left as i16,
+            1,
+            (source_left + source_width) as i16,
+        );
+        write_rect(
+            &mut bus,
+            destination_rect,
+            0,
+            0,
+            1,
+            destination_width as i16,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        if std_bits {
+            const PORT: u32 = 0x181000;
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(PORT + 2, destination_handle);
+            bus.write_word(PORT + 6, 0xc000);
+            *d.current_port = PORT;
+            bus.write_long(TEST_SP + 14, source_pixmap);
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+        }
+
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        bus.read_bytes(destination_base, usize::from(destination_stride))
+    }
+
+    fn indexed_horizontal_tail_low(source_width: usize) -> Vec<u8> {
+        let mut row = vec![200; (source_width + 3) & !3];
+        row[source_width - 1] = 0;
+        row[source_width] = 254;
+        row
+    }
+
+    fn indexed_horizontal_nonmonotonic(source_width: usize, case_index: usize) -> Vec<u8> {
+        let mut row = vec![0; (source_width + 3) & !3];
+        for (position, value) in row[..source_width].iter_mut().enumerate() {
+            *value = ((position * 73 + case_index * 19) % 251 + 1) as u8;
+        }
+        row[source_width] = 254;
+        row
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_match_large_indexed_horizontal_oracles() {
+        // Literal results from controlled Mac OS 8.1 CopyBits and StdBits
+        // captures. The tail-low rows isolate the staged physical tail; the
+        // nonmonotonic rows use the captured position encoding verbatim.
+        for std_bits in [false, true] {
+            for source_left in 0..4u16 {
+                let mut row = vec![0x11; usize::from(source_left) + 194];
+                row[..usize::from(source_left)].fill(250);
+                row[usize::from(source_left)..usize::from(source_left) + 190].fill(20);
+                row[usize::from(source_left) + 189] = 30;
+                row[usize::from(source_left) + 190..usize::from(source_left) + 193]
+                    .copy_from_slice(&[200, 150, 140]);
+                let actual =
+                    run_indexed_horizontal_oracle_route(std_bits, 190, 1, source_left, &row);
+                assert_eq!(actual[0], 200);
+                assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+
+                row.fill(0x11);
+                row[..usize::from(source_left)].fill(250);
+                row[usize::from(source_left)..usize::from(source_left) + 191].fill(20);
+                row[usize::from(source_left) + 190] = 30;
+                row[usize::from(source_left) + 191..usize::from(source_left) + 194]
+                    .copy_from_slice(&[240, 150, 140]);
+                let actual =
+                    run_indexed_horizontal_oracle_route(std_bits, 191, 1, source_left, &row);
+                assert_eq!(actual[0], 30);
+                assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+            }
+
+            for (source_width, destination_width, source, expected) in [
+                (285, 2, indexed_horizontal_tail_low(285), &[200, 254][..]),
+                (
+                    285,
+                    2,
+                    indexed_horizontal_nonmonotonic(285, 1),
+                    &[251, 254][..],
+                ),
+                (
+                    511,
+                    3,
+                    indexed_horizontal_tail_low(511),
+                    &[200, 200, 254][..],
+                ),
+                (
+                    511,
+                    3,
+                    indexed_horizontal_nonmonotonic(511, 7),
+                    &[251, 249, 254][..],
+                ),
+            ] {
+                let actual = run_indexed_horizontal_oracle_route(
+                    std_bits,
+                    source_width,
+                    destination_width,
+                    0,
+                    &source,
+                );
+                assert_eq!(&actual[..expected.len()], expected);
+                assert!(actual[expected.len()..].iter().all(|&byte| byte == 0xa5));
+            }
+
+            for (source_width, expected) in [(4_097, 65), (5_000, 8), (5_001, 7), (10_924, u8::MAX)]
+            {
+                let source = vec![0; (source_width + 3) & !3];
+                let actual = run_indexed_horizontal_oracle_route(
+                    std_bits,
+                    source_width as u16,
+                    1,
+                    0,
+                    &source,
+                );
+                assert_eq!(
+                    actual[0], expected,
+                    "{source_width}->1, std_bits={std_bits}"
+                );
+                assert!(actual[1..].iter().all(|&byte| byte == 0xa5));
+            }
+        }
+    }
     #[test]
     fn copy_bits_and_std_bits_do_not_fallback_after_selected_failure() {
         const SOURCE: u32 = 0x00d2_0000;
