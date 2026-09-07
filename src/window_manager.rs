@@ -53,6 +53,171 @@ pub struct WindowSnapshot {
     pub active: bool,
 }
 
+const WINDOW_VISIBLE_OFFSET: u32 = 110;
+const WINDOW_HILITED_OFFSET: u32 = 111;
+const WINDOW_STRUCTURE_RGN_OFFSET: u32 = 114;
+const WINDOW_UPDATE_RGN_OFFSET: u32 = 122;
+const WINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
+
+fn snapshot_read_word(read_byte: &mut impl FnMut(u32) -> u8, address: u32) -> u16 {
+    u16::from_be_bytes([read_byte(address), read_byte(address.wrapping_add(1))])
+}
+
+fn snapshot_read_long(read_byte: &mut impl FnMut(u32) -> u8, address: u32) -> u32 {
+    u32::from_be_bytes([
+        read_byte(address),
+        read_byte(address.wrapping_add(1)),
+        read_byte(address.wrapping_add(2)),
+        read_byte(address.wrapping_add(3)),
+    ])
+}
+
+fn snapshot_read_rect(read_byte: &mut impl FnMut(u32) -> u8, address: u32) -> WindowRect {
+    (
+        snapshot_read_word(read_byte, address) as i16,
+        snapshot_read_word(read_byte, address.wrapping_add(2)) as i16,
+        snapshot_read_word(read_byte, address.wrapping_add(4)) as i16,
+        snapshot_read_word(read_byte, address.wrapping_add(6)) as i16,
+    )
+}
+
+fn snapshot_region_bounds(
+    read_byte: &mut impl FnMut(u32) -> u8,
+    handle: u32,
+) -> Option<WindowRect> {
+    if handle == 0 {
+        return None;
+    }
+    let region = snapshot_read_long(read_byte, handle);
+    if region == 0 {
+        return None;
+    }
+    let bounds = snapshot_read_rect(read_byte, region.wrapping_add(2));
+    (bounds.2 > bounds.0 && bounds.3 > bounds.1).then_some(bounds)
+}
+
+fn snapshot_port_bounds_origin(read_byte: &mut impl FnMut(u32) -> u8, window: u32) -> (i16, i16) {
+    let port_version = snapshot_read_word(read_byte, window.wrapping_add(6));
+    if port_version & 0xC000 == 0 {
+        return (
+            snapshot_read_word(read_byte, window.wrapping_add(8)) as i16,
+            snapshot_read_word(read_byte, window.wrapping_add(10)) as i16,
+        );
+    }
+
+    let pixmap_handle = snapshot_read_long(read_byte, window.wrapping_add(2));
+    if pixmap_handle == 0 {
+        return (0, 0);
+    }
+    let pixmap = snapshot_read_long(read_byte, pixmap_handle);
+    if pixmap == 0 {
+        return (0, 0);
+    }
+    (
+        snapshot_read_word(read_byte, pixmap.wrapping_add(6)) as i16,
+        snapshot_read_word(read_byte, pixmap.wrapping_add(8)) as i16,
+    )
+}
+
+fn snapshot_local_rect_to_global(rect: WindowRect, origin: (i16, i16)) -> WindowRect {
+    (
+        rect.0.wrapping_sub(origin.0),
+        rect.1.wrapping_sub(origin.1),
+        rect.2.wrapping_sub(origin.0),
+        rect.3.wrapping_sub(origin.1),
+    )
+}
+
+fn snapshot_title(read_byte: &mut impl FnMut(u32) -> u8, handle: u32) -> String {
+    if handle == 0 {
+        return String::new();
+    }
+    let title = snapshot_read_long(read_byte, handle);
+    if title == 0 {
+        return String::new();
+    }
+    let length = usize::from(read_byte(title));
+    let bytes = (0..length)
+        .map(|index| read_byte(title.wrapping_add(1).wrapping_add(index as u32)))
+        .collect::<Vec<_>>();
+    crate::mac_roman::decode_mac_roman(&bytes)
+}
+
+/// Project the process Window Manager list into an owned diagnostic snapshot.
+///
+/// The byte reader is total: missing bytes contribute zero, and guest-address
+/// field arithmetic wraps at 32 bits. Window Manager Boolean fields are true
+/// when nonzero. `GhostWindow` is excluded only from the list-derived front
+/// candidate; a live nonzero `hilited` field remains independently visible.
+/// Inside Macintosh Volume I (1985), pp. I-276--I-287; Macintosh Toolbox
+/// Essentials (1992), pp. 4-63--4-65.
+pub(crate) fn snapshot_window_stack(
+    order: &[u32],
+    mut read_byte: impl FnMut(u32) -> u8,
+) -> Vec<WindowSnapshot> {
+    struct DecodedWindow {
+        pointer: u32,
+        hilited: bool,
+        snapshot: WindowSnapshot,
+    }
+
+    let ghost_window =
+        snapshot_read_long(&mut read_byte, crate::memory::globals::addr::GHOST_WINDOW);
+    let mut windows = order
+        .iter()
+        .copied()
+        .filter(|window| *window != 0)
+        .map(|window| {
+            let visible = read_byte(window.wrapping_add(WINDOW_VISIBLE_OFFSET)) != 0;
+            let hilited = read_byte(window.wrapping_add(WINDOW_HILITED_OFFSET)) != 0;
+            let origin = snapshot_port_bounds_origin(&mut read_byte, window);
+            let bounds = snapshot_local_rect_to_global(
+                snapshot_read_rect(&mut read_byte, window.wrapping_add(16)),
+                origin,
+            );
+            let structure_handle = snapshot_read_long(
+                &mut read_byte,
+                window.wrapping_add(WINDOW_STRUCTURE_RGN_OFFSET),
+            );
+            let structure_bounds = snapshot_region_bounds(&mut read_byte, structure_handle);
+            let visible_handle = snapshot_read_long(&mut read_byte, window.wrapping_add(24));
+            let visible_region = snapshot_region_bounds(&mut read_byte, visible_handle)
+                .map(|rect| snapshot_local_rect_to_global(rect, origin));
+            let update_handle = snapshot_read_long(
+                &mut read_byte,
+                window.wrapping_add(WINDOW_UPDATE_RGN_OFFSET),
+            );
+            let update_region = snapshot_region_bounds(&mut read_byte, update_handle);
+            let title_handle = snapshot_read_long(
+                &mut read_byte,
+                window.wrapping_add(WINDOW_TITLE_HANDLE_OFFSET),
+            );
+            let title = snapshot_title(&mut read_byte, title_handle);
+            DecodedWindow {
+                pointer: window,
+                hilited,
+                snapshot: WindowSnapshot {
+                    title,
+                    bounds,
+                    structure_bounds,
+                    visible_region,
+                    update_region,
+                    visible,
+                    active: false,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let front = windows
+        .iter()
+        .find(|window| window.pointer != ghost_window && window.snapshot.visible)
+        .map(|window| window.pointer);
+    for window in &mut windows {
+        window.snapshot.active = front == Some(window.pointer) || window.hilited;
+    }
+    windows.into_iter().map(|window| window.snapshot).collect()
+}
+
 pub(crate) fn standard_window_structure_bounds(content: WindowRect) -> WindowRect {
     (
         content.0.saturating_sub(19),
@@ -371,7 +536,214 @@ mod tests {
         );
     }
     use super::*;
+    use std::collections::BTreeMap;
 
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct SnapshotMemory {
+        bytes: BTreeMap<u32, u8>,
+    }
+
+    impl SnapshotMemory {
+        fn read_byte(&self, address: u32) -> u8 {
+            self.bytes.get(&address).copied().unwrap_or(0)
+        }
+
+        fn write_byte(&mut self, address: u32, value: u8) {
+            self.bytes.insert(address, value);
+        }
+
+        fn write_word(&mut self, address: u32, value: u16) {
+            for (index, byte) in value.to_be_bytes().into_iter().enumerate() {
+                self.write_byte(address.wrapping_add(index as u32), byte);
+            }
+        }
+
+        fn write_long(&mut self, address: u32, value: u32) {
+            for (index, byte) in value.to_be_bytes().into_iter().enumerate() {
+                self.write_byte(address.wrapping_add(index as u32), byte);
+            }
+        }
+
+        fn write_rect(&mut self, address: u32, rect: WindowRect) {
+            for (index, value) in [rect.0, rect.1, rect.2, rect.3].into_iter().enumerate() {
+                self.write_word(address.wrapping_add(index as u32 * 2), value as u16);
+            }
+        }
+
+        fn write_region(&mut self, handle: u32, region: u32, size: u16, bounds: WindowRect) {
+            self.write_long(handle, region);
+            self.write_word(region, size);
+            self.write_rect(region.wrapping_add(2), bounds);
+        }
+
+        fn write_title(&mut self, handle: u32, title: u32, bytes: &[u8]) {
+            self.write_long(handle, title);
+            self.write_byte(title, bytes.len() as u8);
+            for (index, byte) in bytes.iter().copied().enumerate() {
+                self.write_byte(title.wrapping_add(1).wrapping_add(index as u32), byte);
+            }
+        }
+
+        fn write_window_flags(&mut self, window: u32, visible: u8, hilited: u8) {
+            self.write_byte(window.wrapping_add(WINDOW_VISIBLE_OFFSET), visible);
+            self.write_byte(window.wrapping_add(WINDOW_HILITED_OFFSET), hilited);
+        }
+
+        fn write_window_title(&mut self, window: u32, handle: u32, title: u32, bytes: &[u8]) {
+            self.write_long(window.wrapping_add(WINDOW_TITLE_HANDLE_OFFSET), handle);
+            self.write_title(handle, title, bytes);
+        }
+    }
+
+    fn snapshots(memory: &SnapshotMemory, order: &[u32]) -> Vec<WindowSnapshot> {
+        snapshot_window_stack(order, |address| memory.read_byte(address))
+    }
+
+    #[test]
+    fn window_snapshot_applies_ghost_window_to_the_list_derived_active_candidate() {
+        const UTILITY: u32 = 0x1000;
+        const DOCUMENT: u32 = 0x1200;
+        let mut memory = SnapshotMemory::default();
+        memory.write_window_flags(UTILITY, 0xFF, 0);
+        memory.write_window_flags(DOCUMENT, 0xFF, 0xFF);
+        memory.write_window_title(UTILITY, 0x2000, 0x2100, b"Utility");
+        memory.write_window_title(DOCUMENT, 0x2200, 0x2300, b"Document");
+        memory.write_long(crate::memory::globals::addr::GHOST_WINDOW, UTILITY);
+
+        let ghosted = snapshots(&memory, &[UTILITY, 0, DOCUMENT]);
+        assert_eq!(
+            ghosted
+                .iter()
+                .map(|window| window.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Utility", "Document"]
+        );
+        assert!(!ghosted[0].active);
+        assert!(ghosted[1].active);
+
+        memory.write_long(crate::memory::globals::addr::GHOST_WINDOW, 0);
+        let ordinary = snapshots(&memory, &[UTILITY, DOCUMENT]);
+        assert!(ordinary[0].active);
+        assert!(ordinary[1].active, "direct hilite remains visible");
+    }
+
+    #[test]
+    fn window_snapshot_accepts_documented_ff_booleans() {
+        let mut memory = SnapshotMemory::default();
+        for (window, visible, hilited) in [(0x1000, 0xFF, 0), (0x1200, 1, 0), (0x1400, 2, 2)] {
+            memory.write_window_flags(window, visible, hilited);
+        }
+
+        let result = snapshots(&memory, &[0x1000, 0x1200, 0x1400]);
+        assert!(result.iter().all(|window| window.visible));
+        assert!(result[0].active, "first visible list entry is front");
+        assert!(!result[1].active);
+        assert!(result[2].active, "every nonzero hilite value is true");
+    }
+
+    fn write_complete_window(memory: &mut SnapshotMemory, window: u32, color: bool) {
+        const PIXMAP_HANDLE: u32 = 0x3000;
+        const PIXMAP: u32 = 0x3100;
+        const STRUCTURE_HANDLE: u32 = 0x3200;
+        const STRUCTURE: u32 = 0x3300;
+        const VISIBLE_HANDLE: u32 = 0x3400;
+        const VISIBLE: u32 = 0x3500;
+        const UPDATE_HANDLE: u32 = 0x3600;
+        const UPDATE: u32 = 0x3700;
+        const TITLE_HANDLE: u32 = 0x3800;
+        const TITLE: u32 = 0x3900;
+
+        memory.write_window_flags(window, 0xFF, 0xFF);
+        memory.write_rect(window.wrapping_add(16), (10, 20, 30, 40));
+        if color {
+            memory.write_word(window.wrapping_add(6), 0xC000);
+            memory.write_long(window.wrapping_add(2), PIXMAP_HANDLE);
+            memory.write_long(PIXMAP_HANDLE, PIXMAP);
+            memory.write_word(PIXMAP.wrapping_add(6), (-100i16) as u16);
+            memory.write_word(PIXMAP.wrapping_add(8), (-200i16) as u16);
+        } else {
+            memory.write_word(window.wrapping_add(6), 0);
+            memory.write_word(window.wrapping_add(8), (-100i16) as u16);
+            memory.write_word(window.wrapping_add(10), (-200i16) as u16);
+        }
+        memory.write_long(
+            window.wrapping_add(WINDOW_STRUCTURE_RGN_OFFSET),
+            STRUCTURE_HANDLE,
+        );
+        memory.write_region(STRUCTURE_HANDLE, STRUCTURE, 10, (100, 200, 140, 250));
+        memory.write_long(window.wrapping_add(24), VISIBLE_HANDLE);
+        memory.write_region(VISIBLE_HANDLE, VISIBLE, 10, (5, 7, 15, 17));
+        memory.write_long(window.wrapping_add(WINDOW_UPDATE_RGN_OFFSET), UPDATE_HANDLE);
+        memory.write_region(UPDATE_HANDLE, UPDATE, 10, (101, 202, 111, 212));
+        memory.write_window_title(window, TITLE_HANDLE, TITLE, b"Window");
+    }
+
+    #[test]
+    fn window_snapshot_decodes_grafport_and_cgrafport_equivalently() {
+        let mut graf = SnapshotMemory::default();
+        let mut color = SnapshotMemory::default();
+        write_complete_window(&mut graf, 0x1000, false);
+        write_complete_window(&mut color, 0x1000, true);
+
+        let graf = snapshots(&graf, &[0x1000]);
+        let color = snapshots(&color, &[0x1000]);
+        assert_eq!(graf, color);
+        assert_eq!(graf[0].bounds, (110, 220, 130, 240));
+        assert_eq!(graf[0].visible_region, Some((105, 207, 115, 217)));
+        assert_eq!(graf[0].structure_bounds, Some((100, 200, 140, 250)));
+        assert_eq!(graf[0].update_region, Some((101, 202, 111, 212)));
+    }
+
+    #[test]
+    fn window_snapshot_has_one_explicit_malformed_projection() {
+        const WINDOW: u32 = u32::MAX - 32;
+        const BROKEN_PIXMAP_HANDLE: u32 = 0x900;
+        const STRUCTURE_HANDLE: u32 = 0xA00;
+        const STRUCTURE: u32 = 0xA20;
+        const TITLE_HANDLE: u32 = 0xB00;
+        const TITLE: u32 = 0xB20;
+        let mut memory = SnapshotMemory::default();
+        memory.write_word(WINDOW.wrapping_add(6), 0xC000);
+        memory.write_long(WINDOW.wrapping_add(2), BROKEN_PIXMAP_HANDLE);
+        memory.write_rect(WINDOW.wrapping_add(16), (10, 20, 30, 40));
+        memory.write_long(
+            WINDOW.wrapping_add(WINDOW_STRUCTURE_RGN_OFFSET),
+            STRUCTURE_HANDLE,
+        );
+        memory.write_region(STRUCTURE_HANDLE, STRUCTURE, 2, (1, 2, 5, 7));
+        memory.write_long(
+            WINDOW.wrapping_add(WINDOW_TITLE_HANDLE_OFFSET),
+            TITLE_HANDLE,
+        );
+        memory.write_long(TITLE_HANDLE, TITLE);
+        memory.write_byte(TITLE, 3);
+        memory.write_byte(TITLE.wrapping_add(1), b'A');
+        memory.write_byte(TITLE.wrapping_add(3), b'C');
+
+        let result = snapshots(&memory, &[WINDOW]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].bounds, (10, 20, 30, 40));
+        assert_eq!(result[0].structure_bounds, Some((1, 2, 5, 7)));
+        assert_eq!(result[0].visible_region, None);
+        assert_eq!(result[0].update_region, None);
+        assert_eq!(result[0].title.as_bytes(), b"A\0C");
+        assert!(!result[0].visible);
+        assert!(!result[0].active);
+    }
+
+    #[test]
+    fn window_snapshot_returns_owned_data_without_mutating_input() {
+        let mut memory = SnapshotMemory::default();
+        memory.write_window_flags(0x1000, 0xFF, 0xFF);
+        memory.write_window_title(0x1000, 0x2000, 0x2100, b"Before");
+        let before = memory.clone();
+        let result = snapshots(&memory, &[0x1000]);
+        assert_eq!(memory, before);
+
+        memory.write_window_title(0x1000, 0x2000, 0x2100, b"After");
+        assert_eq!(result[0].title, "Before");
+        assert_eq!(snapshots(&memory, &[0x1000])[0].title, "After");
+    }
     #[test]
     fn occluders_are_only_eligible_windows_in_front_of_the_target() {
         assert_eq!(
