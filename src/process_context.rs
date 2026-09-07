@@ -7,7 +7,7 @@ use crate::display::{
     DisplayGamma,
 };
 use crate::event_queue::EventQueue;
-use crate::guest_call::SharedGuestCallStack;
+use crate::guest_call::{ExecutionMenuViews, SharedGuestCallStack};
 use crate::guest_procedure::GuestProcedure;
 use crate::list_manager::ProcessListManagerState;
 use crate::memory::bus::SharedRamRegion;
@@ -6174,6 +6174,137 @@ pub(crate) struct ProcessContext {
     device_gamma_explicit: SharedProcessValue<bool>,
 }
 
+/// Scoped shared handles for services constructed directly from a process.
+///
+/// This bundle carries capabilities to the existing owners. It does not clone
+/// their values or retain a separate menu view.
+#[derive(Debug)]
+pub(crate) struct MigratedProcessHandles {
+    pub(crate) ticks: SharedProcessTickState,
+    pub(crate) execution: SharedGuestCallStack,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MigratedServiceConflict {
+    Ticks,
+    Execution,
+}
+
+#[derive(Debug)]
+enum TickAdoption {
+    AlreadyShared {
+        process: SharedProcessTickState,
+        expected_process_tick: u32,
+    },
+    DetachedSeed {
+        process: SharedProcessTickState,
+        adapter: SharedProcessTickState,
+        adapter_seed: u32,
+        expected_process_tick: u32,
+    },
+}
+
+#[derive(Debug)]
+enum ExecutionAdoption {
+    AlreadyShared {
+        process: SharedGuestCallStack,
+    },
+    Detached {
+        process: SharedGuestCallStack,
+        adapter: SharedGuestCallStack,
+        process_pristine: bool,
+        adapter_pristine: bool,
+    },
+}
+
+/// Single-use proof that both selected services can be adopted together.
+#[derive(Debug)]
+pub(crate) struct MigratedServiceAdoption {
+    ticks: TickAdoption,
+    execution: ExecutionAdoption,
+}
+
+impl TickAdoption {
+    fn validate(
+        &self,
+        process_tick: &SharedProcessTickState,
+        adapter_tick: &SharedProcessTickState,
+    ) {
+        match self {
+            Self::AlreadyShared {
+                process,
+                expected_process_tick,
+            } => {
+                assert!(process.ptr_eq(process_tick));
+                assert!(process.ptr_eq(adapter_tick));
+                assert_eq!(process.current_tick(), *expected_process_tick);
+            }
+            Self::DetachedSeed {
+                process,
+                adapter,
+                adapter_seed,
+                expected_process_tick,
+            } => {
+                assert!(process.ptr_eq(process_tick));
+                assert!(adapter.ptr_eq(adapter_tick));
+                assert!(!process.ptr_eq(adapter));
+                assert_eq!(process.current_tick(), *expected_process_tick);
+                assert_eq!(adapter.current_tick(), *adapter_seed);
+            }
+        }
+    }
+
+    fn commit(
+        self,
+        process_tick: &SharedProcessTickState,
+        adapter_tick: &mut SharedProcessTickState,
+    ) {
+        match self {
+            Self::AlreadyShared { .. } => {}
+            Self::DetachedSeed {
+                adapter_seed,
+                expected_process_tick,
+                ..
+            } => {
+                if expected_process_tick == 0 && adapter_seed != 0 {
+                    process_tick.set_tick(adapter_seed);
+                }
+                *adapter_tick = process_tick.shared_handle();
+            }
+        }
+    }
+}
+
+impl ExecutionAdoption {
+    fn validate(&self, process_calls: &SharedGuestCallStack, adapter: &ExecutionMenuViews) {
+        assert!(adapter.is_coherent());
+        match self {
+            Self::AlreadyShared { process } => {
+                assert!(process.ptr_eq(process_calls));
+                assert!(process.ptr_eq(adapter.calls()));
+            }
+            Self::Detached {
+                process,
+                adapter: expected_adapter,
+                process_pristine,
+                adapter_pristine,
+            } => {
+                assert!(process.ptr_eq(process_calls));
+                assert!(expected_adapter.ptr_eq(adapter.calls()));
+                assert!(!process.ptr_eq(expected_adapter));
+                assert_eq!(process.is_pristine(), *process_pristine);
+                assert_eq!(expected_adapter.is_pristine(), *adapter_pristine);
+            }
+        }
+    }
+
+    fn commit(self, adapter: &mut ExecutionMenuViews) {
+        if let Self::Detached { process, .. } = self {
+            adapter.install_process_calls(&process);
+        }
+    }
+}
+
 impl Default for ProcessContext {
     fn default() -> Self {
         let guest_calls = SharedGuestCallStack::default();
@@ -6217,6 +6348,81 @@ impl Default for ProcessContext {
 }
 
 impl ProcessContext {
+    pub(crate) fn migrated_handles(&self) -> MigratedProcessHandles {
+        assert!(self.menu_tracking.is_view_of(&self.guest_calls));
+        MigratedProcessHandles {
+            ticks: self.tick_state.shared_handle(),
+            execution: self.guest_calls.shared_handle(),
+        }
+    }
+
+    pub(crate) fn preflight_migrated_adoption(
+        &self,
+        adapter_tick: &SharedProcessTickState,
+        adapter_execution: &ExecutionMenuViews,
+        expected_process_tick_at_commit: u32,
+    ) -> Result<MigratedServiceAdoption, MigratedServiceConflict> {
+        assert!(self.menu_tracking.is_view_of(&self.guest_calls));
+        assert!(adapter_execution.is_coherent());
+
+        let ticks = if adapter_tick.ptr_eq(&self.tick_state) {
+            TickAdoption::AlreadyShared {
+                process: self.tick_state.shared_handle(),
+                expected_process_tick: expected_process_tick_at_commit,
+            }
+        } else {
+            let adapter_seed = adapter_tick.current_tick();
+            if adapter_seed != 0
+                && expected_process_tick_at_commit != 0
+                && adapter_seed != expected_process_tick_at_commit
+            {
+                return Err(MigratedServiceConflict::Ticks);
+            }
+            TickAdoption::DetachedSeed {
+                process: self.tick_state.shared_handle(),
+                adapter: adapter_tick.shared_handle(),
+                adapter_seed,
+                expected_process_tick: expected_process_tick_at_commit,
+            }
+        };
+
+        let execution = if adapter_execution.calls().ptr_eq(&self.guest_calls) {
+            ExecutionAdoption::AlreadyShared {
+                process: self.guest_calls.shared_handle(),
+            }
+        } else {
+            let process_pristine = self.guest_calls.is_pristine();
+            let adapter_pristine = adapter_execution.calls().is_pristine();
+            if !process_pristine && !adapter_pristine {
+                return Err(MigratedServiceConflict::Execution);
+            }
+            ExecutionAdoption::Detached {
+                process: self.guest_calls.shared_handle(),
+                adapter: adapter_execution.calls().shared_handle(),
+                process_pristine,
+                adapter_pristine,
+            }
+        };
+
+        Ok(MigratedServiceAdoption { ticks, execution })
+    }
+
+    pub(crate) fn commit_migrated_adoption(
+        &self,
+        plan: MigratedServiceAdoption,
+        adapter_tick: &mut SharedProcessTickState,
+        adapter_execution: &mut ExecutionMenuViews,
+    ) {
+        assert!(self.menu_tracking.is_view_of(&self.guest_calls));
+        plan.ticks.validate(&self.tick_state, adapter_tick);
+        plan.execution
+            .validate(&self.guest_calls, adapter_execution);
+
+        plan.ticks.commit(&self.tick_state, adapter_tick);
+        plan.execution.commit(adapter_execution);
+        assert!(adapter_execution.is_coherent());
+    }
+
     pub(crate) fn cfm(&self) -> &crate::cfm::CfmState {
         &self.cfm
     }
@@ -6680,6 +6886,184 @@ mod tests {
     use crate::guest_procedure::GuestIsa;
     use crate::memory::{MacMemoryBus, MemoryBus};
     use ppc::PpcMemory;
+
+    fn begin_test_call(calls: &SharedGuestCallStack, entry: u32) {
+        assert!(calls.begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry,
+                rtoc: 0,
+            },
+            entry.wrapping_add(2),
+            0x3000,
+        ));
+    }
+
+    #[test]
+    fn migrated_handles_are_scoped_views_of_the_process_owners() {
+        let context = ProcessContext::default();
+        let first = context.migrated_handles();
+        let second = context.migrated_handles();
+
+        assert!(first.ticks.ptr_eq(&second.ticks));
+        assert!(first.execution.ptr_eq(&second.execution));
+        assert!(context.menu_tracking.is_view_of(&first.execution));
+        first.ticks.set_tick(17);
+        begin_test_call(&first.execution, 0x1000);
+        assert_eq!(second.ticks.current_tick(), 17);
+        assert_eq!(second.execution.len(), 1);
+    }
+
+    #[test]
+    fn migrated_adoption_accepts_populated_shared_execution_and_tick_sync() {
+        let context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        handles.ticks.set_tick(7);
+        begin_test_call(&handles.execution, 0x1000);
+        let mut adapter_tick = handles.ticks.shared_handle();
+        let mut adapter_execution = ExecutionMenuViews::shared_from(&handles.execution);
+
+        let plan = context
+            .preflight_migrated_adoption(&adapter_tick, &adapter_execution, 42)
+            .unwrap();
+        handles.ticks.set_tick(42);
+        context.commit_migrated_adoption(plan, &mut adapter_tick, &mut adapter_execution);
+
+        assert!(adapter_tick.ptr_eq(&handles.ticks));
+        assert_eq!(adapter_tick.current_tick(), 42);
+        assert!(adapter_execution.calls().ptr_eq(&handles.execution));
+        assert!(adapter_execution.is_coherent());
+        assert_eq!(adapter_execution.calls().len(), 1);
+    }
+
+    #[test]
+    fn migrated_adoption_moves_one_detached_execution_menu_and_tick_seed() {
+        let context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        let mut adapter_tick = SharedProcessTickState::from_value(41);
+        let mut adapter_execution = ExecutionMenuViews::detached();
+        {
+            let entry = adapter_execution.enter_test_menu();
+            *adapter_execution.menu_state_mut() =
+                Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+            drop(entry);
+        }
+
+        let plan = context
+            .preflight_migrated_adoption(&adapter_tick, &adapter_execution, 0)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut adapter_tick, &mut adapter_execution);
+
+        assert!(adapter_tick.ptr_eq(&handles.ticks));
+        assert_eq!(handles.ticks.current_tick(), 41);
+        assert!(adapter_execution.calls().ptr_eq(&handles.execution));
+        assert!(adapter_execution.is_coherent());
+        assert_eq!(
+            adapter_execution
+                .menu()
+                .as_ref()
+                .map(|state| state.menu_handle),
+            Some(0x1234)
+        );
+        assert_eq!(
+            handles
+                .execution
+                .menu_tracking_view()
+                .as_ref()
+                .map(|state| state.menu_handle),
+            Some(0x1234)
+        );
+    }
+
+    #[test]
+    fn migrated_adoption_binds_a_pristine_detached_pair_to_populated_process_state() {
+        let context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        handles.ticks.set_tick(23);
+        begin_test_call(&handles.execution, 0x1000);
+        let mut adapter_tick = SharedProcessTickState::from_value(23);
+        let mut adapter_execution = ExecutionMenuViews::detached();
+
+        let plan = context
+            .preflight_migrated_adoption(&adapter_tick, &adapter_execution, 23)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut adapter_tick, &mut adapter_execution);
+
+        assert!(adapter_tick.ptr_eq(&handles.ticks));
+        assert!(adapter_execution.calls().ptr_eq(&handles.execution));
+        assert!(adapter_execution.is_coherent());
+        assert_eq!(adapter_execution.calls().len(), 1);
+    }
+
+    #[test]
+    fn migrated_adoption_conflicts_preserve_both_selected_services() {
+        let context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        handles.ticks.set_tick(41);
+        begin_test_call(&handles.execution, 0x1000);
+        let adapter_tick = SharedProcessTickState::from_value(42);
+        let adapter_execution = ExecutionMenuViews::detached();
+        begin_test_call(adapter_execution.calls(), 0x2000);
+
+        assert!(matches!(
+            context.preflight_migrated_adoption(&adapter_tick, &adapter_execution, 41),
+            Err(MigratedServiceConflict::Ticks)
+        ));
+        assert_eq!(handles.ticks.current_tick(), 41);
+        assert_eq!(adapter_tick.current_tick(), 42);
+        assert!(!adapter_tick.ptr_eq(&handles.ticks));
+        assert_eq!(handles.execution.len(), 1);
+        assert_eq!(adapter_execution.calls().len(), 1);
+        assert!(!adapter_execution.calls().ptr_eq(&handles.execution));
+
+        let adapter_tick = SharedProcessTickState::from_value(41);
+        assert!(matches!(
+            context.preflight_migrated_adoption(&adapter_tick, &adapter_execution, 41),
+            Err(MigratedServiceConflict::Execution)
+        ));
+        assert!(!adapter_tick.ptr_eq(&handles.ticks));
+        assert!(!adapter_execution.calls().ptr_eq(&handles.execution));
+    }
+
+    #[test]
+    fn migrated_adoption_revalidates_all_facts_before_either_service_mutates() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        let mut adapter_tick = SharedProcessTickState::from_value(41);
+        let mut adapter_execution = ExecutionMenuViews::detached();
+        begin_test_call(adapter_execution.calls(), 0x1000);
+        let plan = context
+            .preflight_migrated_adoption(&adapter_tick, &adapter_execution, 0)
+            .unwrap();
+        adapter_tick.set_tick(42);
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            context.commit_migrated_adoption(plan, &mut adapter_tick, &mut adapter_execution);
+        }))
+        .is_err());
+        assert_eq!(handles.ticks.current_tick(), 0);
+        assert!(handles.execution.is_pristine());
+        assert!(!adapter_tick.ptr_eq(&handles.ticks));
+        assert!(!adapter_execution.calls().ptr_eq(&handles.execution));
+
+        let context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        let mut adapter_tick = SharedProcessTickState::from_value(41);
+        let mut adapter_execution = ExecutionMenuViews::detached();
+        let plan = context
+            .preflight_migrated_adoption(&adapter_tick, &adapter_execution, 0)
+            .unwrap();
+        begin_test_call(adapter_execution.calls(), 0x2000);
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            context.commit_migrated_adoption(plan, &mut adapter_tick, &mut adapter_execution);
+        }))
+        .is_err());
+        assert_eq!(handles.ticks.current_tick(), 0);
+        assert!(handles.execution.is_pristine());
+        assert!(!adapter_tick.ptr_eq(&handles.ticks));
+        assert!(!adapter_execution.calls().ptr_eq(&handles.execution));
+    }
 
     #[test]
     fn cfm_seed_installation_moves_one_owner_and_refuses_conflicts() {
