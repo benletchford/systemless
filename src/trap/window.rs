@@ -3081,6 +3081,8 @@ impl super::TrapDispatcher {
         self.window_original_pixmaps.remove(&window_ptr);
         self.window_saved_under_pixels.remove(&window_ptr);
         self.clear_queued_update_events(window_ptr);
+        self.suspended_modal_dialogs
+            .retain(|tracking| tracking.dialog_ptr != window_ptr);
         if self
             .dialog_tracking
             .as_ref()
