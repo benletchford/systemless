@@ -1,4 +1,4 @@
-//! Shared byte-aligned and packed, unscaled srcCopy transfers.
+//! Shared byte-aligned and packed srcCopy transfers.
 //! Imaging With QuickDraw (1994), pp. 3-112–3-117 and 4-27–4-28.
 //! ABI decoding, port/mask resolution and picture recording stay at the callers
 //! until their corresponding operation families migrate.
@@ -375,9 +375,9 @@ pub(crate) enum RowCopyOutcome {
 /// and its raw mode is exactly `srcCopy` without the separately defined dither
 /// flag.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Indexed8HorizontalSelection(());
+pub(crate) struct Indexed8ScalingSelection(());
 
-impl Indexed8HorizontalSelection {
+impl Indexed8ScalingSelection {
     pub(crate) fn from_adapter_facts(
         mask_free: bool,
         source_bounds_are_original: bool,
@@ -401,7 +401,7 @@ impl RowCopy<'_> {
     pub(crate) fn execute_with_indexed8_scaling(
         self,
         memory: &mut impl CopyBitsMemory,
-        selection: Option<Indexed8HorizontalSelection>,
+        selection: Option<Indexed8ScalingSelection>,
     ) -> RowCopyOutcome {
         if let Some(selection) = selection {
             let horizontal = self.execute_indexed8_horizontal(memory, selection);
@@ -411,23 +411,6 @@ impl RowCopy<'_> {
             let vertical = self.execute_indexed8_vertical(memory, selection);
             if vertical != RowCopyOutcome::Declined {
                 return vertical;
-            }
-        }
-        self.execute(memory)
-    }
-
-    /// Adds the indexed horizontal family ahead of the existing shared paths.
-    /// The adapters still receive one final outcome and therefore cannot
-    /// accidentally fall back after a selected family has touched memory.
-    pub(crate) fn execute_with_indexed8_horizontal(
-        self,
-        memory: &mut impl CopyBitsMemory,
-        selection: Option<Indexed8HorizontalSelection>,
-    ) -> RowCopyOutcome {
-        if let Some(selection) = selection {
-            let outcome = self.execute_indexed8_horizontal(memory, selection);
-            if outcome != RowCopyOutcome::Declined {
-                return outcome;
             }
         }
         self.execute(memory)
@@ -443,7 +426,7 @@ impl RowCopy<'_> {
     fn execute_indexed8_horizontal(
         &self,
         memory: &mut impl CopyBitsMemory,
-        _selection: Indexed8HorizontalSelection,
+        _selection: Indexed8ScalingSelection,
     ) -> RowCopyOutcome {
         if self.mode != 0
             || self.source.depth != 8
@@ -654,7 +637,7 @@ impl RowCopy<'_> {
     fn execute_indexed8_vertical(
         &self,
         memory: &mut impl CopyBitsMemory,
-        _selection: Indexed8HorizontalSelection,
+        _selection: Indexed8ScalingSelection,
     ) -> RowCopyOutcome {
         if self.mode != 0
             || self.source.depth != 8
@@ -1605,8 +1588,8 @@ mod tests {
         }
     }
 
-    fn indexed_selection() -> Indexed8HorizontalSelection {
-        Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0).unwrap()
+    fn indexed_selection() -> Indexed8ScalingSelection {
+        Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0).unwrap()
     }
 
     #[derive(Default)]
@@ -1993,9 +1976,9 @@ mod tests {
     }
 
     #[test]
-    fn indexed_horizontal_selection_requires_all_adapter_provenance() {
+    fn indexed_scaling_selection_requires_all_adapter_provenance() {
         assert!(
-            Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0).is_some()
+            Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0).is_some()
         );
         for facts in [
             (false, true, true, true, 0),
@@ -2004,7 +1987,7 @@ mod tests {
             (true, true, true, false, 0),
             (true, true, true, true, 0x40),
         ] {
-            assert!(Indexed8HorizontalSelection::from_adapter_facts(
+            assert!(Indexed8ScalingSelection::from_adapter_facts(
                 facts.0, facts.1, facts.2, facts.3, facts.4
             )
             .is_none());
@@ -2026,9 +2009,9 @@ mod tests {
             palette: None,
         };
         let selection =
-            Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0x40);
+            Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0x40);
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut memory, selection),
+            copy.execute_with_indexed8_scaling(&mut memory, selection),
             RowCopyOutcome::Completed
         );
         assert_eq!(memory.bytes(DESTINATION, 4), [1, 2, 3, 0xaa]);
@@ -2052,7 +2035,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            copy.execute_with_indexed8_scaling(&mut memory, Some(indexed_selection())),
             RowCopyOutcome::Completed
         );
         assert_eq!(
@@ -2080,7 +2063,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            copy.execute_with_indexed8_scaling(&mut memory, Some(indexed_selection())),
             RowCopyOutcome::Completed
         );
         assert_eq!(memory.bytes(SOURCE + 8, 6), [9, 2, 4, 5, 6, 7]);
@@ -2100,7 +2083,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            copy.execute_with_indexed8_scaling(&mut memory, Some(indexed_selection())),
             RowCopyOutcome::Completed
         );
         assert_eq!(memory.bytes(SOURCE, 5), [1, 9, 2, 4, 4]);
@@ -2125,7 +2108,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut memory, Some(indexed_selection())),
+            copy.execute_with_indexed8_scaling(&mut memory, Some(indexed_selection())),
             RowCopyOutcome::Completed
         );
         assert_eq!(memory.bytes(SOURCE + 190, 2), [100, 90]);
@@ -2150,7 +2133,7 @@ mod tests {
         read_failure.fail_read = Some(SOURCE + 8);
         assert_eq!(
             request()
-                .execute_with_indexed8_horizontal(&mut read_failure, Some(indexed_selection()),),
+                .execute_with_indexed8_scaling(&mut read_failure, Some(indexed_selection()),),
             RowCopyOutcome::ReadOrGeometryFailure
         );
         assert!(read_failure.writes.is_empty());
@@ -2163,7 +2146,7 @@ mod tests {
         write_failure.fail_write = Some(DESTINATION + 3);
         assert_eq!(
             request()
-                .execute_with_indexed8_horizontal(&mut write_failure, Some(indexed_selection()),),
+                .execute_with_indexed8_scaling(&mut write_failure, Some(indexed_selection()),),
             RowCopyOutcome::WriteFailure { rows_written: 1 }
         );
         assert_eq!(write_failure.writes, [DESTINATION]);
@@ -2178,7 +2161,7 @@ mod tests {
         first_write_failure.insert(DESTINATION, &[0xaa; 6]);
         first_write_failure.fail_write = Some(DESTINATION);
         assert_eq!(
-            request().execute_with_indexed8_horizontal(
+            request().execute_with_indexed8_scaling(
                 &mut first_write_failure,
                 Some(indexed_selection()),
             ),
@@ -2211,7 +2194,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            copy.execute_with_indexed8_scaling(&mut NoAccess, Some(indexed_selection())),
             RowCopyOutcome::NoOp
         );
     }
@@ -2239,7 +2222,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            copy.execute_with_indexed8_scaling(&mut NoAccess, Some(indexed_selection())),
             RowCopyOutcome::Declined
         );
 
@@ -2253,7 +2236,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            tall_copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            tall_copy.execute_with_indexed8_scaling(&mut NoAccess, Some(indexed_selection())),
             RowCopyOutcome::Declined
         );
     }
@@ -2281,7 +2264,7 @@ mod tests {
             palette: None,
         };
         assert_eq!(
-            copy.execute_with_indexed8_horizontal(&mut NoAccess, Some(indexed_selection())),
+            copy.execute_with_indexed8_scaling(&mut NoAccess, Some(indexed_selection())),
             RowCopyOutcome::ReadOrGeometryFailure
         );
     }

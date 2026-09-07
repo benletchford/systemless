@@ -3671,9 +3671,9 @@ impl super::TrapDispatcher {
                     && !trace_menu_redraw_enabled()
                     && trace_probes.is_empty();
                 if row_copy_edge_eligible {
-                    use crate::copy_bits::{Indexed8HorizontalSelection, RowCopyOutcome};
+                    use crate::copy_bits::{Indexed8ScalingSelection, RowCopyOutcome};
 
-                    let indexed8_horizontal = Indexed8HorizontalSelection::from_adapter_facts(
+                    let indexed8_scaling = Indexed8ScalingSelection::from_adapter_facts(
                         mask_rgn == 0,
                         source_bounds_are_original,
                         destination_bounds_are_authoritative,
@@ -3690,7 +3690,7 @@ impl super::TrapDispatcher {
                         [clip_t, clip_l, clip_b, clip_r].map(i32::from),
                         palette_translation,
                     )
-                    .execute_with_indexed8_horizontal(bus, indexed8_horizontal);
+                    .execute_with_indexed8_scaling(bus, indexed8_scaling);
                     let wrote_rows = match outcome {
                         RowCopyOutcome::Completed => true,
                         RowCopyOutcome::WriteFailure { rows_written } => rows_written != 0,
@@ -20702,9 +20702,9 @@ impl super::TrapDispatcher {
             && !Self::region_is_complex(bus, mask_rgn)
             && trace_probes.is_empty();
         let shared_rows_written = if row_copy_edge_eligible {
-            use crate::copy_bits::{Indexed8HorizontalSelection, RowCopyOutcome};
+            use crate::copy_bits::{Indexed8ScalingSelection, RowCopyOutcome};
 
-            let indexed8_horizontal = Indexed8HorizontalSelection::from_adapter_facts(
+            let indexed8_scaling = Indexed8ScalingSelection::from_adapter_facts(
                 mask_rgn == 0,
                 source_bounds_are_original,
                 destination_bounds_are_authoritative,
@@ -20721,7 +20721,7 @@ impl super::TrapDispatcher {
                 [clip_t, clip_l, clip_b, clip_r].map(i32::from),
                 palette_translation,
             )
-            .execute_with_indexed8_horizontal(bus, indexed8_horizontal)
+            .execute_with_indexed8_scaling(bus, indexed8_scaling)
             {
                 RowCopyOutcome::Completed => true,
                 RowCopyOutcome::WriteFailure { rows_written } if rows_written != 0 => true,
@@ -35440,12 +35440,12 @@ mod tests {
         bus.write_word(TEST_SP + 4, 0);
         bus.write_long(TEST_SP + 6, destination_rect);
         bus.write_long(TEST_SP + 10, source_rect);
+        const PORT: u32 = 0x181000;
+        bus.write_long(destination_handle, destination_pixmap);
+        bus.write_long(PORT + 2, destination_handle);
+        bus.write_word(PORT + 6, 0xc000);
+        *d.current_port = PORT;
         if std_bits {
-            const PORT: u32 = 0x181000;
-            bus.write_long(destination_handle, destination_pixmap);
-            bus.write_long(PORT + 2, destination_handle);
-            bus.write_word(PORT + 6, 0xc000);
-            *d.current_port = PORT;
             bus.write_long(TEST_SP + 14, source_pixmap);
             assert!(d
                 .dispatch_quickdraw(true, 0x0eb, &mut cpu, &mut bus)
@@ -35510,6 +35510,343 @@ mod tests {
     fn std_bits_packed_identity_preserves_edges_and_padding() {
         for depth in [2, 4] {
             run_packed_identity_route(depth, true);
+        }
+    }
+
+    fn indexed_vertical_oracle_groups(destination_height: usize) -> &'static [std::ops::Range<usize>] {
+        match destination_height {
+            7 => &[0..2, 2..4, 4..7, 7..9, 9..11, 11..14, 14..16],
+            18 => &[
+                0..1,
+                1..2,
+                2..3,
+                3..4,
+                4..5,
+                5..6,
+                6..7,
+                7..8,
+                7..8,
+                8..9,
+                9..10,
+                10..11,
+                11..12,
+                12..13,
+                13..14,
+                14..15,
+                15..16,
+                16..17,
+            ],
+            _ => unreachable!(),
+        }
+    }
+
+    fn run_indexed_vertical_route(
+        std_bits: bool,
+        destination_height: usize,
+        source_top: usize,
+        visible_rows: std::ops::Range<usize>,
+        visible_columns: std::ops::Range<usize>,
+        clip_with_destination_bounds: bool,
+        impulse: usize,
+    ) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_stride = 4u32;
+        let destination_stride = 4u32;
+        let source_base = bus.alloc(source_stride * (source_top as u32 + 17));
+        let destination_allocation = bus.alloc(destination_stride * destination_height as u32);
+        let destination_base = if clip_with_destination_bounds {
+            destination_allocation
+                + destination_stride * visible_rows.start as u32
+                + visible_columns.start as u32
+        } else {
+            destination_allocation
+        };
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+
+        write_pixmap_8(
+            &mut bus,
+            source_pixmap,
+            source_base,
+            source_stride as u16,
+            (source_top + 17) as u16,
+            0,
+        );
+        write_pixmap_8(
+            &mut bus,
+            destination_pixmap,
+            destination_base,
+            destination_stride as u16,
+            if clip_with_destination_bounds {
+                visible_rows.end as u16
+            } else {
+                destination_height as u16
+            },
+            0,
+        );
+        if clip_with_destination_bounds {
+            bus.write_word(destination_pixmap + 6, visible_rows.start as u16);
+            bus.write_word(destination_pixmap + 8, visible_columns.start as u16);
+            bus.write_word(destination_pixmap + 10, visible_rows.end as u16);
+            bus.write_word(destination_pixmap + 12, visible_columns.end as u16);
+        } else {
+            bus.write_word(destination_pixmap + 12, 3);
+        }
+
+        let mut source = vec![0xcc; source_stride as usize * (source_top + 17)];
+        for row in 0..17 {
+            for column in 0..3 {
+                source[(source_top + row) * source_stride as usize + column] =
+                    u8::from(row == impulse) * 255;
+            }
+        }
+        bus.write_bytes(source_base, &source);
+        bus.write_bytes(
+            destination_allocation,
+            &vec![0xa5; destination_stride as usize * destination_height],
+        );
+        write_rect(
+            &mut bus,
+            source_rect,
+            source_top as i16,
+            0,
+            (source_top + 17) as i16,
+            3,
+        );
+        assert_eq!(bus.read_word(source_pixmap + 6) as i16, 0);
+        assert_eq!(bus.read_word(source_rect) as i16, source_top as i16);
+        write_rect(
+            &mut bus,
+            destination_rect,
+            0,
+            0,
+            destination_height as i16,
+            3,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        const PORT: u32 = 0x181000;
+        bus.write_long(destination_handle, destination_pixmap);
+        bus.write_long(PORT + 2, destination_handle);
+        bus.write_word(PORT + 6, 0xc000);
+        *d.current_port = PORT;
+        if std_bits {
+            bus.write_long(TEST_SP + 14, source_pixmap);
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+        }
+        if !clip_with_destination_bounds
+            && (visible_rows != (0..destination_height) || visible_columns != (0..3))
+        {
+            let region = bus.alloc(10);
+            let region_handle = bus.alloc(4);
+            make_rgn(
+                &mut bus,
+                region,
+                region_handle,
+                visible_rows.start as i16,
+                visible_columns.start as i16,
+                visible_rows.end as i16,
+                visible_columns.end as i16,
+            );
+            bus.write_long(PORT + 28, region_handle);
+        }
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        bus.read_bytes(
+            destination_allocation,
+            destination_stride as usize * destination_height,
+        )
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_match_indexed_vertical_phase_oracles() {
+        // One-hot source-row membership captured through CopyBits and StdBits
+        // on Mac OS 8.1. Expected groups are literal and independent of the
+        // shared planner.
+        let cases = [
+            (7, 0, 0..7, 0..3, false),
+            (7, 1, 0..7, 0..3, false),
+            (7, 0, 2..7, 0..3, false),
+            (7, 1, 0..5, 0..3, true),
+            (18, 0, 0..18, 0..3, false),
+            (18, 1, 0..18, 0..3, false),
+            (18, 1, 2..18, 0..3, false),
+            (18, 1, 0..16, 0..3, false),
+            (7, 1, 2..7, 1..3, false),
+        ];
+        for std_bits in [false, true] {
+            for (
+                destination_height,
+                source_top,
+                visible_rows,
+                visible_columns,
+                clip_with_destination_bounds,
+            ) in cases.clone()
+            {
+                for impulse in 0..17 {
+                    let actual = run_indexed_vertical_route(
+                        std_bits,
+                        destination_height,
+                        source_top,
+                        visible_rows.clone(),
+                        visible_columns.clone(),
+                        clip_with_destination_bounds,
+                        impulse,
+                    );
+                    let groups = indexed_vertical_oracle_groups(destination_height);
+                    let mut expected = vec![0xa5; destination_height * 4];
+                    for row in visible_rows.clone() {
+                        for column in visible_columns.clone() {
+                            expected[row * 4 + column] = u8::from(groups[row].contains(&impulse)) * 255;
+                        }
+                    }
+                    assert_eq!(
+                        actual, expected,
+                        "std_bits={std_bits}, destination_height={destination_height}, source_top={source_top}, visible_rows={visible_rows:?}, visible_columns={visible_columns:?}, bounds_clip={clip_with_destination_bounds}, impulse={impulse}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn run_indexed_vertical_legacy_route(
+        std_bits: bool,
+        raw_mode: u16,
+        nonidentity_palette: bool,
+        two_axis: bool,
+        source_outside_bounds: bool,
+    ) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_width = if two_axis { 3 } else { 2 };
+        let destination_width = 2;
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_base = bus.alloc((source_width * 5) as u32);
+        let destination_base = bus.alloc(6);
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+        write_pixmap_8(&mut bus, source_pixmap, source_base, source_width, 5, 0);
+        write_pixmap_8(
+            &mut bus,
+            destination_pixmap,
+            destination_base,
+            destination_width,
+            3,
+            0,
+        );
+        if source_outside_bounds {
+            bus.write_word(source_pixmap + 6, 1);
+        }
+        if nonidentity_palette {
+            let handle = bus.alloc(4);
+            let table = bus.alloc(8 + 31 * 8);
+            bus.write_long(source_pixmap + 42, handle);
+            bus.write_long(handle, table);
+            bus.write_long(table, 0x1234_5678);
+            bus.write_word(table + 4, 0);
+            bus.write_word(table + 6, 30);
+            for index in 0..=30u32 {
+                let color_index = if index == 10 { 200 } else { index as usize };
+                let [red, green, blue] = d.color_manager_clut[color_index];
+                let entry = table + 8 + index * 8;
+                bus.write_word(entry, index as u16);
+                bus.write_word(entry + 2, red);
+                bus.write_word(entry + 4, green);
+                bus.write_word(entry + 6, blue);
+            }
+        }
+        let rows: [[u8; 3]; 5] = if nonidentity_palette {
+            [[10, 10, 0], [1, 1, 0], [20, 20, 0], [2, 2, 0], [30, 30, 0]]
+        } else {
+            [
+                [10, 11, 12],
+                [20, 21, 22],
+                [30, 31, 32],
+                [40, 41, 42],
+                [50, 51, 52],
+            ]
+        };
+        for row in 0..5usize {
+            let start = row * source_width as usize;
+            bus.write_bytes(
+                source_base + start as u32,
+                &rows[row][..source_width as usize],
+            );
+        }
+        bus.write_bytes(destination_base, &[0xa5; 6]);
+        write_rect(&mut bus, source_rect, 0, 0, 5, source_width as i16);
+        write_rect(
+            &mut bus,
+            destination_rect,
+            0,
+            0,
+            3,
+            destination_width as i16,
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, raw_mode);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        if std_bits {
+            const PORT: u32 = 0x181000;
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(PORT + 2, destination_handle);
+            bus.write_word(PORT + 6, 0xc000);
+            *d.current_port = PORT;
+            bus.write_long(TEST_SP + 14, source_pixmap);
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+        }
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        bus.read_bytes(destination_base, 6)
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_keep_vertical_exclusions_on_legacy_scaler() {
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_vertical_legacy_route(std_bits, 0x40, false, false, false),
+                vec![10, 11, 20, 21, 40, 41]
+            );
+            assert_eq!(
+                run_indexed_vertical_legacy_route(std_bits, 0, true, false, false),
+                vec![200, 200, 1, 1, 2, 2]
+            );
+            assert_eq!(
+                run_indexed_vertical_legacy_route(std_bits, 0, false, true, false),
+                vec![10, 11, 20, 21, 40, 41]
+            );
+            assert_eq!(
+                run_indexed_vertical_legacy_route(std_bits, 0, false, false, true),
+                vec![0xa5, 0xa5, 10, 11, 30, 31]
+            );
         }
     }
 
@@ -35709,6 +36046,77 @@ mod tests {
             assert_eq!(
                 run_indexed_horizontal_height_gate(std_bits, 32_767),
                 vec![0xa5; 4],
+                "32768, std_bits={std_bits}"
+            );
+        }
+    }
+
+    fn run_indexed_vertical_height_gate(std_bits: bool, bounds_bottom: i16) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let source_pixmap = bus.alloc(50);
+        let destination_pixmap = bus.alloc(50);
+        let destination_handle = bus.alloc(4);
+        let source_base = bus.alloc(34);
+        let destination_base = bus.alloc(14);
+        let source_rect = bus.alloc(8);
+        let destination_rect = bus.alloc(8);
+        write_pixmap_8(&mut bus, source_pixmap, source_base, 2, 17, 0);
+        bus.write_word(source_pixmap + 6, (-1i16) as u16);
+        bus.write_word(source_pixmap + 10, bounds_bottom as u16);
+        bus.write_word(source_pixmap + 12, 1);
+        write_pixmap_8(&mut bus, destination_pixmap, destination_base, 2, 7, 0);
+        bus.write_word(destination_pixmap + 12, 1);
+        let mut source = Vec::new();
+        for value in (10..=170).step_by(10) {
+            source.extend_from_slice(&[value, 0xcc]);
+        }
+        bus.write_bytes(source_base, &source);
+        bus.write_bytes(destination_base, &[0xa5; 14]);
+        write_rect(&mut bus, source_rect, -1, 0, 16, 1);
+        write_rect(&mut bus, destination_rect, 0, 0, 7, 1);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, destination_rect);
+        bus.write_long(TEST_SP + 10, source_rect);
+        if std_bits {
+            const PORT: u32 = 0x181000;
+            bus.write_long(destination_handle, destination_pixmap);
+            bus.write_long(PORT + 2, destination_handle);
+            bus.write_word(PORT + 6, 0xc000);
+            *d.current_port = PORT;
+            bus.write_long(TEST_SP + 14, source_pixmap);
+        } else {
+            bus.write_long(TEST_SP + 14, destination_pixmap);
+            bus.write_long(TEST_SP + 18, source_pixmap);
+        }
+        assert!(d
+            .dispatch_quickdraw(
+                true,
+                if std_bits { 0x0eb } else { 0x0ec },
+                &mut cpu,
+                &mut bus,
+            )
+            .unwrap()
+            .is_ok());
+        bus.read_bytes(destination_base, 14)
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_match_vertical_signed_source_height_capture() {
+        let mut selected = Vec::new();
+        for value in [20, 40, 70, 90, 110, 140, 160] {
+            selected.extend_from_slice(&[value, 0xa5]);
+        }
+        for std_bits in [false, true] {
+            assert_eq!(
+                run_indexed_vertical_height_gate(std_bits, 32_766),
+                selected,
+                "32767, std_bits={std_bits}"
+            );
+            assert_eq!(
+                run_indexed_vertical_height_gate(std_bits, 32_767),
+                vec![0xa5; 14],
                 "32768, std_bits={std_bits}"
             );
         }
@@ -36004,6 +36412,135 @@ mod tests {
     }
 
     #[test]
+    fn copy_bits_and_std_bits_vertical_failures_are_terminal_and_row_atomic() {
+        const SOURCE: u32 = 0x00d4_0000;
+        const DESTINATION: u32 = 0x00e4_0000;
+        for trap in [0x0ec, 0x0eb] {
+            for failure in [0, 1, 2] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(
+                    SOURCE,
+                    if failure == 0 {
+                        vec![1, 11, 4, 14, 3, 13, 8, 18]
+                    } else {
+                        vec![1, 11, 4, 14, 3, 13, 8, 18, 2, 12]
+                    },
+                );
+                memory.add_region(DESTINATION, vec![0xa5; 6]);
+                match failure {
+                    0 => {}
+                    1 => memory.add_readonly_region(DESTINATION, vec![0xa5; 6]),
+                    2 => memory.add_readonly_region(DESTINATION + 2, vec![0xa5; 4]),
+                    _ => unreachable!(),
+                }
+                bus.attach_guest_address_space(memory.shared_view());
+                let source_pixmap = bus.alloc(50);
+                let destination_pixmap = bus.alloc(50);
+                let destination_handle = bus.alloc(4);
+                let source_rect = bus.alloc(8);
+                let destination_rect = bus.alloc(8);
+                write_pixmap_8(&mut bus, source_pixmap, SOURCE, 2, 5, 0);
+                write_pixmap_8(&mut bus, destination_pixmap, DESTINATION, 2, 3, 0);
+                write_rect(&mut bus, source_rect, 0, 0, 5, 2);
+                write_rect(&mut bus, destination_rect, 0, 0, 3, 2);
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 0);
+                bus.write_long(TEST_SP + 6, destination_rect);
+                bus.write_long(TEST_SP + 10, source_rect);
+                if trap == 0x0eb {
+                    const PORT: u32 = 0x181000;
+                    bus.write_long(destination_handle, destination_pixmap);
+                    bus.write_long(PORT + 2, destination_handle);
+                    bus.write_word(PORT + 6, 0xc000);
+                    *d.current_port = PORT;
+                    bus.write_long(TEST_SP + 14, source_pixmap);
+                } else {
+                    bus.write_long(TEST_SP + 14, destination_pixmap);
+                    bus.write_long(TEST_SP + 18, source_pixmap);
+                }
+                assert!(d
+                    .dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+                let mut actual = [0; 6];
+                memory.read_bytes_into(DESTINATION, &mut actual).unwrap();
+                let expected = if failure == 2 {
+                    [1, 11, 0xa5, 0xa5, 0xa5, 0xa5]
+                } else {
+                    [0xa5; 6]
+                };
+                assert_eq!(actual, expected, "trap={trap:03x}, failure={failure}");
+            }
+        }
+    }
+
+    #[test]
+    fn copy_bits_and_std_bits_snapshot_indexed_vertical_aliases() {
+        const SOURCE: u32 = 0x00d5_0000;
+        const DESTINATION: u32 = 0x00e5_0000;
+        for trap in [0x0ec, 0x0eb] {
+            for offset in [0, 2] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let mut memory = GuestAddressSpace::new();
+                let backing = crate::memory::bus::SharedRamRegion::from_owned_bytes(vec![
+                    1, 11, 4, 14, 3, 13, 8, 18, 2, 12,
+                ]);
+                // SAFETY: CopyBits accesses the aliases serially and retains no
+                // borrowed slice across a memory operation.
+                unsafe {
+                    memory.add_shared_region(SOURCE, backing.clone());
+                    memory.add_shared_region(DESTINATION, backing);
+                }
+                bus.attach_guest_address_space(memory.shared_view());
+                let source_pixmap = bus.alloc(50);
+                let destination_pixmap = bus.alloc(50);
+                let destination_handle = bus.alloc(4);
+                let source_rect = bus.alloc(8);
+                let destination_rect = bus.alloc(8);
+                write_pixmap_8(&mut bus, source_pixmap, SOURCE, 2, 5, 0);
+                let destination_base = if offset == 0 {
+                    SOURCE
+                } else {
+                    DESTINATION + offset
+                };
+                write_pixmap_8(&mut bus, destination_pixmap, destination_base, 2, 3, 0);
+                write_rect(&mut bus, source_rect, 0, 0, 5, 2);
+                write_rect(&mut bus, destination_rect, 0, 0, 3, 2);
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 0);
+                bus.write_long(TEST_SP + 6, destination_rect);
+                bus.write_long(TEST_SP + 10, source_rect);
+                if trap == 0x0eb {
+                    const PORT: u32 = 0x181000;
+                    bus.write_long(destination_handle, destination_pixmap);
+                    bus.write_long(PORT + 2, destination_handle);
+                    bus.write_word(PORT + 6, 0xc000);
+                    *d.current_port = PORT;
+                    bus.write_long(TEST_SP + 14, source_pixmap);
+                } else {
+                    bus.write_long(TEST_SP + 14, destination_pixmap);
+                    bus.write_long(TEST_SP + 18, source_pixmap);
+                }
+                assert!(d
+                    .dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+                let mut actual = [0; 10];
+                memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+                let expected = if offset == 0 {
+                    [1, 11, 4, 14, 8, 18, 8, 18, 2, 12]
+                } else {
+                    [1, 11, 1, 11, 4, 14, 8, 18, 2, 12]
+                };
+                assert_eq!(actual, expected, "trap={trap:03x}, offset={offset}");
+            }
+        }
+    }
+
+    #[test]
     fn test_copy_bits() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
@@ -36097,6 +36634,117 @@ mod tests {
             0x7A,
             "identity CopyBits screen writes into a visible dialog must update the retained snapshot"
         );
+    }
+
+    #[test]
+    fn indexed_vertical_screen_effects_follow_completed_row_outcomes() {
+        const SCREEN: u32 = 0x00e6_0000;
+        const SOURCE: u32 = 0x00d6_0000;
+        for trap in [0x0ec, 0x0eb] {
+            for failure in [0, 1, 2] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let dialog = 0x181000u32;
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(
+                    SOURCE,
+                    if failure == 1 {
+                        vec![1, 11, 4, 14, 3, 13, 8, 18]
+                    } else {
+                        vec![1, 11, 4, 14, 3, 13, 8, 18, 2, 12]
+                    },
+                );
+                memory.add_region(SCREEN, vec![0xa5; 16 * 16]);
+                if failure == 2 {
+                    memory.add_readonly_region(SCREEN + 3 * 16 + 2, vec![0xa5; 2]);
+                }
+                bus.attach_guest_address_space(memory.shared_view());
+                let source_pixmap = bus.alloc(50);
+                let destination_pixmap = bus.alloc(50);
+                let destination_handle = bus.alloc(4);
+                let source_rect = bus.alloc(8);
+                let destination_rect = bus.alloc(8);
+                write_pixmap_8(&mut bus, source_pixmap, SOURCE, 2, 5, 0);
+                write_pixmap_8(&mut bus, destination_pixmap, SCREEN, 16, 16, 0);
+                bus.write_long(destination_handle, destination_pixmap);
+                bus.write_long(dialog + 2, destination_handle);
+                bus.write_word(dialog + 6, 0xc000);
+                write_rect(&mut bus, dialog + 16, 0, 0, 16, 16);
+                bus.write_byte(dialog + 110, 0xff);
+                let vis_region = bus.alloc(10);
+                let vis_handle = bus.alloc(4);
+                make_rgn(&mut bus, vis_region, vis_handle, 0, 0, 16, 16);
+                bus.write_long(dialog + 24, vis_handle);
+                let clip_region = bus.alloc(10);
+                let clip_handle = bus.alloc(4);
+                make_rgn(&mut bus, clip_region, clip_handle, 0, 0, 16, 16);
+                bus.write_long(dialog + 28, clip_handle);
+                let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
+                bus.write_long(global_ptr, dialog);
+                *d.current_port = dialog;
+                d.front_window = dialog;
+                d.dialog_items.insert(
+                    dialog,
+                    vec![DialogItem {
+                        item_type: 0x80,
+                        rect: (2, 2, 5, 4),
+                        text: String::new(),
+                        resource_id: 0,
+                        proc_ptr: 0,
+                        sel_start: 0,
+                        sel_end: 0,
+                    }],
+                );
+                d.screen_mode = (SCREEN, 16, 16, 16, 8);
+                bus.write_long(0x0824, SCREEN);
+                write_rect(&mut bus, source_rect, 0, 0, 5, 2);
+                write_rect(&mut bus, destination_rect, 2, 2, 5, 4);
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 0);
+                bus.write_long(TEST_SP + 6, destination_rect);
+                bus.write_long(TEST_SP + 10, source_rect);
+                if trap == 0x0eb {
+                    bus.write_long(TEST_SP + 14, source_pixmap);
+                } else {
+                    bus.write_long(TEST_SP + 14, destination_pixmap);
+                    bus.write_long(TEST_SP + 18, source_pixmap);
+                }
+                assert!(d
+                    .dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+                let mut actual_screen = vec![0; 16 * 16];
+                memory.read_bytes_into(SCREEN, &mut actual_screen).unwrap();
+                let mut expected_screen = vec![0xa5; 16 * 16];
+                if failure != 1 {
+                    expected_screen[2 * 16 + 2..2 * 16 + 4].copy_from_slice(&[1, 11]);
+                }
+                if failure == 0 {
+                    expected_screen[3 * 16 + 2..3 * 16 + 4].copy_from_slice(&[4, 14]);
+                    expected_screen[4 * 16 + 2..4 * 16 + 4].copy_from_slice(&[8, 18]);
+                }
+                assert_eq!(
+                    actual_screen, expected_screen,
+                    "trap={trap:03x}, failure={failure}"
+                );
+                if failure == 1 {
+                    assert!(!d.dialog_visible_snapshots.contains_key(&dialog));
+                    continue;
+                }
+                assert!(d.dialog_visible_snapshots.contains_key(&dialog));
+                bus.write_bytes(SCREEN + 2 * 16 + 2, &[0, 0]);
+                d.restore_visible_dialog_snapshots(&mut bus);
+                assert_eq!(bus.read_bytes(SCREEN + 2 * 16 + 2, 2), vec![1, 11]);
+                assert_eq!(
+                    bus.read_bytes(SCREEN + 3 * 16 + 2, 2),
+                    if failure == 2 {
+                        vec![0xa5; 2]
+                    } else {
+                        vec![4, 14]
+                    }
+                );
+            }
+        }
     }
 
     #[test]
