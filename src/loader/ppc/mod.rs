@@ -57979,10 +57979,10 @@ fn ppc_copy_bits(
         // byte-aligned or packed srcCopy format, mode, and geometry eligibility.
         if mask_storage.is_none() {
             use crate::copy_bits::{
-                BytePixmap, Indexed8HorizontalSelection, RowCopy, RowCopyOutcome,
+                BytePixmap, Indexed8ScalingSelection, RowCopy, RowCopyOutcome,
             };
 
-            let indexed8_horizontal = Indexed8HorizontalSelection::from_adapter_facts(
+            let indexed8_scaling = Indexed8ScalingSelection::from_adapter_facts(
                 mask_rgn == 0,
                 src_resolved.guest_bounds,
                 dst_resolved.authoritative_bounds,
@@ -58011,7 +58011,7 @@ fn ppc_copy_bits(
                 clip: [copy_top, copy_left, copy_bottom, copy_right],
                 palette: palette_map.as_ref(),
             }
-            .execute_with_indexed8_horizontal(memory, indexed8_horizontal);
+            .execute_with_indexed8_scaling(memory, indexed8_scaling);
             match outcome {
                 RowCopyOutcome::Completed => return Some(()),
                 RowCopyOutcome::NoOp => {
@@ -152987,6 +152987,288 @@ pub(crate) mod tests {
         );
     }
 
+    fn ppc_indexed_vertical_oracle_groups(
+        destination_height: usize,
+    ) -> &'static [std::ops::Range<usize>] {
+        match destination_height {
+            7 => &[0..2, 2..4, 4..7, 7..9, 9..11, 11..14, 14..16],
+            18 => &[
+                0..1,
+                1..2,
+                2..3,
+                3..4,
+                4..5,
+                5..6,
+                6..7,
+                7..8,
+                7..8,
+                8..9,
+                9..10,
+                10..11,
+                11..12,
+                12..13,
+                13..14,
+                14..15,
+                15..16,
+                16..17,
+            ],
+            _ => unreachable!(),
+        }
+    }
+
+    fn run_ppc_indexed_vertical_route(
+        destination_height: usize,
+        source_top: usize,
+        visible_rows: std::ops::Range<usize>,
+        visible_columns: std::ops::Range<usize>,
+        impulse: usize,
+    ) -> Vec<u8> {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x17400;
+        let source_pixels = scratch;
+        let destination_allocation = scratch + 0x80;
+        let destination_pixels =
+            destination_allocation + visible_rows.start as u32 * 4 + visible_columns.start as u32;
+        let source_pixmap = scratch + 0x100;
+        let destination_pixmap = scratch + 0x140;
+        let rects = scratch + 0x180;
+        loaded.memory.add_region(scratch, vec![0; 0x1a0]);
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            source_pixmap,
+            source_pixels,
+            4,
+            0,
+            0,
+            (source_top + 17) as i16,
+            4,
+            8,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            destination_pixmap,
+            destination_pixels,
+            4,
+            visible_rows.start as i16,
+            visible_columns.start as i16,
+            visible_rows.end as i16,
+            visible_columns.end as i16,
+            8,
+        )
+        .unwrap();
+        let mut source = vec![0xcc; (source_top + 17) * 4];
+        for row in 0..17 {
+            for column in 0..3 {
+                source[(source_top + row) * 4 + column] = u8::from(row == impulse) * 255;
+            }
+        }
+        loaded.memory.write_bytes(source_pixels, &source).unwrap();
+        loaded
+            .memory
+            .write_bytes(destination_allocation, &vec![0xa5; destination_height * 4])
+            .unwrap();
+        ppc_write_rect(
+            &mut loaded.memory,
+            rects,
+            source_top as i16,
+            0,
+            (source_top + 17) as i16,
+            3,
+        )
+        .unwrap();
+        assert_eq!(loaded.memory.read_u16_be(source_pixmap + 6), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(rects), Some(source_top as u16));
+        ppc_write_rect(
+            &mut loaded.memory,
+            rects + 8,
+            0,
+            0,
+            destination_height as i16,
+            3,
+        )
+        .unwrap();
+        loaded.cpu.gpr[3] = source_pixmap;
+        loaded.cpu.gpr[4] = destination_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = vec![0; destination_height * 4];
+        loaded
+            .memory
+            .read_bytes_into(destination_allocation, &mut actual)
+            .unwrap();
+        actual
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_matches_indexed_vertical_phase_oracles() {
+        // Literal one-hot source-row memberships captured through classic
+        // CopyBits/StdBits on Mac OS 8.1 and reused to validate the PPC ABI.
+        // Repeated columns and horizontal clipping extend only the orthogonal
+        // coverage; they do not claim an additional PPC oracle capture.
+        let cases = [
+            (7, 0, 0..7, 0..3),
+            (7, 1, 0..7, 0..3),
+            (7, 0, 2..7, 0..3),
+            (7, 1, 0..5, 0..3),
+            (18, 0, 0..18, 0..3),
+            (18, 1, 0..18, 0..3),
+            (18, 1, 2..18, 0..3),
+            (18, 1, 0..16, 0..3),
+            (7, 1, 2..7, 1..3),
+        ];
+        for (destination_height, source_top, visible_rows, visible_columns) in cases {
+            for impulse in 0..17 {
+                let actual = run_ppc_indexed_vertical_route(
+                    destination_height,
+                    source_top,
+                    visible_rows.clone(),
+                    visible_columns.clone(),
+                    impulse,
+                );
+                let groups = ppc_indexed_vertical_oracle_groups(destination_height);
+                let mut expected = vec![0xa5; destination_height * 4];
+                for row in visible_rows.clone() {
+                    for column in visible_columns.clone() {
+                        expected[row * 4 + column] = u8::from(groups[row].contains(&impulse)) * 255;
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "destination_height={destination_height}, source_top={source_top}, visible_rows={visible_rows:?}, visible_columns={visible_columns:?}, impulse={impulse}"
+                );
+            }
+        }
+    }
+
+    fn run_ppc_indexed_vertical_legacy_case(
+        raw_mode: u16,
+        nonidentity_palette: bool,
+        two_axis: bool,
+        source_outside_bounds: bool,
+    ) -> [u8; 6] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let source_width = if two_axis { 3 } else { 2 };
+        let scratch = PPC_HEAP_BASE + 0x17c00;
+        let source_pixels = scratch;
+        let destination_pixels = scratch + 0x40;
+        let source_pixmap = scratch + 0x80;
+        let destination_pixmap = scratch + 0xc0;
+        let rects = scratch + 0x100;
+        let table_handle = scratch + 0x110;
+        let table = scratch + 0x120;
+        loaded.memory.add_region(scratch, vec![0; 0x240]);
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            source_pixmap,
+            source_pixels,
+            source_width,
+            if source_outside_bounds { 1 } else { 0 },
+            0,
+            5,
+            source_width as i16,
+            8,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            destination_pixmap,
+            destination_pixels,
+            2,
+            0,
+            0,
+            3,
+            2,
+            8,
+        )
+        .unwrap();
+        if nonidentity_palette {
+            loaded
+                .memory
+                .write_u32_be(source_pixmap + 42, table_handle)
+                .unwrap();
+            loaded.memory.write_u32_be(table_handle, table).unwrap();
+            loaded.memory.write_u32_be(table, 0x1234_5678).unwrap();
+            loaded.memory.write_u16_be(table + 4, 0).unwrap();
+            loaded.memory.write_u16_be(table + 6, 30).unwrap();
+            for index in 0..=30u32 {
+                let color_index = if index == 10 { 200 } else { index as usize };
+                let [red, green, blue] = loaded.color_manager_clut[color_index];
+                let entry = table + 8 + index * 8;
+                loaded.memory.write_u16_be(entry, index as u16).unwrap();
+                loaded.memory.write_u16_be(entry + 2, red).unwrap();
+                loaded.memory.write_u16_be(entry + 4, green).unwrap();
+                loaded.memory.write_u16_be(entry + 6, blue).unwrap();
+            }
+        }
+        let rows: [[u8; 3]; 5] = if nonidentity_palette {
+            [[10, 10, 0], [1, 1, 0], [20, 20, 0], [2, 2, 0], [30, 30, 0]]
+        } else {
+            [
+                [10, 11, 12],
+                [20, 21, 22],
+                [30, 31, 32],
+                [40, 41, 42],
+                [50, 51, 52],
+            ]
+        };
+        for row in 0..5usize {
+            loaded
+                .memory
+                .write_bytes(
+                    source_pixels + (row * source_width as usize) as u32,
+                    &rows[row][..source_width as usize],
+                )
+                .unwrap();
+        }
+        loaded
+            .memory
+            .write_bytes(destination_pixels, &[0xa5; 6])
+            .unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 5, source_width as i16).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 3, 2).unwrap();
+        loaded.cpu.gpr[3] = source_pixmap;
+        loaded.cpu.gpr[4] = destination_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = raw_mode as u32;
+        loaded.cpu.gpr[8] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 6];
+        loaded
+            .memory
+            .read_bytes_into(destination_pixels, &mut actual)
+            .unwrap();
+        actual
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_keeps_vertical_exclusions_on_legacy_scaler() {
+        assert_eq!(
+            run_ppc_indexed_vertical_legacy_case(0x40, false, false, false),
+            [10, 11, 20, 21, 40, 41]
+        );
+        assert_eq!(
+            run_ppc_indexed_vertical_legacy_case(0, true, false, false),
+            [200, 200, 1, 1, 2, 2]
+        );
+        assert_eq!(
+            run_ppc_indexed_vertical_legacy_case(0, false, true, false),
+            [10, 11, 20, 21, 40, 41]
+        );
+        assert_eq!(
+            run_ppc_indexed_vertical_legacy_case(0, false, false, true),
+            [0xa5, 0xa5, 10, 11, 30, 31]
+        );
+    }
+
     fn run_ppc_indexed_horizontal_adapter_case(
         raw_mode: u16,
         clip_left_column: bool,
@@ -153492,6 +153774,81 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn hle_import_runner_copybits_matches_vertical_signed_source_height_capture() {
+        for (bounds_bottom, expected_pixels) in [
+            (32_766i16, vec![20, 40, 70, 90, 110, 140, 160]),
+            (32_767i16, vec![0xa5; 7]),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+            let scratch = PPC_HEAP_BASE + 0x17600;
+            let source_pixels = scratch;
+            let destination_pixels = scratch + 0x80;
+            let source_pixmap = scratch + 0x100;
+            let destination_pixmap = scratch + 0x140;
+            let rects = scratch + 0x180;
+            loaded.memory.add_region(scratch, vec![0; 0x1a0]);
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                source_pixmap,
+                source_pixels,
+                2,
+                -1,
+                0,
+                16,
+                1,
+                8,
+            )
+            .unwrap();
+            loaded
+                .memory
+                .write_u16_be(source_pixmap + 10, bounds_bottom as u16)
+                .unwrap();
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                destination_pixmap,
+                destination_pixels,
+                2,
+                0,
+                0,
+                7,
+                1,
+                8,
+            )
+            .unwrap();
+            let mut source = Vec::new();
+            for value in (10..=170).step_by(10) {
+                source.extend_from_slice(&[value, 0xcc]);
+            }
+            loaded.memory.write_bytes(source_pixels, &source).unwrap();
+            loaded
+                .memory
+                .write_bytes(destination_pixels, &[0xa5; 14])
+                .unwrap();
+            ppc_write_rect(&mut loaded.memory, rects, -1, 0, 16, 1).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 7, 1).unwrap();
+            loaded.cpu.gpr[3] = source_pixmap;
+            loaded.cpu.gpr[4] = destination_pixmap;
+            loaded.cpu.gpr[5] = rects;
+            loaded.cpu.gpr[6] = rects + 8;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut actual = [0; 14];
+            loaded
+                .memory
+                .read_bytes_into(destination_pixels, &mut actual)
+                .unwrap();
+            let mut expected = [0xa5; 14];
+            for (row, value) in expected_pixels.into_iter().enumerate() {
+                expected[row * 2] = value;
+            }
+            assert_eq!(actual, expected, "bounds_bottom={bounds_bottom}");
+        }
+    }
+
+    #[test]
     fn hle_import_runner_copybits_selects_only_exact_record_destination_bounds() {
         for (record_width, expected) in [
             (3u32, [241, 30, 50, 0xa5]),
@@ -153716,6 +154073,133 @@ pub(crate) mod tests {
             .read_bytes_into(DESTINATION, &mut actual)
             .unwrap();
         assert_eq!(actual, [20, 50, 70, 0xa5, 0xa5, 0xa5]);
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_vertical_failures_are_terminal_and_row_atomic() {
+        const SOURCE: u32 = 0x0960_0000;
+        const DESTINATION: u32 = 0x0a60_0000;
+        for failure in [0, 1, 2] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+            loaded.memory.add_region(
+                SOURCE,
+                if failure == 0 {
+                    vec![1, 11, 4, 14, 3, 13, 8, 18]
+                } else {
+                    vec![1, 11, 4, 14, 3, 13, 8, 18, 2, 12]
+                },
+            );
+            loaded.memory.add_region(DESTINATION, vec![0xa5; 6]);
+            match failure {
+                0 => {}
+                1 => loaded
+                    .memory
+                    .add_readonly_region(DESTINATION, vec![0xa5; 6]),
+                2 => loaded
+                    .memory
+                    .add_readonly_region(DESTINATION + 2, vec![0xa5; 4]),
+                _ => unreachable!(),
+            }
+            let records = PPC_HEAP_BASE + 0x17800;
+            let source_pixmap = records;
+            let destination_pixmap = records + 0x40;
+            let rects = records + 0x80;
+            loaded.memory.add_region(records, vec![0; 0x90]);
+            ppc_write_pixmap(&mut loaded.memory, source_pixmap, SOURCE, 2, 0, 0, 5, 2, 8).unwrap();
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                destination_pixmap,
+                DESTINATION,
+                2,
+                0,
+                0,
+                3,
+                2,
+                8,
+            )
+            .unwrap();
+            ppc_write_rect(&mut loaded.memory, rects, 0, 0, 5, 2).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 3, 2).unwrap();
+            loaded.cpu.gpr[3] = source_pixmap;
+            loaded.cpu.gpr[4] = destination_pixmap;
+            loaded.cpu.gpr[5] = rects;
+            loaded.cpu.gpr[6] = rects + 8;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut actual = [0; 6];
+            loaded
+                .memory
+                .read_bytes_into(DESTINATION, &mut actual)
+                .unwrap();
+            let expected = if failure == 2 {
+                [1, 11, 0xa5, 0xa5, 0xa5, 0xa5]
+            } else {
+                [0xa5; 6]
+            };
+            assert_eq!(actual, expected, "failure={failure}");
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_snapshots_indexed_vertical_aliases() {
+        const SOURCE: u32 = 0x0970_0000;
+        const DESTINATION: u32 = 0x0a70_0000;
+        for offset in [0, 2] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+            let backing = crate::memory::bus::SharedRamRegion::from_owned_bytes(vec![
+                1, 11, 4, 14, 3, 13, 8, 18, 2, 12,
+            ]);
+            // SAFETY: CopyBits accesses the aliases serially and retains no
+            // borrowed slice across a memory operation.
+            unsafe {
+                loaded.memory.add_shared_region(SOURCE, backing.clone());
+                loaded.memory.add_shared_region(DESTINATION, backing);
+            }
+            let records = PPC_HEAP_BASE + 0x17a00;
+            let source_pixmap = records;
+            let destination_pixmap = records + 0x40;
+            let rects = records + 0x80;
+            loaded.memory.add_region(records, vec![0; 0x90]);
+            ppc_write_pixmap(&mut loaded.memory, source_pixmap, SOURCE, 2, 0, 0, 5, 2, 8).unwrap();
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                destination_pixmap,
+                if offset == 0 {
+                    SOURCE
+                } else {
+                    DESTINATION + offset
+                },
+                2,
+                0,
+                0,
+                3,
+                2,
+                8,
+            )
+            .unwrap();
+            ppc_write_rect(&mut loaded.memory, rects, 0, 0, 5, 2).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 3, 2).unwrap();
+            loaded.cpu.gpr[3] = source_pixmap;
+            loaded.cpu.gpr[4] = destination_pixmap;
+            loaded.cpu.gpr[5] = rects;
+            loaded.cpu.gpr[6] = rects + 8;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut actual = [0; 10];
+            loaded.memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+            let expected = if offset == 0 {
+                [1, 11, 4, 14, 8, 18, 8, 18, 2, 12]
+            } else {
+                [1, 11, 1, 11, 4, 14, 8, 18, 2, 12]
+            };
+            assert_eq!(actual, expected, "offset={offset}");
+        }
     }
 
     #[test]
