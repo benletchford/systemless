@@ -908,7 +908,7 @@ mod tests {
             (1, 1, 0..1),
             (1, 2, 0..2),
             (i16::MAX as usize + 1, 1, 0..1),
-            (5, 3, 2..1),
+            (5, 3, std::ops::Range { start: 2, end: 1 }),
             (5, 3, 0..4),
         ] {
             assert!(Indexed8HorizontalShrink::new(source, destination, visible).is_none());
