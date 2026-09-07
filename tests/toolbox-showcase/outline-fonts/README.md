@@ -8,7 +8,7 @@ a reused output buffer, caching resolved pixels until drawing or the palette
 changes. A 2× window no longer expands a full 4× output frame.
 
 The complete review galleries now cover both 68K and PowerPC through the shared
-4× presentation surface: 58 interaction checkpoints per architecture. Guest
+4× presentation surface: 59 interaction checkpoints per architecture. Guest
 pixel baselines remain separate and are still checked exactly. First-paint tests
 exercise lists and text input before and after copying, window movement and typing
 on both CPU architectures. Desktop ARGB and browser RGBA output are checked for
@@ -192,6 +192,31 @@ cargo test --no-default-features --lib memory::presentation::tests
 cargo test --no-default-features --lib dialog_snapshot_replay_retains_unchanged_outline_detail
 ```
 
+### Direct CPU background copies
+
+Escape Velocity 1.0.5 saves and restores sprite backgrounds with memory-to-memory
+`MOVE` instructions. Those copies now carry retained glyph coverage through the
+CPU bus using the published `m68k` 0.13.0 copy callbacks, including offscreen saves and overlapping destinations. Ordinary stores
+still erase coverage, even when the logical byte value is unchanged. Copies
+without retained detail skip the completion callback.
+
+The captures below show the same status message after an asteroid crosses it.
+All 32 logical framebuffer captures in the reproduction are identical before
+and after the fix. In the area already cleared by the asteroid, all 1,556
+original detailed cells return exactly; previously only 573 remained intact.
+The asteroid can temporarily cover the text, and the message still clears when
+its display interval expires.
+
+In sequential headless runs on the same Apple M1, median throughput during the
+copy-heavy message interval was 23.4 million instructions/s before and 20.6
+after (13 one-million-instruction samples each, approximately 14% additional
+execution time). This compares the complete candidate, including its CPU update;
+it is not a displayed-FPS or audio-continuity measurement.
+
+| Before | After |
+| --- | --- |
+| ![Detail lost after background restores](ev/status-background-before.png) | ![Detail preserved after background restores](ev/status-background-after.png) |
+
 ## Dialog performance
 
 An unchanged modal filter no longer redraws and snapshots standard items on
@@ -248,3 +273,34 @@ condensed heading cannot change the width used for following plain paragraphs:
 | Previous layout on `master` | Corrected layout and sharp control corners |
 | --- | --- |
 | [Open](ev/override-registration-before.png) | [Open](ev/override-registration.png) |
+
+## Overlapping gameplay windows
+
+SimFarm's window cycling exposed two generic Window Manager costs. A retained
+`DragTheRgn` repainted its outline on every polling call, even with no mouse
+movement. Frame redraws also saved and restored entire overlapping window
+interiors to protect front windows from border painting.
+
+Stationary region tracking now reuses its outline. Frame preservation is limited
+to the title, border and shadow areas that can actually be painted, with duplicate
+overlap removed. `DrawGrowIcon` protects its size box and scrollbar separator lines. Front windows
+remain protected; movement, leaving the drag slop rectangle and reentering it still
+update the outline.
+
+A deterministic SimFarm run moves the farm window, opens the toolbar gameplay
+windows and revisits them through 14 toolbar selections. All 26 logical captures
+and their 26 retained-detail captures are byte-identical before and after this
+change. A longer run completes 48 additional toolbar selections without locking
+up, while the game clock advances. On the same Apple M1, sequential headless
+development builds showed:
+
+| Operation | Previous PR head | Corrected renderer |
+| --- | --- | --- |
+| Drag polling, roughly 100,000 instructions per slice | 8.9–9.9 seconds per slice | No slow-slice reports |
+| Later window cycling, median throughput | 1.7 million instructions/s | 5.9 million instructions/s |
+
+These are headless execution measurements, not live FPS or cross-platform
+benchmark claims.
+The fixes use the shared Rust Window Manager and require no platform backend.
+
+<img src="simfarm/window-cycling.png" alt="SimFarm gameplay windows after repeated cycling, with retained sharp text and correct overlap" width="800">

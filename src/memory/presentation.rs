@@ -301,6 +301,7 @@ impl<T> SavedPixels<T> {
 
 pub(crate) struct Presentation {
     revision: u64,
+    cpu_copy: [Option<Arc<DetailCell>>; 4],
     restored_dialog: Option<(u64, (i16, i16, i16, i16), u64)>,
     output_cache: std::cell::RefCell<Option<(u64, u32, Vec<u32>)>>,
     offscreen: BTreeMap<u32, Arc<DetailCell>>,
@@ -1093,6 +1094,49 @@ impl MacMemoryBus {
         }
     }
 
+    pub(crate) fn begin_cpu_pixel_copy(&mut self, source: u32, bytes: u32) -> bool {
+        let addresses: [u32; 4] =
+            std::array::from_fn(|i| self.translate_guest_address(source.wrapping_add(i as u32)));
+        let Some(mut p) = self.presentation.as_mut() else {
+            return false;
+        };
+        p.cpu_copy = Default::default();
+        if (1..=4).contains(&bytes) {
+            let contiguous =
+                addresses[bytes as usize - 1].checked_sub(addresses[0]) == Some(bytes - 1);
+            if contiguous && !p.observes_range(addresses[0], bytes as usize) {
+                return false;
+            }
+            for offset in 0..bytes as usize {
+                p.cpu_copy[offset] = p.detail(addresses[offset]);
+            }
+        }
+        p.cpu_copy.iter().any(Option::is_some)
+    }
+
+    pub(crate) fn end_cpu_pixel_copy(&mut self, destination: Option<u32>) {
+        let Some(mut p) = self.presentation.as_mut() else {
+            return;
+        };
+        let detail = std::mem::take(&mut p.cpu_copy);
+        drop(p);
+        let Some(destination) = destination else {
+            return;
+        };
+        for (offset, cell) in detail.into_iter().enumerate() {
+            let Some(cell) = cell else { continue };
+            let address = destination.wrapping_add(offset as u32);
+            // The CPU owns the byte writes, including faults and protection.
+            // Restore only metadata for bytes that were actually transferred.
+            if self.is_guest_address_writable(address, 1) && self.read_byte(address) == cell.value {
+                let address = self.translate_guest_address(address);
+                if let Some(mut p) = self.presentation.as_mut() {
+                    p.put_detail(address, &cell);
+                }
+            }
+        }
+    }
+
     pub(crate) fn capture_pixel_detail<T>(
         &self,
         pixels: &mut SavedPixels<T>,
@@ -1440,6 +1484,7 @@ impl MacMemoryBus {
         });
         let mut presentation = Presentation {
             revision: 0,
+            cpu_copy: Default::default(),
             restored_dialog: None,
             output_cache: std::cell::RefCell::new(None),
             offscreen: BTreeMap::new(),
@@ -1722,6 +1767,61 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn cpu_pixel_save_restore_keeps_coverage_and_real_erases_remove_it() {
+        for (opcode, bytes) in [(0x12d8, 1), (0x32d8, 2), (0x22d8, 4)] {
+            for cpu_type in [m68k::CpuType::M68000, m68k::CpuType::M68020] {
+                let mut bus = bus();
+                paint_detail(&mut bus, 0x1000);
+                let original = bus.presentation.as_ref().unwrap().detail(0x1000).unwrap();
+                let mut cpu = m68k::CpuCore::new();
+                cpu.set_cpu_type(cpu_type);
+                bus.write_word(0x200, opcode);
+                bus.write_word(0x202, opcode);
+                bus.write_word(0x204, 0x4e71);
+                cpu.pc = 0x200;
+                cpu.set_a(0, 0x1000);
+                cpu.set_a(1, 0x8000);
+                assert_eq!(cpu.run_batch(&mut bus, 1, &[]).instructions, 1);
+                assert_eq!(
+                    bus.presentation.as_ref().unwrap().detail(0x8000),
+                    Some(original.clone())
+                );
+
+                // A sprite overwrites the screen, then restores its saved background.
+                bus.fill_bytes(0x1000, bytes, 255);
+                assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
+                cpu.set_a(0, 0x8000);
+                cpu.set_a(1, 0x1000);
+                assert_eq!(cpu.run_batch(&mut bus, 1, &[]).instructions, 1);
+                assert_eq!(
+                    bus.presentation.as_ref().unwrap().detail(0x1000),
+                    Some(original)
+                );
+
+                // An ordinary store of the same logical byte is still an erase.
+                let value = bus.read_byte(0x1000);
+                bus.write_byte(0x1000, value);
+                assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_copy_does_not_resurrect_detail_invalidated_in_the_saved_background() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        bus.begin_cpu_pixel_copy(0x1000, 4);
+        let value = bus.read_long(0x1000);
+        bus.write_long(0x8000, value);
+        bus.end_cpu_pixel_copy(Some(0x8000));
+        bus.write_byte(0x8000, bus.read_byte(0x8000));
+        bus.begin_cpu_pixel_copy(0x8000, 4);
+        bus.write_long(0x1000, value);
+        bus.end_cpu_pixel_copy(Some(0x1000));
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
     }
 
     #[test]

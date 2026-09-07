@@ -199,13 +199,6 @@ impl super::TrapDispatcher {
         tracking: &mut super::dispatch::RegionTrackingState,
         mouse: (i16, i16),
     ) {
-        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
-        tracking.outline_saved_pixels.clear();
-        if !Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect) {
-            tracking.outline_rect = None;
-            return;
-        }
-
         let (delta_v, delta_h) = Self::drag_region_offset(
             mouse,
             tracking.start_mouse,
@@ -225,9 +218,18 @@ impl super::TrapDispatcher {
             local_rect.2.wrapping_sub(tracking.port_bounds_origin.0),
             local_rect.3.wrapping_sub(tracking.port_bounds_origin.1),
         );
-        tracking.outline_rect = Some(global_rect);
-        tracking.outline_saved_pixels = self.save_window_drag_outline_pixels(bus, global_rect);
-        self.draw_drag_outline_pattern(bus, global_rect, tracking.outline_pattern);
+        let next_outline =
+            Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect).then_some(global_rect);
+        if tracking.outline_rect == next_outline {
+            return;
+        }
+        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+        tracking.outline_saved_pixels.clear();
+        tracking.outline_rect = next_outline;
+        if let Some(rect) = next_outline {
+            tracking.outline_saved_pixels = self.save_window_drag_outline_pixels(bus, rect);
+            self.draw_drag_outline_pattern(bus, rect, tracking.outline_pattern);
+        }
     }
 
     pub(crate) fn handle_drag_region_trap<C: CpuOps>(
@@ -646,7 +648,7 @@ impl super::TrapDispatcher {
         Self::write_region_handle_rect(bus, update_handle, merged);
     }
 
-    fn rect_difference_parts(src: WindowRect, cut: WindowRect) -> Vec<WindowRect> {
+    pub(super) fn rect_difference_parts(src: WindowRect, cut: WindowRect) -> Vec<WindowRect> {
         let Some(intersection) = Self::rect_intersection(src, cut) else {
             return vec![src];
         };
@@ -10144,7 +10146,7 @@ mod tests {
             150,
             300,
             "Back",
-            4,
+            0,
             true,
             false,
             false,
@@ -10171,7 +10173,17 @@ mod tests {
         let protected = screen_base + 60 * 800 + 49;
         bus.write_byte(protected, 0x7B);
 
-        disp.draw_single_window_chrome_inline(&mut bus, back, false);
+        let front_rect = disp.window_structure_rect(&mut bus, front).unwrap();
+        let before = disp.save_screen_rect_pixels(&mut bus, front_rect).unwrap();
+        for _ in 0..6 {
+            disp.draw_single_window_chrome_inline(&mut bus, back, false);
+            disp.draw_grow_icon(&mut bus, back);
+        }
+        let after = disp.save_screen_rect_pixels(&mut bus, front_rect).unwrap();
+        assert_eq!(
+            before, after,
+            "repeated frame draws must preserve the entire front window"
+        );
 
         assert_eq!(
             bus.read_byte(protected),
@@ -13110,6 +13122,44 @@ mod tests {
             disp.region_tracking.as_ref().unwrap().outline_pattern,
             pattern
         );
+    }
+
+    #[test]
+    fn stationary_drag_region_keeps_outline_until_motion_or_slop_exit() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.enable_outline_presentation(disp.screen_mode, [[0; 3]; 256], 4);
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+        write_test_rect(&mut bus, 0x240000, (0, 0, 100, 100));
+        write_test_rect(&mut bus, 0x240008, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), 0x240000, 0x240008, 0);
+        let region = make_region_handle(&mut bus, 0x300000, 0x300020, 10, (5, 10, 45, 70));
+        bus.write_long(sp + 18, region);
+        disp.push_mouse_down(10, 20);
+        dispatch(&mut disp, 0x126, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let mut tracking = disp.region_tracking.take().unwrap();
+        assert!(!tracking.outline_saved_pixels.is_empty());
+        let epoch = bus.presentation_epoch();
+        for _ in 0..100 {
+            disp.refresh_region_drag_outline(&mut bus, &mut tracking, (10, 20));
+        }
+        assert_eq!(
+            bus.presentation_epoch(),
+            epoch,
+            "stationary polling must not repaint"
+        );
+        disp.refresh_region_drag_outline(&mut bus, &mut tracking, (20, 30));
+        assert_eq!(tracking.outline_rect, Some((15, 20, 55, 80)));
+        disp.refresh_region_drag_outline(&mut bus, &mut tracking, (121, 30));
+        assert_eq!(tracking.outline_rect, None);
+        assert!(tracking.outline_saved_pixels.is_empty());
+        disp.refresh_region_drag_outline(&mut bus, &mut tracking, (20, 30));
+        assert_eq!(tracking.outline_rect, Some((15, 20, 55, 80)));
+        assert!(!tracking.outline_saved_pixels.is_empty());
     }
 
     // IM:I p.I-294 (signature/call-frame summary on p.I-91):

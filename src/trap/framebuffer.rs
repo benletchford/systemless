@@ -4494,18 +4494,14 @@ impl super::TrapDispatcher {
         // writes screen pixels directly, so preserve those occluded pixels.
         // Macintosh Toolbox Essentials (1992), pp. 4-106 and 4-111--4-112.
         let content = (content_top, content_left, content_bottom, content_right);
-        let preserved_front_pixels: Vec<_> = self
-            .window_list
-            .iter()
-            .take_while(|&&front_window| front_window != window_ptr)
-            .filter(|&&front_window| self.window_visible(bus, front_window))
-            .filter_map(|&front_window| {
-                self.window_structure_rect(bus, front_window)
-                    .and_then(|front_structure| Self::rect_intersection(content, front_structure))
-                    .and_then(|overlap| self.save_screen_rect_pixels(bus, overlap))
-            })
-            .collect();
         let icon = crate::window_manager::standard_grow_icon(content, active);
+        let mut paint_parts = vec![icon.background];
+        paint_parts.extend(icon.ink.iter().copied());
+        let preserved_front_pixels: Vec<_> = self
+            .window_occluded_paint_rects(bus, window_ptr, &paint_parts)
+            .into_iter()
+            .filter_map(|rect| self.save_screen_rect_pixels(bus, rect))
+            .collect();
         Self::fb_fill_rect(
             bus,
             screen_base,
@@ -4664,6 +4660,37 @@ impl super::TrapDispatcher {
         erase(ct.max(st), cr.max(sl), cb.min(sb), sr);
     }
 
+    fn window_occluded_paint_rects(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+        paint_parts: &[(i16, i16, i16, i16)],
+    ) -> Vec<(i16, i16, i16, i16)> {
+        let mut occluded_parts = Vec::new();
+        for &front_window in self.window_list.iter().take_while(|&&w| w != window_ptr) {
+            if !self.window_visible(bus, front_window) {
+                continue;
+            }
+            let Some(front_structure) = self.window_structure_rect(bus, front_window) else {
+                continue;
+            };
+            for &frame in paint_parts {
+                let Some(overlap) = Self::rect_intersection(frame, front_structure) else {
+                    continue;
+                };
+                let mut uncovered = vec![overlap];
+                for &covered in &occluded_parts {
+                    uncovered = uncovered
+                        .into_iter()
+                        .flat_map(|rect| Self::rect_difference_parts(rect, covered))
+                        .collect();
+                }
+                occluded_parts.extend(uncovered);
+            }
+        }
+        occluded_parts
+    }
+
     /// Draw the window frame/border for a given procID.
     /// Called when a visible window is created to render its frame to the screen.
     /// This implements the standard WDEF rendering for each window type:
@@ -4714,18 +4741,16 @@ impl super::TrapDispatcher {
             (wind_top, wind_left, wind_bottom, wind_right),
             proc_id,
         );
+        // Only frame pixels can be overwritten. Saving the content intersection
+        // makes every chrome refresh copy whole windows as the stack grows.
+        let frame_parts = Self::rect_difference_parts(
+            target_structure,
+            (wind_top, wind_left, wind_bottom, wind_right),
+        );
         let preserved_front_pixels: Vec<_> = self
-            .window_list
-            .iter()
-            .take_while(|&&front_window| front_window != window_ptr)
-            .filter(|&&front_window| self.window_visible(bus, front_window))
-            .filter_map(|&front_window| {
-                self.window_structure_rect(bus, front_window)
-                    .and_then(|front_structure| {
-                        Self::rect_intersection(target_structure, front_structure)
-                    })
-                    .and_then(|overlap| self.save_screen_rect_pixels(bus, overlap))
-            })
+            .window_occluded_paint_rects(bus, window_ptr, &frame_parts)
+            .into_iter()
+            .filter_map(|rect| self.save_screen_rect_pixels(bus, rect))
             .collect();
         let saved_bounds = self.window_bounds;
         let saved_title = self.window_title.clone();
