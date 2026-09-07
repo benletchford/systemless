@@ -123,8 +123,9 @@ use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, Rect};
 use crate::trap::{pict, TrapDispatcher};
 use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
-    PpcAlignmentPolicy, PpcCpu, PpcException, PpcFetchHistogram, PpcFetchObserver, PpcImportAction,
-    PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3, PpcRunResult, PpcSectionMemSpan,
+    PpcAlignmentPolicy, PpcCpu, PpcException, PpcExecutionContext, PpcFetchHistogram,
+    PpcFetchObserver, PpcImportAction, PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3,
+    PpcRunResult, PpcSectionMemSpan,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -6988,9 +6989,9 @@ impl PpcLoadedApp {
         mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcSoundCompletionCallProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
-        let saved_cpu = self.cpu.clone();
-        let default_rtoc = if saved_cpu.gpr[2] != 0 {
-            saved_cpu.gpr[2]
+        let saved_context = self.cpu.capture_execution_context();
+        let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
+            saved_context.architectural().gpr[2]
         } else {
             self.rtoc
         };
@@ -7006,7 +7007,10 @@ impl PpcLoadedApp {
             proc_info: 0,
             routine_flags: 0,
         });
+        let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.invalidate_reservation();
+            entered = true;
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -7046,7 +7050,9 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
+        if entered {
+            self.cpu.install_execution_context(saved_context);
+        }
 
         PpcSoundCompletionCallProbe {
             invocation: PpcSoundCompletionInvocationRecord {
@@ -7168,10 +7174,10 @@ impl PpcLoadedApp {
         mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcTimerCallbackProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
-        let saved_cpu = self.cpu.clone();
+        let saved_context = self.cpu.capture_execution_context();
         let saved_current_resource_refnum = self.current_resource_refnum();
-        let default_rtoc = if saved_cpu.gpr[2] != 0 {
-            saved_cpu.gpr[2]
+        let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
+            saved_context.architectural().gpr[2]
         } else {
             self.rtoc
         };
@@ -7182,7 +7188,10 @@ impl PpcLoadedApp {
                 proc_info: 0,
                 routine_flags: 0,
             });
+        let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.invalidate_reservation();
+            entered = true;
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -7205,7 +7214,9 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
+        if entered {
+            self.cpu.install_execution_context(saved_context);
+        }
         self.set_current_resource_refnum(saved_current_resource_refnum);
 
         PpcTimerCallbackProbe {
@@ -7327,10 +7338,10 @@ impl PpcLoadedApp {
         mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcVblCallbackProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
-        let saved_cpu = self.cpu.clone();
+        let saved_context = self.cpu.capture_execution_context();
         let saved_current_resource_refnum = self.current_resource_refnum();
-        let default_rtoc = if saved_cpu.gpr[2] != 0 {
-            saved_cpu.gpr[2]
+        let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
+            saved_context.architectural().gpr[2]
         } else {
             self.rtoc
         };
@@ -7341,7 +7352,10 @@ impl PpcLoadedApp {
                 proc_info: 0,
                 routine_flags: 0,
             });
+        let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.invalidate_reservation();
+            entered = true;
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -7366,7 +7380,9 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
+        if entered {
+            self.cpu.install_execution_context(saved_context);
+        }
         self.set_current_resource_refnum(saved_current_resource_refnum);
 
         PpcVblCallbackProbe {
@@ -7415,9 +7431,9 @@ impl PpcLoadedApp {
         mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcSoundCompletionCallProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
-        let saved_cpu = self.cpu.clone();
-        let default_rtoc = if saved_cpu.gpr[2] != 0 {
-            saved_cpu.gpr[2]
+        let saved_context = self.cpu.capture_execution_context();
+        let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
+            saved_context.architectural().gpr[2]
         } else {
             self.rtoc
         };
@@ -7429,7 +7445,10 @@ impl PpcLoadedApp {
                     proc_info: 0,
                     routine_flags: 0,
                 });
+        let mut entered = false;
         let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.invalidate_reservation();
+            entered = true;
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
@@ -7454,7 +7473,9 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        crate::guest_call::restore_powerpc_context(&mut self.cpu, saved_cpu);
+        if entered {
+            self.cpu.install_execution_context(saved_context);
+        }
 
         PpcSoundCompletionCallProbe {
             invocation: PpcSoundCompletionInvocationRecord {
@@ -23988,17 +24009,17 @@ fn dispatch_supported_import(
                 let _ = memory.write_u32_be(made, 0);
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
             };
-            let mut thread_cpu = PpcCpu::new();
-            thread_cpu.alignment_policy = cpu.alignment_policy;
-            thread_cpu.msr = cpu.msr;
-            thread_cpu.pc = target.entry;
-            thread_cpu.lr = PPC_THREAD_RETURN_PC;
-            thread_cpu.gpr[1] = (top & !15) - PPC_INITIAL_STACK_FRAME_SIZE;
-            thread_cpu.gpr[2] = target.rtoc;
-            thread_cpu.gpr[3] = param;
+            let mut thread_context = PpcExecutionContext::fresh();
+            let thread_state = thread_context.architectural_mut();
+            thread_state.msr = cpu.msr;
+            thread_state.pc = target.entry;
+            thread_state.lr = PPC_THREAD_RETURN_PC;
+            thread_state.gpr[1] = (top & !15) - PPC_INITIAL_STACK_FRAME_SIZE;
+            thread_state.gpr[2] = target.rtoc;
+            thread_state.gpr[3] = param;
             let created = toolbox_startup.guest_calls.create_native_thread(
                 crate::guest_call::NativeThreadContext {
-                    cpu: Box::new(thread_cpu),
+                    context: thread_context,
                 },
                 crate::guest_call::ThreadStorage {
                     result_destination,
@@ -170683,7 +170704,7 @@ pub(crate) mod tests {
                 .guest_calls
                 .create_native_thread(
                     NativeThreadContext {
-                        cpu: Box::new(worker_cpu),
+                        context: worker_cpu.capture_execution_context(),
                     },
                     crate::guest_call::ThreadStorage {
                         result_destination: 0,
@@ -170769,6 +170790,15 @@ pub(crate) mod tests {
             .guest_calls
             .set_scheduling_state(worker, ExecutionTaskState::Ready));
         loaded.guest_calls.begin_critical();
+        loaded.cpu.gpr[20] = 0x1234_5678;
+        loaded.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
+        loaded.cpu.cr = 0x1357_2468;
+        loaded.cpu.ctr = 0x2468_1357;
+        loaded.cpu.xer = 0x89ab_cdef;
+        loaded.cpu.fpscr = 0x1020_3040;
+        loaded.cpu.msr = 0x5060_7080;
+        loaded.cpu.alignment_policy = PpcAlignmentPolicy::EmulateData;
+        establish_loaded_reservation(&mut loaded, PPC_DATA_BASE);
         // The ready identity has no saved execution context. Do not partially
         // end critical or stop the caller when successor preparation refuses.
         for (thread, state, error) in [(1, 1, -619), (99, 0, -618), (1, 99, -619), (3, 2, -619)] {
@@ -170782,6 +170812,14 @@ pub(crate) mod tests {
             assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
             assert_eq!(loaded.guest_calls, before);
             assert_eq!(loaded.guest_calls.critical_depth(), 1);
+            assert_eq!(loaded.cpu.gpr[20], 0x1234_5678);
+            assert_eq!(loaded.cpu.fpr[20], 0x4009_21fb_5444_2d18);
+            assert_eq!(loaded.cpu.cr, 0x1357_2468);
+            assert_eq!(loaded.cpu.xer, 0x89ab_cdef);
+            assert_eq!(loaded.cpu.fpscr, 0x1020_3040);
+            assert_eq!(loaded.cpu.msr, 0x5060_7080);
+            assert_eq!(loaded.cpu.alignment_policy, PpcAlignmentPolicy::EmulateData);
+            assert_eq!(loaded.cpu.reservation_address(), Some(PPC_DATA_BASE));
         }
     }
 
@@ -177483,6 +177521,30 @@ pub(crate) mod tests {
         }
     }
 
+    fn establish_loaded_reservation(loaded: &mut PpcLoadedApp, address: u32) {
+        const LWARX_R12_R4_R5: u32 =
+            (31 << 26) | (12 << 21) | (4 << 16) | (5 << 11) | (20 << 1);
+        let preserved = (
+            loaded.cpu.pc,
+            loaded.cpu.gpr[4],
+            loaded.cpu.gpr[5],
+            loaded.cpu.gpr[12],
+        );
+        loaded.cpu.gpr[4] = address;
+        loaded.cpu.gpr[5] = 0;
+        assert_eq!(
+            loaded.cpu.step(&mut loaded.memory, LWARX_R12_R4_R5),
+            ppc::PpcStepResult::Stepped
+        );
+        assert_eq!(loaded.cpu.reservation_address(), Some(address));
+        (
+            loaded.cpu.pc,
+            loaded.cpu.gpr[4],
+            loaded.cpu.gpr[5],
+            loaded.cpu.gpr[12],
+        ) = preserved;
+    }
+
     #[test]
     fn interrupt_callbacks_preserve_time_base_on_return_fault_and_cycle_limit() {
         const OUTPUT: u32 = PPC_DATA_BASE + 0x3000;
@@ -177519,7 +177581,11 @@ pub(crate) mod tests {
                 loaded.cpu.gpr[20] = 0xdead_0000;
                 loaded.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
                 loaded.cpu.cr = 0x1357_2468;
+                loaded.cpu.fpscr = 0x1020_3040;
+                loaded.cpu.msr = 0x5060_7080;
+                loaded.cpu.alignment_policy = PpcAlignmentPolicy::EmulateData;
                 loaded.cpu.set_time_base(START);
+                establish_loaded_reservation(&mut loaded, OUTPUT);
                 let saved = loaded.cpu.clone();
                 let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
                 match outcome {
@@ -177549,6 +177615,10 @@ pub(crate) mod tests {
                 assert_eq!(loaded.cpu.lr, saved.lr);
                 assert_eq!(loaded.cpu.ctr, saved.ctr);
                 assert_eq!(loaded.cpu.xer, saved.xer);
+                assert_eq!(loaded.cpu.fpscr, saved.fpscr);
+                assert_eq!(loaded.cpu.msr, saved.msr);
+                assert_eq!(loaded.cpu.alignment_policy, saved.alignment_policy);
+                assert_eq!(loaded.cpu.reservation_address(), None);
                 // The resumed caller observes that same elapsed time through
                 // guest instructions, rather than only a host-side accessor.
                 loaded.cpu.step_instruction(xfx_form(31, 11, 268, 371));
@@ -177556,6 +177626,100 @@ pub(crate) mod tests {
                 loaded.cpu.step_instruction(xfx_form(31, 12, 269, 371));
                 assert_eq!(loaded.cpu.gpr[12], ((elapsed + 1) >> 32) as u32);
             }
+        }
+    }
+
+    #[test]
+    fn interrupt_callbacks_retain_wrapped_live_engine_time() {
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        for kind in 0..4 {
+            let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+            loaded.memory.add_region(VECTOR, vec![0; 8]);
+            loaded.memory.write_u32_be(VECTOR, ENTRY).unwrap();
+            loaded
+                .memory
+                .write_u32_be(VECTOR + 4, PPC_DATA_BASE)
+                .unwrap();
+            loaded.memory.add_region(ENTRY, BLR.to_be_bytes().to_vec());
+            loaded.cpu.set_time_base(u64::MAX);
+
+            let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+            assert!(matches!(result, PpcRunResult::Halted { cycles: 1, .. }), "{kind}");
+            assert_eq!(loaded.cpu.time_base(), 0, "callback family {kind}");
+            assert_eq!(
+                loaded
+                    .cpu
+                    .step(&mut loaded.memory, xfx_form(31, 11, 268, 371)),
+                ppc::PpcStepResult::Stepped
+            );
+            assert_eq!(loaded.cpu.gpr[11], 0, "callback family {kind}");
+            assert_eq!(loaded.cpu.time_base(), 1, "callback family {kind}");
+        }
+    }
+
+    #[test]
+    fn interrupt_callbacks_restore_the_interrupted_private_import_continuation() {
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        const TRAP: u32 = PPC_CODE_BASE + 0x3000;
+        const RETURN: u32 = PPC_CODE_BASE + 0x3100;
+        const FINAL: u32 = PPC_CODE_BASE + 0x3200;
+        for kind in 0..4 {
+            let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+            loaded.memory.add_region(VECTOR, vec![0; 8]);
+            loaded.memory.write_u32_be(VECTOR, ENTRY).unwrap();
+            loaded
+                .memory
+                .write_u32_be(VECTOR + 4, PPC_DATA_BASE)
+                .unwrap();
+            loaded.memory.add_region(ENTRY, BLR.to_be_bytes().to_vec());
+            crate::guest_call::seed_pending_native_import_context(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                TRAP,
+                RETURN,
+                0xaaaa_0002,
+                RETURN,
+                FINAL,
+                0xbbbb_0002,
+                PpcNativeReturnGpr3::Set(0xcccc_0003),
+            );
+            let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+            assert!(matches!(result, PpcRunResult::Halted { cycles: 1, .. }));
+            assert_eq!(loaded.cpu.pc, RETURN);
+            assert_eq!(
+                loaded.cpu.run_with_imports(
+                    &mut loaded.memory,
+                    2,
+                    FINAL,
+                    0,
+                    0,
+                    |_, _, _| unreachable!()
+                ),
+                PpcRunResult::Halted {
+                    pc: FINAL,
+                    cycles: 1
+                }
+            );
+            assert_eq!(
+                (loaded.cpu.gpr[2], loaded.cpu.gpr[3]),
+                (0xbbbb_0002, 0xcccc_0003)
+            );
+            assert_eq!(
+                loaded.cpu.run_with_imports(
+                    &mut loaded.memory,
+                    2,
+                    FINAL,
+                    0,
+                    0,
+                    |_, _, _| unreachable!()
+                ),
+                PpcRunResult::Halted {
+                    pc: FINAL,
+                    cycles: 0
+                }
+            );
         }
     }
 
@@ -177615,6 +177779,7 @@ pub(crate) mod tests {
                 .add_region(storage.stack_limit, vec![0x5a; 128]);
             for invalid_sp in [storage.stack_base + 128, storage.stack_limit + 16, 16] {
                 loaded.cpu.gpr[1] = invalid_sp;
+                establish_loaded_reservation(&mut loaded, OUTPUT);
                 let saved = loaded.cpu.clone();
                 let frame = ppc_interrupt_callback_stack_pointer(invalid_sp);
                 let before = ppc_memory_read_bytes(&mut loaded.memory, frame, 64);
@@ -177637,12 +177802,14 @@ pub(crate) mod tests {
                 assert_eq!(loaded.cpu.lr, saved.lr);
                 assert_eq!(loaded.cpu.cr, saved.cr);
                 assert_eq!(loaded.cpu.time_base(), saved.time_base());
+                assert_eq!(loaded.cpu.reservation_address(), saved.reservation_address());
                 assert_eq!(loaded.guest_calls.current_task(), worker);
             }
             loaded.cpu.gpr[1] = worker_sp;
             // A valid SP is insufficient when only part of the frame is
             // writable. Refusal must not clear even the accessible prefix.
             let frame = ppc_interrupt_callback_stack_pointer(worker_sp);
+            establish_loaded_reservation(&mut loaded, OUTPUT);
             let memory = std::mem::replace(&mut loaded.memory, PpcSectionMem::new());
             loaded.memory.add_region(frame, vec![0x5a; 32]);
             let saved = loaded.cpu.clone();
@@ -177657,6 +177824,7 @@ pub(crate) mod tests {
             );
             assert_eq!(loaded.cpu.gpr, saved.gpr);
             assert_eq!(loaded.cpu.pc, saved.pc);
+            assert_eq!(loaded.cpu.reservation_address(), saved.reservation_address());
             loaded.memory = memory;
             let protected_base = worker_sp - PPC_INTERRUPT_RED_ZONE_SIZE;
             let protected = vec![0xa5; (PPC_INTERRUPT_RED_ZONE_SIZE + 64) as usize];
@@ -177664,6 +177832,7 @@ pub(crate) mod tests {
                 .memory
                 .write_bytes(protected_base, &protected)
                 .unwrap();
+            establish_loaded_reservation(&mut loaded, OUTPUT);
             let saved = loaded.cpu.clone();
             let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
             assert!(
@@ -177679,6 +177848,7 @@ pub(crate) mod tests {
             );
             assert_eq!(loaded.cpu.gpr, saved.gpr);
             assert_eq!(loaded.cpu.pc, saved.pc);
+            assert_eq!(loaded.cpu.reservation_address(), None);
             assert_eq!(loaded.guest_calls.current_task(), worker);
         }
     }

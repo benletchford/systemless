@@ -25,19 +25,10 @@ use crate::execution_kernel::{
 use crate::guest_procedure::GuestIsa;
 use crate::memory::GuestAddressSpace;
 use crate::process_context::{ProcessNativeMemoryManager, SharedProcessValue};
-use ppc::{PpcCpu, PpcImportAction, PpcMemory, PpcNativeReturnGpr3};
+use ppc::{PpcCpu, PpcExecutionContext, PpcImportAction, PpcMemory, PpcNativeReturnGpr3};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-
-/// Install a saved register context while retaining the furthest native
-/// execution time. Task switches, mixed-mode returns and interrupt returns
-/// share this policy; restoring registers must not rewind the time base.
-pub(crate) fn restore_powerpc_context(cpu: &mut PpcCpu, context: PpcCpu) {
-    let time_base = cpu.time_base().max(context.time_base());
-    *cpu = context;
-    cpu.set_time_base(time_base);
-}
 
 /// Exclusive, synchronous preparation of the PowerPC word-argument ABI.
 /// No guest execution or mapping change may intervene before installation.
@@ -520,11 +511,10 @@ impl PartialEq for GuestCallFrame {
 
 impl Eq for GuestCallFrame {}
 
-/// Full native engine state is retained, including the CPU's private import
-/// continuations. The active CPU remains with its engine between task switches.
+/// Suspendable native state owned by one cooperative task.
 #[derive(Clone, Debug)]
 pub(crate) struct NativeThreadContext {
-    pub(crate) cpu: Box<PpcCpu>,
+    pub(crate) context: PpcExecutionContext,
 }
 
 /// Process-owned storage provenance is independent of a task's current ISA.
@@ -541,14 +531,14 @@ pub(crate) struct ThreadStorage {
 #[derive(Clone, Debug)]
 enum TaskResumeContext {
     Classic(CooperativeThread),
-    Native(Box<PpcCpu>),
+    Native(PpcExecutionContext),
 }
 
 impl TaskResumeContext {
     fn stack_pointer(&self) -> u32 {
         match self {
             Self::Classic(context) => context.a_regs[7],
-            Self::Native(cpu) => cpu.gpr[1],
+            Self::Native(context) => context.architectural().gpr[1],
         }
     }
 
@@ -1000,7 +990,7 @@ struct ExecutionTaskCalls {
     /// Manager roots outlive each individual guest callback and retain the
     /// invoking task, enclosing call and original ABI return placement.
     menu_calls: SharedProcessValue<MenuCalls>,
-    powerpc_contexts: ExecutionContextBank<Box<PpcCpu>>,
+    powerpc_contexts: ExecutionContextBank<PpcExecutionContext>,
     m68k_contexts: Rc<RefCell<ExecutionContextBank<M68kCpu>>>,
     cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
     native_threads: ExecutionTaskContextBank<NativeThreadContext>,
@@ -1130,7 +1120,7 @@ impl ExecutionTaskCalls {
             GuestIsa::PowerPc => self
                 .native_threads
                 .get(task)
-                .map(|saved| TaskResumeContext::Native(saved.cpu.clone())),
+                .map(|saved| TaskResumeContext::Native(saved.context.clone())),
         }
     }
 
@@ -1205,9 +1195,9 @@ impl ExecutionTaskCalls {
             TaskResumeContext::Classic(context) => {
                 self.cooperative_contexts.insert(task, context);
             }
-            TaskResumeContext::Native(cpu) => {
+            TaskResumeContext::Native(context) => {
                 self.native_threads
-                    .insert(task, NativeThreadContext { cpu });
+                    .insert(task, NativeThreadContext { context });
             }
         }
         self.thread_storage.insert(task, storage);
@@ -1270,19 +1260,12 @@ impl ExecutionTaskCalls {
         Some((storage, next))
     }
 
-    fn save_native_cpu(&mut self, task: ExecutionTaskId, cpu: &PpcCpu) {
+    fn save_native_context(&mut self, task: ExecutionTaskId, context: PpcExecutionContext) {
         if self.kernel.scheduling_state(task).is_none() {
             return;
         }
-        let mut context = self
-            .native_threads
-            .get(task)
-            .cloned()
-            .unwrap_or(NativeThreadContext {
-                cpu: Box::new(cpu.clone()),
-            });
-        context.cpu = Box::new(cpu.clone());
-        self.native_threads.insert(task, context);
+        self.native_threads
+            .insert(task, NativeThreadContext { context });
     }
 
     fn install_native_successor(
@@ -1296,7 +1279,7 @@ impl ExecutionTaskCalls {
                 self.handoff = Some((task, TaskResumeContext::Classic(context)));
             }
             TaskResumeContext::Native(next) => {
-                restore_powerpc_context(cpu, *next);
+                cpu.install_execution_context(next);
                 self.native_cpu_task = Some(task);
             }
         }
@@ -1715,8 +1698,8 @@ impl SharedGuestCallStack {
                     tasks.frames.get(&call.call_id())?.origin,
                     GuestCallOrigin::PowerPc(_)
                 ) {
-                    if let Some(cpu) = tasks.powerpc_contexts.get(task, call.call_id()) {
-                        return Some((entry, cpu.gpr[1]));
+                    if let Some(context) = tasks.powerpc_contexts.get(task, call.call_id()) {
+                        return Some((entry, context.architectural().gpr[1]));
                     }
                 }
             }
@@ -1934,17 +1917,18 @@ impl SharedGuestCallStack {
             tasks
                 .native_threads
                 .get(current)
-                .map(|context| context.cpu.clone())
+                .map(|context| context.context.clone())
         } else {
             None
         };
         if replacing_owner {
             if let Some(previous) = tasks.native_cpu_task {
-                tasks.save_native_cpu(previous, cpu);
+                tasks.save_native_context(previous, cpu.capture_execution_context());
+                cpu.invalidate_reservation();
             }
         }
         if let Some(next) = next {
-            restore_powerpc_context(cpu, *next);
+            cpu.install_execution_context(next);
         }
         tasks.native_cpu_task = Some(current);
         true
@@ -1981,7 +1965,7 @@ impl SharedGuestCallStack {
         commit: impl FnOnce(ExecutionTaskId) -> bool,
     ) -> Option<ExecutionTaskId> {
         self.0.borrow_mut().create_thread(
-            TaskResumeContext::Native(context.cpu),
+            TaskResumeContext::Native(context.context),
             storage,
             suspended,
             commit,
@@ -2037,11 +2021,11 @@ impl SharedGuestCallStack {
         {
             return Ok(false);
         }
-        let mut outgoing = cpu.clone();
-        outgoing.pc = outgoing.lr;
-        outgoing.gpr[3] = 0;
-        tasks.save_native_cpu(current, &outgoing);
-        *cpu = outgoing;
+        let mut outgoing = cpu.capture_execution_context();
+        outgoing.architectural_mut().pc = outgoing.architectural().lr;
+        outgoing.architectural_mut().gpr[3] = 0;
+        tasks.save_native_context(current, outgoing.clone());
+        cpu.install_execution_context(outgoing);
         tasks.native_cpu_task = Some(current);
         if let Some((next, context)) = successor {
             tasks.install_native_successor(next, context, cpu);
@@ -2092,15 +2076,15 @@ impl SharedGuestCallStack {
             return Ok(false);
         };
         let next_context = tasks.saved_context(next).ok_or(THREAD_PROTOCOL_ERR)?;
-        let mut outgoing = cpu.clone();
-        outgoing.pc = outgoing.lr;
-        outgoing.gpr[3] = 0;
+        let mut outgoing = cpu.capture_execution_context();
+        outgoing.architectural_mut().pc = outgoing.architectural().lr;
+        outgoing.architectural_mut().gpr[3] = 0;
         tasks
             .kernel
             .switch_to_task(next)
             .map_err(|_| THREAD_PROTOCOL_ERR)?;
-        tasks.save_native_cpu(current, &outgoing);
-        *cpu = outgoing;
+        tasks.save_native_context(current, outgoing.clone());
+        cpu.install_execution_context(outgoing);
         tasks.native_cpu_task = Some(current);
         tasks.install_native_successor(next, next_context, cpu);
         Ok(true)
@@ -2119,7 +2103,11 @@ impl SharedGuestCallStack {
         } else {
             None
         };
+        let retired_live_native = tasks.native_cpu_task == Some(task);
         let (finished, successor) = tasks.retire_thread(task, successor, recycle, commit)?;
+        if retired_live_native {
+            cpu.invalidate_reservation();
+        }
         if let Some((next, context)) = successor {
             tasks.install_native_successor(next, context, cpu);
         }
@@ -2400,16 +2388,17 @@ impl SharedGuestCallStack {
                     &kernel,
                     task,
                     call_id,
-                    Box::new(cpu.clone()),
+                    cpu.capture_execution_context(),
                     caller,
                 )
                 .ok()?;
         } else {
             tasks
                 .powerpc_contexts
-                .park_while_activating(&kernel, task, call_id, Box::new(cpu.clone()))
+                .park_while_activating(&kernel, task, call_id, cpu.capture_execution_context())
                 .ok()?;
         }
+        cpu.invalidate_reservation();
         let frame = tasks
             .frames
             .get_mut(&call_id)
@@ -2499,7 +2488,7 @@ impl SharedGuestCallStack {
             .as_mut()
             .expect("validated PowerPC transition must have an execution payload");
         execution.completed = Some(result);
-        restore_powerpc_context(cpu, *parked_cpu);
+        cpu.install_execution_context(parked_cpu);
         true
     }
 
@@ -2607,7 +2596,7 @@ impl SharedGuestCallStack {
     pub(crate) fn activate_m68k_parking(
         &self,
         installed: &mut M68kCpu,
-        native: &PpcCpu,
+        native: &mut PpcCpu,
     ) -> Option<PendingM68kExecution> {
         let caller = self.suspended_m68k_context_owner().map(|(_, call)| call);
         let bank = self.classic_contexts();
@@ -2621,7 +2610,7 @@ impl SharedGuestCallStack {
         bank: &mut ExecutionContextBank<T>,
         installed: &mut T,
         caller: Option<CallId>,
-        native: Option<&PpcCpu>,
+        native: Option<&mut PpcCpu>,
     ) -> Option<PendingM68kExecution> {
         let (task, call_id, pending, started) = {
             let tasks = self.0.borrow();
@@ -2645,15 +2634,17 @@ impl SharedGuestCallStack {
         let mut tasks = self.0.borrow_mut();
         if let Some(native) = native {
             let kernel = tasks.kernel.shared_handle();
+            let context = native.capture_execution_context();
             bank.activate_parking_caller_with_context(
                 &kernel,
                 task,
                 call_id,
                 caller,
                 installed,
-                Some((&mut tasks.powerpc_contexts, Box::new(native.clone()))),
+                Some((&mut tasks.powerpc_contexts, context)),
             )
             .ok()?;
+            native.invalidate_reservation();
         } else {
             bank.activate_parking_caller(&tasks.kernel, task, call_id, caller, installed)
                 .ok()?;
@@ -3090,7 +3081,7 @@ impl SharedGuestCallStack {
             }
         }
         if let Some(native) = native {
-            restore_powerpc_context(cpu, *native);
+            cpu.install_execution_context(native);
         }
         if let Some(result) = result {
             cpu.gpr[3] = result;
@@ -3122,7 +3113,10 @@ impl SharedGuestCallStack {
     /// exact caller PC and stack pointer. A native frame remains untouched.
     #[cfg(test)]
     pub(crate) fn complete_m68k(&self, post_trap_pc: u32, final_sp: u32) -> bool {
-        self.complete_m68k_with_operation(post_trap_pc, final_sp, |_| panic!("unhandled manager completion")).is_some()
+        self.complete_m68k_with_operation(post_trap_pc, final_sp, |_| {
+            panic!("unhandled manager completion")
+        })
+        .is_some()
     }
 
     pub(crate) fn complete_m68k_with_operation(
@@ -3180,12 +3174,99 @@ impl SharedGuestCallStack {
 }
 
 #[cfg(test)]
+pub(crate) fn test_native_import_action(
+    entry: u32,
+    entry_rtoc: u32,
+    return_pc: u32,
+    final_pc: u32,
+    restore_rtoc: u32,
+    return_gpr3: PpcNativeReturnGpr3,
+) -> PpcImportAction {
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry,
+            rtoc: entry_rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(return_pc, final_pc, restore_rtoc, return_gpr3),
+    )
+    .into_ppc_import_action()
+    .expect("native PowerPC request should adapt to CallNative")
+}
+
+#[cfg(test)]
+pub(crate) fn seed_pending_native_import_context(
+    cpu: &mut PpcCpu,
+    memory: &mut impl PpcMemory,
+    trap_pc: u32,
+    entry: u32,
+    entry_rtoc: u32,
+    return_pc: u32,
+    final_pc: u32,
+    restore_rtoc: u32,
+    return_gpr3: PpcNativeReturnGpr3,
+) {
+    cpu.pc = trap_pc;
+    assert_eq!(
+        cpu.run_with_imports(memory, 1, 0, trap_pc, 1, |_, _, _| {
+            test_native_import_action(
+                entry,
+                entry_rtoc,
+                return_pc,
+                final_pc,
+                restore_rtoc,
+                return_gpr3,
+            )
+        }),
+        ppc::PpcRunResult::CycleLimit { cycles: 1 }
+    );
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory::GuestAddressSpace;
     use ppc::PpcRunResult;
 
     const RETURN_PC: u32 = 0x01f0_4000;
+
+    fn establish_native_reservation(cpu: &mut PpcCpu, address: u32) {
+        const LWARX_R12_R4_R5: u32 = (31 << 26) | (12 << 21) | (4 << 16) | (5 << 11) | (20 << 1);
+        let preserved = (cpu.pc, cpu.gpr[4], cpu.gpr[5], cpu.gpr[12]);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(address, 0x1122_3344u32.to_be_bytes().to_vec());
+        cpu.gpr[4] = address;
+        cpu.gpr[5] = 0;
+        assert_eq!(
+            cpu.step(&mut memory, LWARX_R12_R4_R5),
+            ppc::PpcStepResult::Stepped
+        );
+        assert_eq!(cpu.reservation_address(), Some(address));
+        (cpu.pc, cpu.gpr[4], cpu.gpr[5], cpu.gpr[12]) = preserved;
+    }
+
+    fn pending_native_import_context(
+        trap_pc: u32,
+        return_pc: u32,
+        final_pc: u32,
+        restored_rtoc: u32,
+        result: u32,
+    ) -> PpcExecutionContext {
+        let mut cpu = PpcCpu::new();
+        let mut memory = GuestAddressSpace::new();
+        seed_pending_native_import_context(
+            &mut cpu,
+            &mut memory,
+            trap_pc,
+            return_pc,
+            restored_rtoc ^ 0xffff_0000,
+            return_pc,
+            final_pc,
+            restored_rtoc,
+            PpcNativeReturnGpr3::Set(result),
+        );
+        cpu.capture_execution_context()
+    }
 
     #[test]
     fn menu_bar_operations_scope_nested_calls_and_preserve_each_return_abi() {
@@ -3598,16 +3679,14 @@ mod tests {
         final_pc: u32,
         return_gpr3: PpcNativeReturnGpr3,
     ) -> PpcImportAction {
-        GuestCallEffect::call_guest(
-            GuestCallRequest::new(GuestCallTarget {
-                isa: GuestIsa::PowerPc,
-                entry,
-                rtoc: entry + 0x100,
-            }),
-            GuestCallContinuation::to_powerpc(RETURN_PC, final_pc, final_pc + 0x100, return_gpr3),
+        test_native_import_action(
+            entry,
+            entry + 0x100,
+            RETURN_PC,
+            final_pc,
+            final_pc + 0x100,
+            return_gpr3,
         )
-        .into_ppc_import_action()
-        .expect("native PowerPC request should adapt to CallNative")
     }
 
     #[test]
@@ -3717,7 +3796,7 @@ mod tests {
         let native = calls
             .create_native_thread(
                 NativeThreadContext {
-                    cpu: Box::new(PpcCpu::new()),
+                    context: PpcExecutionContext::fresh(),
                 },
                 ThreadStorage {
                     stack_base: 0x2000,
@@ -3787,7 +3866,7 @@ mod tests {
         let native = calls
             .create_native_thread(
                 NativeThreadContext {
-                    cpu: Box::new(PpcCpu::new()),
+                    context: PpcExecutionContext::fresh(),
                 },
                 crate::guest_call::ThreadStorage {
                     result_destination: 0,
@@ -3801,9 +3880,11 @@ mod tests {
             .unwrap();
         assert!(calls.switch_to_task(native));
         assert!(calls.prepare_native_task(&mut cpu));
+        establish_native_reservation(&mut cpu, 0x1000);
         assert!(calls
             .retire_native_thread(native, &mut cpu, false, |_| true)
             .is_some());
+        assert_eq!(cpu.reservation_address(), None);
         assert_eq!(calls.current_task(), classic);
         assert!(calls.has_classic_task_handoff());
         let blocked_pc = cpu.pc;
@@ -3824,6 +3905,63 @@ mod tests {
     }
 
     #[test]
+    fn native_retirement_refuses_a_parked_mixed_mode_context_then_removes_it() {
+        let calls = SharedGuestCallStack::default();
+        let mut cpu = PpcCpu::new();
+        calls.start_native_engine();
+        assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+        let worker = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    context: PpcExecutionContext::fresh(),
+                },
+                ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        assert!(calls
+            .yield_native_thread(&mut cpu, worker.thread_id())
+            .unwrap());
+        assert!(calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x2000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+            0x4000,
+            0x3004,
+            M68kRegisterState::default(),
+            None,
+            0x5000,
+            0x6000,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+        let (call, _) = calls.top_frame().unwrap();
+        let mut classic = M68kCpu::new();
+        assert!(calls
+            .activate_m68k_parking(&mut classic, &mut cpu)
+            .is_some());
+        establish_native_reservation(&mut cpu, 0x1000);
+        assert!(calls
+            .retire_native_thread(worker, &mut cpu, false, |_| true)
+            .is_none());
+        assert_eq!(calls.current_task(), worker);
+        assert!(calls.scheduling_state(worker).is_some());
+        assert!(calls.0.borrow().powerpc_contexts.contains(worker, call));
+        assert!(calls.thread_storage(worker).is_some());
+        assert_eq!(cpu.reservation_address(), Some(0x1000));
+        assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, None, &mut cpu));
+        assert!(calls
+            .retire_native_thread(worker, &mut cpu, false, |_| true)
+            .is_some());
+        assert_eq!(calls.scheduling_state(worker), None);
+        assert_eq!(cpu.reservation_address(), None);
+    }
+
+    #[test]
     fn native_installation_refuses_missing_snapshot_before_saving_or_relabeling() {
         let calls = SharedGuestCallStack::default();
         assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
@@ -3839,6 +3977,7 @@ mod tests {
         cpu.pc = 0x789a_bcde;
         cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
         cpu.set_time_base(0x1234_5678_9abc_def0);
+        establish_native_reservation(&mut cpu, 0x1000);
 
         let initial = cpu.clone();
         assert!(calls.prepare_native_task(&mut cpu));
@@ -3895,10 +4034,32 @@ mod tests {
         cpu.pc = 0x1234;
         cpu.lr = 0x4560;
         cpu.gpr[3] = 99;
+        cpu.fpr[20] = 0x4009_21fb_5444_2d18;
+        cpu.cr = 0x1357_2468;
+        cpu.ctr = 0x2468_1357;
+        cpu.xer = 0x89ab_cdef;
+        cpu.fpscr = 0x1020_3040;
+        cpu.msr = 0x5060_7080;
+        establish_native_reservation(&mut cpu, 0x1000);
+        cpu.set_time_base(u64::MAX);
+        let mut worker_context = PpcExecutionContext::fresh();
+        {
+            let state = worker_context.architectural_mut();
+            state.gpr[1] = 0x8000;
+            state.gpr[20] = 0xaabb_ccdd;
+            state.fpr[20] = 0x3ff0_0000_0000_0000;
+            state.cr = 0xaaaa_5555;
+            state.lr = 0x9000;
+            state.ctr = 0x1111_2222;
+            state.xer = 0x3333_4444;
+            state.fpscr = 0x5555_6666;
+            state.msr = 0x7777_8888;
+            state.pc = 0x7000;
+        }
         let worker = calls
             .create_native_thread(
                 NativeThreadContext {
-                    cpu: Box::new(PpcCpu::new()),
+                    context: worker_context,
                 },
                 crate::guest_call::ThreadStorage {
                     result_destination: 0,
@@ -3910,6 +4071,18 @@ mod tests {
                 |_| true,
             )
             .unwrap();
+        assert_eq!(
+            calls
+                .0
+                .borrow()
+                .native_threads
+                .get(worker)
+                .unwrap()
+                .context
+                .architectural()
+                .gpr[20],
+            0xaabb_ccdd
+        );
         calls.begin_critical();
         assert_eq!(
             calls.yield_native_thread(&mut cpu, worker.thread_id()),
@@ -3917,6 +4090,7 @@ mod tests {
         );
         assert_eq!(cpu.pc, 0x1234);
         assert_eq!(cpu.gpr[3], 99);
+        assert_eq!(cpu.reservation_address(), Some(0x1000));
         assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
         assert!(calls.end_critical());
         let classic = calls.create_task().unwrap();
@@ -3927,17 +4101,140 @@ mod tests {
         );
         assert_eq!(cpu.pc, 0x1234);
         assert_eq!(cpu.gpr[3], 99);
+        assert_eq!(cpu.reservation_address(), Some(0x1000));
         assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
         assert!(calls
             .yield_native_thread(&mut cpu, worker.thread_id())
             .unwrap());
         assert_eq!(calls.current_task(), worker);
+        assert_eq!(cpu.gpr[20], 0xaabb_ccdd);
+        assert_eq!(cpu.fpr[20], 0x3ff0_0000_0000_0000);
+        assert_eq!(cpu.cr, 0xaaaa_5555);
+        assert_eq!(cpu.pc, 0x7000);
+        assert_eq!(cpu.lr, 0x9000);
+        assert_eq!(cpu.ctr, 0x1111_2222);
+        assert_eq!(cpu.xer, 0x3333_4444);
+        assert_eq!(cpu.fpscr, 0x5555_6666);
+        assert_eq!(cpu.msr, 0x7777_8888);
+        assert_eq!(cpu.reservation_address(), None);
+        assert_eq!(cpu.time_base(), u64::MAX);
+        establish_native_reservation(&mut cpu, 0x1000);
         cpu.lr = 0x9000;
         assert!(calls
             .yield_native_thread(&mut cpu, ExecutionTaskId::APPLICATION.thread_id())
             .unwrap());
         assert_eq!(cpu.pc, 0x4560);
         assert_eq!(cpu.gpr[3], 0);
+        assert_eq!(cpu.fpr[20], 0x4009_21fb_5444_2d18);
+        assert_eq!(cpu.cr, 0x1357_2468);
+        assert_eq!(cpu.pc, 0x4560);
+        assert_eq!(cpu.lr, 0x4560);
+        assert_eq!(cpu.ctr, 0x2468_1357);
+        assert_eq!(cpu.xer, 0x89ab_cdef);
+        assert_eq!(cpu.fpscr, 0x1020_3040);
+        assert_eq!(cpu.msr, 0x5060_7080);
+        assert_eq!(cpu.reservation_address(), None);
+        assert_eq!(cpu.time_base(), 0);
+        let mut memory = GuestAddressSpace::new();
+        assert_eq!(
+            cpu.step(
+                &mut memory,
+                (31 << 26) | (11 << 21) | (12 << 16) | (8 << 11) | (371 << 1)
+            ),
+            ppc::PpcStepResult::Stepped
+        );
+        assert_eq!(cpu.gpr[11], 0);
+        assert_eq!(cpu.time_base(), 1);
+        assert!(calls
+            .yield_native_thread(&mut cpu, worker.thread_id())
+            .unwrap());
+        assert_eq!(cpu.gpr[20], 0xaabb_ccdd);
+        assert_eq!(cpu.fpr[20], 0x3ff0_0000_0000_0000);
+        assert_eq!(cpu.cr, 0xaaaa_5555);
+        assert_eq!(cpu.pc, 0x9000);
+        assert_eq!(cpu.lr, 0x9000);
+        assert_eq!(cpu.ctr, 0x1111_2222);
+        assert_eq!(cpu.xer, 0x3333_4444);
+        assert_eq!(cpu.fpscr, 0x5555_6666);
+        assert_eq!(cpu.msr, 0x7777_8888);
+        assert_eq!(cpu.time_base(), 1);
+    }
+
+    #[test]
+    fn native_task_switch_restores_each_private_import_continuation_once() {
+        const A_RETURN: u32 = 0x2000;
+        const A_FINAL: u32 = 0x3000;
+        const B_RETURN: u32 = 0x2100;
+        const B_FINAL: u32 = 0x3100;
+        let calls = SharedGuestCallStack::default();
+        calls.start_native_engine();
+        assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+        let mut cpu = PpcCpu::new();
+        cpu.install_execution_context(pending_native_import_context(
+            0x1000,
+            A_RETURN,
+            A_FINAL,
+            0xaaaa_0001,
+            0xaaaa_0003,
+        ));
+        let worker = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    context: pending_native_import_context(
+                        0x1100,
+                        B_RETURN,
+                        B_FINAL,
+                        0xbbbb_0002,
+                        0xbbbb_0003,
+                    ),
+                },
+                ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        let mut memory = GuestAddressSpace::new();
+
+        assert!(calls
+            .yield_native_thread(&mut cpu, worker.thread_id())
+            .unwrap());
+        assert_eq!(
+            cpu.run_with_imports(&mut memory, 2, B_FINAL, 0, 0, |_, _, _| unreachable!()),
+            PpcRunResult::Halted {
+                pc: B_FINAL,
+                cycles: 1
+            }
+        );
+        assert_eq!((cpu.gpr[2], cpu.gpr[3]), (0xbbbb_0002, 0xbbbb_0003));
+        assert!(calls
+            .yield_native_thread(&mut cpu, ExecutionTaskId::APPLICATION.thread_id())
+            .unwrap());
+        assert_eq!(
+            cpu.run_with_imports(&mut memory, 2, A_FINAL, 0, 0, |_, _, _| unreachable!()),
+            PpcRunResult::Halted {
+                pc: A_FINAL,
+                cycles: 1
+            }
+        );
+        assert_eq!((cpu.gpr[2], cpu.gpr[3]), (0xaaaa_0001, 0xaaaa_0003));
+        assert_eq!(
+            cpu.run_with_imports(&mut memory, 2, A_FINAL, 0, 0, |_, _, _| unreachable!()),
+            PpcRunResult::Halted {
+                pc: A_FINAL,
+                cycles: 0
+            }
+        );
+        assert!(calls
+            .yield_native_thread(&mut cpu, worker.thread_id())
+            .unwrap());
+        assert_eq!(
+            cpu.run_with_imports(&mut memory, 2, B_FINAL, 0, 0, |_, _, _| unreachable!()),
+            PpcRunResult::Halted {
+                pc: B_FINAL,
+                cycles: 0
+            }
+        );
+        assert_eq!((cpu.gpr[2], cpu.gpr[3]), (0xbbbb_0002, 0));
     }
 
     #[test]
@@ -4631,7 +4928,7 @@ mod tests {
                         .unwrap();
                 };
             let enter_classic =
-                |calls: &SharedGuestCallStack, classic: &mut M68kCpu, native: &PpcCpu| {
+                |calls: &SharedGuestCallStack, classic: &mut M68kCpu, native: &mut PpcCpu| {
                     assert!(calls.begin_powerpc_to_m68k(
                         GuestCallTarget {
                             isa: GuestIsa::M68k,
@@ -4654,7 +4951,7 @@ mod tests {
             if entry == GuestIsa::M68k {
                 enter_native(&calls, &mut classic, &mut native);
             }
-            enter_classic(&calls, &mut classic, &native);
+            enter_classic(&calls, &mut classic, &mut native);
             let manager = ThreadManager::new(&calls);
             assert_eq!(
                 manager.stack_space(1, GuestIsa::M68k, 0x6000, |_| 0x8000),
@@ -4671,7 +4968,7 @@ mod tests {
                 manager.stack_space(1, GuestIsa::PowerPc, native.gpr[1], |_| 0x8000),
                 Ok(expected)
             );
-            enter_classic(&calls, &mut classic, &native);
+            enter_classic(&calls, &mut classic, &mut native);
             let depth = calls.len();
             assert_eq!(
                 manager.stack_space(1, GuestIsa::M68k, 0x6000, |_| 0x8000),
@@ -4860,6 +5157,7 @@ mod tests {
             native.fpr[20] = 0x400921fb54442d18;
             native.cr = 0x12345678;
             native.set_time_base(7);
+            establish_native_reservation(&mut native, 0x1000);
             if occupied {
                 let kernel = calls.0.borrow().kernel.shared_handle();
                 assert!(calls
@@ -4870,20 +5168,22 @@ mod tests {
                         &kernel,
                         ExecutionTaskId::APPLICATION,
                         call,
-                        Box::new(native.clone())
+                        native.capture_execution_context()
                     )
                     .is_ok());
             }
             let mut classic = M68kCpu::new();
             classic.core.set_d(6, 0x7777);
-            let activated = calls.activate_m68k_parking(&mut classic, &native);
+            let activated = calls.activate_m68k_parking(&mut classic, &mut native);
             if occupied {
                 assert!(activated.is_none());
                 assert_eq!(classic.core.d(6), 0x7777);
                 assert!(calls.active_m68k().is_none());
+                assert_eq!(native.reservation_address(), Some(0x1000));
                 continue;
             }
             assert!(activated.is_some());
+            assert_eq!(native.reservation_address(), None);
             assert!(calls
                 .0
                 .borrow()
@@ -4913,6 +5213,67 @@ mod tests {
             assert!(calls.0.borrow().powerpc_contexts.is_empty());
             assert!(calls.is_empty());
         }
+    }
+
+    #[test]
+    fn mixed_callback_restores_private_import_state_across_live_time_wrap() {
+        const NATIVE_RETURN: u32 = 0x5000;
+        const NATIVE_FINAL: u32 = 0x7000;
+        let calls = SharedGuestCallStack::default();
+        let mut native = PpcCpu::new();
+        native.install_execution_context(pending_native_import_context(
+            0x1000,
+            NATIVE_RETURN,
+            NATIVE_FINAL,
+            0x6000,
+            0x1234_5678,
+        ));
+        native.gpr[1] = 0x9000;
+        native.set_time_base(u64::MAX);
+        assert!(calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x2000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+            0x4000,
+            0x3004,
+            M68kRegisterState::default(),
+            None,
+            NATIVE_RETURN,
+            0x6000,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+        let mut classic = M68kCpu::new();
+        assert!(calls
+            .activate_m68k_parking(&mut classic, &mut native)
+            .is_some());
+        assert_eq!(
+            native.step_instruction(0x6000_0000),
+            ppc::PpcStepResult::Stepped
+        );
+        assert_eq!(native.time_base(), 0);
+        assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, None, &mut native));
+        assert_eq!(native.time_base(), 0);
+        assert_eq!(native.pc, NATIVE_RETURN);
+        assert_eq!(
+            native.step_instruction((31 << 26) | (11 << 21) | (12 << 16) | (8 << 11) | (371 << 1)),
+            ppc::PpcStepResult::Stepped
+        );
+        assert_eq!(native.gpr[11], 0);
+        assert_eq!(native.time_base(), 1);
+        native.pc = NATIVE_RETURN;
+        let mut memory = GuestAddressSpace::new();
+        assert_eq!(
+            native.run_with_imports(&mut memory, 2, NATIVE_FINAL, 0, 0, |_, _, _| unreachable!()),
+            PpcRunResult::Halted {
+                pc: NATIVE_FINAL,
+                cycles: 1
+            }
+        );
+        assert_eq!((native.gpr[2], native.gpr[3]), (0x6000, 0x1234_5678));
     }
 
     #[test]

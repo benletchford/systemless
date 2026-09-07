@@ -27785,7 +27785,7 @@ mod tests {
             crate::guest_call::GuestCallReturnPolicy::Preserve
         ));
         disp.guest_calls
-            .activate_m68k_parking(&mut classic, &native)
+            .activate_m68k_parking(&mut classic, &mut native)
             .unwrap();
         cpu.write_reg(Register::A7, TEST_SP);
         cpu.write_reg(Register::D0, 0x0414);
@@ -27832,7 +27832,7 @@ mod tests {
             .guest_calls
             .create_native_thread(
                 crate::guest_call::NativeThreadContext {
-                    cpu: Box::new(native),
+                    context: native.capture_execution_context(),
                 },
                 crate::guest_call::ThreadStorage {
                     stack_base: 0x8000,
