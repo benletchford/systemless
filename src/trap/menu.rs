@@ -533,9 +533,13 @@ impl super::TrapDispatcher {
             if !self.guest_calls.begin_m68k_with_operation(
                 GuestCallTarget { isa: GuestIsa::M68k, entry: proc_addr, rtoc: 0 },
                 return_pc, final_sp, Some(frame.entry),
-                Some(crate::guest_call::ManagerContinuation::Menu(crate::menu_manager::MenuDefinitionOperation {
-                    scratch, completion: completion.clone(),
-                })),
+                Some(crate::guest_call::ManagerContinuation::Menu(
+                    crate::guest_call::MenuManagerContinuation::Definition(
+                        crate::menu_manager::MenuDefinitionOperation {
+                            scratch, completion: completion.clone(),
+                        },
+                    ),
+                )),
             ) { return false; }
             if let Some(id) = tracking_root {
                 self.menu_tracking

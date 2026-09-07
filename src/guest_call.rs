@@ -227,7 +227,13 @@ enum GuestCallOrigin {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ManagerContinuation {
     Cfm(CfmOperation),
-    Menu(crate::menu_manager::MenuDefinitionOperation),
+    Menu(MenuManagerContinuation),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MenuManagerContinuation {
+    Definition(crate::menu_manager::MenuDefinitionOperation),
+    Hook(MenuHookOperation),
 }
 
 #[derive(Clone, Debug)]
@@ -865,6 +871,29 @@ impl SharedMenuTracking {
         } else {
             self.attach_to(&view);
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn menu_hook_key(&self) -> Option<MenuHookKey> {
+        let index = self.active_index()?;
+        match &self.calls.calls[index].operation {
+            MenuOperation::Tracking(operation) => operation.hook.as_ref().map(|hook| hook.key),
+            _ => None,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn menu_hook_is_pending(&self, key: MenuHookKey) -> bool {
+        self.calls.calls.iter().any(|root| {
+            root.task == key.task
+                && root.id == key.menu
+                && root.parent == key.parent
+                && matches!(
+                    &root.operation,
+                    MenuOperation::Tracking(operation)
+                        if operation.hook.as_ref().is_some_and(|hook| {
+                            hook.key == key && !hook.completion.is_returned()
+                        })
+                )
+        })
     }
     fn active_index(&self) -> Option<usize> {
         let task = self.execution.current_task();
@@ -2438,15 +2467,55 @@ impl SharedGuestCallStack {
         final_sp: u32,
         result: Option<M68kResultTarget>,
     ) -> bool {
+        self.begin_m68k_to_powerpc_inner(target, arguments, return_pc, final_sp, result, None)
+    }
+
+    pub(crate) fn begin_m68k_to_powerpc_with_operation(
+        &self,
+        target: GuestCallTarget,
+        arguments: PowerPcArguments,
+        return_pc: u32,
+        final_sp: u32,
+        result: Option<M68kResultTarget>,
+        operation: ManagerContinuation,
+    ) -> bool {
+        self.begin_m68k_to_powerpc_inner(
+            target,
+            arguments,
+            return_pc,
+            final_sp,
+            result,
+            Some(operation),
+        )
+    }
+
+    fn begin_m68k_to_powerpc_inner(
+        &self,
+        target: GuestCallTarget,
+        arguments: PowerPcArguments,
+        return_pc: u32,
+        final_sp: u32,
+        result: Option<M68kResultTarget>,
+        operation: Option<ManagerContinuation>,
+    ) -> bool {
         if self.has_powerpc_from_m68k() {
             return false;
         }
         debug_assert_eq!(target.isa, GuestIsa::PowerPc);
-        self.push_effect(GuestCallEffect::call_guest(
+        let Some(id) = self.submit_effect(GuestCallEffect::call_guest(
             GuestCallRequest::for_task(self.current_task(), target)
                 .with_powerpc_arguments(arguments),
             GuestCallContinuation::to_m68k(return_pc, final_sp, result),
-        ))
+        )) else {
+            return false;
+        };
+        self.0
+            .borrow_mut()
+            .frames
+            .get_mut(&id)
+            .expect("submitted native call")
+            .operation = operation;
+        true
     }
 
     /// Prepare the emulated 68K interval for a native caller. Activation
@@ -2466,8 +2535,68 @@ impl SharedGuestCallStack {
         restore_rtoc: u32,
         return_gpr3: impl Into<GuestCallReturnPolicy>,
     ) -> bool {
+        self.begin_powerpc_to_m68k_inner(
+            target,
+            entry,
+            initial_sp,
+            return_pc,
+            final_sp,
+            registers,
+            result,
+            final_pc,
+            restore_rtoc,
+            return_gpr3.into(),
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_powerpc_to_m68k_with_operation(
+        &self,
+        target: GuestCallTarget,
+        entry: u32,
+        initial_sp: u32,
+        return_pc: u32,
+        final_sp: u32,
+        registers: M68kRegisterState,
+        result: Option<M68kResultSource>,
+        final_pc: u32,
+        restore_rtoc: u32,
+        return_gpr3: impl Into<GuestCallReturnPolicy>,
+        operation: ManagerContinuation,
+    ) -> bool {
+        self.begin_powerpc_to_m68k_inner(
+            target,
+            entry,
+            initial_sp,
+            return_pc,
+            final_sp,
+            registers,
+            result,
+            final_pc,
+            restore_rtoc,
+            return_gpr3.into(),
+            Some(operation),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_powerpc_to_m68k_inner(
+        &self,
+        target: GuestCallTarget,
+        entry: u32,
+        initial_sp: u32,
+        return_pc: u32,
+        final_sp: u32,
+        registers: M68kRegisterState,
+        result: Option<M68kResultSource>,
+        final_pc: u32,
+        restore_rtoc: u32,
+        return_gpr3: GuestCallReturnPolicy,
+        operation: Option<ManagerContinuation>,
+    ) -> bool {
         debug_assert_eq!(target.isa, GuestIsa::M68k);
-        self.push_effect(GuestCallEffect::call_guest(
+        let Some(id) = self.submit_effect(GuestCallEffect::call_guest(
             GuestCallRequest::for_task(self.current_task(), target).with_m68k_request(
                 M68kCallRequest {
                     entry,
@@ -2478,7 +2607,16 @@ impl SharedGuestCallStack {
                 },
             ),
             GuestCallContinuation::to_powerpc(return_pc, final_pc, restore_rtoc, return_gpr3),
-        ))
+        )) else {
+            return false;
+        };
+        self.0
+            .borrow_mut()
+            .frames
+            .get_mut(&id)
+            .expect("submitted classic call")
+            .operation = operation;
+        true
     }
 
     /// Adopt prepared emulated ABI storage into one exact task-owned call.
@@ -2724,21 +2862,42 @@ impl SharedGuestCallStack {
         &self,
         apply: impl FnOnce(M68kResume, Option<&mut M68kCpu>) -> bool,
     ) -> Option<Option<M68kCpu>> {
+        let (context, operation) = self.commit_m68k_resume_inner(false, apply)?;
+        debug_assert!(operation.is_none());
+        Some(context)
+    }
+
+    pub(crate) fn commit_m68k_resume_with_operation(
+        &self,
+        apply: impl FnOnce(M68kResume, Option<&mut M68kCpu>) -> bool,
+    ) -> Option<(Option<M68kCpu>, Option<ManagerContinuation>)> {
+        self.commit_m68k_resume_inner(true, apply)
+    }
+
+    fn commit_m68k_resume_inner(
+        &self,
+        accept_operation: bool,
+        apply: impl FnOnce(M68kResume, Option<&mut M68kCpu>) -> bool,
+    ) -> Option<(Option<M68kCpu>, Option<ManagerContinuation>)> {
         let bank = self.classic_contexts();
         let mut bank = bank.borrow_mut();
         let resume = self.peek_m68k_resume()?;
         let (task, call_id) = self.pending_m68k_resume_owner()?;
         let mut tasks = self.0.borrow_mut();
+        if !accept_operation && tasks.frames.get(&call_id)?.operation.is_some() {
+            return None;
+        }
         let context = bank
             .retire_with_context(&tasks.kernel, task, call_id, |context| {
                 apply(resume, context)
             })
             .ok()?;
-        tasks
+        let operation = tasks
             .frames
             .remove(&call_id)
-            .expect("validated resume frame");
-        Some(context)
+            .expect("validated resume frame")
+            .operation;
+        Some((context, operation))
     }
 
     /// Take and retire a completed 68K-origin continuation.
@@ -3095,9 +3254,18 @@ impl SharedGuestCallStack {
         // service resumes. The enclosing frame stays live, and no execution
         // store borrow may span the semantic consumer.
         drop(tasks);
+        let mut hook = None;
         if let Some(operation) = operation {
-            cpu.gpr[3] =
-                resume.expect("manager return requires its semantic consumer")(operation, cpu.gpr[3]);
+            match operation {
+                ManagerContinuation::Menu(MenuManagerContinuation::Hook(operation)) => {
+                    hook = Some(operation);
+                }
+                operation => {
+                    cpu.gpr[3] = resume.expect("manager return requires its semantic consumer")(
+                        operation, cpu.gpr[3],
+                    );
+                }
+            }
         }
         if let Some(scratch) = scratch {
             memory_manager
@@ -3105,6 +3273,9 @@ impl SharedGuestCallStack {
                 .release_native_scratch(scratch);
         }
         Self::apply_powerpc_return(cpu, origin);
+        if let Some(hook) = hook {
+            assert!(hook.complete(), "MenuHook completion must be single-use");
+        }
         true
     }
 
@@ -3241,9 +3412,19 @@ impl SharedGuestCallStack {
             .remove(&call_id)
             .expect("semantic continuation must have an adapter frame");
         drop(tasks);
+        let mut hook = None;
         if let Some((memory, manager)) = services {
-            if let Some(ManagerContinuation::Menu(operation)) = operation {
-                operation.complete(memory);
+            match operation {
+                Some(ManagerContinuation::Menu(MenuManagerContinuation::Definition(operation))) => {
+                    operation.complete(memory)
+                }
+                Some(ManagerContinuation::Menu(MenuManagerContinuation::Hook(operation))) => {
+                    hook = Some(operation);
+                }
+                Some(ManagerContinuation::Cfm(_)) => {
+                    unreachable!("CFM operation rejected before classic completion")
+                }
+                None => {}
             }
             if let Some(scratch) = scratch {
                 manager.release_native_scratch(scratch);
@@ -3256,6 +3437,9 @@ impl SharedGuestCallStack {
             cpu.gpr[3] = result;
         }
         Self::apply_powerpc_return(cpu, origin);
+        if let Some(hook) = hook {
+            assert!(hook.complete(), "MenuHook completion must be single-use");
+        }
         true
     }
 
@@ -5248,6 +5432,129 @@ mod tests {
             assert!(bank.borrow().is_empty());
             assert!(calls.is_empty());
         }
+    }
+
+    #[test]
+    fn reverse_operation_commit_is_transactional_and_returns_its_exact_carrier() {
+        let calls = SharedGuestCallStack::default();
+        let hook = MenuHookOperation::pending(MenuHookKey {
+            task: ExecutionTaskId::APPLICATION,
+            menu: MenuOperationId(17),
+            parent: None,
+        });
+        assert!(calls.begin_m68k_to_powerpc_with_operation(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: 0x1000,
+                rtoc: 0x2000,
+            },
+            PowerPcArguments::from_slice(&[]).unwrap(),
+            0x3000,
+            0x4000,
+            None,
+            ManagerContinuation::Menu(MenuManagerContinuation::Hook(hook.clone()),),
+        ));
+        let mut classic = M68kCpu::new();
+        classic.core.set_a(7, 0x9876);
+        let mut native = PpcCpu::new();
+        assert!(calls
+            .activate_powerpc_with_classic_caller(&mut native, &mut classic, RETURN_PC)
+            .is_some());
+        native.pc = RETURN_PC;
+        assert!(calls.complete_powerpc_for_m68k(&mut native));
+
+        assert!(calls.commit_m68k_resume(|_, _| true).is_none());
+        assert!(calls
+            .commit_m68k_resume_with_operation(|resume, parked| {
+                assert_eq!((resume.return_pc, resume.final_sp), (0x3000, 0x4000));
+                assert_eq!(parked.unwrap().core.a(7), 0x9876);
+                false
+            })
+            .is_none());
+        assert!(!hook.completion.is_returned());
+        assert!(calls.peek_m68k_resume().is_some());
+
+        let (parked, operation) = calls
+            .commit_m68k_resume_with_operation(|_, parked| {
+                assert_eq!(parked.as_ref().unwrap().core.a(7), 0x9876);
+                true
+            })
+            .unwrap();
+        assert_eq!(parked.unwrap().core.a(7), 0x9876);
+        let Some(ManagerContinuation::Menu(MenuManagerContinuation::Hook(returned))) = operation
+        else {
+            panic!("exact MenuHook carrier must return with the classic context");
+        };
+        assert_eq!(returned, hook);
+        assert!(returned.complete());
+        assert!(hook.completion.is_returned());
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn native_menu_hook_restores_r3_before_releasing_its_receipt() {
+        let calls = SharedGuestCallStack::default();
+        let mut tracking = calls.menu_tracking_view();
+        let call = MenuTrackingCall {
+            request: crate::menu_manager::MenuTrackingRequest::MenuSelect { initial_point: 12 },
+            origin: MenuTrackingOrigin::PowerPc {
+                stack_pointer: 0x1000,
+                return_address: 0x6000,
+            },
+        };
+        let entry = tracking.enter_new_call(call);
+        *tracking = Some(crate::menu_manager::test_process_menu_tracking(111));
+        let key = tracking.request_menu_hook(true).unwrap();
+        let operation = MenuHookOperation::pending(key);
+        let effect = GuestCallEffect::call_guest(
+            GuestCallRequest::for_task(
+                ExecutionTaskId::APPLICATION,
+                GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: 0x2000,
+                    rtoc: 0x3000,
+                },
+            )
+            .with_powerpc_arguments(PowerPcArguments::from_slice(&[]).unwrap()),
+            GuestCallContinuation::to_powerpc(
+                0x5000,
+                0x6000,
+                0x7000,
+                PpcNativeReturnGpr3::Set(0x1234_5678),
+            ),
+        );
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[1] = 0x1000;
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1000, vec![0; 128]);
+        assert!(calls.activate_powerpc_effect_with_operation(
+            &mut cpu,
+            &mut memory,
+            effect,
+            None,
+            Some(ManagerContinuation::Menu(MenuManagerContinuation::Hook(
+                operation.clone(),
+            ))),
+        ));
+        assert!(tracking.bind_menu_hook(key, operation.completion.clone()));
+        cpu.pc = 0x5000;
+        cpu.gpr[3] = 77;
+        let mut manager = ProcessNativeMemoryManager::default();
+        assert!(
+            calls.complete_powerpc_resuming_operation(&mut cpu, &mut manager, |_, _| panic!(
+                "MenuHook must complete at the execution boundary"
+            ),)
+        );
+        assert_eq!(
+            (cpu.pc, cpu.gpr[2], cpu.gpr[3]),
+            (0x6000, 0x7000, 0x1234_5678)
+        );
+        assert_eq!(tracking.ready_call(GuestIsa::PowerPc), Some(call));
+        let (_, resumed) = tracking.resume_call(GuestIsa::PowerPc).unwrap();
+        *tracking.context_mut() = MenuTrackingContext::default();
+        drop(resumed);
+        drop(entry);
+        assert!(calls.is_empty());
     }
 
     #[test]

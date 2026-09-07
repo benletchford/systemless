@@ -10359,16 +10359,13 @@ impl FixtureRunner {
         if self.active_interrupt_callback.is_some() || (opcode & !0x0400) != 0xa93d {
             return false;
         }
-        if !self
-            .process_context
-            .menu_tracking()
-            .as_ref()
-            .is_some_and(|tracking| {
-                tracking.should_invoke_menu_hook(self.bus.read_byte(0x0172) == 0)
-            })
-        {
+        let Some(key) = self
+            .dispatcher
+            .menu_tracking
+            .request_menu_hook(self.bus.read_byte(0x0172) == 0)
+        else {
             return false;
-        }
+        };
         let pointer = self.bus.read_long(0x0a30);
         let Some(procedure) = crate::guest_procedure::resolve_guest_procedure(
             &mut self.bus,
@@ -10388,21 +10385,36 @@ impl FixtureRunner {
             entry: procedure.entry,
             rtoc: procedure.rtoc,
         };
-        self.dispatcher.preserve_menu_callback_port(&self.bus);
         let sp = self.m68k.cpu.read_reg(Register::A7);
+        let operation = crate::guest_call::MenuHookOperation::pending(key);
         if procedure.isa == GuestIsa::PowerPc {
-            return self.dispatcher.guest_calls.begin_m68k_to_powerpc(
-                target,
-                crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
-                self.m68k.cpu.read_reg(Register::PC),
-                sp,
-                None,
-            );
+            if !self
+                .dispatcher
+                .guest_calls
+                .begin_m68k_to_powerpc_with_operation(
+                    target,
+                    crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
+                    self.m68k.cpu.read_reg(Register::PC),
+                    sp,
+                    None,
+                    crate::guest_call::ManagerContinuation::Menu(
+                        crate::guest_call::MenuManagerContinuation::Hook(operation.clone()),
+                    ),
+                )
+            {
+                return false;
+            }
+            assert!(self
+                .dispatcher
+                .menu_tracking
+                .bind_menu_hook(key, operation.completion.clone()));
+            self.dispatcher.preserve_menu_callback_port(&self.bus);
+            return true;
         }
         let Some(frame) = crate::execution_m68k::M68kMenuHookFrame::new(procedure.entry, sp) else {
             return false;
         };
-        if !self.bus.is_guest_address_mapped(frame.entry - 66, 114) {
+        if !self.bus.is_guest_address_writable(frame.entry - 66, 114) {
             return false;
         }
         let return_pc = frame.entry + 28;
@@ -10411,10 +10423,17 @@ impl FixtureRunner {
             return_pc,
             sp,
             Some(frame.entry),
-            None,
+            Some(crate::guest_call::ManagerContinuation::Menu(
+                crate::guest_call::MenuManagerContinuation::Hook(operation.clone()),
+            )),
         ) {
             return false;
         }
+        assert!(self
+            .dispatcher
+            .menu_tracking
+            .bind_menu_hook(key, operation.completion.clone()));
+        self.dispatcher.preserve_menu_callback_port(&self.bus);
         self.bus.write_bytes(frame.entry, &frame.image);
         self.bus.write_long(frame.entry - 4, return_pc);
         self.m68k.cpu.write_reg(Register::A7, frame.entry - 4);
@@ -16532,7 +16551,7 @@ mod tests {
         use crate::loader::ppc::tests::native_menu_hook_fixture;
         use crate::memory::globals::addr;
         for cancel in [false, true] {
-            let (mut native, _) = native_menu_hook_fixture();
+            let (mut native, _, _) = native_menu_hook_fixture();
             native.cpu.gpr[3] = (10 << 16) | 12;
             native.memory.write_u16_be(addr::MENU_FLASH, 0).unwrap();
             let original_sp = native.cpu.gpr[1];
@@ -16646,6 +16665,9 @@ mod tests {
             .unwrap();
         runner.dispatcher.draw_menu_bar_to_fb(&mut runner.bus);
         let original_port = *runner.dispatcher.current_port;
+        let hook_port = runner.bus.alloc(170);
+        let original_port_image = runner.bus.read_bytes(original_port, 170).to_vec();
+        runner.bus.write_bytes(hook_port, &original_port_image);
         let parameters = stack + if auto_pop { 4 } else { 0 };
         let return_pc = entry + if auto_pop { 0x100 } else { 2 };
         runner.bus.write_word(return_pc, 0x60fe);
@@ -16660,14 +16682,61 @@ mod tests {
         runner.bus.write_long(parameters + 4, 0);
         runner.m68k.cpu.write_reg(Register::A7, stack);
         let hook_marker = runner.bus.alloc(4);
+        let hook_after_yield_marker = runner.bus.alloc(4);
+        let cooperative_switch = hook && !native_hook && !auto_pop;
+        let mut hook_yield_resume_pc = None;
+        let mut worker_yield_result = None;
         if hook {
-            let code = runner.bus.alloc(24);
-            runner.bus.write_word(code, 0x7e63); // MOVEQ #99,D7
-            runner.bus.write_word(code + 2, 0x2c7c); // MOVEA.L #value,A6
-            runner.bus.write_long(code + 4, 0x12345678);
-            runner.bus.write_word(code + 8, 0x52b9); // ADDQ.L #1,marker
-            runner.bus.write_long(code + 10, hook_marker);
-            runner.bus.write_word(code + 14, 0x4e75);
+            let mut hook_words = vec![
+                0x7e63, // MOVEQ #99,D7
+                0x2c7c, // MOVEA.L #value,A6
+                0x1234,
+                0x5678,
+            ];
+            if !native_hook {
+                hook_words.extend([
+                    0x2f3c,
+                    (hook_port >> 16) as u16,
+                    hook_port as u16,
+                    0xa873, // SetPort(hook_port)
+                ]);
+            }
+            hook_words.extend([
+                0x52b9, // ADDQ.L #1,marker
+                (hook_marker >> 16) as u16,
+                hook_marker as u16,
+            ]);
+            if cooperative_switch {
+                hook_words.extend([
+                    0x558f, // SUBQ.L #2,SP: Pascal result word
+                    0x42a7, // CLR.L -(SP): synthetic suggested ThreadID
+                    0x303c, 0x0205, // MOVE.W #YieldToAnyThread,D0
+                    0xabf2, // ThreadDispatch
+                    0x548f, // ADDQ.L #2,SP: pop Pascal result
+                ]);
+                hook_words.extend([
+                    0x52b9, // ADDQ.L #1,after-yield marker
+                    (hook_after_yield_marker >> 16) as u16,
+                    hook_after_yield_marker as u16,
+                ]);
+            }
+            hook_words.extend([
+                0x5279, // ADDQ.W #1,menuWidth
+                ((record + 2) >> 16) as u16,
+                (record + 2) as u16,
+                0x4e75,
+            ]);
+            let code = runner.bus.alloc((hook_words.len() * 2) as u32);
+            if cooperative_switch {
+                let trap_index = hook_words
+                    .iter()
+                    .position(|word| *word == 0xabf2)
+                    .unwrap();
+                hook_yield_resume_pc = Some(code + (trap_index as u32 + 1) * 2);
+            }
+            for (index, word) in hook_words.into_iter().enumerate() {
+                runner.bus.write_word(code + index as u32 * 2, word);
+            }
             runner.bus.write_long(0x0a30, code);
             if native_hook {
                 use crate::guest_procedure::{
@@ -16676,8 +16745,13 @@ mod tests {
                     ROUTINE_RECORD_FLAGS_OFFSET, ROUTINE_RECORD_ISA_OFFSET,
                     ROUTINE_RECORD_POWERPC_ISA, ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
                 };
-                let native_code = runner.bus.alloc(28);
+                let native_code = runner.bus.alloc(48);
                 for (index, word) in [
+                    0x3ce0_0000 | (record >> 16),
+                    0x60e7_0000 | (record & 0xffff),
+                    0xa147_0002,
+                    0x394a_0001,
+                    0xb147_0002,
                     0x3d00_0000 | (hook_marker >> 16),
                     0x6108_0000 | (hook_marker & 0xffff),
                     0x8128_0000,
@@ -16718,10 +16792,185 @@ mod tests {
             runner.m68k.cpu.write_reg(Register::D7, 0x77777777);
             runner.m68k.cpu.write_reg(Register::A6, 0x66666666);
         }
-        runner.push_canonical_mouse_down(10, 16);
+        if hook && !native_hook {
+            let hook_pointer = runner.bus.read_long(0x0a30);
+            runner.bus.write_long(0x0a30, 0);
+            runner.push_canonical_mouse_down(10, 16);
+            for _ in 0..8 {
+                assert!(runner.run_steps(128, None).1);
+                if runner
+                    .dispatcher
+                    .menu_tracking
+                    .request_menu_hook(true)
+                    .is_some()
+                {
+                    break;
+                }
+            }
+            let key = runner
+                .dispatcher
+                .menu_tracking
+                .request_menu_hook(true)
+                .expect("held menu requests its classic hook");
+            let call_depth = runner.dispatcher.guest_calls.depth();
+            runner.bus.write_long(0x0a30, hook_pointer);
+            let procedure = crate::guest_procedure::resolve_guest_procedure(
+                &mut runner.bus,
+                hook_pointer,
+                0,
+                None,
+                GuestIsa::M68k,
+                GuestIsa::M68k,
+            )
+            .expect("classic hook remains resolvable");
+            assert_eq!(procedure.isa, GuestIsa::M68k);
+            assert_eq!(procedure.entry, hook_pointer);
+            let valid_sp = runner.m68k.cpu.read_reg(Register::A7);
+            let frame_start = runner.bus.alloc(114);
+            let frame_len = 114;
+            runner
+                .bus
+                .protect_readonly_code(frame_start, frame_len as u32);
+            assert!(runner.bus.is_guest_address_mapped(frame_start, frame_len));
+            assert!(!runner.bus.is_guest_address_writable(frame_start, frame_len));
+            let frame_snapshot = runner.bus.read_bytes(frame_start, frame_len).to_vec();
+            runner
+                .m68k
+                .cpu
+                .write_reg(Register::A7, frame_start + frame_len as u32);
+            assert!(!runner.fire_menu_hook_proc(0xa93d));
+            assert_eq!(runner.bus.read_bytes(frame_start, frame_len), frame_snapshot);
+            assert_eq!(
+                runner.dispatcher.menu_tracking.request_menu_hook(true),
+                Some(key)
+            );
+            assert_eq!(runner.dispatcher.menu_tracking.context().classic_port, None);
+            assert_eq!(runner.dispatcher.guest_calls.depth(), call_depth);
+            runner.m68k.cpu.write_reg(Register::A7, valid_sp);
+            if cooperative_switch {
+                let worker = ExecutionTaskId::from_thread_id(3);
+                let worker_entry = runner.bus.alloc(8);
+                let worker_stack = runner.bus.alloc(64);
+                let worker_sp = worker_stack + 58;
+                for (index, word) in [
+                    0x303c, 0x0205, // MOVE.W #YieldToAnyThread,D0
+                    0xabf2, // ThreadDispatch back to the application
+                    0x60fe, // BRA.S -2 if no successor is runnable
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    runner.bus.write_word(worker_entry + index as u32 * 2, word);
+                }
+                runner.bus.write_long(worker_sp, 0);
+                runner.bus.write_word(worker_sp + 4, 0xbeef);
+                worker_yield_result = Some(worker_sp + 4);
+                assert!(runner.dispatcher.guest_calls.register_task(worker));
+                assert!(runner.dispatcher.guest_calls.set_thread_storage(
+                    worker,
+                    crate::guest_call::ThreadStorage {
+                        stack_base: worker_stack,
+                        stack_limit: worker_stack + 64,
+                        ..Default::default()
+                    }
+                ));
+                assert!(runner.dispatcher.guest_calls.save_cooperative_context(
+                    worker,
+                    CooperativeThread {
+                        a_regs: [0, 0, 0, 0, 0, 0, 0, worker_sp],
+                        pc: worker_entry,
+                        ..Default::default()
+                    }
+                ));
+                assert!(runner.dispatcher.guest_calls.set_scheduling_state(
+                    worker,
+                    crate::execution_kernel::ExecutionTaskState::Ready
+                ));
+            }
+            assert!(runner.fire_menu_hook_proc(0xa93d));
+            assert_eq!(runner.dispatcher.menu_tracking.menu_hook_key(), Some(key));
+            assert!(runner
+                .dispatcher
+                .menu_tracking
+                .context()
+                .classic_port
+                .is_some());
+            if cooperative_switch {
+                runner.bus.write_long(0x0a30, 0);
+                let worker = ExecutionTaskId::from_thread_id(3);
+                for _ in 0..32 {
+                    runner.run_steps(1, None);
+                    if runner.dispatcher.guest_calls.current_task() == worker {
+                        break;
+                    }
+                }
+                assert_eq!(runner.dispatcher.guest_calls.current_task(), worker);
+                assert_eq!(runner.bus.read_long(hook_marker), 1);
+                assert_eq!(runner.bus.read_long(hook_after_yield_marker), 0);
+                assert_eq!(runner.bus.read_byte(0x0172), 0);
+                assert_eq!(*runner.dispatcher.current_port, hook_port);
+                assert_eq!(runner.dispatcher.menu_tracking.menu_hook_key(), None);
+                assert!(runner.dispatcher.menu_tracking.menu_hook_is_pending(key));
+                assert!(runner
+                    .dispatcher
+                    .menu_tracking
+                    .ready_call(GuestIsa::M68k)
+                    .is_none());
+                let parked = runner
+                    .dispatcher
+                    .guest_calls
+                    .cooperative_context(ExecutionTaskId::APPLICATION)
+                    .expect("suspended hook context");
+                assert_eq!(parked.pc, hook_yield_resume_pc.unwrap());
+                for _ in 0..32 {
+                    runner.run_steps(1, None);
+                    if runner.dispatcher.guest_calls.current_task()
+                        == ExecutionTaskId::APPLICATION
+                    {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    runner.dispatcher.guest_calls.current_task(),
+                    ExecutionTaskId::APPLICATION
+                );
+                assert_eq!(runner.bus.read_word(worker_yield_result.unwrap()), 0);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::PC), parked.pc);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::A7), parked.a_regs[7]);
+                assert_eq!(runner.dispatcher.menu_tracking.menu_hook_key(), Some(key));
+                for _ in 0..32 {
+                    runner.run_steps(1, None);
+                    assert!(
+                        runner.process_context.menu_tracking().is_some(),
+                        "held root vanished before hook receipt consumption: task={:?} pc={:08x} button={:02x}",
+                        runner.dispatcher.guest_calls.current_task(),
+                        runner.m68k.cpu.read_reg(Register::PC),
+                        runner.bus.read_byte(0x0172),
+                    );
+                    if runner.bus.read_long(hook_after_yield_marker) == 1
+                        && runner.dispatcher.menu_tracking.menu_hook_key().is_none()
+                    {
+                        break;
+                    }
+                }
+                assert_eq!(runner.bus.read_long(hook_after_yield_marker), 1);
+                assert_eq!(runner.dispatcher.menu_tracking.menu_hook_key(), None);
+                assert!(runner.process_context.menu_tracking().is_some());
+            }
+        } else {
+            runner.push_canonical_mouse_down(10, 16);
+        }
 
-        for _ in 0..8 {
-            assert!(runner.run_steps(128, None).1);
+        if !cooperative_switch {
+            for _ in 0..8 {
+                assert!(runner.run_steps(128, None).1);
+            }
+        }
+        if hook && !native_hook {
+            assert_eq!(*runner.dispatcher.current_port, hook_port);
+            if cooperative_switch {
+                assert_eq!(runner.bus.read_long(hook_after_yield_marker), 1);
+            }
         }
         let rect = runner
             .process_context
@@ -16784,6 +17033,7 @@ mod tests {
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
         if hook {
             assert!(runner.bus.read_long(hook_marker) > 0, "the guest hook ran");
+            assert!(runner.bus.read_word(record + 2) > 80);
             assert_eq!(runner.m68k.cpu.read_reg(Register::D7), 0x77777777);
             assert_eq!(runner.m68k.cpu.read_reg(Register::A6), 0x66666666);
             assert!(runner.dispatcher.guest_calls.is_empty());
