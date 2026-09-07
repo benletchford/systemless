@@ -4520,10 +4520,9 @@ impl FixtureRunner {
         audio_samples: usize,
         sound_interrupt_dispatched: bool,
     ) {
-        // Redraw menu bar and window chrome after each frame.
-        // On a real Mac the Window Manager maintains these as
-        // separate layers; here they are raw framebuffer pixels
-        // that game drawing (explosions, etc.) can overwrite.
+        // Guest framebuffer writes can overwrite menu/window chrome, so a
+        // complete frame restores it. Realtime sound slices leave that work
+        // to the caller's outer composition pass, but still service audio.
         if finalization == FrameFinalization::Complete {
             self.redraw_chrome_outside_idle_journal();
         }
