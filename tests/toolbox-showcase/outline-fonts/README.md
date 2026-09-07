@@ -304,3 +304,38 @@ benchmark claims.
 The fixes use the shared Rust Window Manager and require no platform backend.
 
 <img src="simfarm/window-cycling.png" alt="SimFarm gameplay windows after repeated cycling, with retained sharp text and correct overlap" width="800">
+
+## Picture playback and sustained TextEdit input
+
+PowerPC PICT playback copied the entire temporary framebuffer back, discarding
+outline detail outside the picture. It now commits only bytes actually written
+by the picture interpreter. Same-value writes still erase covered detail; packed
+pixel edges retain their neighboring bits. The Drawing page regression checks
+that its heading retains real subpixel detail before any window repaint.
+
+TextEdit redraws exposed expensive per-pixel rectangle fills and repeated deep
+comparisons of equal font cells. Native fills now decode the visibility and clip
+regions once and write their intersected row spans. Bulk offscreen writes remove
+only affected retained cells, and equal redraws refresh the shared identity cache.
+These paths use portable Rust and keep the existing 2×–4× presentation quality.
+
+Both CPU versions completed 300 inserted characters, selection dragging, deleting
+the selection and switching pages. A sequential Apple M1 headless comparison of
+the same 100-key test, with the menu visible and the PICT fix enabled in both
+builds, reduced the measured input phase from 15.78 to 8.48 seconds (46%). This is
+execution plus composition, not a live frame-rate measurement. The original
+permanent lockup was not reproduced in these tests; the sustained-input regression
+and the remaining interactive performance follow-up continue to track that risk.
+
+```sh
+SYSTEMLESS_PREFER_POWERPC=1 SYSTEMLESS_TEXTEDIT_STRESS_KEYS=300 \
+  cargo test --profile ci-test --no-default-features --test toolbox_showcase \
+  textedit_repeated_input_and_selection_complete -- --exact --nocapture
+```
+
+Use `SYSTEMLESS_PREFER_POWERPC=0` for the 68K run. Both full 59-checkpoint galleries
+were regenerated and their logical reference pixels remained unchanged. Only four
+PowerPC review images changed: Drawing and the later captures that retained the
+previously degraded window title.
+
+<img src="../review/systemless-classic-ppc/04-drawing.png" alt="Drawing page with sharp text retained around PICT playback" width="800">

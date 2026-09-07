@@ -753,11 +753,12 @@ impl Hasher for AddressHasher {
 }
 
 /// Original contents of the aligned 32-bit words a probe's writes touched,
-/// keyed by the word's address. One insert per word instead of one per
+/// keyed by the word's address, with a four-bit mask of the bytes written.
+/// One insert per word instead of one per
 /// byte; the bytes of a word a write did not touch cannot change while a
 /// probe is armed (every writer goes through the bus and fastmem is
 /// withdrawn), so comparing them at the end is harmless.
-type WriteProbeJournal = HashMap<u32, u32, BuildHasherDefault<AddressHasher>>;
+type WriteProbeJournal = HashMap<u32, (u32, u8), BuildHasherDefault<AddressHasher>>;
 
 /// An armed write journal temporarily detached from the bus by
 /// [`MacMemoryBus::suspend_write_probe`]; hand it back with
@@ -1688,12 +1689,39 @@ impl MacMemoryBus {
         let unchanged = !self.write_probe_invalid
             && original
                 .iter()
-                .all(|(&word, &value)| self.ram.read_long_in_bounds(word as usize) == value);
+                .all(|(&word, &(value, _))| self.ram.read_long_in_bounds(word as usize) == value);
         self.write_probe_spare = original;
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
         self.write_probe_uncapped = false;
         unchanged
+    }
+
+    /// Finish host drawing and return exactly the bytes it wrote, including
+    /// same-value writes. Those still erase any retained outline coverage.
+    pub(crate) fn finish_write_probe_ranges(&mut self) -> Vec<std::ops::Range<u32>> {
+        assert!(!self.write_probe_invalid && !self.write_probe_overflowed);
+        let mut addresses = Vec::new();
+        if let Some(journal) = &self.write_probe_original {
+            for (&word, &(_, mask)) in journal {
+                for byte in 0..4 {
+                    if mask & (1 << byte) != 0 {
+                        addresses.push(word + byte);
+                    }
+                }
+            }
+        }
+        addresses.sort_unstable();
+        let mut ranges: Vec<std::ops::Range<u32>> = Vec::new();
+        for address in addresses {
+            if let Some(last) = ranges.last_mut().filter(|last| last.end == address) {
+                last.end += 1;
+            } else {
+                ranges.push(address..address + 1);
+            }
+        }
+        self.cancel_write_probe();
+        ranges
     }
 
     /// Close the journal, keeping its allocation for the next probe.
@@ -1744,7 +1772,10 @@ impl MacMemoryBus {
                 .write_probe_original
                 .as_mut()
                 .expect("write probe checked above");
-            journal.entry(word).or_insert(original);
+            let first_byte = address.saturating_sub(word).min(4);
+            let last_byte = (end - u64::from(word)).min(4) as u32;
+            let mask = (((1u16 << last_byte) - 1) & !((1u16 << first_byte) - 1)) as u8;
+            journal.entry(word).or_insert((original, 0)).1 |= mask;
             if !self.write_probe_uncapped && journal.len() > WRITE_PROBE_MAX_ENTRIES {
                 // Too much written for a wait cycle: void the probe now so
                 // the fast paths (and fastmem) come back for the work in
@@ -2988,6 +3019,26 @@ impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drawing_write_ranges_include_same_value_and_unaligned_writes() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.begin_uncapped_write_probe();
+        bus.write_byte(101, 0);
+        bus.write_word(107, 0);
+        bus.write_bytes(108, &[0; 7]);
+        bus.write_long(201, 0);
+        assert_eq!(
+            bus.finish_write_probe_ranges(),
+            vec![101..102, 107..115, 201..205]
+        );
+        bus.begin_write_probe();
+        bus.write_long(107, 0);
+        assert!(bus.finish_write_probe_unchanged());
+        bus.begin_write_probe();
+        bus.write_byte(108, 1);
+        assert!(!bus.finish_write_probe_unchanged());
+    }
 
     #[test]
     fn attached_m68k_trace_observes_hle_rewrite_with_unchanged_head() {

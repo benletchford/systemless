@@ -3334,51 +3334,42 @@ fn capture_outline_font_showcase() {
     }
 }
 
+fn step_gui_until<F: FnMut(&mut FixtureRunner) -> bool>(
+    runner: &mut FixtureRunner,
+    label: &str,
+    mut condition: F,
+) {
+    for _ in 0..2000 {
+        if condition(runner) {
+            return;
+        }
+        let target = runner.guest_tick() + 1;
+        assert!(runner.run_gui_slice_with_audio(10_000, target, 0).1);
+        prepare_review_presentation(runner);
+        runner.composite_frame();
+    }
+    panic!("timeout: {label}");
+}
+
+fn finish_gui_paint(runner: &mut FixtureRunner) {
+    let previous = runner.event_manager_snapshot().last_record;
+    step_gui_until(runner, "page paint", |runner| {
+        let current = runner.event_manager_snapshot().last_record;
+        current != previous && current.is_some_and(|event| event.what == 0)
+    });
+}
+
+fn select_gui_page(runner: &mut FixtureRunner, page: i16) {
+    assert!(runner.select_guest_menu_item(MENU_PAGES, page));
+    step_gui_until(runner, "page selection", |r| {
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, page)
+    });
+    finish_gui_paint(runner);
+}
 /// Desktop frames can observe CLUT changes after a page has already painted.
 /// A fresh page must retain the same outlines as a later full window update.
 #[test]
 fn first_page_outlines_survive_palette_changes() {
-    fn prepare(runner: &mut FixtureRunner) {
-        let d = runner.dispatcher();
-        let mode = d.screen_mode;
-        let palette =
-            systemless::display::rgba_palette_from_clut_with_gamma(&d.device_clut, &d.device_gamma)
-                .map(|word| {
-                    let [r, g, b, _] = word.to_le_bytes();
-                    [r, g, b]
-                });
-        runner.bus_mut().prepare_outline_presentation(mode, palette);
-    }
-    fn step_until<F: FnMut(&mut FixtureRunner) -> bool>(
-        runner: &mut FixtureRunner,
-        label: &str,
-        mut condition: F,
-    ) {
-        for _ in 0..2000 {
-            if condition(runner) {
-                return;
-            }
-            let target = runner.guest_tick() + 1;
-            assert!(runner.run_gui_slice_with_audio(10_000, target, 0).1);
-            prepare(runner);
-            runner.composite_frame();
-        }
-        panic!("timeout: {label}");
-    }
-    fn finish_paint(runner: &mut FixtureRunner) {
-        let previous = runner.event_manager_snapshot().last_record;
-        step_until(runner, "page paint", |runner| {
-            let current = runner.event_manager_snapshot().last_record;
-            current != previous && current.is_some_and(|event| event.what == 0)
-        });
-    }
-    fn page(runner: &mut FixtureRunner, page: i16) {
-        assert!(runner.select_guest_menu_item(MENU_PAGES, page));
-        step_until(runner, "page selection", |r| {
-            menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, page)
-        });
-        finish_paint(runner);
-    }
     fn text_pixels(runner: &mut FixtureRunner, page: i16) -> Vec<u8> {
         runner.composite_frame();
         let (top, left, _, _) = runner.window_bounds();
@@ -3409,6 +3400,9 @@ fn first_page_outlines_survive_palette_changes() {
         }
     }
     let mut runner = new_runner_with_screen_depth(8);
+    runner
+        .set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 })
+        .unwrap();
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner.set_menu_bar_policy(systemless::runner::MenuBarPolicy::ForceHidden);
     runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
@@ -3417,12 +3411,38 @@ fn first_page_outlines_survive_palette_changes() {
     runner.set_app_start_time(3_786_912_000);
     let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
     init_game(&mut runner, &app);
-    prepare(&mut runner);
-    step_until(&mut runner, "first outline page", |r| r.window_count() >= 1);
-    finish_paint(&mut runner);
-    for (target, name) in [(ITEM_PAGE_LISTS, "lists"), (ITEM_PAGE_TEXTEDIT, "textedit")] {
-        page(&mut runner, ITEM_PAGE_PALETTES);
-        page(&mut runner, target);
+    prepare_review_presentation(&mut runner);
+    step_gui_until(&mut runner, "first outline page", |r| r.window_count() >= 1);
+    finish_gui_paint(&mut runner);
+    for (target, name) in [
+        (ITEM_PAGE_DRAWING, "drawing"),
+        (ITEM_PAGE_LISTS, "lists"),
+        (ITEM_PAGE_TEXTEDIT, "textedit"),
+    ] {
+        select_gui_page(&mut runner, ITEM_PAGE_PALETTES);
+        select_gui_page(&mut runner, target);
+        if target == ITEM_PAGE_DRAWING {
+            let (top, left, _, _) = runner.window_bounds();
+            let (w, _, rgb, _) = runner.bus().outline_presentation_rgb().unwrap();
+            let mut detailed = 0;
+            for y in top + 54..top + 65 {
+                for x in left + 28..left + 215 {
+                    let first = ((y as usize * 4) * w as usize + x as usize * 4) * 3;
+                    if (0..4).any(|sy| {
+                        (0..4).any(|sx| {
+                            let i = first + (sy * w as usize + sx) * 3;
+                            rgb[i..i + 3] != rgb[first..first + 3]
+                        })
+                    }) {
+                        detailed += 1;
+                    }
+                }
+            }
+            assert!(
+                detailed > 100,
+                "drawing a picture discarded surrounding text detail: {detailed}"
+            );
+        }
         let fresh = text_pixels(&mut runner, target);
         capture(&runner, &format!("{name}-fresh.png"));
         // Exercise the same screen -> offscreen -> covered screen -> restore
@@ -3445,7 +3465,7 @@ fn first_page_outlines_survive_palette_changes() {
 
         let (top, left, _, _) = runner.window_bounds();
         drag_mouse(&mut runner, top - 10, left + 100, top - 5, left + 100);
-        finish_paint(&mut runner);
+        finish_gui_paint(&mut runner);
         assert_ne!(runner.window_bounds().0, top, "drag did not move window");
         assert!(
             fresh == text_pixels(&mut runner, target),
@@ -3456,16 +3476,16 @@ fn first_page_outlines_survive_palette_changes() {
             let original = showcase_textedit(&mut runner).text;
             runner.push_key_down(0x07, b'x');
             runner.push_key_up(0x07, b'x');
-            step_until(&mut runner, "typed character", |r| {
+            step_gui_until(&mut runner, "typed character", |r| {
                 showcase_textedit(r).text.len() == original.len() + 1
             });
-            finish_paint(&mut runner);
+            finish_gui_paint(&mut runner);
             runner.push_key_down(0x33, 8);
             runner.push_key_up(0x33, 8);
-            step_until(&mut runner, "deleted character", |r| {
+            step_gui_until(&mut runner, "deleted character", |r| {
                 showcase_textedit(r).text == original
             });
-            finish_paint(&mut runner);
+            finish_gui_paint(&mut runner);
             assert!(
                 fresh == text_pixels(&mut runner, target),
                 "typing must not repair missing first-paint detail"
@@ -3506,4 +3526,71 @@ fn main_window_shrink_repaints_exposed_desktop() {
     run_ticks(&mut runner, "move shrunk window", 2);
     assert_eq!(screen_rgb(&mut runner, 80, 100), desktop,
         "moving the shrunk window must not restore its former contents");
+}
+
+#[test]
+fn textedit_repeated_input_and_selection_complete() {
+    let mut runner = new_runner_with_screen_depth(8);
+    runner
+        .set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 })
+        .unwrap();
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
+    runner.set_menu_bar_visible(true);
+    runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
+        prefer_powerpc(),
+    ));
+    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+    init_game(&mut runner, &app);
+    prepare_review_presentation(&mut runner);
+    step_gui_until(&mut runner, "startup", |r| r.window_count() > 0);
+    finish_gui_paint(&mut runner);
+    select_gui_page(&mut runner, ITEM_PAGE_DRAWING);
+    select_gui_page(&mut runner, ITEM_PAGE_TEXTEDIT);
+    let original = showcase_textedit(&mut runner).text;
+    // Set this to 300 for the sustained desktop-batch performance probe.
+    let count = std::env::var("SYSTEMLESS_TEXTEDIT_STRESS_KEYS")
+        .ok()
+        .map(|value| value.parse::<usize>().unwrap())
+        .unwrap_or(48);
+    let started = std::time::Instant::now();
+    for edit in 0..count {
+        let byte = b" growing text "[edit % 14];
+        runner.push_key_down(0x07, byte);
+        runner.push_key_up(0x07, byte);
+        for _ in 0..120 {
+            let tick = runner.guest_tick() + 1;
+            let batch = if prefer_powerpc() { 1_995_012 } else { 10_000 };
+            assert!(runner.run_gui_slice_with_audio(batch, tick, 0).1);
+            prepare_review_presentation(&mut runner);
+            runner.composite_frame();
+            if showcase_textedit(&mut runner).text.len() == original.len() + edit + 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            showcase_textedit(&mut runner).text.len(),
+            original.len() + edit + 1,
+            "text input stopped progressing at key {edit}"
+        );
+    }
+    eprintln!(
+        "TextEdit: {count} keys completed in {:?}",
+        started.elapsed()
+    );
+    finish_gui_paint(&mut runner);
+    let (top, left, _, _) = runner.window_bounds();
+    drag_mouse(&mut runner, top + 82, left + 35, top + 82, left + 110);
+    finish_gui_paint(&mut runner);
+    let selected = showcase_textedit(&mut runner);
+    assert!(selected.selection.1 > selected.selection.0);
+    runner.push_key_down(0x33, 8);
+    runner.push_key_up(0x33, 8);
+    step_gui_until(&mut runner, "delete selection", |r| {
+        showcase_textedit(r).text.len() < selected.text.len()
+    });
+    finish_gui_paint(&mut runner);
+    assert!(runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_GRAPHICS));
+    step_gui_until(&mut runner, "menu after editing", |r| {
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
+    });
 }

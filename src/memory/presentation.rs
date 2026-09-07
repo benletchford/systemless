@@ -96,7 +96,27 @@ impl PresentationSlot {
     }
     pub fn write_bytes(&self, address: u32, bytes: &[u8]) {
         if let Some(mut p) = self.as_mut() {
-            if p.observes_range(address, bytes.len()) {
+            let end = u64::from(address) + bytes.len() as u64;
+            let screen_end = u64::from(p.base) + u64::from(p.row_bytes) * u64::from(p.height);
+            if p.glyph.is_none()
+                && !p.erasing_text
+                && (end <= u64::from(p.base) || u64::from(address) >= screen_end)
+            {
+                // Ordinary offscreen writes only invalidate existing detail.
+                // A native rectangle fill must not visit every background byte.
+                let keys: Vec<_> = p
+                    .offscreen
+                    .range(address..)
+                    .take_while(|(key, _)| u64::from(**key) < end)
+                    .map(|(&key, _)| key)
+                    .collect();
+                if !keys.is_empty() {
+                    p.revision = p.revision.wrapping_add(1);
+                }
+                for key in keys {
+                    p.offscreen.remove(&key);
+                }
+            } else if p.observes_range(address, bytes.len()) {
                 for (i, &value) in bytes.iter().enumerate() {
                     p.write(address + i as u32, value);
                 }
@@ -648,8 +668,8 @@ impl Presentation {
         for sy in 0..self.scale {
             for sx in 0..self.scale {
                 let i = (sy * self.scale + sx) as usize;
-                let pixel = ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx)
-                    as usize;
+                let pixel =
+                    ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx) as usize;
                 if self.pixel_indices[pixel] != cell.indices[i]
                     || self.ink.get(&(pixel * 3)) != cell.ink.get(&i)
                 {
@@ -657,6 +677,9 @@ impl Presentation {
                 }
             }
         }
+        // A redraw can create an equal cell with a new identity. Remember it
+        // after comparing once, so idle frames do not repeat every ink lookup.
+        self.detail_cache.borrow_mut()[(y * self.width + x) as usize] = Some(cell.clone());
         true
     }
 
@@ -1956,6 +1979,34 @@ mod tests {
         bus.remember_dialog_snapshot(&saved, rect);
         paint_detail(&mut bus, 0x1000);
         assert!(!bus.dialog_snapshot_is_current(&saved, rect));
+    }
+
+    #[test]
+    fn equal_native_redraw_reuses_the_new_cell_identity() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let original = bus.save_pixel_bytes(0x1000, 2);
+        let replacement = Arc::new((*original.detail[&0]).clone());
+        let p = bus.presentation.as_ref().unwrap();
+        assert!(p.matches_detail(0x1000, Some(&replacement)));
+        assert!(Arc::ptr_eq(
+            p.detail_cache.borrow()[0].as_ref().unwrap(),
+            &replacement
+        ));
+    }
+
+    #[test]
+    fn bulk_native_erase_discards_only_touched_outline_cells() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x2000);
+        paint_detail(&mut bus, 0x2010);
+        let before = bus.save_pixel_bytes(0x2010, 2);
+        bus.presentation.write_bytes(0x2000, &[255; 16]);
+        assert!(bus.save_pixel_bytes(0x2000, 2).detail.is_empty());
+        assert_eq!(bus.save_pixel_bytes(0x2010, 2).detail, before.detail);
+        let revision = bus.presentation_epoch();
+        bus.presentation.write_bytes(0x2000, &[255; 16]);
+        assert_eq!(bus.presentation_epoch(), revision);
     }
 
     #[test]

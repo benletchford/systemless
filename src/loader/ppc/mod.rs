@@ -46941,6 +46941,7 @@ fn ppc_draw_pict_bytes_to_16bpp(
         let mut bus = MacMemoryBus::new(ram_size);
         bus.write_bytes(pict_base, data);
         bus.write_bytes(screen_base, &indexed);
+        bus.begin_uncapped_write_probe();
         let (rendered, _) = pict::draw_picture(
             &mut bus,
             pict_base + u32::try_from(pict_offset).unwrap_or(0),
@@ -46963,28 +46964,7 @@ fn ppc_draw_pict_bytes_to_16bpp(
             return false;
         }
 
-        // The temporary framebuffer began as an exact copy of the guest
-        // surface, so complete rows preserve pixels outside dstRect and also
-        // retain the neighboring bits in packed 1/2/4-bpp edge bytes.
-        for y in 0..front_buffer.height {
-            let Some(src_addr) = screen_base.checked_add(y.saturating_mul(row_bytes)) else {
-                return false;
-            };
-            let Some(dst_addr) = front_buffer
-                .base_addr
-                .checked_add(y.saturating_mul(front_buffer.row_bytes))
-            else {
-                return false;
-            };
-            let Some(row_len) = usize::try_from(row_bytes).ok() else {
-                return false;
-            };
-            let row = bus.read_bytes(src_addr, row_len);
-            if row.len() != row_len || memory.write_bytes(dst_addr, &row).is_none() {
-                return false;
-            }
-        }
-        return true;
+        return ppc_commit_picture_writes(memory, &mut bus, screen_base, front_buffer, buffer_len);
     }
 
     if front_buffer.depth != 16 || front_buffer.row_bytes < front_buffer.width.saturating_mul(2) {
@@ -47038,6 +47018,7 @@ fn ppc_draw_pict_bytes_to_16bpp(
     let mut bus = MacMemoryBus::new(ram_size);
     bus.write_bytes(pict_base, data);
     bus.write_bytes(screen_base, &direct);
+    bus.begin_uncapped_write_probe();
     let (rendered, _) = pict::draw_picture(
         &mut bus,
         pict_base + u32::try_from(pict_offset).unwrap_or(0),
@@ -47054,25 +47035,32 @@ fn ppc_draw_pict_bytes_to_16bpp(
         return false;
     }
 
-    for y in 0..front_buffer.height {
-        let Some(src_addr) = screen_base.checked_add(y.saturating_mul(row_bytes)) else {
-            return false;
-        };
-        let Some(dst_addr) = front_buffer
-            .base_addr
-            .checked_add(y.saturating_mul(front_buffer.row_bytes))
-        else {
-            return false;
-        };
-        let Some(row_len) = usize::try_from(row_bytes).ok() else {
-            return false;
-        };
-        let row = bus.read_bytes(src_addr, row_len);
-        if row.len() != row_len || memory.write_bytes(dst_addr, &row).is_none() {
-            return false;
+    ppc_commit_picture_writes(memory, &mut bus, screen_base, front_buffer, buffer_len)
+}
+
+fn ppc_commit_picture_writes(
+    memory: &mut PpcSectionMem,
+    bus: &mut MacMemoryBus,
+    screen_base: u32,
+    front_buffer: PpcFrontBuffer,
+    buffer_len: u32,
+) -> bool {
+    // DrawPicture scales the picture into dstRect; its drawing operations can
+    // extend beyond the picture frame. Copy the actual writes, not a rectangle
+    // or a logical-pixel diff. Imaging With QuickDraw (1994), pp. 7-44--7-45.
+    for range in bus.finish_write_probe_ranges() {
+        let start = range.start.max(screen_base);
+        let end = range.end.min(screen_base + buffer_len);
+        if start < end {
+            let bytes = bus.read_bytes(start, (end - start) as usize);
+            if memory
+                .write_bytes(front_buffer.base_addr + start - screen_base, &bytes)
+                .is_none()
+            {
+                return false;
+            }
         }
     }
-
     true
 }
 
@@ -56608,6 +56596,54 @@ fn ppc_paint_rect_bounds(
     // Imaging With QuickDraw (1994), pp. 2-20--2-21: every destination pixel
     // is constrained by visRgn ∩ clipRgn. Per-pixel writes also preserve the
     // neighboring fields of packed 1/2/4-bit PixMaps.
+    if matches!(front_buffer.depth, 8 | 16)
+        && [
+            top + i32::from(surface.top),
+            bottom + i32::from(surface.top),
+            left + i32::from(surface.left),
+            right + i32::from(surface.left),
+        ]
+        .into_iter()
+        .all(|value| i16::try_from(value).is_ok())
+    {
+        let port_top = (top + i32::from(surface.top)) as i16;
+        let port_bottom = (bottom + i32::from(surface.top)) as i16;
+        let port_left = (left + i32::from(surface.left)) as i16;
+        let port_right = (right + i32::from(surface.left)) as i16;
+        let mut rows = vec![
+            vec![port_left, port_right];
+            (port_bottom as i32 - port_top as i32).max(0) as usize
+        ];
+        for storage in [vis_storage.as_deref(), clip_storage.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            let Some(clip_rows) = ppc_region_rows_for_band(storage, port_top, port_bottom) else {
+                return false;
+            };
+            for (row, clip) in rows.iter_mut().zip(clip_rows) {
+                *row = ppc_region_intersect_rows(row, &clip);
+            }
+        }
+        let lanes = (front_buffer.depth / 8) as usize;
+        let pixel = color_pixel.to_be_bytes();
+        let row_bytes: Vec<_> = (left..right)
+            .flat_map(|_| pixel[2 - lanes..].iter().copied())
+            .collect();
+        let mut wrote = false;
+        for (dy, row) in rows.iter().enumerate() {
+            let y = i32::from(port_top) + dy as i32 - i32::from(surface.top);
+            for pair in row.chunks_exact(2) {
+                let x = i32::from(pair[0]) - i32::from(surface.left);
+                let len = (i32::from(pair[1]) - i32::from(pair[0])) as usize * lanes;
+                let address = front_buffer.base_addr
+                    + y as u32 * front_buffer.row_bytes
+                    + x as u32 * lanes as u32;
+                wrote |= memory.write_bytes(address, &row_bytes[..len]).is_some();
+            }
+        }
+        return wrote;
+    }
     let mut wrote = false;
     for y in top..bottom {
         for x in left..right {
@@ -170621,6 +170657,81 @@ pub(crate) mod tests {
             ppc_region_storage(&mut loaded.memory, saved),
             ppc_region_storage(&mut loaded.memory, region)
         );
+    }
+
+    #[test]
+    fn rectangle_fill_respects_disjoint_clip_spans_at_every_depth() {
+        for depth in [1, 2, 4, 8, 16] {
+            let mut loaded = load_pef_application_with_config(
+                &synthetic_pef(),
+                PpcLoadConfig {
+                    screen_depth: depth,
+                    ..PpcLoadConfig::default()
+                },
+            )
+            .unwrap();
+            assert!(ppc_paint_rect_bounds(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+                (0, 0, 8, 10),
+                PPC_RGB_WHITE,
+                None
+            ));
+            let scratch = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(scratch, vec![0; 512]);
+            let clip = ppc_region_storage_from_rows(2, &vec![vec![1, 3, 5, 9]; 3]).unwrap();
+            let vis = ppc_region_storage_from_rows(1, &vec![vec![2, 8]; 5]).unwrap();
+            for (handle, ptr, bytes, field) in [
+                (scratch, scratch + 16, clip, PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+                (
+                    scratch + 4,
+                    scratch + 128,
+                    vis,
+                    PPC_CGRAF_PORT_VIS_RGN_OFFSET,
+                ),
+            ] {
+                loaded.memory.write_u32_be(handle, ptr).unwrap();
+                loaded.memory.write_bytes(ptr, &bytes).unwrap();
+                loaded
+                    .memory
+                    .write_u32_be(PPC_MAIN_GWORLD + field, handle)
+                    .unwrap();
+            }
+            let surface =
+                ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                    .unwrap();
+            let front = surface.front_buffer;
+            let before: Vec<_> = (0..8)
+                .flat_map(|y| (0..10).map(move |x| (x, y)))
+                .map(|point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point).unwrap())
+                .collect();
+            let color =
+                ppc_quickdraw_surface_fore_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK, None)
+                    .unwrap();
+            assert!(ppc_paint_rect_bounds(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+                (0, 0, 8, 10),
+                PPC_RGB_BLACK,
+                None
+            ));
+            for y in 0..8 {
+                for x in 0..10 {
+                    let painted = (2..5).contains(&y) && (x == 2 || (5..8).contains(&x));
+                    assert_eq!(
+                        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                        Some(if painted {
+                            color
+                        } else {
+                            before[(y * 10 + x) as usize]
+                        }),
+                        "depth {depth}, pixel ({x}, {y})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
