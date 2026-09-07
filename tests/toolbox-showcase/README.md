@@ -437,7 +437,7 @@ indexed paths.
 
 ### Classic theme
 
-Both galleries compare Classic System 7 rendering, with 58 checkpoints for each
+Both galleries compare Classic System 7 rendering, with 59 checkpoints for each
 architecture, stored in
 [`reference/systemless-classic-68k`](reference/systemless-classic-68k) and
 [`reference/systemless-classic-ppc`](reference/systemless-classic-ppc).
@@ -449,7 +449,7 @@ retain classic rendering; guest geometry and hit testing remain unchanged.
 
 ### 68K desktop presentation
 
-All 58 checkpoints below are captured with the default 4× outline surface enabled
+All 59 checkpoints below are captured with the default 4× outline surface enabled
 before the first guest paint. Each capture also checks the unchanged 800×600 guest
 baseline and verifies that its output contains actual outline detail, rather than
 an enlargement of the guest framebuffer. These are presentation surfaces before
@@ -467,6 +467,7 @@ cargo test --profile ci-test --test toolbox_showcase test_toolbox_showcase -- --
 | Checkpoint | Systemless | BasiliskII |
 | --- | --- | --- |
 | 1. Graphics | <img src="review/systemless-classic-68k/01-graphics.png" alt="Graphics page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/overview-01-graphics.png" alt="Graphics page in BasiliskII running the 68K slice" width="360"> |
+| 1a. Main window shrunk | <img src="review/systemless-classic-68k/01-graphics-shrunk.png" alt="Main showcase window after shrinking, with exposed desktop repainted" width="360"> | — |
 | 2. Controls and State menu | <img src="review/systemless-classic-68k/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/overview-02-controls-changed.png" alt="Interacted Controls page and State menu in BasiliskII" width="360"> |
 | 3. Windows | <img src="review/systemless-classic-68k/03-windows.png" alt="Windows page with three overlapping windows in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows.png" alt="Windows page with overlapping windows in BasiliskII" width="360"> |
 | 3a. Auxiliary activated | <img src="review/systemless-classic-68k/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in BasiliskII" width="360"> |
@@ -527,7 +528,7 @@ cargo test --profile ci-test --test toolbox_showcase test_toolbox_showcase -- --
 
 ### PowerPC desktop presentation
 
-These 58 checkpoints use the same 4× outline layer as 68K, retaining detail from
+These 59 checkpoints use the same 4× outline layer as 68K, retaining detail from
 native PowerPC drawing and its 16-bit framebuffer through copies and restores.
 
 ```sh
@@ -540,6 +541,7 @@ cargo test --profile ci-test --test toolbox_showcase test_toolbox_showcase -- --
 | Checkpoint | Systemless | SheepShaver |
 | --- | --- | --- |
 | 1. Graphics | <img src="review/systemless-classic-ppc/01-graphics.png" alt="Graphics page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/overview-01-graphics.png" alt="Graphics page in SheepShaver running the PowerPC slice" width="360"> |
+| 1a. Main window shrunk | <img src="review/systemless-classic-ppc/01-graphics-shrunk.png" alt="Main showcase window after shrinking, with exposed desktop repainted" width="360"> | — |
 | 2. Controls and State menu | <img src="review/systemless-classic-ppc/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/overview-02-controls-changed.png" alt="Interacted Controls page and State menu in SheepShaver" width="360"> |
 | 3. Windows | <img src="review/systemless-classic-ppc/03-windows.png" alt="Windows page with three overlapping windows in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows.png" alt="Windows page with overlapping windows in SheepShaver" width="360"> |
 | 3a. Auxiliary activated | <img src="review/systemless-classic-ppc/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows-aux-activated.png" alt="Auxiliary window activated above the inspector in SheepShaver" width="360"> |
@@ -598,7 +600,7 @@ cargo test --profile ci-test --test toolbox_showcase test_toolbox_showcase -- --
 | 37. Popup selections | <img src="review/systemless-classic-ppc/37-popup-lists-selected.png" alt="Selected popup values and restored controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/37-popup-lists-selected.png" alt="Classic emulator popup checkpoint" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all 58 rendered
+state rather than relying on fixed delays, and compares all 59 rendered
 frames. The six additional Windows frames are deterministic Systemless
 checkpoints; classic-Mac review also covers activation and movement, while the
 remaining repaint lifecycle is asserted semantically because window chrome and

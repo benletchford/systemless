@@ -3473,3 +3473,37 @@ fn first_page_outlines_survive_palette_changes() {
         }
     }
 }
+
+#[test]
+fn main_window_shrink_repaints_exposed_desktop() {
+    let mut runner = new_runner_with_screen_depth(8);
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
+    runner.set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 }).unwrap();
+    runner.set_menu_bar_visible(true);
+    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+    init_game(&mut runner, &app);
+    prepare_review_presentation(&mut runner);
+    step_until(&mut runner, "graphics ready", |r| {
+        let [red, green, blue] = screen_rgb(r, 145, 305);
+        r.window_count() > 0 && red > green.saturating_add(80) && red > blue.saturating_add(80)
+    });
+    let snapshots = runner.window_stack_snapshot();
+    let before = window_snapshot(&snapshots, "Toolbox Showcase").bounds;
+    let desktop = screen_rgb(&mut runner, 450, 650);
+    drag_mouse(&mut runner, before.2 - 3, before.3 - 3, before.2 - 100, before.3 - 150);
+    run_ticks(&mut runner, "settle shrink", 5);
+    let snapshots = runner.window_stack_snapshot();
+    let after = window_snapshot(&snapshots, "Toolbox Showcase").bounds;
+    assert_eq!((after.0, after.1), (before.0, before.1));
+    assert!(after.2 < before.2 && after.3 < before.3);
+    for (v, h) in [(80, 550), (390, 100), (390, 550)] {
+        assert_eq!(screen_rgb(&mut runner, v, h), desktop,
+            "shrinking must repaint exposed desktop at ({v}, {h})");
+    }
+    assert_windows_repainted(&mut runner, "main window shrink");
+    assert_reference_frame(&mut runner, "01-graphics-shrunk.png");
+    drag_mouse(&mut runner, before.0 - 10, before.1 + 100, 300, before.1 + 70);
+    run_ticks(&mut runner, "move shrunk window", 2);
+    assert_eq!(screen_rgb(&mut runner, 80, 100), desktop,
+        "moving the shrunk window must not restore its former contents");
+}

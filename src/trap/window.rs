@@ -646,6 +646,57 @@ impl super::TrapDispatcher {
         Self::write_region_handle_rect(bus, update_handle, merged);
     }
 
+    fn rect_difference_parts(src: WindowRect, cut: WindowRect) -> Vec<WindowRect> {
+        let Some(intersection) = Self::rect_intersection(src, cut) else {
+            return vec![src];
+        };
+        [
+            (src.0, src.1, intersection.0, src.3),
+            (intersection.2, src.1, src.2, src.3),
+            (intersection.0, src.1, intersection.2, intersection.1),
+            (intersection.0, intersection.3, intersection.2, src.3),
+        ]
+        .into_iter()
+        .filter(|rect| !Self::rect_is_empty(*rect))
+        .collect()
+    }
+
+    fn repaint_resize_exposure(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window: u32,
+        previous: WindowRect,
+        next: WindowRect,
+    ) {
+        if previous == next {
+            return;
+        }
+        // SizeWindow preserves the window's position and redraws its frame;
+        // the Window Manager also updates windows uncovered by geometry changes.
+        // Inside Macintosh Volume I (1985), I-278 and I-287--I-293.
+        let behind = self.visible_windows_behind(bus, window);
+        let structures: Vec<_> = self.window_list.iter().copied()
+            .filter(|&window| self.window_visible(bus, window))
+            .filter_map(|window| self.window_structure_rect(bus, window))
+            .collect();
+        for exposed in Self::rect_difference_parts(previous, next) {
+            self.invalidate_exposed_windows(bus, &behind, Some(exposed));
+            let mut desktop = vec![exposed];
+            for &structure in &structures {
+                desktop = desktop.into_iter()
+                    .flat_map(|rect| Self::rect_difference_parts(rect, structure))
+                    .collect();
+            }
+            for (top, left, bottom, right) in desktop {
+                self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+            }
+        }
+        for behind in behind {
+            self.draw_single_window_chrome_inline(bus, behind, behind == self.front_window);
+        }
+        self.draw_single_window_chrome_inline(bus, window, window == self.front_window);
+    }
+
     fn rect_difference_bbox(
         src: (i16, i16, i16, i16),
         cut: (i16, i16, i16, i16),
@@ -4734,6 +4785,9 @@ impl super::TrapDispatcher {
                     // Capture the old content rect before we resize so
                     // the fUpdate branch can invalidate the diff.
                     let old_content_rect = self.window_content_rect(bus, the_window);
+                    let old_structure = self.window_visible(bus, the_window)
+                        .then(|| self.window_structure_rect(bus, the_window))
+                        .flatten();
 
                     // portRect in local coords: (0, 0, h, w)
                     bus.write_word(the_window + 16, 0u16);
@@ -4807,6 +4861,10 @@ impl super::TrapDispatcher {
                         };
                         self.window_bounds =
                             (screen_top, screen_left, screen_top + h, screen_left + w);
+                    }
+
+                    if let Some(previous) = old_structure {
+                        self.repaint_resize_exposure(bus, the_window, previous, global_structure);
                     }
 
                     // fUpdate=TRUE invalidates the newly-exposed area.
@@ -14812,6 +14870,10 @@ mod tests {
     #[test]
     fn size_window_with_fupdate_true_invalidates_new_area() {
         let (mut disp, mut cpu, mut bus) = setup();
+        // Window records below occupy $300000; frame drawing needs separate RAM.
+        let (_, row_bytes, width, height, depth) = disp.screen_mode;
+        disp.set_screen_mode_for_test(0x320000, row_bytes, width, height, depth);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, 0x320000);
         let window_addr: u32 = 0x300000;
         let (_cont_rgn, update_rgn) =
             setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 100, 100);
