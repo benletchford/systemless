@@ -192,6 +192,28 @@ pub(crate) fn resolve_guest_procedure(
     }
 }
 
+/// Resolve a direct NewThread entry for its declared ISA. Thread Manager
+/// (1999), pp. 56–58 requires every thread to use the application's instruction
+/// set and prohibits RoutineDescriptor entry points. Rejecting a recognized
+/// descriptor header is the runtime's explicit `paramErr` compatibility policy;
+/// the ABI adapter encodes that error.
+pub(crate) fn resolve_same_isa_thread_entry(
+    memory: &mut impl GuestProcedureMemory,
+    pointer: u32,
+    default_powerpc_rtoc: u32,
+    isa: GuestIsa,
+) -> Option<GuestProcedure> {
+    if pointer == 0
+        || memory.procedure_read_u16(pointer) == Some(ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+    {
+        return None;
+    }
+    Some(match isa {
+        GuestIsa::M68k => GuestProcedure::raw_m68k(pointer),
+        GuestIsa::PowerPc => resolve_powerpc_pointer(memory, pointer, default_powerpc_rtoc, false),
+    })
+}
+
 /// Inspect a procedure without executing or preparing its code. Callers that
 /// can run CFM retain the preparation request and resume resolution afterwards.
 /// Callable-only consumers must not execute an unprepared fragment container.
@@ -440,6 +462,65 @@ mod tests {
             resolve_guest_procedure(memory, pointer, 0x1234, selector, isa, isa),
             resolve_guest_procedure(&mut classic, pointer, 0x1234, selector, isa, isa),
         ]
+    }
+
+    fn resolve_direct_both_views(
+        memory: &mut GuestAddressSpace,
+        pointer: u32,
+        isa: GuestIsa,
+    ) -> [Option<GuestProcedure>; 2] {
+        let mut classic = MacMemoryBus::new(0x10000);
+        classic.set_addressing_32_bit(true);
+        classic.attach_guest_address_space(memory.shared_view());
+        [
+            resolve_same_isa_thread_entry(memory, pointer, 0x1234, isa),
+            resolve_same_isa_thread_entry(&mut classic, pointer, 0x1234, isa),
+        ]
+    }
+
+    #[test]
+    fn same_isa_thread_entries_reject_null_and_descriptor_headers_in_either_view() {
+        let mut memory = descriptor_memory();
+        write_descriptor_header(&mut memory, 0);
+        for isa in [GuestIsa::M68k, GuestIsa::PowerPc] {
+            assert_eq!(resolve_direct_both_views(&mut memory, 0, isa), [None; 2]);
+            assert_eq!(resolve_direct_both_views(&mut memory, BASE, isa), [None; 2]);
+        }
+    }
+
+    #[test]
+    fn same_isa_thread_entries_preserve_raw_and_powerpc_vector_rules_in_either_view() {
+        let pointer = BASE + 0x100;
+        let entry = BASE + 0x180;
+        let mut memory = descriptor_memory();
+
+        let classic = resolve_direct_both_views(&mut memory, pointer, GuestIsa::M68k);
+        assert_eq!(classic[0], classic[1]);
+        assert_eq!(classic[0], Some(GuestProcedure::raw_m68k(pointer)));
+
+        memory.write_u32_be(pointer, entry).unwrap();
+        memory.write_u32_be(pointer + 4, 0x5678).unwrap();
+        memory.write_u32_be(entry, 0x4e80_0020).unwrap();
+        let native = resolve_direct_both_views(&mut memory, pointer, GuestIsa::PowerPc);
+        assert_eq!(native[0], native[1]);
+        assert_eq!(native[0].unwrap().entry, entry);
+        assert_eq!(native[0].unwrap().rtoc, 0x5678);
+        assert_eq!(
+            native[0].unwrap().representation,
+            GuestProcedureRepresentation::PowerPcTransitionVector { address: pointer }
+        );
+
+        let unmapped = BASE + 0x300;
+        memory.write_u32_be(unmapped, 0x0020_0000).unwrap();
+        memory.write_u32_be(unmapped + 4, 0x9abc).unwrap();
+        let raw = resolve_direct_both_views(&mut memory, unmapped, GuestIsa::PowerPc);
+        assert_eq!(raw[0], raw[1]);
+        assert_eq!(raw[0].unwrap().entry, unmapped);
+        assert_eq!(raw[0].unwrap().rtoc, 0x1234);
+        assert_eq!(
+            raw[0].unwrap().representation,
+            GuestProcedureRepresentation::RawCode
+        );
     }
 
     #[test]
