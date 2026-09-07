@@ -339,3 +339,35 @@ PowerPC review images changed: Drawing and the later captures that retained the
 previously degraded window title.
 
 <img src="../review/systemless-classic-ppc/04-drawing.png" alt="Drawing page with sharp text retained around PICT playback" width="800">
+
+## Odyssey dialog and gameplay audit
+
+The desktop previously composited every window after each small CPU batch,
+then composited again for presentation. Windowed games paid repeated frame and
+font costs while loading dialogs or gameplay. Desktop CPU batches now use the
+same deferred-composition interface as the browser. Audio remains serviced
+between batches, and the display pass still restores window chrome.
+
+A sequential Apple M1 comparison, with retained font detail enabled and the
+same 10,000-instruction CPU batches, reduced the complete Odyssey welcome →
+character creation → profile save → introduction → beach sequence from 38.27
+to 12.42 seconds. Both runs executed 64,879,649 guest instructions and passed
+all six pixel checks. These are scripted CPU/composition timings, not live FPS.
+The corrected path also completed 18 window selections followed by 300 guest
+ticks of gameplay. BasiliskII completed the same new-game sequence and confirmed
+the gameplay layout and the welcome dialog's extra Close button.
+
+Odyssey supplies the bitmap font **B Friz Quadrata Bold**, family 155, with
+10pt and 12pt NFNT strikes. Its game text intentionally retains that face;
+system menus, buttons and window titles use the bundled outline fonts. The
+remaining pixelation in that custom face is not discarded TrueType detail.
+
+The desktop regression verifies that CPU/audio batches leave chrome untouched
+until the presentation pass; it fails with the previous batching implementation.
+All 89 desktop tests pass, including the existing audio callback regressions.
+Interactive macOS drag/resize validation remains pending because the test host
+was locked; this audit does not claim every gameplay interaction is verified.
+
+<img src="odyssey/gameplay.png" alt="Odyssey beach gameplay with sharp system window titles and its original custom bitmap font" width="800">
+
+<img src="odyssey/preferences.png" alt="Odyssey preferences with retained custom artwork and sharp system controls" width="800">

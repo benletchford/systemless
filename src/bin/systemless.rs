@@ -1325,12 +1325,15 @@ impl App {
             };
             let (steps, running) = {
                 let _timing = FramePhaseTimer::new("foreground CPU batch");
-                runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio)
+                runner.run_gui_cpu_slice(batch_size, effective_target)
             };
             total_steps += steps;
             foreground_steps += steps;
             audio_mixed += batch_audio;
             if batch_audio > 0 {
+                // CPU batches share one presentation pass in render_frame.
+                // Keep audio callbacks serviced without repainting every window.
+                runner.mix_gui_audio_slice(batch_audio);
                 if let Some(steps) = service_pending_sound_work(
                     runner,
                     cpu_deadline,
@@ -4147,6 +4150,29 @@ mod tests {
         runner.bus_mut().write_long(0x016A, 0);
         runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
 
+        // Install a guest menu so repeated batch-level compositing is observable.
+        // NewMenu: Inside Macintosh I-352; InsertMenu: Toolbox Essentials 3-108.
+        let title = runner.bus_mut().alloc(5);
+        runner.bus_mut().write_bytes(title, b"\x04File");
+        runner.bus_mut().write_word(pc, 0xA931);
+        runner.bus_mut().write_long(0x0008_0000, title);
+        runner.bus_mut().write_word(0x0008_0004, 1);
+        assert!(runner.run_gui_cpu_slice(1, u32::MAX).1);
+        let menu = runner.bus().read_long(0x0008_0006);
+        assert_ne!(menu, 0);
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
+        runner.bus_mut().write_word(pc, 0xA935);
+        runner.bus_mut().write_word(0x0008_0000, 0);
+        runner.bus_mut().write_long(0x0008_0002, menu);
+        assert!(runner.run_gui_cpu_slice(1, u32::MAX).1);
+        runner.bus_mut().write_word(pc, 0x60FE);
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        let screen = runner.bus_mut().alloc(800 * 600);
+        runner.dispatcher_mut().screen_mode = (screen, 800, 800, 600, 8);
+        runner.bus_mut().write_word(0x0BAA, 20);
+        runner.bus_mut().fill_bytes(screen, 800 * 20, 0xAA);
+
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION);
@@ -4163,6 +4189,11 @@ mod tests {
             app.total_instructions > 0,
             "test setup should execute foreground startup work"
         );
+        assert_eq!(
+            runner.bus().read_byte(screen + 400),
+            0xAA,
+            "CPU and audio batches must defer chrome painting until presentation"
+        );
         assert!(!runner.is_halted(), "foreground loop must remain runnable");
         assert_eq!(
             runner.guest_tick(),
@@ -4172,6 +4203,12 @@ mod tests {
         assert!(
             app.should_render_frame(),
             "same-tick foreground drawing progress should force a present"
+        );
+        app.runner.as_mut().unwrap().composite_frame();
+        assert_ne!(
+            app.runner.as_ref().unwrap().bus().read_byte(screen + 400),
+            0xAA,
+            "the presentation pass must still paint the menu"
         );
     }
 
