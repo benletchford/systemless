@@ -2220,8 +2220,8 @@ impl TrapDispatcher {
         &mut self.sound_manager
     }
 
-    /// Attach shared process resources to this dispatcher.
-    pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+    /// Attach process services outside the construction-owned migration pair.
+    pub(crate) fn attach_unconverted_process_services(&mut self, context: &mut ProcessContext) {
         let mut memory_manager = None;
         context.attach_memory_manager(&mut memory_manager);
         let memory_manager = memory_manager.expect("process context supplies a Memory Manager");
@@ -2256,7 +2256,6 @@ impl TrapDispatcher {
             .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_sound_manager(&mut self.sound_manager);
-        context.attach_tick_state(&mut self.tick_state);
         context.attach_callback_tasks(
             &mut self.timer_tasks,
             &mut self.vbl_tasks,
@@ -2296,8 +2295,6 @@ impl TrapDispatcher {
         );
         self.attach_memory_manager_handle(memory_manager);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
-        context.attach_guest_calls(&mut self.guest_calls);
-        context.attach_menu_tracking(&mut self.menu_tracking);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
         context.attach_apple_event_launch_state(&mut self.apple_event_launch_state);
     }
@@ -10969,7 +10966,7 @@ mod tests {
     fn attached_event_queue_remains_shared_through_panic() {
         let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
@@ -11014,7 +11011,7 @@ mod tests {
         assert!(dispatcher.guest_calls.ptr_eq(&expected_execution));
         assert!(dispatcher.menu_tracking.is_view_of(&dispatcher.guest_calls));
 
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         assert!(dispatcher.tick_state.ptr_eq(&expected_ticks));
         assert!(dispatcher.guest_calls.ptr_eq(&expected_execution));
         assert!(dispatcher.menu_tracking.is_view_of(&dispatcher.guest_calls));
@@ -11058,8 +11055,8 @@ mod tests {
         let mut first = TrapDispatcher::new();
         let mut second = TrapDispatcher::new();
 
-        first.attach_process_context(&mut context);
-        second.attach_process_context(&mut context);
+        first.attach_unconverted_process_services(&mut context);
+        second.attach_unconverted_process_services(&mut context);
 
         assert!(first
             .process_file_system
@@ -11125,8 +11122,8 @@ mod tests {
         let mut first = TrapDispatcher::new();
         let mut second = TrapDispatcher::new();
 
-        first.attach_process_context(&mut context);
-        second.attach_process_context(&mut context);
+        first.attach_unconverted_process_services(&mut context);
+        second.attach_unconverted_process_services(&mut context);
         assert!(first
             .pending_file_completions
             .ptr_eq(&second.pending_file_completions));
@@ -11141,12 +11138,12 @@ mod tests {
 
     #[test]
     fn attached_menu_tracking_mutates_process_context_immediately() {
-        let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x1234,
         )));
-        dispatcher.attach_process_context(&mut context);
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         assert_eq!(
             dispatcher.menu_tracking.as_ref().map(|t| t.menu_handle),
@@ -11168,12 +11165,12 @@ mod tests {
 
     #[test]
     fn attached_menu_tracking_remains_shared_through_panic() {
-        let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x5678,
         )));
-        dispatcher.attach_process_context(&mut context);
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatcher.menu_tracking.as_mut().unwrap().highlighted_item = 9;
@@ -11195,12 +11192,12 @@ mod tests {
 
     #[test]
     fn attached_process_state_remains_canonical_through_panic() {
-        let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x9abc,
         )));
-        dispatcher.attach_process_context(&mut context);
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
+        dispatcher.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -11254,8 +11251,8 @@ mod tests {
         let mut second = TrapDispatcher::new();
         let mut first_context = ProcessContext::default();
         let mut second_context = ProcessContext::default();
-        first.attach_process_context(&mut first_context);
-        second.attach_process_context(&mut second_context);
+        first.attach_unconverted_process_services(&mut first_context);
+        second.attach_unconverted_process_services(&mut second_context);
 
         first.track_handle_ptr(0x2200, 0x1100);
         first.set_handle_state_bits(0x1100, 0x80);
@@ -11277,7 +11274,7 @@ mod tests {
         dispatcher.set_handle_state_bits(0x1100, 0x80);
 
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         let attached = dispatcher.process_memory_manager();
 
         assert!(!attached.ptr_eq(&standalone));
@@ -11310,7 +11307,7 @@ mod tests {
         );
 
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         let attached = dispatcher.process_memory_manager();
 
         assert!(!attached.ptr_eq(&standalone));
@@ -11332,7 +11329,7 @@ mod tests {
         assert_ne!(ptr, 0);
 
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         context.attach_classic_memory_bus(&mut bus);
 
         assert_eq!(
@@ -11385,7 +11382,7 @@ mod tests {
         let shared = native.shared_view();
         bus.attach_guest_address_space(shared);
         let mut dispatcher = TrapDispatcher::new();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         let replacement = vec![0x5a; 48];
 
         assert!(dispatcher.replace_process_native_handle_bytes(

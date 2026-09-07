@@ -4592,7 +4592,7 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         cpu.write_reg(Register::D0, 24);
         let memory_manager = context.memory_manager_handle();
@@ -4727,7 +4727,7 @@ mod tests {
                 0,
             )]);
         }
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         cpu.write_reg(Register::A0, handle);
         cpu.write_reg(Register::D0, 48);
@@ -4800,7 +4800,7 @@ mod tests {
                 0xE0,
             )]);
         }
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         cpu.write_reg(Register::A0, handle);
         cpu.write_reg(Register::D0, 17);
@@ -4875,7 +4875,7 @@ mod tests {
                 0x60,
             )]);
         }
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         cpu.write_reg(Register::A0, handle);
         dispatcher.current_trap_word = 0xA02B;
@@ -4951,7 +4951,7 @@ mod tests {
             );
             manager.register_native_handle_records([(record, 0xE0)]);
         }
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         cpu.write_reg(Register::A0, handle);
         dispatcher.current_trap_word = 0xA023;
@@ -5020,7 +5020,7 @@ mod tests {
             manager.register_native_handle_records([(source_record, 0xE0)]);
         }
         let detached = memory_manager.detached_clone();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         cpu.write_reg(Register::A0, SOURCE_HANDLE);
         dispatcher
@@ -5089,7 +5089,7 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         cpu.write_reg(Register::D0, 12);
         dispatcher.current_trap_word = 0xA022;
@@ -5145,7 +5145,7 @@ mod tests {
                 0,
             )]);
         }
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         assert_eq!(bus.get_alloc_size(HANDLE_PTR), None);
         assert_eq!(bus.get_alloc_size(PTR), None);
 
@@ -7086,8 +7086,8 @@ mod tests {
         let (mut classic, mut cpu, mut bus) = setup();
         let mut attached_view = super::super::TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        attached_view.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        attached_view.attach_unconverted_process_services(&mut context);
 
         let timer = bus.alloc(22);
         bus.write_long(timer + 6, 0x1234_5678);

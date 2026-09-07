@@ -6532,27 +6532,6 @@ impl ProcessContext {
         adapter.attach_to(&self.sound_manager, SoundManager::is_pristine);
     }
 
-    /// Attach an ISA adapter to the process-wide wrapping Macintosh tick
-    /// counter. A nonzero detached adapter may seed a pristine process value;
-    /// two conflicting populated values are rejected before attachment.
-    /// Inside Macintosh Volume I (1985), p. I-260; Volume II (1985),
-    /// pp. II-349--II-350.
-    pub(crate) fn attach_tick_state(&self, adapter: &mut SharedProcessTickState) {
-        if adapter.ptr_eq(&self.tick_state) {
-            return;
-        }
-        let adapter_value = adapter.current_tick();
-        let process_value = self.tick_state.current_tick();
-        assert!(
-            adapter_value == 0 || process_value == 0 || adapter_value == process_value,
-            "cannot attach two populated process manager values"
-        );
-        if process_value == 0 && adapter_value != 0 {
-            self.tick_state.set_tick(adapter_value);
-        }
-        *adapter = self.tick_state.shared_handle();
-    }
-
     pub(crate) fn attach_callback_tasks(
         &self,
         timer_tasks: &mut SharedProcessTimerTasks,
@@ -6709,10 +6688,6 @@ impl ProcessContext {
         adapter.attach_to(&self.input_state, ProcessInputState::is_pristine);
     }
 
-    pub(crate) fn attach_menu_tracking(&self, adapter: &mut SharedProcessMenuTracking) {
-        adapter.attach_to(&self.guest_calls.menu_tracking_view());
-    }
-
     pub(crate) fn attach_classic_file_system(
         &self,
         data_forks: &mut SharedProcessValue<ProcessForkMap>,
@@ -6846,10 +6821,6 @@ impl ProcessContext {
 
     pub(crate) fn attach_native_menu_selection(&self, adapter: &mut SharedNativeMenuSelection) {
         adapter.attach_to(&self.pending_native_menu_selection);
-    }
-
-    pub(crate) fn attach_guest_calls(&self, adapter: &mut SharedGuestCallStack) {
-        adapter.attach_to(&self.guest_calls);
     }
 
     pub(crate) fn attach_apple_event_handlers(
@@ -7666,8 +7637,8 @@ mod tests {
         assert_eq!(native_selection.take(), Some((128, 2)));
         assert!(classic_selection.is_none());
 
-        let mut classic_calls = SharedGuestCallStack::default();
-        classic_calls.begin_m68k(
+        let mut classic_execution = ExecutionMenuViews::detached();
+        classic_execution.calls().begin_m68k(
             GuestCallTarget {
                 isa: GuestIsa::M68k,
                 entry: 0x1000,
@@ -7676,12 +7647,20 @@ mod tests {
             0x2000,
             0x3000,
         );
-        let mut native_calls = SharedGuestCallStack::default();
-        context.attach_guest_calls(&mut classic_calls);
-        context.attach_guest_calls(&mut native_calls);
-        assert_eq!(native_calls.len(), 1);
-        assert!(native_calls.complete_m68k(0x2002, 0x3000));
-        assert!(classic_calls.is_empty());
+        let mut classic_tick = SharedProcessTickState::default();
+        let plan = context
+            .preflight_migrated_adoption(&classic_tick, &classic_execution, 0)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut classic_tick, &mut classic_execution);
+        let mut native_tick = SharedProcessTickState::default();
+        let mut native_execution = ExecutionMenuViews::detached();
+        let plan = context
+            .preflight_migrated_adoption(&native_tick, &native_execution, 0)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut native_tick, &mut native_execution);
+        assert_eq!(native_execution.calls().len(), 1);
+        assert!(native_execution.calls().complete_m68k(0x2002, 0x3000));
+        assert!(classic_execution.calls().is_empty());
     }
 
     #[test]
@@ -7708,15 +7687,25 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot attach two active Menu Manager continuations")]
     fn adopting_two_active_menu_continuations_is_always_rejected() {
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x1000,
         )));
-        let mut second = SharedProcessMenuTracking::default();
-        *second = Some(crate::menu_manager::test_process_menu_tracking(0x2000));
-        context.attach_menu_tracking(&mut second);
+        let adapter_tick = SharedProcessTickState::default();
+        let mut adapter_execution = ExecutionMenuViews::detached();
+        let _entry = adapter_execution.enter_test_menu();
+        *adapter_execution.menu_state_mut() =
+            Some(crate::menu_manager::test_process_menu_tracking(0x2000));
+        assert!(matches!(
+            context.preflight_migrated_adoption(&adapter_tick, &adapter_execution, 0),
+            Err(MigratedServiceConflict::Execution)
+        ));
+        assert_eq!(context.menu_tracking().unwrap().menu_handle, 0x1000);
+        assert_eq!(
+            adapter_execution.menu().as_ref().unwrap().menu_handle,
+            0x2000
+        );
     }
 
     #[test]
@@ -7732,7 +7721,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot attach two initialized execution owners")]
     fn attaching_two_active_guest_call_stacks_is_always_rejected() {
         fn begin_call(calls: &SharedGuestCallStack, entry: u32) {
             calls.begin_m68k(
@@ -7747,12 +7735,17 @@ mod tests {
         }
 
         let context = ProcessContext::default();
-        let mut first = SharedGuestCallStack::default();
-        let mut second = SharedGuestCallStack::default();
-        begin_call(&first, 0x1000);
-        begin_call(&second, 0x2000);
-        context.attach_guest_calls(&mut first);
-        context.attach_guest_calls(&mut second);
+        let handles = context.migrated_handles();
+        begin_call(&handles.execution, 0x1000);
+        let adapter_tick = SharedProcessTickState::default();
+        let adapter_execution = ExecutionMenuViews::detached();
+        begin_call(adapter_execution.calls(), 0x2000);
+        assert!(matches!(
+            context.preflight_migrated_adoption(&adapter_tick, &adapter_execution, 0),
+            Err(MigratedServiceConflict::Execution)
+        ));
+        assert_eq!(handles.execution.len(), 1);
+        assert_eq!(adapter_execution.calls().len(), 1);
     }
 
     #[test]
@@ -9613,10 +9606,18 @@ mod tests {
     fn attached_tick_states_share_wrapping_clock_while_snapshot_detaches() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessTickState::from_value(41);
+        let mut classic_execution = ExecutionMenuViews::detached();
         let mut native = SharedProcessTickState::default();
+        let mut native_execution = ExecutionMenuViews::detached();
 
-        context.attach_tick_state(&mut classic);
-        context.attach_tick_state(&mut native);
+        let plan = context
+            .preflight_migrated_adoption(&classic, &classic_execution, 0)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut classic, &mut classic_execution);
+        let plan = context
+            .preflight_migrated_adoption(&native, &native_execution, 41)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut native, &mut native_execution);
         let detached = native.detached_snapshot();
 
         assert!(classic.ptr_eq(&native));
@@ -9638,18 +9639,20 @@ mod tests {
 
     #[test]
     fn conflicting_tick_attachment_preserves_both_detached_values() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
-
         let context = ProcessContext::default();
         let mut classic = SharedProcessTickState::from_value(41);
-        context.attach_tick_state(&mut classic);
-        let mut native = SharedProcessTickState::from_value(42);
+        let mut classic_execution = ExecutionMenuViews::detached();
+        let plan = context
+            .preflight_migrated_adoption(&classic, &classic_execution, 0)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut classic, &mut classic_execution);
+        let native = SharedProcessTickState::from_value(42);
+        let native_execution = ExecutionMenuViews::detached();
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            context.attach_tick_state(&mut native);
-        }));
-
-        assert!(result.is_err());
+        assert!(matches!(
+            context.preflight_migrated_adoption(&native, &native_execution, 41),
+            Err(MigratedServiceConflict::Ticks)
+        ));
         assert_eq!(classic.current_tick(), 41);
         assert_eq!(native.current_tick(), 42);
         assert!(!classic.ptr_eq(&native));
@@ -9728,22 +9731,31 @@ mod tests {
     #[test]
     fn attached_menu_tracking_is_immediate_while_clones_detach() {
         let context = ProcessContext::default();
-        let mut classic = SharedProcessMenuTracking::default();
-        *classic = Some(crate::menu_manager::test_process_menu_tracking(0x1234));
-        let mut native = SharedProcessMenuTracking::default();
+        let mut classic_tick = SharedProcessTickState::default();
+        let mut classic = ExecutionMenuViews::detached();
+        let _entry = classic.enter_test_menu();
+        *classic.menu_state_mut() = Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+        let plan = context
+            .preflight_migrated_adoption(&classic_tick, &classic, 0)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut classic_tick, &mut classic);
 
-        context.attach_menu_tracking(&mut classic);
-        context.attach_menu_tracking(&mut native);
+        let mut native_tick = SharedProcessTickState::default();
+        let mut native = ExecutionMenuViews::detached();
+        let plan = context
+            .preflight_migrated_adoption(&native_tick, &native, 0)
+            .unwrap();
+        context.commit_migrated_adoption(plan, &mut native_tick, &mut native);
         let detached = native.clone();
 
-        classic.as_mut().unwrap().highlighted_item = 4;
+        classic.menu_state_mut().as_mut().unwrap().highlighted_item = 4;
 
-        assert!(classic.ptr_eq(&native));
-        assert_eq!(native.as_ref().unwrap().highlighted_item, 4);
-        assert_eq!(detached.as_ref().unwrap().highlighted_item, 1);
-        assert_eq!(native.take().unwrap().menu_handle, 0x1234);
-        assert!(classic.is_none());
-        assert_eq!(detached.as_ref().unwrap().menu_handle, 0x1234);
+        assert!(classic.calls().ptr_eq(native.calls()));
+        assert_eq!(native.menu().as_ref().unwrap().highlighted_item, 4);
+        assert_eq!(detached.menu().as_ref().unwrap().highlighted_item, 1);
+        assert_eq!(native.take_menu_state().unwrap().menu_handle, 0x1234);
+        assert!(classic.menu().is_none());
+        assert_eq!(detached.menu().as_ref().unwrap().menu_handle, 0x1234);
     }
 
     #[test]

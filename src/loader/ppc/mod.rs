@@ -28,9 +28,9 @@ use crate::event_queue::{
     EventProbeResult, EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
 };
 use crate::guest_call::{
-    format_ppc_import_action, install_powerpc_call_arguments, GuestCallContinuation,
-    GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall, MenuTrackingOrigin,
-    NativeRetirement, NativeThreadContext, SharedGuestCallStack, ThreadStorage,
+    format_ppc_import_action, install_powerpc_call_arguments, ExecutionMenuViews,
+    GuestCallContinuation, GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall,
+    MenuTrackingOrigin, NativeRetirement, NativeThreadContext, SharedGuestCallStack, ThreadStorage,
 };
 use crate::guest_procedure::{
     resolve_guest_procedure, resolve_same_isa_thread_entry, GuestIsa, GuestProcedure,
@@ -99,7 +99,7 @@ use crate::process_context::{
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
-    DEFAULT_QUICKDRAW_HILITE_COLOR, SharedProcessMenuTracking,
+    DEFAULT_QUICKDRAW_HILITE_COLOR,
     SharedProcessMixedModeM68kState,
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessQuickDrawPixelStates, SharedProcessTickState,
@@ -3078,11 +3078,10 @@ pub struct PpcToolboxStartupState {
     pub menu_bar_draw_count: u32,
     pub host_menu_bar_hidden: bool,
     pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
-    pub(crate) menu_tracking: SharedProcessMenuTracking,
+    pub(crate) execution: ExecutionMenuViews,
     /// Process-owned 68k switch marker/gateway and compatibility stack used
     /// whenever native PowerPC enters classic code through Mixed Mode.
     mixed_mode_m68k: SharedProcessMixedModeM68kState,
-    guest_calls: SharedGuestCallStack,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
     grow_window_tracking: Option<PpcGrowWindowTrackingState>,
@@ -3141,7 +3140,6 @@ pub struct PpcToolboxStartupState {
 
 impl Default for PpcToolboxStartupState {
     fn default() -> Self {
-        let guest_calls = SharedGuestCallStack::default();
         Self {
             init_graf_count: 0,
             init_graf_global_ptr: 0,
@@ -3151,9 +3149,8 @@ impl Default for PpcToolboxStartupState {
             menu_bar_draw_count: 0,
             host_menu_bar_hidden: false,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
-            menu_tracking: guest_calls.menu_tracking_view(),
+            execution: ExecutionMenuViews::detached(),
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
-            guest_calls,
             go_away_tracking: None,
             drag_window_tracking: None,
             grow_window_tracking: None,
@@ -3206,37 +3203,40 @@ impl Default for PpcToolboxStartupState {
 
 impl PpcToolboxStartupState {
     fn active_menu_definition(&self) -> Option<&MenuDefinitionTracking> {
-        self.menu_tracking
+        self.execution
+            .menu()
             .as_ref()
             .and_then(PpcMenuTracking::active_definition)
-            .or(self.menu_tracking.context().definition.as_ref())
+            .or(self.execution.menu().context().definition.as_ref())
     }
 
     fn active_menu_definition_mut(&mut self) -> Option<&mut MenuDefinitionTracking> {
         if self
-            .menu_tracking
+            .execution
+            .menu()
             .as_ref()
             .and_then(PpcMenuTracking::active_definition)
             .is_some()
         {
             return self
-                .menu_tracking
+                .execution
+                .menu_state_mut()
                 .as_mut()
                 .and_then(PpcMenuTracking::active_definition_mut);
         }
-        self.menu_tracking
-            .existing_context_mut()?
+        self.execution
+            .existing_menu_context_mut()?
             .definition
             .as_mut()
     }
 
     fn clear_active_menu_definition(&mut self) {
-        if let Some(tracking) = self.menu_tracking.as_mut() {
+        if let Some(tracking) = self.execution.menu_state_mut().as_mut() {
             if tracking.take_active_definition().is_some() {
                 return;
             }
         }
-        if let Some(context) = self.menu_tracking.existing_context_mut() {
+        if let Some(context) = self.execution.existing_menu_context_mut() {
             context.definition = None;
         }
     }
@@ -3247,8 +3247,9 @@ fn ppc_prepare_menu_definition_port(
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
 ) {
-    if startup.menu_tracking.context().native_port.is_none() {
-        startup.menu_tracking.context_mut().native_port = Some((*current_gworld, *current_gdevice));
+    if startup.execution.menu().context().native_port.is_none() {
+        startup.execution.menu_context_mut().native_port =
+            Some((*current_gworld, *current_gdevice));
     }
     *current_gworld = PPC_MAIN_GWORLD;
     *current_gdevice = PPC_MAIN_GDEVICE;
@@ -3259,8 +3260,8 @@ fn ppc_preserve_menu_callback_port(
     current_gworld: u32,
     current_gdevice: u32,
 ) {
-    if startup.menu_tracking.context().native_port.is_none() {
-        startup.menu_tracking.context_mut().native_port = Some((current_gworld, current_gdevice));
+    if startup.execution.menu().context().native_port.is_none() {
+        startup.execution.menu_context_mut().native_port = Some((current_gworld, current_gdevice));
     }
 }
 
@@ -3270,8 +3271,8 @@ fn ppc_restore_menu_definition_port(
     current_gdevice: &mut u32,
 ) {
     if let Some((gworld, gdevice)) = startup
-        .menu_tracking
-        .existing_context_mut()
+        .execution
+        .existing_menu_context_mut()
         .and_then(|context| context.native_port.take())
     {
         *current_gworld = gworld;
@@ -3629,7 +3630,6 @@ pub struct PpcLoadedApp {
     pub(crate) process_input: SharedProcessInputState,
     pub(crate) event_queue: SharedProcessEventQueue,
     pub(crate) window_list: crate::process_context::SharedProcessWindowList,
-    pub(crate) guest_calls: SharedGuestCallStack,
     pub(crate) process_memory_manager: PpcProcessMemoryManager,
     pub draw_sprocket: PpcDrawSprocketState,
 }
@@ -3678,6 +3678,52 @@ fn ppc_set_current_resource_refnum(
 }
 
 impl PpcLoadedApp {
+    #[cfg(test)]
+    pub(crate) fn guest_calls(&self) -> &SharedGuestCallStack {
+        self.toolbox_startup.execution.calls()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_constructed_from_migrated_handles(
+        &self,
+        handles: &crate::process_context::MigratedProcessHandles,
+    ) -> bool {
+        self.tick_state.ptr_eq(&handles.ticks)
+            && self
+                .toolbox_startup
+                .execution
+                .calls()
+                .ptr_eq(&handles.execution)
+            && self.toolbox_startup.execution.is_coherent()
+    }
+
+    pub(crate) fn preflight_migrated_services(
+        &self,
+        context: &ProcessContext,
+        expected_process_tick_at_commit: u32,
+    ) -> Result<
+        crate::process_context::MigratedServiceAdoption,
+        crate::process_context::MigratedServiceConflict,
+    > {
+        context.preflight_migrated_adoption(
+            &self.tick_state,
+            &self.toolbox_startup.execution,
+            expected_process_tick_at_commit,
+        )
+    }
+
+    pub(crate) fn commit_migrated_services(
+        &mut self,
+        context: &ProcessContext,
+        plan: crate::process_context::MigratedServiceAdoption,
+    ) {
+        context.commit_migrated_adoption(
+            plan,
+            &mut self.tick_state,
+            &mut self.toolbox_startup.execution,
+        );
+    }
+
     pub(crate) fn cfm_symbol_bindings(
         &mut self,
     ) -> impl crate::cfm::CfmSymbolBindings + '_ {
@@ -4078,7 +4124,7 @@ impl PpcLoadedApp {
         Some(self.cursor_state.image.as_ref()?.mono_parts())
     }
 
-    pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+    pub(crate) fn attach_unconverted_process_services(&mut self, context: &mut ProcessContext) {
         let mut attached_memory_manager = None;
         context.attach_memory_manager(&mut attached_memory_manager);
         let attached_memory_manager =
@@ -4110,13 +4156,11 @@ impl PpcLoadedApp {
         if !self.process_memory_manager.ptr_eq(&attached_memory_manager) {
             let standalone_memory_manager = self.process_memory_manager.0.borrow();
             let memory_manager = attached_memory_manager.borrow();
-            memory_manager
-                .assert_can_adopt_process_memory_manager(&standalone_memory_manager);
+            memory_manager.assert_can_adopt_process_memory_manager(&standalone_memory_manager);
         }
         context.attach_file_system(&mut self.process_file_system);
         self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
-        context.attach_tick_state(&mut self.tick_state);
         context.attach_callback_tasks(
             &mut self.timer_tasks,
             &mut self.vbl_tasks,
@@ -4170,14 +4214,9 @@ impl PpcLoadedApp {
         );
         context
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
-        context.attach_guest_calls(&mut self.guest_calls);
-        context.attach_guest_calls(&mut self.toolbox_startup.guest_calls);
-        context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         context.attach_mixed_mode_m68k_state(&mut self.toolbox_startup.mixed_mode_m68k);
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
-        context.attach_apple_event_launch_state(
-            &mut self.apple_events.apple_event_launch_state,
-        );
+        context.attach_apple_event_launch_state(&mut self.apple_events.apple_event_launch_state);
     }
 
     /// Run one native operation with every process manager continuously attached.
@@ -4207,7 +4246,7 @@ impl PpcLoadedApp {
         &mut self,
         caller: &mut crate::cpu::M68kCpu,
     ) -> Option<()> {
-        let pending = self.guest_calls.pending_powerpc_from_m68k()?;
+        let pending = self.toolbox_startup.execution.calls().pending_powerpc_from_m68k()?;
         let parameter_slots = pending
             .arguments
             .as_slice()
@@ -4220,7 +4259,7 @@ impl PpcLoadedApp {
         let callback_sp = caller_sp.checked_sub(frame_size)? & !15;
         // PowerPC System Software, 1-44–1-49: linkage and parameter areas
         // belong to the caller's grow-down stack, including worker stacks.
-        let (stack_base, stack_limit) = self.guest_calls.native_stack_bounds(
+        let (stack_base, stack_limit) = self.toolbox_startup.execution.calls().native_stack_bounds(
             self.stack_base,
             self.stack_base.checked_add(self.stack_size)?,
         )?;
@@ -4240,7 +4279,7 @@ impl PpcLoadedApp {
         self.memory
             .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, self.cpu.gpr[2])?;
 
-        let pending = self.guest_calls.activate_powerpc_with_classic_caller(
+        let pending = self.toolbox_startup.execution.calls().activate_powerpc_with_classic_caller(
             &mut self.cpu,
             caller,
             PPC_GUEST_CALL_RETURN_PC,
@@ -6955,7 +6994,7 @@ impl PpcLoadedApp {
             .checked_sub(PPC_INTERRUPT_RED_ZONE_SIZE)?
             .checked_sub(PPC_INITIAL_STACK_FRAME_SIZE)?
             & !15;
-        let (base, limit) = self.guest_calls.native_stack_bounds(
+        let (base, limit) = self.toolbox_startup.execution.calls().native_stack_bounds(
             self.stack_base,
             self.stack_base.checked_add(self.stack_size)?,
         )?;
@@ -7527,12 +7566,13 @@ impl PpcLoadedApp {
         mut process_cfm: Option<&mut PpcCfmState>,
     ) -> PpcHleRunProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
+        let guest_calls = self.toolbox_startup.execution.calls().shared_handle();
         // Wakeup selects and prepares a saved context before any native step.
-        self.guest_calls.resume_ready_task();
-        if !self.guest_calls.current_task_is_running()
-            || self.guest_calls.has_classic_task_handoff()
-            || (self.guest_calls.has_pending_task_handoff()
-                && !self.guest_calls.prepare_native_task(&mut self.cpu))
+        guest_calls.resume_ready_task();
+        if !guest_calls.current_task_is_running()
+            || guest_calls.has_classic_task_handoff()
+            || (guest_calls.has_pending_task_handoff()
+                && !guest_calls.prepare_native_task(&mut self.cpu))
         {
             return PpcHleRunProbe {
                 result: PpcRunResult::CycleLimit { cycles: 0 },
@@ -7668,10 +7708,6 @@ impl PpcLoadedApp {
         let mut input_sprocket_virtual_elements =
             std::mem::take(&mut self.input_sprocket_virtual_elements);
         let mut toolbox_startup = std::mem::take(&mut self.toolbox_startup);
-        toolbox_startup.guest_calls.attach_to(&self.guest_calls);
-        toolbox_startup
-            .menu_tracking
-            .bind_execution(&toolbox_startup.guest_calls);
         let mut quicktime = std::mem::take(&mut self.quicktime);
         let mut sound = std::mem::take(&mut self.sound);
         let mut timer_tasks = std::mem::take(&mut self.timer_tasks);
@@ -7716,7 +7752,6 @@ impl PpcLoadedApp {
         let mut scrap = std::mem::take(&mut self.scrap);
         let mut list_manager = std::mem::take(&mut self.list_manager);
         let mut draw_sprocket = self.draw_sprocket;
-        let guest_calls = self.guest_calls.shared_handle();
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
         let mut unsupported_import_index = None;
@@ -7770,7 +7805,7 @@ impl PpcLoadedApp {
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
                     let mut resource_call = None;
-                    if toolbox_startup.menu_tracking.ready_call(GuestIsa::PowerPc).is_some()
+                    if toolbox_startup.execution.menu().ready_call(GuestIsa::PowerPc).is_some()
                         || guest_calls
                         .ready_menu_bar_build(GuestIsa::PowerPc)
                         .is_some()
@@ -7818,7 +7853,7 @@ impl PpcLoadedApp {
                                 *current_resource_refnum,
                             );
                         }
-                        if let Some((_call, _scope)) = toolbox_startup.menu_tracking.resume_call(GuestIsa::PowerPc) {
+                        if let Some((_call, _scope)) = toolbox_startup.execution.resume_menu_call(GuestIsa::PowerPc) {
                             let heap = process_memory_manager.native_heap_state()
                                 .expect("native allocator registered during execution");
                             let mut cursor = heap.heap_cursor;
@@ -13237,7 +13272,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         process_input: SharedProcessInputState::default(),
         event_queue: SharedProcessEventQueue::default(),
         window_list: Default::default(),
-        guest_calls: SharedGuestCallStack::default(),
         process_memory_manager,
         draw_sprocket: PpcDrawSprocketState::default(),
     })
@@ -15559,9 +15593,6 @@ fn dispatch_supported_import(
     event_queue: &mut EventQueue,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> Option<PpcImportAction> {
-    toolbox_startup
-        .menu_tracking
-        .bind_execution(&toolbox_startup.guest_calls);
     let _menu_root = (matches!(
         binding.dispatcher_target,
         PpcImportDispatcherTarget::MenuSelect | PpcImportDispatcherTarget::PopUpMenuSelect
@@ -15571,7 +15602,7 @@ fn dispatch_supported_import(
             PpcImportDispatcherTarget::PopUpMenuSelect => ppc_popup_menu_call(cpu),
             _ => ppc_menu_select_call(cpu, cpu.gpr[3]),
         };
-        toolbox_startup.menu_tracking.enter_new_call(call)
+        toolbox_startup.execution.enter_menu_call(call)
     });
     // The process registry is authoritative. Refresh the legacy vector
     // booleans at each native boundary so rendering/debugging code that still
@@ -16728,7 +16759,7 @@ fn dispatch_supported_import(
             let menu_handles = ppc_menu_list_definition(memory, result_handle)
                 .map(|menu_list| menu_list.handles().collect())
                 .unwrap_or_default();
-            if toolbox_startup.guest_calls.begin_menu_bar_build(
+            if toolbox_startup.execution.calls().begin_menu_bar_build(
                 MenuBarBuild::new(result_handle, menu_handles),
                 MenuBarCallOrigin::PowerPc { return_address: cpu.lr },
             ).is_none() {
@@ -20578,7 +20609,7 @@ fn dispatch_supported_import(
         ))),
         PpcImportDispatcherTarget::GetSharedLibrary => Some(ppc_get_shared_library(
             cpu,
-            &toolbox_startup.guest_calls,
+            &toolbox_startup.execution.calls(),
             process_memory_manager,
             memory,
             heap_cursor,
@@ -20631,7 +20662,7 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetMemFragment => Some(ppc_get_mem_fragment(
             cpu,
-            &toolbox_startup.guest_calls,
+            &toolbox_startup.execution.calls(),
             process_memory_manager,
             memory,
             heap_cursor,
@@ -22436,7 +22467,7 @@ fn dispatch_supported_import(
             Some(ppc_install_apple_event_handler(cpu, memory, apple_events))
         }
         PpcImportDispatcherTarget::AEProcessAppleEvent => {
-            let guest_call_depth = toolbox_startup.guest_calls.depth();
+            let guest_call_depth = toolbox_startup.execution.calls().depth();
             Some(ppc_process_apple_event(
                 cpu,
                 process_memory_manager,
@@ -23899,7 +23930,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetCurrentThread => {
             // OSErr GetCurrentThread(ThreadID *currentThreadID);
             // Inside Macintosh: Thread Manager (1999), p. 62.
-            let id = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+            let id = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
                 .current_thread();
             let result = if cpu.gpr[3] != 0 && memory.write_u32_be(cpu.gpr[3], id).is_some() {
                 PPC_NO_ERR
@@ -23914,7 +23945,7 @@ fn dispatch_supported_import(
             let result = if cpu.gpr[4] == 0 {
                 PPC_PARAM_ERR
             } else {
-                match crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                match crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
                     .state(cpu.gpr[3])
                 {
                     Ok(state) if memory.write_u16_be(cpu.gpr[4], state).is_some() => PPC_NO_ERR,
@@ -23927,7 +23958,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetThreadCurrentTaskRef => {
             // OSErr GetThreadCurrentTaskRef(ThreadTaskRef *reference);
             // Inside Macintosh: Thread Manager (1999), p. 73.
-            let reference = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+            let reference = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
                 .task_reference();
             let result = if cpu.gpr[3] != 0 && memory.write_u32_be(cpu.gpr[3], reference).is_some()
             {
@@ -23943,7 +23974,7 @@ fn dispatch_supported_import(
             let result = if cpu.gpr[5] == 0 {
                 PPC_PARAM_ERR
             } else {
-                match crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                match crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
                     .state_given_task(cpu.gpr[3], cpu.gpr[4])
                 {
                     Ok(state) if memory.write_u16_be(cpu.gpr[5], state).is_some() => 0,
@@ -23956,7 +23987,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef => {
             // OSErr SetThreadReadyGivenTaskRef(ThreadTaskRef reference, ThreadID thread);
             // Inside Macintosh: Thread Manager (1999), pp. 75–76.
-            let result = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+            let result = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
                 .ready_given_task(cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -23974,7 +24005,7 @@ fn dispatch_supported_import(
                 PpcImportDispatcherTarget::SetThreadStateEndCritical
             );
             Some(
-                match toolbox_startup.guest_calls.set_native_thread_state(
+                match toolbox_startup.execution.calls().set_native_thread_state(
                     cpu,
                     thread,
                     state,
@@ -23990,7 +24021,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::CreateThreadPool => {
             // OSErr CreateThreadPool(ThreadStyle, short, Size);
             // Thread Manager (1999), pp. 50–51: all allocations or none.
-            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls());
             let result = manager.create_pool(
                 GuestIsa::PowerPc,
                 cpu.gpr[3],
@@ -24035,7 +24066,7 @@ fn dispatch_supported_import(
             let default_size =
                 binding.dispatcher_target == PpcImportDispatcherTarget::GetDefaultThreadStackSize;
             let output = if specific { cpu.gpr[5] } else { cpu.gpr[4] };
-            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls());
             let value = if default_size {
                 crate::thread_manager::ThreadManager::stack_size(GuestIsa::PowerPc, cpu.gpr[3], 0)
             } else {
@@ -24069,7 +24100,7 @@ fn dispatch_supported_import(
             // OSErr ThreadCurrentStackSpace(ThreadID, unsigned long *);
             // Thread Manager (1999), pp. 17–18 and 61.
             let output = cpu.gpr[4];
-            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls);
+            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls());
             let result = match manager.stack_space(
                 cpu.gpr[3],
                 GuestIsa::PowerPc,
@@ -24098,7 +24129,7 @@ fn dispatch_supported_import(
             let options = cpu.gpr[7];
             let result_destination = cpu.gpr[8];
             let made = cpu.gpr[9];
-            let execution = toolbox_startup.guest_calls.shared_handle();
+            let execution = toolbox_startup.execution.calls().shared_handle();
             let mut edge = PpcNewThreadEdge {
                 memory,
                 memory_manager: process_memory_manager,
@@ -24130,8 +24161,7 @@ fn dispatch_supported_import(
                 0
             };
             Some(
-                match toolbox_startup
-                    .guest_calls
+                match toolbox_startup.execution.calls()
                     .yield_native_thread(cpu, suggested)
                 {
                     Ok(true) => PpcImportAction::Yield(1),
@@ -24143,7 +24173,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DisposeThread => {
             // OSErr DisposeThread(ThreadID, void *, Boolean);
             // Inside Macintosh: Thread Manager (1999), pp. 59–60.
-            let calls = &toolbox_startup.guest_calls;
+            let calls = &toolbox_startup.execution.calls();
             let task = crate::guest_call::ExecutionTaskId::from_thread_id(
                 crate::thread_manager::ThreadManager::new(calls).resolve_thread(cpu.gpr[3]),
             );
@@ -24173,13 +24203,13 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::ThreadBeginCritical => {
             Some(PpcImportAction::Return(ppc_i16_result(
-                crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
                     .begin_critical(),
             )))
         }
         PpcImportDispatcherTarget::ThreadEndCritical => {
             Some(PpcImportAction::Return(ppc_i16_result(
-                crate::thread_manager::ThreadManager::new(&toolbox_startup.guest_calls)
+                crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
                     .end_critical(),
             )))
         }
@@ -26965,7 +26995,7 @@ fn dispatch_supported_import(
                     cpu,
                     memory,
                     process_memory_manager,
-                    &toolbox_startup.guest_calls,
+                    &toolbox_startup.execution.calls(),
                     heap_cursor,
                     heap_limit,
                     cfm_connections,
@@ -45052,7 +45082,7 @@ fn ppc_begin_m68k_universal_proc_inner(
         rtoc: target.rtoc,
     };
     let submitted = if let Some(operation) = operation {
-        startup.guest_calls.begin_powerpc_to_m68k_with_operation(
+        startup.execution.calls().begin_powerpc_to_m68k_with_operation(
             target,
             target.entry,
             initial_sp,
@@ -45066,7 +45096,7 @@ fn ppc_begin_m68k_universal_proc_inner(
             operation,
         )
     } else {
-        startup.guest_calls.begin_powerpc_to_m68k(
+        startup.execution.calls().begin_powerpc_to_m68k(
             target,
             target.entry,
             initial_sp,
@@ -59426,10 +59456,11 @@ fn ppc_set_depth(
     // PopUpMenuSelect overlay never owns TheMenu, so preserve that low-memory
     // value when cancelling popup tracking.
     let tracking_owned_menu_bar = toolbox_startup
-        .menu_tracking
+        .execution
+        .menu()
         .as_ref()
         .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar);
-    if let Some(context) = toolbox_startup.menu_tracking.existing_context_mut() {
+    if let Some(context) = toolbox_startup.execution.existing_menu_context_mut() {
         context.tracking = None;
         context.clear_native_popup();
     }
@@ -71369,7 +71400,7 @@ fn ppc_dispatch_drag_window(
         return PpcImportAction::ReturnPreserve;
     }
 
-    if startup.menu_tracking.is_some()
+    if startup.execution.menu().is_some()
         || startup.go_away_tracking.is_some()
         || !input.mouse_button
         || call.window == 0
@@ -71546,7 +71577,7 @@ fn ppc_dispatch_grow_window(
         return PpcImportAction::Return(result);
     }
 
-    if startup.menu_tracking.is_some()
+    if startup.execution.menu().is_some()
         || startup.go_away_tracking.is_some()
         || startup.drag_window_tracking.is_some()
         || !input.mouse_button
@@ -71713,7 +71744,7 @@ fn ppc_dispatch_track_go_away(
         return PpcImportAction::Return(u32::from(inside));
     }
 
-    if startup.menu_tracking.is_some()
+    if startup.execution.menu().is_some()
         || !input.mouse_button
         || !ppc_go_away_window_is_trackable(memory, gworlds, call.window)
     {
@@ -76022,8 +76053,8 @@ fn ppc_dispatch_native_menu_definition_with_return(
     final_pc: u32,
     return_gpr3: PpcNativeReturnGpr3,
 ) -> Option<PpcImportAction> {
-    let menu_build = toolbox_startup.guest_calls.menu_bar_build();
-    let tracking_root = toolbox_startup.menu_tracking.entry_id();
+    let menu_build = toolbox_startup.execution.calls().menu_bar_build();
+    let tracking_root = toolbox_startup.execution.menu().entry_id();
     let final_pc = if menu_build.is_some() && invocation.message == MenuDefinitionMessage::Size {
         PPC_GUEST_CALL_RETURN_PC
     } else {
@@ -76056,7 +76087,7 @@ fn ppc_dispatch_native_menu_definition_with_return(
             GuestIsa::PowerPc => {
                 let effect = GuestCallEffect::call_guest(
                     GuestCallRequest::for_task(
-                        toolbox_startup.guest_calls.current_task(),
+                        toolbox_startup.execution.calls().current_task(),
                         GuestCallTarget {
                             isa: target.isa,
                             entry: target.entry,
@@ -76074,7 +76105,8 @@ fn ppc_dispatch_native_menu_definition_with_return(
                     ),
                 );
                 toolbox_startup
-                    .guest_calls
+                    .execution
+                    .calls()
                     .activate_powerpc_effect_with_operation(
                         cpu,
                         memory,
@@ -76103,17 +76135,18 @@ fn ppc_dispatch_native_menu_definition_with_return(
         return None;
     }
     if let Some(id) = tracking_root {
-        toolbox_startup
-            .menu_tracking
-            .bind_completion(id, invocation, completion.clone());
+        toolbox_startup.execution.bind_menu_definition_completion(
+            id,
+            invocation,
+            completion.clone(),
+        );
     }
     if invocation.message == MenuDefinitionMessage::Size {
         if let Some(id) = menu_build {
-            toolbox_startup.guest_calls.bind_menu_bar_build_completion(
-                id,
-                invocation.menu_handle,
-                completion,
-            );
+            toolbox_startup
+                .execution
+                .calls()
+                .bind_menu_bar_build_completion(id, invocation.menu_handle, completion);
         }
     }
     prepared
@@ -76150,7 +76183,7 @@ fn ppc_begin_m68k_menu_definition(
     registers.address[5] = PPC_DATA_BASE;
     let effect = GuestCallEffect::call_guest(
         GuestCallRequest::for_task(
-            startup.guest_calls.current_task(),
+            startup.execution.calls().current_task(),
             GuestCallTarget {
                 isa: target.isa,
                 entry: target.entry,
@@ -76166,7 +76199,7 @@ fn ppc_begin_m68k_menu_definition(
         }),
         GuestCallContinuation::to_powerpc(return_pc, final_pc, cpu.gpr[2], return_gpr3),
     );
-    if !startup.guest_calls.begin_m68k_operation(
+    if !startup.execution.calls().begin_m68k_operation(
         effect,
         operation.scratch,
         crate::guest_call::ManagerContinuation::Menu(
@@ -76306,7 +76339,7 @@ fn ppc_step_menu_tracking(
     )?;
     if matches!(action, PpcImportAction::Yield(_)) {
         let Some(key) = toolbox_startup
-            .menu_tracking
+            .execution
             .request_menu_hook(input.mouse_button)
         else {
             return Some(action);
@@ -76327,7 +76360,7 @@ fn ppc_step_menu_tracking(
                     GuestIsa::PowerPc => {
                         let effect = GuestCallEffect::call_guest(
                             GuestCallRequest::for_task(
-                                toolbox_startup.guest_calls.current_task(),
+                                toolbox_startup.execution.calls().current_task(),
                                 GuestCallTarget {
                                     isa: target.isa,
                                     entry: target.entry,
@@ -76344,8 +76377,7 @@ fn ppc_step_menu_tracking(
                                 return_value,
                             ),
                         );
-                        toolbox_startup
-                            .guest_calls
+                        toolbox_startup.execution.calls()
                             .activate_powerpc_effect_with_operation(
                                 cpu,
                                 memory,
@@ -76379,7 +76411,7 @@ fn ppc_step_menu_tracking(
                 };
                 if let Some(callback) = callback {
                     assert!(toolbox_startup
-                        .menu_tracking
+                        .execution
                         .bind_menu_hook(key, operation.completion.clone()));
                     ppc_preserve_menu_callback_port(
                         toolbox_startup,
@@ -76410,7 +76442,7 @@ fn ppc_step_menu_tracking_body(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> Option<PpcImportAction> {
-    let call = toolbox_startup.menu_tracking.context().call?;
+    let call = toolbox_startup.execution.menu().context().call?;
     let MenuTrackingOrigin::PowerPc {
         stack_pointer,
         return_address,
@@ -76436,13 +76468,14 @@ fn ppc_step_menu_tracking_body(
         MenuTrackingRequest::PopUp(_) => {
             let menu_color_bytes = ppc_menu_color_table_bytes(memory, &handles);
             let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            if toolbox_startup.menu_tracking.context().caller_isa() == Some(GuestIsa::M68k) {
+            if toolbox_startup.execution.menu().context().caller_isa() == Some(GuestIsa::M68k) {
                 // A classic MenuSelect owns this process continuation. A
                 // nested native call must not consume its origin ABI frame.
                 Some(PpcImportAction::Return(0))
             } else if toolbox_startup.active_menu_definition().is_some() {
                 if toolbox_startup
-                    .menu_tracking
+                    .execution
+                    .menu()
                     .context()
                     .native_popup()
                     .is_some()
@@ -76465,7 +76498,7 @@ fn ppc_step_menu_tracking_body(
                 } else {
                     Some(PpcImportAction::Return(0))
                 }
-            } else if toolbox_startup.menu_tracking.is_none() {
+            } else if toolbox_startup.execution.menu().is_none() {
                 if let Some(action) = ppc_begin_custom_popup_menu_tracking(
                     cpu,
                     process_memory_manager,
@@ -76509,7 +76542,7 @@ fn ppc_step_menu_tracking_body(
         MenuTrackingRequest::MenuSelect { .. } => {
             let menu_color_bytes = ppc_menu_color_table_bytes(memory, &handles);
             let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            if toolbox_startup.menu_tracking.context().caller_isa() == Some(GuestIsa::M68k) {
+            if toolbox_startup.execution.menu().context().caller_isa() == Some(GuestIsa::M68k) {
                 // A classic MenuSelect owns this process continuation. A
                 // nested native call must not consume its origin ABI frame.
                 Some(PpcImportAction::Return(0))
@@ -76531,18 +76564,19 @@ fn ppc_step_menu_tracking_body(
                     current_resource_refnum,
                 ))
             } else if toolbox_startup
-                .menu_tracking
+                .execution
+                .menu()
                 .as_ref()
                 .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar && state.is_flashing())
             {
-                let mut state = toolbox_startup.menu_tracking.take().unwrap();
+                let mut state = toolbox_startup.execution.take_menu_state().unwrap();
                 let step = state.advance_flash();
                 if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
-                    *toolbox_startup.menu_tracking = Some(state);
+                    *toolbox_startup.execution.menu_state_mut() = Some(state);
                     return Some(PpcImportAction::Yield(u64::MAX));
                 }
                 if let MenuFlashStep::Complete(result) = step {
-                    *toolbox_startup.menu_tracking = Some(state);
+                    *toolbox_startup.execution.menu_state_mut() = Some(state);
                     let result = ppc_complete_menu_bar_tracking_with_colors(
                         memory,
                         gworlds,
@@ -76570,10 +76604,11 @@ fn ppc_step_menu_tracking_body(
                         step == MenuFlashStep::Highlight(true),
                     );
                 }
-                *toolbox_startup.menu_tracking = Some(state);
+                *toolbox_startup.execution.menu_state_mut() = Some(state);
                 Some(PpcImportAction::Yield(u64::MAX))
             } else if toolbox_startup
-                .menu_tracking
+                .execution
+                .menu()
                 .as_ref()
                 .is_some_and(|state| state.kind != MenuTrackingKind::MenuBar)
             {
@@ -76608,7 +76643,7 @@ fn ppc_step_menu_tracking_body(
                 ppc_restore_menu_definition_port(toolbox_startup, current_gworld, current_gdevice);
                 Some(PpcImportAction::Return(result))
             } else if input.mouse_button {
-                if toolbox_startup.menu_tracking.is_none() {
+                if toolbox_startup.execution.menu().is_none() {
                     if let Some(action) = ppc_begin_custom_menu_bar_tracking(
                         cpu,
                         process_memory_manager,
@@ -76643,8 +76678,8 @@ fn ppc_step_menu_tracking_body(
                     .and_then(MenuDefinitionTracking::pending_invocation)
                 {
                     toolbox_startup
-                        .menu_tracking
-                        .context_mut()
+                        .execution
+                        .menu_context_mut()
                         .call
                         .get_or_insert(ppc_menu_select_call(cpu, cpu.gpr[3]));
                     ppc_prepare_menu_definition_port(
@@ -76665,13 +76700,13 @@ fn ppc_step_menu_tracking_body(
                     ) {
                         return Some(action);
                     }
-                    if let Some(state) = toolbox_startup.menu_tracking.take() {
+                    if let Some(state) = toolbox_startup.execution.take_menu_state() {
                         ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                     }
                     toolbox_startup.clear_active_menu_definition();
                     toolbox_startup
-                        .menu_tracking
-                        .context_mut()
+                        .execution
+                        .menu_context_mut()
                         .clear_native_menu();
                     ppc_restore_menu_definition_port(
                         toolbox_startup,
@@ -76681,7 +76716,8 @@ fn ppc_step_menu_tracking_body(
                     return Some(PpcImportAction::Return(0));
                 }
                 if toolbox_startup
-                    .menu_tracking
+                    .execution
+                    .menu()
                     .as_ref()
                     .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar)
                 {
@@ -76697,7 +76733,7 @@ fn ppc_step_menu_tracking_body(
                 // separate fixed-height shortcut. Macintosh Toolbox Essentials
                 // (1992), pp. 3-114--3-116.
                 let mut tracking_updated = false;
-                if toolbox_startup.menu_tracking.is_none() {
+                if toolbox_startup.execution.menu().is_none() {
                     if let Some(action) = ppc_begin_custom_menu_bar_tracking(
                         cpu,
                         process_memory_manager,
@@ -76729,7 +76765,7 @@ fn ppc_step_menu_tracking_body(
                     tracking_updated = true;
                 }
                 if !tracking_updated {
-                    if let Some(mut state) = toolbox_startup.menu_tracking.take() {
+                    if let Some(mut state) = toolbox_startup.execution.take_menu_state() {
                         ppc_update_menu_tracking(
                             memory,
                             gworlds,
@@ -76741,10 +76777,10 @@ fn ppc_step_menu_tracking_body(
                             vfs_resources,
                             current_resource_refnum,
                         );
-                        *toolbox_startup.menu_tracking = Some(state);
+                        *toolbox_startup.execution.menu_state_mut() = Some(state);
                     }
                 }
-                if let Some(state) = toolbox_startup.menu_tracking.as_ref() {
+                if let Some(state) = toolbox_startup.execution.menu().as_ref() {
                     if let Some((menu_handle, item)) = ppc_tracked_menu_selection(memory, state) {
                         let menu_id = memory
                             .read_u32_be(menu_handle)
@@ -76753,7 +76789,7 @@ fn ppc_step_menu_tracking_body(
                             .unwrap_or(0);
                         let result = (u32::from(menu_id) << 16) | u32::from(item as u16);
                         if result != 0 {
-                            let state = toolbox_startup.menu_tracking.as_mut().unwrap();
+                            let state = toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
                             if state.begin_flash(
                                 memory
                                     .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -76888,8 +76924,13 @@ fn ppc_begin_custom_popup_menu_tracking(
         return None;
     }
     ppc_menu_definition_target(cpu, memory, resources, menu_handle)?;
-    startup.menu_tracking.context_mut().definition = Some(call.popup_request().unwrap().begin_definition());
-    startup.menu_tracking.context_mut().call.get_or_insert(call);
+    startup.execution.menu_context_mut().definition =
+        Some(call.popup_request().unwrap().begin_definition());
+    startup
+        .execution
+        .menu_context_mut()
+        .call
+        .get_or_insert(call);
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
         .active_menu_definition()
@@ -76907,7 +76948,7 @@ fn ppc_begin_custom_popup_menu_tracking(
     );
     if action.is_none() {
         startup.clear_active_menu_definition();
-        startup.menu_tracking.context_mut().clear_native_popup();
+        startup.execution.menu_context_mut().clear_native_popup();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
     }
     action
@@ -76929,7 +76970,7 @@ fn ppc_continue_custom_popup_menu_tracking(
     input: PpcInputSnapshot,
     resources: &[PpcVfsResourceRecord],
 ) -> PpcImportAction {
-    let Some(call) = startup.menu_tracking.context().native_popup() else {
+    let Some(call) = startup.execution.menu().context().native_popup() else {
         startup.clear_active_menu_definition();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
@@ -76941,7 +76982,7 @@ fn ppc_continue_custom_popup_menu_tracking(
     {
         Ok(completed) => completed.flatten(),
         Err(()) => {
-            if let Some(state) = startup.menu_tracking.take() {
+            if let Some(state) = startup.execution.take_menu_state() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
                     == state.front_buffer
@@ -76950,7 +76991,7 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -76958,16 +76999,22 @@ fn ppc_continue_custom_popup_menu_tracking(
     };
 
     if startup
-        .menu_tracking
+        .execution
+        .menu()
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup.menu_tracking.as_mut().unwrap().advance_flash();
+        let step = startup
+            .execution
+            .menu_state_mut()
+            .as_mut()
+            .unwrap()
+            .advance_flash();
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
         if let MenuFlashStep::Complete(result) = step {
-            if let Some(state) = startup.menu_tracking.take() {
+            if let Some(state) = startup.execution.take_menu_state() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
                     == state.front_buffer
@@ -76976,7 +77023,7 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
@@ -77003,7 +77050,7 @@ fn ppc_continue_custom_popup_menu_tracking(
     if completed == Some(MenuDefinitionMessage::PopUp) {
         let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -77024,7 +77071,7 @@ fn ppc_continue_custom_popup_menu_tracking(
             Vec::new(),
         ) else {
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -77041,13 +77088,13 @@ fn ppc_continue_custom_popup_menu_tracking(
         {
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
         }
-        state.definition = startup.menu_tracking.context_mut().definition.take();
-        *startup.menu_tracking = Some(state);
+        state.definition = startup.execution.menu_context_mut().definition.take();
+        *startup.execution.menu_state_mut() = Some(state);
         startup.active_menu_definition_mut().unwrap().draw();
         let invocation = startup
             .active_menu_definition()
@@ -77100,7 +77147,7 @@ fn ppc_continue_custom_popup_menu_tracking(
                 0
             };
             if result != 0 {
-                let state = startup.menu_tracking.as_mut().unwrap();
+                let state = startup.execution.menu_state_mut().as_mut().unwrap();
                 let flash_enabled = state.begin_flash(
                     memory
                         .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -77108,7 +77155,7 @@ fn ppc_continue_custom_popup_menu_tracking(
                     result,
                 );
                 if !flash_enabled {
-                    if let Some(state) = startup.menu_tracking.take() {
+                    if let Some(state) = startup.execution.take_menu_state() {
                         if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                             .map(MenuTrackingSurface::from)
                             == state.front_buffer
@@ -77117,14 +77164,14 @@ fn ppc_continue_custom_popup_menu_tracking(
                         }
                     }
                     startup.clear_active_menu_definition();
-                    startup.menu_tracking.context_mut().clear_native_popup();
+                    startup.execution.menu_context_mut().clear_native_popup();
                     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
                     cpu.lr = call.origin.return_address();
                     return PpcImportAction::Return(result);
                 }
                 return PpcImportAction::Yield(u64::MAX);
             }
-            if let Some(state) = startup.menu_tracking.take() {
+            if let Some(state) = startup.execution.take_menu_state() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
                     == state.front_buffer
@@ -77133,14 +77180,14 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
         }
     }
 
-    if let Some(state) = startup.menu_tracking.take() {
+    if let Some(state) = startup.execution.take_menu_state() {
         if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
             .map(MenuTrackingSurface::from)
             == state.front_buffer
@@ -77149,7 +77196,7 @@ fn ppc_continue_custom_popup_menu_tracking(
         }
     }
     startup.clear_active_menu_definition();
-    startup.menu_tracking.context_mut().clear_native_popup();
+    startup.execution.menu_context_mut().clear_native_popup();
     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
     cpu.lr = call.origin.return_address();
     PpcImportAction::Return(0)
@@ -77171,14 +77218,14 @@ fn ppc_dispatch_pop_up_menu_select(
     let call = ppc_popup_menu_call(cpu);
     let current_menu_list = ppc_current_menu_list(memory);
 
-    if let Some(state) = startup.menu_tracking.as_ref() {
-        if startup.menu_tracking.context().caller_isa() == Some(GuestIsa::M68k) {
+    if let Some(state) = startup.execution.menu().as_ref() {
+        if startup.execution.menu().context().caller_isa() == Some(GuestIsa::M68k) {
             // A classic MenuSelect owns this process continuation. A nested
             // native call must not consume its save-under or origin ABI frame.
             return PpcImportAction::Return(0);
         }
         if state.kind != MenuTrackingKind::PopUp
-            || startup.menu_tracking.context().native_popup() != Some(call)
+            || startup.execution.menu().context().native_popup() != Some(call)
             || state.menu_handle != menu_handle
         {
             // A callback may enter a different modal menu routine while an
@@ -77191,30 +77238,30 @@ fn ppc_dispatch_pop_up_menu_select(
         if live_front.map(MenuTrackingSurface::from) != state.front_buffer {
             // A changed PixMap/depth makes the saved coordinates unsafe to
             // write. Abandon the overlay without touching either buffer.
-            *startup.menu_tracking = None;
-            startup.menu_tracking.context_mut().clear_native_popup();
+            *startup.execution.menu_state_mut() = None;
+            startup.execution.menu_context_mut().clear_native_popup();
             return PpcImportAction::Return(0);
         }
         if !ppc_popup_menu_is_inserted(memory, current_menu_list, menu_handle) {
-            let Some(state) = startup.menu_tracking.take() else {
+            let Some(state) = startup.execution.take_menu_state() else {
                 return PpcImportAction::Return(0);
             };
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
             return PpcImportAction::Return(0);
         }
 
         if state.is_flashing() {
-            let Some(mut state) = startup.menu_tracking.take() else {
+            let Some(mut state) = startup.execution.take_menu_state() else {
                 return PpcImportAction::Return(0);
             };
             let step = state.advance_flash();
             if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
-                *startup.menu_tracking = Some(state);
+                *startup.execution.menu_state_mut() = Some(state);
                 return PpcImportAction::Yield(u64::MAX);
             }
             if let MenuFlashStep::Complete(result) = step {
-                startup.menu_tracking.context_mut().clear_native_popup();
+                startup.execution.menu_context_mut().clear_native_popup();
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
@@ -77231,11 +77278,11 @@ fn ppc_dispatch_pop_up_menu_select(
                 &state,
                 visible_item,
             );
-            *startup.menu_tracking = Some(state);
+            *startup.execution.menu_state_mut() = Some(state);
             return PpcImportAction::Yield(u64::MAX);
         }
 
-        let Some(mut state) = startup.menu_tracking.take() else {
+        let Some(mut state) = startup.execution.take_menu_state() else {
             return PpcImportAction::Return(0);
         };
         // Popup tracking uses the same retained MenuRows state as MenuSelect.
@@ -77256,7 +77303,7 @@ fn ppc_dispatch_pop_up_menu_select(
         let highlighted_item = state.highlighted_item;
         if !input.mouse_button {
             if highlighted_item == 0 {
-                startup.menu_tracking.context_mut().clear_native_popup();
+                startup.execution.menu_context_mut().clear_native_popup();
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(0);
             }
@@ -77273,7 +77320,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 result,
             );
             if !flash_enabled {
-                startup.menu_tracking.context_mut().clear_native_popup();
+                startup.execution.menu_context_mut().clear_native_popup();
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
@@ -77285,7 +77332,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 &state,
                 highlighted_item,
             );
-            *startup.menu_tracking = Some(state);
+            *startup.execution.menu_state_mut() = Some(state);
             return PpcImportAction::Yield(u64::MAX);
         }
 
@@ -77297,7 +77344,7 @@ fn ppc_dispatch_pop_up_menu_select(
             &state,
             highlighted_item,
         );
-        *startup.menu_tracking = Some(state);
+        *startup.execution.menu_state_mut() = Some(state);
         return PpcImportAction::Yield(u64::MAX);
     }
 
@@ -77351,8 +77398,8 @@ fn ppc_dispatch_pop_up_menu_select(
         &state,
         highlighted_item,
     );
-    *startup.menu_tracking = Some(state);
-    startup.menu_tracking.context_mut().call.get_or_insert(call);
+    *startup.execution.menu_state_mut() = Some(state);
+    startup.execution.menu_context_mut().call.get_or_insert(call);
     PpcImportAction::Yield(u64::MAX)
 }
 
@@ -78627,8 +78674,11 @@ fn ppc_begin_custom_menu_bar_tracking(
         StandardMenuPaneKind::PullDown,
         &state,
     )?;
-    *startup.menu_tracking = Some(state);
-    startup.menu_tracking.context_mut().call
+    *startup.execution.menu_state_mut() = Some(state);
+    startup
+        .execution
+        .menu_context_mut()
+        .call
         .get_or_insert(ppc_menu_select_call(cpu, initial_point));
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
@@ -78646,11 +78696,11 @@ fn ppc_begin_custom_menu_bar_tracking(
         cpu.pc,
     );
     if action.is_none() {
-        if let Some(state) = startup.menu_tracking.take() {
+        if let Some(state) = startup.execution.take_menu_state() {
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
         }
         startup.clear_active_menu_definition();
-        startup.menu_tracking.context_mut().clear_native_menu();
+        startup.execution.menu_context_mut().clear_native_menu();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         ppc_set_menu_command_highlight_with_colors(
             memory,
@@ -78683,21 +78733,21 @@ fn ppc_continue_custom_menu_bar_tracking(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> PpcImportAction {
-    let Some(call) = startup.menu_tracking.context().native_menu() else {
+    let Some(call) = startup.execution.menu().context().native_menu() else {
         startup.clear_active_menu_definition();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
     let Some(definition) = startup.active_menu_definition_mut() else {
         cpu.lr = call.origin.return_address();
-        startup.menu_tracking.context_mut().clear_native_menu();
+        startup.execution.menu_context_mut().clear_native_menu();
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
     let completed = match definition.complete_callback() {
         Ok(completed) => completed,
         Err(()) => {
-            if let Some(state) = startup.menu_tracking.take() {
+            if let Some(state) = startup.execution.take_menu_state() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
                     == state.front_buffer
@@ -78706,7 +78756,7 @@ fn ppc_continue_custom_menu_bar_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_menu();
+            startup.execution.menu_context_mut().clear_native_menu();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -78714,17 +78764,15 @@ fn ppc_continue_custom_menu_bar_tracking(
     };
 
     if completed == Some(MenuDefinitionMessage::Choose) {
-        let active_submenu =
-            startup
-                .menu_tracking
-                .as_ref()
-                .and_then(|state| match state.active_definition_pane() {
-                    Some(MenuDefinitionPane::Submenu(depth)) => state
-                        .submenus
-                        .get(depth)
-                        .map(|submenu| submenu.dropdown_rect()),
-                    _ => None,
-                });
+        let active_submenu = startup.execution.menu().as_ref().and_then(|state| {
+            match state.active_definition_pane() {
+                Some(MenuDefinitionPane::Submenu(depth)) => state
+                    .submenus
+                    .get(depth)
+                    .map(|submenu| submenu.dropdown_rect()),
+                _ => None,
+            }
+        });
         if let Some((top, left, bottom, right)) = active_submenu {
             if input.mouse_v < top
                 || input.mouse_v >= bottom
@@ -78732,7 +78780,7 @@ fn ppc_continue_custom_menu_bar_tracking(
                 || input.mouse_h >= right
             {
                 let menu_list = ppc_current_menu_list(memory);
-                if let Some(mut state) = startup.menu_tracking.take() {
+                if let Some(mut state) = startup.execution.take_menu_state() {
                     ppc_update_menu_tracking(
                         memory,
                         gworlds,
@@ -78744,10 +78792,10 @@ fn ppc_continue_custom_menu_bar_tracking(
                         resources,
                         current_resource_refnum,
                     );
-                    *startup.menu_tracking = Some(state);
+                    *startup.execution.menu_state_mut() = Some(state);
                 }
                 if startup.active_menu_definition().is_none() {
-                    startup.menu_tracking.context_mut().clear_native_menu();
+                    startup.execution.menu_context_mut().clear_native_menu();
                     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
                     cpu.lr = call.origin.return_address();
                     return PpcImportAction::Yield(u64::MAX);
@@ -78775,16 +78823,22 @@ fn ppc_continue_custom_menu_bar_tracking(
     }
 
     if startup
-        .menu_tracking
+        .execution
+        .menu()
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup.menu_tracking.as_mut().unwrap().advance_flash();
+        let step = startup
+            .execution
+            .menu_state_mut()
+            .as_mut()
+            .unwrap()
+            .advance_flash();
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
         if let MenuFlashStep::Complete(result) = step {
-            if let Some(state) = startup.menu_tracking.take() {
+            if let Some(state) = startup.execution.take_menu_state() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
                     == state.front_buffer
@@ -78804,7 +78858,7 @@ fn ppc_continue_custom_menu_bar_tracking(
                 startup.host_menu_bar_hidden,
             );
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_menu();
+            startup.execution.menu_context_mut().clear_native_menu();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
@@ -78848,7 +78902,7 @@ fn ppc_continue_custom_menu_bar_tracking(
             return action;
         }
         let menu_list = ppc_current_menu_list(memory);
-        if let Some(state) = startup.menu_tracking.take() {
+        if let Some(state) = startup.execution.take_menu_state() {
             if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                 .map(MenuTrackingSurface::from)
                 == state.front_buffer
@@ -78857,7 +78911,7 @@ fn ppc_continue_custom_menu_bar_tracking(
             }
         }
         startup.clear_active_menu_definition();
-        startup.menu_tracking.context_mut().clear_native_menu();
+        startup.execution.menu_context_mut().clear_native_menu();
         ppc_set_menu_command_highlight_with_colors(
             memory,
             gworlds,
@@ -78890,7 +78944,7 @@ fn ppc_continue_custom_menu_bar_tracking(
         0
     };
     if result != 0 {
-        let state = startup.menu_tracking.as_mut().unwrap();
+        let state = startup.execution.menu_state_mut().as_mut().unwrap();
         let flash_enabled = state.begin_flash(
             memory
                 .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
@@ -78898,7 +78952,7 @@ fn ppc_continue_custom_menu_bar_tracking(
             result,
         );
         if !flash_enabled {
-            if let Some(state) = startup.menu_tracking.take() {
+            if let Some(state) = startup.execution.take_menu_state() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     .map(MenuTrackingSurface::from)
                     == state.front_buffer
@@ -78918,14 +78972,14 @@ fn ppc_continue_custom_menu_bar_tracking(
                 startup.host_menu_bar_hidden,
             );
             startup.clear_active_menu_definition();
-            startup.menu_tracking.context_mut().clear_native_menu();
+            startup.execution.menu_context_mut().clear_native_menu();
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
         }
         return PpcImportAction::Yield(u64::MAX);
     }
-    if let Some(state) = startup.menu_tracking.take() {
+    if let Some(state) = startup.execution.take_menu_state() {
         if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
             .map(MenuTrackingSurface::from)
             == state.front_buffer
@@ -78945,7 +78999,7 @@ fn ppc_continue_custom_menu_bar_tracking(
         startup.host_menu_bar_hidden,
     );
     startup.clear_active_menu_definition();
-    startup.menu_tracking.context_mut().clear_native_menu();
+    startup.execution.menu_context_mut().clear_native_menu();
     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
     cpu.lr = call.origin.return_address();
     PpcImportAction::Return(result)
@@ -78990,14 +79044,15 @@ fn ppc_track_menu_while_held_with_resources(
         return;
     };
     if startup
-        .menu_tracking
+        .execution
+        .menu()
         .as_ref()
         .is_some_and(|state| state.kind != MenuTrackingKind::MenuBar)
     {
         return;
     }
     if startup.host_menu_bar_hidden {
-        if let Some(previous) = startup.menu_tracking.take() {
+        if let Some(previous) = startup.execution.take_menu_state() {
             if previous.front_buffer == Some(front.into()) {
                 ppc_restore_menu_tracking(memory, Some(front.into()), &previous);
             }
@@ -79005,7 +79060,7 @@ fn ppc_track_menu_while_held_with_resources(
         let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
         return;
     }
-    if let Some(previous) = startup.menu_tracking.take() {
+    if let Some(previous) = startup.execution.take_menu_state() {
         if previous.front_buffer != Some(front.into()) {
             ppc_restore_menu_tracking(memory, previous.front_buffer, &previous);
             let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
@@ -79027,7 +79082,7 @@ fn ppc_track_menu_while_held_with_resources(
             .filter(|(menu_handle, _)| *menu_handle != previous.menu_handle);
         if let Some((menu_handle, title_left)) = switched {
             ppc_restore_menu_tracking(memory, Some(front.into()), &previous);
-            *startup.menu_tracking = ppc_begin_menu_bar_tracking_with_resources(
+            *startup.execution.menu_state_mut() = ppc_begin_menu_bar_tracking_with_resources(
                 memory,
                 front,
                 menu_handle,
@@ -79035,9 +79090,9 @@ fn ppc_track_menu_while_held_with_resources(
                 resources,
                 current_resource_refnum,
             );
-            startup.menu_tracking.context_mut().clear_native_popup();
+            startup.execution.menu_context_mut().clear_native_popup();
         } else {
-            *startup.menu_tracking = Some(previous);
+            *startup.execution.menu_state_mut() = Some(previous);
         }
     } else {
         let Some((menu_handle, title_left)) =
@@ -79055,10 +79110,10 @@ fn ppc_track_menu_while_held_with_resources(
         ) else {
             return;
         };
-        *startup.menu_tracking = Some(state);
-        startup.menu_tracking.context_mut().clear_native_popup();
+        *startup.execution.menu_state_mut() = Some(state);
+        startup.execution.menu_context_mut().clear_native_popup();
     }
-    let active_menu_id = startup.menu_tracking.as_ref().and_then(|state| {
+    let active_menu_id = startup.execution.menu().as_ref().and_then(|state| {
         memory
             .read_u32_be(state.menu_handle)
             .filter(|menu| *menu != 0)
@@ -79076,7 +79131,7 @@ fn ppc_track_menu_while_held_with_resources(
             startup.host_menu_bar_hidden,
         );
     }
-    if let Some(mut state) = startup.menu_tracking.take() {
+    if let Some(mut state) = startup.execution.take_menu_state() {
         // MenuSelect highlights the title and tracks the pointer until the
         // button is released, displaying the selected item inversely. A
         // hierarchical title opens its installed submenu while remaining
@@ -79093,7 +79148,7 @@ fn ppc_track_menu_while_held_with_resources(
             resources,
             current_resource_refnum,
         );
-        *startup.menu_tracking = Some(state);
+        *startup.execution.menu_state_mut() = Some(state);
     }
 }
 
@@ -79106,13 +79161,14 @@ fn ppc_finish_menu_bar_tracking_with_colors(
     _input: PpcInputSnapshot,
 ) -> Option<u32> {
     if startup
-        .menu_tracking
+        .execution
+        .menu()
         .as_ref()
         .is_some_and(|state| state.kind != MenuTrackingKind::MenuBar)
     {
         return None;
     }
-    let state = startup.menu_tracking.as_ref()?;
+    let state = startup.execution.menu().as_ref()?;
     let selection = (!startup.host_menu_bar_hidden)
         .then(|| ppc_tracked_menu_selection(memory, state))
         .flatten();
@@ -79144,7 +79200,7 @@ fn ppc_complete_menu_bar_tracking_with_colors(
     result: u32,
 ) -> Option<u32> {
     let current_menu_list = ppc_current_menu_list(memory);
-    let state = startup.menu_tracking.take()?;
+    let state = startup.execution.take_menu_state()?;
     if let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) {
         if Some(MenuTrackingSurface::from(front)) == state.front_buffer {
             ppc_restore_menu_tracking(memory, Some(front.into()), &state);
@@ -79185,7 +79241,7 @@ fn ppc_finish_menu_bar_tracking(
     startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
 ) -> Option<u32> {
-    if let Some(mut state) = startup.menu_tracking.take() {
+    if let Some(mut state) = startup.execution.take_menu_state() {
         let menu_list = ppc_current_menu_list(memory);
         ppc_update_menu_tracking(
             memory,
@@ -79198,7 +79254,7 @@ fn ppc_finish_menu_bar_tracking(
             &[],
             0,
         );
-        *startup.menu_tracking = Some(state);
+        *startup.execution.menu_state_mut() = Some(state);
     }
     ppc_finish_menu_bar_tracking_with_colors(
         memory,
@@ -79791,8 +79847,7 @@ fn ppc_continue_menu_bar_build(
     current_resource_refnum: i16,
 ) -> PpcImportAction {
     loop {
-        let menu_handle = match startup
-            .guest_calls
+        let menu_handle = match startup.execution.calls()
             .advance_menu_bar_build(GuestIsa::PowerPc)
         {
             Some(MenuBarBuildResume::Size(handle)) => handle,
@@ -91560,10 +91615,9 @@ pub(crate) mod tests {
     }
 
     fn drain_test_m68k_guest_calls(loaded: &mut PpcLoadedApp) {
-        while let Some(pending) = loaded
-            .guest_calls
+        while let Some(pending) = loaded.guest_calls()
             .active_m68k()
-            .or_else(|| loaded.guest_calls.activate_m68k())
+            .or_else(|| loaded.guest_calls().activate_m68k())
         {
             let mut cpu = m68k::CpuCore::new();
             cpu.set_cpu_type(REFERENCE_MACHINE_PROFILE.cpu_type());
@@ -91607,7 +91661,11 @@ pub(crate) mod tests {
                     panic!("special-case result selector {selector} requires the shared runner")
                 }
             };
-            assert!(loaded.guest_calls.complete_m68k_operation_for_powerpc(
+            assert!(loaded
+                .toolbox_startup
+                .execution
+                .calls()
+                .complete_m68k_operation_for_powerpc(
                 cpu.pc,
                 cpu.a(7),
                 result,
@@ -93625,7 +93683,7 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             },
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
         let command_text_advance = ppc_text_bytes_advance_for_font(
             b"Command",
             PPC_QD_TEXT_FONT_DEFAULT,
@@ -93907,7 +93965,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
 
-        let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
         let front =
             ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
                 .unwrap();
@@ -94206,7 +94264,7 @@ pub(crate) mod tests {
             .native_ptr_records()
             .iter()
             .all(|record| record.ptr != loaded.cpu.gpr[5]));
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.guest_calls().is_empty());
     }
 
     #[test]
@@ -94269,7 +94327,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(probe.handled_import_count, 2);
         assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.guest_calls().is_empty());
         assert_eq!(
             loaded.memory.read_u32_be(marker),
             Some(0x1122),
@@ -94322,7 +94380,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             assert!(matches!(action, PpcImportAction::Halt));
-            let pending = loaded.toolbox_startup.guest_calls.activate_m68k().unwrap();
+            let pending = loaded.toolbox_startup.execution.calls().activate_m68k().unwrap();
             loaded
                 .memory
                 .write_u32_be(pending.initial_sp - 100, 0x1122 + index)
@@ -94344,8 +94402,7 @@ pub(crate) mod tests {
         assert_eq!(manager.native_ptr_records().len(), initial_count + 2);
         for (index, pending) in intervals.into_iter().rev().enumerate() {
             assert!(loaded
-                .toolbox_startup
-                .guest_calls
+                .toolbox_startup.execution.calls()
                 .complete_m68k_operation_for_powerpc(
                     pending.return_pc,
                     pending.final_sp,
@@ -94359,7 +94416,7 @@ pub(crate) mod tests {
                 initial_count + 1 - index
             );
         }
-        assert!(loaded.toolbox_startup.guest_calls.is_empty());
+        assert!(loaded.toolbox_startup.execution.calls().is_empty());
         assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
         assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
     }
@@ -94434,7 +94491,7 @@ pub(crate) mod tests {
         assert!(matches!(action, PpcImportAction::Continue));
         assert_eq!(loaded.cpu.pc, callback_entry);
         assert_eq!(loaded.cpu.gpr[2], callback_rtoc);
-        assert_eq!(loaded.toolbox_startup.guest_calls.len(), 1);
+        assert_eq!(loaded.toolbox_startup.execution.calls().len(), 1);
         let scratch = loaded.cpu.gpr[5];
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, scratch, 10),
@@ -94446,8 +94503,7 @@ pub(crate) mod tests {
         );
         loaded.cpu.pc = PPC_GUEST_CALL_RETURN_PC;
         assert!(loaded
-            .toolbox_startup
-            .guest_calls
+            .toolbox_startup.execution.calls()
             .complete_powerpc_resuming_operation(
                 &mut loaded.cpu,
                 manager.native_mut(),
@@ -94482,13 +94538,13 @@ pub(crate) mod tests {
             )
             .unwrap();
             assert!(
-                loaded.toolbox_startup.guest_calls.is_pristine(),
+                loaded.toolbox_startup.execution.calls().is_pristine(),
                 "depth {screen_depth}"
             );
             let mut context = crate::process_context::ProcessContext::default();
-            loaded.attach_process_context(&mut context);
-            assert!(loaded.toolbox_startup.menu_tracking.is_none());
-            assert!(loaded.guest_calls.is_pristine());
+            loaded.attach_unconverted_process_services(&mut context);
+            assert!(loaded.toolbox_startup.execution.menu().is_none());
+            assert!(loaded.guest_calls().is_pristine());
             assert!(context.menu_tracking().is_none());
         }
     }
@@ -94606,8 +94662,8 @@ pub(crate) mod tests {
             );
             assert_eq!(loaded.cpu.pc, PPC_HALT_PC, "outer caller return");
             assert_eq!(loaded.cpu.gpr[3], (131u32 << 16) | 1, "outer selection");
-            assert!(loaded.guest_calls.is_empty());
-            assert!(loaded.toolbox_startup.menu_tracking.is_none());
+            assert!(loaded.guest_calls().is_empty());
+            assert!(loaded.toolbox_startup.execution.menu().is_none());
             assert_eq!(*loaded.current_gworld, 0x1234_0000);
             assert_eq!(*loaded.current_gdevice, 0x1234_1000);
             assert_eq!(
@@ -94692,7 +94748,7 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
             Some(before.clone())
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
 
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: false,
@@ -94706,7 +94762,7 @@ pub(crate) mod tests {
         assert_eq!(
             loaded
                 .toolbox_startup
-                .menu_tracking
+                .execution.menu()
                 .as_ref()
                 .unwrap()
                 .flash_remaining,
@@ -94718,7 +94774,7 @@ pub(crate) mod tests {
             assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
             let remaining = loaded
                 .toolbox_startup
-                .menu_tracking
+                .execution.menu()
                 .as_ref()
                 .map_or(0, |state| state.flash_remaining);
             if phases.last() != Some(&remaining) {
@@ -94732,13 +94788,13 @@ pub(crate) mod tests {
         assert_eq!(phases, [6, 5, 4, 3, 2, 1, 0]);
         assert_eq!(loaded.cpu.gpr[3], (131u32 << 16) | 2);
         assert_eq!(loaded.cpu.lr, return_address);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().definition,
+            loaded.toolbox_startup.execution.menu().context().definition,
             None
         );
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_menu(),
+            loaded.toolbox_startup.execution.menu().context().native_menu(),
             None
         );
         assert_eq!(*loaded.current_gworld, 0x1234_0000);
@@ -94874,7 +94930,7 @@ pub(crate) mod tests {
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         let root_rect = loaded
             .toolbox_startup
-            .menu_tracking
+            .execution.menu()
             .as_ref()
             .unwrap()
             .dropdown_rect();
@@ -94887,7 +94943,7 @@ pub(crate) mod tests {
         });
         let probe = loaded.run_with_hle_imports(512);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
         let child_rect = tracking.submenus[0].dropdown_rect();
         assert_eq!(child_rect.3 - child_rect.1, 72);
         assert_eq!(child_rect.2 - child_rect.0, 32);
@@ -94907,13 +94963,13 @@ pub(crate) mod tests {
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert!(loaded
             .toolbox_startup
-            .menu_tracking
+            .execution.menu()
             .as_ref()
             .unwrap()
             .submenus
             .is_empty());
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().caller_isa(),
+            loaded.toolbox_startup.execution.menu().context().caller_isa(),
             Some(GuestIsa::PowerPc)
         );
         assert_eq!(*loaded.current_gworld, 0x1234_0000);
@@ -94930,7 +94986,7 @@ pub(crate) mod tests {
         assert_eq!(
             loaded
                 .toolbox_startup
-                .menu_tracking
+                .execution.menu()
                 .as_ref()
                 .unwrap()
                 .active_definition_pane(),
@@ -94963,7 +95019,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(256);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         {
-            let state = loaded.toolbox_startup.menu_tracking.as_mut().unwrap();
+            let state = loaded.toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
             assert_eq!(state.flash_result, (141u32 << 16) | 2);
             state.flash_remaining = 1;
             state.flash_delay = 0;
@@ -94972,9 +95028,9 @@ pub(crate) mod tests {
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (141u32 << 16) | 2);
         assert_eq!(loaded.cpu.lr, return_address);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().caller_isa(),
+            loaded.toolbox_startup.execution.menu().context().caller_isa(),
             None
         );
         assert_eq!(*loaded.current_gworld, 0x1234_0000);
@@ -95102,7 +95158,7 @@ pub(crate) mod tests {
             assert_eq!(
                 loaded
                     .toolbox_startup
-                    .menu_tracking
+                    .execution.menu()
                     .as_ref()
                     .unwrap()
                     .flash_remaining,
@@ -95114,7 +95170,7 @@ pub(crate) mod tests {
                 assert_eq!(probe.handled_import_count, 0, "retained custom tracking bypasses public entry");
                 let remaining = loaded
                     .toolbox_startup
-                    .menu_tracking
+                    .execution.menu()
                     .as_ref()
                     .map_or(0, |state| state.flash_remaining);
                 if phases.last() != Some(&remaining) {
@@ -95127,13 +95183,13 @@ pub(crate) mod tests {
             }
             assert_eq!(phases, [6, 5, 4, 3, 2, 1, 0]);
             assert_eq!(loaded.cpu.gpr[3], (132u32 << 16) | 2);
-            assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+            assert!(loaded.toolbox_startup.execution.menu().is_none());
             assert_eq!(
-                loaded.toolbox_startup.menu_tracking.context().definition,
+                loaded.toolbox_startup.execution.menu().context().definition,
                 None
             );
             assert_eq!(
-                loaded.toolbox_startup.menu_tracking.context().native_popup(),
+                loaded.toolbox_startup.execution.menu().context().native_popup(),
                 None
             );
             assert_eq!(
@@ -95216,7 +95272,7 @@ pub(crate) mod tests {
                 &loaded.process_file_system.vfs_resources,
                 *loaded.process_file_system.current_resource_file,
             );
-            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(
                 tracking
                     .item_appearances
@@ -95407,7 +95463,7 @@ pub(crate) mod tests {
             &loaded.process_file_system.vfs_resources,
             *loaded.process_file_system.current_resource_file,
         );
-        let root = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let root = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
         assert_eq!(root.item_appearances[0].height, 34);
         let parent_top = root.popup_top + root.item_appearances[0].height;
         ppc_track_menu_while_held_with_resources(
@@ -95426,7 +95482,7 @@ pub(crate) mod tests {
             &loaded.process_file_system.vfs_resources,
             *loaded.process_file_system.current_resource_file,
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
         let child = tracking.submenus.first().expect("submenu did not open");
         assert_eq!(tracking.highlighted_item, 2);
         assert_eq!(child.popup_top, parent_top);
@@ -95510,7 +95566,7 @@ pub(crate) mod tests {
                     ..PpcInputSnapshot::default()
                 },
             );
-            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(tracking.front_buffer, Some(front.into()));
             assert_eq!(tracking.popup_left, STANDARD_MENU_BAR_FIRST_TITLE_LEFT);
             assert_eq!(tracking.saved_width, tracking.popup_width + 1);
@@ -95642,7 +95698,7 @@ pub(crate) mod tests {
                 ),
                 Some(0),
             );
-            assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+            assert!(loaded.toolbox_startup.execution.menu().is_none());
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
             assert_eq!(
                 ppc_memory_read_bytes(
@@ -95757,7 +95813,7 @@ pub(crate) mod tests {
                     ..PpcInputSnapshot::default()
                 },
             );
-            let root = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let root = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             let parent_hover = PpcInputSnapshot {
                 mouse_button: true,
                 mouse_v: root.popup_top + 8,
@@ -95772,7 +95828,7 @@ pub(crate) mod tests {
                 12,
                 parent_hover,
             );
-            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             let child = tracking.submenus.first().expect("submenu did not open");
             assert_eq!(tracking.highlighted_item, 1);
             assert_eq!(child.menu_handle, submenu);
@@ -95800,7 +95856,7 @@ pub(crate) mod tests {
             assert_eq!(
                 loaded
                     .toolbox_startup
-                    .menu_tracking
+                    .execution.menu()
                     .as_ref()
                     .and_then(|state| state.submenus.first())
                     .map(|child| child.highlighted_item),
@@ -95896,7 +95952,7 @@ pub(crate) mod tests {
             );
             assert!(loaded
                 .toolbox_startup
-                .menu_tracking
+                .execution.menu()
                 .as_ref()
                 .is_some_and(|state| !state.submenus.is_empty()));
             assert_eq!(
@@ -96073,9 +96129,9 @@ pub(crate) mod tests {
                 );
             };
             track(&mut loaded, (10, 12));
-            let root = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let root = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             track(&mut loaded, (root.popup_top + 8, root.popup_left + 20));
-            let first = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let first = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(first.submenus.len(), 1);
             assert_eq!(first.submenus[0].menu_handle, options);
             let options_pane = first.submenus[0].clone();
@@ -96083,7 +96139,7 @@ pub(crate) mod tests {
                 &mut loaded,
                 (options_pane.popup_top + 8, options_pane.popup_left + 20),
             );
-            let nested = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let nested = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(nested.submenus.len(), 2);
             assert_eq!(nested.submenus[0].highlighted_item, 1);
             assert_eq!(nested.submenus[1].menu_handle, speed);
@@ -96095,14 +96151,14 @@ pub(crate) mod tests {
                     options_pane.popup_left + 20,
                 ),
             );
-            let switched = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let switched = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(switched.submenus.len(), 1);
             assert_eq!(switched.submenus[0].highlighted_item, 2);
             track(
                 &mut loaded,
                 (options_pane.popup_top + 8, options_pane.popup_left + 20),
             );
-            let reopened = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let reopened = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(reopened.submenus.len(), 2);
             let speed_pane = reopened.submenus[1].clone();
 
@@ -96110,7 +96166,7 @@ pub(crate) mod tests {
                 &mut loaded,
                 (speed_pane.popup_top + 8, speed_pane.popup_left + 20),
             );
-            let cycle = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let cycle = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(cycle.submenus.len(), 2, "circular submenu grew the chain");
             assert_eq!(cycle.submenus[1].highlighted_item, 1);
             assert_eq!(
@@ -96337,7 +96393,7 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             },
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
         assert_eq!(tracking.front_buffer, Some(live.into()));
         let selected = PpcInputSnapshot {
             mouse_button: true,
@@ -96550,7 +96606,7 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             },
         );
-        assert!(loaded.toolbox_startup.menu_tracking.is_some());
+        assert!(loaded.toolbox_startup.execution.menu().is_some());
         assert_ne!(loaded.memory.read_u8(popup_probe), Some(popup_before));
         assert_eq!(
             ppc_finish_menu_bar_tracking(
@@ -96667,7 +96723,7 @@ pub(crate) mod tests {
                     ..PpcInputSnapshot::default()
                 },
             );
-            let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+            let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
             let input = PpcInputSnapshot {
                 mouse_button: true,
                 mouse_v: tracking.popup_top + (item - 1) * 16 + 4,
@@ -96727,7 +96783,7 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             },
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
         let outside = PpcInputSnapshot {
             mouse_v: tracking.popup_top + 8,
             mouse_h: tracking.popup_left - 1,
@@ -96762,7 +96818,7 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             },
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
         let enabled = PpcInputSnapshot {
             mouse_v: tracking.popup_top + 6,
             mouse_h: tracking.popup_left + 4,
@@ -96925,12 +96981,21 @@ pub(crate) mod tests {
 
     #[test]
     fn process_owner_shares_one_retained_menu_continuation_between_adapters() {
-        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let (prepared, mut classic_cpu, mut classic_bus) = setup_with_port();
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        let mut classic = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
+        classic.scrap.clipboard_writable = prepared.scrap.clipboard_writable;
+        let (base, row_bytes, width, height, depth) = prepared.screen_mode;
+        classic.set_screen_mode_for_test(base, row_bytes, width, height, depth);
+        classic.read_tick_count(&classic_bus);
+        classic.attach_unconverted_process_services(&mut context);
+        let plan = native
+            .preflight_migrated_services(&context, classic_bus.read_long(0x016a))
+            .unwrap();
+        native.commit_migrated_services(&context, plan);
+        native.attach_unconverted_process_services(&mut context);
 
         let mut tracking = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
         tracking.highlighted_item = 2;
@@ -96961,9 +97026,11 @@ pub(crate) mod tests {
 
         native.cpu.gpr[3] = 0;
         run_test_import(&mut native, PpcImportDispatcherTarget::MenuSelect);
+        assert!(native.is_constructed_from_migrated_handles(&context.migrated_handles()));
         native
             .toolbox_startup
-            .menu_tracking
+            .execution
+            .menu_state_mut()
             .as_mut()
             .unwrap()
             .highlighted_item = 4;
@@ -96975,7 +97042,7 @@ pub(crate) mod tests {
             Some(4)
         );
 
-        native.toolbox_startup.menu_tracking.context_mut().call =
+        native.toolbox_startup.execution.menu_context_mut().call =
             Some(ppc_menu_select_call(&native.cpu, 0));
         // Nor can an absent native surface turn its caller into a classic one.
         context.menu_tracking_mut().unwrap().front_buffer = None;
@@ -96995,7 +97062,8 @@ pub(crate) mod tests {
 
         context.take_menu_tracking();
         assert!(classic.menu_tracking.is_none());
-        assert!(native.toolbox_startup.menu_tracking.is_none());
+        assert!(native.toolbox_startup.execution.menu().is_none());
+        assert!(native.is_constructed_from_migrated_handles(&context.migrated_handles()));
     }
 
     #[test]
@@ -97005,8 +97073,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
 
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         assert!(!context.event_queue().menu_bar_is_invalid());
 
@@ -97047,8 +97115,8 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"GetNextEvent");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         assert!(classic
             .apple_event_launch_state
             .ptr_eq(&native.apple_events.apple_event_launch_state));
@@ -97122,8 +97190,8 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"EventAvail");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let low_memory = classic_bus
             .shared_ram_region(0, 0x0010_0000)
             .expect("classic adapter owns low memory");
@@ -97172,8 +97240,8 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"GetNextEvent");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let low_memory = classic_bus
             .shared_ram_region(0, 0x0010_0000)
             .expect("classic adapter owns low memory");
@@ -97231,8 +97299,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
 
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = native.clone();
 
         classic.input_state.mouse_pos = (123, 456);
@@ -97275,8 +97343,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
 
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = native.clone();
 
         native.screen_clut[7] = [0x1111, 0x2222, 0x3333];
@@ -97322,8 +97390,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
 
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = native.clone();
 
         assert!(classic.current_port.ptr_eq(&native.current_gworld));
@@ -97360,8 +97428,8 @@ pub(crate) mod tests {
         let mut native =
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let low_memory = classic_bus
             .shared_ram_region(0, 0x0010_0000)
             .expect("classic adapter owns low memory");
@@ -97460,8 +97528,8 @@ pub(crate) mod tests {
         let mut native =
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let low_memory = classic_bus
             .shared_ram_region(0, 0x0010_0000)
             .expect("classic adapter owns low memory");
@@ -97533,8 +97601,8 @@ pub(crate) mod tests {
         let mut native =
             load_pef_application(&synthetic_pef_with_import(b"GetPixelsState")).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         assert!(classic
             .gworld_pixel_states
@@ -97588,8 +97656,8 @@ pub(crate) mod tests {
         let mut native =
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut detached = native.clone();
 
         assert!(classic
@@ -97632,7 +97700,7 @@ pub(crate) mod tests {
             where_h: 20,
             modifiers: 0,
         });
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             native.event_queue.push_back(QueuedEvent {
@@ -97671,8 +97739,8 @@ pub(crate) mod tests {
         let mut second = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
 
-        first.attach_process_context(&mut context);
-        second.attach_process_context(&mut context);
+        first.attach_unconverted_process_services(&mut context);
+        second.attach_unconverted_process_services(&mut context);
         assert!(first
             .process_file_system
             .ptr_eq(&second.process_file_system));
@@ -97718,9 +97786,9 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"TestImport");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic = TrapDispatcher::new();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         native
             .files
@@ -97792,8 +97860,7 @@ pub(crate) mod tests {
         .into_ppc_import_action()
         .expect("native test request should adapt to the PPC ABI");
         assert!(matches!(
-            native
-                .guest_calls
+            native.toolbox_startup.execution.calls()
                 .externalize_powerpc_action(&mut native.cpu, action),
             PpcImportAction::Continue
         ));
@@ -97830,9 +97897,9 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"TestImport");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic = TrapDispatcher::new();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         native.resource_files.push(PpcResourceFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
@@ -97891,9 +97958,9 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"LMGetCurApName");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic = TrapDispatcher::new();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         classic.set_launched_app_path("Apps/Classic App");
         assert_eq!(native.launched_app_path(), Some("Apps/Classic App"));
@@ -97922,9 +97989,9 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"TestImport");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic = TrapDispatcher::new();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         native.resource_files.push(PpcResourceFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
@@ -97981,8 +98048,7 @@ pub(crate) mod tests {
         .into_ppc_import_action()
         .expect("native test request should adapt to the PPC ABI");
         assert!(matches!(
-            native
-                .guest_calls
+            native.toolbox_startup.execution.calls()
                 .externalize_powerpc_action(&mut native.cpu, action),
             PpcImportAction::Continue
         ));
@@ -98053,10 +98119,10 @@ pub(crate) mod tests {
         native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
 
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = native.clone();
         let mut classic = TrapDispatcher::new();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         assert!(classic.open_files.ptr_eq(&native.files));
         assert!(classic
@@ -98124,7 +98190,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"GetEOF");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let executing_directories = native.vfs_directories.shared_handle();
         let executing_volumes = native.vfs_volumes.shared_handle();
         let executing_next_volume_ref_num =
@@ -98137,7 +98203,7 @@ pub(crate) mod tests {
             .shared_handle();
         let detached = native.clone();
         let mut classic = TrapDispatcher::new();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
         assert!(classic.vfs_directories.ptr_eq(&executing_directories));
         assert!(classic.next_vfs_dir_id.ptr_eq(&executing_next_dir_id));
 
@@ -98446,19 +98512,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn attached_ppc_menu_tracking_mutates_process_context_immediately() {
+    fn adopted_ppc_execution_pair_shares_and_snapshot_detaches_coherently() {
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x0012_3456,
         )));
-        native.attach_process_context(&mut context);
+        let plan = native.preflight_migrated_services(&context, 0).unwrap();
+        native.commit_migrated_services(&context, plan);
         let detached = native.clone();
 
         native
             .toolbox_startup
-            .menu_tracking
+            .execution
+            .menu_state_mut()
             .as_mut()
             .unwrap()
             .highlighted_item = 3;
@@ -98469,15 +98537,26 @@ pub(crate) mod tests {
                 .map(|tracking| tracking.highlighted_item),
             Some(3)
         );
-        assert_eq!(native.toolbox_startup.menu_tracking.as_ref().unwrap().highlighted_item, 3);
+        assert_eq!(
+            native
+                .toolbox_startup
+                .execution
+                .menu()
+                .as_ref()
+                .unwrap()
+                .highlighted_item,
+            3
+        );
         assert!(!native
             .toolbox_startup
-            .menu_tracking
-            .ptr_eq(&detached.toolbox_startup.menu_tracking));
+            .execution
+            .menu()
+            .ptr_eq(detached.toolbox_startup.execution.menu()));
         assert_eq!(
             detached
                 .toolbox_startup
-                .menu_tracking
+                .execution
+                .menu()
                 .as_ref()
                 .unwrap()
                 .highlighted_item,
@@ -98486,19 +98565,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn attached_ppc_menu_tracking_remains_shared_through_panic() {
+    fn adopted_ppc_execution_pair_remains_shared_through_panic() {
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x0012_3456,
         )));
-        native.attach_process_context(&mut context);
+        let plan = native.preflight_migrated_services(&context, 0).unwrap();
+        native.commit_migrated_services(&context, plan);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             native
                 .toolbox_startup
-                .menu_tracking
+                .execution
+                .menu_state_mut()
                 .as_mut()
                 .unwrap()
                 .highlighted_item = 5;
@@ -98512,7 +98593,16 @@ pub(crate) mod tests {
                 .map(|tracking| tracking.highlighted_item),
             Some(5)
         );
-        assert_eq!(native.toolbox_startup.menu_tracking.as_ref().unwrap().highlighted_item, 5);
+        assert_eq!(
+            native
+                .toolbox_startup
+                .execution
+                .menu()
+                .as_ref()
+                .unwrap()
+                .highlighted_item,
+            5
+        );
     }
 
     #[test]
@@ -98528,7 +98618,7 @@ pub(crate) mod tests {
         assert_ne!(handle, 0);
 
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle();
         let expected_cursor = native.heap_cursor() + 16;
         {
@@ -98622,7 +98712,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"NewPtr");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -98753,7 +98843,7 @@ pub(crate) mod tests {
         let mut standalone = load_pef_application(&pef).unwrap();
         let mut attached = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        attached.attach_process_context(&mut context);
+        attached.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
 
         standalone.cpu.gpr[3] = 24;
@@ -98873,8 +98963,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
         let shared = native.memory.shared_view();
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         classic_bus.attach_guest_address_space(shared);
@@ -98943,7 +99033,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"EmptyHandle");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
@@ -99015,7 +99105,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"DisposeHandle");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
@@ -99089,8 +99179,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
@@ -99244,7 +99334,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"GetPtrSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
         let ptr = context
@@ -99283,7 +99373,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetHandleSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         let (handle, ptr) = context
@@ -99426,7 +99516,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetHandleSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         let handle = context
@@ -99462,7 +99552,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetHandleSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 3 * 1024 * 1024, 0x4000);
         let (handle, ptr) = context
@@ -99525,7 +99615,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetHandleSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         let (handle, ptr) = context
@@ -99578,7 +99668,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetHandleSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         let (handle, ptr) = context
@@ -99631,7 +99721,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetHandleSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         let (handle, ptr) = context
@@ -99706,8 +99796,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         let ptr = context
@@ -99765,7 +99855,7 @@ pub(crate) mod tests {
         );
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         classic_bus.attach_guest_address_space(native.memory.shared_view());
@@ -99853,7 +99943,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetPtrSize");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
@@ -100013,7 +100103,7 @@ pub(crate) mod tests {
             .ptr_eq(&native.process_memory_manager.0));
 
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let process_memory_manager = context.memory_manager_handle().clone();
         assert!(native
             .process_memory_manager
@@ -100140,13 +100230,13 @@ pub(crate) mod tests {
         );
         let ptr = owner.cpu.gpr[3];
         let mut context = ProcessContext::default();
-        owner.attach_process_context(&mut context);
+        owner.attach_unconverted_process_services(&mut context);
         let canonical = context.memory_manager_handle().clone();
         let canonical_allocator = canonical.borrow().native_allocator_snapshot();
 
         let mut observer = load_pef_application(&pef).unwrap();
         let standalone = observer.process_memory_manager.0.clone();
-        observer.attach_process_context(&mut context);
+        observer.attach_unconverted_process_services(&mut context);
 
         assert!(observer.process_memory_manager.ptr_eq(&canonical));
         assert_eq!(canonical.borrow().native_allocator_snapshot(), canonical_allocator);
@@ -100175,7 +100265,7 @@ pub(crate) mod tests {
             PpcImportDispatcherTarget::NewPtr { clear: true },
         );
         let mut context = ProcessContext::default();
-        owner.attach_process_context(&mut context);
+        owner.attach_unconverted_process_services(&mut context);
         let canonical = context.memory_manager_handle().clone();
 
         let mut rejected = load_pef_application(&pef).unwrap();
@@ -100191,7 +100281,7 @@ pub(crate) mod tests {
         let system_zone = rejected.memory.read_u32_be(PPC_SYSTEM_ZONE + 12);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rejected.attach_process_context(&mut context);
+            rejected.attach_unconverted_process_services(&mut context);
         }));
 
         assert!(result.is_err());
@@ -100214,7 +100304,7 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         native.cpu.gpr[3] = 24;
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         native.with_process_memory_manager(
             |native, memory_manager| {
                 let prior_ptr = memory_manager.new_native_ptr(&mut native.memory, 24, false);
@@ -100296,9 +100386,9 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         native.cpu.gpr[3] = 24;
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
-        classic_dispatcher.attach_process_context(&mut context);
+        classic_dispatcher.attach_unconverted_process_services(&mut context);
         native.with_process_memory_manager(
             |native, memory_manager| {
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
@@ -100510,9 +100600,9 @@ pub(crate) mod tests {
         native.cpu.gpr[3] = 16;
 
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic = TrapDispatcher::new();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         native.with_process_memory_manager(|native, memory_manager| {
             native.run_with_process_memory_manager(64, false, false, memory_manager);
@@ -100595,7 +100685,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"RecoverHandle");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
         let classic_heap = classic_bus
@@ -100666,7 +100756,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"RecoverHandle");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
         let classic_heap = classic_bus
@@ -100707,7 +100797,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"RecoverHandle");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut classic_bus);
         let classic_heap = classic_bus
@@ -100742,7 +100832,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"RecoverHandle");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let (handle, ptr) = native.with_process_memory_manager(|native, memory_manager| {
             let handle = memory_manager.new_native_handle(&mut native.memory, 24, true);
             let ptr = PpcMemory::read_u32_be(&mut native.memory, handle).unwrap();
@@ -100777,7 +100867,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"NewHandle");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         native.with_process_memory_manager(|native, memory_manager| {
             native.cpu.gpr[3] = 24;
@@ -100815,9 +100905,9 @@ pub(crate) mod tests {
         let external_handle = PPC_DATA_BASE + 0x2140;
         native.memory.add_region(external_handle, vec![0; 4]);
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
-        classic_dispatcher.attach_process_context(&mut context);
+        classic_dispatcher.attach_unconverted_process_services(&mut context);
         native.with_process_memory_manager(
             |native, memory_manager| {
                 let allocator = memory_manager.native_allocator_snapshot().unwrap();
@@ -100954,7 +101044,7 @@ pub(crate) mod tests {
         classic_bus.attach_guest_address_space(shared);
 
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         native.with_process_memory_manager(
             |native, memory_manager| {
                 native.cpu.gpr[3] = source;
@@ -101018,8 +101108,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         classic_bus.attach_guest_address_space(native.memory.shared_view());
@@ -101107,7 +101197,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"HandToHand");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
 
@@ -101177,7 +101267,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"HandToHand");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let mut classic_bus =
             attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
         let payload = b"disposed classic source";
@@ -101243,7 +101333,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"HandToHand");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
         let source_handle = memory_manager
             .borrow_mut()
@@ -101302,7 +101392,7 @@ pub(crate) mod tests {
             .write_u32_be(handle_variable, PPC_MAIN_CTABLE_HANDLE)
             .unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
 
         native.cpu.gpr[3] = handle_variable;
@@ -101339,7 +101429,7 @@ pub(crate) mod tests {
             .write_u32_be(handle_variable, PPC_MAIN_CTABLE_HANDLE)
             .unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
         let allocator_before = memory_manager
             .borrow()
@@ -101627,7 +101717,7 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
 
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: false,
@@ -101638,7 +101728,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
 
         let expected = menu_choice_value(128, 1);
         assert_eq!(
@@ -102244,7 +102334,7 @@ pub(crate) mod tests {
         let menu = loaded.memory.read_u32_be(loaded.cpu.gpr[3]).unwrap();
         assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.guest_calls().is_empty());
         assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
         assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
     }
@@ -102279,8 +102369,8 @@ pub(crate) mod tests {
         let mut first = load_pef_application(&pef).unwrap();
         let mut second = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        first.attach_process_context(&mut context);
-        second.attach_process_context(&mut context);
+        first.attach_unconverted_process_services(&mut context);
+        second.attach_unconverted_process_services(&mut context);
         assert!(first
             .toolbox_startup
             .mixed_mode_m68k
@@ -102713,7 +102803,7 @@ pub(crate) mod tests {
             assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
             assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
         }
-        assert!(!loaded.guest_calls.has_menu_bar_builds());
+        assert!(!loaded.guest_calls().has_menu_bar_builds());
     }
 
     #[test]
@@ -102779,7 +102869,7 @@ pub(crate) mod tests {
 
         run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewMBar);
         assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.guest_calls().is_empty());
 
         let list_handle = loaded.cpu.gpr[3];
         let menu_handles = ppc_menu_list_definition(&mut loaded.memory, list_handle)
@@ -102792,7 +102882,7 @@ pub(crate) mod tests {
             assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
             assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
         }
-        assert!(!loaded.guest_calls.has_menu_bar_builds());
+        assert!(!loaded.guest_calls().has_menu_bar_builds());
     }
 
     #[test]
@@ -102929,7 +103019,7 @@ pub(crate) mod tests {
                 .count(),
             0
         );
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.guest_calls().is_empty());
         assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
         let list_handle = loaded.cpu.gpr[3];
         let menu_handles = ppc_menu_list_definition(&mut loaded.memory, list_handle)
@@ -102942,7 +103032,7 @@ pub(crate) mod tests {
             assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
             assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
         }
-        assert!(!loaded.guest_calls.has_menu_bar_builds());
+        assert!(!loaded.guest_calls().has_menu_bar_builds());
     }
 
     #[test]
@@ -105170,11 +105260,11 @@ pub(crate) mod tests {
             let probe = loaded.run_with_hle_imports(64);
 
             if opens {
-                assert!(loaded.toolbox_startup.menu_tracking.is_some(), "{label}");
+                assert!(loaded.toolbox_startup.execution.menu().is_some(), "{label}");
                 assert!(
                     loaded
                         .toolbox_startup
-                        .menu_tracking
+                        .execution.menu()
                         .context()
                         .native_popup()
                         .is_some(),
@@ -105195,9 +105285,9 @@ pub(crate) mod tests {
                 },
                 "{label} TrackControl result",
             );
-            assert_eq!(loaded.toolbox_startup.menu_tracking, None, "{label}");
+            assert!(loaded.toolbox_startup.execution.menu().is_none(), "{label}");
             assert_eq!(
-                loaded.toolbox_startup.menu_tracking.context().native_popup(),
+                loaded.toolbox_startup.execution.menu().context().native_popup(),
                 None,
                 "{label}"
             );
@@ -109547,8 +109637,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
         assert!(native
             .callback_scheduling
             .ptr_eq(&classic.callback_scheduling));
@@ -109667,8 +109757,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&synthetic_pef()).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         assert!(native.timer_tasks.ptr_eq(&classic.timer_tasks));
         assert!(native.vbl_tasks.ptr_eq(&classic.vbl_tasks));
@@ -110017,7 +110107,7 @@ pub(crate) mod tests {
             loaded.memory.read_u32_be(callback_rtoc + 8),
             Some(callback_rtoc)
         );
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.guest_calls().is_empty());
     }
 
     #[test]
@@ -110036,24 +110126,21 @@ pub(crate) mod tests {
         loaded.run_with_hle_imports(64);
         assert_eq!(loaded.cpu.gpr[3], 0);
         let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
-        assert!(loaded
-            .guest_calls
+        assert!(loaded.toolbox_startup.execution.calls()
             .yield_native_thread(&mut loaded.cpu, worker.thread_id())
             .unwrap());
-        let storage = loaded.guest_calls.thread_storage(worker).unwrap();
+        let storage = loaded.guest_calls().thread_storage(worker).unwrap();
         let worker_sp = loaded.cpu.gpr[1];
         assert!(worker_sp < loaded.stack_base);
-        assert!(loaded
-            .guest_calls
+        assert!(loaded.guest_calls()
             .switch_to_task(ExecutionTaskId::APPLICATION));
         assert_eq!(
-            loaded
-                .guest_calls
+            loaded.guest_calls()
                 .native_stack_bounds(loaded.stack_base, PPC_STACK_TOP),
             Some((storage.stack_base, storage.stack_limit))
         );
-        assert!(loaded.guest_calls.switch_to_task(worker));
-        assert!(loaded.guest_calls.begin_m68k_to_powerpc(
+        assert!(loaded.guest_calls().switch_to_task(worker));
+        assert!(loaded.guest_calls().begin_m68k_to_powerpc(
             GuestCallTarget {
                 isa: GuestIsa::PowerPc,
                 entry: PPC_CODE_BASE + 0x1000,
@@ -110084,8 +110171,8 @@ pub(crate) mod tests {
             assert_eq!(loaded.cpu.fpr, before.fpr);
             assert_eq!(classic.read_reg(crate::cpu::Register::PC), 0x0010_0000);
             assert_eq!(loaded.memory.read_u32_be(sentinel), Some(0xface_cafe));
-            assert!(loaded.guest_calls.pending_powerpc_from_m68k().is_some());
-            assert!(!loaded.guest_calls.has_parked_m68k_contexts());
+            assert!(loaded.guest_calls().pending_powerpc_from_m68k().is_some());
+            assert!(!loaded.guest_calls().has_parked_m68k_contexts());
         }
         loaded.cpu.gpr[1] = worker_sp;
         loaded.activate_powerpc_from_m68k(&mut classic).unwrap();
@@ -110095,7 +110182,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u32_be(callback_sp), Some(worker_sp));
         assert_eq!(loaded.cpu.gpr[3], 42);
         assert_eq!(loaded.cpu.pc, PPC_CODE_BASE + 0x1000);
-        assert!(loaded.guest_calls.has_parked_m68k_contexts());
+        assert!(loaded.guest_calls().has_parked_m68k_contexts());
     }
 
     #[test]
@@ -110107,7 +110194,7 @@ pub(crate) mod tests {
             .map(|value| 0x1000_0000 | value)
             .collect();
         let arguments = crate::guest_call::PowerPcArguments::from_slice(&values).unwrap();
-        assert!(loaded.guest_calls.begin_m68k_to_powerpc(
+        assert!(loaded.guest_calls().begin_m68k_to_powerpc(
             crate::guest_call::GuestCallTarget {
                 isa: GuestIsa::PowerPc,
                 entry: PPC_CODE_BASE + 0x1000,
@@ -110378,10 +110465,6 @@ pub(crate) mod tests {
         for (selector, arguments, data, address, stack, has_stack_result) in cases {
             let pef = synthetic_pef();
             let mut loaded = load_pef_application(&pef).unwrap();
-            loaded
-                .toolbox_startup
-                .guest_calls
-                .attach_to(&loaded.guest_calls);
             loaded.memory.add_region(RECT, vec![0; 0x20]);
             for (offset, byte) in (1u8..=8).enumerate() {
                 loaded
@@ -110421,7 +110504,7 @@ pub(crate) mod tests {
                 matches!(action, Some(PpcImportAction::Halt)),
                 "selector {selector}"
             );
-            let pending = loaded.guest_calls.activate_m68k().unwrap();
+            let pending = loaded.guest_calls().activate_m68k().unwrap();
             assert_eq!(pending.registers.data, data, "selector {selector}");
             assert_eq!(pending.registers.address, address, "selector {selector}");
             assert_eq!(
@@ -110483,7 +110566,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        let pending = loaded.guest_calls().activate_m68k().unwrap();
         assert_eq!(
             loaded.memory.read_u32_be(pending.initial_sp + 4),
             Some(0x1234_5678)
@@ -110491,7 +110574,7 @@ pub(crate) mod tests {
         assert_eq!(pending.final_sp, pending.initial_sp + 8);
         drain_test_m68k_guest_calls(&mut loaded);
         assert_eq!(loaded.cpu.gpr[3], 0x1234_567f);
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.guest_calls().is_empty());
     }
 
     #[test]
@@ -110525,7 +110608,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.handled_import_count, 1);
-        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        let pending = loaded.guest_calls().activate_m68k().unwrap();
         let frame = pending.initial_sp;
         assert_eq!(loaded.memory.read_u32_be(frame), Some(pending.return_pc));
         assert_eq!(loaded.memory.read_u32_be(frame + 4), Some(0xcafe_babe));
@@ -110571,7 +110654,7 @@ pub(crate) mod tests {
             let probe = loaded.run_with_hle_imports(64);
 
             assert_eq!(probe.handled_import_count, 1);
-            let pending = loaded.guest_calls.activate_m68k().unwrap();
+            let pending = loaded.guest_calls().activate_m68k().unwrap();
             let frame = pending.initial_sp;
             assert_eq!(loaded.memory.read_u8(frame + 4 + byte_offset), Some(0x78));
             assert_eq!(loaded.memory.read_u16_be(frame + 6), Some(0x4321));
@@ -110612,7 +110695,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.handled_import_count, 1);
-        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        let pending = loaded.guest_calls().activate_m68k().unwrap();
         assert_eq!(pending.registers.data[1], 0x7654);
         assert_eq!(pending.registers.address[3], 0x1234_5678);
         assert_eq!(pending.registers.address[5], PPC_DATA_BASE);
@@ -110661,7 +110744,7 @@ pub(crate) mod tests {
             let probe = loaded.run_with_hle_imports(64);
 
             assert_eq!(probe.handled_import_count, 1);
-            let pending = loaded.guest_calls.activate_m68k().unwrap();
+            let pending = loaded.guest_calls().activate_m68k().unwrap();
             if let Some(register) = selector_register {
                 assert_eq!(pending.registers.data[register], 0x5678);
             } else {
@@ -110892,11 +110975,11 @@ pub(crate) mod tests {
             loaded.cpu.gpr[4] = proc_info;
             loaded.cpu.gpr[5] = 0x1234_5678;
             let registers = loaded.cpu.gpr[3..11].to_vec();
-            let calls = loaded.guest_calls.clone();
+            let calls = loaded.guest_calls().clone();
             let probe = loaded.run_with_hle_imports_with_trace(64, traced, false, None, None);
             assert_eq!(probe.unsupported_import_index, Some(0));
             assert_eq!(&loaded.cpu.gpr[3..11], registers.as_slice());
-            assert_eq!(loaded.guest_calls, calls);
+            assert_eq!(loaded.guest_calls(), &calls);
             for offset in 0..32 {
                 assert_eq!(loaded.memory.read_u8(sp + 24 + offset), Some(0xa5));
             }
@@ -110909,7 +110992,7 @@ pub(crate) mod tests {
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
             assert_eq!(loaded.memory.read_u32_be(callback_rtoc), Some(0x1234_5678));
-            assert!(loaded.guest_calls.is_empty());
+            assert!(loaded.guest_calls().is_empty());
         }
     }
 
@@ -111908,7 +111991,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        let pending = loaded.guest_calls().activate_m68k().unwrap();
         assert_eq!(pending.registers.data[1], 0xa11c);
         drain_test_m68k_guest_calls(&mut loaded);
         assert_eq!(loaded.cpu.gpr[3], 0xa121);
@@ -111946,7 +112029,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        let pending = loaded.guest_calls().activate_m68k().unwrap();
         assert_eq!(pending.entry, callback_entry);
         assert_eq!(pending.registers.data[1], 0xa11e);
         assert_eq!(pending.registers.data[0], 0x20);
@@ -149294,7 +149377,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"NewGWorld");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = context.memory_manager_mut().detached_clone();
         let scratch = PPC_DATA_BASE + 0x1000;
         let bounds_ptr = scratch;
@@ -149448,7 +149531,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"NewGWorld");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let scratch = PPC_DATA_BASE + 0x1000;
         let bounds_ptr = scratch;
         let gworld_out_ptr = scratch + 8;
@@ -162930,11 +163013,11 @@ pub(crate) mod tests {
             [loaded.cpu.gpr[4], loaded.cpu.gpr[5], loaded.cpu.gpr[6]],
             original_args
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
         let parked_lr = loaded.cpu.lr;
         assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_popup(),
+            loaded.toolbox_startup.execution.menu().context().native_popup(),
             Some(MenuTrackingCall {
                 request: MenuTrackingRequest::PopUp(PopupMenuRequest {
                     menu_handle,
@@ -162989,7 +163072,7 @@ pub(crate) mod tests {
         assert_eq!(
             loaded
                 .toolbox_startup
-                .menu_tracking
+                .execution.menu()
                 .as_ref()
                 .unwrap()
                 .highlighted_item,
@@ -163009,7 +163092,7 @@ pub(crate) mod tests {
         loaded.set_input_snapshot(item_two_release);
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        let flash = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+        let flash = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
         assert_eq!(flash.flash_remaining, 2);
         assert_eq!(flash.highlighted_item, 2);
         assert_eq!(flash.flash_result, (300u32 << 16) | 2);
@@ -163023,7 +163106,7 @@ pub(crate) mod tests {
         let mut final_probe = None;
         for _ in 0..32 {
             let probe = loaded.run_with_hle_imports(64);
-            if loaded.toolbox_startup.menu_tracking.is_some() {
+            if loaded.toolbox_startup.execution.menu().is_some() {
                 flash_pixels.push(
                     ppc_quickdraw_read_pixel(&mut loaded.memory, front, flash_probe).unwrap(),
                 );
@@ -163087,7 +163170,7 @@ pub(crate) mod tests {
 
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
             Some(before)
@@ -163125,7 +163208,7 @@ pub(crate) mod tests {
                 "{label}"
             );
             assert_eq!(miss.cpu.gpr[3], 0, "{label}");
-            assert_eq!(miss.toolbox_startup.menu_tracking, None, "{label}");
+            assert!(miss.toolbox_startup.execution.menu().is_none(), "{label}");
             assert_eq!(
                 ppc_memory_read_bytes(&mut miss.memory, front.base_addr, framebuffer_len),
                 Some(before.clone()),
@@ -163166,7 +163249,7 @@ pub(crate) mod tests {
             });
             let probe = loaded.run_with_hle_imports(64);
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: false,
                 mouse_v: tracking.popup_top + 16 + 4,
@@ -163181,7 +163264,7 @@ pub(crate) mod tests {
                 "{label}"
             );
             assert_eq!(loaded.cpu.gpr[3], 0, "{label}");
-            assert_eq!(loaded.toolbox_startup.menu_tracking, None, "{label}");
+            assert!(loaded.toolbox_startup.execution.menu().is_none(), "{label}");
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
                 Some(before),
@@ -163247,10 +163330,10 @@ pub(crate) mod tests {
             let probe = loaded.run_with_hle_imports(64);
 
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
             assert_eq!(
-                loaded.toolbox_startup.menu_tracking.context().native_popup(),
+                loaded.toolbox_startup.execution.menu().context().native_popup(),
                 Some(ppc_popup_menu_call(&loaded.cpu))
             );
             assert_eq!(
@@ -163279,7 +163362,7 @@ pub(crate) mod tests {
 
             assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
             assert_eq!(loaded.cpu.gpr[3], 0);
-            assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+            assert!(loaded.toolbox_startup.execution.menu().is_none());
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
                 Some(pattern),
@@ -163316,7 +163399,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
 
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
         assert_eq!(tracking.popup_top, 4);
         assert_eq!(tracking.popup_height, 576);
         assert_eq!(tracking.content_top, -204);
@@ -163387,7 +163470,7 @@ pub(crate) mod tests {
                 *loaded.process_file_system.current_resource_file,
             );
             assert!(matches!(action, PpcImportAction::Yield(_)));
-            let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+            let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
             assert_eq!(tracking.highlighted_item, expected_item);
             assert_eq!(tracking.content_top, expected_top);
             assert_eq!(
@@ -163486,9 +163569,9 @@ pub(crate) mod tests {
             let probe = loaded.run_with_hle_imports(128);
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         }
-        assert!(loaded.toolbox_startup.menu_tracking.is_some());
+        assert!(loaded.toolbox_startup.execution.menu().is_some());
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_port,
+            loaded.toolbox_startup.execution.menu().context().native_port,
             Some(original_port),
         );
         assert_eq!(*loaded.current_gworld, PPC_DSP_BACK_GWORLD);
@@ -163520,8 +163603,8 @@ pub(crate) mod tests {
             (*loaded.current_gworld, *loaded.current_gdevice),
             original_port
         );
-        assert!(loaded.guest_calls.is_empty());
-        assert!(loaded.toolbox_startup.menu_tracking.is_none());
+        assert!(loaded.guest_calls().is_empty());
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
     }
 
     #[test]
@@ -163540,10 +163623,10 @@ pub(crate) mod tests {
 
         let probe = loaded.run_with_hle_imports(128);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        assert_eq!(loaded.guest_calls.depth(), 0);
-        assert_eq!(loaded.toolbox_startup.menu_tracking.menu_hook_key(), None);
+        assert_eq!(loaded.guest_calls().depth(), 0);
+        assert_eq!(loaded.toolbox_startup.execution.menu().menu_hook_key(), None);
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_port,
+            loaded.toolbox_startup.execution.menu().context().native_port,
             None
         );
         assert_eq!(loaded.memory.read_u32_be(marker), Some(0));
@@ -163555,10 +163638,10 @@ pub(crate) mod tests {
             .unwrap();
         let probe = loaded.run_with_hle_imports(128);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        assert_eq!(loaded.guest_calls.depth(), 0);
-        assert_eq!(loaded.toolbox_startup.menu_tracking.menu_hook_key(), None);
+        assert_eq!(loaded.guest_calls().depth(), 0);
+        assert_eq!(loaded.toolbox_startup.execution.menu().menu_hook_key(), None);
         assert_eq!(
-            loaded.toolbox_startup.menu_tracking.context().native_port,
+            loaded.toolbox_startup.execution.menu().context().native_port,
             None
         );
         assert_eq!(loaded.memory.read_u32_be(marker), Some(0));
@@ -163574,7 +163657,7 @@ pub(crate) mod tests {
         assert!(loaded.memory.read_u32_be(marker).unwrap() > 0);
         assert!(loaded
             .toolbox_startup
-            .menu_tracking
+            .execution.menu()
             .context()
             .native_port
             .is_some());
@@ -163593,8 +163676,8 @@ pub(crate) mod tests {
                 break;
             }
         }
-        assert!(loaded.guest_calls.is_empty());
-        assert!(loaded.toolbox_startup.menu_tracking.is_none());
+        assert!(loaded.guest_calls().is_empty());
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
     }
 
     #[test]
@@ -163632,8 +163715,8 @@ pub(crate) mod tests {
             (*loaded.current_gworld, *loaded.current_gdevice),
             original_port
         );
-        assert!(loaded.toolbox_startup.menu_tracking.is_none());
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
+        assert!(loaded.guest_calls().is_empty());
     }
 
     #[test]
@@ -163677,8 +163760,8 @@ pub(crate) mod tests {
             (*loaded.current_gworld, *loaded.current_gdevice),
             original_port
         );
-        assert!(loaded.toolbox_startup.menu_tracking.is_none());
-        assert!(loaded.guest_calls.is_empty());
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
+        assert!(loaded.guest_calls().is_empty());
     }
 
     #[test]
@@ -163721,8 +163804,8 @@ pub(crate) mod tests {
             });
             let first = loaded.run_with_hle_imports(64);
             assert_eq!(first.handled_import_count, 1);
-            assert!(loaded.toolbox_startup.menu_tracking.is_some(), "popup={popup}, result={:?}, r3={:08x}", first.result, loaded.cpu.gpr[3]);
-            let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+            assert!(loaded.toolbox_startup.execution.menu().is_some(), "popup={popup}, result={:?}, r3={:08x}", first.result, loaded.cpu.gpr[3]);
+            let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
             let pointer = (tracking.popup_top + 4, tracking.popup_left + 4);
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: true,
@@ -163746,8 +163829,8 @@ pub(crate) mod tests {
             assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
             assert_eq!(loaded.cpu.gpr[1], original_sp);
             assert_eq!(loaded.cpu.gpr[3], (128 << 16) | 1);
-            assert!(loaded.toolbox_startup.menu_tracking.is_none());
-            assert!(loaded.guest_calls.is_empty());
+            assert!(loaded.toolbox_startup.execution.menu().is_none());
+            assert!(loaded.guest_calls().is_empty());
             // Returning to the public gateway is a new call and is counted again.
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
@@ -163801,7 +163884,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (128u32 << 16) | 1);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
     }
 
@@ -163889,7 +163972,7 @@ pub(crate) mod tests {
             assert_eq!(
                 loaded
                     .toolbox_startup
-                    .menu_tracking
+                    .execution.menu()
                     .as_ref()
                     .map(|state| state.menu_handle),
                 Some(file_menu),
@@ -163908,7 +163991,7 @@ pub(crate) mod tests {
             assert_eq!(
                 loaded
                     .toolbox_startup
-                    .menu_tracking
+                    .execution.menu()
                     .as_ref()
                     .map(|state| state.menu_handle),
                 Some(edit_menu),
@@ -163930,7 +164013,7 @@ pub(crate) mod tests {
                 assert_eq!(
                     loaded
                         .toolbox_startup
-                        .menu_tracking
+                        .execution.menu()
                         .as_ref()
                         .map(|state| state.menu_handle),
                     Some(expected_menu),
@@ -163952,14 +164035,14 @@ pub(crate) mod tests {
             assert_eq!(
                 loaded
                     .toolbox_startup
-                    .menu_tracking
+                    .execution.menu()
                     .as_ref()
                     .map(|state| state.menu_handle),
                 Some(disabled_menu),
                 "{depth}bpp disabled title did not open",
             );
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(130));
-            let disabled_tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            let disabled_tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
             assert_eq!(
                 disabled_tracking.highlighted_item, 0,
                 "{depth}bpp disabled menu item became highlighted",
@@ -163975,7 +164058,7 @@ pub(crate) mod tests {
             assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
             assert_eq!(loaded.cpu.gpr[3], 0);
             assert_eq!(loaded.cpu.gpr[1], original_sp);
-            assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+            assert!(loaded.toolbox_startup.execution.menu().is_none());
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
             assert_eq!(
                 loaded
@@ -164022,7 +164105,7 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        let switched = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let switched = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
         loaded
             .memory
             .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 1)
@@ -164038,7 +164121,7 @@ pub(crate) mod tests {
         assert_eq!(
             loaded
                 .toolbox_startup
-                .menu_tracking
+                .execution.menu()
                 .as_ref()
                 .map(|state| state.flash_remaining),
             Some(2)
@@ -164051,7 +164134,8 @@ pub(crate) mod tests {
         });
         loaded
             .toolbox_startup
-            .menu_tracking
+            .execution
+            .menu_state_mut()
             .as_mut()
             .unwrap()
             .flash_delay = 0;
@@ -164061,14 +164145,15 @@ pub(crate) mod tests {
         ));
         loaded
             .toolbox_startup
-            .menu_tracking
+            .execution
+            .menu_state_mut()
             .as_mut()
             .unwrap()
             .flash_delay = 0;
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (129u32 << 16) | 1);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(129));
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -164088,7 +164173,7 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+        let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: false,
             mouse_v: tracking.popup_top + 6,
@@ -164098,7 +164183,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (128u32 << 16) | 1);
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
     }
 
     #[test]
@@ -165388,8 +165473,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&synthetic_pef_with_import(b"LNew")).unwrap();
         let (mut classic, _classic_cpu, _classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let scratch = PPC_DATA_BASE + 0x1800;
         let view_ptr = scratch;
@@ -166420,8 +166505,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         let mut classic_bus = MacMemoryBus::new(0x2000);
         classic_bus.attach_guest_address_space(native.memory.shared_view());
@@ -166465,8 +166550,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         let base = PPC_HEAP_BASE + 0x15_000;
         let port = base;
@@ -166615,8 +166700,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         let mut classic_bus = MacMemoryBus::new(0x2000);
         classic_bus.attach_guest_address_space(native.memory.shared_view());
@@ -166691,8 +166776,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut classic = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
-        classic.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
 
         let base = PPC_HEAP_BASE + 0x12_000;
         let port = base;
@@ -166907,8 +166992,8 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         classic_bus.write_word(TEST_SP, 0x00ff);
         classic_cpu.write_reg(Register::A7, TEST_SP);
@@ -166940,12 +167025,12 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
         let low_memory = classic_bus
             .shared_ram_region(0, 0x0010_0000)
             .expect("classic adapter owns low memory");
         context.attach_memory(0, low_memory, &mut native.memory);
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let native_heap_ceiling = native.heap_limit();
         assert_eq!(
@@ -166992,8 +167077,8 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let low_memory = classic_bus
             .shared_ram_region(0, 0x0010_0000)
             .expect("classic adapter owns low memory");
@@ -167071,8 +167156,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let probe = native.run_with_hle_imports(64);
 
@@ -167094,8 +167179,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let native_cursor = PPC_DATA_BASE + 0x1000;
         let mut native_data = [0; 32];
@@ -167144,8 +167229,8 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         run_test_import(&mut native, PpcImportDispatcherTarget::ZeroScrap);
         let native_source = PPC_DATA_BASE + 0x2600;
@@ -167204,8 +167289,8 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let te_handle = 0x0033_1000;
 
         classic_bus.write_long(TEST_SP, te_handle);
@@ -167238,8 +167323,8 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let low_memory = classic_bus
             .shared_ram_region(0, 0x0010_0000)
             .expect("classic adapter owns low memory");
@@ -167349,8 +167434,8 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let window = classic_bus.alloc(180);
         let (classic_handle, classic_pointer) = classic.create_control_record(
@@ -170318,7 +170403,7 @@ pub(crate) mod tests {
     fn apple_event_handler_bundle_is_process_owned_cross_isa_and_depth_disposed() {
         let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = context.memory_manager_mut().detached_clone();
         let event_record = PPC_DATA_BASE + 0x2600;
         native.memory.add_region(event_record, vec![0; 16]);
@@ -170473,8 +170558,8 @@ pub(crate) mod tests {
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let ram_end = classic_bus.ram_size();
         let low_memory_end = 0x0010_0000.min(ram_end);
@@ -170616,7 +170701,7 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         native.set_heap_cursor(native.heap_limit().saturating_sub(8));
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let event_record = PPC_DATA_BASE + 0x2700;
         native.memory.add_region(event_record, vec![0; 16]);
         native
@@ -170718,7 +170803,7 @@ pub(crate) mod tests {
     fn native_apple_event_dispatch_enters_registered_classic_handler() {
         let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let event_record = PPC_DATA_BASE + 0x2800;
         native.memory.add_region(event_record, vec![0; 16]);
         native
@@ -170770,8 +170855,8 @@ pub(crate) mod tests {
         };
 
         assert_eq!(action, PpcImportAction::Halt);
-        assert!(native.guest_calls.has_m68k_execution());
-        let pending = native.guest_calls.activate_m68k().unwrap();
+        assert!(native.guest_calls().has_m68k_execution());
+        let pending = native.guest_calls().activate_m68k().unwrap();
         assert_eq!(pending.entry, classic_handler);
         assert_eq!(native.apple_events.pending_dispatches.len(), 1);
     }
@@ -171761,12 +171846,11 @@ pub(crate) mod tests {
             .unwrap();
         loaded.memory.add_region(OUTPUT, vec![0; 4]);
         assert!(loaded.application_heap_limit() > 0x9000);
-        assert!(loaded
-            .guest_calls
+        assert!(loaded.guest_calls()
             .bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::M68k));
         let mut classic = crate::cpu::M68kCpu::new();
         classic.core.set_a(7, 0x9000);
-        assert!(loaded.guest_calls.begin_m68k_to_powerpc(
+        assert!(loaded.guest_calls().begin_m68k_to_powerpc(
             GuestCallTarget {
                 isa: GuestIsa::PowerPc,
                 entry: loaded.entry_pc,
@@ -171837,8 +171921,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(4096 - 64));
         let mut classic = CooperativeThread::default();
         classic.a_regs[7] = 0x9300;
-        let classic = loaded
-            .guest_calls
+        let classic = loaded.guest_calls()
             .create_classic_thread(
                 classic,
                 ThreadStorage {
@@ -171852,12 +171935,11 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(query(&mut loaded, classic.thread_id(), OUTPUT), 0);
         assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0x300));
-        assert!(loaded
-            .guest_calls
+        assert!(loaded.toolbox_startup.execution.calls()
             .yield_native_thread(&mut loaded.cpu, worker.thread_id())
             .unwrap());
         let worker_sp = loaded.cpu.gpr[1];
-        let storage = loaded.guest_calls.thread_storage(worker).unwrap();
+        let storage = loaded.guest_calls().thread_storage(worker).unwrap();
         assert_eq!(query(&mut loaded, 1, OUTPUT), 0);
         assert_eq!(
             loaded.memory.read_u32_be(OUTPUT),
@@ -171866,7 +171948,7 @@ pub(crate) mod tests {
         assert_eq!(query(&mut loaded, 2, OUTPUT), 0);
         assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(main_sp - limit));
         assert_eq!(
-            crate::thread_manager::ThreadManager::new(&loaded.guest_calls).stack_space(
+            crate::thread_manager::ThreadManager::new(loaded.guest_calls()).stack_space(
                 2,
                 GuestIsa::M68k,
                 0x1234,
@@ -171891,7 +171973,7 @@ pub(crate) mod tests {
             Some(vec![0x5a; 3])
         );
         assert_eq!(query(&mut loaded, 1, 0), -50);
-        assert_eq!(loaded.guest_calls.current_task(), worker);
+        assert_eq!(loaded.guest_calls().current_task(), worker);
     }
 
     #[test]
@@ -171954,7 +172036,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u32_be(output), Some(3));
         assert_eq!(invoke(&mut loaded, "GetFreeThreadCount", [1, output, 0]), 0);
         assert_eq!(loaded.memory.read_u16_be(output), Some(3));
-        assert_eq!(loaded.guest_calls.thread_pool_count(GuestIsa::M68k, 0), 0);
+        assert_eq!(loaded.guest_calls().thread_pool_count(GuestIsa::M68k, 0), 0);
     }
 
     #[test]
@@ -171969,7 +172051,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
         assert_eq!(loaded.memory.read_u32_be(made), Some(0));
-        assert!(!loaded.guest_calls.has_live_workers());
+        assert!(!loaded.guest_calls().has_live_workers());
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = 1;
@@ -171977,7 +172059,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-617));
         assert_eq!(loaded.memory.read_u32_be(made), Some(0));
-        assert!(!loaded.guest_calls.has_live_workers());
+        assert!(!loaded.guest_calls().has_live_workers());
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = 1;
@@ -172058,7 +172140,7 @@ pub(crate) mod tests {
             assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
             assert_eq!(loaded.memory.read_u32_be(made), Some(0));
             assert_eq!(loaded.heap_cursor(), heap_before);
-            assert!(!loaded.guest_calls.has_live_workers());
+            assert!(!loaded.guest_calls().has_live_workers());
         }
 
         loaded.memory.write_u32_be(descriptor, target).unwrap();
@@ -172067,8 +172149,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], 0);
         let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(made).unwrap());
         assert_eq!(worker.thread_id(), 3);
-        assert!(loaded
-            .guest_calls
+        assert!(loaded.toolbox_startup.execution.calls()
             .yield_native_thread(&mut loaded.cpu, worker.thread_id())
             .unwrap());
         assert_eq!(loaded.cpu.pc, target);
@@ -172113,7 +172194,7 @@ pub(crate) mod tests {
         assert_eq!(protected.heap_cursor(), protected_cursor);
         assert_eq!(protected.ptrs(), protected_ptrs);
         assert_eq!(protected.last_mem_error(), protected_mem_error);
-        assert!(!protected.guest_calls.has_live_workers());
+        assert!(!protected.guest_calls().has_live_workers());
         invoke(&mut protected, valid_made, 4096);
         assert_eq!(protected.cpu.gpr[3], 0);
         assert_eq!(protected.memory.read_u32_be(valid_made), Some(3));
@@ -172150,7 +172231,7 @@ pub(crate) mod tests {
                 .0
             )
         );
-        assert!(!exhausted.guest_calls.has_live_workers());
+        assert!(!exhausted.guest_calls().has_live_workers());
 
         invoke(&mut exhausted, made, 4096);
         assert_eq!(exhausted.cpu.gpr[3], 0);
@@ -172203,21 +172284,21 @@ pub(crate) mod tests {
         loaded.cpu.lr = PPC_HALT_PC;
         let creator = loaded.cpu.clone();
         loaded.run_with_hle_imports(64);
-        assert_eq!(loaded.guest_calls.current_task(), worker);
+        assert_eq!(loaded.guest_calls().current_task(), worker);
         assert_eq!(loaded.cpu.pc, ENTRY);
         assert_eq!(loaded.cpu.gpr[2], creator.gpr[2]);
         assert_eq!(loaded.cpu.gpr[3], 17);
         loaded.run_with_hle_imports(64);
-        assert_eq!(loaded.guest_calls.current_task(), worker);
+        assert_eq!(loaded.guest_calls().current_task(), worker);
         assert_eq!(loaded.cpu.pc, PPC_THREAD_RETURN_PC);
         assert_eq!(loaded.cpu.gpr[3], 42);
         loaded.memory.add_region(RESULT, vec![0; 4]);
         loaded.run_with_hle_imports(64);
         assert_eq!(
-            loaded.guest_calls.current_task(),
+            loaded.guest_calls().current_task(),
             ExecutionTaskId::APPLICATION
         );
-        assert_eq!(loaded.guest_calls.scheduling_state(worker), None);
+        assert_eq!(loaded.guest_calls().scheduling_state(worker), None);
         assert_eq!(loaded.memory.read_u32_be(RESULT), Some(42));
         assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
         assert_eq!(loaded.cpu.gpr[20], creator.gpr[20]);
@@ -172237,8 +172318,7 @@ pub(crate) mod tests {
             let mut worker_cpu = loaded.cpu.clone();
             worker_cpu.pc = PPC_CODE_BASE + 0x2000;
             worker_cpu.gpr[1] = PPC_DATA_BASE + 0x4000;
-            let worker = loaded
-                .guest_calls
+            let worker = loaded.guest_calls()
                 .create_native_thread(
                     NativeThreadContext {
                         context: worker_cpu.capture_execution_context(),
@@ -172248,7 +172328,7 @@ pub(crate) mod tests {
                     |_| true,
                 )
                 .unwrap();
-            loaded.guest_calls.begin_critical();
+            loaded.guest_calls().begin_critical();
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
             loaded.cpu.gpr[3] = worker.thread_id();
@@ -172256,7 +172336,7 @@ pub(crate) mod tests {
             loaded.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
             loaded.cpu.cr = 0x1357_2468;
             establish_loaded_reservation(&mut loaded, PPC_DATA_BASE);
-            let before_calls = loaded.guest_calls.clone();
+            let before_calls = loaded.guest_calls().clone();
 
             let probe = loaded.run_with_hle_imports(64);
 
@@ -172267,12 +172347,12 @@ pub(crate) mod tests {
             assert_eq!(loaded.cpu.fpr[20], 0x4009_21fb_5444_2d18);
             assert_eq!(loaded.cpu.cr, 0x1357_2468);
             assert_eq!(loaded.cpu.reservation_address(), Some(PPC_DATA_BASE));
-            assert_eq!(loaded.guest_calls, before_calls);
+            assert_eq!(loaded.guest_calls(), &before_calls);
             assert_eq!(
-                loaded.guest_calls.current_task(),
+                loaded.guest_calls().current_task(),
                 ExecutionTaskId::APPLICATION
             );
-            assert_eq!(loaded.guest_calls.critical_depth(), 1);
+            assert_eq!(loaded.guest_calls().critical_depth(), 1);
         }
 
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"YieldToAnyThread")).unwrap();
@@ -172280,7 +172360,7 @@ pub(crate) mod tests {
         loaded.cpu.fpr[20] = 0x3ff0_0000_0000_0000;
         loaded.cpu.cr = 0x2468_1357;
         establish_loaded_reservation(&mut loaded, PPC_DATA_BASE);
-        let before_calls = loaded.guest_calls.clone();
+        let before_calls = loaded.guest_calls().clone();
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -172291,9 +172371,9 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.fpr[20], 0x3ff0_0000_0000_0000);
         assert_eq!(loaded.cpu.cr, 0x2468_1357);
         assert_eq!(loaded.cpu.reservation_address(), Some(PPC_DATA_BASE));
-        assert_eq!(loaded.guest_calls, before_calls);
+        assert_eq!(loaded.guest_calls(), &before_calls);
         assert_eq!(
-            loaded.guest_calls.current_task(),
+            loaded.guest_calls().current_task(),
             ExecutionTaskId::APPLICATION
         );
     }
@@ -172302,12 +172382,12 @@ pub(crate) mod tests {
     fn standalone_native_thread_stays_stopped_until_ready() {
         let mut loaded =
             load_pef_application(&synthetic_pef_with_import(b"SetThreadStateEndCritical")).unwrap();
-        loaded.guest_calls.begin_critical();
+        loaded.guest_calls().begin_critical();
         loaded.cpu.gpr[3] = 1;
         loaded.cpu.gpr[4] = 1;
         loaded.cpu.gpr[5] = 0;
         assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
-        assert!(!loaded.guest_calls.current_task_is_running());
+        assert!(!loaded.guest_calls().current_task_is_running());
         let pc = loaded.cpu.pc;
         let time = loaded.cpu.time_base();
         for _ in 0..3 {
@@ -172317,7 +172397,7 @@ pub(crate) mod tests {
             assert_eq!(loaded.cpu.pc, pc);
             assert_eq!(loaded.cpu.time_base(), time);
         }
-        let manager = crate::thread_manager::ThreadManager::new(&loaded.guest_calls);
+        let manager = crate::thread_manager::ThreadManager::new(loaded.guest_calls());
         assert_eq!(manager.ready_given_task(manager.task_reference(), 2), 0);
         loaded.run_with_hle_imports(64);
         assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
@@ -172331,7 +172411,7 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"SetThreadReadyGivenTaskRef"))
                 .unwrap();
         let worker = ExecutionTaskId::from_thread_id(3);
-        assert!(loaded.guest_calls.register_task(worker));
+        assert!(loaded.guest_calls().register_task(worker));
         for (reference, thread, result) in [
             (99, 3, -619),
             (2, 99, -618),
@@ -172346,14 +172426,15 @@ pub(crate) mod tests {
             assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
             assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(result));
             assert_eq!(
-                loaded.guest_calls.current_task(),
+                loaded.guest_calls().current_task(),
                 ExecutionTaskId::APPLICATION
             );
         }
         let mut query =
             load_pef_application(&synthetic_pef_with_import(b"GetThreadStateGivenTaskRef"))
                 .unwrap();
-        query.guest_calls = loaded.guest_calls.shared_handle();
+        query.toolbox_startup.execution =
+            ExecutionMenuViews::shared_from(loaded.guest_calls());
         let out = PPC_DATA_BASE + 0x1000;
         query.memory.add_region(out, vec![0xaa; 4]);
         for (reference, thread, result, state) in
@@ -172401,8 +172482,7 @@ pub(crate) mod tests {
             worker_cpu.pc = code;
             worker_cpu.lr = PPC_HALT_PC;
             worker_cpu.gpr[20] = 0;
-            let worker = loaded
-                .guest_calls
+            let worker = loaded.guest_calls()
                 .create_native_thread(
                     NativeThreadContext {
                         context: worker_cpu.capture_execution_context(),
@@ -172423,17 +172503,16 @@ pub(crate) mod tests {
             loaded.cpu.gpr[5] = worker.thread_id();
             loaded.cpu.lr = PPC_HALT_PC;
             if end_critical {
-                loaded.guest_calls.begin_critical();
+                loaded.guest_calls().begin_critical();
             }
             assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
-            assert_eq!(loaded.guest_calls.current_task(), worker);
+            assert_eq!(loaded.guest_calls().current_task(), worker);
             assert_eq!(
-                loaded
-                    .guest_calls
+                loaded.guest_calls()
                     .scheduling_state(ExecutionTaskId::APPLICATION),
                 Some(ExecutionTaskState::Stopped)
             );
-            assert_eq!(loaded.guest_calls.critical_depth(), 0);
+            assert_eq!(loaded.guest_calls().critical_depth(), 0);
             loaded.run_with_hle_imports(64);
             assert_eq!(loaded.cpu.gpr[20], 0x55);
             // Wake the creator without switching away from the worker.
@@ -172443,13 +172522,12 @@ pub(crate) mod tests {
             loaded.cpu.gpr[4] = 0;
             loaded.cpu.gpr[5] = 0;
             if end_critical {
-                loaded.guest_calls.begin_critical();
+                loaded.guest_calls().begin_critical();
             }
             assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
-            assert_eq!(loaded.guest_calls.current_task(), worker);
+            assert_eq!(loaded.guest_calls().current_task(), worker);
             assert_eq!(
-                loaded
-                    .guest_calls
+                loaded.guest_calls()
                     .scheduling_state(ExecutionTaskId::APPLICATION),
                 Some(ExecutionTaskState::Ready)
             );
@@ -172460,11 +172538,11 @@ pub(crate) mod tests {
             loaded.cpu.gpr[4] = 1;
             loaded.cpu.gpr[5] = ExecutionTaskId::APPLICATION.thread_id();
             if end_critical {
-                loaded.guest_calls.begin_critical();
+                loaded.guest_calls().begin_critical();
             }
             assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
             assert_eq!(
-                loaded.guest_calls.current_task(),
+                loaded.guest_calls().current_task(),
                 ExecutionTaskId::APPLICATION
             );
             assert_eq!(loaded.cpu.gpr[3], 0);
@@ -172473,7 +172551,7 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64);
             assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
             assert_eq!(
-                loaded.guest_calls.scheduling_state(worker),
+                loaded.guest_calls().scheduling_state(worker),
                 Some(ExecutionTaskState::Stopped)
             );
         }
@@ -172486,11 +172564,10 @@ pub(crate) mod tests {
         let mut loaded =
             load_pef_application(&synthetic_pef_with_import(b"SetThreadStateEndCritical")).unwrap();
         let worker = ExecutionTaskId::from_thread_id(3);
-        assert!(loaded.guest_calls.register_task(worker));
-        assert!(loaded
-            .guest_calls
+        assert!(loaded.guest_calls().register_task(worker));
+        assert!(loaded.guest_calls()
             .set_scheduling_state(worker, ExecutionTaskState::Ready));
-        loaded.guest_calls.begin_critical();
+        loaded.guest_calls().begin_critical();
         loaded.cpu.gpr[20] = 0x1234_5678;
         loaded.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
         loaded.cpu.cr = 0x1357_2468;
@@ -172508,11 +172585,11 @@ pub(crate) mod tests {
             loaded.cpu.gpr[3] = thread;
             loaded.cpu.gpr[4] = state;
             loaded.cpu.gpr[5] = 3;
-            let before = loaded.guest_calls.clone();
+            let before = loaded.guest_calls().clone();
             assert_eq!(loaded.run_with_hle_imports(64).handled_import_count, 1);
             assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
-            assert_eq!(loaded.guest_calls, before);
-            assert_eq!(loaded.guest_calls.critical_depth(), 1);
+            assert_eq!(loaded.guest_calls(), &before);
+            assert_eq!(loaded.guest_calls().critical_depth(), 1);
             assert_eq!(loaded.cpu.gpr[20], 0x1234_5678);
             assert_eq!(loaded.cpu.fpr[20], 0x4009_21fb_5444_2d18);
             assert_eq!(loaded.cpu.cr, 0x1357_2468);
@@ -172544,7 +172621,8 @@ pub(crate) mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         let mut loaded =
             load_pef_application(&synthetic_pef_with_import(b"GetThreadState")).unwrap();
-        loaded.guest_calls = classic.guest_calls.shared_handle();
+        loaded.toolbox_startup.execution =
+            ExecutionMenuViews::shared_from(&classic.guest_calls);
         let out = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(out, vec![0xaa; 4]);
         for (thread, expected_result, expected_state) in [(3, 0, 0), (1, 0, 2), (99, -618, 0xaaaa)]
@@ -172622,7 +172700,7 @@ pub(crate) mod tests {
         assert_eq!(classic.guest_calls.critical_depth(), 1);
         let mut end =
             load_pef_application(&synthetic_pef_with_import(b"ThreadEndCritical")).unwrap();
-        end.guest_calls = classic.guest_calls.shared_handle();
+        end.toolbox_startup.execution = ExecutionMenuViews::shared_from(&classic.guest_calls);
         assert_eq!(end.run_with_hle_imports(64).handled_import_count, 1);
         assert_eq!(end.cpu.gpr[3], 0);
         assert_eq!(classic.guest_calls.critical_depth(), 0);
@@ -172634,7 +172712,7 @@ pub(crate) mod tests {
 
         let mut begin =
             load_pef_application(&synthetic_pef_with_import(b"ThreadBeginCritical")).unwrap();
-        begin.guest_calls = classic.guest_calls.shared_handle();
+        begin.toolbox_startup.execution = ExecutionMenuViews::shared_from(&classic.guest_calls);
         assert_eq!(begin.run_with_hle_imports(64).handled_import_count, 1);
         assert_eq!(begin.cpu.gpr[3], 0);
         assert_eq!(classic.guest_calls.critical_depth(), 1);
@@ -173930,7 +174008,7 @@ pub(crate) mod tests {
             item_appearances: Vec::new(),
             submenus: Vec::new(),
         };
-        *loaded.toolbox_startup.menu_tracking = Some(tracking.clone());
+        *loaded.toolbox_startup.execution.menu_state_mut() = Some(tracking.clone());
         loaded.memory.write_u16_be(PPC_THE_MENU_ADDR, 128).unwrap();
 
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
@@ -173940,7 +174018,7 @@ pub(crate) mod tests {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
 
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
-        assert_eq!(loaded.toolbox_startup.menu_tracking, Some(tracking.clone()));
+        assert_eq!(loaded.toolbox_startup.execution.menu().as_ref(), Some(&tracking));
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
 
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
@@ -173950,15 +174028,15 @@ pub(crate) mod tests {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
 
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
 
         let mut popup_tracking = tracking;
         popup_tracking.kind = MenuTrackingKind::PopUp;
         loaded
             .toolbox_startup
-            .menu_tracking
-            .context_mut()
+            .execution
+            .menu_context_mut()
             .call = Some(MenuTrackingCall {
             request: MenuTrackingRequest::PopUp(PopupMenuRequest {
                 menu_handle: popup_tracking.menu_handle,
@@ -173967,7 +174045,7 @@ pub(crate) mod tests {
             }),
             origin: MenuTrackingOrigin::PowerPc { stack_pointer: loaded.cpu.gpr[1], return_address: loaded.cpu.lr },
         });
-        *loaded.toolbox_startup.menu_tracking = Some(popup_tracking);
+        *loaded.toolbox_startup.execution.menu_state_mut() = Some(popup_tracking);
         loaded
             .memory
             .write_u16_be(PPC_THE_MENU_ADDR, 0x2468)
@@ -173979,7 +174057,7 @@ pub(crate) mod tests {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
 
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
         assert_eq!(
             loaded.memory.read_u16_be(PPC_THE_MENU_ADDR),
             Some(0x2468),
@@ -175056,7 +175134,7 @@ pub(crate) mod tests {
                         ..PpcInputSnapshot::default()
                     },
                 );
-                let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
+                let tracking = loaded.toolbox_startup.execution.menu().as_ref().unwrap();
                 assert_eq!((tracking.popup_left, tracking.popup_top), (11, 20));
                 assert_eq!(
                     ppc_quickdraw_read_pixel(
@@ -179445,11 +179523,10 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64);
             assert_eq!(loaded.cpu.gpr[3], 0);
             let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
-            assert!(loaded
-                .guest_calls
+            assert!(loaded.toolbox_startup.execution.calls()
                 .yield_native_thread(&mut loaded.cpu, worker.thread_id())
                 .unwrap());
-            let storage = loaded.guest_calls.thread_storage(worker).unwrap();
+            let storage = loaded.guest_calls().thread_storage(worker).unwrap();
             let worker_sp = loaded.cpu.gpr[1];
             assert!(worker_sp < loaded.stack_base);
             loaded.memory.add_region(OUTPUT, vec![0; 4]);
@@ -179504,7 +179581,7 @@ pub(crate) mod tests {
                 assert_eq!(loaded.cpu.cr, saved.cr);
                 assert_eq!(loaded.cpu.time_base(), saved.time_base());
                 assert_eq!(loaded.cpu.reservation_address(), saved.reservation_address());
-                assert_eq!(loaded.guest_calls.current_task(), worker);
+                assert_eq!(loaded.guest_calls().current_task(), worker);
             }
             loaded.cpu.gpr[1] = worker_sp;
             // A valid SP is insufficient when only part of the frame is
@@ -179550,7 +179627,7 @@ pub(crate) mod tests {
             assert_eq!(loaded.cpu.gpr, saved.gpr);
             assert_eq!(loaded.cpu.pc, saved.pc);
             assert_eq!(loaded.cpu.reservation_address(), None);
-            assert_eq!(loaded.guest_calls.current_task(), worker);
+            assert_eq!(loaded.guest_calls().current_task(), worker);
         }
     }
 
@@ -180029,8 +180106,8 @@ pub(crate) mod tests {
             load_pef_application(&synthetic_pef_with_import(b"ParamText")).unwrap();
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let mut context = ProcessContext::default();
-        classic.attach_process_context(&mut context);
-        native.attach_process_context(&mut context);
+        classic.attach_unconverted_process_services(&mut context);
+        native.attach_unconverted_process_services(&mut context);
 
         let native_text = PPC_DATA_BASE + 0x2900;
         native.memory.add_region(native_text, vec![0; 32]);
@@ -180835,13 +180912,13 @@ pub(crate) mod tests {
             prepare_call(&mut loaded);
             if initialization.is_some() {
                 for _ in 0..16 {
-                    if loaded.guest_calls.is_resource_preparation_pending(record) {
+                    if loaded.guest_calls().is_resource_preparation_pending(record) {
                         break;
                     }
                     let slice = loaded.run_with_hle_imports(1);
                     assert_eq!(slice.unsupported_import_index, None);
                 }
-                assert!(loaded.guest_calls.is_resource_preparation_pending(record));
+                assert!(loaded.guest_calls().is_resource_preparation_pending(record));
                 assert_eq!(loaded.memory.read_u16_be(record + 6), Some(3));
                 let request = match crate::guest_procedure::inspect_guest_procedure(
                     &mut loaded.memory,
@@ -180864,6 +180941,7 @@ pub(crate) mod tests {
                     loaded.import_count,
                     ppc_import_layout(),
                 );
+                let guest_calls = loaded.guest_calls().shared_handle();
                 let mut manager = loaded.process_memory_manager.0.borrow_mut();
                 let limit = manager.native_heap_state().unwrap().heap_limit;
                 let cfm = loaded.cfm.as_mut().unwrap();
@@ -180872,7 +180950,7 @@ pub(crate) mod tests {
                         &mut recursive_cpu,
                         &mut loaded.memory,
                         &mut manager,
-                        &loaded.guest_calls,
+                        &guest_calls,
                         &mut cursor,
                         limit,
                         &mut cfm.connections,
@@ -180886,7 +180964,7 @@ pub(crate) mod tests {
                 (loaded.imports, loaded.import_count) = import_run_state.into_parts();
                 assert_eq!(recursive_cpu.gpr, before_cpu.gpr);
                 assert_eq!(recursive_cpu.pc, before_cpu.pc);
-                assert!(loaded.guest_calls.is_resource_preparation_pending(record));
+                assert!(loaded.guest_calls().is_resource_preparation_pending(record));
             }
             let result = loaded.run_with_hle_imports(128);
             assert_eq!(result.unsupported_import_index, None);
@@ -180899,7 +180977,7 @@ pub(crate) mod tests {
             ));
             assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
             assert_eq!(loaded.cpu.gpr[1], sp);
-            assert!(loaded.guest_calls.is_empty());
+            assert!(loaded.guest_calls().is_empty());
             if initialization == Some(1) {
                 assert_eq!(
                     loaded.cpu.gpr[3],
@@ -180962,7 +181040,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_library_import(b"StdCLib", b"malloc");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = context.memory_manager_mut().detached_clone();
         native.set_last_mem_error(PPC_PARAM_ERR);
 
@@ -181051,7 +181129,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_library_import(b"StdCLib", b"fopen");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = context.memory_manager_mut().detached_clone();
         let heap_before = context
             .memory_manager_mut()
@@ -182783,7 +182861,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AECreateDesc");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = context.memory_manager_mut().detached_clone();
         let scratch = PPC_DATA_BASE + 0x2000;
         let source = scratch;
@@ -182852,7 +182930,7 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         native.set_heap_cursor(native.heap_limit().saturating_sub(8));
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let scratch = PPC_DATA_BASE + 0x2200;
         let descriptor = scratch + 0x20;
         native.memory.add_region(scratch, vec![0xaa; 0x40]);
@@ -182904,7 +182982,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"CreateObjSpecifier");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let detached = context.memory_manager_mut().detached_clone();
         let descriptor = PPC_DATA_BASE + 0x2400;
         native.memory.add_region(descriptor, vec![0; 8]);
@@ -182951,7 +183029,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AECreateAppleEvent");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
-        native.attach_process_context(&mut context);
+        native.attach_unconverted_process_services(&mut context);
         let descriptor = PPC_DATA_BASE + 0x2500;
         native.memory.add_region(descriptor, vec![0; 8]);
         native.cpu.gpr[8] = descriptor;

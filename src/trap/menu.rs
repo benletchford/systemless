@@ -1746,7 +1746,6 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
-        self.menu_tracking.bind_execution(&self.guest_calls);
         self.retire_menu_definition(cpu, bus);
         let _menu_root = (is_tool && matches!(trap_num, 0x13d | 0x00b)).then(|| {
             let sp = cpu.read_reg(Register::A7);

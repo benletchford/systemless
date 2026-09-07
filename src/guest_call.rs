@@ -893,21 +893,6 @@ impl SharedMenuTracking {
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         self.calls.ptr_eq(&other.calls)
     }
-    pub(crate) fn bind_execution(&mut self, calls: &SharedGuestCallStack) {
-        let view = calls.menu_tracking_view();
-        if self.calls.ptr_eq(&view.calls) {
-            self.execution = calls.shared_handle();
-            return;
-        }
-        // Derived adapter clones hold detached but equal snapshots of their
-        // view and execution owner. Reconnect that view before execution;
-        // adopting conflicting populated owners remains forbidden.
-        if self.calls == view.calls {
-            *self = view;
-        } else {
-            self.attach_to(&view);
-        }
-    }
     #[cfg(test)]
     pub(crate) fn menu_hook_key(&self) -> Option<MenuHookKey> {
         let index = self.active_index()?;
@@ -1195,17 +1180,6 @@ impl SharedMenuTracking {
             call.id != id
                 || !matches!(&call.operation, MenuOperation::Tracking(operation) if operation.is_idle())
         });
-    }
-    pub(crate) fn attach_to(&mut self, other: &Self) {
-        assert!(
-            self.calls.ptr_eq(&other.calls)
-                || self.calls.calls.is_empty()
-                || other.calls.calls.is_empty(),
-            "cannot attach two active Menu Manager continuations"
-        );
-        self.calls
-            .attach_to(&other.calls, |calls| calls.calls.is_empty());
-        self.execution = other.execution.shared_handle();
     }
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
@@ -2530,6 +2504,7 @@ impl SharedGuestCallStack {
         Some(call_id)
     }
 
+    #[cfg(test)]
     fn push_effect(&self, effect: GuestCallEffect) -> bool {
         self.submit_effect(effect).is_some()
     }
@@ -2970,6 +2945,7 @@ impl SharedGuestCallStack {
     /// Commit the ABI result and restore the exact caller under one validated
     /// retirement boundary. The adapter closure must leave state unchanged
     /// when it rejects a result and must not execute guest code.
+    #[cfg(test)]
     pub(crate) fn commit_m68k_resume(
         &self,
         apply: impl FnOnce(M68kResume, Option<&mut M68kCpu>) -> bool,
@@ -3680,6 +3656,7 @@ impl ExecutionMenuViews {
         Self { calls, menu }
     }
 
+    #[cfg(test)]
     pub(crate) fn shared_from(calls: &SharedGuestCallStack) -> Self {
         let calls = calls.shared_handle();
         let menu = calls.menu_tracking_view();
@@ -3700,9 +3677,60 @@ impl ExecutionMenuViews {
         &mut self.menu
     }
 
+    pub(crate) fn existing_menu_context_mut(&mut self) -> Option<&mut MenuTrackingContext> {
+        self.menu.existing_context_mut()
+    }
+
+    pub(crate) fn menu_context_mut(&mut self) -> &mut MenuTrackingContext {
+        self.menu.context_mut()
+    }
+
+    pub(crate) fn enter_menu_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
+        self.menu.enter_new_call(call)
+    }
+
+    pub(crate) fn resume_menu_call(
+        &mut self,
+        isa: GuestIsa,
+    ) -> Option<(MenuTrackingCall, MenuTrackingEntry)> {
+        self.menu.resume_call(isa)
+    }
+
+    pub(crate) fn take_menu_state(
+        &mut self,
+    ) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
+        self.menu.take()
+    }
+
+    pub(crate) fn request_menu_hook(&self, mouse_down: bool) -> Option<MenuHookKey> {
+        self.menu.request_menu_hook(mouse_down)
+    }
+
+    pub(crate) fn bind_menu_hook(
+        &mut self,
+        key: MenuHookKey,
+        completion: MenuHookCompletion,
+    ) -> bool {
+        self.menu.bind_menu_hook(key, completion)
+    }
+
+    pub(crate) fn bind_menu_definition_completion(
+        &mut self,
+        id: MenuOperationId,
+        invocation: crate::menu_manager::MenuDefinitionInvocation,
+        completion: crate::menu_manager::MenuDefinitionCompletion,
+    ) {
+        self.menu.bind_completion(id, invocation, completion);
+    }
+
     #[cfg(test)]
     pub(crate) fn enter_test_menu(&mut self) -> MenuTrackingEntry {
         self.menu.enter()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_test_menu_if_idle(&mut self, id: MenuOperationId) {
+        self.menu.finish_if_idle(id);
     }
 
     pub(crate) fn is_coherent(&self) -> bool {
@@ -3788,6 +3816,11 @@ mod tests {
         snapshot.menu_state_mut().as_mut().unwrap().highlighted_item = 7;
         assert_eq!(snapshot.menu().as_ref().unwrap().highlighted_item, 7);
         assert_eq!(original.menu().as_ref().unwrap().highlighted_item, 1);
+
+        assert_eq!(snapshot.take_menu_state().unwrap().menu_handle, 0x1000);
+        snapshot.finish_test_menu_if_idle(root.id);
+        assert!(snapshot.calls().is_empty());
+        assert!(!original.calls().is_empty());
 
         let shared = ExecutionMenuViews::shared_from(original.calls());
         assert!(shared.is_coherent());
@@ -4412,37 +4445,6 @@ mod tests {
         assert!(view.take().is_none());
         assert!(view.existing_context_mut().is_none());
         assert!(calls.is_pristine());
-        let other = SharedGuestCallStack::default();
-        view.attach_to(&other.menu_tracking_view());
-        assert!(other.is_pristine());
-    }
-
-    #[test]
-    fn cloned_menu_view_reconnects_to_its_detached_execution_owner() {
-        let calls = SharedGuestCallStack::default();
-        let mut view = calls.menu_tracking_view();
-        let entry = view.enter();
-        *view = Some(crate::menu_manager::test_process_menu_tracking(111));
-        let cloned_calls = calls.clone();
-        let mut cloned_view = view.clone();
-        assert!(!view.ptr_eq(&cloned_view));
-        cloned_view.bind_execution(&cloned_calls);
-        cloned_view.as_mut().unwrap().highlighted_item = 3;
-        assert_eq!(
-            cloned_calls
-                .menu_tracking_view()
-                .as_ref()
-                .unwrap()
-                .highlighted_item,
-            3
-        );
-        assert_eq!(view.as_ref().unwrap().highlighted_item, 1);
-        *cloned_view = None;
-        cloned_view.finish_if_idle(entry.id);
-        assert!(cloned_calls.is_empty());
-        assert!(!calls.is_empty());
-        *view = None;
-        drop(entry);
     }
 
     #[test]

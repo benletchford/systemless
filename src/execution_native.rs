@@ -201,6 +201,12 @@ impl<T> NativeExecution<T> {
         Ok(())
     }
 
+    pub(crate) fn staged_companion(&self) -> Option<&T> {
+        matches!(self.companion, NativeSlot::Empty)
+            .then_some(self.staged.as_ref())
+            .flatten()
+    }
+
     #[cfg(test)]
     pub(crate) fn has_staged_companion(&self) -> bool {
         self.staged.is_some()

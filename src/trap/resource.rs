@@ -9605,7 +9605,7 @@ mod tests {
         context.attach_memory(0, shared, &mut native);
         let foreign = native.shared_view();
         bus.attach_guest_address_space(foreign);
-        disp.attach_process_context(&mut context);
+        disp.attach_unconverted_process_services(&mut context);
 
         let memory_manager = disp.process_memory_manager();
         let handle = {
