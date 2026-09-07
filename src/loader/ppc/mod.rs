@@ -171165,6 +171165,76 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn native_yield_imports_preserve_state_when_refused_or_quiescent() {
+        use crate::guest_call::{ExecutionTaskId, NativeThreadContext, ThreadStorage};
+
+        for symbol in [b"YieldToAnyThread".as_slice(), b"YieldToThread".as_slice()] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(symbol)).unwrap();
+            let mut worker_cpu = loaded.cpu.clone();
+            worker_cpu.pc = PPC_CODE_BASE + 0x2000;
+            worker_cpu.gpr[1] = PPC_DATA_BASE + 0x4000;
+            let worker = loaded
+                .guest_calls
+                .create_native_thread(
+                    NativeThreadContext {
+                        context: worker_cpu.capture_execution_context(),
+                    },
+                    ThreadStorage::default(),
+                    false,
+                    |_| true,
+                )
+                .unwrap();
+            loaded.guest_calls.begin_critical();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = worker.thread_id();
+            loaded.cpu.gpr[20] = 0x1234_5678;
+            loaded.cpu.fpr[20] = 0x4009_21fb_5444_2d18;
+            loaded.cpu.cr = 0x1357_2468;
+            establish_loaded_reservation(&mut loaded, PPC_DATA_BASE);
+            let before_calls = loaded.guest_calls.clone();
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-619));
+            assert_eq!(loaded.cpu.gpr[20], 0x1234_5678);
+            assert_eq!(loaded.cpu.fpr[20], 0x4009_21fb_5444_2d18);
+            assert_eq!(loaded.cpu.cr, 0x1357_2468);
+            assert_eq!(loaded.cpu.reservation_address(), Some(PPC_DATA_BASE));
+            assert_eq!(loaded.guest_calls, before_calls);
+            assert_eq!(
+                loaded.guest_calls.current_task(),
+                ExecutionTaskId::APPLICATION
+            );
+            assert_eq!(loaded.guest_calls.critical_depth(), 1);
+        }
+
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"YieldToAnyThread")).unwrap();
+        loaded.cpu.gpr[20] = 0x8765_4321;
+        loaded.cpu.fpr[20] = 0x3ff0_0000_0000_0000;
+        loaded.cpu.cr = 0x2468_1357;
+        establish_loaded_reservation(&mut loaded, PPC_DATA_BASE);
+        let before_calls = loaded.guest_calls.clone();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.cpu.gpr[20], 0x8765_4321);
+        assert_eq!(loaded.cpu.fpr[20], 0x3ff0_0000_0000_0000);
+        assert_eq!(loaded.cpu.cr, 0x2468_1357);
+        assert_eq!(loaded.cpu.reservation_address(), Some(PPC_DATA_BASE));
+        assert_eq!(loaded.guest_calls, before_calls);
+        assert_eq!(
+            loaded.guest_calls.current_task(),
+            ExecutionTaskId::APPLICATION
+        );
+    }
+
+    #[test]
     fn standalone_native_thread_stays_stopped_until_ready() {
         let mut loaded =
             load_pef_application(&synthetic_pef_with_import(b"SetThreadStateEndCritical")).unwrap();
