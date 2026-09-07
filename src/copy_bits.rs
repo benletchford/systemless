@@ -145,6 +145,114 @@ impl Indexed8HorizontalShrink {
     }
 }
 
+/// Pure vertical plan for indexed 8-bit identity-palette scaling. Destination
+/// indices are relative to the complete, unclipped destination rectangle, so
+/// slicing `visible` preserves the original vertical phase.
+///
+/// Imaging With QuickDraw defines rectangle scaling. The source-row carry,
+/// exact-integral reduction branch, and maximum-index reduction are measured
+/// Mac OS 8.1 compatibility behavior.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Indexed8VerticalScale {
+    groups: Vec<Range<usize>>,
+    source_range: Range<usize>,
+}
+
+impl Indexed8VerticalScale {
+    pub(crate) fn new(
+        source_height: usize,
+        destination_height: usize,
+        visible: Range<usize>,
+    ) -> Option<Self> {
+        if !(1..=i16::MAX as usize).contains(&source_height)
+            || !(1..=i16::MAX as usize).contains(&destination_height)
+            || visible.start > visible.end
+            || visible.end > destination_height
+        {
+            return None;
+        }
+
+        let mut all_groups = Vec::new();
+        all_groups.try_reserve_exact(destination_height).ok()?;
+        if source_height == destination_height {
+            for index in 0..destination_height {
+                all_groups.push(index..index.checked_add(1)?);
+            }
+        } else if source_height > destination_height && source_height % destination_height == 0 {
+            let group_height = source_height / destination_height;
+            for destination in 0..destination_height {
+                let start = destination.checked_mul(group_height)?;
+                all_groups.push(start..start.checked_add(group_height)?);
+            }
+        } else {
+            let source_height = i64::try_from(source_height).ok()?;
+            let destination_height = i64::try_from(destination_height).ok()?;
+            let mut error = -(source_height / 2);
+            let mut source = -1i64;
+            let mut endpoints = Vec::new();
+            endpoints
+                .try_reserve_exact(usize::try_from(destination_height).ok()?)
+                .ok()?;
+            while endpoints.len() < usize::try_from(destination_height).ok()? {
+                source = source.checked_add(1)?;
+                error = error.checked_add(destination_height)?;
+                while error <= 0 && source.checked_add(1)? < source_height {
+                    source = source.checked_add(1)?;
+                    error = error.checked_add(destination_height)?;
+                }
+                loop {
+                    endpoints.push(usize::try_from(source).ok()?);
+                    error = error.checked_sub(source_height)?;
+                    if error < 0 || endpoints.len() == usize::try_from(destination_height).ok()? {
+                        break;
+                    }
+                }
+            }
+
+            if source_height > destination_height {
+                let mut start = 0usize;
+                for endpoint in endpoints {
+                    let end = endpoint.checked_add(1)?;
+                    all_groups.push(start..end);
+                    start = end;
+                }
+            } else {
+                for source in endpoints {
+                    all_groups.push(source..source.checked_add(1)?);
+                }
+            }
+        }
+        if all_groups
+            .iter()
+            .any(|group| group.is_empty() || group.end > source_height)
+        {
+            return None;
+        }
+
+        let visible_groups = all_groups.get(visible.clone())?;
+        let mut groups = Vec::new();
+        groups.try_reserve_exact(visible_groups.len()).ok()?;
+        groups.extend(visible_groups.iter().cloned());
+        let source_range = match (groups.first(), groups.last()) {
+            (Some(first), Some(last)) => first.start..last.end,
+            (None, None) => 0..0,
+            _ => return None,
+        };
+        Some(Self {
+            groups,
+            source_range,
+        })
+    }
+
+    pub(crate) fn groups(&self) -> &[Range<usize>] {
+        &self.groups
+    }
+
+    pub(crate) fn source_range(&self) -> Range<usize> {
+        self.source_range.clone()
+    }
+}
+
 pub(crate) trait CopyBitsMemory {
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()>;
     fn write_copy_row(&mut self, address: u32, bytes: &[u8]) -> Option<()>;
@@ -287,6 +395,27 @@ impl Indexed8HorizontalSelection {
 }
 
 impl RowCopy<'_> {
+    /// Adds the shared indexed scaling families ahead of the existing paths.
+    /// Adapters receive one final outcome, so only a decline before memory is
+    /// touched reaches the legacy implementation.
+    pub(crate) fn execute_with_indexed8_scaling(
+        self,
+        memory: &mut impl CopyBitsMemory,
+        selection: Option<Indexed8HorizontalSelection>,
+    ) -> RowCopyOutcome {
+        if let Some(selection) = selection {
+            let horizontal = self.execute_indexed8_horizontal(memory, selection);
+            if horizontal != RowCopyOutcome::Declined {
+                return horizontal;
+            }
+            let vertical = self.execute_indexed8_vertical(memory, selection);
+            if vertical != RowCopyOutcome::Declined {
+                return vertical;
+            }
+        }
+        self.execute(memory)
+    }
+
     /// Adds the indexed horizontal family ahead of the existing shared paths.
     /// The adapters still receive one final outcome and therefore cannot
     /// accidentally fall back after a selected family has touched memory.
@@ -513,6 +642,238 @@ impl RowCopy<'_> {
             .enumerate()
         {
             if memory.write_copy_row(*destination, row).is_none() {
+                return RowCopyOutcome::WriteFailure { rows_written };
+            }
+        }
+        RowCopyOutcome::Completed
+    }
+
+    /// Executes the measured indexed 8-bit vertical scale family. Required
+    /// source rows are snapshotted before the first write. Rows belonging only
+    /// to clipped-away destination groups are never addressed.
+    fn execute_indexed8_vertical(
+        &self,
+        memory: &mut impl CopyBitsMemory,
+        _selection: Indexed8HorizontalSelection,
+    ) -> RowCopyOutcome {
+        if self.mode != 0
+            || self.source.depth != 8
+            || self.destination.depth != 8
+            || self.palette.is_some()
+        {
+            return RowCopyOutcome::Declined;
+        }
+
+        if self
+            .source_rect
+            .iter()
+            .chain(self.destination_rect.iter())
+            .chain(self.source.bounds.iter())
+            .chain(self.destination.bounds.iter())
+            .chain(self.clip.iter())
+            .any(|&coordinate| i16::try_from(coordinate).is_err())
+        {
+            return RowCopyOutcome::Declined;
+        }
+
+        let [st, sl, sb, sr] = self.source_rect;
+        let [dt, dl, db, dr] = self.destination_rect;
+        let Some(source_width) = sr.checked_sub(sl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_height) = sb.checked_sub(st) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_width) = dr.checked_sub(dl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(destination_height) = db.checked_sub(dt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if source_width <= 0
+            || source_height <= 0
+            || destination_width <= 0
+            || destination_height <= 0
+        {
+            return RowCopyOutcome::NoOp;
+        }
+        if destination_width != source_width || destination_height == source_height {
+            return RowCopyOutcome::Declined;
+        }
+        if source_width > i32::from(i16::MAX)
+            || source_height > i32::from(i16::MAX)
+            || destination_height > i32::from(i16::MAX)
+        {
+            return RowCopyOutcome::Declined;
+        }
+
+        let [sbt, sbl, sbb, sbr] = self.source.bounds;
+        let Some(source_bounds_height) = sbb.checked_sub(sbt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if source_bounds_height <= 0 {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        if st < sbt || sl < sbl || sb > sbb || sr > sbr {
+            return RowCopyOutcome::Declined;
+        }
+        let Some(source_y_delta) = st.checked_sub(sbt) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(source_x_delta) = sl.checked_sub(sbl) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        if i16::try_from(source_y_delta).is_err() || i16::try_from(source_x_delta).is_err() {
+            return RowCopyOutcome::Declined;
+        }
+        // Classic QuickDraw's signed source-bounds-height gate is observed at
+        // 32767/32768 for otherwise-identical contained vertical transfers.
+        if source_bounds_height > i32::from(i16::MAX) {
+            return RowCopyOutcome::NoOp;
+        }
+
+        let [dbt, dbl, dbb, dbr] = self.destination.bounds;
+        let [ct, cl, cb, cr] = self.clip;
+        let top = dt.max(dbt).max(ct);
+        let left = dl.max(dbl).max(cl);
+        let bottom = db.min(dbb).min(cb);
+        let right = dr.min(dbr).min(cr);
+        if top >= bottom || left >= right {
+            return RowCopyOutcome::NoOp;
+        }
+
+        let Some(visible_start) = top
+            .checked_sub(dt)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(visible_end) = bottom
+            .checked_sub(dt)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let Some(plan) = Indexed8VerticalScale::new(
+            source_height as usize,
+            destination_height as usize,
+            visible_start..visible_end,
+        ) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let source_range = plan.source_range();
+        let Some(output_width) = right
+            .checked_sub(left)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+
+        let Some(source_x) = left
+            .checked_sub(dl)
+            .and_then(|offset| sl.checked_add(offset))
+        else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let mut source_addresses = Vec::new();
+        if source_addresses
+            .try_reserve_exact(source_range.len())
+            .is_err()
+        {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        for source_index in source_range.clone() {
+            let Some(source_y) = i32::try_from(source_index)
+                .ok()
+                .and_then(|offset| st.checked_add(offset))
+            else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(address) = self.source.row_address(source_x, source_y, output_width) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            source_addresses.push(address);
+        }
+
+        let mut destination_addresses = Vec::new();
+        if destination_addresses
+            .try_reserve_exact(plan.groups().len())
+            .is_err()
+        {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        for destination_y in top..bottom {
+            let Some(address) = self
+                .destination
+                .row_address(left, destination_y, output_width)
+            else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            destination_addresses.push(address);
+        }
+
+        let Some(snapshot_len) = source_range.len().checked_mul(output_width) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let mut snapshots = Vec::new();
+        if snapshots.try_reserve_exact(snapshot_len).is_err() {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        snapshots.resize(snapshot_len, 0);
+        for (row, address) in source_addresses.iter().copied().enumerate() {
+            let Some(start) = row.checked_mul(output_width) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            let Some(end) = start.checked_add(output_width) else {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            };
+            if memory
+                .read_copy_row(address, &mut snapshots[start..end])
+                .is_none()
+            {
+                return RowCopyOutcome::ReadOrGeometryFailure;
+            }
+        }
+
+        let Some(output_len) = plan.groups().len().checked_mul(output_width) else {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        };
+        let mut output = Vec::new();
+        if output.try_reserve_exact(output_len).is_err() {
+            return RowCopyOutcome::ReadOrGeometryFailure;
+        }
+        for group in plan.groups() {
+            for x in 0..output_width {
+                let mut maximum = None;
+                for source_index in group.clone() {
+                    let Some(row) = source_index.checked_sub(source_range.start) else {
+                        return RowCopyOutcome::ReadOrGeometryFailure;
+                    };
+                    let Some(index) = row
+                        .checked_mul(output_width)
+                        .and_then(|start| start.checked_add(x))
+                    else {
+                        return RowCopyOutcome::ReadOrGeometryFailure;
+                    };
+                    let Some(value) = snapshots.get(index).copied() else {
+                        return RowCopyOutcome::ReadOrGeometryFailure;
+                    };
+                    maximum = Some(maximum.map_or(value, |current: u8| current.max(value)));
+                }
+                let Some(maximum) = maximum else {
+                    return RowCopyOutcome::ReadOrGeometryFailure;
+                };
+                output.push(maximum);
+            }
+        }
+
+        for (rows_written, (address, row)) in destination_addresses
+            .iter()
+            .copied()
+            .zip(output.chunks_exact(output_width))
+            .enumerate()
+        {
+            if memory.write_copy_row(address, row).is_none() {
                 return RowCopyOutcome::WriteFailure { rows_written };
             }
         }
@@ -918,6 +1279,312 @@ mod tests {
         assert_eq!(plan.reduce(&vec![0; 192]), None);
     }
 
+    // Monotonic source-row indices captured through CopyBits on Mac OS 8.1
+    // for every source/destination height pair in 1..=16.
+    const VERTICAL_GRID_SOURCE_ROWS: &[u8] = &[
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1,
+        1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1,
+        1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1,
+        1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1,
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1,
+        1, 1, 2, 0, 2, 0, 1, 2, 0, 0, 1, 2, 0, 0, 1, 1, 2, 0, 0, 1, 1, 2, 2, 0, 0, 0, 1, 1, 2, 2,
+        0, 0, 0, 1, 1, 1, 2, 2, 0, 0, 0, 1, 1, 1, 2, 2, 2, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 0, 0, 0,
+        0, 1, 1, 1, 1, 2, 2, 2, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2,
+        2, 2, 2, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2,
+        2, 2, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 1, 3, 0, 2, 3, 0, 1, 2, 3, 0, 1,
+        1, 2, 3, 0, 0, 1, 2, 2, 3, 0, 0, 1, 1, 2, 3, 3, 0, 0, 1, 1, 2, 2, 3, 3, 0, 0, 1, 1, 1, 2,
+        2, 3, 3, 0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 3, 0, 0, 0, 1, 1, 1,
+        2, 2, 2, 3, 3, 3, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2,
+        3, 3, 3, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+        3, 3, 3, 3, 4, 1, 3, 0, 2, 4, 0, 1, 3, 4, 0, 1, 2, 3, 4, 0, 1, 1, 2, 3, 4, 0, 0, 1, 2, 3,
+        3, 4, 0, 0, 1, 2, 2, 3, 3, 4, 0, 0, 1, 1, 2, 2, 3, 4, 4, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 0,
+        0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 0, 0, 0, 1, 1, 2, 2, 3, 3, 3, 4, 4, 0, 0, 0, 1, 1, 2, 2, 2,
+        3, 3, 3, 4, 4, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3,
+        3, 4, 4, 4, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 2, 5, 1, 3, 5, 0, 2, 3, 5,
+        0, 1, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 2, 3, 4, 5, 0, 1, 1, 2, 3, 4, 4, 5, 0, 0, 1, 2,
+        2, 3, 4, 4, 5, 0, 0, 1, 2, 2, 3, 3, 4, 5, 5, 0, 0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 0, 0, 1, 1,
+        2, 2, 3, 3, 4, 4, 5, 5, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 0, 0, 1, 1, 1, 2, 2, 3, 3,
+        4, 4, 4, 5, 5, 0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 5, 5, 0, 0, 0, 1, 1, 2, 2, 2, 3, 3,
+        3, 4, 4, 5, 5, 5, 6, 1, 5, 1, 3, 5, 0, 2, 4, 6, 0, 2, 3, 4, 6, 0, 1, 2, 4, 5, 6, 0, 1, 2,
+        3, 4, 5, 6, 0, 1, 2, 2, 3, 4, 5, 6, 0, 1, 1, 2, 3, 4, 4, 5, 6, 0, 0, 1, 2, 3, 3, 4, 5, 5,
+        6, 0, 0, 1, 2, 2, 3, 4, 4, 5, 5, 6, 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 6, 6, 0, 0, 1, 1, 2, 2,
+        3, 3, 4, 5, 5, 6, 6, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 0, 0, 1, 1, 2, 2, 2, 3, 3,
+        4, 4, 5, 5, 6, 6, 0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5, 5, 6, 6, 7, 3, 7, 1, 4, 6, 1, 3,
+        5, 7, 0, 2, 4, 5, 7, 0, 2, 3, 4, 6, 7, 0, 1, 2, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1,
+        2, 3, 3, 4, 5, 6, 7, 0, 1, 1, 2, 3, 4, 5, 5, 6, 7, 0, 1, 1, 2, 3, 3, 4, 5, 6, 6, 7, 0, 0,
+        1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 0, 0, 1, 2, 2, 3, 3, 4, 5, 5, 6, 7, 7, 0, 0, 1, 1, 2, 3, 3,
+        4, 4, 5, 5, 6, 7, 7, 0, 0, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 6, 7, 7, 0, 0, 1, 1, 2, 2, 3, 3,
+        4, 4, 5, 5, 6, 6, 7, 7, 8, 2, 6, 2, 5, 8, 1, 3, 5, 7, 0, 2, 4, 6, 8, 0, 2, 3, 5, 6, 8, 0,
+        1, 3, 4, 5, 7, 8, 0, 1, 2, 3, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 3, 4, 5,
+        6, 7, 8, 0, 1, 1, 2, 3, 4, 5, 6, 6, 7, 8, 0, 1, 1, 2, 3, 4, 4, 5, 6, 7, 7, 8, 0, 0, 1, 2,
+        3, 3, 4, 5, 5, 6, 7, 7, 8, 0, 0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 7, 8, 0, 0, 1, 2, 2, 3, 3,
+        4, 5, 5, 6, 6, 7, 8, 8, 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 8, 9, 4, 9, 1, 5, 8,
+        1, 3, 6, 8, 1, 3, 5, 7, 9, 0, 2, 4, 5, 7, 9, 0, 2, 3, 5, 6, 7, 9, 0, 1, 3, 4, 5, 6, 8, 9,
+        0, 1, 2, 3, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 9,
+        0, 1, 2, 2, 3, 4, 5, 6, 7, 7, 8, 9, 0, 1, 1, 2, 3, 4, 4, 5, 6, 7, 8, 8, 9, 0, 1, 1, 2, 3,
+        3, 4, 5, 6, 6, 7, 8, 8, 9, 0, 0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 8, 8, 9, 0, 0, 1, 2, 2, 3,
+        4, 4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 2, 8, 1, 5, 9, 1, 4, 6, 9, 1, 3, 5, 7, 9, 0, 2, 4, 6, 8,
+        10, 0, 2, 3, 5, 7, 8, 10, 0, 2, 3, 4, 6, 7, 8, 10, 0, 1, 3, 4, 5, 6, 7, 9, 10, 0, 1, 2, 3,
+        4, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 9, 10,
+        0, 1, 2, 2, 3, 4, 5, 6, 7, 7, 8, 9, 10, 0, 1, 1, 2, 3, 4, 5, 5, 6, 7, 8, 8, 9, 10, 0, 1, 1,
+        2, 3, 3, 4, 5, 6, 6, 7, 8, 9, 9, 10, 0, 0, 1, 2, 3, 3, 4, 5, 5, 6, 7, 7, 8, 9, 9, 10, 11,
+        5, 11, 3, 7, 11, 2, 5, 8, 11, 1, 3, 6, 8, 10, 1, 3, 5, 7, 9, 11, 0, 2, 4, 6, 7, 9, 11, 0,
+        2, 3, 5, 6, 8, 9, 11, 0, 2, 3, 4, 6, 7, 8, 10, 11, 0, 1, 3, 4, 5, 6, 7, 9, 10, 11, 0, 1, 2,
+        3, 4, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 5, 6, 7,
+        8, 9, 10, 11, 0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10, 11, 0, 1, 1, 2, 3, 4, 5, 5, 6, 7, 8,
+        9, 9, 10, 11, 0, 1, 1, 2, 3, 4, 4, 5, 6, 7, 7, 8, 9, 10, 10, 11, 12, 3, 9, 2, 6, 10, 1, 4,
+        8, 11, 1, 3, 6, 9, 11, 1, 3, 5, 7, 9, 11, 0, 2, 4, 6, 8, 10, 12, 0, 2, 4, 5, 7, 8, 10, 12,
+        0, 2, 3, 5, 6, 7, 9, 10, 12, 0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 0, 1, 2, 4, 5, 6, 7, 8, 10,
+        11, 12, 0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0,
+        1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12,
+        0, 1, 1, 2, 3, 4, 5, 6, 6, 7, 8, 9, 10, 10, 11, 12, 13, 6, 13, 2, 7, 11, 1, 5, 8, 12, 1, 4,
+        7, 9, 12, 1, 3, 5, 8, 10, 12, 1, 3, 5, 7, 9, 11, 13, 0, 2, 4, 6, 7, 9, 11, 13, 0, 2, 3, 5,
+        7, 8, 10, 11, 13, 0, 2, 3, 4, 6, 7, 9, 10, 11, 13, 0, 1, 3, 4, 5, 7, 8, 9, 10, 12, 13, 0,
+        1, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 0, 1, 2, 3,
+        4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1, 2, 3, 4, 5, 6, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1, 2,
+        3, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 3, 11, 4, 9, 14, 1, 5, 9, 13, 2, 5, 8, 11,
+        14, 1, 3, 6, 8, 11, 13, 1, 3, 5, 7, 9, 11, 13, 0, 2, 4, 6, 8, 10, 12, 14, 0, 2, 4, 5, 7, 9,
+        10, 12, 14, 0, 2, 3, 5, 6, 8, 9, 11, 12, 14, 0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 0, 1, 3,
+        4, 5, 6, 8, 9, 10, 11, 13, 14, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 0, 1, 2, 3, 4, 5,
+        6, 8, 9, 10, 11, 12, 13, 14, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0, 1, 2, 3,
+        4, 5, 6, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 7, 15, 2, 8, 13, 3, 7, 11, 15, 1, 4, 8, 11,
+        14, 1, 4, 6, 9, 12, 14, 1, 3, 5, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15, 0, 2, 4, 6, 8,
+        9, 11, 13, 15, 0, 2, 4, 5, 7, 8, 10, 12, 13, 15, 0, 2, 3, 5, 6, 8, 9, 10, 12, 13, 15, 0, 2,
+        3, 4, 6, 7, 8, 10, 11, 12, 14, 15, 0, 1, 3, 4, 5, 6, 8, 9, 10, 11, 12, 14, 15, 0, 1, 2, 4,
+        5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 0, 1,
+        2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    ];
+
+    #[test]
+    fn indexed_vertical_groups_match_independent_oracle_boundaries() {
+        for (source, destination, expected) in [
+            (3, 2, &[0..1, 1..3][..]),
+            (5, 3, &[0..1, 1..3, 3..5][..]),
+            (17, 7, &[0..2, 2..4, 4..7, 7..9, 9..11, 11..14, 14..16][..]),
+            (
+                17,
+                16,
+                &[
+                    0..1,
+                    1..2,
+                    2..3,
+                    3..4,
+                    4..5,
+                    5..6,
+                    6..7,
+                    7..8,
+                    8..10,
+                    10..11,
+                    11..12,
+                    12..13,
+                    13..14,
+                    14..15,
+                    15..16,
+                    16..17,
+                ][..],
+            ),
+            (
+                17,
+                18,
+                &[
+                    0..1,
+                    1..2,
+                    2..3,
+                    3..4,
+                    4..5,
+                    5..6,
+                    6..7,
+                    7..8,
+                    7..8,
+                    8..9,
+                    9..10,
+                    10..11,
+                    11..12,
+                    12..13,
+                    13..14,
+                    14..15,
+                    15..16,
+                    16..17,
+                ][..],
+            ),
+        ] {
+            let plan = Indexed8VerticalScale::new(source, destination, 0..destination)
+                .expect("captured vertical geometry is supported");
+            assert_eq!(plan.groups(), expected);
+        }
+
+        for (source, destination, expected) in [
+            (4, 1, &[0..4][..]),
+            (8, 2, &[0..4, 4..8][..]),
+            (6, 2, &[0..3, 3..6][..]),
+        ] {
+            let plan = Indexed8VerticalScale::new(source, destination, 0..destination).unwrap();
+            assert_eq!(plan.groups(), expected);
+        }
+        for (source, factor) in [(34, 2), (51, 3)] {
+            let expected: Vec<_> = (0..17)
+                .map(|index| index * factor..index * factor + factor)
+                .collect();
+            let plan = Indexed8VerticalScale::new(source, 17, 0..17).unwrap();
+            assert_eq!(plan.groups(), expected);
+        }
+    }
+
+    #[test]
+    fn indexed_vertical_groups_match_complete_captured_small_grid() {
+        let mut cursor = 0;
+        for source in 1..=16 {
+            for destination in 1..=16 {
+                let expected = &VERTICAL_GRID_SOURCE_ROWS[cursor..cursor + destination];
+                cursor += destination;
+                let plan = Indexed8VerticalScale::new(source, destination, 0..destination).unwrap();
+                let selected: Vec<u8> = plan
+                    .groups()
+                    .iter()
+                    .map(|group| u8::try_from(group.end - 1).unwrap())
+                    .collect();
+                assert_eq!(
+                    selected, expected,
+                    "source={source}, destination={destination}"
+                );
+            }
+        }
+        assert_eq!(cursor, VERTICAL_GRID_SOURCE_ROWS.len());
+    }
+
+    #[test]
+    fn indexed_vertical_phase_holdouts_and_visible_slice_match_captures() {
+        let shrink = Indexed8VerticalScale::new(257, 256, 0..256).unwrap();
+        let shrink_rows: Vec<_> = shrink.groups().iter().map(|group| group.end - 1).collect();
+        let expected_shrink: Vec<_> = (0..128).chain(129..257).collect();
+        assert_eq!(shrink_rows, expected_shrink);
+        let enlarge = Indexed8VerticalScale::new(256, 257, 0..257).unwrap();
+        let enlarge_rows: Vec<_> = enlarge.groups().iter().map(|group| group.start).collect();
+        let expected_enlarge: Vec<_> = (0..128).chain(127..256).collect();
+        assert_eq!(enlarge_rows, expected_enlarge);
+
+        let full = Indexed8VerticalScale::new(17, 7, 0..7).unwrap();
+        let clipped = Indexed8VerticalScale::new(17, 7, 2..6).unwrap();
+        assert_eq!(clipped.groups(), &full.groups()[2..6]);
+        assert_eq!(clipped.source_range(), 4..14);
+        for visible in [0..1, 3..4, 6..7] {
+            let sliced = Indexed8VerticalScale::new(17, 7, visible.clone()).unwrap();
+            assert_eq!(sliced.groups(), &full.groups()[visible]);
+        }
+        assert!(Indexed8VerticalScale::new(17, 7, 3..3)
+            .unwrap()
+            .source_range()
+            .is_empty());
+    }
+
+    #[test]
+    fn indexed_vertical_plan_has_checked_nonempty_groups_over_broad_domain() {
+        for source in 1..=128 {
+            for destination in 1..=128 {
+                let plan = Indexed8VerticalScale::new(source, destination, 0..destination).unwrap();
+                assert_eq!(plan.groups().len(), destination);
+                assert!(plan.groups().iter().all(|group| !group.is_empty()));
+                assert!(plan
+                    .groups()
+                    .windows(2)
+                    .all(|pair| pair[0].start <= pair[1].start));
+                assert!(plan.groups().iter().all(|group| group.end <= source));
+            }
+        }
+        for (source, destination) in [
+            (190, 1),
+            (191, 1),
+            (256, 257),
+            (257, 256),
+            (285, 2),
+            (511, 3),
+            (4097, 1),
+            (5000, 3),
+            (10_924, 1),
+            (32_767, 2),
+            (2, 32_767),
+        ] {
+            let plan = Indexed8VerticalScale::new(source, destination, 0..destination).unwrap();
+            assert_eq!(plan.groups().len(), destination);
+            assert!(plan
+                .groups()
+                .iter()
+                .all(|group| !group.is_empty() && group.end <= source));
+            assert!(plan.source_range().end <= source);
+        }
+        for (source, destination, visible) in [
+            (0, 1, 0..1),
+            (1, 0, 0..0),
+            (i16::MAX as usize + 1, 1, 0..1),
+            (1, i16::MAX as usize + 1, 0..1),
+            (5, 3, std::ops::Range { start: 2, end: 1 }),
+            (5, 3, 0..4),
+        ] {
+            assert!(Indexed8VerticalScale::new(source, destination, visible).is_none());
+        }
+    }
+
+    #[test]
+    fn indexed_vertical_groups_match_independent_source_row_walk() {
+        for source in 1usize..=64 {
+            for destination in 1usize..=64 {
+                if source == destination {
+                    continue;
+                }
+                let expected = if source > destination && source % destination == 0 {
+                    let height = source / destination;
+                    (0..destination)
+                        .map(|index| index * height..(index + 1) * height)
+                        .collect::<Vec<_>>()
+                } else {
+                    // This reference walks each source row once and emits all
+                    // destination rows reached there, rather than advancing
+                    // source rows on demand for each destination endpoint.
+                    let mut error = -(i64::try_from(source).unwrap() / 2);
+                    let mut endpoints = Vec::new();
+                    for source_row in 0..source {
+                        error += i64::try_from(destination).unwrap();
+                        if error > 0 {
+                            loop {
+                                endpoints.push(source_row);
+                                error -= i64::try_from(source).unwrap();
+                                if error < 0 || endpoints.len() == destination {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if source > destination {
+                        let mut start = 0;
+                        endpoints
+                            .into_iter()
+                            .map(|endpoint| {
+                                let group = start..endpoint + 1;
+                                start = endpoint + 1;
+                                group
+                            })
+                            .collect()
+                    } else {
+                        endpoints
+                            .into_iter()
+                            .map(|source_row| source_row..source_row + 1)
+                            .collect()
+                    }
+                };
+                let plan = Indexed8VerticalScale::new(source, destination, 0..destination).unwrap();
+                assert_eq!(
+                    plan.groups(),
+                    expected,
+                    "source={source}, destination={destination}"
+                );
+            }
+        }
+    }
+
     fn run(memory: &mut GuestAddressSpace, classic: bool, copy: RowCopy<'_>) -> RowCopyOutcome {
         if classic {
             let mut bus = MacMemoryBus::new(0x10000);
@@ -985,6 +1652,344 @@ mod tests {
             }
             Some(())
         }
+    }
+
+    #[test]
+    fn indexed_vertical_executor_preserves_phase_and_avoids_discarded_rows_and_columns() {
+        let mut memory = SparseMemory::default();
+        // Only the source rows and columns needed by logical destination rows
+        // 2..6 and columns 1..3 are mapped.
+        for source_index in 4u32..14 {
+            memory.insert(
+                SOURCE + (source_index + 5) * 4 + 1,
+                &[20 + source_index as u8, 40 + source_index as u8],
+            );
+        }
+        memory.insert(DESTINATION, &[0xa5; 28]);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 4, 8, [0, 0, 30, 3]),
+            destination: pixmap(DESTINATION, 4, 8, [0, 10, 7, 13]),
+            source_rect: [5, 0, 22, 3],
+            destination_rect: [0, 10, 7, 13],
+            clip: [2, 11, 6, 13],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_scaling(&mut memory, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(
+            memory.bytes(DESTINATION, 28),
+            [
+                0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 26, 46, 0xa5, 0xa5, 28, 48,
+                0xa5, 0xa5, 30, 50, 0xa5, 0xa5, 33, 53, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+            ]
+        );
+    }
+
+    #[test]
+    fn indexed_vertical_executor_enlarges_by_repeating_captured_rows() {
+        let mut memory = SparseMemory::default();
+        memory.insert(SOURCE, &[10, 20, 30, 40, 50]);
+        memory.insert(DESTINATION, &[0xa5; 14]);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 1, 8, [0, 0, 5, 1]),
+            destination: pixmap(DESTINATION, 2, 8, [0, 0, 7, 1]),
+            source_rect: [0, 0, 5, 1],
+            destination_rect: [0, 0, 7, 1],
+            clip: [0, 0, 7, 1],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_scaling(&mut memory, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(
+            memory.bytes(DESTINATION, 14),
+            [10, 0xa5, 10, 0xa5, 20, 0xa5, 30, 0xa5, 40, 0xa5, 40, 0xa5, 50, 0xa5]
+        );
+    }
+
+    #[test]
+    fn indexed_vertical_executor_snapshots_aliasing_rows_before_writes() {
+        let mut memory = SparseMemory::default();
+        memory.insert(SOURCE, &[1, 11, 4, 14, 3, 13, 8, 18, 2, 12]);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 2, 8, [0, 0, 5, 2]),
+            destination: pixmap(SOURCE + 2, 2, 8, [0, 0, 3, 2]),
+            source_rect: [0, 0, 5, 2],
+            destination_rect: [0, 0, 3, 2],
+            clip: [0, 0, 3, 2],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_scaling(&mut memory, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(memory.bytes(SOURCE + 2, 6), [1, 11, 4, 14, 8, 18]);
+
+        let mut reverse = SparseMemory::default();
+        reverse.insert(SOURCE, &[0xa5, 0xa5, 1, 11, 4, 14, 3, 13, 8, 18, 2, 12]);
+        let copy = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE + 2, 2, 8, [0, 0, 5, 2]),
+            destination: pixmap(SOURCE, 2, 8, [0, 0, 3, 2]),
+            source_rect: [0, 0, 5, 2],
+            destination_rect: [0, 0, 3, 2],
+            clip: [0, 0, 3, 2],
+            palette: None,
+        };
+        assert_eq!(
+            copy.execute_with_indexed8_scaling(&mut reverse, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(reverse.bytes(SOURCE, 6), [1, 11, 4, 14, 8, 18]);
+
+        let mut same_base = SparseMemory::default();
+        same_base.insert(SOURCE, &[1, 11, 4, 14, 3, 13, 8, 18, 2, 12]);
+        let reduction = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 2, 8, [0, 0, 5, 2]),
+            destination: pixmap(SOURCE, 2, 8, [0, 0, 3, 2]),
+            source_rect: [0, 0, 5, 2],
+            destination_rect: [0, 0, 3, 2],
+            clip: [0, 0, 3, 2],
+            palette: None,
+        };
+        assert_eq!(
+            reduction.execute_with_indexed8_scaling(&mut same_base, Some(indexed_selection())),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(same_base.bytes(SOURCE, 6), [1, 11, 4, 14, 8, 18]);
+
+        let mut same_base_enlarge = SparseMemory::default();
+        same_base_enlarge.insert(
+            SOURCE,
+            &[
+                10, 0xa5, 20, 0xa5, 30, 0xa5, 40, 0xa5, 50, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+            ],
+        );
+        let enlargement = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 2, 8, [0, 0, 5, 1]),
+            destination: pixmap(SOURCE, 2, 8, [0, 0, 7, 1]),
+            source_rect: [0, 0, 5, 1],
+            destination_rect: [0, 0, 7, 1],
+            clip: [0, 0, 7, 1],
+            palette: None,
+        };
+        assert_eq!(
+            enlargement
+                .execute_with_indexed8_scaling(&mut same_base_enlarge, Some(indexed_selection()),),
+            RowCopyOutcome::Completed
+        );
+        assert_eq!(
+            same_base_enlarge.bytes(SOURCE, 14),
+            [10, 0xa5, 10, 0xa5, 20, 0xa5, 30, 0xa5, 40, 0xa5, 40, 0xa5, 50, 0xa5]
+        );
+    }
+
+    #[test]
+    fn indexed_vertical_failures_preserve_prewrite_and_partial_row_contracts() {
+        let request = || RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 2, 8, [0, 0, 5, 2]),
+            destination: pixmap(DESTINATION, 2, 8, [0, 0, 3, 2]),
+            source_rect: [0, 0, 5, 2],
+            destination_rect: [0, 0, 3, 2],
+            clip: [0, 0, 3, 2],
+            palette: None,
+        };
+
+        let mut read_failure = SparseMemory::default();
+        read_failure.insert(SOURCE, &[1, 11, 4, 14, 3, 13, 8, 18, 2, 12]);
+        read_failure.insert(DESTINATION, &[0xa5; 6]);
+        read_failure.fail_read = Some(SOURCE + 4);
+        assert_eq!(
+            request().execute_with_indexed8_scaling(&mut read_failure, Some(indexed_selection()),),
+            RowCopyOutcome::ReadOrGeometryFailure
+        );
+        assert!(read_failure.writes.is_empty());
+        assert_eq!(read_failure.bytes(DESTINATION, 6), [0xa5; 6]);
+
+        let mut write_failure = SparseMemory::default();
+        write_failure.insert(SOURCE, &[1, 11, 4, 14, 3, 13, 8, 18, 2, 12]);
+        write_failure.insert(DESTINATION, &[0xa5; 6]);
+        write_failure.fail_write = Some(DESTINATION + 2);
+        assert_eq!(
+            request().execute_with_indexed8_scaling(&mut write_failure, Some(indexed_selection()),),
+            RowCopyOutcome::WriteFailure { rows_written: 1 }
+        );
+        assert_eq!(write_failure.writes, [DESTINATION]);
+        assert_eq!(
+            write_failure.bytes(DESTINATION, 6),
+            [1, 11, 0xa5, 0xa5, 0xa5, 0xa5]
+        );
+
+        let mut first_write_failure = SparseMemory::default();
+        first_write_failure.insert(SOURCE, &[1, 11, 4, 14, 3, 13, 8, 18, 2, 12]);
+        first_write_failure.insert(DESTINATION, &[0xa5; 6]);
+        first_write_failure.fail_write = Some(DESTINATION);
+        assert_eq!(
+            request().execute_with_indexed8_scaling(
+                &mut first_write_failure,
+                Some(indexed_selection()),
+            ),
+            RowCopyOutcome::WriteFailure { rows_written: 0 }
+        );
+        assert!(first_write_failure.writes.is_empty());
+        assert_eq!(first_write_failure.bytes(DESTINATION, 6), [0xa5; 6]);
+    }
+
+    #[test]
+    fn indexed_vertical_signed_source_height_noop_and_exclusions_do_not_access_memory() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("excluded vertical transfer reached source memory");
+            }
+
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("excluded vertical transfer reached destination memory");
+            }
+        }
+
+        let request = |source_bounds, source_rect, destination_rect, palette| RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, source_bounds),
+            destination: pixmap(DESTINATION, 8, 8, [0, 0, 8, 8]),
+            source_rect,
+            destination_rect,
+            clip: [0, 0, 8, 8],
+            palette,
+        };
+        assert_eq!(
+            request([-1, 0, 32_767, 7], [-1, 0, 0, 7], [0, 0, 3, 7], None,)
+                .execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::NoOp
+        );
+        assert_eq!(
+            request([0, 0, 5, 7], [0, 0, 5, 7], [0, 0, 3, 6], None)
+                .execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::Declined
+        );
+        assert_eq!(
+            request([0, 0, 5, 7], [0, 0, 5, 7], [0, 0, 3, 7], Some(&[0; 256]))
+                .execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::Declined
+        );
+        assert_eq!(
+            request(
+                [i16::MIN.into(), 0, i16::MAX.into(), 7],
+                [0, 0, 5, 7],
+                [0, 0, 3, 7],
+                None,
+            )
+            .execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::Declined
+        );
+        assert_eq!(
+            request(
+                [i16::MIN.into(), 0, i16::MAX.into(), 7],
+                [i16::MIN.into(), 0, 1, 7],
+                [0, 0, 3, 7],
+                None,
+            )
+            .execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::Declined
+        );
+    }
+
+    #[test]
+    fn indexed_vertical_signed_source_bounds_threshold_matches_capture() {
+        let mut source = Vec::new();
+        for row in 1..=17u8 {
+            source.extend_from_slice(&[row * 10; 7]);
+            source.push(0xa5);
+        }
+        let mut memory = SparseMemory::default();
+        memory.insert(SOURCE, &source);
+        memory.insert(DESTINATION, &[0xa5; 56]);
+        let selected = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [-1, 0, 32_766, 7]),
+            destination: pixmap(DESTINATION, 8, 8, [0, 0, 7, 7]),
+            source_rect: [-1, 0, 16, 7],
+            destination_rect: [0, 0, 7, 7],
+            clip: [0, 0, 7, 7],
+            palette: None,
+        };
+        assert_eq!(
+            selected.execute_indexed8_vertical(&mut memory, indexed_selection()),
+            RowCopyOutcome::Completed
+        );
+        let mut expected = Vec::new();
+        for value in [20, 40, 70, 90, 110, 140, 160] {
+            expected.extend_from_slice(&[value; 7]);
+            expected.push(0xa5);
+        }
+        assert_eq!(memory.bytes(DESTINATION, 56), expected);
+
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("height-32768 no-op reached source memory");
+            }
+
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("height-32768 no-op reached destination memory");
+            }
+        }
+        let excluded = RowCopy {
+            mode: 0,
+            source: pixmap(SOURCE, 8, 8, [-1, 0, 32_767, 7]),
+            destination: pixmap(DESTINATION, 8, 8, [0, 0, 7, 7]),
+            source_rect: [-1, 0, 16, 7],
+            destination_rect: [0, 0, 7, 7],
+            clip: [0, 0, 7, 7],
+            palette: None,
+        };
+        assert_eq!(
+            excluded.execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::NoOp
+        );
+    }
+
+    #[test]
+    fn indexed_vertical_invalid_final_addresses_fail_before_memory_access() {
+        struct NoAccess;
+        impl CopyBitsMemory for NoAccess {
+            fn read_copy_row(&mut self, _: u32, _: &mut [u8]) -> Option<()> {
+                panic!("invalid vertical geometry reached source memory");
+            }
+
+            fn write_copy_row(&mut self, _: u32, _: &[u8]) -> Option<()> {
+                panic!("invalid vertical geometry reached destination memory");
+            }
+        }
+
+        let request = |source, destination| RowCopy {
+            mode: 0,
+            source: pixmap(source, 4, 8, [0, 0, 5, 4]),
+            destination: pixmap(destination, 4, 8, [0, 0, 3, 4]),
+            source_rect: [0, 0, 5, 4],
+            destination_rect: [0, 0, 3, 4],
+            clip: [0, 0, 3, 4],
+            palette: None,
+        };
+        assert_eq!(
+            request(u32::MAX - 3, DESTINATION)
+                .execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::ReadOrGeometryFailure
+        );
+        assert_eq!(
+            request(SOURCE, u32::MAX - 3)
+                .execute_indexed8_vertical(&mut NoAccess, indexed_selection()),
+            RowCopyOutcome::ReadOrGeometryFailure
+        );
     }
 
     #[test]
