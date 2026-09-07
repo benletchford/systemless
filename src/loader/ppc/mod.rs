@@ -3353,6 +3353,13 @@ struct PpcPixMapBits {
     depth: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcResolvedPixMapBits {
+    bits: PpcPixMapBits,
+    guest_bounds: bool,
+    authoritative_bounds: bool,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct PpcProcessMemoryManager(SharedProcessMemoryManager);
 
@@ -57024,6 +57031,14 @@ fn ppc_resolve_pixmap_bits(
     gworlds: &[PpcGWorldRecord],
     bits_ptr: u32,
 ) -> Option<PpcPixMapBits> {
+    ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, bits_ptr).map(|resolved| resolved.bits)
+}
+
+fn ppc_resolve_pixmap_bits_with_provenance(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    bits_ptr: u32,
+) -> Option<PpcResolvedPixMapBits> {
     if bits_ptr == 0 {
         return None;
     }
@@ -57040,7 +57055,7 @@ fn ppc_resolve_pixmap_bits(
         if record.port == bits_ptr || record.port.checked_add(2) == Some(bits_ptr) {
             let surface = ppc_live_quickdraw_surface(memory, gworlds, record.port)?;
             let front = surface.front_buffer;
-            return Some(PpcPixMapBits {
+            let bits = PpcPixMapBits {
                 base_addr: front.base_addr,
                 row_bytes: front.row_bytes,
                 top: surface.top,
@@ -57054,6 +57069,14 @@ fn ppc_resolve_pixmap_bits(
                 width: front.width,
                 height: front.height,
                 depth: front.depth,
+            };
+            let exact_bottom = i64::from(surface.top) + i64::from(front.height);
+            let exact_right = i64::from(surface.left) + i64::from(front.width);
+            return Some(PpcResolvedPixMapBits {
+                bits,
+                guest_bounds: false,
+                authoritative_bounds: i16::try_from(exact_bottom).is_ok()
+                    && i16::try_from(exact_right).is_ok(),
             });
         }
         let bits = if record.pixmap_handle == bits_ptr {
@@ -57061,14 +57084,36 @@ fn ppc_resolve_pixmap_bits(
         } else {
             ppc_read_pixmap_bits(memory, record.pixmap)
         };
-        return bits.or_else(|| ppc_pixmap_bits_from_record(record));
+        return bits
+            .map(|bits| PpcResolvedPixMapBits {
+                bits,
+                guest_bounds: true,
+                authoritative_bounds: true,
+            })
+            .or_else(|| {
+                ppc_pixmap_bits_from_record(record).map(|bits| PpcResolvedPixMapBits {
+                    bits,
+                    guest_bounds: false,
+                    authoritative_bounds: i16::try_from(record.height).is_ok()
+                        && i16::try_from(record.width).is_ok(),
+                })
+            });
     }
     if let Some(bits) = ppc_read_pixmap_bits(memory, bits_ptr) {
-        return Some(bits);
+        return Some(PpcResolvedPixMapBits {
+            bits,
+            guest_bounds: true,
+            authoritative_bounds: true,
+        });
     }
     let pixmap_or_handle = memory.read_u32_be(bits_ptr)?;
     ppc_read_pixmap_bits(memory, pixmap_or_handle)
         .or_else(|| ppc_read_pixmap_handle_bits(memory, pixmap_or_handle))
+        .map(|bits| PpcResolvedPixMapBits {
+            bits,
+            guest_bounds: true,
+            authoritative_bounds: true,
+        })
 }
 
 fn ppc_read_pixmap_raw_pixel(
@@ -57299,6 +57344,20 @@ fn ppc_resolve_pixmap_ctable_handle(
     gworlds: &[PpcGWorldRecord],
     bits_ptr: u32,
 ) -> Option<u32> {
+    ppc_resolve_pixmap_ctable_handle_with_provenance(memory, gworlds, bits_ptr).handle
+}
+
+#[derive(Clone, Copy)]
+struct PpcOptionalHandleResolution {
+    handle: Option<u32>,
+    known: bool,
+}
+
+fn ppc_resolve_pixmap_ctable_handle_with_provenance(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    bits_ptr: u32,
+) -> PpcOptionalHandleResolution {
     let tracked_pixmap = gworlds.iter().find_map(|record| {
         if record.pixmap == bits_ptr {
             return Some(record.pixmap);
@@ -57328,11 +57387,26 @@ fn ppc_resolve_pixmap_ctable_handle(
             .and_then(|row_bytes| memory.read_u16_be(row_bytes))
             .filter(|row_bytes| row_bytes & 0x8000 != 0)
             .map(|_| indirect)
-    })?;
-    pixmap
+    });
+    let Some(pixmap) = pixmap else {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    };
+    let raw_handle = pixmap
         .checked_add(42)
-        .and_then(|pm_table| memory.read_u32_be(pm_table))
-        .filter(|ctable_handle| *ctable_handle != 0)
+        .and_then(|pm_table| memory.read_u32_be(pm_table));
+    let Some(raw_handle) = raw_handle else {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    };
+    PpcOptionalHandleResolution {
+        handle: (raw_handle != 0).then_some(raw_handle),
+        known: true,
+    }
 }
 
 fn ppc_color_tables_share_index_space(
@@ -57378,14 +57452,25 @@ fn ppc_copy_bits_clut(
     ctable_handle: u32,
     color_manager_clut: &[[u16; 3]; 256],
 ) -> [[u16; 3]; 256] {
+    ppc_copy_bits_clut_with_provenance(memory, ctable_handle, color_manager_clut).0
+}
+
+fn ppc_copy_bits_clut_with_provenance(
+    memory: &mut PpcSectionMem,
+    ctable_handle: u32,
+    color_manager_clut: &[[u16; 3]; 256],
+) -> ([[u16; 3]; 256], bool) {
     if ctable_handle == 0 {
-        return *color_manager_clut;
+        return (*color_manager_clut, true);
     }
     // Inside Macintosh Volume V (1986), p. V-143: SetEntries updates the
     // current GDevice's ColorTable as well as its hardware lookup table.
     // Read even the main device table from guest memory so CopyBits sees
     // palette animation instead of the immutable startup palette.
-    ppc_read_ctable_clut(memory, ctable_handle, color_manager_clut).unwrap_or(*color_manager_clut)
+    match ppc_read_ctable_clut(memory, ctable_handle, color_manager_clut) {
+        Some(clut) => (clut, true),
+        None => (*color_manager_clut, false),
+    }
 }
 
 fn ppc_copy_bits_palette_index_map(
@@ -57641,14 +57726,20 @@ fn ppc_copy_bits(
             reason = "unsupported-mode";
             return None;
         }
-        let Some(src_bits) = ppc_resolve_pixmap_bits(memory, gworlds, src_bits_ptr) else {
+        let Some(src_resolved) =
+            ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, src_bits_ptr)
+        else {
             reason = "src-bits";
             return None;
         };
-        let Some(dst_bits) = ppc_resolve_pixmap_bits(memory, gworlds, dst_bits_ptr) else {
+        let Some(dst_resolved) =
+            ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, dst_bits_ptr)
+        else {
             reason = "dst-bits";
             return None;
         };
+        let src_bits = src_resolved.bits;
+        let dst_bits = dst_resolved.bits;
         let transparent = mode == 36;
         let supported_source = matches!(src_bits.depth, 1 | 2 | 4 | 8 | 16);
         let supported_destination = matches!(dst_bits.depth, 1 | 2 | 4 | 8 | 16);
@@ -57665,19 +57756,35 @@ fn ppc_copy_bits(
             reason = "depth";
             return None;
         }
-        let src_ctable = ppc_resolve_pixmap_ctable_handle(memory, gworlds, src_bits_ptr);
-        let dst_ctable = ppc_resolve_pixmap_ctable_handle(memory, gworlds, dst_bits_ptr);
+        let src_ctable_resolution =
+            ppc_resolve_pixmap_ctable_handle_with_provenance(memory, gworlds, src_bits_ptr);
+        let dst_ctable_resolution =
+            ppc_resolve_pixmap_ctable_handle_with_provenance(memory, gworlds, dst_bits_ptr);
+        // Keep the legacy Option values below: unreadable lookup metadata has
+        // always fallen back to the Color Manager table. The additional
+        // provenance only prevents that fallback from selecting the new raw
+        // indexed reducer as if a readable nil pmTable had been observed.
+        let src_ctable = src_ctable_resolution.handle;
+        let dst_ctable = dst_ctable_resolution.handle;
+        let mut src_clut_resolution_known = false;
         let src_clut = ppc_indexed_depth_entry_count(src_bits.depth).map(|_| {
             let src_ctable = src_ctable.unwrap_or(0);
-            ppc_copy_bits_linked_palette_clut(
+            if let Some(clut) = ppc_copy_bits_linked_palette_clut(
                 memory,
                 src_ctable,
                 current_gworld,
                 current_gdevice,
                 toolbox_startup,
                 color_manager_clut,
-            )
-            .unwrap_or_else(|| ppc_copy_bits_clut(memory, src_ctable, color_manager_clut))
+            ) {
+                src_clut_resolution_known = src_ctable_resolution.known;
+                clut
+            } else {
+                let (clut, known) =
+                    ppc_copy_bits_clut_with_provenance(memory, src_ctable, color_manager_clut);
+                src_clut_resolution_known = src_ctable_resolution.known && known;
+                clut
+            }
         });
         // Inside Macintosh Volume V (1986), p. V-69: CopyBits assumes that
         // an indexed destination uses the current GDevice's color table,
@@ -57688,10 +57795,19 @@ fn ppc_copy_bits(
         // colors into the current GDevice. The destination PixMap's table is
         // not the inverse-mapping target, even when it differs from that
         // device table.
+        let dst_device_ctable_resolution =
+            ppc_gdevice_ctable_handle_with_provenance(memory, current_gdevice);
+        let mut dst_clut_resolution_known = false;
         let dst_clut = ppc_indexed_depth_entry_count(dst_bits.depth).map(|_| {
-            ppc_gdevice_ctable_handle(memory, current_gdevice)
-                .map(|handle| ppc_copy_bits_clut(memory, handle, color_manager_clut))
-                .unwrap_or(*color_manager_clut)
+            if let Some(handle) = dst_device_ctable_resolution.handle {
+                let (clut, known) =
+                    ppc_copy_bits_clut_with_provenance(memory, handle, color_manager_clut);
+                dst_clut_resolution_known = dst_device_ctable_resolution.known && known;
+                clut
+            } else {
+                dst_clut_resolution_known = dst_device_ctable_resolution.known;
+                *color_manager_clut
+            }
         });
         // A shared nonzero ctSeed identifies a particular ColorTable instance.
         // When two same-depth ordinary image tables also describe the same
@@ -57700,7 +57816,10 @@ fn ppc_copy_bits(
         // Imaging With QuickDraw (1994), pp. 4-56--4-57 and 4-97.
         let same_indexed_ctable_identity = src_bits.depth == dst_bits.depth
             && ppc_indexed_depth_entry_count(src_bits.depth).is_some()
+            && src_ctable_resolution.known
+            && dst_ctable_resolution.known
             && ppc_color_tables_share_index_space(memory, src_ctable, dst_ctable);
+        let mut indexed_palette_identity_known = false;
         let palette_map = if src_bits.depth == 8 && dst_bits.depth == 8 {
             let src_ctable = src_ctable.unwrap_or(0);
             let src_clut = src_clut.as_ref().unwrap();
@@ -57720,18 +57839,24 @@ fn ppc_copy_bits(
             if let Some(linked_palette_map) = linked_palette_map {
                 Some(linked_palette_map)
             } else if same_indexed_ctable_identity {
+                indexed_palette_identity_known =
+                    src_clut_resolution_known && dst_clut_resolution_known;
                 None
             } else {
                 // Inside Macintosh Volume V (1986), p. V-135: the high
                 // ctFlags bit distinguishes a GDevice table from a PixMap
                 // image table. Its pixels are already device indexes, so an
                 // indexed CopyBits preserves them.
-                (!source_uses_device_indices && src_clut != dst_clut).then(|| {
-                    std::array::from_fn::<u8, 256, _>(|index| {
+                if source_uses_device_indices || src_clut == dst_clut {
+                    indexed_palette_identity_known =
+                        src_clut_resolution_known && dst_clut_resolution_known;
+                    None
+                } else {
+                    Some(std::array::from_fn::<u8, 256, _>(|index| {
                         let [red, green, blue] = src_clut[index];
                         pict::closest_clut_index(red, green, blue, dst_clut)
-                    })
-                })
+                    }))
+                }
             }
         } else if src_bits.depth == dst_bits.depth && matches!(src_bits.depth, 1 | 2 | 4) {
             let src_ctable = src_ctable.unwrap_or(0);
@@ -57823,7 +57948,17 @@ fn ppc_copy_bits(
         // resolves records and masks; the shared operation owns pure
         // byte-aligned or packed srcCopy format, mode, and geometry eligibility.
         if mask_storage.is_none() {
-            use crate::copy_bits::{BytePixmap, RowCopy, RowCopyOutcome};
+            use crate::copy_bits::{
+                BytePixmap, Indexed8HorizontalSelection, RowCopy, RowCopyOutcome,
+            };
+
+            let indexed8_horizontal = Indexed8HorizontalSelection::from_adapter_facts(
+                mask_rgn == 0,
+                src_resolved.guest_bounds,
+                dst_resolved.authoritative_bounds,
+                indexed_palette_identity_known,
+                transfer_mode,
+            );
 
             let outcome = RowCopy {
                 mode,
@@ -57846,7 +57981,7 @@ fn ppc_copy_bits(
                 clip: [copy_top, copy_left, copy_bottom, copy_right],
                 palette: palette_map.as_ref(),
             }
-            .execute(memory);
+            .execute_with_indexed8_horizontal(memory, indexed8_horizontal);
             match outcome {
                 RowCopyOutcome::Completed => return Some(()),
                 RowCopyOutcome::NoOp => {
@@ -66337,16 +66472,62 @@ fn ppc_current_gdevice_record(memory: &mut PpcSectionMem, current_gdevice: u32) 
 }
 
 fn ppc_gdevice_ctable_handle(memory: &mut PpcSectionMem, current_gdevice: u32) -> Option<u32> {
-    let gdevice = ppc_current_gdevice_record(memory, current_gdevice)?;
-    let pixmap_handle = memory
-        .read_u32_be(gdevice.checked_add(22)?)
-        .filter(|handle| *handle != 0)?;
-    let pixmap = memory
+    ppc_gdevice_ctable_handle_with_provenance(memory, current_gdevice).handle
+}
+
+fn ppc_gdevice_ctable_handle_with_provenance(
+    memory: &mut PpcSectionMem,
+    current_gdevice: u32,
+) -> PpcOptionalHandleResolution {
+    let Some(gdevice) = memory.read_u32_be(current_gdevice) else {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    };
+    if gdevice == 0 {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    }
+    let Some(pixmap_handle) = gdevice
+        .checked_add(22)
+        .and_then(|field| memory.read_u32_be(field))
+    else {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    };
+    if pixmap_handle == 0 {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    }
+    let Some(pixmap) = memory
         .read_u32_be(pixmap_handle)
-        .filter(|pixmap| *pixmap != 0)?;
-    memory
-        .read_u32_be(pixmap.checked_add(42)?)
-        .filter(|handle| *handle != 0)
+        .filter(|pixmap| *pixmap != 0)
+    else {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    };
+    let Some(raw_handle) = pixmap
+        .checked_add(42)
+        .and_then(|field| memory.read_u32_be(field))
+    else {
+        return PpcOptionalHandleResolution {
+            handle: None,
+            known: false,
+        };
+    };
+    PpcOptionalHandleResolution {
+        handle: (raw_handle != 0).then_some(raw_handle),
+        known: true,
+    }
 }
 
 fn ppc_index_to_color(
@@ -102459,8 +102640,7 @@ pub(crate) mod tests {
                 BLR,
             ],
         );
-        let descriptor_bytes =
-            ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
+        let descriptor_bytes = ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
         let ref_num = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.extend([
             PpcVfsResourceRecord {
@@ -102663,7 +102843,8 @@ pub(crate) mod tests {
                 BLR,
             ],
         );
-        let descriptor_bytes = ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
+        let descriptor_bytes =
+            ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
         let ref_num = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.extend([
             PpcVfsResourceRecord {
@@ -152571,6 +152752,721 @@ pub(crate) mod tests {
             copied,
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 42, 42, 42, 42]
         );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_reduces_physical_source_bound_crossing() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x12c00;
+        let source_allocation = scratch;
+        let src_pixels = source_allocation + 2;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let dst_pixmap = scratch + 0x80;
+        let rects = scratch + 0xc0;
+        let ctable_handle = scratch + 0xd0;
+        let ctable = scratch + 0xe0;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 8, 0, 0, 1, 8, 8).unwrap();
+        loaded.memory.write_u16_be(src_pixmap + 8, 2).unwrap();
+        loaded.memory.write_u16_be(src_pixmap + 12, 7).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 3, 0, 0, 1, 3, 8).unwrap();
+        loaded
+            .memory
+            .write_u32_be(src_pixmap + 42, ctable_handle)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(dst_pixmap + 42, ctable_handle)
+            .unwrap();
+        loaded.memory.write_u32_be(ctable_handle, ctable).unwrap();
+        loaded.memory.write_u32_be(ctable, 0x1234_5678).unwrap();
+        loaded.memory.write_u16_be(ctable + 4, 0).unwrap();
+        loaded.memory.write_u16_be(ctable + 6, 0).unwrap();
+        loaded.memory.write_u16_be(ctable + 8, 0).unwrap();
+        let [red, green, blue] = loaded.color_manager_clut[0];
+        loaded.memory.write_u16_be(ctable + 10, red).unwrap();
+        loaded.memory.write_u16_be(ctable + 12, green).unwrap();
+        loaded.memory.write_u16_be(ctable + 14, blue).unwrap();
+        loaded
+            .memory
+            .write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0])
+            .unwrap();
+        loaded.memory.write_bytes(dst_pixels, &[0xa5; 4]).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 7).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = [0; 4];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        assert_eq!(copied, [241, 30, 50, 0xa5]);
+    }
+
+    #[test]
+    fn pixmap_ctable_resolution_uses_fallback_after_failed_tracked_port_lookup() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let pixmap = PPC_HEAP_BASE + 0x16400;
+        let ctable_handle = pixmap + 0x40;
+        loaded.memory.add_region(pixmap, vec![0; 0x50]);
+        ppc_write_pixmap(&mut loaded.memory, pixmap, pixmap + 0x48, 8, 0, 0, 1, 8, 8).unwrap();
+        loaded
+            .memory
+            .write_u32_be(pixmap + 42, ctable_handle)
+            .unwrap();
+        let tracked_port = PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+            port: pixmap,
+            pixmap_handle: 0,
+            pixmap: pixmap + 0x1000,
+            base_addr: pixmap + 0x48,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: 8,
+            height: 1,
+            depth: 8,
+            row_bytes: 8,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        };
+
+        let resolved = ppc_resolve_pixmap_ctable_handle_with_provenance(
+            &mut loaded.memory,
+            &[tracked_port],
+            pixmap,
+        );
+
+        assert_eq!(resolved.handle, Some(ctable_handle));
+        assert!(resolved.known);
+    }
+
+    #[test]
+    fn pixmap_ctable_resolution_tries_indirect_when_direct_rowbytes_are_unreadable() {
+        const INDIRECT: u32 = 0x0952_0000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let pixmap = PPC_HEAP_BASE + 0x16500;
+        let ctable_handle = pixmap + 0x40;
+        loaded
+            .memory
+            .add_region(INDIRECT, pixmap.to_be_bytes().to_vec());
+        loaded.memory.add_region(pixmap, vec![0; 0x50]);
+        ppc_write_pixmap(&mut loaded.memory, pixmap, pixmap + 0x48, 8, 0, 0, 1, 8, 8).unwrap();
+        loaded
+            .memory
+            .write_u32_be(pixmap + 42, ctable_handle)
+            .unwrap();
+
+        let resolved =
+            ppc_resolve_pixmap_ctable_handle_with_provenance(&mut loaded.memory, &[], INDIRECT);
+
+        assert_eq!(resolved.handle, Some(ctable_handle));
+        assert!(resolved.known);
+    }
+
+    #[test]
+    fn gdevice_ctable_resolution_preserves_mapped_low_memory_zero_handle_chain() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let records = PPC_HEAP_BASE + 0x16580;
+        let gdevice = records;
+        let pixmap_handle = records + 0x40;
+        let pixmap = records + 0x50;
+        let ctable_handle = records + 0x90;
+        loaded.memory.add_region(0, gdevice.to_be_bytes().to_vec());
+        loaded.memory.add_region(records, vec![0; 0xa0]);
+        loaded
+            .memory
+            .write_u32_be(gdevice + 22, pixmap_handle)
+            .unwrap();
+        loaded.memory.write_u32_be(pixmap_handle, pixmap).unwrap();
+        loaded
+            .memory
+            .write_u32_be(pixmap + 42, ctable_handle)
+            .unwrap();
+
+        let resolved = ppc_gdevice_ctable_handle_with_provenance(&mut loaded.memory, 0);
+
+        assert_eq!(resolved.handle, Some(ctable_handle));
+        assert!(resolved.known);
+        assert_eq!(
+            ppc_gdevice_ctable_handle(&mut loaded.memory, 0),
+            Some(ctable_handle)
+        );
+    }
+
+    fn run_ppc_indexed_horizontal_adapter_case(
+        raw_mode: u16,
+        clip_left_column: bool,
+        synthesized_source: bool,
+        nonidentity_palette: bool,
+    ) -> [u8; 4] {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x16440;
+        let source_allocation = scratch;
+        let src_pixels = source_allocation + 2;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let dst_pixmap = scratch + 0x80;
+        let rects = scratch + 0xc0;
+        let ctable_handle = scratch + 0xd0;
+        let ctable = scratch + 0xe0;
+        loaded.memory.add_region(scratch, vec![0; 0x160]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 8, 0, 2, 1, 7, 8).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 3, 0, 0, 1, 3, 8).unwrap();
+        let source_bits_ptr = if synthesized_source {
+            const SYNTHESIZED_PIXMAP: u32 = 0x0951_0000;
+            loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+                port: SYNTHESIZED_PIXMAP + 0x1000,
+                pixmap_handle: 0,
+                pixmap: SYNTHESIZED_PIXMAP,
+                base_addr: src_pixels,
+                gdevice: PPC_MAIN_GDEVICE,
+                width: 5,
+                height: 1,
+                depth: 8,
+                row_bytes: 8,
+                pixels_locked: false,
+                pixels_no_purge: false,
+            });
+            SYNTHESIZED_PIXMAP
+        } else {
+            src_pixmap
+        };
+        if nonidentity_palette {
+            loaded
+                .memory
+                .write_u32_be(src_pixmap + 42, ctable_handle)
+                .unwrap();
+            loaded.memory.write_u32_be(ctable_handle, ctable).unwrap();
+            loaded.memory.write_u32_be(ctable, 0x1234_5678).unwrap();
+            loaded.memory.write_u16_be(ctable + 4, 0).unwrap();
+            loaded.memory.write_u16_be(ctable + 6, 10).unwrap();
+            for index in 0..=10u32 {
+                let color_index = if index == 10 { 200 } else { index as usize };
+                let [red, green, blue] = loaded.color_manager_clut[color_index];
+                let entry = ctable + 8 + index * 8;
+                loaded.memory.write_u16_be(entry, index as u16).unwrap();
+                loaded.memory.write_u16_be(entry + 2, red).unwrap();
+                loaded.memory.write_u16_be(entry + 4, green).unwrap();
+                loaded.memory.write_u16_be(entry + 6, blue).unwrap();
+            }
+        }
+        loaded
+            .memory
+            .write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0])
+            .unwrap();
+        loaded.memory.write_bytes(dst_pixels, &[0xa5; 4]).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 7).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+        if clip_left_column {
+            loaded.memory.write_u16_be(dst_pixmap + 8, 1).unwrap();
+        }
+        loaded.cpu.gpr[3] = source_bits_ptr;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = u32::from(raw_mode);
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = [0; 4];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        copied
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_keeps_dithered_horizontal_shrink_on_legacy_scaler() {
+        assert_eq!(
+            run_ppc_indexed_horizontal_adapter_case(0x40, false, false, false),
+            [0xa5, 10, 30, 0xa5]
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_keeps_global_groups_after_destination_clip() {
+        assert_eq!(
+            run_ppc_indexed_horizontal_adapter_case(0, true, false, false),
+            [30, 50, 0xa5, 0xa5]
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_keeps_valid_nonidentity_palette_on_legacy_scaler() {
+        assert_eq!(
+            run_ppc_indexed_horizontal_adapter_case(0, false, false, true),
+            [0xa5, 200, 30, 0xa5]
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_does_not_select_synthesized_source_bounds() {
+        assert_eq!(
+            run_ppc_indexed_horizontal_adapter_case(0, false, true, false),
+            [10, 30, 50, 0xa5]
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_does_not_select_unresolved_equal_fallback_cluts() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x12d00;
+        let source_allocation = scratch;
+        let src_pixels = source_allocation + 2;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let dst_pixmap = scratch + 0x80;
+        let rects = scratch + 0xc0;
+        loaded.memory.add_region(scratch, vec![0; 0xe0]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 8, 0, 0, 1, 8, 8).unwrap();
+        loaded.memory.write_u16_be(src_pixmap + 8, 2).unwrap();
+        loaded.memory.write_u16_be(src_pixmap + 12, 7).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 3, 0, 0, 1, 3, 8).unwrap();
+        loaded
+            .memory
+            .write_u32_be(src_pixmap + 42, 0x0bad_0000)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(dst_pixmap + 42, 0x0bad_1000)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0])
+            .unwrap();
+        loaded.memory.write_bytes(dst_pixels, &[0xa5; 4]).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 7).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = [0; 4];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        assert_eq!(copied, [0xa5, 10, 30, 0xa5]);
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_does_not_select_when_source_table_field_is_unreadable() {
+        const TRUNCATED_PIXMAP: u32 = 0x0950_0000;
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x16000;
+        let source_allocation = scratch;
+        let src_pixels = source_allocation + 2;
+        let dst_pixels = scratch + 0x20;
+        let dst_pixmap = scratch + 0x40;
+        let rects = scratch + 0x80;
+        loaded.memory.add_region(scratch, vec![0; 0xa0]);
+        loaded.memory.add_region(TRUNCATED_PIXMAP, vec![0; 34]);
+        // The resolver can read pixelSize at +32 but cannot read pmTable at
+        // +42. The legacy path still receives its existing fallback CLUT;
+        // only the new raw-index reducer must reject this unresolved lookup.
+        assert_eq!(
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                TRUNCATED_PIXMAP,
+                src_pixels,
+                8,
+                0,
+                0,
+                1,
+                8,
+                8,
+            ),
+            None
+        );
+        loaded.memory.write_u16_be(TRUNCATED_PIXMAP + 8, 2).unwrap();
+        loaded
+            .memory
+            .write_u16_be(TRUNCATED_PIXMAP + 12, 7)
+            .unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 3, 0, 0, 1, 3, 8).unwrap();
+        loaded
+            .memory
+            .write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0])
+            .unwrap();
+        loaded.memory.write_bytes(dst_pixels, &[0xa5; 4]).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 7).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+        loaded.cpu.gpr[3] = TRUNCATED_PIXMAP;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = [0; 4];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        assert_eq!(copied, [0xa5, 10, 30, 0xa5]);
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_does_not_select_through_broken_current_device_chain() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x16300;
+        let source_allocation = scratch;
+        let src_pixels = source_allocation + 2;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let dst_pixmap = scratch + 0x80;
+        let rects = scratch + 0xc0;
+        let gdevice_handle = scratch + 0xd0;
+        let gdevice = scratch + 0xe0;
+        loaded.memory.add_region(scratch, vec![0; 0x110]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 8, 0, 0, 1, 8, 8).unwrap();
+        loaded.memory.write_u16_be(src_pixmap + 8, 2).unwrap();
+        loaded.memory.write_u16_be(src_pixmap + 12, 7).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 3, 0, 0, 1, 3, 8).unwrap();
+        loaded.memory.write_u32_be(gdevice_handle, gdevice).unwrap();
+        loaded
+            .memory
+            .write_u32_be(gdevice + 22, 0x0bad_2000)
+            .unwrap();
+        *loaded.current_gdevice = gdevice_handle;
+        loaded
+            .memory
+            .write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0])
+            .unwrap();
+        loaded.memory.write_bytes(dst_pixels, &[0xa5; 4]).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 7).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = [0; 4];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        assert_eq!(copied, [0xa5, 10, 30, 0xa5]);
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_uses_signed_source_height_gate() {
+        for (bounds_bottom, expected) in [(32_766i16, [20, 50, 70, 0xa5]), (32_767i16, [0xa5; 4])] {
+            let pef = synthetic_pef_with_import(b"CopyBits");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_HEAP_BASE + 0x12e00;
+            let src_pixels = scratch;
+            let dst_pixels = scratch + 0x20;
+            let src_pixmap = scratch + 0x40;
+            let dst_pixmap = scratch + 0x80;
+            let rects = scratch + 0xc0;
+            loaded.memory.add_region(scratch, vec![0; 0xe0]);
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                src_pixmap,
+                src_pixels,
+                8,
+                -1,
+                0,
+                1,
+                8,
+                8,
+            )
+            .unwrap();
+            loaded
+                .memory
+                .write_u16_be(src_pixmap + 10, bounds_bottom as u16)
+                .unwrap();
+            ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 3, 0, 0, 1, 3, 8).unwrap();
+            loaded
+                .memory
+                .write_bytes(src_pixels, &[10, 20, 30, 40, 50, 60, 70, 0])
+                .unwrap();
+            loaded.memory.write_bytes(dst_pixels, &[0xa5; 4]).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects, -1, 0, 0, 7).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+            loaded.cpu.gpr[3] = src_pixmap;
+            loaded.cpu.gpr[4] = dst_pixmap;
+            loaded.cpu.gpr[5] = rects;
+            loaded.cpu.gpr[6] = rects + 8;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut copied = [0; 4];
+            loaded
+                .memory
+                .read_bytes_into(dst_pixels, &mut copied)
+                .unwrap();
+            assert_eq!(copied, expected, "bounds_bottom={bounds_bottom}");
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_selects_only_exact_record_destination_bounds() {
+        for (record_width, expected) in [
+            (3u32, [241, 30, 50, 0xa5]),
+            (40_000u32, [0xa5, 10, 30, 0xa5]),
+        ] {
+            let pef = synthetic_pef_with_import(b"CopyBits");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_HEAP_BASE + 0x12f00;
+            let source_allocation = scratch;
+            let src_pixels = source_allocation + 2;
+            let dst_pixels = scratch + 0x20;
+            let src_pixmap = scratch + 0x40;
+            let destination_record = scratch + 0x80;
+            let rects = scratch + 0xc0;
+            loaded.memory.add_region(scratch, vec![0; 0xe0]);
+            ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 8, 0, 0, 1, 8, 8).unwrap();
+            loaded.memory.write_u16_be(src_pixmap + 8, 2).unwrap();
+            loaded.memory.write_u16_be(src_pixmap + 12, 7).unwrap();
+            loaded.gworlds.push(PpcGWorldRecord {
+                ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+                port: destination_record + 0x1000,
+                pixmap_handle: 0,
+                pixmap: destination_record,
+                base_addr: dst_pixels,
+                gdevice: PPC_MAIN_GDEVICE,
+                width: record_width,
+                height: 1,
+                depth: 8,
+                row_bytes: 3,
+                pixels_locked: false,
+                pixels_no_purge: false,
+            });
+            loaded
+                .memory
+                .write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0])
+                .unwrap();
+            loaded.memory.write_bytes(dst_pixels, &[0xa5; 4]).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 7).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+            loaded.cpu.gpr[3] = src_pixmap;
+            loaded.cpu.gpr[4] = destination_record;
+            loaded.cpu.gpr[5] = rects;
+            loaded.cpu.gpr[6] = rects + 8;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut copied = [0; 4];
+            loaded
+                .memory
+                .read_bytes_into(dst_pixels, &mut copied)
+                .unwrap();
+            assert_eq!(copied, expected, "record_width={record_width}");
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_snapshots_indexed_horizontal_aliases() {
+        const SOURCE: u32 = 0x0920_0000;
+        const DESTINATION: u32 = 0x0a20_0000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let backing = crate::memory::bus::SharedRamRegion::from_owned_bytes(vec![
+            10, 20, 30, 40, 50, 60, 70, 0, 80, 90, 100, 110, 120, 130, 140, 0,
+        ]);
+        // SAFETY: the import accesses both aliases serially through one
+        // operation, and no borrowed byte slice survives a memory call.
+        unsafe {
+            loaded.memory.add_shared_region(SOURCE, backing.clone());
+            loaded.memory.add_shared_region(DESTINATION, backing);
+        }
+        let records = PPC_HEAP_BASE + 0x16120;
+        let src_pixmap = records;
+        let dst_pixmap = records + 0x40;
+        let rects = records + 0x80;
+        loaded.memory.add_region(records, vec![0; 0x90]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, SOURCE, 8, 0, 0, 2, 8, 8).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            DESTINATION + 8,
+            3,
+            0,
+            0,
+            2,
+            3,
+            8,
+        )
+        .unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 2, 7).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 2, 3).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 16];
+        loaded.memory.read_bytes_into(SOURCE, &mut actual).unwrap();
+        assert_eq!(
+            actual,
+            [10, 20, 30, 40, 50, 60, 70, 0, 20, 50, 70, 90, 120, 140, 140, 0]
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_selected_failures_do_not_fallback() {
+        const SOURCE: u32 = 0x0930_0000;
+        const DESTINATION: u32 = 0x0a30_0000;
+        for source_failure in [true, false] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+            loaded.memory.add_region(
+                SOURCE,
+                if source_failure {
+                    vec![10, 20, 30, 40, 50, 60]
+                } else {
+                    vec![10, 20, 30, 40, 50, 60, 70, 0]
+                },
+            );
+            loaded.memory.add_region(DESTINATION, vec![0xa5; 4]);
+            if !source_failure {
+                loaded
+                    .memory
+                    .add_readonly_region(DESTINATION, vec![0xa5; 3]);
+            }
+            let records = PPC_HEAP_BASE + 0x161b0;
+            let src_pixmap = records;
+            let dst_pixmap = records + 0x40;
+            let rects = records + 0x80;
+            loaded.memory.add_region(records, vec![0; 0x90]);
+            ppc_write_pixmap(&mut loaded.memory, src_pixmap, SOURCE, 8, 0, 0, 1, 8, 8).unwrap();
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                dst_pixmap,
+                DESTINATION,
+                3,
+                0,
+                0,
+                1,
+                3,
+                8,
+            )
+            .unwrap();
+            ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 7).unwrap();
+            ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 1, 3).unwrap();
+            loaded.cpu.gpr[3] = src_pixmap;
+            loaded.cpu.gpr[4] = dst_pixmap;
+            loaded.cpu.gpr[5] = rects;
+            loaded.cpu.gpr[6] = rects + 8;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let mut actual = [0; 4];
+            loaded
+                .memory
+                .read_bytes_into(DESTINATION, &mut actual)
+                .unwrap();
+            assert_eq!(actual, [0xa5; 4], "source_failure={source_failure}");
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_selected_refusal_preserves_later_rows() {
+        const SOURCE: u32 = 0x0940_0000;
+        const DESTINATION: u32 = 0x0a40_0000;
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        loaded.memory.add_region(
+            SOURCE,
+            vec![
+                10, 20, 30, 40, 50, 60, 70, 0, 80, 90, 100, 110, 120, 130, 140, 0,
+            ],
+        );
+        loaded.memory.add_region(DESTINATION, vec![0xa5; 6]);
+        loaded
+            .memory
+            .add_readonly_region(DESTINATION + 3, vec![0xa5; 3]);
+        let records = PPC_HEAP_BASE + 0x16240;
+        let src_pixmap = records;
+        let dst_pixmap = records + 0x40;
+        let rects = records + 0x80;
+        loaded.memory.add_region(records, vec![0; 0x90]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, SOURCE, 8, 0, 0, 2, 8, 8).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            DESTINATION,
+            3,
+            0,
+            0,
+            2,
+            3,
+            8,
+        )
+        .unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 2, 7).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 2, 3).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut actual = [0; 6];
+        loaded
+            .memory
+            .read_bytes_into(DESTINATION, &mut actual)
+            .unwrap();
+        assert_eq!(actual, [20, 50, 70, 0xa5, 0xa5, 0xa5]);
     }
 
     #[test]

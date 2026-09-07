@@ -262,8 +262,10 @@ pub(crate) enum RowCopyOutcome {
 
 /// Adapter facts which are not retained in [`RowCopy`]. Callers must keep
 /// using their existing path unless the request had no mask, its source bounds
-/// are original guest bounds rather than sanitized substitutes, and its raw
-/// mode is exactly `srcCopy` without the separately defined dither flag.
+/// are original guest bounds rather than sanitized substitutes, its destination
+/// bounds are authoritative, its missing palette map means known index identity,
+/// and its raw mode is exactly `srcCopy` without the separately defined dither
+/// flag.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Indexed8HorizontalSelection(());
 
@@ -271,9 +273,16 @@ impl Indexed8HorizontalSelection {
     pub(crate) fn from_adapter_facts(
         mask_free: bool,
         source_bounds_are_original: bool,
+        destination_bounds_are_authoritative: bool,
+        indexed_palette_identity_known: bool,
         raw_mode: u16,
     ) -> Option<Self> {
-        (mask_free && source_bounds_are_original && raw_mode == 0).then_some(Self(()))
+        (mask_free
+            && source_bounds_are_original
+            && destination_bounds_are_authoritative
+            && indexed_palette_identity_known
+            && raw_mode == 0)
+            .then_some(Self(()))
     }
 }
 
@@ -930,7 +939,7 @@ mod tests {
     }
 
     fn indexed_selection() -> Indexed8HorizontalSelection {
-        Indexed8HorizontalSelection::from_adapter_facts(true, true, 0).unwrap()
+        Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0).unwrap()
     }
 
     #[derive(Default)]
@@ -980,12 +989,20 @@ mod tests {
 
     #[test]
     fn indexed_horizontal_selection_requires_all_adapter_provenance() {
-        assert!(Indexed8HorizontalSelection::from_adapter_facts(true, true, 0).is_some());
-        for facts in [(false, true, 0), (true, false, 0), (true, true, 0x40)] {
-            assert!(
-                Indexed8HorizontalSelection::from_adapter_facts(facts.0, facts.1, facts.2)
-                    .is_none()
-            );
+        assert!(
+            Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0).is_some()
+        );
+        for facts in [
+            (false, true, true, true, 0),
+            (true, false, true, true, 0),
+            (true, true, false, true, 0),
+            (true, true, true, false, 0),
+            (true, true, true, true, 0x40),
+        ] {
+            assert!(Indexed8HorizontalSelection::from_adapter_facts(
+                facts.0, facts.1, facts.2, facts.3, facts.4
+            )
+            .is_none());
         }
     }
 
@@ -1003,7 +1020,8 @@ mod tests {
             clip: [0, 0, 1, 3],
             palette: None,
         };
-        let selection = Indexed8HorizontalSelection::from_adapter_facts(true, true, 0x40);
+        let selection =
+            Indexed8HorizontalSelection::from_adapter_facts(true, true, true, true, 0x40);
         assert_eq!(
             copy.execute_with_indexed8_horizontal(&mut memory, selection),
             RowCopyOutcome::Completed
