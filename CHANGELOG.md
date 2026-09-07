@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.39.0](https://github.com/benletchford/systemless/compare/v0.38.3...v0.39.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **fonts:** replace hardcoded fonts with bundled TrueType defaults ([#1524](https://github.com/benletchford/systemless/issues/1524))
+
+### Features
+
+* **fonts:** replace hardcoded fonts with bundled TrueType defaults ([#1524](https://github.com/benletchford/systemless/issues/1524)) ([f182826](https://github.com/benletchford/systemless/commit/f1828269b579d604f4e7290105c6f9d45d36aa12))
+
 ## [0.38.3](https://github.com/benletchford/systemless/compare/v0.38.2...v0.38.3) (2026-09-07)
 
 
