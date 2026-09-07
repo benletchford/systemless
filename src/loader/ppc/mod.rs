@@ -102640,7 +102640,8 @@ pub(crate) mod tests {
                 BLR,
             ],
         );
-        let descriptor_bytes = ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
+        let descriptor_bytes =
+            ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
         let ref_num = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.extend([
             PpcVfsResourceRecord {
@@ -102843,8 +102844,7 @@ pub(crate) mod tests {
                 BLR,
             ],
         );
-        let descriptor_bytes =
-            ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
+        let descriptor_bytes = ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
         let ref_num = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.extend([
             PpcVfsResourceRecord {
