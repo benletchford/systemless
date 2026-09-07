@@ -3,7 +3,124 @@
 //! ABI decoding, port/mask resolution and picture recording stay at the callers
 //! until their corresponding operation families migrate.
 
+use std::ops::Range;
+
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
+
+const INDEXED_8_GUARD_BYTES: usize = 4;
+const INDEXED_8_MAP_ENTRIES: usize = 256;
+
+/// Pure horizontal plan for the indexed 8-bit identity-palette shrink path.
+/// Destination indices are relative to the complete, unclipped destination
+/// rectangle. `source_range` is relative to the submitted source pixel.
+///
+/// Imaging With QuickDraw defines rectangle scaling, but not the indexed
+/// reducer. The truncated fixed-point carry and rounded source/guard/map
+/// prefix are measured compatibility behavior; the finite-prefix saturation
+/// follows from unsigned-byte maximum and the complete identity map.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Indexed8HorizontalShrink {
+    groups: Vec<Range<usize>>,
+    source_range: Range<usize>,
+    staged_len: usize,
+}
+
+impl Indexed8HorizontalShrink {
+    pub(crate) fn new(
+        source_width: usize,
+        destination_width: usize,
+        visible: Range<usize>,
+    ) -> Option<Self> {
+        if !(1..=i16::MAX as usize).contains(&source_width)
+            || destination_width == 0
+            || destination_width >= source_width
+            || visible.start > visible.end
+            || visible.end > destination_width
+        {
+            return None;
+        }
+
+        let source = i64::try_from(source_width).ok()?;
+        let destination = i64::try_from(destination_width).ok()?;
+        let step = destination.checked_mul(1 << 16)?.checked_div(source)?;
+        if step <= 0 {
+            return None;
+        }
+        let phase = step / 2;
+        let boundary = |index: usize| {
+            let numerator = i64::try_from(index)
+                .ok()?
+                .checked_mul(1 << 16)?
+                .checked_sub(phase)?;
+            let quotient = numerator.div_euclid(step);
+            let rounded = quotient.checked_add(i64::from(numerator.rem_euclid(step) != 0))?;
+            usize::try_from(rounded).ok()
+        };
+
+        let mut endpoints = Vec::with_capacity(visible.end - visible.start + 1);
+        for index in visible.start..=visible.end {
+            endpoints.push(boundary(index)?);
+        }
+        let groups: Vec<_> = endpoints.windows(2).map(|pair| pair[0]..pair[1]).collect();
+        if groups.iter().any(|group| group.is_empty()) {
+            return None;
+        }
+
+        let staged_len = source_width.checked_add(3)? & !3;
+        let source_range = match (groups.first(), groups.last()) {
+            (Some(first), Some(last)) => first.start.min(staged_len)..last.end.min(staged_len),
+            (None, None) => 0..0,
+            _ => return None,
+        };
+        Some(Self {
+            groups,
+            source_range,
+            staged_len,
+        })
+    }
+
+    pub(crate) fn groups(&self) -> &[Range<usize>] {
+        &self.groups
+    }
+
+    pub(crate) fn source_range(&self) -> Range<usize> {
+        self.source_range.clone()
+    }
+
+    /// Reduces an exact snapshot of `source_range`. The remaining arena is the
+    /// operation-owned zero guard followed by big-endian identity-map entries.
+    pub(crate) fn reduce(&self, staged_source: &[u8]) -> Option<Vec<u8>> {
+        if staged_source.len() != self.source_range.len() {
+            return None;
+        }
+        let map_start = self.staged_len.checked_add(INDEXED_8_GUARD_BYTES)?;
+        let prefix_end = map_start.checked_add(INDEXED_8_MAP_ENTRIES.checked_mul(4)?)?;
+        let mut output = Vec::with_capacity(self.groups.len());
+
+        for group in &self.groups {
+            let mut maximum = None;
+            for index in group.start..group.end.min(prefix_end) {
+                let value = if index < self.staged_len {
+                    let source_index = index.checked_sub(self.source_range.start)?;
+                    *staged_source.get(source_index)?
+                } else if index < map_start {
+                    0
+                } else {
+                    let map_offset = index - map_start;
+                    let entry = u32::try_from(map_offset / 4).ok()?;
+                    entry.to_be_bytes()[map_offset % 4]
+                };
+                maximum = Some(maximum.map_or(value, |current: u8| current.max(value)));
+            }
+            let maximum = maximum?;
+            if group.end > prefix_end && maximum != u8::MAX {
+                return None;
+            }
+            output.push(maximum);
+        }
+        Some(output)
+    }
+}
 
 pub(crate) trait CopyBitsMemory {
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()>;
@@ -338,6 +455,187 @@ mod tests {
 
     const SOURCE: u32 = 0x0100_0000;
     const DESTINATION: u32 = 0x0200_0000;
+
+    #[test]
+    fn indexed_horizontal_groups_match_independent_oracle_boundaries() {
+        for (source, destination, expected) in [
+            (3, 2, &[0..2, 2..3][..]),
+            (5, 3, &[0..2, 2..3, 3..5][..]),
+            (
+                17,
+                7,
+                &[0..2, 2..5, 5..7, 7..10, 10..12, 12..15, 15..17][..],
+            ),
+            (
+                17,
+                16,
+                &[
+                    0..1,
+                    1..2,
+                    2..3,
+                    3..4,
+                    4..5,
+                    5..6,
+                    6..7,
+                    7..9,
+                    9..10,
+                    10..11,
+                    11..12,
+                    12..13,
+                    13..14,
+                    14..15,
+                    15..16,
+                    16..17,
+                ][..],
+            ),
+        ] {
+            let plan = Indexed8HorizontalShrink::new(source, destination, 0..destination)
+                .expect("oracle geometry is supported");
+            assert_eq!(plan.groups(), expected);
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_boundaries_match_independent_carry_loop() {
+        for source in 2usize..=32 {
+            for destination in 1usize..source {
+                let step = (destination * (1 << 16) / source) as u16;
+                let mut error = step / 2;
+                let mut source_index = 0;
+                let mut expected = Vec::with_capacity(destination);
+                for _ in 0..destination {
+                    let start = source_index;
+                    loop {
+                        source_index += 1;
+                        let (next, carry) = error.overflowing_add(step);
+                        error = next;
+                        if carry {
+                            break;
+                        }
+                    }
+                    expected.push(start..source_index);
+                }
+                let plan = Indexed8HorizontalShrink::new(source, destination, 0..destination)
+                    .expect("small positive shrink is supported");
+                assert_eq!(
+                    plan.groups(),
+                    expected,
+                    "source={source}, destination={destination}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_plan_uses_signed_zero_boundary_and_visible_groups() {
+        let first = Indexed8HorizontalShrink::new(285, 2, 0..1).unwrap();
+        assert_eq!(first.groups(), &[0..143]);
+        assert_eq!(first.source_range(), 0..143);
+
+        let last = Indexed8HorizontalShrink::new(285, 2, 1..2).unwrap();
+        assert_eq!(last.groups(), &[143..286]);
+        assert_eq!(last.source_range(), 143..286);
+
+        let clipped_away = Indexed8HorizontalShrink::new(190, 1, 0..0).unwrap();
+        assert!(clipped_away.groups().is_empty());
+        assert_eq!(clipped_away.source_range(), 0..0);
+        assert_eq!(clipped_away.reduce(&[]), Some(vec![]));
+    }
+
+    #[test]
+    fn indexed_horizontal_origin_residues_use_only_submitted_pixels() {
+        for residue in 0..4 {
+            let mut row = vec![0x11; 256];
+            row[..residue].fill(250);
+            row[residue..residue + 190].fill(20);
+            row[residue + 189] = 30;
+            row[residue + 190..residue + 193].copy_from_slice(&[200, 150, 140]);
+            let plan = Indexed8HorizontalShrink::new(190, 1, 0..1).unwrap();
+            assert_eq!(plan.groups(), &[0..191]);
+            assert_eq!(plan.source_range(), 0..191);
+            let range = plan.source_range();
+            assert_eq!(
+                plan.reduce(&row[residue + range.start..residue + range.end]),
+                Some(vec![200])
+            );
+
+            row.fill(0x11);
+            row[..residue].fill(250);
+            row[residue..residue + 191].fill(20);
+            row[residue + 190] = 30;
+            row[residue + 191..residue + 194].copy_from_slice(&[240, 150, 140]);
+            let plan = Indexed8HorizontalShrink::new(191, 1, 0..1).unwrap();
+            assert_eq!(plan.groups(), &[0..191]);
+            assert_eq!(plan.source_range(), 0..191);
+            let range = plan.source_range();
+            assert_eq!(
+                plan.reduce(&row[residue + range.start..residue + range.end]),
+                Some(vec![30])
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_owned_map_matches_large_trace_pixels() {
+        for (source_width, endpoint, expected) in [
+            (4_097, 4_369, 65),
+            (5_000, 5_041, 8),
+            (5_001, 5_041, 7),
+            (10_924, 13_107, u8::MAX),
+        ] {
+            let plan = Indexed8HorizontalShrink::new(source_width, 1, 0..1).unwrap();
+            assert_eq!(plan.groups(), &[0..endpoint]);
+            let range = plan.source_range();
+            assert_eq!(range.start, 0);
+            assert_eq!(
+                plan.reduce(&vec![0; range.len()]),
+                Some(vec![expected]),
+                "source_width={source_width}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_horizontal_final_column_stays_bounded_near_signed_limit() {
+        let guarded = Indexed8HorizontalShrink::new(32_761, 2, 1..2).unwrap();
+        assert_eq!(guarded.groups(), &[16_384..32_768]);
+        assert_eq!(guarded.source_range(), 16_384..32_764);
+        let mut guarded_source = vec![0; guarded.source_range().len()];
+        *guarded_source.last_mut().unwrap() = 77;
+        assert_eq!(guarded.reduce(&guarded_source), Some(vec![77]));
+
+        let unrounded = Indexed8HorizontalShrink::new(32_767, 2, 1..2).unwrap();
+        assert_eq!(unrounded.groups(), &[16_384..32_768]);
+        assert_eq!(unrounded.source_range(), 16_384..32_768);
+        let mut unrounded_source = vec![0; unrounded.source_range().len()];
+        *unrounded_source.last_mut().unwrap() = 88;
+        assert_eq!(unrounded.reduce(&unrounded_source), Some(vec![88]));
+
+        let saturated = Indexed8HorizontalShrink::new(31_736, 2, 1..2).unwrap();
+        assert_eq!(saturated.groups(), &[16_384..32_768]);
+        assert_eq!(saturated.source_range(), 16_384..31_736);
+        assert_eq!(
+            saturated.reduce(&vec![0; saturated.source_range().len()]),
+            Some(vec![u8::MAX])
+        );
+    }
+
+    #[test]
+    fn indexed_horizontal_plan_rejects_unproved_domains_and_wrong_snapshot() {
+        for (source, destination, visible) in [
+            (0, 1, 0..1),
+            (1, 1, 0..1),
+            (1, 2, 0..2),
+            (i16::MAX as usize + 1, 1, 0..1),
+            (5, 3, 2..1),
+            (5, 3, 0..4),
+        ] {
+            assert!(Indexed8HorizontalShrink::new(source, destination, visible).is_none());
+        }
+        let plan = Indexed8HorizontalShrink::new(190, 1, 0..1).unwrap();
+        assert_eq!(plan.reduce(&vec![0; 190]), None);
+        assert_eq!(plan.reduce(&vec![0; 192]), None);
+    }
 
     fn run(memory: &mut GuestAddressSpace, classic: bool, copy: RowCopy<'_>) -> RowCopyOutcome {
         if classic {
