@@ -25398,9 +25398,20 @@ mod tests {
                 deferred.bus.save_pixel_bytes(0x0040_0000, 256 * 64),
                 "logical pixels AND retained subpixel metadata must match",
             );
-            assert_eq!(
-                complete.bus.outline_presentation_rgb(),
-                deferred.bus.outline_presentation_rgb()
+            let (cw, ch, complete_rgb, complete_draws) =
+                complete.bus.outline_presentation_rgb().unwrap();
+            let (dw, dh, deferred_rgb, deferred_draws) =
+                deferred.bus.outline_presentation_rgb().unwrap();
+            assert_eq!((cw, ch), (dw, dh));
+            assert!(
+                complete_rgb == deferred_rgb,
+                "retained visible RGB must match"
+            );
+            // The fourth capture field is a cumulative draw counter, not
+            // visible state: reducing it is the purpose of this change.
+            assert!(
+                complete_draws > deferred_draws,
+                "sound slices must avoid redundant glyph draws"
             );
             assert!(
                 complete.bus.read_bytes(0, 8 * 1024 * 1024)
