@@ -32,12 +32,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Keep routine CI on Linux; release-please squash commits get the full
-        # cross-platform matrix.
+        # Keep routine CI on Linux; releases and explicitly labelled PRs get
+        # the full cross-platform matrix.
         os: >-
           ${{ fromJSON(
-            github.event_name == 'push' &&
-            startsWith(github.event.head_commit.message, 'chore(master): release ') &&
+            (contains(github.event.pull_request.labels.*.name, 'cross-platform') ||
+             github.event_name == 'push' &&
+             startsWith(github.event.head_commit.message, 'chore(master): release ')) &&
             '["ubuntu-latest","macos-latest","windows-latest"]' ||
             '["ubuntu-latest"]'
           ) }}
@@ -75,11 +76,14 @@ jobs:
         run: cargo test --locked --profile ci-test --test toolbox_showcase --no-run
 
       - name: Run classic showcase assertions (68k)
+        env:
+          SYSTEMLESS_VERIFY_REVIEW_GALLERY: 1
         run: cargo test --locked --profile ci-test --test toolbox_showcase
 
       - name: Run classic showcase assertions (PowerPC)
         env:
           SYSTEMLESS_PREFER_POWERPC: 1
+          SYSTEMLESS_VERIFY_REVIEW_GALLERY: 1
         run: cargo test --locked --profile ci-test --test toolbox_showcase
 
       - name: Upload failed showcase frames

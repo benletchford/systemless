@@ -1,5 +1,6 @@
 //! Dialog Manager, Cursor Manager, and misc stub trap handlers.
 
+use crate::memory::SavedPixels;
 use super::dispatch::{
     selector_operation_route, DialogItem, DialogPopupDraw, DialogPopupTrackingState,
     DialogTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
@@ -1367,7 +1368,7 @@ impl super::TrapDispatcher {
             }
             let advance = if uses_styled_runs {
                 let style = Self::te_style_at_offset(&styled_runs, index);
-                self.te_char_width(style.font, style.size, *byte)
+                Self::te_styled_char_width(style, *byte)
             } else {
                 self.te_char_width(font, Self::font_lookup_size(size), *byte)
             };
@@ -1911,7 +1912,7 @@ impl super::TrapDispatcher {
         let mut width = 0i16;
         for (offset, &byte) in text_bytes[start..end].iter().enumerate() {
             let style = Self::te_style_at_offset(runs, start + offset);
-            width = width.saturating_add(self.te_char_width(style.font, style.size, byte));
+            width = width.saturating_add(Self::te_styled_char_width(style, byte));
         }
         width
     }
@@ -1924,7 +1925,7 @@ impl super::TrapDispatcher {
     ) -> Vec<(usize, usize)> {
         crate::quickdraw::text::wrap_classic_text(text_bytes, box_width, |index, byte| {
             let style = Self::te_style_at_offset(runs, index);
-            self.te_char_width(style.font, style.size, byte)
+            Self::te_styled_char_width(style, byte)
         })
         .into_iter()
         .map(|line| (line.start, line.next))
@@ -2744,6 +2745,18 @@ impl super::TrapDispatcher {
         self.te_commit_edit_buffer(bus, te_handle, &buffer);
     }
 
+    // TextEdit measures each run with its own font, size and face, independent
+    // of the caller's current port style. Inside Macintosh: Text (1993), 2-20.
+    fn te_styled_char_width(style: TeResolvedStyle, byte: u8) -> i16 {
+        let size = Self::font_lookup_size(style.size);
+        let (_, scale) = get_font_face_scaled(style.font, size);
+        let advance = crate::quickdraw::text::get_glyph(style.font, size, byte as char)
+            .map_or(6, |(glyph, _)| i16::from(glyph.advance));
+        advance * scale
+            + crate::quickdraw::text::QuickDrawTextStyle::from_bits(style.face as u8)
+                .advance_extra() as i16
+    }
+
     fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
         let size = Self::font_lookup_size(size);
         let (_face, scale) = get_font_face_scaled(font, size);
@@ -3186,6 +3199,7 @@ impl super::TrapDispatcher {
                 }
                 self.draw_char(cpu, bus, byte as char);
             }
+
             top = line_bottom;
         }
 
@@ -4119,6 +4133,7 @@ impl super::TrapDispatcher {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -5383,7 +5398,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
-    ) -> Vec<u8> {
+    ) -> SavedPixels {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (save_top, save_left, save_bottom, save_right) = Self::dialog_saved_pixel_rect(rect);
         // Guard against negative y (top < 5) and y >= screen_h. `y as u32`
@@ -5434,6 +5449,21 @@ impl super::TrapDispatcher {
             // Packed off-screen row: silently produces nothing — the
             // byte_left < bx_end check + row_count-based saved.len tracking
             // tolerates short rows.
+        }
+        let mut saved: SavedPixels = saved.into();
+        if pixel_size == 8 {
+            let (t, l, b, r) = (save_top, save_left, save_bottom, save_right);
+            for y in t.max(0)..b.min(screen_h) {
+                let x0 = l.max(0) as u32;
+                let len = (r.max(0) as u32).min(row_bytes).saturating_sub(x0) as usize;
+                let offset = (y - t) as usize * row_width + (x0 as i32 - i32::from(l)) as usize;
+                bus.capture_pixel_detail(
+                    &mut saved,
+                    offset,
+                    screen_base + y as u32 * row_bytes + x0,
+                    len,
+                );
+            }
         }
         saved
     }
@@ -5543,7 +5573,7 @@ impl super::TrapDispatcher {
         screen_params: (u32, u32, i16, i16, u16),
         bounds: (i16, i16, i16, i16),
         screen_rect: (i16, i16, i16, i16),
-        saved: &mut [u8],
+        saved: &mut SavedPixels,
     ) {
         let save_rect = Self::dialog_saved_pixel_rect(bounds);
         let Some(intersection) = Self::rect_intersection(save_rect, screen_rect) else {
@@ -5577,7 +5607,8 @@ impl super::TrapDispatcher {
                     let len = (right - left) as usize;
                     let row_addr = screen_base + (y as u32) * row_bytes + (left as u32);
                     let row = bus.read_bytes(row_addr, len);
-                    saved[saved_offset..saved_offset + len].copy_from_slice(&row);
+                    saved.replace_range(saved_offset, &row);
+                    bus.capture_pixel_detail(saved, saved_offset, row_addr, len);
                 }
             }
             1 | 2 | 4 => {
@@ -5627,8 +5658,11 @@ impl super::TrapDispatcher {
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
-        saved: &[u8],
+        saved: &SavedPixels,
     ) {
+        if bus.dialog_snapshot_is_current(saved, rect) {
+            return;
+        }
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (save_top, save_left, save_bottom, save_right) = Self::dialog_saved_pixel_rect(rect);
         // Mirror save_dialog_pixels y-bounds guard — saved bytes for off-screen
@@ -5643,14 +5677,14 @@ impl super::TrapDispatcher {
                     y_on_screen && save_left >= 0 && (save_right as u32) <= row_bytes;
                 if on_screen_row && idx + row_width <= saved.len() {
                     let row_addr = screen_base + (y as u32) * row_bytes + (save_left as u32);
-                    bus.write_bytes(row_addr, &saved[idx..idx + row_width]);
+                    bus.restore_saved_pixels(row_addr, saved, idx, row_width);
                     idx += row_width;
                 } else if y_on_screen {
                     for x in save_left..save_right {
                         if idx < saved.len() {
                             if x >= 0 && (x as u32) < row_bytes {
                                 let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                                bus.write_byte(addr, saved[idx]);
+                                bus.restore_saved_pixels(addr, saved, idx, 1);
                             }
                             idx += 1;
                         }
@@ -5667,7 +5701,7 @@ impl super::TrapDispatcher {
                     let len = (byte_end - byte_left) as usize;
                     if idx + len <= saved.len() {
                         let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
-                        bus.write_bytes(row_addr, &saved[idx..idx + len]);
+                        bus.restore_saved_pixels(row_addr, saved, idx, len);
                         idx += len;
                     } else {
                         for bx in byte_left..byte_end {
@@ -5685,13 +5719,14 @@ impl super::TrapDispatcher {
             // Packed off-screen: save produced no bytes for this row,
             // so there's nothing to advance idx over here.
         }
+        bus.remember_dialog_snapshot(saved, rect);
     }
 
     fn restore_dialog_pixels_outside_rect(
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
-        saved: &[u8],
+        saved: &SavedPixels,
         keep_rect: (i16, i16, i16, i16),
     ) {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
@@ -5718,7 +5753,7 @@ impl super::TrapDispatcher {
                                 && (x as u32) < row_bytes
                             {
                                 let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                                bus.write_byte(addr, saved[idx]);
+                                bus.restore_saved_pixels(addr, saved, idx, 1);
                             }
                             idx += 1;
                         }
@@ -5767,7 +5802,7 @@ impl super::TrapDispatcher {
     /// Save framebuffer pixels for an exact rectangle (no margin).
     /// Guards off-screen y (y < 0 or y >= screen_h) from sign-extend overflow.
     /// Off-screen rows pad 8bpp output with zeros; 1bpp output is short by that row.
-    fn save_rect_pixels(&self, bus: &MacMemoryBus, rect: (i16, i16, i16, i16)) -> Vec<u8> {
+    fn save_rect_pixels(&self, bus: &MacMemoryBus, rect: (i16, i16, i16, i16)) -> SavedPixels {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
         let row_width = (right - left).max(0) as usize;
@@ -5801,6 +5836,21 @@ impl super::TrapDispatcher {
                     let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
                     saved.extend_from_slice(&bus.read_bytes(row_addr, len));
                 }
+            }
+        }
+        let mut saved: SavedPixels = saved.into();
+        if pixel_size == 8 {
+            let (t, l, b, r) = (top, left, bottom, right);
+            for y in t.max(0)..b.min(screen_h) {
+                let x0 = l.max(0) as u32;
+                let len = (r.max(0) as u32).min(row_bytes).saturating_sub(x0) as usize;
+                let offset = (y - t) as usize * row_width + (x0 as i32 - i32::from(l)) as usize;
+                bus.capture_pixel_detail(
+                    &mut saved,
+                    offset,
+                    screen_base + y as u32 * row_bytes + x0,
+                    len,
+                );
             }
         }
         saved
@@ -5848,7 +5898,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &mut MacMemoryBus,
         rects: &[((i16, i16, i16, i16), bool)],
-        backups: &[Vec<u8>],
+        backups: &[SavedPixels],
     ) {
         for ((rect, always_restore), pixels) in rects.iter().zip(backups.iter()) {
             if *always_restore || self.saved_rect_has_non_background_content(pixels) {
@@ -5884,7 +5934,7 @@ impl super::TrapDispatcher {
         } else {
             Vec::new()
         };
-        let user_item_backups: Vec<Vec<u8>> = user_item_rects
+        let user_item_backups: Vec<SavedPixels> = user_item_rects
             .iter()
             .map(|&(r, _)| self.save_rect_pixels(bus, r))
             .collect();
@@ -6052,7 +6102,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
-        saved: &[u8],
+        saved: &SavedPixels,
     ) {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
@@ -6065,15 +6115,17 @@ impl super::TrapDispatcher {
                 let on_screen_row = y_on_screen && left >= 0 && (right as u32) <= row_bytes;
                 if on_screen_row && idx + row_width <= saved.len() {
                     let row_addr = screen_base + (y as u32) * row_bytes + (left as u32);
-                    bus.write_bytes(row_addr, &saved[idx..idx + row_width]);
+                    bus.restore_saved_pixels(row_addr, saved, idx, row_width);
                     idx += row_width;
                 } else if y_on_screen {
                     for x in left..right {
                         if idx < saved.len() {
                             if x >= 0 && (x as u32) < row_bytes {
-                                bus.write_byte(
+                                bus.restore_saved_pixels(
                                     screen_base + (y as u32) * row_bytes + (x as u32),
-                                    saved[idx],
+                                    saved,
+                                    idx,
+                                    1,
                                 );
                             }
                             idx += 1;
@@ -6089,7 +6141,7 @@ impl super::TrapDispatcher {
                     let len = (byte_end - byte_left) as usize;
                     if idx + len <= saved.len() {
                         let row_addr = screen_base + (y as u32) * row_bytes + byte_left;
-                        bus.write_bytes(row_addr, &saved[idx..idx + len]);
+                        bus.restore_saved_pixels(row_addr, saved, idx, len);
                         idx += len;
                     } else {
                         for bx in byte_left..byte_end {
@@ -7984,6 +8036,31 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let slot = bus.presentation.clone();
+        let black = Self::fb_main_screen_pixel_index_for_rgb(bus, [0; 3]).unwrap_or(255);
+        let detail = (oval_width == oval_height)
+            .then(|| {
+                slot.rounded_control_corners(
+                    (top.into(), left.into(), bottom.into(), right.into()),
+                    oval_width.into(),
+                    pen_size.into(),
+                    if pixel_size == 8 { 8 } else { 0 },
+                    None,
+                    black.into(),
+                    |x, y, _| {
+                        if x < 0
+                            || y < 0
+                            || x >= i32::from(screen_width)
+                            || y >= i32::from(screen_height)
+                        {
+                            return None;
+                        }
+                        let address = screen_base + y as u32 * row_bytes + x as u32;
+                        Some((address, bus.read_byte(address)))
+                    },
+                )
+            })
+            .flatten();
         let r = Rect {
             top,
             left,
@@ -8048,6 +8125,7 @@ impl super::TrapDispatcher {
                 );
             }
         }
+        slot.finish_rounded_control(detail, |address| bus.read_byte(address));
     }
 
     /// Draw a button with optional default (thick) border.
@@ -8097,8 +8175,28 @@ impl super::TrapDispatcher {
         if !self.draw_theme_push_button_chrome(
             bus, top, left, bottom, right, enabled, false, is_default,
         ) {
+            let slot = bus.presentation.clone();
+            let (base, row_bytes, width, height, pixel_size) = self.get_screen_params();
+            let white = Self::fb_main_screen_pixel_index_for_rgb(bus, [0xffff; 3]).unwrap_or(0);
+            let black = Self::fb_main_screen_pixel_index_for_rgb(bus, [0; 3]).unwrap_or(255);
+            let detail = slot.rounded_control_corners(
+                (top.into(), left.into(), bottom.into(), right.into()),
+                crate::control_manager::STANDARD_BUTTON_OVAL.into(),
+                1,
+                if pixel_size == 8 { 8 } else { 0 },
+                Some(white.into()),
+                black.into(),
+                |x, y, _| {
+                    if x < 0 || y < 0 || x >= i32::from(width) || y >= i32::from(height) {
+                        return None;
+                    }
+                    let address = base + y as u32 * row_bytes + x as u32;
+                    Some((address, bus.read_byte(address)))
+                },
+            );
             self.fill_classic_button_shape(bus, top, left, bottom, right);
             self.draw_classic_button_outline(bus, top, left, bottom, right);
+            slot.finish_rounded_control(detail, |address| bus.read_byte(address));
 
             // Default button: rounded bold outline (3px thick)
             // Macintosh Toolbox Essentials 1992, Listing 6-17
@@ -9314,8 +9412,7 @@ impl super::TrapDispatcher {
             for x in x_start..x_end {
                 if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                    let b = bus.read_byte(addr);
-                    bus.write_byte(addr, 255 - b);
+                    bus.invert_screen_byte(addr);
                 } else {
                     let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
                     let bit = 7 - (x as u32 % 8);
@@ -9350,8 +9447,7 @@ impl super::TrapDispatcher {
             for x in x_start..x_end {
                 if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                    let b = bus.read_byte(addr);
-                    bus.write_byte(addr, 255 - b);
+                    bus.invert_screen_byte(addr);
                 } else {
                     let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
                     let bit = 7 - (x as u32 % 8);
@@ -11944,6 +12040,15 @@ impl super::TrapDispatcher {
                     .is_some_and(|dialog_ptr| {
                         self.dialog_cdef_draw_pending_snapshot.remove(&dialog_ptr)
                     });
+                if !cdef_draw_pending_snapshot {
+                    if let Some(tracking) = self.dialog_tracking.as_mut() {
+                        if let Some(epoch) = tracking.filter_presentation_epoch.take() {
+                            if bus.presentation_epoch() == Some(epoch) {
+                                tracking.rendered_pixels_final = true;
+                            }
+                        }
+                    }
+                }
                 if let Some(ref tracking) = self.dialog_tracking {
                     if !tracking.rendered_pixels_final {
                         let bounds = tracking.bounds;
@@ -13222,6 +13327,7 @@ impl super::TrapDispatcher {
                             draw_proc_queue,
                             draw_procs_done: !has_draw_procs,
                             rendered_pixels_final: !has_draw_procs,
+                            filter_presentation_epoch: None,
                             filter_proc,
                             game_managed,
                             last_filter_event: None,
@@ -16819,6 +16925,41 @@ mod tests {
     use crate::ui_theme::UiThemeId;
     use std::collections::VecDeque;
 
+    #[test]
+    fn styled_text_layout_uses_run_faces_independently_of_port_face() {
+        let (mut disp, _, _) = setup();
+        let text = b"A condensed heading\rPlain text should wrap using its own font metrics and remain inside the view.";
+        let runs = vec![
+            super::TeStyleRun {
+                start: 0,
+                style_index: 0,
+                style: TrapDispatcher::te_resolved_style_from_parts(0, 0x20, 12, (0, 0, 0), 0, 0),
+            },
+            super::TeStyleRun {
+                start: 20,
+                style_index: 1,
+                style: TrapDispatcher::te_resolved_style_from_parts(3, 0, 9, (0, 0, 0), 0, 0),
+            },
+        ];
+        let expected = disp.te_wrap_lines_styled(&runs, text, 150);
+        let width = disp.te_measure_text_width_styled(&runs, text, 20, text.len());
+        for face in [0, 1, 0x20, 0x40] {
+            disp.tx_face = face;
+            assert_eq!(disp.te_wrap_lines_styled(&runs, text, 150), expected);
+            assert_eq!(
+                disp.te_measure_text_width_styled(&runs, text, 20, text.len()),
+                width
+            );
+            for &(start, end) in &expected {
+                let mut end = end;
+                while end > start && text[end - 1].is_ascii_whitespace() {
+                    end -= 1;
+                }
+                assert!(disp.te_measure_text_width_styled(&runs, text, start, end) <= 150);
+            }
+        }
+    }
+
     fn screen_pixel_is_set(bus: &MacMemoryBus, base: u32, row_bytes: u32, x: i16, y: i16) -> bool {
         let byte = bus.read_byte(base + (y as u32 * row_bytes) + ((x as u32) / 8));
         byte & (0x80u8 >> ((x as u8) & 7)) != 0
@@ -17759,10 +17900,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -17770,6 +17911,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -17812,10 +17954,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -17823,6 +17965,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -18641,7 +18784,7 @@ mod tests {
         // Replace the saved snapshot with a distinct dirty pattern. If
         // DisposDialog restores it, the probe byte will change to 0x33.
         disp.dialog_saved_pixels
-            .insert(dlg_ptr, vec![0x33; 90 * 170]);
+            .insert(dlg_ptr, vec![0x33; 90 * 170].into());
         let probe_addr = screen_base + 120 * 800 + 120;
         bus.write_byte(probe_addr, 0x77);
 
@@ -21779,10 +21922,10 @@ mod tests {
             cancel_item: 0,
             edit_text: "First".to_string(),
             edit_item: 1,
-            saved_pixels: vec![0x11, 0x22, 0x33],
+            saved_pixels: vec![0x11, 0x22, 0x33].into(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -21790,6 +21933,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -21888,10 +22032,10 @@ mod tests {
                 cancel_item: 2,
                 edit_text: String::new(),
                 edit_item: 0,
-                saved_pixels: Vec::new(),
+                saved_pixels: Default::default(),
                 stack_ptr: TEST_SP,
                 item_hit_ptr,
-                rendered_pixels: Vec::new(),
+                rendered_pixels: Default::default(),
                 flash_remaining: 0,
                 flash_delay: 0,
                 flash_item: 0,
@@ -21899,6 +22043,7 @@ mod tests {
                 draw_proc_queue: VecDeque::new(),
                 draw_procs_done: true,
                 rendered_pixels_final: true,
+                filter_presentation_epoch: None,
                 filter_proc: 0,
                 game_managed: false,
                 last_filter_event: None,
@@ -22034,10 +22179,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels,
+            rendered_pixels: rendered_pixels.into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -22045,6 +22190,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -23146,10 +23292,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -23157,6 +23303,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -23216,13 +23363,13 @@ mod tests {
             close_dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: saved_pixels.clone(),
+                pixels: saved_pixels.clone().into(),
             },
         );
         close_disp.dialog_modal_entered.insert(close_dialog_ptr);
         close_disp
             .dialog_saved_pixels
-            .insert(close_dialog_ptr, saved_pixels.clone());
+            .insert(close_dialog_ptr, saved_pixels.clone().into());
         close_bus.write_long(crate::memory::globals::addr::THE_PORT, close_dialog_ptr);
         let close_global_ptr = close_bus.read_long(close_cpu.read_reg(Register::A5));
         close_bus.write_long(close_global_ptr, close_dialog_ptr);
@@ -23303,13 +23450,13 @@ mod tests {
             dispose_dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: saved_pixels.clone(),
+                pixels: saved_pixels.clone().into(),
             },
         );
         dispose_disp.dialog_modal_entered.insert(dispose_dialog_ptr);
         dispose_disp
             .dialog_saved_pixels
-            .insert(dispose_dialog_ptr, saved_pixels);
+            .insert(dispose_dialog_ptr, saved_pixels.into());
         dispose_disp
             .dialog_item_handles
             .insert(dispose_text_handle, (dispose_dialog_ptr, 0));
@@ -26354,7 +26501,7 @@ mod tests {
             "movableDBoxProc must paint the title-frame top above portRect"
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 42, 22),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 42, 23),
             "an active movable title bar must contain racing stripes"
         );
     }
@@ -26624,7 +26771,7 @@ mod tests {
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: vec![0x11; snapshot_width * snapshot_height],
+                pixels: vec![0x11; snapshot_width * snapshot_height].into(),
             },
         );
 
@@ -26848,7 +26995,7 @@ mod tests {
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: vec![0x00; snapshot_width * snapshot_height],
+                pixels: vec![0x00; snapshot_width * snapshot_height].into(),
             },
         );
         disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
@@ -26861,10 +27008,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: vec![0x00; snapshot_width * snapshot_height],
+            rendered_pixels: vec![0x00; snapshot_width * snapshot_height].into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -26872,6 +27019,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -27527,7 +27675,7 @@ mod tests {
         }
 
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 66 * 116]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116].into());
 
         bus.write_long(TEST_SP, dialog_ptr);
         let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
@@ -27743,7 +27891,7 @@ mod tests {
             }],
         );
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 66 * 116]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116].into());
         disp.window_stack
             .push((prev_window, (0, 0, 342, 512), 2, "Prev".to_string()));
 
@@ -27942,7 +28090,7 @@ mod tests {
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds: (10, 20, 30, 40),
-                pixels: vec![0x55; 400],
+                pixels: vec![0x55; 400].into(),
             },
         );
 
@@ -28331,10 +28479,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: 0,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -28342,6 +28490,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -28482,7 +28631,7 @@ mod tests {
         // Install a saved background snapshot filled with 0x33 (the
         // "what was behind the dialog" pattern). 66*116=7656 bytes.
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 66 * 116]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116].into());
 
         bus.write_long(TEST_SP, dialog_ptr);
         let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
@@ -28531,7 +28680,7 @@ mod tests {
         disp.window_stack
             .push((predecessor, (0, 0, 480, 640), 0, String::new()));
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 66 * 116]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116].into());
 
         for y in 92u32..158 {
             for x in 92u32..208 {
@@ -28576,13 +28725,13 @@ mod tests {
 
         disp.dialog_saved_pixels.insert(
             dialog_ptr,
-            vec![0x11; row_width * (save_bottom - save_top) as usize],
+            vec![0x11; row_width * (save_bottom - save_top) as usize].into(),
         );
         disp.dialog_visible_snapshots.insert(
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: vec![0xEE; row_width * (save_bottom - save_top) as usize],
+                pixels: vec![0xEE; row_width * (save_bottom - save_top) as usize].into(),
             },
         );
 
@@ -28652,7 +28801,7 @@ mod tests {
 
         disp.dialog_saved_pixels.insert(
             dialog_ptr,
-            vec![0x11; row_width * (save_bottom - save_top) as usize],
+            vec![0x11; row_width * (save_bottom - save_top) as usize].into(),
         );
         let mut tracking = dialog_tracking_state_for_test(dialog_ptr);
         tracking.bounds = bounds;
@@ -28697,13 +28846,13 @@ mod tests {
 
         disp.dialog_saved_pixels.insert(
             dialog_ptr,
-            vec![0x11; row_width * (save_bottom - save_top) as usize],
+            vec![0x11; row_width * (save_bottom - save_top) as usize].into(),
         );
         disp.dialog_visible_snapshots.insert(
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: vec![0xEE; row_width * (save_bottom - save_top) as usize],
+                pixels: vec![0xEE; row_width * (save_bottom - save_top) as usize].into(),
             },
         );
 
@@ -28847,7 +28996,7 @@ mod tests {
         }
 
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x33; 66 * 116]);
+            .insert(dialog_ptr, vec![0x33; 66 * 116].into());
 
         bus.write_long(TEST_SP, dialog_ptr);
         disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
@@ -28942,7 +29091,7 @@ mod tests {
             }
         }
         disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x99; 66 * 116]);
+            .insert(dialog_ptr, vec![0x99; 66 * 116].into());
 
         bus.write_long(TEST_SP, dialog_ptr);
         disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
@@ -30824,7 +30973,7 @@ mod tests {
             saved_pixels: saved_under,
             stack_ptr: TEST_SP,
             item_hit_ptr: item_hit_addr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -30832,6 +30981,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31021,11 +31171,13 @@ mod tests {
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: visible_pixels,
+                pixels: visible_pixels.into(),
             },
         );
-        disp.dialog_saved_pixels
-            .insert(dialog_ptr, vec![0x22; snapshot_width * snapshot_height]);
+        disp.dialog_saved_pixels.insert(
+            dialog_ptr,
+            vec![0x22; snapshot_width * snapshot_height].into(),
+        );
         disp.dialog_modal_entered.insert(dialog_ptr);
 
         disp.front_window = dialog_ptr;
@@ -31081,7 +31233,7 @@ mod tests {
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds,
-                pixels: vec![0x44; snapshot_width * snapshot_height],
+                pixels: vec![0x44; snapshot_width * snapshot_height].into(),
             },
         );
 
@@ -31206,7 +31358,7 @@ mod tests {
             dialog_ptr,
             PersistentDialogSnapshot {
                 bounds: (0, 0, 20, 20),
-                pixels: vec![0x44; 30 * 30],
+                pixels: vec![0x44; 30 * 30].into(),
             },
         );
 
@@ -31238,10 +31390,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31249,6 +31401,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31303,10 +31456,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31314,6 +31467,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31396,10 +31550,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31407,6 +31561,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31469,10 +31624,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels,
+            rendered_pixels: rendered_pixels.into(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31480,6 +31635,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31536,10 +31692,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31547,6 +31703,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: false,
             rendered_pixels_final: false,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31591,10 +31748,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31602,6 +31759,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: None,
@@ -31666,10 +31824,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31677,6 +31835,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31730,10 +31889,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31741,6 +31900,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -31802,10 +31962,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31813,6 +31973,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: None,
@@ -31904,10 +32065,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31915,6 +32076,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: None,
@@ -31959,10 +32121,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -31970,6 +32132,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32070,6 +32233,7 @@ mod tests {
             item_hit_ptr,
             rendered_pixels: disp.save_dialog_pixels(&bus, bounds),
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             draw_procs_done: true,
             filter_proc: 0x149F0,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32158,10 +32322,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -32169,6 +32333,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: true,
             last_filter_event: None,
@@ -32309,10 +32474,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -32320,6 +32485,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32386,10 +32552,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -32397,6 +32563,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
@@ -32454,10 +32621,10 @@ mod tests {
             cancel_item: 2,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: TEST_SP,
             item_hit_ptr,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -32465,6 +32632,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {

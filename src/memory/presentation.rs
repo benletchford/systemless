@@ -1,0 +1,2517 @@
+//! Indexed and direct-color outline presentation. Guest memory and text metrics stay unchanged.
+//! Ordinary framebuffer writes replace enlarged pixels in drawing order; supported
+//! outline glyphs retain indexed coverage through snapshots and pixel transfers.
+//! Frontends consume the presentation at its physical dimensions.
+mod controls;
+
+use super::{MacMemoryBus, MemoryBus};
+use crate::quickdraw::fonts::{outline, Glyph};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
+
+/// Shared by both CPU adapters; access is scoped to a single drawing operation.
+#[derive(Clone, Default)]
+pub(crate) struct PresentationSlot(std::rc::Rc<std::cell::RefCell<Option<Presentation>>>);
+impl std::fmt::Debug for PresentationSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PresentationSlot")
+            .field(&self.is_some())
+            .finish()
+    }
+}
+impl PresentationSlot {
+    pub fn as_ref(&self) -> Option<std::cell::Ref<'_, Presentation>> {
+        std::cell::Ref::filter_map(self.0.borrow(), |p| p.as_ref()).ok()
+    }
+    pub fn as_mut(&self) -> Option<std::cell::RefMut<'_, Presentation>> {
+        std::cell::RefMut::filter_map(self.0.borrow_mut(), |p| p.as_mut()).ok()
+    }
+    pub fn is_some(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+    pub fn is_none(&self) -> bool {
+        !self.is_some()
+    }
+    pub fn set(&self, value: Option<Presentation>) {
+        *self.0.borrow_mut() = value;
+    }
+    pub fn observes(&self, address: u32, len: usize) -> bool {
+        self.as_ref()
+            .is_some_and(|p| p.observes_range(address, len))
+    }
+    pub(crate) fn capture_detail<T>(
+        &self,
+        pixels: &mut SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+    ) {
+        pixels.identity = next_snapshot_identity();
+        if let Some(p) = self.as_ref() {
+            for byte in 0..len {
+                if let Some(detail) = p.detail(address + byte as u32) {
+                    pixels.detail.insert(offset + byte, detail);
+                }
+            }
+        }
+    }
+    pub(crate) fn restore_detail<T>(
+        &self,
+        pixels: &SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+    ) {
+        self.restore_copy_detail(pixels, offset, address, len, None);
+    }
+    pub(crate) fn restore_copy_detail<T>(
+        &self,
+        pixels: &SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+        palette: Option<&[u8; 256]>,
+    ) {
+        if let Some(mut p) = self.as_mut() {
+            for byte in 0..len {
+                if let Some(detail) = pixels.detail.get(&(offset + byte)) {
+                    if let Some(palette) = palette {
+                        let mut detail = detail.clone();
+                        let mapped = Arc::make_mut(&mut detail);
+                        mapped.value = palette[mapped.value as usize];
+                        for index in &mut mapped.indices {
+                            *index = palette[*index as usize];
+                        }
+                        for ink in mapped.ink.values_mut() {
+                            ink.foreground = palette[ink.foreground as usize];
+                            ink.background.map(&mut |index| palette[index as usize]);
+                        }
+                        p.put_detail(address + byte as u32, &detail);
+                    } else {
+                        p.put_detail(address + byte as u32, detail);
+                    }
+                }
+            }
+        }
+    }
+    pub fn write_bytes(&self, address: u32, bytes: &[u8]) {
+        if let Some(mut p) = self.as_mut() {
+            let end = u64::from(address) + bytes.len() as u64;
+            let screen_end = u64::from(p.base) + u64::from(p.row_bytes) * u64::from(p.height);
+            if p.glyph.is_none()
+                && !p.erasing_text
+                && (end <= u64::from(p.base) || u64::from(address) >= screen_end)
+            {
+                // Ordinary offscreen writes only invalidate existing detail.
+                // A native rectangle fill must not visit every background byte.
+                let keys: Vec<_> = p
+                    .offscreen
+                    .range(address..)
+                    .take_while(|(key, _)| u64::from(**key) < end)
+                    .map(|(&key, _)| key)
+                    .collect();
+                if !keys.is_empty() {
+                    p.revision = p.revision.wrapping_add(1);
+                }
+                for key in keys {
+                    p.offscreen.remove(&key);
+                }
+            } else if p.observes_range(address, bytes.len()) {
+                for (i, &value) in bytes.iter().enumerate() {
+                    p.write(address + i as u32, value);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OutlineGlyph {
+    pub pixels: Vec<u8>,
+    pub width: i32,
+    pub height: i32,
+    pub left: i32,
+    pub top: i32,
+}
+
+// Keep palette indexes through antialiasing so a CLUT change recolors existing
+// coverage without rasterizing the guest's one-bit text again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Ink {
+    foreground: u8,
+    alpha: u32,
+    background: IndexedColor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum IndexedColor {
+    Solid(u8),
+    Mix(Box<IndexedColor>, Box<IndexedColor>, u32),
+}
+
+impl IndexedColor {
+    fn map(&mut self, map: &mut impl FnMut(u8) -> u8) {
+        match self {
+            Self::Solid(index) => *index = map(*index),
+            Self::Mix(fg, bg, _) => {
+                fg.map(map);
+                bg.map(map);
+            }
+        }
+    }
+    fn over(self, foreground: u8, alpha: u32) -> Self {
+        if alpha == 0 {
+            self
+        } else if alpha == 255 {
+            Self::Solid(foreground)
+        } else {
+            Self::Mix(Box::new(Self::Solid(foreground)), Box::new(self), alpha)
+        }
+    }
+    fn combine(&self, dst: &Self, map: &mut impl FnMut(u8, u8) -> u8) -> Self {
+        match (self, dst) {
+            (Self::Solid(src), Self::Solid(dst)) => Self::Solid(map(*src, *dst)),
+            (Self::Mix(fg, bg, alpha), _) => Self::Mix(
+                Box::new(fg.combine(dst, map)),
+                Box::new(bg.combine(dst, map)),
+                *alpha,
+            ),
+            (_, Self::Mix(fg, bg, alpha)) => Self::Mix(
+                Box::new(self.combine(fg, map)),
+                Box::new(self.combine(bg, map)),
+                *alpha,
+            ),
+        }
+    }
+    fn rgb(&self, palette: &[[u8; 3]; 256]) -> [u8; 3] {
+        match self {
+            Self::Solid(index) => palette[*index as usize],
+            Self::Mix(foreground, background, alpha) => {
+                blend(foreground.rgb(palette), background.rgb(palette), *alpha)
+            }
+        }
+    }
+}
+
+fn blend(foreground: [u8; 3], background: [u8; 3], alpha: u32) -> [u8; 3] {
+    std::array::from_fn(|c| {
+        ((u32::from(foreground[c]) * alpha + u32::from(background[c]) * (255 - alpha) + 127) / 255)
+            as u8
+    })
+}
+
+impl Ink {
+    fn rgb(&self, palette: &[[u8; 3]; 256]) -> [u8; 3] {
+        blend(
+            palette[self.foreground as usize],
+            self.background.rgb(palette),
+            self.alpha,
+        )
+    }
+}
+
+/// An owned pixel snapshot carries the indexed subpixels with the guest bytes.
+/// Cloning a snapshot preserves its coverage even after its source is erased.
+#[derive(Clone, Debug, Default)]
+pub struct SavedPixels<T = u8> {
+    values: Vec<T>,
+    identity: u64,
+    detail: HashMap<usize, Arc<DetailCell>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetailCell {
+    value: u8,
+    indices: Vec<u8>,
+    ink: HashMap<usize, Ink>,
+}
+
+fn next_snapshot_identity() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+impl<T: PartialEq> PartialEq for SavedPixels<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values && self.detail == other.detail
+    }
+}
+impl<T: Eq> Eq for SavedPixels<T> {}
+
+impl<T> From<Vec<T>> for SavedPixels<T> {
+    fn from(values: Vec<T>) -> Self {
+        Self {
+            values,
+            identity: next_snapshot_identity(),
+            detail: HashMap::new(),
+        }
+    }
+}
+impl<T> std::ops::Deref for SavedPixels<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Vec<T> {
+        &self.values
+    }
+}
+impl<T> std::ops::DerefMut for SavedPixels<T> {
+    fn deref_mut(&mut self) -> &mut Vec<T> {
+        // Raw logical edits cannot retain stale coverage. Region refreshes use
+        // replace_range so unrelated parts of a snapshot retain their detail.
+        self.detail.clear();
+        self.identity = next_snapshot_identity();
+        &mut self.values
+    }
+}
+impl<'a, T> IntoIterator for &'a SavedPixels<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
+    }
+}
+impl<T> SavedPixels<T> {
+    pub(crate) fn transform_detail(&mut self, mut map: impl FnMut(usize, u8) -> u8) {
+        self.identity = next_snapshot_identity();
+        for (&offset, cell) in &mut self.detail {
+            let cell = Arc::make_mut(cell);
+            cell.value = map(offset, cell.value);
+            for value in &mut cell.indices {
+                *value = map(offset, *value);
+            }
+            for ink in cell.ink.values_mut() {
+                ink.foreground = map(offset, ink.foreground);
+                ink.background.map(&mut |value| map(offset, value));
+            }
+        }
+    }
+    pub fn map<U>(self, map: impl FnMut(T) -> U) -> SavedPixels<U> {
+        SavedPixels {
+            values: self.values.into_iter().map(map).collect(),
+            identity: next_snapshot_identity(),
+            detail: self.detail,
+        }
+    }
+    pub fn into_vec(self) -> Vec<T> {
+        self.values
+    }
+    pub(crate) fn slice(&self, range: std::ops::Range<usize>) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            values: self.values[range.clone()].to_vec(),
+            identity: next_snapshot_identity(),
+            detail: self
+                .detail
+                .iter()
+                .filter(|(i, _)| range.contains(i))
+                .map(|(i, cell)| (i - range.start, cell.clone()))
+                .collect(),
+        }
+    }
+    pub(crate) fn replace_range(&mut self, offset: usize, values: &[T])
+    where
+        T: Clone,
+    {
+        self.identity = next_snapshot_identity();
+        let end = offset + values.len();
+        self.detail.retain(|i, _| *i < offset || *i >= end);
+        self.values[offset..end].clone_from_slice(values);
+    }
+}
+
+pub(crate) struct Presentation {
+    revision: u64,
+    cpu_copy: [Option<Arc<DetailCell>>; 4],
+    restored_dialog: Option<(u64, (i16, i16, i16, i16), u64)>,
+    output_cache: std::cell::RefCell<Option<(u64, u32, Vec<u32>)>>,
+    offscreen: BTreeMap<u32, Arc<DetailCell>>,
+    base: u32,
+    row_bytes: u32,
+    width: u32,
+    height: u32,
+    depth: u16,
+    direct_palettes: [[[u8; 3]; 256]; 4],
+    pub scale: u32,
+    palette: [[u8; 3]; 256],
+    pixels: Vec<u8>,
+    pixel_indices: Vec<u8>,
+    guest_values: Vec<u16>,
+    text_cells: Vec<bool>,
+    detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
+    ink: HashMap<usize, Ink>,
+    run_ink: HashSet<usize>,
+    offscreen_run_ink: HashSet<(u32, usize)>,
+    in_text_run: bool,
+    pub erasing_text: bool,
+    glyph: Option<(OutlineGlyph, i16, i16)>,
+    pub glyph_count: usize,
+}
+
+impl Presentation {
+    fn bytes_per_pixel(&self) -> u32 {
+        u32::from(self.depth.max(8) / 8)
+    }
+    fn logical_width(&self) -> u32 {
+        self.width / self.bytes_per_pixel()
+    }
+    fn palette_at(&self, x: u32) -> &[[u8; 3]; 256] {
+        if self.depth == 8 {
+            &self.palette
+        } else {
+            &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
+        }
+    }
+
+    /// Only screen bytes and retained offscreen glyphs need write interception.
+    /// Ordinary heap/stack ranges retain the bus's bulk memory paths.
+    pub(super) fn observes_range(&self, address: u32, len: usize) -> bool {
+        if len == 0 {
+            return false;
+        }
+        let end = u64::from(address).saturating_add(len as u64);
+        if end > u64::from(u32::MAX) + 1 {
+            return true;
+        }
+        if u64::from(address)
+            < u64::from(self.base) + u64::from(self.row_bytes) * u64::from(self.height)
+            && end > u64::from(self.base)
+        {
+            return true;
+        }
+        self.offscreen
+            .range(address..=(end - 1) as u32)
+            .next()
+            .is_some()
+    }
+
+    fn position(&self, address: u32) -> Option<(u32, u32)> {
+        let offset = address.checked_sub(self.base)?;
+        let (x, y) = (offset % self.row_bytes, offset / self.row_bytes);
+        (x < self.width && y < self.height).then_some((x, y))
+    }
+
+    fn resolved_argb(&self, scale: u32) -> std::cell::Ref<'_, [u32]> {
+        if !self
+            .output_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|(revision, cached_scale, _)| {
+                *revision == self.revision && *cached_scale == scale
+            })
+        {
+            let mut cache = self.output_cache.borrow_mut();
+            let (_, _, pixels) = cache.get_or_insert_with(|| (0, 0, Vec::new()));
+            pixels.clear();
+            pixels.reserve((self.logical_width() * self.height * scale * scale) as usize);
+            self.render_scaled(scale, |rgb, count| {
+                let pixel = 0xff000000
+                    | (u32::from(rgb[0]) << 16)
+                    | (u32::from(rgb[1]) << 8)
+                    | u32::from(rgb[2]);
+                pixels.extend(std::iter::repeat_n(pixel, count as usize));
+            });
+            let (revision, cached_scale, _) = cache.as_mut().unwrap();
+            *revision = self.revision;
+            *cached_scale = scale;
+        }
+        std::cell::Ref::map(self.output_cache.borrow(), |cache| {
+            cache.as_ref().unwrap().2.as_slice()
+        })
+    }
+
+    fn render_scaled(&self, scale: u32, mut emit: impl FnMut([u8; 3], u32)) {
+        if self.depth == 8 && self.scale % scale == 0 {
+            let factor = self.scale / scale;
+            let count = factor * factor;
+            let stride = self.width as usize * self.scale as usize * 3;
+            for y in 0..self.height {
+                for dy in 0..scale {
+                    for x in 0..self.width {
+                        let cell = (y * self.width + x) as usize;
+                        if !self.text_cells[cell] {
+                            emit(self.palette[self.guest_values[cell] as u8 as usize], scale);
+                            continue;
+                        }
+                        for dx in 0..scale {
+                            let mut sum = [0u32; 3];
+                            let start = (y * self.scale + dy * factor) as usize * stride
+                                + (x * self.scale + dx * factor) as usize * 3;
+                            for sy in 0..factor as usize {
+                                for rgb in self.pixels
+                                    [start + sy * stride..start + sy * stride + factor as usize * 3]
+                                    .chunks_exact(3)
+                                {
+                                    for c in 0..3 {
+                                        sum[c] += u32::from(rgb[c]);
+                                    }
+                                }
+                            }
+                            emit(sum.map(|v| ((v + count / 2) / count) as u8), 1);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let lanes = self.bytes_per_pixel();
+        let width = self.logical_width();
+        // Integrate each retained coverage cell directly into the requested
+        // integer output scale, without materializing a larger RGB frame.
+        for y in 0..self.height {
+            for dy in 0..scale {
+                for x in 0..width {
+                    let first = (y * self.width + x * lanes) as usize;
+                    if !self.text_cells[first..first + lanes as usize]
+                        .iter()
+                        .any(|&v| v)
+                    {
+                        let mut rgb = [0u8; 3];
+                        for lane in 0..lanes {
+                            let color = self.palette_at(x * lanes + lane)
+                                [self.guest_values[first + lane as usize] as u8 as usize];
+                            for c in 0..3 {
+                                rgb[c] = rgb[c].saturating_add(color[c]);
+                            }
+                        }
+                        emit(rgb, scale);
+                        continue;
+                    }
+                    for dx in 0..scale {
+                        let (left, right, top, bottom, total) = if scale > self.scale {
+                            let left = ((dx * 2 + 1) * self.scale / (scale * 2)) * scale;
+                            let top = ((dy * 2 + 1) * self.scale / (scale * 2)) * scale;
+                            (left, left + scale, top, top + scale, scale * scale)
+                        } else {
+                            (
+                                dx * self.scale,
+                                (dx + 1) * self.scale,
+                                dy * self.scale,
+                                (dy + 1) * self.scale,
+                                self.scale * self.scale,
+                            )
+                        };
+                        let mut sum = [0u32; 3];
+                        for sy in top / scale..bottom.div_ceil(scale) {
+                            let wy = bottom.min((sy + 1) * scale) - top.max(sy * scale);
+                            for sx in left / scale..right.div_ceil(scale) {
+                                let weight =
+                                    wy * (right.min((sx + 1) * scale) - left.max(sx * scale));
+                                let mut rgb = [0u8; 3];
+                                for lane in 0..lanes {
+                                    let bx = x * lanes + lane;
+                                    let cell = first + lane as usize;
+                                    let color = if self.text_cells[cell] {
+                                        let index =
+                                            (((y * self.scale + sy) * self.width * self.scale
+                                                + bx * self.scale
+                                                + sx)
+                                                * 3)
+                                                as usize;
+                                        [
+                                            self.pixels[index],
+                                            self.pixels[index + 1],
+                                            self.pixels[index + 2],
+                                        ]
+                                    } else {
+                                        self.palette_at(bx)[self.guest_values[cell] as u8 as usize]
+                                    };
+                                    for c in 0..3 {
+                                        rgb[c] = rgb[c].saturating_add(color[c]);
+                                    }
+                                }
+                                for c in 0..3 {
+                                    sum[c] += u32::from(rgb[c]) * weight;
+                                }
+                            }
+                        }
+                        emit(sum.map(|v| ((v + total / 2) / total) as u8), 1);
+                    }
+                }
+            }
+        }
+    }
+
+    fn render_pixels<T: Copy>(&self, map: impl Fn([u8; 3]) -> T) -> Vec<T> {
+        if self.depth == 8 {
+            return self.render_indexed_pixels(map);
+        }
+        let lanes = self.bytes_per_pixel();
+        let width = self.logical_width();
+        let mut output =
+            Vec::with_capacity((width * self.height * self.scale * self.scale) as usize);
+        for y in 0..self.height {
+            for sy in 0..self.scale {
+                for x in 0..width {
+                    let first = (y * self.width + x * lanes) as usize;
+                    if !self.text_cells[first..first + lanes as usize]
+                        .iter()
+                        .any(|&text| text)
+                    {
+                        let mut rgb = [0u8; 3];
+                        for lane in 0..lanes {
+                            let color = self.direct_palettes[lane as usize]
+                                [self.guest_values[first + lane as usize] as u8 as usize];
+                            for channel in 0..3 {
+                                rgb[channel] = rgb[channel].saturating_add(color[channel]);
+                            }
+                        }
+                        output.extend(std::iter::repeat_n(map(rgb), self.scale as usize));
+                        continue;
+                    }
+                    for sx in 0..self.scale {
+                        let mut rgb = [0u8; 3];
+                        for lane in 0..lanes {
+                            let bx = x * lanes + lane;
+                            let cell = (y * self.width + bx) as usize;
+                            let color = if self.text_cells[cell] {
+                                let start = (((y * self.scale + sy) * self.width * self.scale
+                                    + bx * self.scale
+                                    + sx)
+                                    * 3) as usize;
+                                [
+                                    self.pixels[start],
+                                    self.pixels[start + 1],
+                                    self.pixels[start + 2],
+                                ]
+                            } else {
+                                self.palette_at(bx)[self.guest_values[cell] as u8 as usize]
+                            };
+                            for c in 0..3 {
+                                rgb[c] = rgb[c].saturating_add(color[c]);
+                            }
+                        }
+                        output.push(map(rgb));
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn render_indexed_pixels<T: Copy>(&self, map: impl Fn([u8; 3]) -> T) -> Vec<T> {
+        let width = (self.width * self.scale) as usize;
+        let mut output = Vec::with_capacity(width * (self.height * self.scale) as usize);
+        for y in 0..self.height {
+            for sy in 0..self.scale {
+                for x in 0..self.width {
+                    let cell = (y * self.width + x) as usize;
+                    if self.text_cells[cell] {
+                        let start = ((y * self.scale + sy) * self.width * self.scale
+                            + x * self.scale) as usize
+                            * 3;
+                        for rgb in
+                            self.pixels[start..start + self.scale as usize * 3].chunks_exact(3)
+                        {
+                            output.push(map([rgb[0], rgb[1], rgb[2]]));
+                        }
+                    } else {
+                        let color = map(self.palette[self.guest_values[cell] as u8 as usize]);
+                        output.extend(std::iter::repeat_n(color, self.scale as usize));
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn detail(&self, address: u32) -> Option<Arc<DetailCell>> {
+        let Some((x, y)) = self.position(address) else {
+            return self.offscreen.get(&address).cloned();
+        };
+        if !self.text_cells[(y * self.width + x) as usize] {
+            return None;
+        }
+        let index = (y * self.width + x) as usize;
+        if let Some(cell) = &self.detail_cache.borrow()[index] {
+            return Some(cell.clone());
+        }
+        let mut cell = DetailCell {
+            value: self.guest_values[(y * self.width + x) as usize] as u8,
+            indices: Vec::new(),
+            ink: HashMap::new(),
+        };
+        for sy in 0..self.scale {
+            for sx in 0..self.scale {
+                let pixel = ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx)
+                    as usize;
+                let i = cell.indices.len();
+                cell.indices.push(self.pixel_indices[pixel]);
+                if let Some(ink) = self.ink.get(&(pixel * 3)) {
+                    cell.ink.insert(i, ink.clone());
+                }
+            }
+        }
+        let cell = Arc::new(cell);
+        self.detail_cache.borrow_mut()[index] = Some(cell.clone());
+        Some(cell)
+    }
+
+    fn matches_detail(&self, address: u32, detail: Option<&Arc<DetailCell>>) -> bool {
+        let Some((x, y)) = self.position(address) else {
+            return self.offscreen.get(&address) == detail;
+        };
+        let Some(cell) = detail else {
+            return !self.text_cells[(y * self.width + x) as usize];
+        };
+        if !self.text_cells[(y * self.width + x) as usize]
+            || self.guest_values[(y * self.width + x) as usize] != u16::from(cell.value)
+            || cell.indices.len() != (self.scale * self.scale) as usize
+        {
+            return false;
+        }
+        if self.detail_cache.borrow()[(y * self.width + x) as usize]
+            .as_ref()
+            .is_some_and(|cached| Arc::ptr_eq(cached, cell))
+        {
+            return true;
+        }
+        for sy in 0..self.scale {
+            for sx in 0..self.scale {
+                let i = (sy * self.scale + sx) as usize;
+                let pixel =
+                    ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx) as usize;
+                if self.pixel_indices[pixel] != cell.indices[i]
+                    || self.ink.get(&(pixel * 3)) != cell.ink.get(&i)
+                {
+                    return false;
+                }
+            }
+        }
+        // A redraw can create an equal cell with a new identity. Remember it
+        // after comparing once, so idle frames do not repeat every ink lookup.
+        self.detail_cache.borrow_mut()[(y * self.width + x) as usize] = Some(cell.clone());
+        true
+    }
+
+    fn put_detail(&mut self, address: u32, cell: &Arc<DetailCell>) {
+        if self.matches_detail(address, Some(cell)) {
+            return;
+        }
+        self.revision = self.revision.wrapping_add(1);
+        let Some((x, y)) = self.position(address) else {
+            self.offscreen.insert(address, cell.clone());
+            return;
+        };
+        if cell.indices.len() != (self.scale * self.scale) as usize {
+            return;
+        }
+        self.text_cells[(y * self.width + x) as usize] = true;
+        self.detail_cache.get_mut()[(y * self.width + x) as usize] = Some(cell.clone());
+        self.guest_values[(y * self.width + x) as usize] = cell.value.into();
+        for sy in 0..self.scale {
+            for sx in 0..self.scale {
+                let i = (sy * self.scale + sx) as usize;
+                let pixel = ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx)
+                    as usize;
+                self.pixel_indices[pixel] = cell.indices[i];
+                self.ink.remove(&(pixel * 3));
+                let rgb = if let Some(ink) = cell.ink.get(&i) {
+                    self.ink.insert(pixel * 3, ink.clone());
+                    ink.rgb(if self.depth == 8 {
+                        &self.palette
+                    } else {
+                        &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
+                    })
+                } else {
+                    self.palette_at(x)[cell.indices[i] as usize]
+                };
+                self.pixels[pixel * 3..pixel * 3 + 3].copy_from_slice(&rgb);
+            }
+        }
+    }
+
+    pub fn glyph_bounds(&self) -> Option<(i32, i32, i32, i32)> {
+        let (g, h, v) = self.glyph.as_ref()?;
+        let scale = self.scale as i32;
+        Some((
+            i32::from(*v) + g.top.div_euclid(scale),
+            i32::from(*h) + g.left.div_euclid(scale),
+            i32::from(*v) + (g.top + g.height + scale - 1).div_euclid(scale),
+            i32::from(*h) + (g.left + g.width + scale - 1).div_euclid(scale),
+        ))
+    }
+
+    fn prepare_text_cell(&mut self, x: u32, y: u32) {
+        self.detail_cache.get_mut()[(y * self.width + x) as usize] = None;
+        let cell = (y * self.width + x) as usize;
+        if !self.text_cells[cell] {
+            let index = self.guest_values[cell] as u8;
+            let color = self.palette_at(x)[index as usize];
+            for sy in 0..self.scale {
+                let start =
+                    ((y * self.scale + sy) * self.width * self.scale + x * self.scale) as usize;
+                self.pixel_indices[start..start + self.scale as usize].fill(index);
+                for pixel in
+                    self.pixels[start * 3..(start + self.scale as usize) * 3].chunks_exact_mut(3)
+                {
+                    pixel.copy_from_slice(&color);
+                }
+            }
+        }
+        self.text_cells[cell] = true;
+    }
+
+    pub fn write(&mut self, address: u32, value: u8) {
+        let Some((x, y)) = self.position(address) else {
+            if self.offscreen.contains_key(&address) || self.glyph.is_some() {
+                self.revision = self.revision.wrapping_add(1);
+            }
+            if self.glyph.is_some() {
+                if let Some(cell) = self.offscreen.get_mut(&address) {
+                    let cell = Arc::make_mut(cell);
+                    cell.value = value;
+                }
+            } else if self.erasing_text
+                && self
+                    .offscreen_run_ink
+                    .iter()
+                    .any(|(addr, _)| *addr == address)
+            {
+                if let Some(cell) = self.offscreen.get_mut(&address) {
+                    let cell = Arc::make_mut(cell);
+                    cell.value = value;
+                    for i in 0..cell.indices.len() {
+                        if !self.offscreen_run_ink.contains(&(address, i)) {
+                            cell.indices[i] = value;
+                            cell.ink.remove(&i);
+                        }
+                    }
+                }
+            } else {
+                self.offscreen.remove(&address);
+            }
+            return;
+        };
+        let cell = (y * self.width + x) as usize;
+        self.detail_cache.get_mut()[cell] = None;
+        if self.glyph.is_some() {
+            self.revision = self.revision.wrapping_add(1);
+            // The logical mask can extend beyond the native glyph bounds.
+            // Such cells still need their current background preserved.
+            self.prepare_text_cell(x, y);
+            self.guest_values[cell] = u16::from(value);
+            return;
+        }
+        if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
+            return;
+        }
+        self.revision = self.revision.wrapping_add(1);
+        self.guest_values[cell] = u16::from(value);
+        if !self.text_cells[cell] {
+            // Ordinary game pixels stay indexed until presentation. Expanding
+            // each intermediate framebuffer write to scale² RGB samples makes
+            // software-rendered animation pay the text cost for every pixel.
+            return;
+        }
+        self.text_cells[cell] = false;
+        let color = self.palette_at(x)[value as usize];
+        for sy in 0..self.scale {
+            for sx in 0..self.scale {
+                let offset =
+                    (((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx) * 3)
+                        as usize;
+                // A following character's opaque background must not shave off
+                // an outline overhang already painted by this same text run.
+                if self.erasing_text && self.run_ink.contains(&offset) {
+                    self.text_cells[cell] = true;
+                    continue;
+                }
+                self.run_ink.remove(&offset);
+                self.ink.remove(&offset);
+                self.pixel_indices[offset / 3] = value;
+                self.pixels[offset..offset + 3].copy_from_slice(&color);
+            }
+        }
+    }
+
+    /// Called for every visible glyph cell, including cells with zero 1x ink.
+    /// QuickDraw has already applied both the visibility and clipping regions.
+    pub fn glyph_pixel(&mut self, address: u32, x: i16, y: i16, foreground: u8, background: u8) {
+        self.revision = self.revision.wrapping_add(1);
+        let Some((px, py)) = self.position(address) else {
+            let Some((glyph, h, v)) = &self.glyph else {
+                return;
+            };
+            let cell = self.offscreen.entry(address).or_insert_with(|| {
+                Arc::new(DetailCell {
+                    value: background,
+                    indices: vec![background; (self.scale * self.scale) as usize],
+                    ink: HashMap::new(),
+                })
+            });
+            let cell = Arc::make_mut(cell);
+            for sy in 0..self.scale {
+                for sx in 0..self.scale {
+                    let gx =
+                        (i32::from(x) - i32::from(*h)) * self.scale as i32 + sx as i32 - glyph.left;
+                    let gy =
+                        (i32::from(y) - i32::from(*v)) * self.scale as i32 + sy as i32 - glyph.top;
+                    if gx < 0 || gy < 0 || gx >= glyph.width || gy >= glyph.height {
+                        continue;
+                    }
+                    let alpha = u32::from(glyph.pixels[(gy * glyph.width + gx) as usize]);
+                    if alpha == 0 {
+                        continue;
+                    }
+                    let i = (sy * self.scale + sx) as usize;
+                    if self.in_text_run {
+                        self.offscreen_run_ink.insert((address, i));
+                    }
+                    if alpha == 255 {
+                        cell.indices[i] = foreground;
+                        cell.ink.remove(&i);
+                    } else {
+                        let ink = cell.ink.entry(i).or_insert_with(|| Ink {
+                            foreground,
+                            alpha: 0,
+                            background: IndexedColor::Solid(cell.indices[i]),
+                        });
+                        if ink.foreground != foreground {
+                            let previous = ink.clone();
+                            *ink = Ink {
+                                foreground,
+                                alpha: 0,
+                                background: previous
+                                    .background
+                                    .over(previous.foreground, previous.alpha),
+                            };
+                        }
+                        ink.alpha = ink.alpha.max(alpha);
+                    }
+                }
+            }
+            return;
+        };
+        if self.glyph.is_none() {
+            return;
+        }
+        self.prepare_text_cell(px, py);
+        let (glyph, h, v) = self.glyph.as_ref().unwrap();
+        let lane = (px % self.bytes_per_pixel()) as usize;
+        let palette = if self.depth == 8 {
+            &self.palette
+        } else {
+            &self.direct_palettes[lane]
+        };
+        let color = palette[foreground as usize];
+        for sy in 0..self.scale {
+            for sx in 0..self.scale {
+                let gx =
+                    (i32::from(x) - i32::from(*h)) * self.scale as i32 + sx as i32 - glyph.left;
+                let gy = (i32::from(y) - i32::from(*v)) * self.scale as i32 + sy as i32 - glyph.top;
+                if gx < 0 || gy < 0 || gx >= glyph.width || gy >= glyph.height {
+                    continue;
+                }
+                let alpha = u32::from(glyph.pixels[(gy * glyph.width + gx) as usize]);
+                if alpha == 0 {
+                    continue;
+                }
+                let offset =
+                    (((py * self.scale + sy) * self.width * self.scale + px * self.scale + sx) * 3)
+                        as usize;
+                if self.in_text_run {
+                    self.run_ink.insert(offset);
+                }
+                if alpha == 255 {
+                    self.pixels[offset..offset + 3].copy_from_slice(&color);
+                    self.ink.remove(&offset);
+                    self.pixel_indices[offset / 3] = foreground;
+                    continue;
+                }
+                // Inside Macintosh I, "Transfer Modes": srcOr forces source
+                // ink on and leaves other bits alone; repeated ink is idempotent.
+                // Retain coverage rather than
+                // repeatedly blending the same ink into its own antialiased edge.
+                let ink = self.ink.entry(offset).or_insert_with(|| Ink {
+                    foreground,
+                    alpha: 0,
+                    background: IndexedColor::Solid(self.pixel_indices[offset / 3]),
+                });
+                if ink.foreground != foreground {
+                    let previous = std::mem::replace(
+                        ink,
+                        Ink {
+                            foreground,
+                            alpha: 0,
+                            background: IndexedColor::Solid(0),
+                        },
+                    );
+                    ink.background = previous
+                        .background
+                        .over(previous.foreground, previous.alpha);
+                }
+                ink.alpha = ink.alpha.max(alpha);
+                self.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(palette));
+            }
+        }
+    }
+}
+
+impl MacMemoryBus {
+    pub(crate) fn dialog_snapshot_is_current(
+        &self,
+        saved: &SavedPixels,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        self.presentation
+            .as_ref()
+            .is_some_and(|p| p.restored_dialog == Some((saved.identity, rect, p.revision)))
+    }
+    pub(crate) fn remember_dialog_snapshot(&self, saved: &SavedPixels, rect: (i16, i16, i16, i16)) {
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.restored_dialog = Some((saved.identity, rect, p.revision));
+        }
+    }
+
+    // Only actual drawing invalidates an idle modal filter. Borrowing the store
+    // to refresh an unchanged palette or save a snapshot is not a drawing event.
+    pub(crate) fn presentation_epoch(&self) -> Option<u64> {
+        self.presentation.as_ref().map(|p| p.revision)
+    }
+
+    /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
+    pub(crate) fn sync_presented_bytes(&mut self, destination: u32, source: u32, bytes: &[u8]) {
+        if destination == source {
+            return;
+        }
+        if self.presentation.is_none() {
+            self.write_bytes(destination, bytes);
+            return;
+        }
+        let previous = self.read_bytes(destination, bytes.len());
+        for (i, (&old, &new)) in previous.iter().zip(bytes).enumerate() {
+            if old != new {
+                self.write_byte(destination + i as u32, new);
+            }
+        }
+        if let Some(mut p) = self.presentation.as_mut() {
+            let changes = {
+                let mut source_cells = p
+                    .offscreen
+                    .range(source..source + bytes.len() as u32)
+                    .peekable();
+                let mut changes = Vec::new();
+                for (i, &value) in bytes.iter().enumerate() {
+                    let address = source + i as u32;
+                    let detail = if source_cells.peek().is_some_and(|(key, _)| **key == address) {
+                        source_cells.next().map(|(_, cell)| cell)
+                    } else {
+                        None
+                    };
+                    let destination = destination + i as u32;
+                    if !p.matches_detail(destination, detail) {
+                        changes.push((destination, value, detail.cloned()));
+                    }
+                }
+                changes
+            };
+            for (address, value, detail) in changes {
+                if let Some(detail) = detail {
+                    p.put_detail(address, &detail);
+                } else {
+                    p.write(address, value);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn outline_glyph_pixel(&mut self, address: u32, x: i16, y: i16, foreground: u8) {
+        if self.presentation.is_none() {
+            return;
+        }
+        let background = self.read_byte(address);
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.glyph_pixel(address, x, y, foreground, background);
+        }
+    }
+
+    pub(crate) fn save_pixel_bytes(&self, address: u32, len: usize) -> SavedPixels {
+        let mut pixels = SavedPixels::from(self.read_bytes(address, len));
+        self.capture_pixel_detail(&mut pixels, 0, address, len);
+        pixels
+    }
+
+    pub(crate) fn transfer_saved_pixel(
+        &mut self,
+        address: u32,
+        source: &SavedPixels,
+        offset: usize,
+        mut map: impl FnMut(&MacMemoryBus, u8, u8) -> u8,
+    ) -> bool {
+        let src = source.detail.get(&offset);
+        let dst = self.presentation.as_ref().and_then(|p| p.detail(address));
+        if src.is_none() && dst.is_none() {
+            return false;
+        }
+        let old = self.read_byte(address);
+        let value = map(self, source[offset], old);
+        let scale = self.presentation.as_ref().unwrap().scale;
+        let mut cell = DetailCell {
+            value,
+            indices: vec![value; (scale * scale) as usize],
+            ink: HashMap::new(),
+        };
+        let color = |cell: Option<&DetailCell>, i: usize, fallback| {
+            cell.map_or(IndexedColor::Solid(fallback), |cell| {
+                cell.ink
+                    .get(&i)
+                    .map_or(IndexedColor::Solid(cell.indices[i]), |ink| {
+                        ink.background.clone().over(ink.foreground, ink.alpha)
+                    })
+            })
+        };
+        for i in 0..cell.indices.len() {
+            let src_color = color(src.map(AsRef::as_ref), i, source[offset]);
+            let dst_color = color(dst.as_deref(), i, old);
+            let output = if src_color == dst_color {
+                let mut same = src_color;
+                same.map(&mut |index| map(self, index, index));
+                same
+            } else {
+                src_color.combine(&dst_color, &mut |s, d| map(self, s, d))
+            };
+            match output {
+                IndexedColor::Solid(index) => cell.indices[i] = index,
+                background => {
+                    cell.ink.insert(
+                        i,
+                        Ink {
+                            foreground: value,
+                            alpha: 0,
+                            background,
+                        },
+                    );
+                }
+            }
+        }
+        self.write_byte(address, value);
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.put_detail(address, &Arc::new(cell));
+        }
+        true
+    }
+
+    pub(crate) fn copy_saved_pixel(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels,
+        offset: usize,
+        mut map: impl Fn(u8) -> u8,
+    ) {
+        let value = map(pixels[offset]);
+        self.write_byte(address, value);
+        if let Some(cell) = pixels.detail.get(&offset) {
+            let mut cell = cell.clone();
+            let mapped = Arc::make_mut(&mut cell);
+            mapped.value = value;
+            for index in &mut mapped.indices {
+                *index = map(*index);
+            }
+            for ink in mapped.ink.values_mut() {
+                ink.foreground = map(ink.foreground);
+                ink.background.map(&mut map);
+            }
+            if let Some(mut p) = self.presentation.as_mut() {
+                p.put_detail(address, &cell);
+            }
+        }
+    }
+
+    pub(crate) fn begin_cpu_pixel_copy(&mut self, source: u32, bytes: u32) -> bool {
+        let addresses: [u32; 4] =
+            std::array::from_fn(|i| self.translate_guest_address(source.wrapping_add(i as u32)));
+        let Some(mut p) = self.presentation.as_mut() else {
+            return false;
+        };
+        p.cpu_copy = Default::default();
+        if (1..=4).contains(&bytes) {
+            let contiguous =
+                addresses[bytes as usize - 1].checked_sub(addresses[0]) == Some(bytes - 1);
+            if contiguous && !p.observes_range(addresses[0], bytes as usize) {
+                return false;
+            }
+            for offset in 0..bytes as usize {
+                p.cpu_copy[offset] = p.detail(addresses[offset]);
+            }
+        }
+        p.cpu_copy.iter().any(Option::is_some)
+    }
+
+    pub(crate) fn end_cpu_pixel_copy(&mut self, destination: Option<u32>) {
+        let Some(mut p) = self.presentation.as_mut() else {
+            return;
+        };
+        let detail = std::mem::take(&mut p.cpu_copy);
+        drop(p);
+        let Some(destination) = destination else {
+            return;
+        };
+        for (offset, cell) in detail.into_iter().enumerate() {
+            let Some(cell) = cell else { continue };
+            let address = destination.wrapping_add(offset as u32);
+            // The CPU owns the byte writes, including faults and protection.
+            // Restore only metadata for bytes that were actually transferred.
+            if self.is_guest_address_writable(address, 1) && self.read_byte(address) == cell.value {
+                let address = self.translate_guest_address(address);
+                if let Some(mut p) = self.presentation.as_mut() {
+                    p.put_detail(address, &cell);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn capture_pixel_detail<T>(
+        &self,
+        pixels: &mut SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+    ) {
+        pixels.identity = next_snapshot_identity();
+        if let Some(p) = self.presentation.as_ref() {
+            if len == 0 {
+                return;
+            }
+            let end = (u64::from(address) + len as u64).min(u64::from(u32::MAX) + 1);
+            for (&addr, cell) in p.offscreen.range(address..=(end - 1) as u32) {
+                if p.position(addr).is_some() {
+                    continue;
+                }
+                pixels
+                    .detail
+                    .insert(offset + (addr - address) as usize, cell.clone());
+            }
+            let screen_start = u64::from(address).max(u64::from(p.base));
+            let screen_end =
+                end.min(u64::from(p.base) + u64::from(p.row_bytes) * u64::from(p.height));
+            for addr in screen_start..screen_end {
+                if let Some(cell) = p.detail(addr as u32) {
+                    pixels
+                        .detail
+                        .insert(offset + (addr - u64::from(address)) as usize, cell);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn restore_saved_pixels<T: Copy + Into<u16>>(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels<T>,
+        offset: usize,
+        len: usize,
+    ) {
+        if self.presentation.is_none() {
+            let end = offset.saturating_add(len).min(pixels.len());
+            if offset < end {
+                let bytes: Vec<u8> = pixels[offset..end]
+                    .iter()
+                    .map(|value| (*value).into() as u8)
+                    .collect();
+                self.write_bytes(address, &bytes);
+            }
+            return;
+        }
+        for i in offset..offset.saturating_add(len).min(pixels.len()) {
+            let dst = address + (i - offset) as u32;
+            let value = pixels[i].into() as u8;
+            let detail = pixels.detail.get(&i).filter(|cell| cell.value == value);
+            if self.read_byte(dst) == value
+                && self
+                    .presentation
+                    .as_ref()
+                    .is_some_and(|p| p.matches_detail(dst, detail))
+            {
+                continue;
+            }
+            self.write_byte(dst, value);
+            if let Some(cell) = detail {
+                if let Some(mut p) = self.presentation.as_mut() {
+                    p.put_detail(dst, cell);
+                }
+            }
+        }
+    }
+
+    /// Apply the same indexed operation to each physical sample, retaining coverage.
+    pub(crate) fn map_screen_byte(&mut self, address: u32, mut map: impl Fn(u8) -> u8) {
+        let mut cell = self.presentation.as_ref().and_then(|p| p.detail(address));
+        let value = map(self.read_byte(address));
+        self.write_byte(address, value);
+        if let Some(cell) = &mut cell {
+            let mapped = Arc::make_mut(cell);
+            mapped.value = value;
+            for index in &mut mapped.indices {
+                *index = map(*index);
+            }
+            for ink in mapped.ink.values_mut() {
+                ink.foreground = map(ink.foreground);
+                ink.background.map(&mut map);
+            }
+            if let Some(mut p) = self.presentation.as_mut() {
+                p.put_detail(address, cell);
+            }
+        }
+    }
+
+    /// Invert indexed dialog selection pixels without flattening their outline
+    /// coverage. Transform palette indexes, matching the guest's byte inversion.
+    pub(crate) fn invert_screen_byte(&mut self, address: u32) {
+        self.map_screen_byte(address, |index| !index);
+    }
+
+    /// Maintain a 4x outline surface for an indexed screen. Geometry changes
+    /// recreate the surface; palette changes recolor the retained coverage.
+    pub fn prepare_outline_presentation(
+        &mut self,
+        screen: (u32, u32, u16, u16, u16),
+        palette: [[u8; 3]; 256],
+    ) {
+        if !matches!(screen.4, 8 | 16 | 32) {
+            self.presentation.set(None);
+            return;
+        }
+        let slot = self.presentation.clone();
+        if slot.as_ref().is_some_and(|p| {
+            (p.base, p.row_bytes, p.logical_width(), p.height, p.depth)
+                == (
+                    screen.0,
+                    screen.1,
+                    screen.2 as u32,
+                    screen.3 as u32,
+                    screen.4,
+                )
+                && p.scale == 4
+        }) {
+            let mut guard = slot.as_mut().unwrap();
+            let p = &mut *guard;
+            if p.depth == 8 && p.palette != palette {
+                p.revision = p.revision.wrapping_add(1);
+                // Indexed pixels retain their CLUT indexes when the device's
+                // colors change (Imaging With QuickDraw, 1994, 4-5–4-6).
+                p.palette = palette;
+                // Plain image pixels are indexed until output; palette fades
+                // only need to recolor the retained native text samples here.
+                for (cell, &detail) in p.text_cells.iter().enumerate() {
+                    if !detail {
+                        continue;
+                    }
+                    let x = cell as u32 % p.width;
+                    let y = cell as u32 / p.width;
+                    for sy in 0..p.scale {
+                        let start = ((y * p.scale + sy) * p.width * p.scale + x * p.scale) as usize;
+                        for pixel in start..start + p.scale as usize {
+                            p.pixels[pixel * 3..pixel * 3 + 3]
+                                .copy_from_slice(&palette[p.pixel_indices[pixel] as usize]);
+                        }
+                    }
+                }
+                for (&offset, ink) in &p.ink {
+                    p.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(&palette));
+                }
+            }
+        } else {
+            // Drop the slot borrow before replacing its surface.
+            self.enable_outline_presentation(screen, palette, 4);
+        }
+    }
+
+    /// Whether an outline presentation surface is available to a frontend.
+    pub fn has_outline_presentation(&self) -> bool {
+        self.presentation.is_some()
+    }
+
+    /// Frames without visible retained text can use the ordinary framebuffer
+    /// presenter while continuing to track offscreen text for later copies.
+    pub fn has_visible_outline_detail(&self) -> bool {
+        self.presentation
+            .as_ref()
+            .is_some_and(|p| p.text_cells.iter().any(|&text| text))
+    }
+
+    /// Composite host overlays onto the outline surface. Overlay positions stay
+    /// in guest coordinates; only the returned presentation dimensions change.
+    pub fn presented_argb(
+        &self,
+        guest: &[u32],
+        with_overlays: &[u32],
+    ) -> Option<(u32, u32, Vec<u32>)> {
+        let p = self.presentation.as_ref()?;
+        if guest.len() != (p.logical_width() * p.height) as usize
+            || with_overlays.len() != guest.len()
+        {
+            return None;
+        }
+        let width = p.logical_width() * p.scale;
+        let height = p.height * p.scale;
+        let mut pixels = p.render_pixels(|c| {
+            0xff000000 | ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | c[2] as u32
+        });
+        for (index, (&before, &after)) in guest.iter().zip(with_overlays).enumerate() {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % p.logical_width();
+            let y = index as u32 / p.logical_width();
+            for dy in 0..p.scale {
+                let start = ((y * p.scale + dy) * width + x * p.scale) as usize;
+                pixels[start..start + p.scale as usize].fill(after);
+            }
+        }
+        Some((width, height, pixels))
+    }
+
+    /// Render retained coverage into a reusable output buffer at the scale
+    /// needed by the drawable, independently of the internal sampling scale.
+    pub fn presented_argb_scaled(
+        &self,
+        guest: &[u32],
+        with_overlays: &[u32],
+        scale: u32,
+        output: &mut Vec<u32>,
+    ) -> Option<(u32, u32)> {
+        let p = self.presentation.as_ref()?;
+        if !(1..=4).contains(&scale)
+            || guest.len() != (p.logical_width() * p.height) as usize
+            || with_overlays.len() != guest.len()
+        {
+            return None;
+        }
+        output.clear();
+        output.extend_from_slice(&p.resolved_argb(scale));
+        let width = p.logical_width() * scale;
+        for (index, (&before, &after)) in guest.iter().zip(with_overlays).enumerate() {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % p.logical_width();
+            let y = index as u32 / p.logical_width();
+            for dy in 0..scale {
+                let start = ((y * scale + dy) * width + x * scale) as usize;
+                output[start..start + scale as usize].fill(after);
+            }
+        }
+        Some((width, p.height * scale))
+    }
+
+    /// RGBA version of `presented_argb_scaled`, using the same coverage rules.
+    pub fn presented_rgba_scaled(
+        &self,
+        guest: &[u8],
+        with_overlays: &[u8],
+        scale: u32,
+        output: &mut Vec<u8>,
+    ) -> Option<(u32, u32)> {
+        let p = self.presentation.as_ref()?;
+        if !(1..=4).contains(&scale)
+            || guest.len() != (p.logical_width() * p.height * 4) as usize
+            || with_overlays.len() != guest.len()
+        {
+            return None;
+        }
+        output.clear();
+        let pixels = p.resolved_argb(scale);
+        output.reserve(pixels.len() * 4);
+        for pixel in pixels.iter() {
+            output.extend_from_slice(&[
+                (*pixel >> 16) as u8,
+                (*pixel >> 8) as u8,
+                *pixel as u8,
+                255,
+            ]);
+        }
+        let width = p.logical_width() * scale;
+        for (index, (before, after)) in guest
+            .chunks_exact(4)
+            .zip(with_overlays.chunks_exact(4))
+            .enumerate()
+        {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % p.logical_width();
+            let y = index as u32 / p.logical_width();
+            for dy in 0..scale {
+                let start = ((y * scale + dy) * width + x * scale) as usize * 4;
+                for pixel in output[start..start + scale as usize * 4].chunks_exact_mut(4) {
+                    pixel.copy_from_slice(after);
+                }
+            }
+        }
+        Some((width, p.height * scale))
+    }
+
+    /// RGBA counterpart of `presented_argb` for browser and image frontends.
+    pub fn presented_rgba(
+        &self,
+        guest: &[u8],
+        with_overlays: &[u8],
+    ) -> Option<(u32, u32, Vec<u8>)> {
+        let p = self.presentation.as_ref()?;
+        let logical_width = p.logical_width();
+        if guest.len() != (logical_width * p.height * 4) as usize
+            || with_overlays.len() != guest.len()
+        {
+            return None;
+        }
+        let width = logical_width * p.scale;
+        let mut pixels: Vec<u8> = p
+            .render_pixels(|c| [c[0], c[1], c[2], 255])
+            .into_iter()
+            .flatten()
+            .collect();
+        for (index, (before, after)) in guest
+            .chunks_exact(4)
+            .zip(with_overlays.chunks_exact(4))
+            .enumerate()
+        {
+            if before == after {
+                continue;
+            }
+            let x = index as u32 % logical_width;
+            let y = index as u32 / logical_width;
+            for dy in 0..p.scale {
+                let start = ((y * p.scale + dy) * width + x * p.scale) as usize * 4;
+                for pixel in pixels[start..start + p.scale as usize * 4].chunks_exact_mut(4) {
+                    pixel.copy_from_slice(after);
+                }
+            }
+        }
+        Some((width, p.height * p.scale, pixels))
+    }
+
+    /// Start an indexed outline surface at 2x through 4x resolution.
+    /// Frontends normally use `prepare_outline_presentation` to track mode changes.
+    pub fn enable_outline_presentation(
+        &mut self,
+        screen: (u32, u32, u16, u16, u16),
+        palette: [[u8; 3]; 256],
+        scale: u32,
+    ) {
+        let (base, row_bytes, width, height, depth) = screen;
+        assert!(matches!(depth, 8 | 16 | 32));
+        let width = u32::from(width) * u32::from(depth / 8);
+        assert!((2..=4).contains(&scale));
+        assert!(width > 0 && height > 0 && row_bytes >= u32::from(width));
+        assert!(
+            u64::from(base) + u64::from(row_bytes) * u64::from(height)
+                <= u64::from(self.ram_size())
+        );
+        let retained = self.presentation.as_mut().and_then(|mut previous| {
+            (previous.depth == depth && previous.scale == scale).then(|| {
+                (
+                    std::mem::take(&mut previous.offscreen),
+                    previous.glyph_count,
+                )
+            })
+        });
+        let mut presentation = Presentation {
+            revision: 0,
+            cpu_copy: Default::default(),
+            restored_dialog: None,
+            output_cache: std::cell::RefCell::new(None),
+            offscreen: BTreeMap::new(),
+            base,
+            row_bytes,
+            width: width.into(),
+            height: height.into(),
+            depth,
+            direct_palettes: std::array::from_fn(|lane| {
+                std::array::from_fn(|i| {
+                    let byte = i as u8;
+                    let expand = |v: u8| (v << 3) | (v >> 2);
+                    match (depth, lane) {
+                        (16, 0) => [expand((byte >> 2) & 31), (byte & 3) * 66, 0],
+                        (16, 1) => [0, ((byte >> 5) & 7) * 8 + (byte >> 7), expand(byte & 31)],
+                        (32, 1) => [byte, 0, 0],
+                        (32, 2) => [0, byte, 0],
+                        (32, 3) => [0, 0, byte],
+                        _ => [0; 3],
+                    }
+                })
+            }),
+            scale,
+            palette,
+            pixels: vec![0; width as usize * height as usize * scale as usize * scale as usize * 3],
+            pixel_indices: vec![
+                0;
+                width as usize * height as usize * scale as usize * scale as usize
+            ],
+            guest_values: vec![256; width as usize * height as usize],
+            text_cells: vec![false; width as usize * height as usize],
+            detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
+            ink: HashMap::new(),
+            run_ink: HashSet::new(),
+            offscreen_run_ink: HashSet::new(),
+            in_text_run: false,
+            erasing_text: false,
+            glyph: None,
+            glyph_count: 0,
+        };
+        for y in 0..u32::from(height) {
+            for x in 0..u32::from(width) {
+                let address = base + y * row_bytes + x;
+                presentation.write(address, self.read_byte(address));
+            }
+        }
+        if let Some((offscreen, glyph_count)) = retained {
+            presentation.offscreen = offscreen;
+            presentation.glyph_count = glyph_count;
+        }
+        self.presentation.set(Some(presentation));
+    }
+
+    /// Return the real guest's presentation capture and number of outline draws.
+    pub fn outline_presentation_rgb(&self) -> Option<(u32, u32, Vec<u8>, usize)> {
+        let p = self.presentation.as_ref()?;
+        Some((
+            p.logical_width() * p.scale,
+            p.height * p.scale,
+            p.render_pixels(|rgb| rgb).into_iter().flatten().collect(),
+            p.glyph_count,
+        ))
+    }
+
+    pub(crate) fn begin_presentation_text_run(&mut self, opaque: bool) {
+        self.presentation.begin_presentation_text_run(opaque);
+    }
+    pub(crate) fn end_presentation_text_run(&mut self) {
+        self.presentation.end_presentation_text_run();
+    }
+    pub(crate) fn begin_outline_glyph(
+        &mut self,
+        glyph: &Glyph,
+        data: &[u8],
+        x: i16,
+        y: i16,
+        bold: bool,
+        italic: Option<i16>,
+        underline: Option<(i16, i16)>,
+    ) {
+        self.presentation
+            .begin_outline_glyph(glyph, data, x, y, bold, italic, underline);
+    }
+    pub(crate) fn style_outline_glyph(
+        &mut self,
+        style: crate::quickdraw::text::QuickDrawTextStyle,
+    ) {
+        self.presentation.style_outline_glyph(style);
+    }
+    pub(crate) fn end_outline_glyph(&mut self) {
+        self.presentation.end_outline_glyph();
+    }
+}
+impl PresentationSlot {
+    pub(crate) fn begin_presentation_text_run(&mut self, opaque: bool) {
+        if let Some(mut p) = self.as_mut() {
+            p.run_ink.clear();
+            p.offscreen_run_ink.clear();
+            p.in_text_run = opaque;
+        }
+    }
+
+    pub(crate) fn end_presentation_text_run(&mut self) {
+        if let Some(mut p) = self.as_mut() {
+            p.run_ink.clear();
+            p.offscreen_run_ink.clear();
+            p.in_text_run = false;
+        }
+    }
+
+    pub(crate) fn begin_outline_glyph(
+        &mut self,
+        glyph: &Glyph,
+        data: &[u8],
+        x: i16,
+        y: i16,
+        bold: bool,
+        italic_descent: Option<i16>,
+        underline: Option<(i16, i16)>,
+    ) {
+        let Some(mut p) = self.as_mut() else {
+            return;
+        };
+        if let Some(mut outline) = outline::presentation_glyph(glyph, data, p.scale) {
+            if let Some(descent) = italic_descent {
+                // Apply the shared QuickDraw shear on the physical grid rather
+                // than enlarging the already sheared one-bit strike.
+                let bottom = (i32::from(descent) - 1) * p.scale as i32;
+                let shift = |row: i32| (bottom - outline.top - row).max(0) / 2;
+                let width = outline.width + shift(0);
+                let mut pixels = vec![0; (width * outline.height) as usize];
+                for row in 0..outline.height {
+                    let src = (row * outline.width) as usize;
+                    let dst = (row * width + shift(row)) as usize;
+                    pixels[dst..dst + outline.width as usize]
+                        .copy_from_slice(&outline.pixels[src..src + outline.width as usize]);
+                }
+                outline.width = width;
+                outline.pixels = pixels;
+            }
+            if bold && outline.width > 0 {
+                let width = outline.width + p.scale as i32;
+                let mut pixels = vec![0; (width * outline.height) as usize];
+                for y in 0..outline.height {
+                    for x in 0..outline.width {
+                        let alpha = outline.pixels[(y * outline.width + x) as usize];
+                        for shift in 0..=p.scale as i32 {
+                            let dst = &mut pixels[(y * width + x + shift) as usize];
+                            *dst = (*dst).max(alpha);
+                        }
+                    }
+                }
+                outline.width = width;
+                outline.pixels = pixels;
+            }
+            if let Some((advance, thickness)) = underline {
+                let scale = p.scale as i32;
+                let left = outline.left.min(0);
+                let top = outline.top.min(scale);
+                let right = (outline.left + outline.width).max(i32::from(advance) * scale);
+                let bottom = (outline.top + outline.height).max((1 + i32::from(thickness)) * scale);
+                let width = right - left;
+                let height = bottom - top;
+                let mut pixels = vec![0; (width * height) as usize];
+                // Underlines break around descenders. Measure their coverage at
+                // the physical resolution, keeping a one-guest-pixel clearance.
+                let mut descenders = vec![false; width as usize];
+                for row in 0..outline.height {
+                    for col in 0..outline.width {
+                        let alpha = outline.pixels[(row * outline.width + col) as usize];
+                        let px = outline.left + col - left;
+                        let py = outline.top + row - top;
+                        pixels[(py * width + px) as usize] = alpha;
+                        if outline.top + row >= 0 && alpha >= 128 {
+                            for nearby in (px - scale).max(0)..=(px + scale).min(width - 1) {
+                                descenders[nearby as usize] = true;
+                            }
+                        }
+                    }
+                }
+                for px in -left..i32::from(advance) * scale - left {
+                    if !descenders[px as usize] {
+                        for py in scale - top..(1 + i32::from(thickness)) * scale - top {
+                            pixels[(py * width + px) as usize] = 255;
+                        }
+                    }
+                }
+                outline = OutlineGlyph {
+                    pixels,
+                    width,
+                    height,
+                    left,
+                    top,
+                };
+            }
+            p.glyph = Some((outline, x, y));
+            p.glyph_count += 1;
+        }
+    }
+
+    /// Synthesize hollow outline/shadow masks on the physical grid using the
+    /// same smear-and-remove rule as the logical QuickDraw renderer.
+    pub(crate) fn style_outline_glyph(
+        &mut self,
+        style: crate::quickdraw::text::QuickDrawTextStyle,
+    ) {
+        let Some(mut p) = self.as_mut() else {
+            return;
+        };
+        let p = &mut *p;
+        let Some((glyph, _, _)) = &mut p.glyph else {
+            return;
+        };
+        let Some(radius) = style.smear_max() else {
+            return;
+        };
+        let scale = p.scale as i32;
+        let pad = scale;
+        let width = glyph.width + pad + radius * scale;
+        let height = glyph.height + pad + radius * scale;
+        let mut pixels = vec![0u8; (width * height) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let mut alpha = 0;
+                for dy in -scale..=radius * scale {
+                    for dx in -scale..=radius * scale {
+                        let gx = x - pad - dx;
+                        let gy = y - pad - dy;
+                        if gx >= 0 && gy >= 0 && gx < glyph.width && gy < glyph.height {
+                            alpha = alpha.max(glyph.pixels[(gy * glyph.width + gx) as usize]);
+                        }
+                    }
+                }
+                let gx = x - pad;
+                let gy = y - pad;
+                if gx >= 0 && gy >= 0 && gx < glyph.width && gy < glyph.height {
+                    alpha = alpha.saturating_sub(glyph.pixels[(gy * glyph.width + gx) as usize]);
+                }
+                pixels[(y * width + x) as usize] = alpha;
+            }
+        }
+        glyph.left -= pad;
+        glyph.top += style.glyph_y_offset() * scale - pad;
+        glyph.width = width;
+        glyph.height = height;
+        glyph.pixels = pixels;
+    }
+
+    pub(crate) fn end_outline_glyph(&mut self) {
+        if let Some(mut p) = self.as_mut() {
+            p.glyph = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(super) fn bus() -> MacMemoryBus {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.fill_bytes(0x1000, 64, 255);
+        bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), palette, 2);
+        bus
+    }
+
+    fn paint_detail(bus: &mut MacMemoryBus, address: u32) {
+        bus.presentation.as_mut().unwrap().glyph = Some((
+            OutlineGlyph {
+                pixels: vec![64, 255, 0, 128],
+                width: 2,
+                height: 2,
+                left: 0,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        bus.outline_glyph_pixel(address, 0, 0, 0);
+        bus.write_byte(address, 0);
+        bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn cpu_pixel_save_restore_keeps_coverage_and_real_erases_remove_it() {
+        for (opcode, bytes) in [(0x12d8, 1), (0x32d8, 2), (0x22d8, 4)] {
+            for cpu_type in [m68k::CpuType::M68000, m68k::CpuType::M68020] {
+                let mut bus = bus();
+                paint_detail(&mut bus, 0x1000);
+                let original = bus.presentation.as_ref().unwrap().detail(0x1000).unwrap();
+                let mut cpu = m68k::CpuCore::new();
+                cpu.set_cpu_type(cpu_type);
+                bus.write_word(0x200, opcode);
+                bus.write_word(0x202, opcode);
+                bus.write_word(0x204, 0x4e71);
+                cpu.pc = 0x200;
+                cpu.set_a(0, 0x1000);
+                cpu.set_a(1, 0x8000);
+                assert_eq!(cpu.run_batch(&mut bus, 1, &[]).instructions, 1);
+                assert_eq!(
+                    bus.presentation.as_ref().unwrap().detail(0x8000),
+                    Some(original.clone())
+                );
+
+                // A sprite overwrites the screen, then restores its saved background.
+                bus.fill_bytes(0x1000, bytes, 255);
+                assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
+                cpu.set_a(0, 0x8000);
+                cpu.set_a(1, 0x1000);
+                assert_eq!(cpu.run_batch(&mut bus, 1, &[]).instructions, 1);
+                assert_eq!(
+                    bus.presentation.as_ref().unwrap().detail(0x1000),
+                    Some(original)
+                );
+
+                // An ordinary store of the same logical byte is still an erase.
+                let value = bus.read_byte(0x1000);
+                bus.write_byte(0x1000, value);
+                assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_copy_does_not_resurrect_detail_invalidated_in_the_saved_background() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        bus.begin_cpu_pixel_copy(0x1000, 4);
+        let value = bus.read_long(0x1000);
+        bus.write_long(0x8000, value);
+        bus.end_cpu_pixel_copy(Some(0x8000));
+        bus.write_byte(0x8000, bus.read_byte(0x8000));
+        bus.begin_cpu_pixel_copy(0x8000, 4);
+        bus.write_long(0x1000, value);
+        bus.end_cpu_pixel_copy(Some(0x1000));
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
+    }
+
+    #[test]
+    fn output_scales_match_full_coverage_resampling_for_both_pixel_orders() {
+        for (depth, retained) in [8u16, 16, 32]
+            .into_iter()
+            .flat_map(|depth| (2..=4).map(move |retained| (depth, retained)))
+        {
+            let mut bus = bus();
+            let lanes = u32::from(depth / 8);
+            bus.enable_outline_presentation(
+                (0x1000, 8 * lanes, 8, 8, depth),
+                std::array::from_fn(|i| [i as u8; 3]),
+                retained,
+            );
+            paint_detail(&mut bus, 0x1000);
+            let guest = vec![0xff123456; 64];
+            let mut overlay = guest.clone();
+            overlay[7] = 0xffabcdef;
+            let (w, h, full) = bus.presented_argb(&guest, &overlay).unwrap();
+            let rgba = |pixels: &[u32]| {
+                pixels
+                    .iter()
+                    .flat_map(|p| {
+                        [
+                            (*p >> 16) as u8,
+                            (*p >> 8) as u8,
+                            *p as u8,
+                            (*p >> 24) as u8,
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for scale in 1..=4 {
+                let mut expected = Vec::new();
+                crate::display::resize_argb_coverage(
+                    &full,
+                    (w, h),
+                    (8 * scale, 8 * scale),
+                    &mut expected,
+                );
+                let mut actual = Vec::new();
+                assert_eq!(
+                    bus.presented_argb_scaled(&guest, &overlay, scale, &mut actual),
+                    Some((8 * scale, 8 * scale))
+                );
+                assert_eq!(actual, expected, "depth={depth} scale={scale}");
+                let mut actual_rgba = Vec::new();
+                bus.presented_rgba_scaled(&rgba(&guest), &rgba(&overlay), scale, &mut actual_rgba)
+                    .unwrap();
+                assert_eq!(actual_rgba, rgba(&expected));
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_output_cache_tracks_writes_restores_palette_and_overlay_removal() {
+        let mut bus = bus();
+        let screen = (0x1000, 8, 8, 8, 8);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation(screen, palette);
+        paint_detail(&mut bus, 0x1000);
+        let saved = bus.save_pixel_bytes(0x1000, 64);
+        let guest = [0; 64];
+        let mut output = Vec::new();
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        let expected = output.clone();
+        let mut overlay = guest;
+        overlay[0] = 0xffabcdef;
+        bus.presented_argb_scaled(&guest, &overlay, 2, &mut output)
+            .unwrap();
+        assert_ne!(output, expected);
+        output.clear();
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_eq!(output, expected);
+        bus.write_byte(0x1000, bus.read_byte(0x1000));
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_ne!(output, expected);
+        bus.restore_saved_pixels(0x1000, &saved, 0, 64);
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_eq!(output, expected);
+        let mut changed_palette = palette;
+        changed_palette[0] = [255, 0, 0];
+        bus.prepare_outline_presentation(screen, changed_palette);
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_ne!(output, expected);
+    }
+
+    #[test]
+    fn unchanged_palette_and_snapshot_preserve_modal_filter_epoch() {
+        let mut bus = bus();
+        let screen = (0x1000, 8, 8, 8, 8);
+        let mut palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation(screen, palette);
+        paint_detail(&mut bus, 0x1000);
+        let epoch = bus.presentation_epoch();
+        for _ in 0..10 {
+            bus.prepare_outline_presentation(screen, palette);
+            let saved = bus.save_pixel_bytes(0x1000, 2);
+            bus.remember_dialog_snapshot(&saved, (0, 0, 1, 2));
+            assert_eq!(bus.presentation_epoch(), epoch);
+        }
+        palette[0] = [200, 0, 0];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_ne!(bus.presentation_epoch(), epoch);
+    }
+
+    #[test]
+    fn dialog_snapshot_reuse_observes_drawing_and_snapshot_mutation() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let saved = bus.save_pixel_bytes(0x1000, 2);
+        let rect = (0, 0, 1, 2);
+        bus.remember_dialog_snapshot(&saved, rect);
+        assert!(bus.dialog_snapshot_is_current(&saved.clone(), rect));
+        assert!(!bus.dialog_snapshot_is_current(&saved, (1, 0, 2, 2)));
+        let _ = bus.save_pixel_bytes(0x1000, 2);
+        bus.write_byte(0x1001, 255);
+        assert!(bus.dialog_snapshot_is_current(&saved, rect));
+        let mut changed = saved.clone();
+        changed[0] = 1;
+        assert!(!bus.dialog_snapshot_is_current(&changed, rect));
+        // Even a same-byte write over a glyph discards its subpixel coverage.
+        bus.write_byte(0x1000, bus.read_byte(0x1000));
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect));
+        bus.restore_saved_pixels(0x1000, &saved, 0, 2);
+        bus.remember_dialog_snapshot(&saved, rect);
+        paint_detail(&mut bus, 0x1000);
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect));
+    }
+
+    #[test]
+    fn equal_native_redraw_reuses_the_new_cell_identity() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let original = bus.save_pixel_bytes(0x1000, 2);
+        let replacement = Arc::new((*original.detail[&0]).clone());
+        let p = bus.presentation.as_ref().unwrap();
+        assert!(p.matches_detail(0x1000, Some(&replacement)));
+        assert!(Arc::ptr_eq(
+            p.detail_cache.borrow()[0].as_ref().unwrap(),
+            &replacement
+        ));
+    }
+
+    #[test]
+    fn bulk_native_erase_discards_only_touched_outline_cells() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x2000);
+        paint_detail(&mut bus, 0x2010);
+        let before = bus.save_pixel_bytes(0x2010, 2);
+        bus.presentation.write_bytes(0x2000, &[255; 16]);
+        assert!(bus.save_pixel_bytes(0x2000, 2).detail.is_empty());
+        assert_eq!(bus.save_pixel_bytes(0x2010, 2).detail, before.detail);
+        let revision = bus.presentation_epoch();
+        bus.presentation.write_bytes(0x2000, &[255; 16]);
+        assert_eq!(bus.presentation_epoch(), revision);
+    }
+
+    #[test]
+    fn snapshots_share_detail_until_drawing_changes_the_cell() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let before = bus.save_pixel_bytes(0x1000, 2);
+        let repeated = bus.save_pixel_bytes(0x1000, 2);
+        assert!(Arc::ptr_eq(&before.detail[&0], &repeated.detail[&0]));
+        bus.restore_saved_pixels(0x1000, &before, 0, 2);
+        let restored = bus.save_pixel_bytes(0x1000, 2);
+        assert!(Arc::ptr_eq(&before.detail[&0], &restored.detail[&0]));
+        bus.write_byte(0x1000, 255);
+        assert!(bus.save_pixel_bytes(0x1000, 2).detail.get(&0).is_none());
+        paint_detail(&mut bus, 0x1000);
+        let repainted = bus.save_pixel_bytes(0x1000, 2);
+        assert!(!Arc::ptr_eq(&before.detail[&0], &repainted.detail[&0]));
+        assert_eq!(before.detail[&0], repeated.detail[&0]);
+    }
+
+    #[test]
+    fn shared_row_copy_retains_native_detail_in_indexed_and_direct_formats() {
+        use crate::copy_bits::{BytePixmap, RowCopy, RowCopyOutcome};
+        for depth in [8u32, 16, 32] {
+            let mut bus = bus();
+            let lanes = depth / 8;
+            bus.enable_outline_presentation(
+                (0x1000, 8 * lanes, 8, 8, depth as u16),
+                std::array::from_fn(|i| [i as u8; 3]),
+                2,
+            );
+            let mut memory = crate::memory::GuestAddressSpace::new();
+            let source = 0x0100_0000;
+            let destination = source + 32;
+            memory.add_region(source, vec![255; 64]);
+            bus.attach_guest_address_space(memory.shared_view());
+            paint_detail(&mut bus, source);
+            let mut expected = bus.save_pixel_bytes(source, (2 * lanes) as usize);
+            let palette: [u8; 256] = std::array::from_fn(|i| 255 - i as u8);
+            let translation = (depth == 8).then_some(&palette);
+            if let Some(palette) = translation {
+                expected.transform_detail(|_, byte| palette[byte as usize]);
+            }
+            let pixmap = |base| BytePixmap {
+                base,
+                row_bytes: 2 * lanes,
+                depth,
+                bounds: [0, 0, 1, 2],
+            };
+            assert_eq!(
+                RowCopy {
+                    mode: 0,
+                    source: pixmap(source),
+                    destination: pixmap(destination),
+                    source_rect: [0, 0, 1, 2],
+                    destination_rect: [0, 0, 1, 2],
+                    clip: [0, 0, 1, 2],
+                    palette: translation
+                }
+                .execute(&mut memory),
+                RowCopyOutcome::Completed
+            );
+            assert_eq!(
+                bus.presentation
+                    .as_ref()
+                    .unwrap()
+                    .detail(destination)
+                    .as_ref(),
+                expected.detail.get(&0)
+            );
+            memory.write_bytes(destination, &[0]).unwrap();
+            assert!(bus
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail(destination)
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn ordinary_pixels_expand_at_presentation_and_seed_new_glyphs() {
+        let mut bus = bus();
+        bus.write_long(0x1000, 0x20202020);
+        let before = bus.outline_presentation_rgb().unwrap().2;
+        assert_eq!(&before[..24], &[32; 24]);
+        paint_detail(&mut bus, 0x1000);
+        bus.presentation.as_mut().unwrap().glyph = Some((
+            OutlineGlyph {
+                pixels: vec![255],
+                width: 1,
+                height: 1,
+                left: 0,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        bus.write_byte(0x1001, 0);
+        bus.end_outline_glyph();
+        let first = bus.outline_presentation_rgb().unwrap().2;
+        assert_eq!(
+            &first[6..12],
+            &[32; 6],
+            "logical-only ink must retain its background"
+        );
+        assert_eq!(
+            &first[..3],
+            &[24; 3],
+            "25% black over the latest image pixel"
+        );
+        bus.write_word(0x1000, 0x4040);
+        let cleared = bus.outline_presentation_rgb().unwrap().2;
+        assert_eq!(&cleared[..12], &[64; 12]);
+        paint_detail(&mut bus, 0x1000);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..3], &[48; 3]);
+        // Ordinary writes must not replace neighboring retained glyph samples.
+        let glyph = bus.presentation.as_ref().unwrap().detail(0x1000);
+        bus.write_byte(0x1001, 99);
+        assert_eq!(bus.presentation.as_ref().unwrap().detail(0x1000), glyph);
+    }
+
+    #[test]
+    fn bulk_memory_paths_invalidate_only_overlapping_offscreen_detail() {
+        let mut bus = bus();
+        for write in [
+            |b: &mut MacMemoryBus| b.write_word(0x2000, 0),
+            |b: &mut MacMemoryBus| b.write_long(0x1ffe, 0),
+            |b: &mut MacMemoryBus| b.write_bytes(0x1fff, &[0; 4]),
+            |b: &mut MacMemoryBus| b.fill_zeros(0x2000, 4),
+            |b: &mut MacMemoryBus| b.fill_bytes(0x1fff, 4, 0),
+            |b: &mut MacMemoryBus| {
+                assert!(b.copy_ram_bytes(0x3000, 0x2000, 4));
+            },
+        ] {
+            paint_detail(&mut bus, 0x2000);
+            let p = bus.presentation.as_ref().unwrap();
+            assert!(!p.observes_range(0x3000, 0x1000));
+            assert!(p.observes_range(0x1fff, 2));
+            assert!(!p.observes_range(0x2000, 0));
+            drop(p);
+            bus.fill_bytes(0x3000, 0x1000, 0);
+            assert!(bus.presentation.as_ref().unwrap().detail(0x2000).is_some());
+            write(&mut bus);
+            assert!(bus.presentation.as_ref().unwrap().detail(0x2000).is_none());
+        }
+        paint_detail(&mut bus, 0x2000);
+        paint_detail(&mut bus, 0x1000);
+        let snapshot = bus.save_pixel_bytes(0x0fff, 0x1002);
+        assert_eq!(snapshot.detail.len(), 2);
+        assert!(snapshot.detail.contains_key(&1));
+        assert!(snapshot.detail.contains_key(&0x1001));
+    }
+
+    #[test]
+    fn screen_snapshot_ignores_detail_from_an_old_offscreen_mapping() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x2000);
+        let stale = bus.presentation.as_ref().unwrap().detail(0x2000).unwrap();
+        bus.presentation
+            .as_mut()
+            .unwrap()
+            .offscreen
+            .insert(0x1000, stale);
+        let original = bus.outline_presentation_rgb().unwrap().2;
+        let saved = bus.save_pixel_bytes(0x1000, 8);
+        assert!(saved.detail.is_empty());
+        bus.fill_bytes(0x1000, 8, 42);
+        bus.restore_saved_pixels(0x1000, &saved, 0, 8);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, original);
+    }
+
+    #[test]
+    fn snapshots_restore_covered_ink_and_clear_ink_absent_from_snapshot() {
+        let mut bus = bus();
+        let blank = bus.save_pixel_bytes(0x1000, 8);
+        paint_detail(&mut bus, 0x1000);
+        let expected = bus.outline_presentation_rgb().unwrap().2;
+        let saved = bus.save_pixel_bytes(0x1000, 8).clone();
+        bus.fill_bytes(0x1000, 8, 42);
+        bus.restore_saved_pixels(0x1000, &saved, 0, 8);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+        // Restore blank pixels even where their guest byte matches a glyph's
+        // empty logical cell: no stale subpixel ink may remain behind.
+        bus.restore_saved_pixels(0x1000, &blank, 0, 8);
+        assert!(bus.presentation.as_ref().unwrap().ink.is_empty());
+        assert!(bus
+            .outline_presentation_rgb()
+            .unwrap()
+            .2
+            .iter()
+            .all(|&v| v == 255));
+    }
+
+    #[test]
+    fn offscreen_round_trip_overlap_and_palette_translation_preserve_detail() {
+        let mut bus = bus();
+        bus.write_byte(0x2000, 255);
+        paint_detail(&mut bus, 0x2000);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x2000).is_some());
+        bus.block_move(0x2000, 0x1000, 1);
+        let original = bus.presentation.as_ref().unwrap().detail(0x1000).unwrap();
+        assert!(bus.copy_ram_bytes(0x1000, 0x1001, 7));
+        assert_eq!(
+            bus.presentation.as_ref().unwrap().detail(0x1001),
+            Some(original.clone())
+        );
+        let table = std::array::from_fn(|i| 255 - i as u8);
+        assert!(bus.copy_mapped_ram_bytes(0x1001, 0x2001, 1, &table));
+        assert!(bus.copy_mapped_ram_bytes(0x2001, 0x1002, 1, &table));
+        assert_eq!(
+            bus.presentation.as_ref().unwrap().detail(0x1002),
+            Some(original)
+        );
+        bus.write_byte(0x2002, 255);
+        bus.presentation.as_mut().unwrap().glyph = Some((
+            OutlineGlyph {
+                pixels: vec![0; 4],
+                width: 2,
+                height: 2,
+                left: 0,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        bus.outline_glyph_pixel(0x2002, 0, 0, 0);
+        bus.write_byte(0x2002, 0);
+        bus.end_outline_glyph();
+        bus.block_move(0x2002, 0x1003, 1);
+        assert_eq!(
+            &bus.outline_presentation_rgb().unwrap().2[18..24],
+            &[255; 6],
+            "a logical ink pixel with zero physical coverage must stay clear after copying"
+        );
+        // Guest overwrites must invalidate offscreen metadata, including equal bytes.
+        bus.write_byte(0x2000, 0);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x2000).is_none());
+    }
+
+    #[test]
+    fn indexed_transfers_keep_edges_and_identical_xor_clears_them() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let expected = bus.outline_presentation_rgb().unwrap().2;
+        let saved = bus.save_pixel_bytes(0x1000, 1);
+        assert!(bus.transfer_saved_pixel(0x1000, &saved, 0, |_, s, d| s | d));
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+        assert!(bus.transfer_saved_pixel(0x1000, &saved, 0, |_, s, d| s ^ d));
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..6], &[0; 6]);
+        // Transparent source background reveals destination coverage.
+        bus.restore_saved_pixels(0x1000, &saved, 0, 1);
+        let transparent = vec![255].into();
+        assert!(
+            bus.transfer_saved_pixel(0x1000, &transparent, 0, |_, s, d| if s == 255 {
+                d
+            } else {
+                s
+            })
+        );
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+    }
+
+    #[test]
+    fn palette_changes_preserve_coverage_and_distinct_indexes_with_equal_colors() {
+        let mut bus = bus();
+        let mut palette = [[0; 3]; 256];
+        palette[255] = [255; 3];
+        let screen = (0x1000, 8, 8, 8, 8);
+        bus.prepare_outline_presentation(screen, palette);
+        let mut p = bus.presentation.as_mut().unwrap();
+        p.glyph = Some((
+            OutlineGlyph {
+                pixels: vec![128, 255, 0, 0],
+                width: 4,
+                height: 1,
+                left: 0,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        p.glyph_pixel(0x1000, 0, 0, 0, 255);
+        p.glyph.as_mut().unwrap().0.pixels[1] = 0;
+        p.glyph_pixel(0x1000, 0, 0, 2, 255);
+        p.glyph = None;
+        drop(p);
+        // Both foreground indexes were black when drawn. Retaining only RGB
+        // cannot distinguish them after the CLUT assigns different colors.
+        palette[0] = [255, 0, 0];
+        palette[2] = [0, 0, 255];
+        palette[255] = [0, 255, 0];
+        bus.prepare_outline_presentation(screen, palette);
+        let (_, _, rgb, _) = bus.outline_presentation_rgb().unwrap();
+        assert_eq!(&rgb[..9], &[64, 63, 128, 255, 0, 0, 0, 255, 0]);
+        let original_byte = bus.read_byte(0x1000);
+        bus.invert_screen_byte(0x1000);
+        assert_eq!(bus.read_byte(0x1000), !original_byte);
+        assert_ne!(bus.outline_presentation_rgb().unwrap().2, rgb);
+        bus.invert_screen_byte(0x1000);
+        assert_eq!(bus.read_byte(0x1000), original_byte);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, rgb);
+        // A same-value guest erase still discards coverage after recoloring.
+        bus.write_byte(0x1000, 255);
+        palette[255] = [255; 3];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..12], &[255; 12]);
+    }
+
+    #[test]
+    fn default_surface_preserves_overlay_coordinates_and_invalidates_changed_modes() {
+        let mut bus = bus();
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation((0x1000, 8, 8, 8, 8), palette);
+        // The default path replaces an explicitly configured 2x surface.
+        let guest = vec![0xffffffff; 64];
+        let mut overlay = guest.clone();
+        overlay[10] = 0xff123456;
+        let (width, height, pixels) = bus.presented_argb(&guest, &overlay).unwrap();
+        assert_eq!((width, height), (32, 32));
+        assert_eq!(pixels[4 * 32 + 8], 0xff123456);
+        assert_eq!(pixels[7 * 32 + 11], 0xff123456);
+        assert_eq!(pixels[4 * 32 + 12], 0xffffffff);
+        bus.prepare_outline_presentation((0x1000, 8, 8, 8, 1), palette);
+        assert!(!bus.has_outline_presentation());
+        bus.prepare_outline_presentation((0x1000, 8, 8, 8, 8), palette);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().0, 32);
+    }
+
+    #[test]
+    fn clipped_coverage_blends_over_background_and_later_writes_erase_it() {
+        let mut bus = bus();
+        let mut p = bus.presentation.as_mut().unwrap();
+        p.glyph = Some((
+            OutlineGlyph {
+                pixels: vec![128; 8],
+                width: 4,
+                height: 2,
+                left: 0,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        assert_eq!(p.glyph_bounds(), Some((0, 0, 1, 2)));
+        // Only the first logical cell survives the caller's clipping region.
+        p.glyph_pixel(0x1000, 0, 0, 0, 255);
+        p.glyph_pixel(0x1000, 0, 0, 0, 255); // Repainting must not darken the edge.
+        drop(p);
+        bus.write_byte(0x1000, 0); // Guest ink must not replace the blended plane.
+        bus.end_outline_glyph();
+        let (_, _, rgb, _) = bus.outline_presentation_rgb().unwrap();
+        assert_eq!(&rgb[0..6], &[127; 6]);
+        assert_eq!(&rgb[6..12], &[255; 6]);
+        assert_eq!(bus.read_byte(0x1000), 0);
+        bus.write_byte(0x1000, 0); // Even a same-value later write invalidates ink.
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[0..6], &[0; 6]);
+    }
+
+    #[test]
+    fn text_run_overhang_survives_adjacent_erase_but_not_a_new_run() {
+        let mut bus = bus();
+        bus.begin_presentation_text_run(true);
+        let mut p = bus.presentation.as_mut().unwrap();
+        p.glyph = Some((
+            OutlineGlyph {
+                pixels: vec![128; 4],
+                width: 2,
+                height: 2,
+                left: 2,
+                top: 0,
+            },
+            0,
+            0,
+        ));
+        p.glyph_pixel(0x1001, 1, 0, 0, 255);
+        drop(p);
+        bus.end_outline_glyph();
+        bus.presentation.as_mut().unwrap().erasing_text = true;
+        bus.write_byte(0x1001, 255);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[6..12], &[127; 6]);
+        assert_eq!(bus.read_byte(0x1001), 255);
+        bus.end_presentation_text_run();
+        bus.begin_presentation_text_run(true);
+        bus.write_byte(0x1001, 255);
+        assert_eq!(&bus.outline_presentation_rgb().unwrap().2[6..12], &[255; 6]);
+    }
+
+    #[test]
+    fn rgba_and_argb_frontends_present_identical_pixels_and_overlay_positions() {
+        let mut bus = bus();
+        for depth in [8, 16, 32] {
+            let lanes = u32::from(depth / 8);
+            bus.enable_outline_presentation((0x1000, 8 * lanes, 8, 8, depth), [[255; 3]; 256], 4);
+            let guest = vec![0xffffffff; 64];
+            let mut overlay = guest.clone();
+            overlay[19] = 0xff12ab34;
+            let rgba = |pixels: &[u32]| {
+                pixels
+                    .iter()
+                    .flat_map(|p| {
+                        let [a, r, g, b] = p.to_be_bytes();
+                        [r, g, b, a]
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (w, h, argb) = bus.presented_argb(&guest, &overlay).unwrap();
+            let presented = bus.presented_rgba(&rgba(&guest), &rgba(&overlay)).unwrap();
+            assert_eq!(presented, (w, h, rgba(&argb)));
+            assert_eq!(argb[(2 * 4 * w + 3 * 4) as usize], 0xff12ab34);
+        }
+    }
+
+    #[test]
+    fn direct_color_planes_decode_guest_bytes_and_preserve_owned_detail() {
+        for depth in [16, 32] {
+            let mut bus = bus();
+            let lanes = u32::from(depth / 8);
+            bus.enable_outline_presentation((0x1000, 8 * lanes, 8, 8, depth), [[0; 3]; 256], 4);
+            let white = if depth == 16 {
+                vec![0x7f, 0xff]
+            } else {
+                vec![0, 255, 255, 255]
+            };
+            bus.write_bytes(0x1000, &white);
+            assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..12], &[255; 12]);
+            {
+                let mut p = bus.presentation.as_mut().unwrap();
+                p.glyph = Some((
+                    OutlineGlyph {
+                        pixels: vec![128; 16],
+                        width: 4,
+                        height: 4,
+                        left: 0,
+                        top: 0,
+                    },
+                    0,
+                    0,
+                ));
+                for lane in 0..lanes {
+                    p.glyph_pixel(0x1000 + lane, 0, 0, 0, white[lane as usize]);
+                }
+            }
+            bus.write_bytes(0x1000, &vec![0; lanes as usize]);
+            bus.end_outline_glyph();
+            let capture = bus.outline_presentation_rgb().unwrap().2;
+            assert!(capture[..12].iter().all(|&v| (126..=128).contains(&v)));
+            let saved = bus.save_pixel_bytes(0x1000, lanes as usize);
+            bus.write_bytes(0x1000, &vec![0; lanes as usize]);
+            assert_eq!(&bus.outline_presentation_rgb().unwrap().2[..12], &[0; 12]);
+            bus.restore_saved_pixels(0x1000, &saved, 0, lanes as usize);
+            assert_eq!(bus.outline_presentation_rgb().unwrap().2, capture);
+        }
+    }
+
+    #[test]
+    fn four_times_capture_has_four_times_the_linear_resolution() {
+        let mut bus = bus();
+        bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), [[255; 3]; 256], 4);
+        let (w, h, pixels, _) = bus.outline_presentation_rgb().unwrap();
+        assert_eq!((w, h, pixels.len()), (32, 32, 32 * 32 * 3));
+    }
+
+    #[test]
+    fn bulk_writes_and_overlapping_copies_update_both_planes() {
+        let mut bus = bus();
+        bus.write_word(0x1000, 0x1020);
+        bus.write_long(0x1002, 0x30405060);
+        bus.write_bytes(0x1006, &[0x70, 0x80]);
+        assert!(bus.copy_ram_bytes(0x1000, 0x1001, 7));
+        let expected = [0x10, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70];
+        assert_eq!(bus.read_bytes(0x1000, 8), expected);
+        let rgb = bus.outline_presentation_rgb().unwrap().2;
+        for (i, value) in expected.iter().enumerate() {
+            assert_eq!(&rgb[i * 6..i * 6 + 6], &[*value; 6]);
+        }
+        bus.fill_bytes_strided(0x1000, 2, 4, 42);
+        bus.fill_zeros(0x1008, 8);
+        bus.fill_bytes(0x1010, 8, 99);
+        let rgb = bus.outline_presentation_rgb().unwrap().2;
+        assert_eq!(&rgb[..6], &[42; 6]);
+        assert_eq!(&rgb[16 * 2 * 3..16 * 3 * 3], &[0; 48]);
+        assert_eq!(&rgb[16 * 4 * 3..16 * 5 * 3], &[99; 48]);
+        assert!(bus.fast_mem_window().is_none());
+    }
+
+    #[test]
+    fn native_outline_capture_preserves_logical_font_metrics() {
+        use crate::quickdraw::{fonts::FONT_GENEVA, text::get_glyph};
+        let mut bus = bus();
+        let (glyph, data) = get_glyph(FONT_GENEVA, 9, 'a').unwrap();
+        let advance = glyph.advance;
+        bus.begin_outline_glyph(glyph, data, 0, 7, false, None, None);
+        let p = bus.presentation.as_ref().unwrap();
+        let native = &p.glyph.as_ref().unwrap().0;
+        assert!(native.pixels.iter().any(|&a| a > 0 && a < 255));
+        assert!(native.height > i32::from(glyph.height));
+        let plain_width = native.width;
+        drop(p);
+        bus.begin_outline_glyph(glyph, data, 0, 7, false, Some(2), Some((advance as i16, 1)));
+        let p = bus.presentation.as_ref().unwrap();
+        let styled = &p.glyph.as_ref().unwrap().0;
+        assert!(styled.width > plain_width);
+        assert!(styled.top + styled.height >= 4);
+        assert!(styled.pixels.iter().any(|&a| a > 0 && a < 255));
+        assert_eq!(get_glyph(FONT_GENEVA, 9, 'a').unwrap().0.advance, advance);
+    }
+}

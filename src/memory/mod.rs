@@ -107,6 +107,16 @@ impl m68k::AddressBus for MacMemoryBus {
         MemoryBus::write_long(self, addr, val)
     }
 
+    #[inline]
+    fn begin_memory_copy(&mut self, source: u32, bytes: u32) -> bool {
+        self.begin_cpu_pixel_copy(source, bytes)
+    }
+
+    #[inline]
+    fn end_memory_copy(&mut self, destination: Option<u32>) {
+        self.end_cpu_pixel_copy(destination);
+    }
+
     /// Guest RAM is one flat side-effect-free array, so expose it all to
     /// the m68k batch loop. Returns `None` while bus-access diagnostics
     /// (tracers/watchpoints) are active so they keep seeing every access.
@@ -116,3 +126,6 @@ impl m68k::AddressBus for MacMemoryBus {
         Some(m68k::FastMem { ptr, base: 0, len })
     }
 }
+
+pub(crate) mod presentation;
+pub use presentation::SavedPixels;

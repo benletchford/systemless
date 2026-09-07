@@ -66,6 +66,39 @@ use winit::window::Window;
 use winit::window::WindowAttributes;
 use winit::window::WindowId;
 
+/// Opt-in stall diagnostics; disabled runs avoid reading the clock per phase.
+struct FramePhaseTimer {
+    phase: &'static str,
+    start: Option<std::time::Instant>,
+}
+
+impl FramePhaseTimer {
+    fn new(phase: &'static str) -> Self {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled =
+            *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PROFILE_FRAMES").is_some());
+        Self {
+            phase,
+            start: enabled.then(std::time::Instant::now),
+        }
+    }
+}
+
+impl Drop for FramePhaseTimer {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let elapsed = start.elapsed();
+            if elapsed >= std::time::Duration::from_millis(50) {
+                eprintln!(
+                    "[SLOW-FRAME] {}: {:.1} ms",
+                    self.phase,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+            }
+        }
+    }
+}
+
 /// Initial screen dimensions: 800x600 8bpp color mode by default.
 const INITIAL_SCREEN_WIDTH: u32 = 800;
 const INITIAL_SCREEN_HEIGHT: u32 = 600;
@@ -225,9 +258,9 @@ fn fit_window_size(
     )
 }
 
-/// Aim for a 960×720 logical-point content box, leaving room for desktop
-/// chrome on smaller monitors. DPI converts that box to physical pixels;
-/// guest resolution never changes the requested on-screen footprint.
+/// On macOS, start at one guest pixel per logical point. Other platforms
+/// target a 960×720-point box. Leave room for desktop chrome on small monitors
+/// and apply backing DPI once before fitting the content.
 fn automatic_window_size(
     width: u32,
     height: u32,
@@ -239,9 +272,13 @@ fn automatic_window_size(
     } else {
         1.0
     };
+    #[cfg(target_os = "macos")]
+    let logical_bounds = (f64::from(width.max(1)), f64::from(height.max(1)));
+    #[cfg(not(target_os = "macos"))]
+    let logical_bounds = (960.0, 720.0);
     let mut bounds = winit::dpi::PhysicalSize::new(
-        (960.0 * dpi).round().max(1.0) as u32,
-        (720.0 * dpi).round().max(1.0) as u32,
+        (logical_bounds.0 * dpi).round().max(1.0) as u32,
+        (logical_bounds.1 * dpi).round().max(1.0) as u32,
     );
     if let Some(monitor) = monitor.filter(|m| m.width > 0 && m.height > 0) {
         bounds.width = bounds.width.min((f64::from(monitor.width) * 0.8) as u32);
@@ -532,7 +569,7 @@ fn persist_content_rect(
 #[cfg(target_os = "macos")]
 fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
     attrs
-        .with_disallow_hidpi(true)
+        .with_disallow_hidpi(false)
         .with_accepts_first_mouse(true)
 }
 
@@ -678,6 +715,7 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
+    presentation_argb: Vec<u32>,
     #[cfg(target_os = "macos")]
     content_rect: Option<ContentRect>,
     #[cfg(target_os = "macos")]
@@ -712,7 +750,7 @@ struct App {
     #[cfg(target_os = "macos")]
     window_resize_events: u64,
     #[cfg(not(target_os = "macos"))]
-    scaled_row: Vec<u32>,
+    scaled_frame: Vec<u32>,
     runner: Option<FixtureRunner>,
     save_store: Option<DesktopSaveStore>,
     game_path: PathBuf,
@@ -838,6 +876,7 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
             frame_argb: Vec::new(),
+            presentation_argb: Vec::new(),
             #[cfg(target_os = "macos")]
             content_rect: cached_content.as_ref().map(|cache| cache.content),
             #[cfg(target_os = "macos")]
@@ -863,7 +902,7 @@ impl App {
             #[cfg(target_os = "macos")]
             window_resize_events: 0,
             #[cfg(not(target_os = "macos"))]
-            scaled_row: Vec::new(),
+            scaled_frame: Vec::new(),
             runner: None,
             save_store: None,
             game_path,
@@ -990,6 +1029,7 @@ impl App {
             );
         }
         game::init_game(&mut runner, &app);
+        runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
         // Configure the wall-clock-paced GUI from the loaded architecture's
@@ -1163,6 +1203,7 @@ impl App {
     }
 
     fn step_frame_with_clock(&mut self, mut host_now: impl FnMut() -> std::time::Instant) {
+        let _timing = FramePhaseTimer::new("CPU and audio frame");
         let Some(runner) = self.runner.as_ref() else {
             return;
         };
@@ -1220,12 +1261,12 @@ impl App {
             .unwrap_or(now);
 
         let slice_budget = game::MAX_INSTRUCTIONS_PER_FRAME;
-        let audio_interval = self
+        let presentation_interval = self
             .last_audio_mix_time
             .replace(now)
             .map(|previous| now.saturating_duration_since(previous))
-            .unwrap_or(FRAME_DURATION)
-            .min(MAX_AUDIO_MIX_INTERVAL);
+            .unwrap_or(FRAME_DURATION);
+        let audio_interval = presentation_interval.min(MAX_AUDIO_MIX_INTERVAL);
         let audio_samples =
             Self::audio_samples_for_duration(audio_interval, &mut self.audio_sample_remainder);
         if std::env::var_os("SYSTEMLESS_TRACE_AUDIO").is_some()
@@ -1239,6 +1280,7 @@ impl App {
         }
 
         let runner = self.runner.as_mut().expect("runner checked above");
+        runner.advance_menu_presentation_clock(presentation_interval);
         // A PPC HLE slice currently borrows its large mutable state by moving
         // collections into a dispatch closure and restoring them afterward.
         // Yield once per guest VBL rather than paying that boundary thousands
@@ -1281,12 +1323,17 @@ impl App {
             } else {
                 remaining_audio.div_ceil(batches_left)
             };
-            let (steps, running) =
-                runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio);
+            let (steps, running) = {
+                let _timing = FramePhaseTimer::new("foreground CPU batch");
+                runner.run_gui_cpu_slice(batch_size, effective_target)
+            };
             total_steps += steps;
             foreground_steps += steps;
             audio_mixed += batch_audio;
             if batch_audio > 0 {
+                // CPU batches share one presentation pass in render_frame.
+                // Keep audio callbacks serviced without repainting every window.
+                runner.mix_gui_audio_slice(batch_audio);
                 if let Some(steps) = service_pending_sound_work(
                     runner,
                     cpu_deadline,
@@ -1400,6 +1447,7 @@ impl App {
     }
 
     fn render_frame(&mut self) {
+        let _timing = FramePhaseTimer::new("render frame (main thread)");
         let render_start = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         let force_gpu_present = self.force_gpu_present;
@@ -1416,7 +1464,14 @@ impl App {
         let Some(runner) = self.runner.as_mut() else {
             return;
         };
-        runner.composite_frame();
+        {
+            let _timing = FramePhaseTimer::new("outline palette preparation");
+            runner.prepare_text_presentation();
+        }
+        {
+            let _timing = FramePhaseTimer::new("window compositing");
+            runner.composite_frame();
+        }
         let presented_tick = runner.guest_tick();
 
         let (_, _, scrn_right, scrn_bottom, _) = runner.dispatcher().screen_mode;
@@ -1821,7 +1876,11 @@ impl App {
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
             presentation_rect = content;
             let palette = display::argb_palette_from_clut_with_gamma(&device_clut, &device_gamma);
-            if let Some(surface) = self.surface.as_mut() {
+            if let Some(surface) = self
+                .surface
+                .as_mut()
+                .filter(|_| !runner.bus().has_visible_outline_detail())
+            {
                 let presented_directly = surface
                     .present_guest_frame(
                         framebuffer,
@@ -1855,6 +1914,10 @@ impl App {
             &device_gamma,
             &mut frame_argb,
         );
+        let guest_frame = runner
+            .bus()
+            .has_visible_outline_detail()
+            .then(|| frame_argb.clone());
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
         }
@@ -1869,13 +1932,48 @@ impl App {
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
 
+        let mut presented = std::mem::take(&mut self.presentation_argb);
+        #[cfg(target_os = "macos")]
+        let logical_size = (presentation_rect.width, presentation_rect.height);
+        #[cfg(not(target_os = "macos"))]
+        let logical_size = (game_w, game_h);
+        let output_scale = display::outline_output_scale(logical_size, (buf_w, buf_h));
+        let mut used_outlines = false;
+        #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
+        let (game_w, game_h) = if let Some((width, height)) =
+            guest_frame.as_ref().and_then(|guest| {
+                let _timing = FramePhaseTimer::new("outline pixel expansion");
+                runner
+                    .bus()
+                    .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
+            }) {
+            #[cfg(target_os = "macos")]
+            {
+                let scale = width / game_w;
+                presentation_rect.left *= scale;
+                presentation_rect.top *= scale;
+                presentation_rect.width *= scale;
+                presentation_rect.height *= scale;
+            }
+            std::mem::swap(&mut frame_argb, &mut presented);
+            used_outlines = true;
+            (width, height)
+        } else {
+            (game_w, game_h)
+        };
+
         #[cfg(target_os = "macos")]
         {
             let Some(surface) = self.surface.as_mut() else {
+                if used_outlines {
+                    std::mem::swap(&mut frame_argb, &mut presented);
+                }
+                self.presentation_argb = presented;
                 self.frame_argb = frame_argb;
                 return;
             };
             crop_argb_frame(&mut frame_argb, game_w, presentation_rect);
+            let _timing = FramePhaseTimer::new("raster presentation submission");
             surface
                 .present(
                     &frame_argb,
@@ -1895,11 +1993,15 @@ impl App {
             let draw_y = draw_y as usize;
             let draw_w = draw_w as usize;
             let draw_h = draw_h as usize;
-            let mut scaled_row = std::mem::take(&mut self.scaled_row);
+            let mut scaled_frame = std::mem::take(&mut self.scaled_frame);
 
             let Some(surface) = self.surface.as_mut() else {
+                if used_outlines {
+                    std::mem::swap(&mut frame_argb, &mut presented);
+                }
+                self.presentation_argb = presented;
                 self.frame_argb = frame_argb;
-                self.scaled_row = scaled_row;
+                self.scaled_frame = scaled_frame;
                 return;
             };
 
@@ -1926,24 +2028,27 @@ impl App {
                     buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
                 }
             } else {
-                scaled_row.resize(draw_w, 0xFF000000);
+                display::resize_argb_coverage(
+                    &frame_argb,
+                    (game_w, game_h),
+                    (draw_w as u32, draw_h as u32),
+                    &mut scaled_frame,
+                );
                 for row in 0..draw_h {
-                    let source_y = row * game_h as usize / draw_h;
-                    let src_row =
-                        &frame_argb[source_y * game_w as usize..(source_y + 1) * game_w as usize];
-                    for (destination_x, pixel) in scaled_row.iter_mut().enumerate() {
-                        let source_x = destination_x * game_w as usize / draw_w;
-                        *pixel = src_row[source_x];
-                    }
                     let dst_offset = (draw_y + row) * buf_w as usize + draw_x;
-                    buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
+                    buffer[dst_offset..dst_offset + draw_w]
+                        .copy_from_slice(&scaled_frame[row * draw_w..(row + 1) * draw_w]);
                 }
             }
 
-            self.scaled_row = scaled_row;
+            self.scaled_frame = scaled_frame;
             buffer.present().expect("Failed to present buffer");
         }
 
+        if used_outlines {
+            std::mem::swap(&mut frame_argb, &mut presented);
+        }
+        self.presentation_argb = presented;
         self.frame_argb = frame_argb;
         self.last_presented_guest_tick = Some(presented_tick);
         self.force_next_render = false;
@@ -3491,6 +3596,7 @@ mod tests {
         assert_eq!(invalid.kind(), ErrorKind::ValueValidation);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn automatic_windows_have_the_same_logical_size_across_dpi() {
         use winit::dpi::PhysicalSize;
@@ -3501,6 +3607,26 @@ mod tests {
                     automatic_window_size(width, height, Some(monitor), dpi),
                     PhysicalSize::new((960.0 * dpi) as u32, (720.0 * dpi) as u32)
                 );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn automatic_mac_windows_use_guest_points_at_native_and_retina_dpi() {
+        use winit::dpi::PhysicalSize;
+        for dpi in [1.0, 2.0] {
+            let monitor = PhysicalSize::new((2560.0 * dpi) as u32, (1600.0 * dpi) as u32);
+            for (width, height) in [(320, 200), (640, 480), (800, 600), (800, 580)] {
+                let expected = PhysicalSize::new(
+                    (f64::from(width) * dpi) as u32,
+                    (f64::from(height) * dpi) as u32,
+                );
+                assert_eq!(
+                    automatic_window_size(width, height, Some(monitor), dpi),
+                    expected
+                );
+                assert_eq!(automatic_window_size(width, height, None, dpi), expected);
             }
         }
     }
@@ -3531,15 +3657,20 @@ mod tests {
     #[test]
     fn automatic_windows_have_safe_monitor_and_dpi_fallbacks() {
         use winit::dpi::PhysicalSize;
+        let (width, height) = if cfg!(target_os = "macos") {
+            (640, 480)
+        } else {
+            (960, 720)
+        };
         for dpi in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(
                 automatic_window_size(640, 480, None, dpi),
-                PhysicalSize::new(960, 720)
+                PhysicalSize::new(width, height)
             );
         }
         assert_eq!(
             automatic_window_size(640, 480, Some(PhysicalSize::new(0, 0)), 2.0),
-            PhysicalSize::new(1920, 1440)
+            PhysicalSize::new(width * 2, height * 2)
         );
         let zero = automatic_window_size(0, 0, None, 1.0);
         assert!(zero.width > 0 && zero.height > 0);
@@ -4019,6 +4150,29 @@ mod tests {
         runner.bus_mut().write_long(0x016A, 0);
         runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
 
+        // Install a guest menu so repeated batch-level compositing is observable.
+        // NewMenu: Inside Macintosh I-352; InsertMenu: Toolbox Essentials 3-108.
+        let title = runner.bus_mut().alloc(5);
+        runner.bus_mut().write_bytes(title, b"\x04File");
+        runner.bus_mut().write_word(pc, 0xA931);
+        runner.bus_mut().write_long(0x0008_0000, title);
+        runner.bus_mut().write_word(0x0008_0004, 1);
+        assert!(runner.run_gui_cpu_slice(1, u32::MAX).1);
+        let menu = runner.bus().read_long(0x0008_0006);
+        assert_ne!(menu, 0);
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
+        runner.bus_mut().write_word(pc, 0xA935);
+        runner.bus_mut().write_word(0x0008_0000, 0);
+        runner.bus_mut().write_long(0x0008_0002, menu);
+        assert!(runner.run_gui_cpu_slice(1, u32::MAX).1);
+        runner.bus_mut().write_word(pc, 0x60FE);
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        let screen = runner.bus_mut().alloc(800 * 600);
+        runner.dispatcher_mut().screen_mode = (screen, 800, 800, 600, 8);
+        runner.bus_mut().write_word(0x0BAA, 20);
+        runner.bus_mut().fill_bytes(screen, 800 * 20, 0xAA);
+
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION);
@@ -4035,6 +4189,11 @@ mod tests {
             app.total_instructions > 0,
             "test setup should execute foreground startup work"
         );
+        assert_eq!(
+            runner.bus().read_byte(screen + 400),
+            0xAA,
+            "CPU and audio batches must defer chrome painting until presentation"
+        );
         assert!(!runner.is_halted(), "foreground loop must remain runnable");
         assert_eq!(
             runner.guest_tick(),
@@ -4044,6 +4203,12 @@ mod tests {
         assert!(
             app.should_render_frame(),
             "same-tick foreground drawing progress should force a present"
+        );
+        app.runner.as_mut().unwrap().composite_frame();
+        assert_ne!(
+            app.runner.as_ref().unwrap().bus().read_byte(screen + 400),
+            0xAA,
+            "the presentation pass must still paint the menu"
         );
     }
 

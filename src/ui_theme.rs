@@ -202,8 +202,16 @@ impl UiTheme for ClassicSystem7Theme {
             },
             selection: Rgb8 { r: 0, g: 0, b: 0 },
             accent: Rgb8 { r: 0, g: 0, b: 0 },
-            desktop_light: Rgb8 { r: 255, g: 255, b: 255 },
-            desktop_dark: Rgb8 { r: 0, g: 0, b: 0 },
+            desktop_light: Rgb8 {
+                r: 223,
+                g: 246,
+                b: 255,
+            },
+            desktop_dark: Rgb8 {
+                r: 223,
+                g: 246,
+                b: 255,
+            },
         }
     }
 

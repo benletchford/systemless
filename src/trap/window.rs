@@ -1,5 +1,6 @@
 //! Window Manager trap handlers.
 
+use crate::memory::SavedPixels;
 use crate::cpu::{CpuOps, Register};
 use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -198,13 +199,6 @@ impl super::TrapDispatcher {
         tracking: &mut super::dispatch::RegionTrackingState,
         mouse: (i16, i16),
     ) {
-        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
-        tracking.outline_saved_pixels.clear();
-        if !Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect) {
-            tracking.outline_rect = None;
-            return;
-        }
-
         let (delta_v, delta_h) = Self::drag_region_offset(
             mouse,
             tracking.start_mouse,
@@ -224,9 +218,18 @@ impl super::TrapDispatcher {
             local_rect.2.wrapping_sub(tracking.port_bounds_origin.0),
             local_rect.3.wrapping_sub(tracking.port_bounds_origin.1),
         );
-        tracking.outline_rect = Some(global_rect);
-        tracking.outline_saved_pixels = self.save_window_drag_outline_pixels(bus, global_rect);
-        self.draw_drag_outline_pattern(bus, global_rect, tracking.outline_pattern);
+        let next_outline =
+            Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect).then_some(global_rect);
+        if tracking.outline_rect == next_outline {
+            return;
+        }
+        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+        tracking.outline_saved_pixels.clear();
+        tracking.outline_rect = next_outline;
+        if let Some(rect) = next_outline {
+            tracking.outline_saved_pixels = self.save_window_drag_outline_pixels(bus, rect);
+            self.draw_drag_outline_pattern(bus, rect, tracking.outline_pattern);
+        }
     }
 
     pub(crate) fn handle_drag_region_trap<C: CpuOps>(
@@ -643,6 +646,57 @@ impl super::TrapDispatcher {
         let update_handle = bus.read_long(window_ptr + Self::WINDOW_UPDATE_RGN_OFFSET);
         let merged = Self::rect_union(Self::region_handle_rect(bus, update_handle), Some(rect));
         Self::write_region_handle_rect(bus, update_handle, merged);
+    }
+
+    pub(super) fn rect_difference_parts(src: WindowRect, cut: WindowRect) -> Vec<WindowRect> {
+        let Some(intersection) = Self::rect_intersection(src, cut) else {
+            return vec![src];
+        };
+        [
+            (src.0, src.1, intersection.0, src.3),
+            (intersection.2, src.1, src.2, src.3),
+            (intersection.0, src.1, intersection.2, intersection.1),
+            (intersection.0, intersection.3, intersection.2, src.3),
+        ]
+        .into_iter()
+        .filter(|rect| !Self::rect_is_empty(*rect))
+        .collect()
+    }
+
+    fn repaint_resize_exposure(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window: u32,
+        previous: WindowRect,
+        next: WindowRect,
+    ) {
+        if previous == next {
+            return;
+        }
+        // SizeWindow preserves the window's position and redraws its frame;
+        // the Window Manager also updates windows uncovered by geometry changes.
+        // Inside Macintosh Volume I (1985), I-278 and I-287--I-293.
+        let behind = self.visible_windows_behind(bus, window);
+        let structures: Vec<_> = self.window_list.iter().copied()
+            .filter(|&window| self.window_visible(bus, window))
+            .filter_map(|window| self.window_structure_rect(bus, window))
+            .collect();
+        for exposed in Self::rect_difference_parts(previous, next) {
+            self.invalidate_exposed_windows(bus, &behind, Some(exposed));
+            let mut desktop = vec![exposed];
+            for &structure in &structures {
+                desktop = desktop.into_iter()
+                    .flat_map(|rect| Self::rect_difference_parts(rect, structure))
+                    .collect();
+            }
+            for (top, left, bottom, right) in desktop {
+                self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+            }
+        }
+        for behind in behind {
+            self.draw_single_window_chrome_inline(bus, behind, behind == self.front_window);
+        }
+        self.draw_single_window_chrome_inline(bus, window, window == self.front_window);
     }
 
     fn rect_difference_bbox(
@@ -1410,7 +1464,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
-    ) -> Option<(i16, i16, i16, i16, Vec<u8>)> {
+    ) -> Option<(i16, i16, i16, i16, SavedPixels)> {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let top = rect.0.max(0).min(screen_height);
@@ -1461,6 +1515,17 @@ impl super::TrapDispatcher {
             }
         }
 
+        let mut pixels: SavedPixels = pixels.into();
+        if pixel_size == 8 {
+            for (row, y) in (top..bottom).enumerate() {
+                bus.capture_pixel_detail(
+                    &mut pixels,
+                    row * width_u,
+                    screen_base + y as u32 * row_bytes + left as u32,
+                    width_u,
+                );
+            }
+        }
         Some((top, left, width, height, pixels))
     }
 
@@ -1471,7 +1536,7 @@ impl super::TrapDispatcher {
         dst_left: i16,
         width: i16,
         height: i16,
-        pixels: &[u8],
+        pixels: &SavedPixels,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -1500,7 +1565,7 @@ impl super::TrapDispatcher {
                 let e = (row_base + (x1 - dst_left) as usize).min(pixels.len());
                 if s < e {
                     let addr = screen_base + y as u32 * row_bytes + x0 as u32;
-                    bus.write_bytes(addr, &pixels[s..e]);
+                    bus.restore_saved_pixels(addr, pixels, s, e - s);
                 }
             }
             return;
@@ -1593,7 +1658,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
-    ) -> Vec<(i16, i16, i16, i16, Vec<u8>)> {
+    ) -> Vec<(i16, i16, i16, i16, SavedPixels)> {
         Self::window_drag_outline_strips(rect)
             .into_iter()
             .filter_map(|strip| self.save_screen_rect_pixels(bus, strip))
@@ -1603,7 +1668,7 @@ impl super::TrapDispatcher {
     pub(super) fn restore_window_drag_outline_pixels(
         &self,
         bus: &mut MacMemoryBus,
-        pixels: &[(i16, i16, i16, i16, Vec<u8>)],
+        pixels: &[(i16, i16, i16, i16, SavedPixels)],
     ) {
         for (top, left, width, height, saved) in pixels {
             self.restore_screen_rect_pixels(bus, *top, *left, *width, *height, saved);
@@ -4722,6 +4787,9 @@ impl super::TrapDispatcher {
                     // Capture the old content rect before we resize so
                     // the fUpdate branch can invalidate the diff.
                     let old_content_rect = self.window_content_rect(bus, the_window);
+                    let old_structure = self.window_visible(bus, the_window)
+                        .then(|| self.window_structure_rect(bus, the_window))
+                        .flatten();
 
                     // portRect in local coords: (0, 0, h, w)
                     bus.write_word(the_window + 16, 0u16);
@@ -4795,6 +4863,10 @@ impl super::TrapDispatcher {
                         };
                         self.window_bounds =
                             (screen_top, screen_left, screen_top + h, screen_left + w);
+                    }
+
+                    if let Some(previous) = old_structure {
+                        self.repaint_resize_exposure(bus, the_window, previous, global_structure);
                     }
 
                     // fUpdate=TRUE invalidates the newly-exposed area.
@@ -8569,7 +8641,7 @@ mod tests {
             utility,
             PersistentDialogSnapshot {
                 bounds: (80, 100, 220, 420),
-                pixels: vec![0xEE; 140 * 320],
+                pixels: vec![0xEE; 140 * 320].into(),
             },
         );
         let update_handle = bus.read_long(document + 122);
@@ -8672,23 +8744,11 @@ mod tests {
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
         disp.menu_bar_hidden = false;
-        super::super::TrapDispatcher::fb_fill_pattern_rect(
-            &mut bus,
-            screen_base,
-            800,
-            8,
-            800,
-            600,
-            0,
-            0,
-            600,
-            800,
-            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
-        );
+        disp.fill_theme_desktop_rect(&mut bus, 0, 0, 600, 800);
 
         let content_probe = screen_base + 250 * 800 + 460;
         let right_frame_probe = screen_base + 300 * 800 + 651;
-        let title_frame_probe = screen_base + 222 * 800 + 627;
+        let title_frame_probe = screen_base + 223 * 800 + 628;
         let desktop_content = bus.read_byte(content_probe);
         let desktop_right_frame = bus.read_byte(right_frame_probe);
         let desktop_title_frame = bus.read_byte(title_frame_probe);
@@ -9525,7 +9585,7 @@ mod tests {
             dialog,
             PersistentDialogSnapshot {
                 bounds: (120, 120, 140, 180),
-                pixels: vec![0xEE; 20 * 60],
+                pixels: vec![0xEE; 20 * 60].into(),
             },
         );
 
@@ -9897,7 +9957,7 @@ mod tests {
             target,
             PersistentDialogSnapshot {
                 bounds: (80, 100, 220, 420),
-                pixels: vec![0xEE; 140 * 320],
+                pixels: vec![0xEE; 140 * 320].into(),
             },
         );
         let update_handle = bus.read_long(back + 122);
@@ -10086,7 +10146,7 @@ mod tests {
             150,
             300,
             "Back",
-            4,
+            0,
             true,
             false,
             false,
@@ -10113,7 +10173,17 @@ mod tests {
         let protected = screen_base + 60 * 800 + 49;
         bus.write_byte(protected, 0x7B);
 
-        disp.draw_single_window_chrome_inline(&mut bus, back, false);
+        let front_rect = disp.window_structure_rect(&mut bus, front).unwrap();
+        let before = disp.save_screen_rect_pixels(&mut bus, front_rect).unwrap();
+        for _ in 0..6 {
+            disp.draw_single_window_chrome_inline(&mut bus, back, false);
+            disp.draw_grow_icon(&mut bus, back);
+        }
+        let after = disp.save_screen_rect_pixels(&mut bus, front_rect).unwrap();
+        assert_eq!(
+            before, after,
+            "repeated frame draws must preserve the entire front window"
+        );
 
         assert_eq!(
             bus.read_byte(protected),
@@ -12374,8 +12444,8 @@ mod tests {
 
         assert_eq!(
             bus.read_byte(old_content_probe),
-            255,
-            "host menu suppression must not turn the exposed desktop black"
+            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light),
+            "host menu suppression must preserve the themed desktop"
         );
         let new_content_probe = screen_base + 250 * 800 + 460;
         assert_eq!(
@@ -13052,6 +13122,44 @@ mod tests {
             disp.region_tracking.as_ref().unwrap().outline_pattern,
             pattern
         );
+    }
+
+    #[test]
+    fn stationary_drag_region_keeps_outline_until_motion_or_slop_exit() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.enable_outline_presentation(disp.screen_mode, [[0; 3]; 256], 4);
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+        write_test_rect(&mut bus, 0x240000, (0, 0, 100, 100));
+        write_test_rect(&mut bus, 0x240008, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), 0x240000, 0x240008, 0);
+        let region = make_region_handle(&mut bus, 0x300000, 0x300020, 10, (5, 10, 45, 70));
+        bus.write_long(sp + 18, region);
+        disp.push_mouse_down(10, 20);
+        dispatch(&mut disp, 0x126, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let mut tracking = disp.region_tracking.take().unwrap();
+        assert!(!tracking.outline_saved_pixels.is_empty());
+        let epoch = bus.presentation_epoch();
+        for _ in 0..100 {
+            disp.refresh_region_drag_outline(&mut bus, &mut tracking, (10, 20));
+        }
+        assert_eq!(
+            bus.presentation_epoch(),
+            epoch,
+            "stationary polling must not repaint"
+        );
+        disp.refresh_region_drag_outline(&mut bus, &mut tracking, (20, 30));
+        assert_eq!(tracking.outline_rect, Some((15, 20, 55, 80)));
+        disp.refresh_region_drag_outline(&mut bus, &mut tracking, (121, 30));
+        assert_eq!(tracking.outline_rect, None);
+        assert!(tracking.outline_saved_pixels.is_empty());
+        disp.refresh_region_drag_outline(&mut bus, &mut tracking, (20, 30));
+        assert_eq!(tracking.outline_rect, Some((15, 20, 55, 80)));
+        assert!(!tracking.outline_saved_pixels.is_empty());
     }
 
     // IM:I p.I-294 (signature/call-frame summary on p.I-91):
@@ -14812,6 +14920,10 @@ mod tests {
     #[test]
     fn size_window_with_fupdate_true_invalidates_new_area() {
         let (mut disp, mut cpu, mut bus) = setup();
+        // Window records below occupy $300000; frame drawing needs separate RAM.
+        let (_, row_bytes, width, height, depth) = disp.screen_mode;
+        disp.set_screen_mode_for_test(0x320000, row_bytes, width, height, depth);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, 0x320000);
         let window_addr: u32 = 0x300000;
         let (_cont_rgn, update_rgn) =
             setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 100, 100);

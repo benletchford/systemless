@@ -1,6 +1,7 @@
 //! Architecture-neutral Menu Manager records and list operations.
 
 use crate::mac_roman::decode_mac_roman;
+use crate::memory::SavedPixels;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
 use std::cell::RefCell;
@@ -20,7 +21,7 @@ pub(crate) fn menu_flash_phase_count(count: u16) -> u32 {
     u32::from(count) * 2
 }
 
-pub(crate) const STANDARD_MENU_FLASH_PHASE_DELAY: u8 = 3;
+pub(crate) const STANDARD_MENU_FLASH_PHASE_DELAY: u32 = 3;
 
 /// Horizontal origin of the first standard menu title's logical hit cell.
 pub(crate) const STANDARD_MENU_BAR_FIRST_TITLE_LEFT: i16 = 11;
@@ -639,15 +640,14 @@ pub(crate) fn standard_menu_bar_title_baseline(
         + ascent
 }
 
-/// Align the replacement system-menu artwork to the standard title baseline.
+/// Center the system-menu artwork independently of the selected font metrics.
 pub(crate) fn standard_menu_bar_system_mark_top(
     menu_bar_height: i16,
-    ascent: i16,
-    descent: i16,
+    _ascent: i16,
+    _descent: i16,
 ) -> i16 {
-    standard_menu_bar_title_baseline(menu_bar_height, ascent, descent)
-        .saturating_sub(ascent)
-        .saturating_add(1)
+    let height = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS.len() as i16;
+    (menu_bar_height.saturating_sub(1).saturating_sub(height) / 2).max(0)
 }
 
 /// Result of one standard scrolling-menu pointer update.
@@ -802,7 +802,7 @@ pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) saved_width: i16,
     pub(crate) saved_height: i16,
     pub(crate) front_buffer: Surface,
-    pub(crate) saved_pixels: Vec<Pixel>,
+    pub(crate) saved_pixels: SavedPixels<Pixel>,
     pub(crate) item_appearances: Vec<Appearance>,
 }
 
@@ -834,12 +834,13 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     /// Application-defined item drawing and hit-testing for the root pane.
     pub(crate) definition: Option<MenuDefinitionTracking>,
     pub(crate) flash_remaining: u32,
-    pub(crate) flash_delay: u8,
+    pub(crate) flash_tick: Option<u32>,
+    pub(crate) flash_deadline: u32,
     pub(crate) flash_result: u32,
     pub(crate) saved_width: i16,
     pub(crate) saved_height: i16,
     pub(crate) front_buffer: Surface,
-    pub(crate) saved_pixels: Vec<Pixel>,
+    pub(crate) saved_pixels: SavedPixels<Pixel>,
     pub(crate) item_appearances: Vec<Appearance>,
     pub(crate) submenus: Vec<TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>,
 }
@@ -867,12 +868,13 @@ pub(crate) fn test_process_menu_tracking(menu_handle: u32) -> ProcessMenuTrackin
         highlighted_item: 1,
         definition: None,
         flash_remaining: 0,
-        flash_delay: 0,
+        flash_tick: None,
+        flash_deadline: 0,
         flash_result: 0,
         saved_width: 101,
         saved_height: 41,
         front_buffer: None,
-        saved_pixels: Vec::new(),
+        saved_pixels: Default::default(),
         item_appearances: Vec::new(),
         submenus: Vec::new(),
     }
@@ -986,7 +988,7 @@ pub(crate) trait TrackedMenuPaneView {
     fn saved_width(&self) -> i16;
     fn saved_height(&self) -> i16;
     fn front_buffer(&self) -> Self::Surface;
-    fn saved_pixels(&self) -> &[Self::Pixel];
+    fn saved_pixels(&self) -> &crate::memory::SavedPixels<Self::Pixel>;
     fn item_appearances(&self) -> &[Self::Appearance];
 }
 
@@ -1027,7 +1029,7 @@ macro_rules! impl_tracked_menu_pane_view {
             fn front_buffer(&self) -> Self::Surface {
                 self.front_buffer
             }
-            fn saved_pixels(&self) -> &[Self::Pixel] {
+            fn saved_pixels(&self) -> &crate::memory::SavedPixels<Self::Pixel> {
                 &self.saved_pixels
             }
             fn item_appearances(&self) -> &[Self::Appearance] {
@@ -1048,10 +1050,12 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
     /// complete the originating call immediately.
     pub(crate) fn begin_flash(&mut self, count: u16, result: u32) -> bool {
         self.flash_remaining = menu_flash_phase_count(count);
-        self.flash_delay = if self.flash_remaining == 0 {
+        self.flash_deadline = if self.flash_remaining == 0 {
             0
         } else {
-            STANDARD_MENU_FLASH_PHASE_DELAY
+            self.flash_tick
+                .unwrap_or(0)
+                .wrapping_add(STANDARD_MENU_FLASH_PHASE_DELAY)
         };
         self.flash_result = result;
         self.flash_remaining != 0
@@ -1061,7 +1065,23 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
         self.flash_remaining != 0
     }
 
-    /// Advance one presentation pulse, retaining the release result throughout
+    /// The frontend supplies its 60 Hz target while application time is frozen.
+    /// Headless execution supplies guest ticks. Never move this clock backward.
+    pub(crate) fn set_flash_tick(&mut self, tick: u32) {
+        if self
+            .flash_tick
+            .is_none_or(|previous| tick.wrapping_sub(previous) < 0x8000_0000)
+        {
+            self.flash_tick = Some(tick);
+        }
+    }
+
+    pub(crate) fn advance_flash_at(&mut self, tick: u32) -> MenuFlashStep {
+        self.set_flash_tick(tick);
+        self.advance_flash()
+    }
+
+    /// Advance by elapsed presentation ticks, retaining the release result throughout
     /// the blink. Custom panes receive the same phases through their MDEF.
     /// A pending guest call must complete before another phase can be issued.
     /// Macintosh Toolbox Essentials (1992), SetMenuFlash; Inside Macintosh
@@ -1075,15 +1095,27 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
         }) {
             return MenuFlashStep::Wait;
         }
-        if self.flash_delay > 0 {
-            self.flash_delay -= 1;
+        let elapsed = self
+            .flash_tick
+            .unwrap_or(0)
+            .wrapping_sub(self.flash_deadline);
+        if elapsed >= 0x8000_0000 {
             return MenuFlashStep::Wait;
         }
-        self.flash_remaining -= 1;
+        // Standard panes can skip missed visual phases after a slow frame.
+        // Custom definitions must receive every Choose callback in order.
+        let phases = if self.active_definition().is_some() {
+            1
+        } else {
+            (1 + elapsed / STANDARD_MENU_FLASH_PHASE_DELAY).min(self.flash_remaining)
+        };
+        self.flash_remaining -= phases;
+        self.flash_deadline = self
+            .flash_deadline
+            .wrapping_add(phases * STANDARD_MENU_FLASH_PHASE_DELAY);
         if self.flash_remaining == 0 {
             return MenuFlashStep::Complete(self.flash_result);
         }
-        self.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
         let visible = self.flash_remaining & 1 == 0;
         if let Some(definition) = self.active_definition_mut() {
             definition.flash(visible);
@@ -3847,11 +3879,11 @@ mod tests {
         let mut tracking = tracking_with_child(1u32, 2);
         assert!(tracking.begin_flash(1, 0x0080_0002));
         assert_eq!(tracking.flash_remaining, 2);
-        assert_eq!(tracking.flash_delay, STANDARD_MENU_FLASH_PHASE_DELAY);
+        assert_eq!(tracking.flash_deadline, STANDARD_MENU_FLASH_PHASE_DELAY);
         assert_eq!(tracking.flash_result, 0x0080_0002);
         assert!(!tracking.begin_flash(0, 0x0080_0003));
         assert_eq!(tracking.flash_remaining, 0);
-        assert_eq!(tracking.flash_delay, 0);
+        assert_eq!(tracking.flash_deadline, 0);
         assert_eq!(tracking.flash_result, 0x0080_0003);
     }
 
@@ -3867,6 +3899,7 @@ mod tests {
                 for phase in 0..u32::from(count) * 2 {
                     for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
                         assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                        tracking.set_flash_tick(tracking.flash_tick.unwrap_or(0).wrapping_add(1));
                     }
                     let expected = if phase + 1 == u32::from(count) * 2 {
                         MenuFlashStep::Complete(result)
@@ -3878,6 +3911,36 @@ mod tests {
                 assert!(!tracking.is_flashing());
                 assert_eq!(tracking.advance_flash(), MenuFlashStep::Inactive);
             }
+        }
+    }
+
+    #[test]
+    fn menu_flash_duration_ignores_poll_rate_and_catches_up_after_slow_frames() {
+        for start in [100, u32::MAX - 8] {
+            let mut tracking = test_process_menu_tracking(128);
+            tracking.set_flash_tick(start);
+            tracking.begin_flash(3, 0x0080_0002);
+            for _ in 0..100 {
+                assert_eq!(tracking.advance_flash_at(start), MenuFlashStep::Wait);
+            }
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(3)),
+                MenuFlashStep::Highlight(false)
+            );
+            // A slow renderer skips missed visual phases without stretching
+            // the configured three blinks beyond 18 ticks (300 ms).
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(12)),
+                MenuFlashStep::Highlight(true)
+            );
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(18)),
+                MenuFlashStep::Complete(0x0080_0002)
+            );
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(19)),
+                MenuFlashStep::Inactive
+            );
         }
     }
 
@@ -3904,6 +3967,7 @@ mod tests {
             for visible in [false, true, false] {
                 for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
                     assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                    tracking.set_flash_tick(tracking.flash_tick.unwrap_or(0).wrapping_add(1));
                 }
                 assert_eq!(tracking.advance_flash(), MenuFlashStep::Highlight(visible));
                 let invocation = tracking
@@ -3921,11 +3985,11 @@ mod tests {
                     .active_definition_mut()
                     .unwrap()
                     .bind_completion(invocation, completion.clone());
-                let before = (tracking.flash_remaining, tracking.flash_delay);
+                let before = (tracking.flash_remaining, tracking.flash_deadline);
                 for _ in 0..10 {
                     assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
                 }
-                assert_eq!((tracking.flash_remaining, tracking.flash_delay), before);
+                assert_eq!((tracking.flash_remaining, tracking.flash_deadline), before);
                 MenuDefinitionOperation {
                     scratch: 0,
                     completion,
@@ -3947,6 +4011,7 @@ mod tests {
             }
             for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
                 assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                tracking.set_flash_tick(tracking.flash_tick.unwrap_or(0).wrapping_add(1));
             }
             assert_eq!(
                 tracking.advance_flash(),
@@ -4217,12 +4282,13 @@ mod tests {
             highlighted_item: 1,
             definition: None,
             flash_remaining: 0,
-            flash_delay: 0,
+            flash_tick: None,
+            flash_deadline: 0,
             flash_result: 0,
             saved_width: 100,
             saved_height: 40,
             front_buffer: (),
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             item_appearances: Vec::new(),
             submenus: vec![TrackedMenuPane {
                 parent_item: 1,
@@ -4238,7 +4304,7 @@ mod tests {
                 saved_width: 100,
                 saved_height: 40,
                 front_buffer: (),
-                saved_pixels: Vec::new(),
+                saved_pixels: Default::default(),
                 item_appearances: Vec::new(),
             }],
         }
@@ -4613,17 +4679,19 @@ mod tests {
 
     #[test]
     fn standard_menu_text_measurement_is_shared_between_gateways() {
-        // The frozen 68040 and 604 profiles both measure "Three" as
-        // T6+h8+r6+e8+e8 = 36 pixels in the Roman system font. The standard
-        // MDEF then adds its 32-pixel non-indicator columns.
-        assert_eq!(standard_menu_text_advance(b"Three"), 36);
+        let face = crate::quickdraw::fonts::get_font_face_or_default(0, 12);
+        let expected: i16 = b"Three"
+            .iter()
+            .map(|c| i16::from(face.glyphs[(c - 32) as usize].advance))
+            .sum();
+        assert_eq!(standard_menu_text_advance(b"Three"), expected);
         assert_eq!(
             standard_menu_width([StandardMenuItemWidth {
-                text: standard_menu_text_advance(b"Three"),
+                text: expected,
                 icon: 0,
-                command: 0,
+                command: 0
             }]),
-            68
+            expected + 32
         );
 
         assert!(is_standard_system_menu_title(&[0x14]));
@@ -5463,7 +5531,7 @@ mod tests {
         assert_eq!(region.title_origin(), 18);
         assert_eq!(region.highlighted_rect(20), (1, 9, 19, 48));
         assert_eq!(standard_menu_bar_title_baseline(20, 11, 2), 14);
-        assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 4);
+        assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 3);
     }
 
     #[test]
