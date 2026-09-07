@@ -371,3 +371,28 @@ was locked; this audit does not claim every gameplay interaction is verified.
 <img src="odyssey/gameplay.png" alt="Odyssey beach gameplay with sharp system window titles and its original custom bitmap font" width="800">
 
 <img src="odyssey/preferences.png" alt="Odyssey preferences with retained custom artwork and sharp system controls" width="800">
+
+### Death dialog and recovery
+
+Odyssey can open its death dialog from a resting dialog's event filter. Those
+filters are foreground application code: they can wait for TickCount, depend on
+sound completion, and open nested dialogs. Treating them as non-reentrant
+interrupt handlers froze the clock and blocked sound completion. Sharing one
+callback trampoline and one ModalDialog stack then corrupted nested drawing
+and the return from the death screen.
+
+The runner now lets foreground dialog callbacks advance time and receive
+interrupts while preserving each callback's return state. Nested ModalDialog
+calls retain their own tracking state and Pascal argument stack. Regression
+tests cover GUI tick deadlines, Delay, sound completion, nested callback
+trampolines, and nested modal return stacks.
+
+A scripted new game walks into the forest and rests until an enemy kills the
+player. The death artwork and both buttons render; OK returns to the welcome
+screen, and Restore reloads the saved beach game with 20/20 health. BasiliskII
+confirms the death layout and OK's return to the welcome screen. These are
+scripted checks, not a claim of exhaustive native mouse or gameplay coverage.
+
+<img src="odyssey/death.png" alt="Odyssey death dialog with its skeleton artwork, message, Restore and OK buttons" width="800">
+
+<img src="odyssey/death-restored.png" alt="Odyssey restored to the saved beach game with full health" width="800">
