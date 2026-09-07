@@ -1842,8 +1842,9 @@ impl FixtureRunner {
             "screen_depth must be 1, 2, 4, or 8"
         );
         let mut process_context = ProcessContext::with_file_system(file_system);
-        let mut dispatcher = TrapDispatcher::new();
-        dispatcher.attach_process_context(&mut process_context);
+        let mut dispatcher =
+            TrapDispatcher::new_with_migrated_handles(process_context.migrated_handles());
+        dispatcher.attach_unconverted_process_services(&mut process_context);
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
         dispatcher.set_ui_theme_id(config.ui_theme);
@@ -3697,10 +3698,17 @@ impl FixtureRunner {
             app.ppc.as_ref().is_none_or(|native| native.cfm.is_some()),
             "native relaunch requires an uninstalled CFM seed"
         );
+        let native_launch = app.ppc.clone().map(|native| {
+            let launch_ticks = self.launch_ticks_override.unwrap_or(0);
+            let migrated_services = native
+                .preflight_migrated_services(&self.process_context, launch_ticks)
+                .expect("native application services conflict with the process registry");
+            (native, migrated_services)
+        });
         assert!(self.native.reset_for_launch(app.ppc.is_some()));
         self.process_context.reset_cfm_for_launch();
-        if let Some(ppc_app) = app.ppc.clone() {
-            self.init_ppc_app(ppc_app);
+        if let Some((ppc_app, migrated_services)) = native_launch {
+            self.init_ppc_app_with_services(ppc_app, migrated_services);
             return;
         }
 
@@ -4112,14 +4120,28 @@ impl FixtureRunner {
         self.native.companion().is_some() || self.native.has_staged_companion()
     }
 
-    fn init_ppc_companion(&mut self, mut ppc_companion: PpcLoadedApp) {
+    #[cfg(test)]
+    fn init_ppc_companion(&mut self, ppc_companion: PpcLoadedApp) {
         assert!(
             self.process_context
                 .can_install_cfm_seed(&ppc_companion.cfm),
             "CFM seed conflicts with the process registry"
         );
+        let current_tick = self.process_context.migrated_handles().ticks.current_tick();
+        let migrated_services = ppc_companion
+            .preflight_migrated_services(&self.process_context, current_tick)
+            .expect("native companion services conflict with the process registry");
+        self.init_ppc_companion_with_services(ppc_companion, migrated_services);
+    }
+
+    fn init_ppc_companion_with_services(
+        &mut self,
+        mut ppc_companion: PpcLoadedApp,
+        migrated_services: crate::process_context::MigratedServiceAdoption,
+    ) {
+        ppc_companion.commit_migrated_services(&self.process_context, migrated_services);
         self.share_ppc_process_memory(&mut ppc_companion);
-        ppc_companion.attach_process_context(&mut self.process_context);
+        ppc_companion.attach_unconverted_process_services(&mut self.process_context);
         assert!(self
             .process_context
             .install_cfm_seed(&mut ppc_companion.cfm));
@@ -4130,13 +4152,26 @@ impl FixtureRunner {
             .unwrap_or_else(|_| panic!("native engine slot is occupied"));
     }
 
-    fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
+    #[cfg(test)]
+    fn init_ppc_app(&mut self, ppc_app: PpcLoadedApp) {
+        let launch_ticks = self.launch_ticks_override.unwrap_or(0);
+        let migrated_services = ppc_app
+            .preflight_migrated_services(&self.process_context, launch_ticks)
+            .expect("native application services conflict with the process registry");
+        self.init_ppc_app_with_services(ppc_app, migrated_services);
+    }
+
+    fn init_ppc_app_with_services(
+        &mut self,
+        mut ppc_app: PpcLoadedApp,
+        migrated_services: crate::process_context::MigratedServiceAdoption,
+    ) {
         assert!(
             self.process_context.can_install_cfm_seed(&ppc_app.cfm),
             "CFM seed conflicts with the process registry"
         );
         use crate::memory::globals::addr;
-
+        let launch_ticks = self.launch_ticks_override.unwrap_or(0);
         // A native application carries its parsed SIZE capability before it
         // attaches to the runner-owned process state. Start this launch with
         // that capability and a fresh process-wide OAPP claim so a prior
@@ -4174,9 +4209,9 @@ impl FixtureRunner {
         self.bus.write_word(0x09dc, 1); // PaintWhite
         let ram_size = self.bus.ram_size();
         self.bus.write_long(addr::MEM_TOP, ram_size);
-        let launch_ticks = self.launch_ticks_override.unwrap_or(0);
         self.bus.write_long(addr::TICKS, launch_ticks);
         self.dispatcher.read_tick_count(&self.bus);
+        ppc_app.commit_migrated_services(&self.process_context, migrated_services);
         let time = self
             .app_start_time
             .unwrap_or_else(current_mac_epoch_seconds);
@@ -4191,7 +4226,7 @@ impl FixtureRunner {
         self.process_context
             .event_queue_mut()
             .merge(detached_events);
-        ppc_app.attach_process_context(&mut self.process_context);
+        ppc_app.attach_unconverted_process_services(&mut self.process_context);
         assert!(self.process_context.install_cfm_seed(&mut ppc_app.cfm));
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
@@ -4242,7 +4277,11 @@ impl FixtureRunner {
             crate::guest_procedure::GuestIsa::PowerPc
         ));
         ppc_app.set_ui_theme(self.config.ui_theme);
-        ppc_app.guest_calls.start_native_engine();
+        ppc_app
+            .toolbox_startup
+            .execution
+            .calls()
+            .start_native_engine();
         self.native
             .install(NativeEngineRole::Application, ppc_app)
             .unwrap_or_else(|_| panic!("native engine slot is occupied"));
@@ -5617,11 +5656,25 @@ impl FixtureRunner {
         }
 
         if route == ExecutionRoute::PrepareCompanion {
+            let current_tick = self.process_context.migrated_handles().ticks.current_tick();
+            let migrated_services = {
+                let companion = self
+                    .native
+                    .staged_companion()
+                    .expect("selected staged native companion");
+                assert!(
+                    self.process_context.can_install_cfm_seed(&companion.cfm),
+                    "CFM seed conflicts with the process registry"
+                );
+                companion
+                    .preflight_migrated_services(&self.process_context, current_tick)
+                    .expect("native companion services conflict with the process registry")
+            };
             let companion = self
                 .native
                 .take_staged_companion()
                 .expect("selected staged native companion");
-            self.init_ppc_companion(companion);
+            self.init_ppc_companion_with_services(companion, migrated_services);
         }
         if matches!(
             route,
@@ -6512,7 +6565,7 @@ impl FixtureRunner {
         let mut ppc_app = native_context.adapter_mut();
 
         ppc_app.set_ui_theme(self.config.ui_theme);
-        if !ppc_app.guest_calls.prepare_native_task(&mut ppc_app.cpu) {
+        if !ppc_app.toolbox_startup.execution.calls().prepare_native_task(&mut ppc_app.cpu) {
             return (0, !self.halted);
         }
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
@@ -6524,7 +6577,7 @@ impl FixtureRunner {
             cycles_per_tick,
             cycles_per_tick.saturating_sub(remaining_cycles),
         );
-        if ppc_app.guest_calls.pending_powerpc_from_m68k().is_some()
+        if ppc_app.toolbox_startup.execution.calls().pending_powerpc_from_m68k().is_some()
             && ppc_app
                 .activate_powerpc_from_m68k(&mut self.m68k.cpu)
                 .is_none()
@@ -6538,8 +6591,8 @@ impl FixtureRunner {
                 .unwrap_or_else(|_| panic!("native context lost its owner"));
             return (0, false);
         }
-        if ppc_app.guest_calls.has_m68k_execution() {
-            let ppc_task = ppc_app.guest_calls.current_task();
+        if ppc_app.toolbox_startup.execution.calls().has_m68k_execution() {
+            let ppc_task = ppc_app.toolbox_startup.execution.calls().current_task();
             let ppc_start_time = self.bus.read_long(crate::memory::globals::addr::TIME);
             let (mixed_steps, running) = self
                 .run_pending_m68k_guest_call(&mut ppc_app, ppc_max_steps)
@@ -6552,8 +6605,8 @@ impl FixtureRunner {
             // the native caller is parked. Do not deliver the native
             // application's VBL/Time Manager work against that successor's
             // task; the callback phase is retried once its owner is selected.
-            let native_callbacks_allowed = ppc_app.guest_calls.current_task_is_running()
-                && ppc_app.guest_calls.current_task() == ppc_task
+            let native_callbacks_allowed = ppc_app.toolbox_startup.execution.calls().current_task_is_running()
+                && ppc_app.toolbox_startup.execution.calls().current_task() == ppc_task
                 && ExecutionTaskId::from_thread_id(
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
@@ -6611,7 +6664,7 @@ impl FixtureRunner {
                 running,
             );
         }
-        let ppc_task = ppc_app.guest_calls.current_task();
+        let ppc_task = ppc_app.toolbox_startup.execution.calls().current_task();
         let ppc_start_time = self.bus.read_long(crate::memory::globals::addr::TIME);
         let profile_ppc = ppc_profile_enabled();
         let profile_total_start = profile_ppc.then(Instant::now);
@@ -6668,8 +6721,8 @@ impl FixtureRunner {
             (Vec::new(), Vec::new())
         } else {
             let tick_advance = self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
-            let native_callbacks_allowed = ppc_app.guest_calls.current_task_is_running()
-                && ppc_app.guest_calls.current_task() == ppc_task
+            let native_callbacks_allowed = ppc_app.toolbox_startup.execution.calls().current_task_is_running()
+                && ppc_app.toolbox_startup.execution.calls().current_task() == ppc_task
                 && ExecutionTaskId::from_thread_id(
                     self.dispatcher.guest_calls.current_task().thread_id(),
                 ) == ppc_task;
@@ -6908,13 +6961,13 @@ impl FixtureRunner {
         max_steps: usize,
     ) -> Option<(usize, bool)> {
         self.m68k.apply_task_handoff();
-        if !ppc_app.guest_calls.has_m68k_execution() {
+        if !ppc_app.toolbox_startup.execution.calls().has_m68k_execution() {
             return None;
         }
-        if !ppc_app.guest_calls.prepare_native_task(&mut ppc_app.cpu) {
+        if !ppc_app.toolbox_startup.execution.calls().prepare_native_task(&mut ppc_app.cpu) {
             return Some((0, true));
         }
-        let task = ppc_app.guest_calls.current_task();
+        let task = ppc_app.toolbox_startup.execution.calls().current_task();
         let pending = self.m68k.activate_pending(&mut ppc_app.cpu)?;
 
         // Thread Manager calls are allowed to yield while guest callback code
@@ -6922,8 +6975,8 @@ impl FixtureRunner {
         // task and the continuation captured above must remain suspended until
         // its owner is scheduled again. Continuing here would execute the old
         // callback against the new task's registers and stack.
-        if ppc_app.guest_calls.current_task() != task
-            || !ppc_app.guest_calls.current_task_is_running()
+        if ppc_app.toolbox_startup.execution.calls().current_task() != task
+            || !ppc_app.toolbox_startup.execution.calls().current_task_is_running()
         {
             return Some((0, true));
         }
@@ -7015,15 +7068,15 @@ impl FixtureRunner {
                         running = false;
                         break;
                     }
-                    if ppc_app.guest_calls.current_task() != task
-                        || !ppc_app.guest_calls.current_task_is_running()
+                    if ppc_app.toolbox_startup.execution.calls().current_task() != task
+                        || !ppc_app.toolbox_startup.execution.calls().current_task_is_running()
                     {
                         // The trap switched cooperative tasks. Preserve the active
                         // frame and let the outer scheduler run the newly selected
                         // task; only this task may resume the captured continuation.
                         return Some((executed, true));
                     }
-                    if ppc_app.guest_calls.has_powerpc_from_m68k() {
+                    if ppc_app.toolbox_startup.execution.calls().has_powerpc_from_m68k() {
                         break;
                     }
                 }
@@ -11479,6 +11532,377 @@ mod tests {
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
 
+    fn start_real_classic_menu_definition(runner: &mut FixtureRunner) -> u32 {
+        use crate::memory::globals::addr;
+
+        let menu = runner.bus.alloc(4);
+        let record = runner.bus.alloc(64);
+        let definition = runner.bus.alloc(2);
+        let definition_handle = runner.bus.alloc(4);
+        let entry = runner.bus.alloc(4);
+        let stack = runner.bus.alloc(8);
+
+        runner.bus.write_long(menu, record);
+        runner.bus.write_word(record, 140);
+        runner.bus.write_word(record + 2, 80);
+        runner.bus.write_word(record + 4, 32);
+        runner.bus.write_long(record + 6, definition_handle);
+        runner.bus.write_long(record + 10, u32::MAX);
+        runner.bus.write_bytes(
+            record + 14,
+            b"\x06Shared\x01A\x00\x00\x00\x00\x01B\x00\x00\x00\x00\x00",
+        );
+        runner.bus.write_word(definition, 0x60FE); // real guest MDEF parks while owned
+        runner.bus.write_long(definition_handle, definition);
+        runner.bus.write_word(stack, 0);
+        runner.bus.write_long(stack + 2, menu);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner
+            .dispatcher
+            .dispatch_menu(true, 0x135, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        runner.dispatcher.menu_bar_hidden = false;
+        runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+        runner.bus.write_word(addr::MENU_FLASH, 0);
+        runner.dispatcher.draw_menu_bar_to_fb(&mut runner.bus);
+
+        runner.bus.write_word(entry, 0xA93D); // MenuSelect
+        runner.bus.write_word(entry + 2, 0x60FE); // park after the call
+        runner.bus.write_word(stack, 10);
+        runner.bus.write_word(stack + 2, 16);
+        runner.bus.write_long(stack + 4, 0);
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner.push_canonical_mouse_down(10, 16);
+
+        for _ in 0..64 {
+            assert!(runner.run_steps(1, None).1);
+            if runner.process_context.menu_tracking().is_some()
+                && runner.dispatcher.guest_calls.depth() != 0
+            {
+                return menu;
+            }
+        }
+        panic!("classic MenuSelect did not enter its real guest MDEF continuation");
+    }
+
+    #[test]
+    fn classic_runner_constructs_migrated_services_from_one_owner() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let process_handles = runner.process_context.migrated_handles();
+        assert!(runner
+            .dispatcher
+            .is_constructed_from_migrated_handles(&process_handles));
+
+        let tick_result = runner.bus.alloc(4);
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 0x1234_5678);
+        runner.m68k.cpu.write_reg(Register::A7, tick_result);
+        runner
+            .dispatcher
+            .dispatch(0xA975, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert_eq!(runner.bus.read_long(tick_result), 0x1234_5678);
+        assert_eq!(process_handles.ticks.current_tick(), 0x1234_5678);
+
+        let menu = start_real_classic_menu_definition(&mut runner);
+        assert_eq!(
+            runner
+                .process_context
+                .menu_tracking()
+                .expect("real classic menu root remains active")
+                .menu_handle,
+            menu,
+        );
+        assert!(runner.dispatcher.guest_calls.depth() > 0);
+        assert!(runner
+            .dispatcher
+            .is_constructed_from_migrated_handles(&process_handles));
+    }
+
+    #[test]
+    fn independent_runners_keep_migrated_services_isolated() {
+        let mut first = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let second = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let first_handles = first.process_context.migrated_handles();
+        let second_handles = second.process_context.migrated_handles();
+
+        assert!(!first_handles.ticks.ptr_eq(&second_handles.ticks));
+        assert!(!first_handles.execution.ptr_eq(&second_handles.execution));
+
+        let tick_result = first.bus.alloc(4);
+        first
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 0x1020_3040);
+        first.m68k.cpu.write_reg(Register::A7, tick_result);
+        first
+            .dispatcher
+            .dispatch(0xA975, &mut first.m68k.cpu, &mut first.bus)
+            .unwrap();
+        assert_eq!(first_handles.ticks.current_tick(), 0x1020_3040);
+        assert_ne!(second_handles.ticks.current_tick(), 0x1020_3040);
+
+        start_real_classic_menu_definition(&mut first);
+        assert!(first.process_context.menu_tracking().is_some());
+        assert!(first.dispatcher.guest_calls.depth() > 0);
+        assert!(second.process_context.menu_tracking().is_none());
+        assert!(second.dispatcher.guest_calls.is_empty());
+    }
+
+    fn halted_ppc_adapter() -> PpcLoadedApp {
+        halted_ppc_app_with_sound(PpcSoundState::default())
+            .ppc
+            .expect("halted native fixture")
+    }
+
+    #[test]
+    fn native_application_adopts_detached_populated_services_before_publication() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let handles = runner.process_context.migrated_handles();
+        let mut native = load_pef_application(&crate::loader::ppc::tests::synthetic_pef_with_import(
+            b"TickCount",
+        ))
+        .unwrap();
+        native.tick_state = SharedProcessTickState::from_value(41);
+        native.cpu.gpr[3] = 0xfeed_face;
+        let _menu = native.toolbox_startup.execution.enter_test_menu();
+        *native.toolbox_startup.execution.menu_state_mut() =
+            Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+        let app = LoadedApp::from_ppc(native);
+
+        runner.init_app(&app);
+
+        assert_eq!(handles.ticks.current_tick(), 41);
+        let (steps, _) = runner.run_steps(64, None);
+        assert!(steps > 0);
+        let installed = runner
+            .native
+            .adapter_mut(NativeEngineRole::Application)
+            .expect("native application installed");
+        assert!(installed.is_constructed_from_migrated_handles(&handles));
+        assert_eq!(installed.cpu.gpr[3], 0);
+        assert_eq!(handles.ticks.current_tick(), 0);
+        assert_eq!(
+            installed
+                .memory
+                .read_u32_be(crate::memory::globals::addr::TICKS),
+            Some(0)
+        );
+        assert_eq!(
+            runner
+                .process_context
+                .menu_tracking()
+                .map(|state| state.menu_handle),
+            Some(0x1234)
+        );
+    }
+
+    #[test]
+    fn native_application_accepts_shared_tick_identity_across_launch_sync() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(42, 1, 0);
+        let handles = runner.process_context.migrated_handles();
+        handles.ticks.set_tick(7);
+        let mut native = load_pef_application(&crate::loader::ppc::tests::synthetic_pef_with_import(
+            b"TickCount",
+        ))
+        .unwrap();
+        native.tick_state = handles.ticks.shared_handle();
+        native.toolbox_startup.execution =
+            crate::guest_call::ExecutionMenuViews::shared_from(&handles.execution);
+
+        runner.init_ppc_app(native);
+
+        let installed = runner
+            .native
+            .adapter_mut(NativeEngineRole::Application)
+            .expect("native application installed");
+        assert!(installed.is_constructed_from_migrated_handles(&handles));
+        assert_eq!(handles.ticks.current_tick(), 42);
+        assert_eq!(
+            installed
+                .memory
+                .read_u32_be(crate::memory::globals::addr::TICKS),
+            Some(42)
+        );
+        let (steps, _) = runner.run_steps(64, None);
+        assert!(steps > 0);
+        let installed = runner
+            .native
+            .adapter_mut(NativeEngineRole::Application)
+            .expect("native application retained");
+        assert!(installed.is_constructed_from_migrated_handles(&handles));
+        assert_eq!(installed.cpu.gpr[3], 42);
+    }
+
+    #[test]
+    fn native_companion_joins_live_classic_execution_for_both_tick_identities() {
+        for already_shared in [false, true] {
+            run_classic_menu_select_with_powerpc_mdef_identity(false, already_shared);
+        }
+    }
+
+    #[test]
+    fn staged_native_companion_conflict_preserves_owner_and_retries_same_adapter() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let handles = runner.process_context.migrated_handles();
+        handles.ticks.set_tick(41);
+        let mut conflict = halted_ppc_adapter();
+        conflict.tick_state = SharedProcessTickState::from_value(42);
+        assert!(handles.execution.begin_m68k_to_powerpc(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::PowerPc,
+                entry: conflict.entry_pc,
+                rtoc: conflict.rtoc,
+            },
+            crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
+            0x1000,
+            0x2000,
+            None,
+        ));
+        let before_calls = handles.execution.clone();
+        runner.stage_ppc_companion(conflict);
+
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runner.run_steps(1, None);
+        }));
+        assert!(refused.is_err());
+        assert!(runner.native.has_staged_companion());
+        assert!(runner.native.companion().is_none());
+        assert_eq!(handles.ticks.current_tick(), 41);
+        assert_eq!(handles.execution, before_calls);
+
+        handles.ticks.set_tick(42);
+        let (steps, _) = runner.run_steps(1, None);
+        assert!(steps > 0);
+        assert!(!runner.native.has_staged_companion());
+        assert!(runner
+            .native
+            .adapter_mut(NativeEngineRole::Companion)
+            .expect("retained staged adapter installs on retry")
+            .is_constructed_from_migrated_handles(&handles));
+    }
+
+    #[test]
+    fn native_application_relaunch_refuses_two_live_execution_owners_before_publication() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let menu = start_real_classic_menu_definition(&mut runner);
+        let handles = runner.process_context.migrated_handles();
+        let before_calls = handles.execution.clone();
+        runner.process_context.cfm_mut().next_connection_id = 77;
+        let before_cfm = runner.process_context.cfm_mut().clone();
+        runner
+            .dispatcher
+            .apple_event_launch_state
+            .reset_for_launch(true);
+        let before_apple_events = runner.dispatcher.apple_event_launch_state.clone();
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 0x1122_3344);
+        let mut installed = halted_ppc_adapter();
+        installed.cpu.gpr[31] = 0xfeed_beef;
+        assert!(runner
+            .native
+            .install(NativeEngineRole::Application, installed)
+            .is_ok());
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let conflict = app.ppc.as_mut().unwrap();
+        let _menu = conflict.toolbox_startup.execution.enter_test_menu();
+        *conflict.toolbox_startup.execution.menu_state_mut() =
+            Some(crate::menu_manager::test_process_menu_tracking(0x5678));
+
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runner.init_app(&app);
+        }));
+
+        assert!(refused.is_err());
+        assert_eq!(
+            runner.native.application().unwrap().cpu.gpr[31],
+            0xfeed_beef
+        );
+        assert_eq!(handles.execution, before_calls);
+        assert_eq!(*runner.process_context.cfm_mut(), before_cfm);
+        assert_eq!(
+            runner.dispatcher.apple_event_launch_state,
+            before_apple_events
+        );
+        assert_eq!(
+            runner.bus.read_long(crate::memory::globals::addr::TICKS),
+            0x1122_3344
+        );
+        assert_eq!(
+            runner
+                .process_context
+                .menu_tracking()
+                .map(|state| state.menu_handle),
+            Some(menu)
+        );
+    }
+
+    #[test]
+    fn native_application_relaunch_preflight_preserves_nonlive_process_state() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let handles = runner.process_context.migrated_handles();
+        assert!(handles.execution.begin_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+        ));
+        assert!(handles.execution.complete_m68k(0x2002, 0x3000));
+        assert!(handles.execution.is_empty());
+        assert!(!handles.execution.is_pristine());
+        assert!(runner.m68k.can_relaunch());
+        assert!(runner.native.can_relaunch());
+        let before_calls = handles.execution.clone();
+        runner.process_context.cfm_mut().next_connection_id = 77;
+        let before_cfm = runner.process_context.cfm_mut().clone();
+        runner
+            .dispatcher
+            .apple_event_launch_state
+            .reset_for_launch(true);
+        let before_apple_events = runner.dispatcher.apple_event_launch_state.clone();
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 0x1122_3344);
+        let mut installed = halted_ppc_adapter();
+        installed.cpu.gpr[31] = 0xfeed_beef;
+        assert!(runner
+            .native
+            .install(NativeEngineRole::Application, installed)
+            .is_ok());
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let conflict = app.ppc.as_mut().unwrap();
+        let _menu = conflict.toolbox_startup.execution.enter_test_menu();
+        *conflict.toolbox_startup.execution.menu_state_mut() =
+            Some(crate::menu_manager::test_process_menu_tracking(0x5678));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runner.init_app(&app);
+        }));
+
+        assert!(refused.is_err());
+        assert_eq!(
+            runner.native.application().unwrap().cpu.gpr[31],
+            0xfeed_beef
+        );
+        assert_eq!(handles.execution, before_calls);
+        assert_eq!(*runner.process_context.cfm_mut(), before_cfm);
+        assert_eq!(
+            runner.dispatcher.apple_event_launch_state,
+            before_apple_events
+        );
+        assert_eq!(
+            runner.bus.read_long(crate::memory::globals::addr::TICKS),
+            0x1122_3344
+        );
+    }
+
     fn cfm_test_connection(id: u32) -> crate::cfm::CfmConnection {
         crate::cfm::CfmConnection {
             id,
@@ -11825,7 +12249,7 @@ mod tests {
                 .unwrap();
         }
         native.memory.write_u32_be(STACK, RETURN).unwrap();
-        assert!(native.guest_calls.begin_powerpc_to_m68k(
+        assert!(native.guest_calls().begin_powerpc_to_m68k(
             GuestCallTarget {
                 isa: GuestIsa::M68k,
                 entry: CALLBACK,
@@ -15519,7 +15943,6 @@ mod tests {
             process_input: Default::default(),
             event_queue: Default::default(),
             window_list: Default::default(),
-            guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
                 PPC_STACK_BASE,
@@ -15568,8 +15991,8 @@ mod tests {
             0x3000,
         );
         let ppc_app = runner.native.application_mut().expect("PPC app");
-        assert_eq!(ppc_app.guest_calls.len(), 1);
-        assert!(ppc_app.guest_calls.complete_m68k(0x2002, 0x3000));
+        assert_eq!(ppc_app.toolbox_startup.execution.calls().len(), 1);
+        assert!(ppc_app.toolbox_startup.execution.calls().complete_m68k(0x2002, 0x3000));
         assert!(runner.dispatcher.guest_calls.is_empty());
     }
 
@@ -16198,7 +16621,7 @@ mod tests {
         ppc_app.memory.add_region(RESULT, vec![0; 4]);
         ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
         ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::M68k,
                 entry: M68K_ENTRY,
@@ -16265,7 +16688,7 @@ mod tests {
         );
         ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
         ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::M68k,
                 entry: M68K_ENTRY,
@@ -16326,7 +16749,7 @@ mod tests {
         let arguments =
             PowerPcArguments::from_slice(&[0, 0, 0, 0, 0, 0, OUTPUTS, OUTPUTS + 2, OUTPUTS + 4])
                 .unwrap();
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::M68k,
                 entry: M68K_ENTRY,
@@ -16441,7 +16864,7 @@ mod tests {
             .memory
             .write_u32_be(INITIAL_SP + 4, ARGUMENT)
             .unwrap();
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::M68k,
                 entry: DESCRIPTOR,
@@ -16506,6 +16929,12 @@ mod tests {
     }
 
     fn classic_powerpc_mdef_fixture() -> ClassicPowerPcMdefFixture {
+        classic_powerpc_mdef_fixture_with_tick_identity(false)
+    }
+
+    fn classic_powerpc_mdef_fixture_with_tick_identity(
+        already_shared_tick: bool,
+    ) -> ClassicPowerPcMdefFixture {
         use crate::guest_procedure::{
             ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
             ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_FLAGS_OFFSET,
@@ -16565,6 +16994,13 @@ mod tests {
             size_resource: None,
         };
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        if already_shared_tick {
+            native.tick_state = runner
+                .process_context
+                .migrated_handles()
+                .ticks
+                .shared_handle();
+        }
         runner.stage_ppc_companion(native);
         runner.init_app(&classic);
         runner.bus.write_long(MENU, RECORD);
@@ -16748,6 +17184,10 @@ mod tests {
     }
 
     fn run_classic_menu_select_with_powerpc_mdef(interrupt: bool) {
+        run_classic_menu_select_with_powerpc_mdef_identity(interrupt, false);
+    }
+
+    fn run_classic_menu_select_with_powerpc_mdef_identity(interrupt: bool, already_shared_tick: bool) {
         use crate::memory::globals::addr;
         let ClassicPowerPcMdefFixture {
             mut runner,
@@ -16756,7 +17196,8 @@ mod tests {
             marker,
             entry,
             stack,
-        } = classic_powerpc_mdef_fixture();
+        } = classic_powerpc_mdef_fixture_with_tick_identity(already_shared_tick);
+        let migrated_handles = runner.process_context.migrated_handles();
         runner.dispatcher.menu_bar_hidden = false;
         runner.bus.write_word(addr::MBAR_HEIGHT, 20);
         runner.bus.write_word(addr::MENU_FLASH, 0);
@@ -16784,7 +17225,8 @@ mod tests {
         if interrupt {
             let mut parked = false;
             for _ in 0..512 {
-                if runner.m68k.cpu.read_reg(Register::PC) == stack - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION + 52
+                if runner.m68k.cpu.read_reg(Register::PC)
+                    == stack - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION + 52
                     && runner.m68k.cpu.read_reg(Register::A7)
                         == stack - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
                 {
@@ -16825,12 +17267,29 @@ mod tests {
         }
         assert!(runner.process_context.menu_tracking().is_none());
         assert!(runner.dispatcher.guest_calls.is_empty());
+        assert!(runner
+            .native
+            .adapter_mut(NativeEngineRole::Companion)
+            .expect("mixed callback companion retained")
+            .is_constructed_from_migrated_handles(&migrated_handles));
         assert_eq!(runner.bus.read_long(stack + 4), (140 << 16) | 2);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), stack + 4);
         assert_eq!(*runner.dispatcher.current_port, original_port);
         if interrupt {
             assert_eq!(runner.bus.read_word(marker + 4), 1);
         }
+
+        let completed_result = runner.bus.read_long(stack + 4);
+        let completed_sp = runner.m68k.cpu.read_reg(Register::A7);
+        let completed_pc = runner.m68k.cpu.read_reg(Register::PC);
+        let completed_marker = runner.bus.read_long(marker);
+        assert!(runner.run_steps(16, None).1);
+        assert_eq!(runner.bus.read_long(stack + 4), completed_result);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), completed_sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), completed_pc);
+        assert_eq!(runner.bus.read_long(marker), completed_marker);
+        assert!(runner.process_context.menu_tracking().is_none());
+        assert!(runner.dispatcher.guest_calls.is_empty());
     }
 
     #[test]
@@ -17563,7 +18022,7 @@ mod tests {
         let mut registers = M68kRegisterState::default();
         registers.data[0] = BYTE_COUNT;
         registers.data[1] = 0xdead_beef;
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
             GuestCallTarget {
                 isa: GuestIsa::M68k,
                 entry: M68K_ENTRY,
@@ -18435,7 +18894,7 @@ mod tests {
                 ppc_app.import_count = 2;
             }
 
-            assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+            assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
                 crate::guest_call::GuestCallTarget {
                     isa: crate::guest_procedure::GuestIsa::M68k,
                     entry: OUTER_ENTRY,
@@ -18723,7 +19182,7 @@ mod tests {
         ppc_app.imports = vec![call_universal_proc];
         let mut outer_registers = crate::guest_call::M68kRegisterState::default();
         outer_registers.data[6] = OUTER_D6;
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::M68k,
                 entry: DESCRIPTOR,
@@ -18802,7 +19261,7 @@ mod tests {
                         .len(),
                     1
                 );
-                assert_eq!(ppc_app.guest_calls.len(), frame_count);
+                assert_eq!(ppc_app.toolbox_startup.execution.calls().len(), frame_count);
                 runner
                     .native
                     .restore(native_context)
@@ -18857,14 +19316,12 @@ mod tests {
             .expect("PPC app");
         let mut ppc_app = native_context.adapter_mut();
         let return_pc = 0x01f0_4000;
-        ppc_app
-            .guest_calls
+        ppc_app.toolbox_startup.execution.calls()
             .activate_powerpc_from_m68k(&mut ppc_app.cpu, return_pc)
             .unwrap();
         ppc_app.cpu.pc = return_pc;
         ppc_app.cpu.gpr[3] = 1;
-        assert!(ppc_app
-            .guest_calls
+        assert!(ppc_app.toolbox_startup.execution.calls()
             .complete_powerpc_for_m68k(&mut ppc_app.cpu));
 
         assert!(runner.resume_m68k_after_powerpc(&mut ppc_app));
@@ -18872,7 +19329,7 @@ mod tests {
         assert_eq!(runner.m68k.cpu.core.get_ccr(), 0x14);
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x0010_0000);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_1000);
-        assert!(ppc_app.guest_calls.is_empty());
+        assert!(ppc_app.toolbox_startup.execution.calls().is_empty());
         runner
             .native
             .restore(native_context)
@@ -19252,7 +19709,7 @@ mod tests {
         let ppc_app = native_context.adapter_mut();
         ppc_app.cpu.gpr[3] = NATIVE_R3;
         let arguments = PowerPcArguments::from_slice(&[0, 0]).unwrap();
-        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::M68k,
                 entry: M68K_ENTRY,
@@ -19272,7 +19729,7 @@ mod tests {
             0,
             PpcNativeReturnGpr3::Preserve,
         ));
-        let pending = ppc_app.guest_calls.activate_m68k().unwrap();
+        let pending = ppc_app.toolbox_startup.execution.calls().activate_m68k().unwrap();
         runner.m68k.cpu.write_reg(Register::PC, pending.return_pc);
         runner.m68k.cpu.write_reg(Register::A7, pending.final_sp);
 
@@ -19285,7 +19742,7 @@ mod tests {
                 manager
             )));
         assert_eq!(ppc_app.cpu.gpr[3], NATIVE_R3);
-        assert!(ppc_app.guest_calls.is_empty());
+        assert!(ppc_app.toolbox_startup.execution.calls().is_empty());
     }
 
     #[test]
@@ -19436,7 +19893,7 @@ mod tests {
             runner.init_app(&app);
             let mut native_context = runner.native.take(NativeEngineRole::Application).unwrap();
             let mut ppc_app = native_context.adapter_mut();
-            assert!(ppc_app.guest_calls.begin_m68k_to_powerpc(
+            assert!(ppc_app.toolbox_startup.execution.calls().begin_m68k_to_powerpc(
                 crate::guest_call::GuestCallTarget {
                     isa: crate::guest_procedure::GuestIsa::PowerPc,
                     entry: PPC_CODE_BASE,
@@ -19447,21 +19904,18 @@ mod tests {
                 FINAL_SP,
                 Some(target),
             ));
-            ppc_app
-                .guest_calls
+            ppc_app.toolbox_startup.execution.calls()
                 .activate_powerpc_from_m68k(&mut ppc_app.cpu, RETURN_PC)
                 .unwrap();
             ppc_app.cpu.pc = RETURN_PC;
             ppc_app.cpu.gpr[3] = 0x1234_5678;
-            assert!(ppc_app
-                .guest_calls
+            assert!(ppc_app.toolbox_startup.execution.calls()
                 .complete_powerpc_for_m68k(&mut ppc_app.cpu));
-            let (task, call_id) = ppc_app.guest_calls.pending_m68k_resume_owner().unwrap();
+            let (task, call_id) = ppc_app.toolbox_startup.execution.calls().pending_m68k_resume_owner().unwrap();
             runner.m68k.cpu.core.set_d(1, 0xabcd_0000);
             runner.m68k.cpu.core.set_d(7, 0xcafe_babe);
             runner.m68k.cpu.core.set_ccr(0x11);
-            assert!(ppc_app
-                .guest_calls
+            assert!(ppc_app.guest_calls()
                 .park_context(
                     &mut runner
                         .dispatcher
@@ -19488,7 +19942,7 @@ mod tests {
             assert_eq!(runner.m68k.cpu.core.d(7), 0xcafe_babe);
             assert_eq!(runner.m68k.cpu.read_reg(Register::PC), RETURN_PC);
             assert_eq!(runner.m68k.cpu.read_reg(Register::A7), FINAL_SP);
-            assert!(ppc_app.guest_calls.is_empty());
+            assert!(ppc_app.toolbox_startup.execution.calls().is_empty());
             assert!(runner
                 .dispatcher
                 .guest_calls
@@ -19516,7 +19970,7 @@ mod tests {
             .take(NativeEngineRole::Application)
             .expect("PPC app");
         let mut ppc_app = native_context.adapter_mut();
-        assert!(ppc_app.guest_calls.begin_m68k_to_powerpc(
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_m68k_to_powerpc(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::PowerPc,
                 entry: PPC_CODE_BASE,
@@ -19530,25 +19984,21 @@ mod tests {
                 size: 4,
             }),
         ));
-        ppc_app
-            .guest_calls
+        ppc_app.toolbox_startup.execution.calls()
             .activate_powerpc_from_m68k(&mut ppc_app.cpu, RETURN_PC)
             .unwrap();
         ppc_app.cpu.pc = RETURN_PC;
         ppc_app.cpu.gpr[3] = RESULT_VALUE;
-        assert!(ppc_app
-            .guest_calls
+        assert!(ppc_app.toolbox_startup.execution.calls()
             .complete_powerpc_for_m68k(&mut ppc_app.cpu));
 
         // Model the caller parked by a nested native-to-68K transition. The
         // failed write must not consume either this context or its completion.
-        let (task, call_id) = ppc_app
-            .guest_calls
+        let (task, call_id) = ppc_app.guest_calls()
             .pending_m68k_resume_owner()
             .expect("completed continuation owner");
         runner.m68k.cpu.core.set_d(0, PARKED_D0);
-        assert!(ppc_app
-            .guest_calls
+        assert!(ppc_app.guest_calls()
             .park_context(
                 &mut runner
                     .dispatcher
@@ -19569,7 +20019,7 @@ mod tests {
                 .task_len(task),
             1
         );
-        assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
+        assert!(ppc_app.toolbox_startup.execution.calls().peek_m68k_resume().is_some());
 
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
         assert_eq!(
@@ -19581,7 +20031,7 @@ mod tests {
                 .task_len(task),
             1
         );
-        assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
+        assert!(ppc_app.toolbox_startup.execution.calls().peek_m68k_resume().is_some());
 
         ppc_app.memory.add_readonly_region(RESULT, vec![0xaa; 4]);
         assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
@@ -19595,7 +20045,7 @@ mod tests {
                 .task_len(task),
             1
         );
-        assert!(ppc_app.guest_calls.peek_m68k_resume().is_some());
+        assert!(ppc_app.toolbox_startup.execution.calls().peek_m68k_resume().is_some());
 
         ppc_app.memory.add_region(RESULT, vec![0; 4]);
         assert!(runner.resume_m68k_after_powerpc(&mut ppc_app));
@@ -19608,7 +20058,7 @@ mod tests {
                 .task_len(task),
             0
         );
-        assert!(ppc_app.guest_calls.peek_m68k_resume().is_none());
+        assert!(ppc_app.toolbox_startup.execution.calls().peek_m68k_resume().is_none());
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(RESULT_VALUE));
         assert_eq!(runner.m68k.cpu.core.d(0), PARKED_D0);
     }
@@ -20316,7 +20766,6 @@ mod tests {
             process_input: Default::default(),
             event_queue: Default::default(),
             window_list: Default::default(),
-            guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
                 PPC_STACK_BASE,
@@ -21131,7 +21580,6 @@ mod tests {
             process_input: Default::default(),
             event_queue: Default::default(),
             window_list: Default::default(),
-            guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
                 PPC_STACK_BASE,
@@ -21284,7 +21732,6 @@ mod tests {
             process_input: Default::default(),
             event_queue: Default::default(),
             window_list: Default::default(),
-            guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
                 PPC_STACK_BASE,
@@ -21684,7 +22131,6 @@ mod tests {
             process_input: Default::default(),
             event_queue: Default::default(),
             window_list: Default::default(),
-            guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE + 8,
                 PPC_STACK_BASE,
@@ -22001,7 +22447,6 @@ mod tests {
             process_input: Default::default(),
             event_queue: Default::default(),
             window_list: Default::default(),
-            guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE + 8 * 16,
                 PPC_STACK_BASE,
@@ -22281,7 +22726,7 @@ mod tests {
                 .expect("packed indexed mode");
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
             let mut ppc_app = app.ppc.take().expect("PPC app");
-            ppc_app.attach_process_context(&mut runner.process_context);
+            ppc_app.attach_unconverted_process_services(&mut runner.process_context);
             let (mut device_clut, _) =
                 TrapDispatcher::standard_mac_indexed_clut(depth).expect("standard indexed depth");
             device_clut[0][0] = 0xfffe;

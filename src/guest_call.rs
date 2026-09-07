@@ -884,24 +884,14 @@ impl std::ops::DerefMut for SharedMenuTracking {
     }
 }
 impl SharedMenuTracking {
+    pub(crate) fn is_view_of(&self, calls: &SharedGuestCallStack) -> bool {
+        let tasks = calls.0.borrow();
+        self.calls.ptr_eq(&tasks.menu_calls) && self.execution.ptr_eq(calls)
+    }
+
     #[cfg(test)]
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         self.calls.ptr_eq(&other.calls)
-    }
-    pub(crate) fn bind_execution(&mut self, calls: &SharedGuestCallStack) {
-        let view = calls.menu_tracking_view();
-        if self.calls.ptr_eq(&view.calls) {
-            self.execution = calls.shared_handle();
-            return;
-        }
-        // Derived adapter clones hold detached but equal snapshots of their
-        // view and execution owner. Reconnect that view before execution;
-        // adopting conflicting populated owners remains forbidden.
-        if self.calls == view.calls {
-            *self = view;
-        } else {
-            self.attach_to(&view);
-        }
     }
     #[cfg(test)]
     pub(crate) fn menu_hook_key(&self) -> Option<MenuHookKey> {
@@ -1190,17 +1180,6 @@ impl SharedMenuTracking {
             call.id != id
                 || !matches!(&call.operation, MenuOperation::Tracking(operation) if operation.is_idle())
         });
-    }
-    pub(crate) fn attach_to(&mut self, other: &Self) {
-        assert!(
-            self.calls.ptr_eq(&other.calls)
-                || self.calls.calls.is_empty()
-                || other.calls.calls.is_empty(),
-            "cannot attach two active Menu Manager continuations"
-        );
-        self.calls
-            .attach_to(&other.calls, |calls| calls.calls.is_empty());
-        self.execution = other.execution.shared_handle();
     }
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
@@ -1614,6 +1593,10 @@ impl SharedGuestCallStack {
 
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0))
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
     }
 
     pub(crate) fn attach_to(&mut self, process_calls: &Self) {
@@ -2521,6 +2504,7 @@ impl SharedGuestCallStack {
         Some(call_id)
     }
 
+    #[cfg(test)]
     fn push_effect(&self, effect: GuestCallEffect) -> bool {
         self.submit_effect(effect).is_some()
     }
@@ -2961,6 +2945,7 @@ impl SharedGuestCallStack {
     /// Commit the ABI result and restore the exact caller under one validated
     /// retirement boundary. The adapter closure must leave state unchanged
     /// when it rejects a result and must not execute guest code.
+    #[cfg(test)]
     pub(crate) fn commit_m68k_resume(
         &self,
         apply: impl FnOnce(M68kResume, Option<&mut M68kCpu>) -> bool,
@@ -3629,6 +3614,135 @@ impl SharedGuestCallStack {
     }
 }
 
+/// One execution owner and its derived Menu Manager view.
+///
+/// Ordinary clones detach the execution snapshot exactly once, then derive the
+/// menu view from that clone. Shared installation uses `shared_from` explicitly.
+#[derive(Debug)]
+pub(crate) struct ExecutionMenuViews {
+    calls: SharedGuestCallStack,
+    menu: SharedMenuTracking,
+}
+
+impl Default for ExecutionMenuViews {
+    fn default() -> Self {
+        Self::detached()
+    }
+}
+
+impl Clone for ExecutionMenuViews {
+    fn clone(&self) -> Self {
+        debug_assert!(self.is_coherent());
+        let calls = self.calls.clone();
+        let menu = calls.menu_tracking_view();
+        Self { calls, menu }
+    }
+}
+
+impl PartialEq for ExecutionMenuViews {
+    fn eq(&self, other: &Self) -> bool {
+        debug_assert!(self.is_coherent());
+        debug_assert!(other.is_coherent());
+        self.calls == other.calls
+    }
+}
+
+impl Eq for ExecutionMenuViews {}
+
+impl ExecutionMenuViews {
+    pub(crate) fn detached() -> Self {
+        let calls = SharedGuestCallStack::default();
+        let menu = calls.menu_tracking_view();
+        Self { calls, menu }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_from(calls: &SharedGuestCallStack) -> Self {
+        let calls = calls.shared_handle();
+        let menu = calls.menu_tracking_view();
+        Self { calls, menu }
+    }
+
+    pub(crate) fn calls(&self) -> &SharedGuestCallStack {
+        &self.calls
+    }
+
+    pub(crate) fn menu(&self) -> &SharedMenuTracking {
+        &self.menu
+    }
+
+    pub(crate) fn menu_state_mut(
+        &mut self,
+    ) -> &mut Option<crate::menu_manager::ProcessMenuTrackingState> {
+        &mut self.menu
+    }
+
+    pub(crate) fn existing_menu_context_mut(&mut self) -> Option<&mut MenuTrackingContext> {
+        self.menu.existing_context_mut()
+    }
+
+    pub(crate) fn menu_context_mut(&mut self) -> &mut MenuTrackingContext {
+        self.menu.context_mut()
+    }
+
+    pub(crate) fn enter_menu_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
+        self.menu.enter_new_call(call)
+    }
+
+    pub(crate) fn resume_menu_call(
+        &mut self,
+        isa: GuestIsa,
+    ) -> Option<(MenuTrackingCall, MenuTrackingEntry)> {
+        self.menu.resume_call(isa)
+    }
+
+    pub(crate) fn take_menu_state(
+        &mut self,
+    ) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
+        self.menu.take()
+    }
+
+    pub(crate) fn request_menu_hook(&self, mouse_down: bool) -> Option<MenuHookKey> {
+        self.menu.request_menu_hook(mouse_down)
+    }
+
+    pub(crate) fn bind_menu_hook(
+        &mut self,
+        key: MenuHookKey,
+        completion: MenuHookCompletion,
+    ) -> bool {
+        self.menu.bind_menu_hook(key, completion)
+    }
+
+    pub(crate) fn bind_menu_definition_completion(
+        &mut self,
+        id: MenuOperationId,
+        invocation: crate::menu_manager::MenuDefinitionInvocation,
+        completion: crate::menu_manager::MenuDefinitionCompletion,
+    ) {
+        self.menu.bind_completion(id, invocation, completion);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enter_test_menu(&mut self) -> MenuTrackingEntry {
+        self.menu.enter()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_test_menu_if_idle(&mut self, id: MenuOperationId) {
+        self.menu.finish_if_idle(id);
+    }
+
+    pub(crate) fn is_coherent(&self) -> bool {
+        self.menu.is_view_of(&self.calls)
+    }
+
+    pub(crate) fn install_process_calls(&mut self, process_calls: &SharedGuestCallStack) {
+        self.calls.attach_to(process_calls);
+        self.menu = self.calls.menu_tracking_view();
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_native_import_action(
     entry: u32,
@@ -3685,6 +3799,78 @@ mod tests {
     use ppc::PpcRunResult;
 
     const RETURN_PC: u32 = 0x01f0_4000;
+
+    #[test]
+    fn execution_menu_views_clone_once_and_derive_each_menu_view() {
+        let mut original = ExecutionMenuViews::detached();
+        let root = original.enter_test_menu();
+        *original.menu_state_mut() = Some(crate::menu_manager::test_process_menu_tracking(0x1000));
+        assert!(original.is_coherent());
+
+        let mut snapshot = original.clone();
+        assert!(snapshot.is_coherent());
+        assert!(!snapshot.calls().ptr_eq(original.calls()));
+        assert!(!snapshot.menu().ptr_eq(original.menu()));
+        assert_eq!(snapshot, original);
+
+        snapshot.menu_state_mut().as_mut().unwrap().highlighted_item = 7;
+        assert_eq!(snapshot.menu().as_ref().unwrap().highlighted_item, 7);
+        assert_eq!(original.menu().as_ref().unwrap().highlighted_item, 1);
+
+        assert_eq!(snapshot.take_menu_state().unwrap().menu_handle, 0x1000);
+        snapshot.finish_test_menu_if_idle(root.id);
+        assert!(snapshot.calls().is_empty());
+        assert!(!original.calls().is_empty());
+
+        let shared = ExecutionMenuViews::shared_from(original.calls());
+        assert!(shared.is_coherent());
+        assert!(shared.calls().ptr_eq(original.calls()));
+        assert!(shared.menu().ptr_eq(original.menu()));
+        drop(root);
+    }
+
+    #[test]
+    fn execution_menu_views_adopt_parked_context_without_orphaning_its_bank() {
+        let mut adapter = ExecutionMenuViews::detached();
+        assert!(adapter.calls().begin_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+        ));
+        let (call, _) = adapter.calls().top_frame().unwrap();
+        let adapter_bank = adapter.calls().m68k_context_bank();
+        let mut cpu = M68kCpu::new();
+        cpu.core.set_d(7, 0x1234_5678);
+        assert!(adapter
+            .calls()
+            .park_context(
+                &mut adapter_bank.borrow_mut(),
+                ExecutionTaskId::APPLICATION,
+                call,
+                cpu,
+            )
+            .is_ok());
+
+        let process = SharedGuestCallStack::default();
+        adapter.install_process_calls(&process);
+
+        assert!(adapter.calls().ptr_eq(&process));
+        assert!(adapter.is_coherent());
+        assert!(Rc::ptr_eq(&adapter_bank, &process.m68k_context_bank()));
+        let restored = adapter_bank
+            .borrow_mut()
+            .take(
+                &process.0.borrow().kernel,
+                ExecutionTaskId::APPLICATION,
+                call,
+            )
+            .unwrap();
+        assert_eq!(restored.core.d(7), 0x1234_5678);
+    }
 
     fn establish_native_reservation(cpu: &mut PpcCpu, address: u32) {
         const LWARX_R12_R4_R5: u32 = (31 << 26) | (12 << 21) | (4 << 16) | (5 << 11) | (20 << 1);
@@ -4259,37 +4445,6 @@ mod tests {
         assert!(view.take().is_none());
         assert!(view.existing_context_mut().is_none());
         assert!(calls.is_pristine());
-        let other = SharedGuestCallStack::default();
-        view.attach_to(&other.menu_tracking_view());
-        assert!(other.is_pristine());
-    }
-
-    #[test]
-    fn cloned_menu_view_reconnects_to_its_detached_execution_owner() {
-        let calls = SharedGuestCallStack::default();
-        let mut view = calls.menu_tracking_view();
-        let entry = view.enter();
-        *view = Some(crate::menu_manager::test_process_menu_tracking(111));
-        let cloned_calls = calls.clone();
-        let mut cloned_view = view.clone();
-        assert!(!view.ptr_eq(&cloned_view));
-        cloned_view.bind_execution(&cloned_calls);
-        cloned_view.as_mut().unwrap().highlighted_item = 3;
-        assert_eq!(
-            cloned_calls
-                .menu_tracking_view()
-                .as_ref()
-                .unwrap()
-                .highlighted_item,
-            3
-        );
-        assert_eq!(view.as_ref().unwrap().highlighted_item, 1);
-        *cloned_view = None;
-        cloned_view.finish_if_idle(entry.id);
-        assert!(cloned_calls.is_empty());
-        assert!(!calls.is_empty());
-        *view = None;
-        drop(entry);
     }
 
     #[test]
