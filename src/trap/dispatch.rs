@@ -26,7 +26,8 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    PendingFileCompletion, ProcessContext, ProcessForkMap, ProcessKeyRepeatState,
+    MigratedProcessHandles, PendingFileCompletion, ProcessContext, ProcessForkMap,
+    ProcessKeyRepeatState,
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
     SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
@@ -3188,7 +3189,32 @@ impl TrapDispatcher {
     }
 
     pub fn new() -> Self {
-        let guest_calls = SharedGuestCallStack::default();
+        Self::new_inner(MigratedProcessHandles {
+            ticks: SharedProcessTickState::default(),
+            execution: SharedGuestCallStack::default(),
+        })
+    }
+
+    pub(crate) fn new_with_migrated_handles(handles: MigratedProcessHandles) -> Self {
+        Self::new_inner(handles)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_constructed_from_migrated_handles(
+        &self,
+        handles: &MigratedProcessHandles,
+    ) -> bool {
+        self.tick_state.ptr_eq(&handles.ticks)
+            && self.guest_calls.ptr_eq(&handles.execution)
+            && self.menu_tracking.is_view_of(&self.guest_calls)
+    }
+
+    fn new_inner(handles: MigratedProcessHandles) -> Self {
+        let MigratedProcessHandles {
+            ticks: tick_state,
+            execution: guest_calls,
+        } = handles;
+        let menu_tracking = guest_calls.menu_tracking_view();
         let mut process_file_system = SharedProcessFileSystem::default();
         *process_file_system.vfs_directories = vec![ProcessVfsDirectory {
             dir_id: 2,
@@ -3321,7 +3347,7 @@ impl TrapDispatcher {
             tx_size: 12,
             outline_preferred: false,
             preserve_glyph: false,
-            tick_state: SharedProcessTickState::default(),
+            tick_state,
             power_idle_last_update_tick: 0,
             power_idle_disable_count: 0,
             serial_port_a_powered: false,
@@ -3351,7 +3377,7 @@ impl TrapDispatcher {
             menu_bar_hidden: false,
             sound_manager: SharedProcessSoundManager::default(),
             menus: Vec::new(),
-            menu_tracking: guest_calls.menu_tracking_view(),
+            menu_tracking,
             guest_calls,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             pending_native_menu_event: None,
@@ -10973,6 +10999,36 @@ mod tests {
         assert!(context.event_queue().menu_bar_is_invalid());
         assert_eq!(dispatcher.event_queue.len(), 2);
         assert!(dispatcher.event_queue.menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn migrated_constructor_uses_exact_process_tick_and_execution_owners() {
+        let mut context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        let expected_ticks = handles.ticks.shared_handle();
+        let expected_execution = handles.execution.shared_handle();
+
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(handles);
+
+        assert!(dispatcher.tick_state.ptr_eq(&expected_ticks));
+        assert!(dispatcher.guest_calls.ptr_eq(&expected_execution));
+        assert!(dispatcher.menu_tracking.is_view_of(&dispatcher.guest_calls));
+
+        dispatcher.attach_process_context(&mut context);
+        assert!(dispatcher.tick_state.ptr_eq(&expected_ticks));
+        assert!(dispatcher.guest_calls.ptr_eq(&expected_execution));
+        assert!(dispatcher.menu_tracking.is_view_of(&dispatcher.guest_calls));
+    }
+
+    #[test]
+    fn standalone_constructors_create_independent_coherent_service_owners() {
+        let first = TrapDispatcher::new();
+        let second = TrapDispatcher::new();
+
+        assert!(!first.tick_state.ptr_eq(&second.tick_state));
+        assert!(!first.guest_calls.ptr_eq(&second.guest_calls));
+        assert!(first.menu_tracking.is_view_of(&first.guest_calls));
+        assert!(second.menu_tracking.is_view_of(&second.guest_calls));
     }
 
     #[test]

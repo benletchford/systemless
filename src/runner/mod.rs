@@ -1842,7 +1842,8 @@ impl FixtureRunner {
             "screen_depth must be 1, 2, 4, or 8"
         );
         let mut process_context = ProcessContext::with_file_system(file_system);
-        let mut dispatcher = TrapDispatcher::new();
+        let mut dispatcher =
+            TrapDispatcher::new_with_migrated_handles(process_context.migrated_handles());
         dispatcher.attach_process_context(&mut process_context);
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
@@ -11478,6 +11479,125 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
+
+    fn start_real_classic_menu_definition(runner: &mut FixtureRunner) -> u32 {
+        use crate::memory::globals::addr;
+
+        let menu = runner.bus.alloc(4);
+        let record = runner.bus.alloc(64);
+        let definition = runner.bus.alloc(2);
+        let definition_handle = runner.bus.alloc(4);
+        let entry = runner.bus.alloc(4);
+        let stack = runner.bus.alloc(8);
+
+        runner.bus.write_long(menu, record);
+        runner.bus.write_word(record, 140);
+        runner.bus.write_word(record + 2, 80);
+        runner.bus.write_word(record + 4, 32);
+        runner.bus.write_long(record + 6, definition_handle);
+        runner.bus.write_long(record + 10, u32::MAX);
+        runner.bus.write_bytes(
+            record + 14,
+            b"\x06Shared\x01A\x00\x00\x00\x00\x01B\x00\x00\x00\x00\x00",
+        );
+        runner.bus.write_word(definition, 0x60FE); // real guest MDEF parks while owned
+        runner.bus.write_long(definition_handle, definition);
+        runner.bus.write_word(stack, 0);
+        runner.bus.write_long(stack + 2, menu);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner
+            .dispatcher
+            .dispatch_menu(true, 0x135, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        runner.dispatcher.menu_bar_hidden = false;
+        runner.bus.write_word(addr::MBAR_HEIGHT, 20);
+        runner.bus.write_word(addr::MENU_FLASH, 0);
+        runner.dispatcher.draw_menu_bar_to_fb(&mut runner.bus);
+
+        runner.bus.write_word(entry, 0xA93D); // MenuSelect
+        runner.bus.write_word(entry + 2, 0x60FE); // park after the call
+        runner.bus.write_word(stack, 10);
+        runner.bus.write_word(stack + 2, 16);
+        runner.bus.write_long(stack + 4, 0);
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner.push_canonical_mouse_down(10, 16);
+
+        for _ in 0..64 {
+            assert!(runner.run_steps(1, None).1);
+            if runner.process_context.menu_tracking().is_some()
+                && runner.dispatcher.guest_calls.depth() != 0
+            {
+                return menu;
+            }
+        }
+        panic!("classic MenuSelect did not enter its real guest MDEF continuation");
+    }
+
+    #[test]
+    fn classic_runner_constructs_migrated_services_from_one_owner() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let process_handles = runner.process_context.migrated_handles();
+        assert!(runner
+            .dispatcher
+            .is_constructed_from_migrated_handles(&process_handles));
+
+        let tick_result = runner.bus.alloc(4);
+        runner
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 0x1234_5678);
+        runner.m68k.cpu.write_reg(Register::A7, tick_result);
+        runner
+            .dispatcher
+            .dispatch(0xA975, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert_eq!(runner.bus.read_long(tick_result), 0x1234_5678);
+        assert_eq!(process_handles.ticks.current_tick(), 0x1234_5678);
+
+        let menu = start_real_classic_menu_definition(&mut runner);
+        assert_eq!(
+            runner
+                .process_context
+                .menu_tracking()
+                .expect("real classic menu root remains active")
+                .menu_handle,
+            menu,
+        );
+        assert!(runner.dispatcher.guest_calls.depth() > 0);
+        assert!(runner
+            .dispatcher
+            .is_constructed_from_migrated_handles(&process_handles));
+    }
+
+    #[test]
+    fn independent_runners_keep_migrated_services_isolated() {
+        let mut first = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let second = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let first_handles = first.process_context.migrated_handles();
+        let second_handles = second.process_context.migrated_handles();
+
+        assert!(!first_handles.ticks.ptr_eq(&second_handles.ticks));
+        assert!(!first_handles.execution.ptr_eq(&second_handles.execution));
+
+        let tick_result = first.bus.alloc(4);
+        first
+            .bus
+            .write_long(crate::memory::globals::addr::TICKS, 0x1020_3040);
+        first.m68k.cpu.write_reg(Register::A7, tick_result);
+        first
+            .dispatcher
+            .dispatch(0xA975, &mut first.m68k.cpu, &mut first.bus)
+            .unwrap();
+        assert_eq!(first_handles.ticks.current_tick(), 0x1020_3040);
+        assert_ne!(second_handles.ticks.current_tick(), 0x1020_3040);
+
+        start_real_classic_menu_definition(&mut first);
+        assert!(first.process_context.menu_tracking().is_some());
+        assert!(first.dispatcher.guest_calls.depth() > 0);
+        assert!(second.process_context.menu_tracking().is_none());
+        assert!(second.dispatcher.guest_calls.is_empty());
+    }
 
     fn cfm_test_connection(id: u32) -> crate::cfm::CfmConnection {
         crate::cfm::CfmConnection {
