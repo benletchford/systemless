@@ -34,6 +34,12 @@ pub(crate) trait NewThreadCreationEdge {
     fn finish_publication_attempt(&mut self);
 }
 
+pub(crate) trait RetiredThreadStorageEdge {
+    fn release_classic(&mut self, stack_base: u32);
+
+    fn release_native(&mut self, stack_base: u32);
+}
+
 pub(crate) struct ThreadManager<'a> {
     execution: &'a SharedGuestCallStack,
 }
@@ -94,6 +100,21 @@ impl<'a> ThreadManager<'a> {
         }
         edge.finish_publication_attempt();
         result
+    }
+
+    pub(crate) fn release_retired_storage<E: RetiredThreadStorageEdge>(
+        storage: ThreadStorage,
+        recycle: bool,
+        edge: &mut E,
+    ) {
+        if recycle || storage.stack_base == 0 {
+            return;
+        }
+        if storage.managed_pointer {
+            edge.release_native(storage.stack_base);
+        } else {
+            edge.release_classic(storage.stack_base);
+        }
     }
 
     /// Prepare every allocation before publishing any pool entry. On failure,
@@ -507,5 +528,44 @@ mod tests {
                 .is_err());
             assert_eq!(execution.create_task().unwrap().thread_id(), 3);
         }
+    }
+
+    #[test]
+    fn retired_storage_release_uses_the_recorded_allocator_provenance_once() {
+        #[derive(Default)]
+        struct RecordingRetirementEdge {
+            classic: Vec<u32>,
+            native: Vec<u32>,
+        }
+
+        impl RetiredThreadStorageEdge for RecordingRetirementEdge {
+            fn release_classic(&mut self, stack_base: u32) {
+                self.classic.push(stack_base);
+            }
+
+            fn release_native(&mut self, stack_base: u32) {
+                self.native.push(stack_base);
+            }
+        }
+
+        let mut edge = RecordingRetirementEdge::default();
+        for (stack_base, managed_pointer, recycle) in [
+            (0x1000, false, false),
+            (0x2000, true, false),
+            (0x3000, false, true),
+            (0, true, false),
+        ] {
+            ThreadManager::release_retired_storage(
+                ThreadStorage {
+                    stack_base,
+                    managed_pointer,
+                    ..ThreadStorage::default()
+                },
+                recycle,
+                &mut edge,
+            );
+        }
+        assert_eq!(edge.classic, [0x1000]);
+        assert_eq!(edge.native, [0x2000]);
     }
 }
