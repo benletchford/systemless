@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.38.3](https://github.com/benletchford/systemless/compare/v0.38.2...v0.38.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* preflight native task context installation ([7102d6a](https://github.com/benletchford/systemless/commit/7102d6aa7ad3dda2bd910126e0b3bd11bf13eddf))
+* preserve MenuHook completion ownership across task switches ([a840af3](https://github.com/benletchford/systemless/commit/a840af3174fb5ef89552f0c2bcef7fafce97cffc))
+* preserve PPC engine state across context restoration ([30a66da](https://github.com/benletchford/systemless/commit/30a66da12414d3f00a3551aa6a86ad139af301da))
+* project window snapshots consistently across execution engines ([775e339](https://github.com/benletchford/systemless/commit/775e33968eba47910e14bed5659dc1f0dd1bb6ba))
+* share atomic cooperative thread yielding across ABIs ([e7b26d5](https://github.com/benletchford/systemless/commit/e7b26d5caeeb9a0ae7b002f3d403b0ad9ac14ea3))
+* share indexed horizontal reduction across graphics adapters ([#1579](https://github.com/benletchford/systemless/issues/1579)) ([3a18e98](https://github.com/benletchford/systemless/commit/3a18e985a965520e31e830e2b6e2612a96d97079))
+* share thread disposal and preserve automatic return retries ([241d021](https://github.com/benletchford/systemless/commit/241d021f6ba2fbdffdf58844bbc958d09c233ffb))
+
+
+### Code Refactoring
+
+* centralize PPC import binding transactions ([b5e5318](https://github.com/benletchford/systemless/commit/b5e5318eb8a4005eff089fe3d28d0e63e6f34979))
+* construct migrated process services coherently ([fbf56fd](https://github.com/benletchford/systemless/commit/fbf56fd1a27b23f686cd0c5032dfe04b544e0bd5))
+* encapsulate process tick state with copied access ([390f316](https://github.com/benletchford/systemless/commit/390f3164fc0d75b932750542a0e56622074a980f))
+* isolate optional PEF dump diagnostics ([b635d8d](https://github.com/benletchford/systemless/commit/b635d8dd0516ffdab89eb1abaf31f14eda3d0b00))
+* separate host execution budgets from guest capabilities ([927397c](https://github.com/benletchford/systemless/commit/927397ce09f2ba395556077ed40b2c29644514bd))
+* share cooperative NewThread creation policy ([9f29cb9](https://github.com/benletchford/systemless/commit/9f29cb986f20c552aff8b73cb825f3be4f7a5bc8))
+* share indexed vertical scaling across toolbox adapters ([a36b3b2](https://github.com/benletchford/systemless/commit/a36b3b2a2df020c60203cf71c98e690a6c3f89fa))
+* share packed identity CopyBits row transfers ([1657fb9](https://github.com/benletchford/systemless/commit/1657fb92ab03eb58a0ea68c58ad721888dac6242))
+* share rectangular CopyBits transfer outcomes ([4b3f637](https://github.com/benletchford/systemless/commit/4b3f637ee3e7972b8990bb7c35723deb042566c9))
+
 ## [0.38.2](https://github.com/benletchford/systemless/compare/v0.38.1...v0.38.2) (2026-09-06)
 
 
