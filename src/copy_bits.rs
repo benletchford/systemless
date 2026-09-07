@@ -1977,9 +1977,7 @@ mod tests {
 
     #[test]
     fn indexed_scaling_selection_requires_all_adapter_provenance() {
-        assert!(
-            Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0).is_some()
-        );
+        assert!(Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0).is_some());
         for facts in [
             (false, true, true, true, 0),
             (true, false, true, true, 0),
@@ -2008,8 +2006,7 @@ mod tests {
             clip: [0, 0, 1, 3],
             palette: None,
         };
-        let selection =
-            Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0x40);
+        let selection = Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0x40);
         assert_eq!(
             copy.execute_with_indexed8_scaling(&mut memory, selection),
             RowCopyOutcome::Completed
@@ -2132,8 +2129,7 @@ mod tests {
         read_failure.insert(DESTINATION, &[0xaa; 6]);
         read_failure.fail_read = Some(SOURCE + 8);
         assert_eq!(
-            request()
-                .execute_with_indexed8_scaling(&mut read_failure, Some(indexed_selection()),),
+            request().execute_with_indexed8_scaling(&mut read_failure, Some(indexed_selection()),),
             RowCopyOutcome::ReadOrGeometryFailure
         );
         assert!(read_failure.writes.is_empty());
@@ -2145,8 +2141,7 @@ mod tests {
         write_failure.insert(DESTINATION, &[0xaa; 6]);
         write_failure.fail_write = Some(DESTINATION + 3);
         assert_eq!(
-            request()
-                .execute_with_indexed8_scaling(&mut write_failure, Some(indexed_selection()),),
+            request().execute_with_indexed8_scaling(&mut write_failure, Some(indexed_selection()),),
             RowCopyOutcome::WriteFailure { rows_written: 1 }
         );
         assert_eq!(write_failure.writes, [DESTINATION]);
