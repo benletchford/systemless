@@ -6,7 +6,6 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
 use crate::trap::quickdraw::RegionBooleanOp;
 use crate::trap::types::{Rect, ShapeOp};
-use crate::window_manager::WindowSnapshot;
 use crate::Result;
 use std::sync::OnceLock;
 
@@ -2616,55 +2615,6 @@ impl super::TrapDispatcher {
 
     pub(crate) fn window_visible(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
         window_ptr != 0 && bus.read_byte(window_ptr + Self::WINDOW_VISIBLE_OFFSET) != 0
-    }
-
-    /// Return the process Window Manager list in front-to-back order with
-    /// enough guest-visible state for architecture-neutral fixture checks.
-    ///
-    /// Macintosh Toolbox Essentials (1992), pp. 4-63--4-65 and 4-89--4-93:
-    /// WindowList is front-to-back, `hilited` identifies the active window,
-    /// `visRgn` excludes structure regions above the window, and `updateRgn`
-    /// carries pending repaint work.  Keep the WindowPtr itself private so
-    /// deterministic callers compare titles and geometry rather than guest
-    /// allocation addresses.
-    pub(crate) fn window_stack_snapshot(&self, bus: &MacMemoryBus) -> Vec<WindowSnapshot> {
-        self.window_list
-            .iter()
-            .copied()
-            .filter(|&window_ptr| window_ptr != 0)
-            .map(|window_ptr| {
-                let title_handle = bus.read_long(window_ptr + Self::WINDOW_TITLE_HANDLE_OFFSET);
-                let title_ptr = if title_handle != 0 {
-                    bus.read_long(title_handle)
-                } else {
-                    0
-                };
-                let title = if title_ptr != 0 {
-                    decode_mac_roman(&bus.read_pstring(title_ptr))
-                } else {
-                    String::new()
-                };
-                let visible = self.window_visible(bus, window_ptr);
-                let bounds = self.window_global_port_rect(bus, window_ptr);
-                let structure_bounds = Self::region_handle_rect(
-                    bus,
-                    bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
-                );
-                let visible_region = Self::region_handle_rect(bus, bus.read_long(window_ptr + 24))
-                    .map(|rect| self.window_local_rect_to_global(bus, window_ptr, rect));
-                let update_region = self.window_update_rect(bus, window_ptr);
-                WindowSnapshot {
-                    title,
-                    bounds,
-                    structure_bounds,
-                    visible_region,
-                    update_region,
-                    visible,
-                    active: window_ptr == self.front_window
-                        || bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) != 0,
-                }
-            })
-            .collect()
     }
 
     fn frontmost_visible_window_in_list(&self, bus: &MacMemoryBus) -> u32 {
