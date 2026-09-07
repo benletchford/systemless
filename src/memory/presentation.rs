@@ -1820,8 +1820,7 @@ mod tests {
         let mut actual_set = PixelIndexSet::default();
         let mut expected_set = HashSet::new();
         for index in 0..4096usize {
-            let key = (index / 64 * 9600 + index % 64 * 3)
-                ^ ((index % 2) << (usize::BITS - 1));
+            let key = (index / 64 * 9600 + index % 64 * 3) ^ ((index % 2) << (usize::BITS - 1));
             assert_eq!(actual.insert(key, index), expected.insert(key, index));
             assert_eq!(actual_set.insert(key), expected_set.insert(key));
         }
@@ -1831,8 +1830,12 @@ mod tests {
         }
         let keys: Vec<_> = expected.keys().copied().collect();
         for key in keys {
+            assert_eq!(actual.insert(key, 23), expected.insert(key, 23));
+            assert_eq!(actual_set.insert(key), expected_set.insert(key));
             *actual.entry(key).or_insert(0) += 1;
             *expected.entry(key).or_insert(0) += 1;
+            assert_eq!(actual.remove(&key), expected.remove(&key));
+            assert_eq!(actual_set.remove(&key), expected_set.remove(&key));
             assert_eq!(actual.remove(&key), expected.remove(&key));
             assert_eq!(actual_set.remove(&key), expected_set.remove(&key));
         }
@@ -1841,6 +1844,9 @@ mod tests {
         actual.insert(usize::MAX, 17);
         actual.clear();
         assert!(actual.is_empty());
+        actual_set.insert(usize::MAX);
+        actual_set.clear();
+        assert!(actual_set.is_empty());
     }
 
     pub(super) fn bus() -> MacMemoryBus {
