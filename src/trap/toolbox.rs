@@ -1316,18 +1316,6 @@ impl super::TrapDispatcher {
             .cooperative_context(ExecutionTaskId::from_thread_id(thread_id))
     }
 
-    /// Save the running thread's registers into its record without
-    /// changing its scheduling state.
-    fn save_current_cooperative_thread<C: CpuOps>(&mut self, cpu: &C) {
-        let current_id = self.guest_calls.current_task().thread_id();
-        let mut thread = self
-            .cooperative_thread_snapshot(cpu, current_id)
-            .unwrap_or_default();
-        thread.save_registers(cpu);
-        self.guest_calls
-            .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), thread);
-    }
-
     /// Pick the next ready thread. `suggested_thread` wins when it names a
     /// ready thread, matching `YieldToThread`; otherwise the ready queue
     /// runs round-robin, as the stock 68K scheduler does.
@@ -1337,28 +1325,6 @@ impl super::TrapDispatcher {
                 (suggested_thread > 1).then(|| ExecutionTaskId::from_thread_id(suggested_thread)),
             )
             .map(ExecutionTaskId::thread_id)
-    }
-
-    /// Validate the saved adapter context before committing the task switch.
-    fn switch_to_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, next_id: u32) -> bool {
-        let task = ExecutionTaskId::from_thread_id(next_id);
-        let Some(next) = self.guest_calls.switch_from_classic(task) else {
-            return false;
-        };
-        if let Some(next) = next {
-            next.install(cpu);
-        }
-        true
-    }
-
-    /// Scheduling policy lives with the task cursor; this adapter only saves
-    /// and installs registers. Inside Macintosh: Thread Manager (1999), pp. 65–70.
-    fn yield_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, suggested_thread: u32) {
-        let Some(next_id) = self.next_ready_cooperative_thread(suggested_thread) else {
-            return;
-        };
-        self.save_current_cooperative_thread(cpu);
-        self.switch_to_cooperative_thread(cpu, next_id);
     }
 
     /// Retire a task and release its storage unless explicitly recycled.
@@ -16475,10 +16441,26 @@ impl super::TrapDispatcher {
                     }
                     0x0205 => {
                         let suggested_thread = bus.read_long(sp);
-                        bus.write_word(sp + 4, 0);
-                        cpu.write_reg(Register::A7, sp + 4);
-                        cpu.write_reg(Register::D0, 0);
-                        self.yield_cooperative_thread(cpu, suggested_thread);
+                        let result_sp = sp.wrapping_add(4);
+                        let current = self.guest_calls.current_task();
+                        let mut outgoing = self
+                            .guest_calls
+                            .cooperative_context(current)
+                            .unwrap_or_else(|| CooperativeThread::capture(cpu));
+                        outgoing.save_registers(cpu);
+                        outgoing.d_regs[0] = 0;
+                        outgoing.a_regs[7] = result_sp;
+                        let result = self
+                            .guest_calls
+                            .yield_classic_thread(outgoing, suggested_thread);
+                        let error = result.as_ref().err().copied().unwrap_or(0);
+                        bus.write_word(result_sp, error as u16);
+                        cpu.write_reg(Register::D0, error as u32);
+                        cpu.write_reg(Register::A7, result_sp);
+                        if let Ok(crate::guest_call::ClassicYield::Switched(Some(context))) = result
+                        {
+                            context.install(cpu);
+                        }
                         return Some(Ok(()));
                     }
                     // GetCurrentThread(currentThreadID)
@@ -28524,6 +28506,169 @@ mod tests {
         assert_eq!(saved.switch_in, (0x1000, 1));
         assert_eq!(saved.switch_out, (0x2000, 2));
         assert_eq!(saved.terminator, (0x3000, 3));
+    }
+
+    #[test]
+    fn classic_yield_refuses_missing_successor_context_without_publishing_source() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let application = ExecutionTaskId::APPLICATION;
+        let worker = ExecutionTaskId::from_thread_id(3);
+        assert!(disp.guest_calls.register_task(worker));
+        assert!(disp
+            .guest_calls
+            .set_scheduling_state(worker, ExecutionTaskState::Ready));
+        let saved = crate::guest_call::CooperativeThread {
+            d_regs: [0x1111_0000; 8],
+            a_regs: [0x2222_0000; 8],
+            pc: 0x3333_0000,
+            ccr: 0x14,
+            extended: None,
+            switch_in: (0x4444_0000, 1),
+            switch_out: (0x5555_0000, 2),
+            terminator: (0x6666_0000, 3),
+        };
+        assert!(disp
+            .guest_calls
+            .save_cooperative_context(application, saved.clone()));
+        cpu.write_reg(Register::PC, 0x1234_5678);
+        cpu.write_reg(Register::D3, 0x89ab_cdef);
+        cpu.write_reg(Register::A5, 0x7654_3210);
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, worker.thread_id());
+        bus.write_word(sp + 4, 0xbeef);
+        cpu.write_reg(Register::D0, 0x0205);
+        let mut expected_live = crate::guest_call::CooperativeThread::capture(&cpu);
+        expected_live.d_regs[0] = (-619i16) as u32;
+        expected_live.a_regs[7] = sp.wrapping_add(4);
+        let before_extended = cpu.capture_extended_context();
+        let before_calls = disp.guest_calls.clone();
+
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-619i16) as u32);
+        assert_eq!(cpu.read_reg(Register::A7), sp.wrapping_add(4));
+        assert_eq!(bus.read_word(sp + 4), (-619i16) as u16);
+        assert_eq!(
+            crate::guest_call::CooperativeThread::capture(&cpu),
+            expected_live
+        );
+        assert_eq!(cpu.capture_extended_context(), before_extended);
+        assert_eq!(disp.guest_calls, before_calls);
+        assert_eq!(disp.guest_calls.current_task(), application);
+        assert_eq!(
+            disp.guest_calls.scheduling_state(worker),
+            Some(ExecutionTaskState::Ready)
+        );
+        assert_eq!(
+            disp.guest_calls.cooperative_context(application),
+            Some(saved)
+        );
+        assert_eq!(disp.guest_calls.cooperative_context(worker), None);
+        assert!(!disp.guest_calls.has_pending_task_handoff());
+    }
+
+    #[test]
+    fn classic_yield_refuses_during_critical_sections_without_mutating_contexts() {
+        for suggested in [0, 3] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let application = ExecutionTaskId::APPLICATION;
+            let worker = ExecutionTaskId::from_thread_id(3);
+            let worker_context = crate::guest_call::CooperativeThread {
+                pc: 0x3000,
+                a_regs: [0, 0, 0, 0, 0, 0, 0, 0x9000],
+                ..Default::default()
+            };
+            assert!(disp.guest_calls.register_task(worker));
+            assert!(disp
+                .guest_calls
+                .save_cooperative_context(worker, worker_context.clone()));
+            assert!(disp
+                .guest_calls
+                .set_scheduling_state(worker, ExecutionTaskState::Ready));
+            disp.guest_calls.begin_critical();
+            cpu.write_reg(Register::PC, 0x1234_5678);
+            cpu.write_reg(Register::D3, 0x89ab_cdef);
+            let sp = TEST_SP;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, suggested);
+            bus.write_word(sp + 4, 0xbeef);
+            cpu.write_reg(Register::D0, 0x0205);
+            let mut expected_live = crate::guest_call::CooperativeThread::capture(&cpu);
+            expected_live.d_regs[0] = (-619i16) as u32;
+            expected_live.a_regs[7] = sp.wrapping_add(4);
+            let before_extended = cpu.capture_extended_context();
+            let before_application = disp.guest_calls.cooperative_context(application);
+            let before_calls = disp.guest_calls.clone();
+
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(cpu.read_reg(Register::D0), (-619i16) as u32);
+            assert_eq!(cpu.read_reg(Register::A7), sp.wrapping_add(4));
+            assert_eq!(bus.read_word(sp + 4), (-619i16) as u16);
+            assert_eq!(
+                crate::guest_call::CooperativeThread::capture(&cpu),
+                expected_live
+            );
+            assert_eq!(cpu.capture_extended_context(), before_extended);
+            assert_eq!(disp.guest_calls, before_calls);
+            assert_eq!(disp.guest_calls.current_task(), application);
+            assert_eq!(disp.guest_calls.critical_depth(), 1);
+            assert_eq!(
+                disp.guest_calls.cooperative_context(application),
+                before_application
+            );
+            assert_eq!(
+                disp.guest_calls.cooperative_context(worker),
+                Some(worker_context)
+            );
+            assert!(!disp.guest_calls.has_pending_task_handoff());
+        }
+    }
+
+    #[test]
+    fn classic_yield_to_any_without_successor_returns_without_publishing_snapshot() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = u32::MAX - 3;
+        cpu.write_reg(Register::PC, 0x1234_5678);
+        cpu.write_reg(Register::D3, 0x89ab_cdef);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0205);
+        let mut expected_live = crate::guest_call::CooperativeThread::capture(&cpu);
+        expected_live.d_regs[0] = 0;
+        expected_live.a_regs[7] = 0;
+        let before_extended = cpu.capture_extended_context();
+        let before_application = disp
+            .guest_calls
+            .cooperative_context(ExecutionTaskId::APPLICATION);
+        let before_calls = disp.guest_calls.clone();
+
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), 0);
+        assert_eq!(
+            crate::guest_call::CooperativeThread::capture(&cpu),
+            expected_live
+        );
+        assert_eq!(cpu.capture_extended_context(), before_extended);
+        assert_eq!(disp.guest_calls, before_calls);
+        assert_eq!(
+            disp.guest_calls.current_task(),
+            ExecutionTaskId::APPLICATION
+        );
+        assert_eq!(
+            disp.guest_calls
+                .cooperative_context(ExecutionTaskId::APPLICATION),
+            before_application
+        );
+        assert!(!disp.guest_calls.has_pending_task_handoff());
     }
 
     #[test]

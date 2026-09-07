@@ -540,6 +540,18 @@ enum TaskResumeContext {
     Native(PpcExecutionContext),
 }
 
+struct YieldedTask {
+    current: ExecutionTaskId,
+    next: ExecutionTaskId,
+    successor: TaskResumeContext,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ClassicYield {
+    Stayed,
+    Switched(Option<CooperativeThread>),
+}
+
 impl TaskResumeContext {
     fn stack_pointer(&self) -> u32 {
         match self {
@@ -1265,6 +1277,44 @@ impl Default for ExecutionTaskCalls {
 }
 
 impl ExecutionTaskCalls {
+    fn yield_task(
+        &mut self,
+        suggested: u32,
+        outgoing: TaskResumeContext,
+    ) -> Result<Option<YieldedTask>, i16> {
+        use crate::thread_manager::{THREAD_NOT_FOUND_ERR, THREAD_PROTOCOL_ERR};
+        if self.kernel.critical_depth() != 0 || self.handoff.is_some() {
+            return Err(THREAD_PROTOCOL_ERR);
+        }
+        let current = self.kernel.current_task();
+        let explicit = (suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested));
+        let unavailable = explicit.is_some_and(|task| {
+            task != current && self.kernel.scheduling_state(task) != Some(ExecutionTaskState::Ready)
+        });
+        let Some(next) = self.kernel.next_ready_task(explicit) else {
+            return if unavailable {
+                Err(THREAD_NOT_FOUND_ERR)
+            } else {
+                Ok(None)
+            };
+        };
+        let successor = self.saved_context(next).ok_or(THREAD_PROTOCOL_ERR)?;
+        self.kernel
+            .switch_to_task(next)
+            .map_err(|_| THREAD_PROTOCOL_ERR)?;
+        match outgoing {
+            TaskResumeContext::Classic(context) => {
+                self.cooperative_contexts.insert(current, context);
+            }
+            TaskResumeContext::Native(context) => self.save_native_context(current, context),
+        }
+        Ok(Some(YieldedTask {
+            current,
+            next,
+            successor,
+        }))
+    }
+
     fn pending_powerpc_from_m68k(&self, task: ExecutionTaskId) -> Option<PendingPowerPcExecution> {
         let semantic = self.kernel.peek(task)?;
         let frame = self.frames.get(&semantic.call_id())?;
@@ -2261,31 +2311,38 @@ impl SharedGuestCallStack {
         cpu: &mut PpcCpu,
         suggested: u32,
     ) -> Result<bool, i16> {
-        use crate::thread_manager::THREAD_PROTOCOL_ERR;
         let mut tasks = self.0.borrow_mut();
-        if tasks.kernel.critical_depth() != 0 || tasks.handoff.is_some() {
-            return Err(THREAD_PROTOCOL_ERR);
-        }
-        let current = tasks.kernel.current_task();
-        let Some(next) = tasks
-            .kernel
-            .next_ready_task((suggested > 1).then(|| ExecutionTaskId::from_thread_id(suggested)))
-        else {
-            return Ok(false);
-        };
-        let next_context = tasks.saved_context(next).ok_or(THREAD_PROTOCOL_ERR)?;
         let mut outgoing = cpu.capture_execution_context();
         outgoing.architectural_mut().pc = outgoing.architectural().lr;
         outgoing.architectural_mut().gpr[3] = 0;
-        tasks
-            .kernel
-            .switch_to_task(next)
-            .map_err(|_| THREAD_PROTOCOL_ERR)?;
-        tasks.save_native_context(current, outgoing.clone());
+        let Some(yielded) =
+            tasks.yield_task(suggested, TaskResumeContext::Native(outgoing.clone()))?
+        else {
+            return Ok(false);
+        };
         cpu.install_execution_context(outgoing);
-        tasks.native_cpu_task = Some(current);
-        tasks.install_native_successor(next, next_context, cpu);
+        tasks.native_cpu_task = Some(yielded.current);
+        tasks.install_native_successor(yielded.next, yielded.successor, cpu);
         Ok(true)
+    }
+
+    pub(crate) fn yield_classic_thread(
+        &self,
+        outgoing: CooperativeThread,
+        suggested: u32,
+    ) -> Result<ClassicYield, i16> {
+        let mut tasks = self.0.borrow_mut();
+        let Some(yielded) = tasks.yield_task(suggested, TaskResumeContext::Classic(outgoing))?
+        else {
+            return Ok(ClassicYield::Stayed);
+        };
+        match yielded.successor {
+            TaskResumeContext::Classic(context) => Ok(ClassicYield::Switched(Some(context))),
+            context => {
+                tasks.handoff = Some((yielded.next, context));
+                Ok(ClassicYield::Switched(None))
+            }
+        }
     }
 
     pub(crate) fn retire_native_thread(
@@ -4751,6 +4808,185 @@ mod tests {
         assert_eq!(cpu.fpscr, 0x5555_6666);
         assert_eq!(cpu.msr, 0x7777_8888);
         assert_eq!(cpu.time_base(), 1);
+    }
+
+    #[test]
+    fn yield_suggestion_fallback_and_no_successor_preserve_compatibility() {
+        let classic = |pc| CooperativeThread {
+            pc,
+            a_regs: [0, 0, 0, 0, 0, 0, 0, 0x8000 + pc],
+            ..Default::default()
+        };
+        for suggested in [0, 1, ExecutionTaskId::APPLICATION.thread_id()] {
+            let calls = SharedGuestCallStack::default();
+            assert_eq!(
+                calls.yield_classic_thread(classic(1), suggested),
+                Ok(ClassicYield::Stayed)
+            );
+            assert_eq!(
+                calls.cooperative_context(ExecutionTaskId::APPLICATION),
+                None
+            );
+        }
+        let calls = SharedGuestCallStack::default();
+        let fallback = calls.create_task().unwrap();
+        let fallback_context = classic(5);
+        assert!(calls.save_cooperative_context(fallback, fallback_context.clone()));
+        assert!(calls.set_scheduling_state(fallback, ExecutionTaskState::Ready));
+        assert_eq!(
+            calls.yield_classic_thread(classic(6), ExecutionTaskId::APPLICATION.thread_id()),
+            Ok(ClassicYield::Switched(Some(fallback_context)))
+        );
+        assert_eq!(calls.current_task(), fallback);
+        assert_eq!(
+            calls.cooperative_context(ExecutionTaskId::APPLICATION),
+            Some(classic(6))
+        );
+        for stopped in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            let unavailable = if stopped {
+                calls.create_task().unwrap()
+            } else {
+                ExecutionTaskId::from_thread_id(99)
+            };
+            assert_eq!(
+                calls.yield_classic_thread(classic(2), unavailable.thread_id()),
+                Err(crate::thread_manager::THREAD_NOT_FOUND_ERR)
+            );
+            assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+            assert_eq!(
+                calls.cooperative_context(ExecutionTaskId::APPLICATION),
+                None
+            );
+        }
+        for stopped in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            let unavailable = if stopped {
+                calls.create_task().unwrap()
+            } else {
+                ExecutionTaskId::from_thread_id(99)
+            };
+            let fallback = calls.create_task().unwrap();
+            let fallback_context = classic(3);
+            assert!(calls.save_cooperative_context(fallback, fallback_context.clone()));
+            assert!(calls.set_scheduling_state(fallback, ExecutionTaskState::Ready));
+            assert_eq!(
+                calls.yield_classic_thread(classic(4), unavailable.thread_id()),
+                Ok(ClassicYield::Switched(Some(fallback_context)))
+            );
+            assert_eq!(calls.current_task(), fallback);
+            assert_eq!(
+                calls.cooperative_context(ExecutionTaskId::APPLICATION),
+                Some(classic(4))
+            );
+            assert_eq!(
+                calls.scheduling_state(unavailable),
+                if stopped {
+                    Some(ExecutionTaskState::Stopped)
+                } else {
+                    None
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn yield_to_any_without_successor_publishes_no_native_snapshot() {
+        let calls = SharedGuestCallStack::default();
+        let mut cpu = PpcCpu::new();
+        cpu.pc = 0x1234;
+        cpu.lr = 0x5678;
+        cpu.gpr[3] = 99;
+        let before = cpu.clone();
+        assert!(!calls.yield_native_thread(&mut cpu, 0).unwrap());
+        assert_eq!(cpu.pc, before.pc);
+        assert_eq!(cpu.lr, before.lr);
+        assert_eq!(cpu.gpr, before.gpr);
+        assert!(calls.0.borrow().native_threads.is_empty());
+        assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+    }
+
+    #[test]
+    fn pending_cross_isa_handoff_refuses_both_yield_wrappers_atomically() {
+        const NATIVE_RETURN: u32 = 0x2400;
+        const NATIVE_FINAL: u32 = 0x3400;
+        let calls = SharedGuestCallStack::default();
+        let native = calls
+            .create_native_thread(
+                NativeThreadContext {
+                    context: PpcExecutionContext::fresh(),
+                },
+                ThreadStorage::default(),
+                false,
+                |_| true,
+            )
+            .unwrap();
+        let classic_outgoing = CooperativeThread {
+            pc: 0x1400,
+            a_regs: [0, 0, 0, 0, 0, 0, 0, 0x8400],
+            ..Default::default()
+        };
+        assert_eq!(
+            calls.yield_classic_thread(classic_outgoing, native.thread_id()),
+            Ok(ClassicYield::Switched(None))
+        );
+        assert_eq!(calls.current_task(), native);
+        assert!(calls.has_pending_task_handoff());
+
+        let mut native_cpu = PpcCpu::new();
+        native_cpu.install_execution_context(pending_native_import_context(
+            0x1000,
+            NATIVE_RETURN,
+            NATIVE_FINAL,
+            0xaaaa_0002,
+            0xaaaa_0003,
+        ));
+        native_cpu.gpr[20] = 0x1234_5678;
+        native_cpu.fpr[20] = 0x4009_21fb_5444_2d18;
+        native_cpu.cr = 0x1357_2468;
+        establish_native_reservation(&mut native_cpu, 0x1000);
+        native_cpu.set_time_base(44);
+        let before_owner = calls.clone();
+        let before_native = native_cpu.capture_execution_context();
+        let before_time = native_cpu.time_base();
+        let before_reservation = native_cpu.reservation_address();
+
+        assert_eq!(calls.yield_native_thread(&mut native_cpu, 0), Err(-619));
+        assert_eq!(calls, before_owner);
+        assert_eq!(
+            native_cpu.capture_execution_context().architectural(),
+            before_native.architectural()
+        );
+        assert_eq!(native_cpu.time_base(), before_time);
+        assert_eq!(native_cpu.reservation_address(), before_reservation);
+
+        let mut classic_cpu = crate::cpu::M68kCpu::new();
+        classic_cpu.write_reg(crate::cpu::Register::PC, 0x1500);
+        classic_cpu.write_reg(crate::cpu::Register::D3, 0x89ab_cdef);
+        classic_cpu.write_reg(crate::cpu::Register::A7, 0x8500);
+        let before_classic = CooperativeThread::capture(&classic_cpu);
+        let before_extended = classic_cpu.capture_extended_context();
+        let before_owner = calls.clone();
+        assert_eq!(
+            calls.yield_classic_thread(before_classic.clone(), 0),
+            Err(-619)
+        );
+        assert_eq!(calls, before_owner);
+        assert_eq!(CooperativeThread::capture(&classic_cpu), before_classic);
+        assert_eq!(classic_cpu.capture_extended_context(), before_extended);
+
+        let mut memory = GuestAddressSpace::new();
+        assert_eq!(
+            native_cpu.run_with_imports(&mut memory, 2, NATIVE_FINAL, 0, 0, |_, _, _| unreachable!(),),
+            PpcRunResult::Halted {
+                pc: NATIVE_FINAL,
+                cycles: 1,
+            }
+        );
+        assert_eq!(
+            (native_cpu.gpr[2], native_cpu.gpr[3]),
+            (0xaaaa_0002, 0xaaaa_0003)
+        );
     }
 
     #[test]
