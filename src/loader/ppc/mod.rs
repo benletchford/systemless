@@ -164703,7 +164703,9 @@ pub(crate) mod tests {
             ..PpcInputSnapshot::default()
         });
 
-        for _ in 0..16 {
+        let flash_start = loaded.current_tick();
+        for elapsed in 0..16 {
+            loaded.set_tick_count(flash_start.wrapping_add(elapsed));
             if matches!(
                 loaded.run_with_hle_imports(128).result,
                 PpcRunResult::Halted { .. }
