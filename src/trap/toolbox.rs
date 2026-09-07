@@ -1,13 +1,15 @@
 //! Toolbox Utility trap handlers (events, Random, Sound, misc).
 
 use crate::cpu::{CpuOps, Register};
-use crate::guest_call::{CooperativeThread, ExecutionTaskId, SharedGuestCallStack, ThreadStorage};
+use crate::guest_call::{
+    ClassicRetirement, CooperativeThread, ExecutionTaskId, SharedGuestCallStack, ThreadStorage,
+};
 use crate::guest_procedure::{resolve_same_isa_thread_entry, GuestIsa};
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::get_font_face_scaled;
 use crate::quickdraw::text::{get_font_metrics, get_glyph};
-use crate::thread_manager::{NewThreadCreationEdge, ThreadManager};
+use crate::thread_manager::{NewThreadCreationEdge, RetiredThreadStorageEdge, ThreadManager};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -1212,6 +1214,24 @@ impl<C: CpuOps> NewThreadCreationEdge for ClassicNewThreadEdge<'_, C> {
     fn finish_publication_attempt(&mut self) {}
 }
 
+struct ClassicRetiredThreadStorageEdge<'a> {
+    bus: &'a mut MacMemoryBus,
+    manager: crate::process_context::SharedProcessMemoryManager,
+}
+
+impl RetiredThreadStorageEdge for ClassicRetiredThreadStorageEdge<'_> {
+    fn release_classic(&mut self, stack_base: u32) {
+        self.bus.free(stack_base);
+    }
+
+    fn release_native(&mut self, stack_base: u32) {
+        self.manager
+            .borrow_mut()
+            .native_mut()
+            .dispose_native_ptr(stack_base);
+    }
+}
+
 impl super::TrapDispatcher {
     /// Whether `SystemTask` currently has periodic Desk Manager work to do.
     ///
@@ -1316,96 +1336,25 @@ impl super::TrapDispatcher {
             .cooperative_context(ExecutionTaskId::from_thread_id(thread_id))
     }
 
-    /// Pick the next ready thread. `suggested_thread` wins when it names a
-    /// ready thread, matching `YieldToThread`; otherwise the ready queue
-    /// runs round-robin, as the stock 68K scheduler does.
-    fn next_ready_cooperative_thread(&mut self, suggested_thread: u32) -> Option<u32> {
-        self.guest_calls
-            .next_ready_task(
-                (suggested_thread > 1).then(|| ExecutionTaskId::from_thread_id(suggested_thread)),
-            )
-            .map(ExecutionTaskId::thread_id)
-    }
-
-    /// Retire a task and release its storage unless explicitly recycled.
-    fn retire_cooperative_thread(
-        &mut self,
-        thread_id: u32,
-        result: u32,
-        bus: &mut MacMemoryBus,
-        recycle: bool,
-    ) -> bool {
-        let task = ExecutionTaskId::from_thread_id(thread_id);
-        let Some((finished, _)) =
-            self.guest_calls
-                .retire_cooperative_context(task, None, recycle, |saved| {
-                    saved.result_destination == 0
-                        || bus.try_write_long(saved.result_destination, result)
-                })
-        else {
-            return false;
-        };
-        if !recycle && finished.stack_base != 0 {
-            if finished.managed_pointer {
-                self.process_memory_manager()
-                    .borrow_mut()
-                    .native_mut()
-                    .dispose_native_ptr(finished.stack_base);
-            } else {
-                bus.free(finished.stack_base);
-            }
-        }
-        true
-    }
-
-    /// ThreadEntryProc returns a pointer in A0 at the 68K ABI edge.
-    fn finish_cooperative_thread<C: CpuOps>(
+    fn apply_classic_retirement<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
-    ) -> bool {
-        let result = cpu.read_reg(Register::A0);
-        self.finish_cooperative_thread_with_result(cpu, bus, result, false)
-    }
-
-    fn finish_cooperative_thread_with_result<C: CpuOps>(
-        &mut self,
-        cpu: &mut C,
-        bus: &mut MacMemoryBus,
-        result: u32,
         recycle: bool,
-    ) -> bool {
-        let finished = self.guest_calls.current_task();
-        let Some(next) = self.next_ready_cooperative_thread(0) else {
-            return false;
+        retirement: ClassicRetirement,
+    ) {
+        let (storage, successor) = match retirement {
+            ClassicRetirement::Removed(storage) => (storage, None),
+            ClassicRetirement::Switched { storage, successor } => (storage, successor),
         };
-        let Some((saved, successor)) = self.guest_calls.retire_cooperative_context(
-            finished,
-            Some(ExecutionTaskId::from_thread_id(next)),
-            recycle,
-            |saved| {
-                saved.result_destination == 0
-                    || bus.try_write_long(saved.result_destination, result)
-            },
-        ) else {
-            return false;
+        let mut edge = ClassicRetiredThreadStorageEdge {
+            bus,
+            manager: self.process_memory_manager(),
         };
-        // The execution owner validated both contexts and committed the result.
-        // Installing this owned snapshot cannot yield or fail.
+        ThreadManager::release_retired_storage(storage, recycle, &mut edge);
         if let Some(successor) = successor {
             successor.install(cpu);
         }
-        if !recycle && saved.stack_base != 0 {
-            if saved.managed_pointer {
-                self.process_memory_manager()
-                    .borrow_mut()
-                    .native_mut()
-                    .dispose_native_ptr(saved.stack_base);
-            } else {
-                bus.free(saved.stack_base);
-            }
-        }
-        true
     }
 
     fn apple_event_handler_for(
@@ -16428,15 +16377,28 @@ impl super::TrapDispatcher {
 
                 let result = match selector {
                     0xFFFE => {
-                        if self.finish_cooperative_thread(cpu, bus) {
+                        let task = self.guest_calls.current_task();
+                        let result = cpu.read_reg(Register::A0);
+                        let retirement = self.guest_calls.retire_classic_thread(
+                            task,
+                            false,
+                            |saved| {
+                                saved.result_destination == 0
+                                    || bus.try_write_long(saved.result_destination, result)
+                            },
+                        );
+                        if let Ok(retirement) = retirement {
+                            self.apply_classic_retirement(cpu, bus, false, retirement);
                             return Some(Ok(()));
                         }
                         // A thread cannot finish while one of its guest
                         // continuations is suspended. This is a guest-visible
                         // protocol failure, not an emulator invariant that
                         // justifies panicking.
-                        bus.write_word(sp, Self::THREAD_PROTOCOL_ERR as u16);
                         cpu.write_reg(Register::D0, Self::THREAD_PROTOCOL_ERR as u32);
+                        if self.thread_return_trampoline != 0 {
+                            cpu.write_reg(Register::PC, self.thread_return_trampoline);
+                        }
                         return Some(Ok(()));
                     }
                     0x0205 => {
@@ -16631,37 +16593,27 @@ impl super::TrapDispatcher {
                         let thread_result = bus.read_long(sp + 2);
                         let thread_to_dump =
                             self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
-                        if !self
-                            .guest_calls
-                            .thread_storage(ExecutionTaskId::from_thread_id(thread_to_dump))
-                            .is_some()
-                            && thread_to_dump != Self::APPLICATION_THREAD_ID
-                        {
-                            Self::THREAD_NOT_FOUND_ERR
-                        } else if thread_to_dump == self.guest_calls.current_task().thread_id() {
-                            // Threads.h allows a thread to dispose of itself;
-                            // the call never returns to it.
-                            if self.finish_cooperative_thread_with_result(
-                                cpu,
-                                bus,
-                                thread_result,
-                                recycle,
-                            ) {
-                                return Some(Ok(()));
-                            } else {
-                                Self::THREAD_PROTOCOL_ERR
-                            }
-                        } else {
-                            if self.retire_cooperative_thread(
-                                thread_to_dump,
-                                thread_result,
-                                bus,
-                                recycle,
-                            ) {
+                        let retirement = self.guest_calls.retire_classic_thread(
+                            ExecutionTaskId::from_thread_id(thread_to_dump),
+                            recycle,
+                            |saved| {
+                                saved.result_destination == 0
+                                    || bus.try_write_long(saved.result_destination, thread_result)
+                            },
+                        );
+                        match retirement {
+                            Ok(retirement) => {
+                                let switched = matches!(
+                                    retirement,
+                                    ClassicRetirement::Switched { .. }
+                                );
+                                self.apply_classic_retirement(cpu, bus, recycle, retirement);
+                                if switched {
+                                    return Some(Ok(()));
+                                }
                                 0
-                            } else {
-                                Self::THREAD_PROTOCOL_ERR
                             }
+                            Err(error) => error,
                         }
                     }
                     // GetThreadState(threadToGet, threadState), and
@@ -27968,6 +27920,27 @@ mod tests {
         }
     }
 
+    fn retire_classic_for_test<C: CpuOps>(
+        disp: &mut TrapDispatcher,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        task: ExecutionTaskId,
+        result: u32,
+        recycle: bool,
+    ) -> bool {
+        let retirement = disp
+            .guest_calls
+            .retire_classic_thread(task, recycle, |saved| {
+                saved.result_destination == 0
+                    || bus.try_write_long(saved.result_destination, result)
+            });
+        let Ok(retirement) = retirement else {
+            return false;
+        };
+        disp.apply_classic_retirement(cpu, bus, recycle, retirement);
+        true
+    }
+
     #[test]
     fn thread_retirement_rejects_partial_result_writes_and_can_retry() {
         for self_exit in [false, true] {
@@ -28003,11 +27976,8 @@ mod tests {
             cpu.write_reg(Register::A0, 0xcafe_babe);
             let current = disp.guest_calls.current_task();
             let ready = disp.guest_calls.next_ready_task(None);
-            let retired = if self_exit {
-                disp.finish_cooperative_thread(&mut cpu, &mut bus)
-            } else {
-                disp.retire_cooperative_thread(worker.thread_id(), 0xcafe_babe, &mut bus, false)
-            };
+            let retired =
+                retire_classic_for_test(&mut disp, &mut cpu, &mut bus, worker, 0xcafe_babe, false);
             assert!(!retired);
             assert_eq!(disp.guest_calls.current_task(), current);
             assert_eq!(disp.guest_calls.next_ready_task(None), ready);
@@ -28022,11 +27992,8 @@ mod tests {
 
             storage.result_destination = result_slot + 8;
             assert!(disp.guest_calls.set_thread_storage(worker, storage));
-            let retired = if self_exit {
-                disp.finish_cooperative_thread(&mut cpu, &mut bus)
-            } else {
-                disp.retire_cooperative_thread(worker.thread_id(), 0xcafe_babe, &mut bus, false)
-            };
+            let retired =
+                retire_classic_for_test(&mut disp, &mut cpu, &mut bus, worker, 0xcafe_babe, false);
             assert!(retired);
             assert_eq!(disp.guest_calls.current_task(), application);
             assert!(disp.guest_calls.cooperative_context(worker).is_none());
@@ -28066,7 +28033,14 @@ mod tests {
         assert!(disp.guest_calls.switch_to_task(worker));
         // The application is ready, but no adapter snapshot exists for it.
         cpu.write_reg(Register::A0, 0xcafe_babe);
-        assert!(!disp.finish_cooperative_thread(&mut cpu, &mut bus));
+        assert!(!retire_classic_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            worker,
+            0xcafe_babe,
+            false,
+        ));
         assert_eq!(disp.guest_calls.current_task(), worker);
         assert_eq!(disp.guest_calls.cooperative_context(worker), Some(saved));
         assert_eq!(bus.read_long(result_slot), 0x1234_5678);

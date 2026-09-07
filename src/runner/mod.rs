@@ -17499,6 +17499,201 @@ mod tests {
     }
 
     #[test]
+    fn dispose_thread_refuses_the_application_through_both_public_abis() {
+        const FRAME: u32 = 0x6000;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let loaded = app.ppc.as_mut().unwrap();
+        loaded.entry_pc = PPC_IMPORT_TRAP_BASE;
+        loaded.cpu.pc = PPC_IMPORT_TRAP_BASE;
+        loaded.memory.add_region(PPC_IMPORT_TRAP_BASE, vec![0; 4]);
+        let mut binding = test_ppc_import_binding(0, "InterfaceLib", "DisposeThread");
+        binding.dispatcher_target = PpcImportDispatcherTarget::DisposeThread;
+        binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+        loaded.import_count = 1;
+        loaded.imports.push(binding);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let calls = runner.dispatcher.guest_calls.shared_handle();
+        let before = calls.clone();
+        {
+            let cpu = &mut runner.native.application_mut().unwrap().cpu;
+            cpu.lr = PPC_CODE_BASE;
+            cpu.gpr[3] = ExecutionTaskId::APPLICATION.thread_id();
+            cpu.gpr[4] = 0xcafe_babe;
+            cpu.gpr[5] = 0;
+        }
+        assert!(runner.run_steps(32, None).1);
+        assert_eq!(
+            runner.native.application().unwrap().cpu.gpr[3] as i16,
+            crate::thread_manager::THREAD_PROTOCOL_ERR
+        );
+        assert_eq!(calls, before);
+
+        runner.m68k.cpu.write_reg(Register::A7, FRAME);
+        runner.bus.write_word(FRAME, 0);
+        runner.bus.write_long(FRAME + 2, 0xcafe_babe);
+        runner
+            .bus
+            .write_long(FRAME + 6, ExecutionTaskId::APPLICATION.thread_id());
+        runner.bus.write_word(FRAME + 10, 0xbeef);
+        runner.m68k.cpu.write_reg(Register::D0, 0x0504);
+        runner
+            .dispatcher
+            .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runner.m68k.cpu.read_reg(Register::D0) as i16,
+            crate::thread_manager::THREAD_PROTOCOL_ERR
+        );
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), FRAME + 10);
+        assert_eq!(
+            runner.bus.read_word(FRAME + 10) as i16,
+            crate::thread_manager::THREAD_PROTOCOL_ERR
+        );
+        assert_eq!(calls, before);
+    }
+
+    #[test]
+    fn classic_thread_return_trampoline_retries_refused_retirement_without_rts_fallthrough() {
+        const FRAME: u32 = 0x6000;
+        const YIELD_FRAME: u32 = 0x6100;
+        const MADE: u32 = 0x7000;
+        const RESULT: u32 = 0x7100;
+        const ENTRY: u32 = 0x8000;
+        const APP_PC: u32 = 0x9000;
+        const PARAM: u32 = 0xdead_beef;
+        const THREAD_RESULT: u32 = 0xcafe_babe;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.bus.write_word(ENTRY, 0x4e75); // RTS
+        runner.m68k.cpu.write_reg(Register::A7, FRAME);
+        for (offset, value) in [
+            (0, MADE),
+            (4, RESULT),
+            (8, 0),
+            (12, 1024),
+            (16, PARAM),
+            (20, ENTRY),
+            (24, 1),
+        ] {
+            runner.bus.write_long(FRAME + offset, value);
+        }
+        runner.m68k.cpu.write_reg(Register::D0, 0x0e03);
+        runner
+            .dispatcher
+            .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        let worker = ExecutionTaskId::from_thread_id(runner.bus.read_long(MADE));
+        let worker_context = runner
+            .dispatcher
+            .guest_calls
+            .cooperative_context(worker)
+            .unwrap();
+        let worker_sp = worker_context.a_regs[7];
+        let trampoline = runner.bus.read_long(worker_sp);
+        assert_eq!(runner.bus.read_long(worker_sp + 4), PARAM);
+
+        runner.m68k.cpu.write_reg(Register::PC, APP_PC);
+        runner.m68k.cpu.write_reg(Register::A0, 0x1111_2222);
+        runner.m68k.cpu.write_reg(Register::A7, YIELD_FRAME);
+        runner.bus.write_long(YIELD_FRAME, worker.thread_id());
+        runner.bus.write_word(YIELD_FRAME + 4, 0xbeef);
+        runner.m68k.cpu.write_reg(Register::D0, 0x0205);
+        runner
+            .dispatcher
+            .dispatch_toolbox(true, 0x3f2, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        let application_context = runner
+            .dispatcher
+            .guest_calls
+            .cooperative_context(ExecutionTaskId::APPLICATION)
+            .unwrap();
+        assert_eq!(runner.dispatcher.guest_calls.current_task(), worker);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), ENTRY);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), worker_sp);
+
+        runner.m68k.cpu.write_reg(Register::A0, THREAD_RESULT);
+        runner.dispatcher.guest_calls.begin_critical();
+        assert!(matches!(
+            runner.m68k.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), worker_sp + 4);
+        assert_eq!(runner.bus.read_long(worker_sp + 4), PARAM);
+
+        for _ in 0..2 {
+            assert!(matches!(
+                runner.m68k.cpu.step(&mut runner.bus),
+                crate::cpu::StepResult::Ok
+            ));
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), trampoline + 4);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D0) & 0xffff, 0xfffe);
+            assert!(matches!(
+                runner.m68k.cpu.step(&mut runner.bus),
+                crate::cpu::StepResult::Aline(0xabf2)
+            ));
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), trampoline + 6);
+            let before = runner.dispatcher.guest_calls.clone();
+            runner
+                .dispatch_classic_with_process_services(0xabf2)
+                .unwrap();
+            assert_eq!(runner.dispatcher.guest_calls, before);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), trampoline);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), worker_sp + 4);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A0), THREAD_RESULT);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D0) as i16, -619);
+            assert_eq!(runner.bus.read_long(worker_sp + 4), PARAM);
+            assert_eq!(runner.bus.read_long(RESULT), 0);
+        }
+
+        let before_bounded_retry = runner.dispatcher.guest_calls.clone();
+        let (steps, running) = runner.run_steps(8, None);
+        assert_eq!(steps, 8);
+        assert!(running);
+        assert_eq!(runner.dispatcher.guest_calls, before_bounded_retry);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), worker_sp + 4);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), THREAD_RESULT);
+        assert_eq!(runner.bus.read_long(worker_sp + 4), PARAM);
+        assert_eq!(runner.bus.read_long(RESULT), 0);
+
+        assert!(runner.dispatcher.guest_calls.end_critical());
+        assert!(matches!(
+            runner.m68k.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), trampoline + 4);
+        assert!(matches!(
+            runner.m68k.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Aline(0xabf2)
+        ));
+        runner
+            .dispatch_classic_with_process_services(0xabf2)
+            .unwrap();
+
+        assert_eq!(
+            runner.dispatcher.guest_calls.current_task(),
+            ExecutionTaskId::APPLICATION
+        );
+        assert_eq!(runner.bus.read_long(RESULT), THREAD_RESULT);
+        assert_eq!(
+            CooperativeThread::capture(&runner.m68k.cpu),
+            application_context
+        );
+        assert_eq!(runner.dispatcher.guest_calls.scheduling_state(worker), None);
+        assert_eq!(
+            runner.dispatcher.guest_calls.cooperative_context(worker),
+            None
+        );
+    }
+
+    #[test]
     fn stopped_last_thread_waits_for_a_task_reference_wakeup() {
         use crate::cpu::CpuOps;
         use crate::execution_kernel::ExecutionTaskState;
@@ -18852,7 +19047,7 @@ mod tests {
                 .unwrap());
             assert!(calls
                 .retire_native_thread(worker, cpu, false, |_| true)
-                .is_some());
+                .is_ok());
         }
         assert_eq!(calls.scheduling_state(worker), None);
         assert!(!calls.switch_to_task(worker));

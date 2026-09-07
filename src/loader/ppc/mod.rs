@@ -30,7 +30,7 @@ use crate::event_queue::{
 use crate::guest_call::{
     format_ppc_import_action, install_powerpc_call_arguments, GuestCallContinuation,
     GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall, MenuTrackingOrigin,
-    NativeThreadContext, SharedGuestCallStack, ThreadStorage,
+    NativeRetirement, NativeThreadContext, SharedGuestCallStack, ThreadStorage,
 };
 use crate::guest_procedure::{
     resolve_guest_procedure, resolve_same_isa_thread_entry, GuestIsa, GuestProcedure,
@@ -121,7 +121,7 @@ use crate::trap::manager::{
 };
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, Rect};
 use crate::trap::{pict, TrapDispatcher};
-use crate::thread_manager::{NewThreadCreationEdge, ThreadManager};
+use crate::thread_manager::{NewThreadCreationEdge, RetiredThreadStorageEdge, ThreadManager};
 use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcExecutionContext, PpcFetchHistogram,
@@ -7745,15 +7745,20 @@ impl PpcLoadedApp {
                     // Inside Macintosh: Thread Manager (1999), pp. 59–60.
                     let task = guest_calls.current_task();
                     let result = cpu.gpr[3];
-                    let _ = ppc_retire_native_thread(
-                        &guest_calls,
-                        cpu,
-                        memory,
-                        process_memory_manager,
-                        task,
-                        result,
-                        false,
-                    );
+                    if let Ok(retirement) =
+                        guest_calls.retire_native_thread(task, cpu, false, |context| {
+                            context.result_destination == 0
+                                || memory
+                                    .write_u32_be(context.result_destination, result)
+                                    .is_some()
+                        })
+                    {
+                        ppc_release_retired_thread_storage(
+                            process_memory_manager,
+                            retirement,
+                            false,
+                        );
+                    }
                     return PpcImportAction::Yield(1);
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
@@ -24135,35 +24140,29 @@ fn dispatch_supported_import(
             let task = crate::guest_call::ExecutionTaskId::from_thread_id(
                 crate::thread_manager::ThreadManager::new(calls).resolve_thread(cpu.gpr[3]),
             );
-            if calls.scheduling_state(task).is_none() {
-                return Some(PpcImportAction::Return(ppc_i16_result(
-                    crate::thread_manager::THREAD_NOT_FOUND_ERR,
-                )));
-            }
-            let current = task == calls.current_task();
             let result = cpu.gpr[4];
             let recycle = cpu.gpr[5] as u8 != 0;
-            Some(
-                if ppc_retire_native_thread(
-                    calls,
-                    cpu,
-                    memory,
-                    process_memory_manager,
-                    task,
-                    result,
-                    recycle,
-                ) {
-                    if current {
+            Some(match calls.retire_native_thread(task, cpu, recycle, |context| {
+                context.result_destination == 0
+                    || memory
+                        .write_u32_be(context.result_destination, result)
+                        .is_some()
+            }) {
+                Ok(retirement) => {
+                    let switched = matches!(retirement, NativeRetirement::Switched(_));
+                    ppc_release_retired_thread_storage(
+                        process_memory_manager,
+                        retirement,
+                        recycle,
+                    );
+                    if switched {
                         PpcImportAction::Yield(1)
                     } else {
                         PpcImportAction::Return(0)
                     }
-                } else {
-                    PpcImportAction::Return(ppc_i16_result(
-                        crate::thread_manager::THREAD_PROTOCOL_ERR,
-                    ))
-                },
-            )
+                }
+                Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
+            })
         }
         PpcImportDispatcherTarget::ThreadBeginCritical => {
             Some(PpcImportAction::Return(ppc_i16_result(
@@ -91026,31 +91025,34 @@ fn ppc_restore_native_exception(
     frame_is_valid.then_some(())
 }
 
-fn ppc_retire_native_thread(
-    calls: &crate::guest_call::SharedGuestCallStack,
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    manager: &mut ProcessNativeMemoryManager,
-    task: crate::guest_call::ExecutionTaskId,
-    result: u32,
-    recycle: bool,
-) -> bool {
-    let Some(finished) = calls.retire_native_thread(task, cpu, recycle, |context| {
-        context.result_destination == 0
-            || memory
-                .write_u32_be(context.result_destination, result)
-                .is_some()
-    }) else {
-        return false;
-    };
-    if !recycle && finished.stack_base != 0 {
-        if finished.managed_pointer {
-            manager.dispose_native_ptr(finished.stack_base);
-        } else {
-            manager.dispose_classic_ptr_from_native_import(finished.stack_base);
-        }
+struct PpcRetiredThreadStorageEdge<'a> {
+    manager: &'a mut ProcessNativeMemoryManager,
+}
+
+impl RetiredThreadStorageEdge for PpcRetiredThreadStorageEdge<'_> {
+    fn release_classic(&mut self, stack_base: u32) {
+        self.manager
+            .dispose_classic_ptr_from_native_import(stack_base);
     }
-    true
+
+    fn release_native(&mut self, stack_base: u32) {
+        self.manager.dispose_native_ptr(stack_base);
+    }
+}
+
+fn ppc_release_retired_thread_storage(
+    manager: &mut ProcessNativeMemoryManager,
+    retirement: NativeRetirement,
+    recycle: bool,
+) {
+    let storage = match retirement {
+        NativeRetirement::Removed(storage) | NativeRetirement::Switched(storage) => storage,
+    };
+    ThreadManager::release_retired_storage(
+        storage,
+        recycle,
+        &mut PpcRetiredThreadStorageEdge { manager },
+    );
 }
 
 fn ppc_resolve_callback_target(
