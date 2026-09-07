@@ -1590,6 +1590,16 @@ impl FixtureRunnerConfig {
     }
 }
 
+/// Whether a CPU slice owns presentation or only Sound Manager servicing.
+/// Audio-only slices retain the existing completion/synchronization boundary;
+/// they defer native chrome until the frontend's outer composition pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameFinalization {
+    Deferred,
+    AudioOnly,
+    Complete,
+}
+
 /// Canonical entry point of the systemless library.
 ///
 /// `FixtureRunner` serializes one Macintosh process: `ProcessContext` owns
@@ -4504,12 +4514,20 @@ impl FixtureRunner {
         }
     }
 
-    fn finish_host_frame(&mut self, audio_samples: usize, sound_interrupt_dispatched: bool) {
+    fn finish_host_frame(
+        &mut self,
+        finalization: FrameFinalization,
+        audio_samples: usize,
+        sound_interrupt_dispatched: bool,
+    ) {
         // Redraw menu bar and window chrome after each frame.
         // On a real Mac the Window Manager maintains these as
         // separate layers; here they are raw framebuffer pixels
         // that game drawing (explosions, etc.) can overwrite.
-        self.redraw_chrome_outside_idle_journal();
+        if finalization == FrameFinalization::Complete {
+            self.redraw_chrome_outside_idle_journal();
+        }
+        debug_assert_ne!(finalization, FrameFinalization::Deferred);
         self.finish_audio_frame(audio_samples, sound_interrupt_dispatched);
     }
 
@@ -5616,7 +5634,7 @@ impl FixtureRunner {
         audio_samples: usize,
         yield_for_ui: bool,
         sound_work_only: bool,
-        finish_frame: bool,
+        finish_frame: FrameFinalization,
     ) -> (usize, bool) {
         self.dispatcher.guest_calls.resume_ready_task();
         self.m68k.apply_task_handoff();
@@ -5643,8 +5661,14 @@ impl FixtureRunner {
             let mut count = 0usize;
             let mut running = !self.halted;
             while count < max_steps && running {
-                let (steps, still_running) =
-                    self.run_ppc_steps(max_steps - count, tick_cap, 0, true, false, true);
+                let (steps, still_running) = self.run_ppc_steps(
+                    max_steps - count,
+                    tick_cap,
+                    0,
+                    true,
+                    FrameFinalization::Deferred,
+                    true,
+                );
                 count = count.saturating_add(steps);
                 running = still_running;
                 if steps == 0 {
@@ -5670,18 +5694,20 @@ impl FixtureRunner {
                     .execution_route(self.native.availability())
                     != route
             {
-                if finish_frame {
+                if finish_frame != FrameFinalization::Deferred {
                     self.sync_ppc_deferred_host_state();
-                    self.finish_host_frame(audio_samples, false);
+                    self.finish_host_frame(finish_frame, audio_samples, false);
                 }
                 return (count, running);
             }
-            if finish_frame {
+            if finish_frame != FrameFinalization::Deferred {
                 self.sync_ppc_deferred_host_state();
                 if self.halted_by_exit_to_shell() {
-                    self.redraw_chrome_outside_idle_journal();
+                    if finish_frame == FrameFinalization::Complete {
+                        self.redraw_chrome_outside_idle_journal();
+                    }
                 } else {
-                    self.finish_host_frame(audio_samples, false);
+                    self.finish_host_frame(finish_frame, audio_samples, false);
                 }
             }
             return (count, running);
@@ -6000,8 +6026,12 @@ impl FixtureRunner {
                         }
                         let fired_hook = self.fire_menu_hook_proc(opcode);
                         if yield_for_ui && !fired_hook {
-                            if finish_frame {
-                                self.finish_host_frame(audio_samples, sound_interrupt_dispatched);
+                            if finish_frame != FrameFinalization::Deferred {
+                                self.finish_host_frame(
+                                    finish_frame,
+                                    audio_samples,
+                                    sound_interrupt_dispatched,
+                                );
                             }
                             return (count, true);
                         }
@@ -6424,8 +6454,9 @@ impl FixtureRunner {
                                     {
                                         continue;
                                     }
-                                    if finish_frame {
+                                    if finish_frame != FrameFinalization::Deferred {
                                         self.finish_host_frame(
+                                            finish_frame,
                                             audio_samples,
                                             sound_interrupt_dispatched,
                                         );
@@ -6548,8 +6579,12 @@ impl FixtureRunner {
         }
 
         self.cancel_idle_cycle_observation();
-        if finish_frame {
-            self.finish_host_frame(audio_samples, sound_interrupt_dispatched || sound_work_only);
+        if finish_frame != FrameFinalization::Deferred {
+            self.finish_host_frame(
+                finish_frame,
+                audio_samples,
+                sound_interrupt_dispatched || sound_work_only,
+            );
         }
 
         (count, !self.halted)
@@ -6561,7 +6596,7 @@ impl FixtureRunner {
         tick_cap: Option<u32>,
         audio_samples: usize,
         coalesce_to_tick_cap: bool,
-        finish_frame: bool,
+        finish_frame: FrameFinalization,
         foreground: bool,
     ) -> (usize, bool) {
         if max_steps == 0 || self.halted {
@@ -6579,8 +6614,8 @@ impl FixtureRunner {
         let cycles_to_next_tick = usize::try_from(self.tick_budget.max(1)).unwrap_or(1);
         let ppc_max_steps = ppc_max_steps.min(cycles_to_next_tick);
         if ppc_max_steps == 0 {
-            if finish_frame {
-                self.finish_host_frame(audio_samples, false);
+            if finish_frame != FrameFinalization::Deferred {
+                self.finish_host_frame(finish_frame, audio_samples, false);
             }
             return (0, true);
         }
@@ -6682,9 +6717,9 @@ impl FixtureRunner {
             self.native
                 .restore(native_context)
                 .unwrap_or_else(|_| panic!("native context lost its owner"));
-            if finish_frame {
+            if finish_frame != FrameFinalization::Deferred {
                 self.sync_ppc_deferred_host_state();
-                self.finish_host_frame(audio_samples, false);
+                self.finish_host_frame(finish_frame, audio_samples, false);
             }
             return (
                 usize::try_from(
@@ -6854,7 +6889,7 @@ impl FixtureRunner {
         }
         let q3_frame_start = self.q3_completed_frame_index;
         let profile_render_start = profile_ppc.then(Instant::now);
-        let render_stats = if foreground && finish_frame {
+        let render_stats = if foreground && finish_frame != FrameFinalization::Deferred {
             self.render_ppc_completed_frames(&mut ppc_app, pc)
         } else {
             PpcQ3SoftwareRenderStats::default()
@@ -6862,7 +6897,7 @@ impl FixtureRunner {
         let profile_render_us = elapsed_profile_micros(profile_render_start);
         let next_q3_frame_index = self.q3_completed_frame_index;
         let profile_sync_start = profile_ppc.then(Instant::now);
-        if foreground && finish_frame {
+        if foreground && finish_frame != FrameFinalization::Deferred {
             self.sync_ppc_front_buffer_to_host(&mut ppc_app);
             self.persist_ppc_vfs_to_host(&mut ppc_app);
         }
@@ -6964,12 +6999,12 @@ impl FixtureRunner {
             .restore(native_context)
             .unwrap_or_else(|_| panic!("native context lost its owner"));
         if foreground && exited_via_ppc_exit_to_shell {
-            if finish_frame {
+            if finish_frame == FrameFinalization::Complete {
                 self.redraw_chrome_outside_idle_journal();
             }
         } else {
-            if finish_frame {
-                self.finish_host_frame(audio_samples, false);
+            if finish_frame != FrameFinalization::Deferred {
+                self.finish_host_frame(finish_frame, audio_samples, false);
             }
         }
         (
@@ -8827,7 +8862,7 @@ impl FixtureRunner {
             audio_samples,
             tick_override.is_some(),
             false,
-            true,
+            FrameFinalization::Complete,
         )
     }
 
@@ -8839,7 +8874,14 @@ impl FixtureRunner {
         max_steps: usize,
         audio_samples: usize,
     ) -> (usize, bool) {
-        self.run_steps_internal(max_steps, None, audio_samples, true, false, true)
+        self.run_steps_internal(
+            max_steps,
+            None,
+            audio_samples,
+            true,
+            false,
+            FrameFinalization::Complete,
+        )
     }
 
     /// Run a GUI frame slice paced by wall-clock time.
@@ -8867,7 +8909,7 @@ impl FixtureRunner {
             audio_samples,
             true,
             false,
-            true,
+            FrameFinalization::Complete,
         )
     }
 
@@ -8875,14 +8917,31 @@ impl FixtureRunner {
     /// frame. Browser frontends use this to execute several small CPU batches
     /// and then redraw chrome / mix queued audio once for the outer frame.
     pub fn run_gui_cpu_slice(&mut self, max_steps: usize, deadline_tick: u32) -> (usize, bool) {
-        self.run_steps_internal(max_steps, Some(deadline_tick), 0, true, false, false)
+        self.run_steps_internal(
+            max_steps,
+            Some(deadline_tick),
+            0,
+            true,
+            false,
+            FrameFinalization::Deferred,
+        )
     }
 
     /// Run pending Sound Manager interrupt work without advancing TickCount
     /// or continuing into foreground guest code after the callback returns.
     pub fn run_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
         self.fire_pending_ppc_sound_completions();
-        self.run_steps_internal(max_steps, None, 0, true, true, true)
+        self.run_steps_internal(max_steps, None, 0, true, true, FrameFinalization::Complete)
+    }
+
+    /// Service pending sound work like [`Self::run_pending_sound_work`], but
+    /// leave native chrome to the frontend's next [`Self::composite_frame`].
+    /// Sound queues, refilled double buffers and channel state are serviced at
+    /// the same slice boundary. This does not defer audio or enlarge the guest
+    /// callback budget. Use this only when the caller owns outer presentation.
+    pub fn run_gui_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
+        self.fire_pending_ppc_sound_completions();
+        self.run_steps_internal(max_steps, None, 0, true, true, FrameFinalization::AudioOnly)
     }
 
     /// Run for a specific number of steps (for GUI/headless callers that don't
@@ -8897,7 +8956,14 @@ impl FixtureRunner {
     /// accessors after this call returns.
     pub fn run_steps(&mut self, max_steps: usize, tick_override: Option<u32>) -> (usize, bool) {
         let start_tick = self.guest_tick();
-        let result = self.run_steps_internal(max_steps, tick_override, 0, false, false, true);
+        let result = self.run_steps_internal(
+            max_steps,
+            tick_override,
+            0,
+            false,
+            false,
+            FrameFinalization::Complete,
+        );
         self.advance_headless_callback_audio(self.guest_tick().wrapping_sub(start_tick));
         result
     }
@@ -25208,6 +25274,231 @@ mod tests {
         assert!(runner.has_pending_sound_work());
     }
 
+    fn sound_chrome_runner() -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let screen_base = 0x0040_0000;
+        runner.dispatcher.screen_mode = (screen_base, 256, 256, 64, 8);
+        runner.bus.write_long(0x0824, screen_base);
+        runner.bus.write_word(0x0BAA, 20);
+        runner.dispatcher.menus.push(crate::trap::menu::Menu {
+            id: 1,
+            title: String::from("Apple"),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        runner.dispatcher.menu_bar_hidden = false;
+        runner.prepare_text_presentation();
+        runner.composite_frame();
+        let pixel = screen_base + 5 * 256 + 100;
+        assert_ne!(runner.bus.read_byte(pixel), 0xAA);
+        runner.bus.write_byte(pixel, 0xAA);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.bus.write_word(0x0001_0000, 0x4E71); // foreground NOP
+        runner.set_guest_tick_for_test(41);
+        runner.set_instructions_per_tick(1);
+        runner.tick_budget = 0;
+        runner
+    }
+
+    #[test]
+    fn gui_sound_work_defers_chrome_but_matches_complete_slices() {
+        for budget in [0, 1, 32] {
+            let mut complete = sound_chrome_runner();
+            let mut deferred = sound_chrome_runner();
+            for runner in [&mut complete, &mut deferred] {
+                let callback_addr = runner.bus.alloc(2);
+                runner.bus.write_word(callback_addr, 0x4E75); // RTS
+                for _ in 0..2 {
+                    runner
+                        .dispatcher
+                        .sound_manager
+                        .pending_sound_callbacks
+                        .push(PendingSoundCallback::Command {
+                            architecture: CallbackTaskArchitecture::M68k,
+                            callback_addr,
+                            chan_ptr: 0x0039_38C8,
+                            cmd: SndCommand {
+                                cmd: crate::sound::cmd::CALLBACK,
+                                param1: 0,
+                                param2: 0,
+                            },
+                        });
+                }
+            }
+            for _ in 0..64 {
+                assert_eq!(
+                    complete.run_pending_sound_work(budget),
+                    deferred.run_gui_pending_sound_work(budget),
+                );
+                for reg in [Register::PC, Register::A7, Register::D0] {
+                    assert_eq!(
+                        complete.m68k.cpu.read_reg(reg),
+                        deferred.m68k.cpu.read_reg(reg)
+                    );
+                }
+                assert_eq!(deferred.guest_tick(), 41);
+                assert_eq!(complete.guest_tick(), deferred.guest_tick());
+                assert_eq!(
+                    complete.has_pending_sound_work(),
+                    deferred.has_pending_sound_work()
+                );
+                assert_eq!(
+                    complete
+                        .dispatcher
+                        .sound_manager
+                        .pending_sound_callbacks
+                        .len(),
+                    deferred
+                        .dispatcher
+                        .sound_manager
+                        .pending_sound_callbacks
+                        .len(),
+                );
+                let pixel = 0x0040_0000 + 5 * 256 + 100;
+                assert_ne!(complete.bus.read_byte(pixel), 0xAA);
+                assert_eq!(
+                    deferred.bus.read_byte(pixel),
+                    0xAA,
+                    "sound slices must not repaint chrome"
+                );
+                if budget == 0 || !deferred.has_pending_sound_work() {
+                    break;
+                }
+            }
+            if budget > 0 {
+                assert!(!deferred.has_pending_sound_work());
+                assert_eq!(deferred.m68k.cpu.read_reg(Register::PC), 0x0001_0000);
+                assert_eq!(deferred.m68k.cpu.read_reg(Register::A7), 0x007F_FFC0);
+            }
+            complete.composite_frame();
+            deferred.composite_frame();
+            assert!(
+                deferred.bus.has_visible_outline_detail(),
+                "fixture must exercise retained glyphs"
+            );
+            assert_eq!(
+                complete.bus.save_pixel_bytes(0x0040_0000, 256 * 64),
+                deferred.bus.save_pixel_bytes(0x0040_0000, 256 * 64),
+                "logical pixels AND retained subpixel metadata must match",
+            );
+            assert_eq!(
+                complete.bus.outline_presentation_rgb(),
+                deferred.bus.outline_presentation_rgb()
+            );
+            assert!(
+                complete.bus.read_bytes(0, 8 * 1024 * 1024)
+                    == deferred.bus.read_bytes(0, 8 * 1024 * 1024)
+            );
+        }
+    }
+
+    #[test]
+    fn gui_sound_work_services_ready_double_buffers_even_with_zero_budget() {
+        let mut runner = sound_chrome_runner();
+        let chan_ptr = 0x0039_38C8;
+        let header_ptr = runner.bus.alloc(24);
+        let buf0_ptr = runner.bus.alloc(18);
+        let buf1_ptr = runner.bus.alloc(18);
+        runner.bus.write_word(header_ptr, 1);
+        runner.bus.write_word(header_ptr + 2, 8);
+        runner.bus.write_long(header_ptr + 8, OUTPUT_RATE << 16);
+        runner.bus.write_long(header_ptr + 12, buf0_ptr);
+        runner.bus.write_long(header_ptr + 16, buf1_ptr);
+        write_double_buffer(&mut runner.bus, buf0_ptr, &[0xA0, 0xA1]);
+        runner.bus.write_long(buf1_ptr, 2);
+        runner.bus.write_long(buf1_ptr + 4, 0);
+        let mut chan = SndChannel::new(chan_ptr, false);
+        chan.double_buffer = Some(DoubleBufferState {
+            header_ptr,
+            current_buffer: 1,
+            callback_addr: 0,
+            chan_ptr,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
+        });
+        runner.dispatcher.sound_manager.channels.push(chan);
+        assert_eq!(runner.run_gui_pending_sound_work(0), (0, true));
+        let chan = &runner.dispatcher.sound_manager.channels[0];
+        assert!(
+            chan.is_playing(),
+            "audio-only finalization must load a ready refill"
+        );
+        assert_eq!(chan.double_buffer.as_ref().unwrap().current_buffer, 0);
+        assert_eq!(
+            runner.audio_buffer_len(),
+            0,
+            "servicing is not an extra mix"
+        );
+        assert_eq!(runner.bus.read_byte(0x0040_0000 + 5 * 256 + 100), 0xAA);
+        runner.mix_audio(2);
+        assert_eq!(runner.audio_buffer, vec![0xA0, 0xA1]);
+    }
+
+    #[test]
+    fn gui_sound_work_leaves_parked_chrome_validation_to_composition() {
+        let mut runner = sound_chrome_runner();
+        runner.park_proven_idle_cycle(0x0002_0000, 205);
+        assert!(runner.idle_cycle_sleep.is_some());
+        // Test the finalization policy separately from guest execution: a
+        // zero-budget CPU slice can independently cancel an idle observation.
+        runner.finish_host_frame(FrameFinalization::AudioOnly, 0, true);
+        assert_eq!(runner.bus.read_byte(0x0040_0000 + 5 * 256 + 100), 0xAA);
+        runner.composite_frame();
+        assert_ne!(runner.bus.read_byte(0x0040_0000 + 5 * 256 + 100), 0xAA);
+        assert!(
+            runner.idle_cycle_sleep.is_none(),
+            "changed repaint must still revoke the park"
+        );
+        assert!(runner.bus.suspend_write_probe().is_none());
+    }
+
+    #[test]
+    fn gui_sound_work_services_guest_written_queue_without_painting() {
+        let mut runner = sound_chrome_runner();
+        let chan_ptr = runner.bus.alloc(1088);
+        runner
+            .dispatcher
+            .sound_manager
+            .channels
+            .push(SndChannel::new(chan_ptr, false));
+        // Guest SndChannel: flags, qLength, qHead, qTail, then 8-byte commands.
+        runner.bus.write_word(chan_ptr + 28, 0xFFFF);
+        runner.bus.write_word(chan_ptr + 30, 128);
+        runner.bus.write_word(chan_ptr + 32, 0);
+        runner.bus.write_word(chan_ptr + 34, 1);
+        runner
+            .bus
+            .write_word(chan_ptr + 36, crate::sound::cmd::VOLUME);
+        runner.bus.write_word(chan_ptr + 38, 0);
+        runner.bus.write_long(chan_ptr + 40, 0x0080_0040);
+        assert_eq!(runner.run_gui_pending_sound_work(0), (0, true));
+        assert_eq!(
+            runner.bus.read_word(chan_ptr + 32),
+            1,
+            "guest queue must drain"
+        );
+        assert_eq!(
+            runner.bus.read_word(chan_ptr + 28),
+            0,
+            "idle channel state must synchronize"
+        );
+        assert_eq!(
+            runner.bus.read_word(chan_ptr + 20),
+            0,
+            "completed command must clear"
+        );
+        assert_eq!(runner.bus.read_byte(0x0040_0000 + 5 * 256 + 100), 0xAA);
+    }
+
     #[test]
     fn run_steps_paces_pending_sound_doublebacks_to_one_per_slice() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -26621,7 +26912,14 @@ mod tests {
         runner.set_guest_tick_for_test(100);
         runner.dispatcher.set_sent_open_app_event_for_test(true);
 
-        let (_, running) = runner.run_steps_internal(1_000, Some(100), 0, true, false, false);
+        let (_, running) = runner.run_steps_internal(
+            1_000,
+            Some(100),
+            0,
+            true,
+            false,
+            FrameFinalization::Deferred,
+        );
         assert!(running);
         let sleep = runner
             .idle_cycle_sleep
@@ -27567,7 +27865,7 @@ mod tests {
         runner.process_context.set_menu_tracking(Some(tracking));
         runner.frozen_ticks = Some(100);
         runner.advance_menu_presentation_clock(std::time::Duration::from_millis(300));
-        runner.run_steps_internal(0, Some(102), 0, true, false, false);
+        runner.run_steps_internal(0, Some(102), 0, true, false, FrameFinalization::Deferred);
         assert_eq!(runner.frozen_ticks, Some(100));
         assert_eq!(
             runner
