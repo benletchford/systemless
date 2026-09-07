@@ -225,9 +225,11 @@ systemless --ui-theme classic-system7 path/to/game.sit
 systemless --fullscreen path/to/game.sit
 ```
 
-Desktop windows automatically open at a comfortable size for the display,
-including Retina and other high-DPI screens. Games keep their aspect ratio,
-and the initial window fits within the monitor. Use `--display-scale` with an
+On macOS, desktop windows open at the guest’s logical resolution: an 800×600
+guest gets an 800×600-point content area (1600×1200 backing pixels on a 2× Retina
+display). Oversized windows shrink to fit the monitor. Other platforms use an
+automatic display-sized window. Games keep their aspect ratio, and windows
+remain manually resizable. Use `--display-scale` with an
 integer from 1 through 8 to override automatic sizing with an exact physical
 guest-to-host pixel ratio (`1` selects 1:1). `--fullscreen` starts the guest in a borderless fullscreen space.
 On systems where macOS selects direct scan-out for the fullscreen surface this

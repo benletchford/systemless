@@ -258,9 +258,9 @@ fn fit_window_size(
     )
 }
 
-/// Aim for a 960×720 logical-point content box, leaving room for desktop
-/// chrome on smaller monitors. DPI converts that box to physical pixels;
-/// guest resolution never changes the requested on-screen footprint.
+/// On macOS, start at one guest pixel per logical point. Other platforms
+/// target a 960×720-point box. Leave room for desktop chrome on small monitors
+/// and apply backing DPI once before fitting the content.
 fn automatic_window_size(
     width: u32,
     height: u32,
@@ -272,9 +272,13 @@ fn automatic_window_size(
     } else {
         1.0
     };
+    #[cfg(target_os = "macos")]
+    let logical_bounds = (f64::from(width.max(1)), f64::from(height.max(1)));
+    #[cfg(not(target_os = "macos"))]
+    let logical_bounds = (960.0, 720.0);
     let mut bounds = winit::dpi::PhysicalSize::new(
-        (960.0 * dpi).round().max(1.0) as u32,
-        (720.0 * dpi).round().max(1.0) as u32,
+        (logical_bounds.0 * dpi).round().max(1.0) as u32,
+        (logical_bounds.1 * dpi).round().max(1.0) as u32,
     );
     if let Some(monitor) = monitor.filter(|m| m.width > 0 && m.height > 0) {
         bounds.width = bounds.width.min((f64::from(monitor.width) * 0.8) as u32);
@@ -3589,6 +3593,7 @@ mod tests {
         assert_eq!(invalid.kind(), ErrorKind::ValueValidation);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn automatic_windows_have_the_same_logical_size_across_dpi() {
         use winit::dpi::PhysicalSize;
@@ -3599,6 +3604,26 @@ mod tests {
                     automatic_window_size(width, height, Some(monitor), dpi),
                     PhysicalSize::new((960.0 * dpi) as u32, (720.0 * dpi) as u32)
                 );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn automatic_mac_windows_use_guest_points_at_native_and_retina_dpi() {
+        use winit::dpi::PhysicalSize;
+        for dpi in [1.0, 2.0] {
+            let monitor = PhysicalSize::new((2560.0 * dpi) as u32, (1600.0 * dpi) as u32);
+            for (width, height) in [(320, 200), (640, 480), (800, 600), (800, 580)] {
+                let expected = PhysicalSize::new(
+                    (f64::from(width) * dpi) as u32,
+                    (f64::from(height) * dpi) as u32,
+                );
+                assert_eq!(
+                    automatic_window_size(width, height, Some(monitor), dpi),
+                    expected
+                );
+                assert_eq!(automatic_window_size(width, height, None, dpi), expected);
             }
         }
     }
@@ -3629,15 +3654,20 @@ mod tests {
     #[test]
     fn automatic_windows_have_safe_monitor_and_dpi_fallbacks() {
         use winit::dpi::PhysicalSize;
+        let (width, height) = if cfg!(target_os = "macos") {
+            (640, 480)
+        } else {
+            (960, 720)
+        };
         for dpi in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(
                 automatic_window_size(640, 480, None, dpi),
-                PhysicalSize::new(960, 720)
+                PhysicalSize::new(width, height)
             );
         }
         assert_eq!(
             automatic_window_size(640, 480, Some(PhysicalSize::new(0, 0)), 2.0),
-            PhysicalSize::new(1920, 1440)
+            PhysicalSize::new(width * 2, height * 2)
         );
         let zero = automatic_window_size(0, 0, None, 1.0);
         assert!(zero.width > 0 && zero.height > 0);
