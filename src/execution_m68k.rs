@@ -121,25 +121,34 @@ pub(crate) fn complete_classic_manager_return<C: crate::cpu::CpuOps>(
     bus: &crate::memory::MacMemoryBus,
 ) -> bool {
     use crate::memory::MemoryBus;
+    let mut hook = None;
     let restored_sp = calls.complete_m68k_with_operation(
         cpu.read_reg(Register::PC),
         cpu.read_reg(Register::A7),
-        |operation| {
-            let crate::guest_call::ManagerContinuation::Menu(operation) = operation else {
-                panic!("classic manager return has no completion consumer");
-            };
-            let result = if bus.is_guest_address_mapped(operation.scratch, 10) {
-                <[u8; 10]>::try_from(bus.read_bytes(operation.scratch, 10))
-                    .map(crate::menu_manager::MenuDefinitionInvocation::decode_result)
-                    .map_err(|_| ())
-            } else {
-                Err(())
-            };
-            operation.complete_result(result);
+        |operation| match operation {
+            crate::guest_call::ManagerContinuation::Menu(
+                crate::guest_call::MenuManagerContinuation::Definition(operation),
+            ) => {
+                let result = if bus.is_guest_address_mapped(operation.scratch, 10) {
+                    <[u8; 10]>::try_from(bus.read_bytes(operation.scratch, 10))
+                        .map(crate::menu_manager::MenuDefinitionInvocation::decode_result)
+                        .map_err(|_| ())
+                } else {
+                    Err(())
+                };
+                operation.complete_result(result);
+            }
+            crate::guest_call::ManagerContinuation::Menu(
+                crate::guest_call::MenuManagerContinuation::Hook(operation),
+            ) => hook = Some(operation),
+            _ => panic!("classic manager return has no completion consumer"),
         },
     );
     if let Some(sp) = restored_sp {
         cpu.write_reg(Register::A7, sp);
+        if let Some(hook) = hook {
+            assert!(hook.complete(), "MenuHook completion must be single-use");
+        }
         true
     } else {
         false
@@ -200,19 +209,34 @@ impl M68kExecution {
 
     /// Apply a completed native result to its actual caller, then restore it.
     pub(crate) fn resume_after_powerpc(&mut self, memory: &mut PpcSectionMem) -> bool {
-        let Some(parked) = self.calls.commit_m68k_resume(|resume, parked| {
-            let cpu = parked.unwrap_or(&mut self.cpu);
-            if !Self::apply_m68k_resume_result(cpu, memory, resume) {
-                return false;
-            }
-            cpu.write_reg(Register::PC, resume.return_pc);
-            cpu.write_reg(Register::A7, resume.final_sp);
-            true
-        }) else {
+        let Some((parked, operation)) =
+            self.calls
+                .commit_m68k_resume_with_operation(|resume, parked| {
+                    let cpu = parked.unwrap_or(&mut self.cpu);
+                    if !Self::apply_m68k_resume_result(cpu, memory, resume) {
+                        return false;
+                    }
+                    cpu.write_reg(Register::PC, resume.return_pc);
+                    cpu.write_reg(Register::A7, resume.final_sp);
+                    true
+                })
+        else {
             return false;
         };
         if let Some(parked) = parked {
             self.cpu = parked;
+        }
+        match operation {
+            Some(crate::guest_call::ManagerContinuation::Menu(
+                crate::guest_call::MenuManagerContinuation::Hook(operation),
+            )) => {
+                assert!(
+                    operation.complete(),
+                    "MenuHook completion must be single-use"
+                );
+            }
+            Some(_) => panic!("reverse manager return has no completion consumer"),
+            None => {}
         }
         true
     }
@@ -542,7 +566,10 @@ impl M68kExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guest_call::{GuestCallTarget, M68kRegisterState};
+    use crate::guest_call::{
+        GuestCallTarget, M68kRegisterState, ManagerContinuation, MenuHookOperation,
+        MenuManagerContinuation, MenuTrackingCall, MenuTrackingContext, MenuTrackingOrigin,
+    };
     use crate::guest_procedure::GuestIsa;
 
     #[test]
@@ -582,6 +609,127 @@ mod tests {
         assert_eq!(native.reservation_address(), Some(ADDRESS));
         assert!(engine.activate_pending(&mut native).is_some());
         assert_eq!(native.reservation_address(), Some(ADDRESS));
+    }
+
+    #[test]
+    fn classic_menu_hook_completion_waits_for_its_task_and_restores_the_caller_first() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::ExecutionTaskId;
+        use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
+
+        let calls = SharedGuestCallStack::default();
+        let mut tracking = calls.menu_tracking_view();
+        let call = MenuTrackingCall {
+            request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
+            origin: MenuTrackingOrigin::M68k {
+                stack_pointer: 0x3000,
+                return_address: 0x4000,
+            },
+        };
+        let entry = tracking.enter_new_call(call);
+        *tracking = Some(test_process_menu_tracking(111));
+        let key = tracking.request_menu_hook(true).unwrap();
+        let operation = MenuHookOperation::pending(key);
+        assert!(calls.begin_m68k_with_operation(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+            None,
+            Some(ManagerContinuation::Menu(MenuManagerContinuation::Hook(
+                operation.clone(),
+            ))),
+        ));
+        assert!(tracking.bind_menu_hook(key, operation.completion.clone()));
+
+        let mut execution = M68kExecution::new(&calls);
+        execution.cpu.write_reg(Register::PC, 0x2002);
+        execution.cpu.write_reg(Register::A7, 0x3000);
+        let worker = ExecutionTaskId::from_thread_id(7);
+        assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(worker));
+        assert!(!execution.complete_manager_return(&crate::memory::MacMemoryBus::new(0x1000)));
+        assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
+        assert_eq!(tracking.menu_hook_key(), Some(key));
+
+        assert!(execution.complete_manager_return(&crate::memory::MacMemoryBus::new(0x1000)));
+        assert_eq!(execution.cpu.read_reg(Register::A7), 0x3000);
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(call));
+        let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
+        assert_eq!(tracking.menu_hook_key(), None);
+        *tracking.context_mut() = MenuTrackingContext::default();
+        drop(resumed);
+        drop(entry);
+        assert!(calls.remove_task(worker));
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn native_menu_hook_restores_classic_context_before_releasing_its_receipt() {
+        use crate::guest_call::ExecutionTaskId;
+        use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
+
+        let calls = SharedGuestCallStack::default();
+        let mut tracking = calls.menu_tracking_view();
+        let call = MenuTrackingCall {
+            request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
+            origin: MenuTrackingOrigin::M68k {
+                stack_pointer: 0x3000,
+                return_address: 0x4000,
+            },
+        };
+        let entry = tracking.enter_new_call(call);
+        *tracking = Some(test_process_menu_tracking(111));
+        let key = tracking.request_menu_hook(true).unwrap();
+        let operation = MenuHookOperation::pending(key);
+        assert!(calls.begin_m68k_to_powerpc_with_operation(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: 0x1000,
+                rtoc: 0x2000,
+            },
+            crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
+            0x3000,
+            0x4000,
+            None,
+            ManagerContinuation::Menu(MenuManagerContinuation::Hook(operation.clone())),
+        ));
+        assert!(tracking.bind_menu_hook(key, operation.completion.clone()));
+
+        let mut execution = M68kExecution::new(&calls);
+        execution.cpu.write_reg(Register::PC, 0xaaaa);
+        execution.cpu.write_reg(Register::A7, 0xbbbb);
+        let mut native = ppc::PpcCpu::new();
+        assert!(calls
+            .activate_powerpc_with_classic_caller(&mut native, &mut execution.cpu, 0x5000,)
+            .is_some());
+        native.pc = 0x5004;
+        assert!(!calls.complete_powerpc_for_m68k(&mut native));
+        assert_eq!(tracking.menu_hook_key(), Some(key));
+        native.pc = 0x5000;
+        assert!(calls.complete_powerpc_for_m68k(&mut native));
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), None);
+
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        assert!(execution.resume_after_powerpc(&mut memory));
+        assert_eq!(
+            (
+                execution.cpu.read_reg(Register::PC),
+                execution.cpu.read_reg(Register::A7),
+            ),
+            (0x3000, 0x4000),
+        );
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(call));
+        let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
+        *tracking.context_mut() = MenuTrackingContext::default();
+        drop(resumed);
+        drop(entry);
+        assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+        assert!(calls.is_empty());
     }
 
     #[test]
