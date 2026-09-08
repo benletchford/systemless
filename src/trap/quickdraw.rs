@@ -3074,11 +3074,17 @@ impl super::TrapDispatcher {
                 // paint through a hidden window (whose visRgn is empty), nor
                 // through an empty clipRgn. Inside Macintosh Volume I,
                 // pp. I-158, I-176, and I-197.
+                // Picture recording ignores the current port's visibility,
+                // while clipRgn and maskRgn continue to constrain the saved
+                // image. A hidden window therefore records CopyBits for later
+                // DrawPicture playback without painting live pixels. Imaging
+                // With QuickDraw (1994), pp. 7-39--7-42.
                 if self.copy_bits_fully_clipped_in_current_port(
                     bus,
                     dst_bits_ptr,
                     dst_rect_ptr,
                     mask_rgn,
+                    self.recording_picture.is_none(),
                 ) {
                     return Some(Ok(()));
                 }
@@ -21533,6 +21539,7 @@ impl super::TrapDispatcher {
         dst_bits_ptr: u32,
         dst_rect_ptr: u32,
         mask_rgn: u32,
+        include_visibility: bool,
     ) -> bool {
         let port = *self.current_port;
         if port == 0 || !Self::guest_range_in_ram(bus, port, 32) {
@@ -21558,7 +21565,11 @@ impl super::TrapDispatcher {
         let mut left = bus.read_word(dst_rect_ptr + 2) as i16;
         let mut bottom = bus.read_word(dst_rect_ptr + 4) as i16;
         let mut right = bus.read_word(dst_rect_ptr + 6) as i16;
-        for region in [bus.read_long(port + 24), bus.read_long(port + 28), mask_rgn] {
+        let visibility = include_visibility.then(|| bus.read_long(port + 24));
+        for region in [visibility, Some(bus.read_long(port + 28)), Some(mask_rgn)]
+            .into_iter()
+            .flatten()
+        {
             if !Self::clip_rect_to_region_bbox(
                 bus,
                 region,
@@ -32640,6 +32651,7 @@ mod tests {
         let vis_rgn = bus.alloc(4);
         bus.write_long(vis_rgn, vis_rgn_ptr);
         bus.write_long(PORT_PTR + 24, vis_rgn);
+        bus.write_long(PORT_PTR + 28, 0);
         cpu.write_reg(Register::PC, RETURN_PC);
 
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
@@ -32647,6 +32659,82 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::PC), RETURN_PC);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 22);
         assert_eq!(bus.read_byte(0x300480), 0x00);
+    }
+
+    #[test]
+    fn copybits_records_from_a_hidden_port_for_later_picture_playback() {
+        // Imaging With QuickDraw (1994), pp. 7-39--7-42: OpenPicture records
+        // drawing commands while the pen is hidden. The owning window's empty
+        // visRgn suppresses live pixels, but it must not erase the recording.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        const PORT_PTR: u32 = 0x181000;
+        *d.current_port = PORT_PTR;
+        let _ = setup_copybits_through_port_bottleneck(&mut bus, 0);
+
+        let vis_rgn_ptr = bus.alloc(10);
+        bus.write_word(vis_rgn_ptr, 10);
+        let vis_rgn = bus.alloc(4);
+        bus.write_long(vis_rgn, vis_rgn_ptr);
+        bus.write_long(PORT_PTR + 24, vis_rgn);
+
+        let pic_frame = bus.alloc(8);
+        write_rect(&mut bus, pic_frame, 0, 0, 1, 1);
+        bus.write_long(TEST_SP, pic_frame);
+        d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let picture = bus.read_long(TEST_SP + 4);
+
+        setup_copybits_through_port_bottleneck(&mut bus, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(0x300480), 0x00, "hidden live port stays clipped");
+        assert!(d.recording_picture_bitmap.is_some());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let pic_ptr = bus.read_long(picture);
+        assert!(
+            bus.read_word(pic_ptr) > 32,
+            "recorded CopyBits must produce bitmap picture data"
+        );
+    }
+
+    #[test]
+    fn copybits_recording_still_honors_an_empty_clip_region() {
+        // Imaging With QuickDraw (1994), pp. 7-39--7-42: unlike visRgn,
+        // clipRgn remains effective while drawing is recorded offscreen.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        const PORT_PTR: u32 = 0x181000;
+        *d.current_port = PORT_PTR;
+        setup_copybits_through_port_bottleneck(&mut bus, 0);
+
+        let clip_rgn_ptr = bus.alloc(10);
+        bus.write_word(clip_rgn_ptr, 10);
+        let clip_rgn = bus.alloc(4);
+        bus.write_long(clip_rgn, clip_rgn_ptr);
+        bus.write_long(PORT_PTR + 28, clip_rgn);
+
+        let pic_frame = bus.alloc(8);
+        write_rect(&mut bus, pic_frame, 0, 0, 1, 1);
+        bus.write_long(TEST_SP, pic_frame);
+        d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        setup_copybits_through_port_bottleneck(&mut bus, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(
+            d.recording_picture_bitmap.is_none(),
+            "empty clipRgn must suppress the recorded transfer"
+        );
     }
 
     #[test]
