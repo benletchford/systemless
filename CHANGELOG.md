@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.39.2](https://github.com/benletchford/systemless/compare/v0.39.1...v0.39.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* add save location navigation ([36bd047](https://github.com/benletchford/systemless/commit/36bd047cf37b71b395ca249f65aacf5242434434))
+* distinguish basic and hierarchical data fork opens ([507ba00](https://github.com/benletchford/systemless/commit/507ba00f87cbb17d20db8b81c7221c7f885f7e5f))
+* encode current application names as MacRoman ([576ea79](https://github.com/benletchford/systemless/commit/576ea7972d7e7d3de838c7bb649a3b22c09fe916))
+* expand headerless Quilt picture frames ([93fb4ad](https://github.com/benletchford/systemless/commit/93fb4ad8748e8432b224671b64a4cb4e0207810a))
+* honor PBHOpenDF write permissions ([3875388](https://github.com/benletchford/systemless/commit/3875388d2c2c04ddd73d5bb51c30775d211bad3c))
+* **pict:** preserve relative text origins ([c00b4ac](https://github.com/benletchford/systemless/commit/c00b4acc1582e3151d77dc0e24271126fa168fab))
+* preserve Mac Roman dialog text at byte boundaries ([c6001fe](https://github.com/benletchford/systemless/commit/c6001fe257df7e84dc1439012051d18651842e9f))
+* record hidden CopyBits in pictures ([970c392](https://github.com/benletchford/systemless/commit/970c392fdaa78aa83caef2d8b6c0593c74043dd2))
+* report resized resource handle sizes ([b726cfe](https://github.com/benletchford/systemless/commit/b726cfef163e4dd5728d9129a77689f3f8ffde54))
+
 ## [0.39.1](https://github.com/benletchford/systemless/compare/v0.39.0...v0.39.1) (2026-09-07)
 
 
