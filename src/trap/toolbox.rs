@@ -628,6 +628,9 @@ struct StandardFileSelection {
 enum StandardFilePutAction {
     Save,
     Cancel,
+    Desktop,
+    Navigate,
+    Parent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -639,13 +642,18 @@ enum StandardFileGetAction {
 }
 
 const STANDARD_FILE_SAVE_ITEM: i16 = 1;
-const STANDARD_FILE_NAME_ITEM: i16 = 4;
+const STANDARD_FILE_NAME_ITEM: i16 = 9;
 const STANDARD_FILE_DIALOG_WIDTH: i16 = 360;
-const STANDARD_FILE_DIALOG_HEIGHT: i16 = 148;
-const STANDARD_FILE_PROMPT_RECT: (i16, i16, i16, i16) = (20, 24, 40, 330);
-const STANDARD_FILE_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
-const STANDARD_FILE_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
-const STANDARD_FILE_SAVE_RECT: (i16, i16, i16, i16) = (103, 258, 125, 338);
+const STANDARD_FILE_DIALOG_HEIGHT: i16 = 260;
+const STANDARD_FILE_PUT_VOLUME_RECT: (i16, i16, i16, i16) = (12, 24, 31, 116);
+const STANDARD_FILE_PUT_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 124, 31, 336);
+const STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (38, 18, 156, 316);
+const STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (38, 315, 156, 331);
+const STANDARD_FILE_PROMPT_RECT: (i16, i16, i16, i16) = (166, 24, 184, 330);
+const STANDARD_FILE_NAME_RECT: (i16, i16, i16, i16) = (188, 24, 208, 330);
+const STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (220, 24, 242, 104);
+const STANDARD_FILE_CANCEL_RECT: (i16, i16, i16, i16) = (220, 166, 242, 246);
+const STANDARD_FILE_SAVE_RECT: (i16, i16, i16, i16) = (220, 258, 242, 338);
 const STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
 const STANDARD_FILE_GET_DIALOG_HEIGHT: i16 = 178;
 const STANDARD_FILE_GET_OPEN_ITEM: i16 = 1;
@@ -2726,10 +2734,14 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn standard_file_put_dialog_items(tracking: &StandardFilePutTrackingState) -> Vec<DialogItem> {
+    fn standard_file_put_dialog_items(
+        tracking: &StandardFilePutTrackingState,
+        location_label: &str,
+        writable: bool,
+    ) -> Vec<DialogItem> {
         vec![
             DialogItem {
-                item_type: 4,
+                item_type: if writable { 4 } else { 0x84 },
                 rect: STANDARD_FILE_SAVE_RECT,
                 text: "Save".to_string(),
                 ..DialogItem::default()
@@ -2738,6 +2750,34 @@ impl super::TrapDispatcher {
                 item_type: 4,
                 rect: STANDARD_FILE_CANCEL_RECT,
                 text: "Cancel".to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 4,
+                rect: STANDARD_FILE_PUT_DESKTOP_RECT,
+                text: "Desktop".to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 8,
+                rect: STANDARD_FILE_PUT_VOLUME_LABEL_RECT,
+                text: location_label.to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 0,
+                rect: STANDARD_FILE_PUT_VOLUME_RECT,
+                text: location_label.to_string(),
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 0,
+                rect: STANDARD_FILE_PUT_LIST_RECT,
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 0,
+                rect: STANDARD_FILE_PUT_SCROLL_RECT,
                 ..DialogItem::default()
             },
             DialogItem {
@@ -2762,7 +2802,9 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         tracking: &StandardFilePutTrackingState,
     ) {
-        let items = Self::standard_file_put_dialog_items(tracking);
+        let (_, _, location_label, writable) =
+            self.standard_file_put_directory_location(tracking.current_dir_id);
+        let items = Self::standard_file_put_dialog_items(tracking, &location_label, writable);
         self.draw_dialog(
             bus,
             tracking.bounds,
@@ -2777,7 +2819,7 @@ impl super::TrapDispatcher {
         );
         let (top, left, _, _) = tracking.bounds;
         let (button_top, button_left, button_bottom, button_right) = STANDARD_FILE_SAVE_RECT;
-        self.draw_button(
+        self.draw_button_state(
             bus,
             top + button_top,
             left + button_left,
@@ -2785,7 +2827,238 @@ impl super::TrapDispatcher {
             left + button_right,
             "Save",
             true,
+            writable,
         );
+        let (vtop, vleft, vbottom, vright) = STANDARD_FILE_PUT_VOLUME_RECT;
+        self.draw_popup_control(
+            bus,
+            top + vtop,
+            left + vleft,
+            top + vbottom,
+            left + vright,
+            &location_label,
+        );
+        self.draw_standard_file_put_list(bus, tracking);
+    }
+
+    fn standard_file_put_visible_rows() -> usize {
+        let inner_height =
+            (STANDARD_FILE_PUT_LIST_RECT.2 - STANDARD_FILE_PUT_LIST_RECT.0 - 3).max(0);
+        (inner_height / STANDARD_FILE_GET_ROW_HEIGHT).max(1) as usize
+    }
+
+    fn standard_file_put_first_visible_index(tracking: &StandardFilePutTrackingState) -> usize {
+        let Some(selected) = tracking.selected else {
+            return 0;
+        };
+        selected.saturating_sub(Self::standard_file_put_visible_rows().saturating_sub(1))
+    }
+
+    fn draw_standard_file_put_list(
+        &self,
+        bus: &mut MacMemoryBus,
+        tracking: &StandardFilePutTrackingState,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (dialog_top, dialog_left, _, _) = tracking.bounds;
+        let (list_top, list_left, list_bottom, list_right) = STANDARD_FILE_PUT_LIST_RECT;
+        let top = dialog_top + list_top;
+        let left = dialog_left + list_left;
+        let bottom = dialog_top + list_bottom;
+        let right = dialog_left + list_right;
+
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            false,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            top + 1,
+            right,
+            true,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            bottom - 1,
+            left,
+            bottom,
+            right,
+            true,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            left + 1,
+            true,
+        );
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            right - 1,
+            bottom,
+            right,
+            true,
+        );
+
+        let first_visible = Self::standard_file_put_first_visible_index(tracking);
+        for row in 0..Self::standard_file_put_visible_rows() {
+            let index = first_visible + row;
+            let Some(entry) = tracking.entries.get(index) else {
+                break;
+            };
+            let row_top = top + 2 + (row as i16 * STANDARD_FILE_GET_ROW_HEIGHT);
+            let row_bottom = (row_top + STANDARD_FILE_GET_ROW_HEIGHT).min(bottom - 1);
+            let selected = tracking.selected == Some(index);
+            if selected {
+                Self::fb_fill_rect(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    row_top,
+                    left + 2,
+                    row_bottom,
+                    right - 2,
+                    true,
+                );
+            }
+            let text = if entry.is_directory {
+                format!(
+                    "{} ▸",
+                    Self::standard_file_get_display_name(&entry.display_name)
+                )
+            } else {
+                Self::standard_file_get_display_name(&entry.display_name)
+            };
+            if selected {
+                Self::fb_draw_string_styled_ink(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    left + 6,
+                    row_top + 11,
+                    &text,
+                    0,
+                    12,
+                    0,
+                    false,
+                );
+            } else {
+                Self::fb_draw_string(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    left + 6,
+                    row_top + 11,
+                    &text,
+                    0,
+                    12,
+                );
+            }
+        }
+        let max = tracking
+            .entries
+            .len()
+            .saturating_sub(Self::standard_file_put_visible_rows());
+        self.draw_scroll_bar(
+            bus,
+            dialog_top + STANDARD_FILE_PUT_SCROLL_RECT.0,
+            dialog_left + STANDARD_FILE_PUT_SCROLL_RECT.1,
+            dialog_top + STANDARD_FILE_PUT_SCROLL_RECT.2,
+            dialog_left + STANDARD_FILE_PUT_SCROLL_RECT.3,
+            first_visible.min(i16::MAX as usize) as i16,
+            0,
+            max.min(i16::MAX as usize) as i16,
+            if max == 0 { 255 } else { 0 },
+        );
+    }
+
+    fn standard_file_put_directory_location(&self, dir_id: u32) -> (i16, u32, String, bool) {
+        let path = self.directory_path_for_id(dir_id).unwrap_or_default();
+        let volume = self.vfs_volume_for_path(path);
+        let vref = volume
+            .map(|volume| volume.ref_num)
+            .unwrap_or_else(Self::boot_volume_ref_num);
+        let volume_name = volume
+            .map(|volume| volume.name.as_str())
+            .unwrap_or_else(|| Self::boot_volume_name());
+        let directory_name = Self::vfs_directory_name(path);
+        let label = if path.is_empty() || path.eq_ignore_ascii_case(volume_name) {
+            volume_name.to_string()
+        } else {
+            format!("{volume_name}: {directory_name}")
+        };
+        (vref, dir_id, label, !self.vfs_path_is_read_only(path))
+    }
+
+    fn standard_file_put_default_destination(&self) -> (i16, u32) {
+        let (vref, dir_id, _, writable) =
+            self.standard_file_put_directory_location(*self.default_dir_id);
+        if writable {
+            (vref, dir_id)
+        } else {
+            (Self::boot_volume_ref_num(), 2)
+        }
+    }
+
+    fn persist_standard_file_directory(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        vref: i16,
+        dir_id: u32,
+    ) -> i16 {
+        let wd_ref = if dir_id == 2 {
+            vref
+        } else {
+            self.open_working_directory(vref, dir_id, 0).unwrap_or(vref)
+        };
+        *self.default_dir_id = dir_id;
+        *self.app_wd_refnum = wd_ref;
+        bus.write_long(addr::CUR_DIR_STORE, dir_id);
+        bus.write_word(addr::SF_SAVE_DISK, (-vref) as u16);
+        wd_ref
     }
 
     fn begin_standard_file_put_tracking(
@@ -2804,15 +3077,16 @@ impl super::TrapDispatcher {
         let bounds = self.standard_file_put_dialog_bounds();
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
         let name_len = name.len().min(i16::MAX as usize) as i16;
-        let old_wd_ref = self.standard_file_old_reply_wd_ref();
+        let current_dir_id = *self.default_dir_id;
+        let entries = self.standard_file_get_candidates_in_directory(current_dir_id, None);
         let tracking = StandardFilePutTrackingState {
             modern_reply,
             reply_ptr,
             stack_ptr,
             pop_total,
-            vref: self.resolve_volume_ref_num(*self.app_wd_refnum),
-            old_wd_ref,
-            dir_id: *self.default_dir_id,
+            entries,
+            current_dir_id,
+            selected: None,
             prompt: Self::standard_file_put_prompt(bus, prompt_ptr),
             name,
             sel_start: 0,
@@ -2822,12 +3096,6 @@ impl super::TrapDispatcher {
         };
         self.draw_standard_file_put_dialog(bus, &tracking);
         self.standard_file_put_tracking = Some(tracking);
-    }
-
-    fn standard_file_old_reply_wd_ref(&mut self) -> i16 {
-        let vref = self.resolve_volume_ref_num(*self.app_wd_refnum);
-        self.open_working_directory(vref, *self.default_dir_id, 0)
-            .unwrap_or_else(|| self.resolve_volume_ref_num(*self.app_wd_refnum))
     }
 
     fn service_standard_file_put_tracking<C: CpuOps>(
@@ -2841,7 +3109,7 @@ impl super::TrapDispatcher {
             match event.what {
                 1 => {
                     action = self.standard_file_put_mouse_action(
-                        &tracking,
+                        &mut tracking,
                         event.where_v,
                         event.where_h,
                     );
@@ -2861,11 +3129,48 @@ impl super::TrapDispatcher {
 
         match action {
             Some(StandardFilePutAction::Save) => {
-                if tracking.name.trim().is_empty() {
+                let (_, _, _, writable) =
+                    self.standard_file_put_directory_location(tracking.current_dir_id);
+                if tracking.name.trim().is_empty() || !writable {
+                    self.draw_standard_file_put_dialog(bus, &tracking);
                     self.standard_file_put_tracking = Some(tracking);
                     return;
                 }
                 self.finish_standard_file_put_tracking(cpu, bus, tracking, true);
+            }
+            Some(StandardFilePutAction::Navigate) => {
+                let target = tracking
+                    .selected
+                    .and_then(|selected| tracking.entries.get(selected))
+                    .filter(|entry| entry.is_directory)
+                    .map(|entry| entry.dir_id);
+                if let Some(target) = target {
+                    tracking.current_dir_id = target;
+                    tracking.entries = self.standard_file_get_candidates_in_directory(target, None);
+                    tracking.selected = None;
+                }
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+            }
+            Some(StandardFilePutAction::Parent) => {
+                let parent_dir_id = self
+                    .directory_entry_for_id(tracking.current_dir_id)
+                    .map(|directory| directory.parent_dir_id)
+                    .filter(|parent| *parent > 1)
+                    .unwrap_or(2);
+                tracking.current_dir_id = parent_dir_id;
+                tracking.entries =
+                    self.standard_file_get_candidates_in_directory(parent_dir_id, None);
+                tracking.selected = None;
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
+            }
+            Some(StandardFilePutAction::Desktop) => {
+                tracking.current_dir_id = 2;
+                tracking.entries = self.standard_file_get_candidates_in_directory(2, None);
+                tracking.selected = None;
+                self.draw_standard_file_put_dialog(bus, &tracking);
+                self.standard_file_put_tracking = Some(tracking);
             }
             Some(StandardFilePutAction::Cancel) => {
                 self.finish_standard_file_put_tracking(cpu, bus, tracking, false);
@@ -2885,7 +3190,11 @@ impl super::TrapDispatcher {
         accepted: bool,
     ) {
         self.restore_dialog_pixels(bus, tracking.bounds, &tracking.saved_pixels);
+        let (vref, dir_id, _, writable) =
+            self.standard_file_put_directory_location(tracking.current_dir_id);
+        let wd_ref = self.persist_standard_file_directory(bus, vref, dir_id);
         if accepted {
+            debug_assert!(writable);
             let mut name = encode_mac_roman_lossy(&tracking.name);
             if name.is_empty() {
                 name.extend_from_slice(b"Untitled");
@@ -2894,21 +3203,21 @@ impl super::TrapDispatcher {
             if tracking.modern_reply {
                 let target_name = decode_mac_roman(&name);
                 let replacing = self
-                    .find_vfs_file_in_directory(tracking.dir_id, &target_name)
+                    .find_vfs_file_in_directory(dir_id, &target_name)
                     .is_some()
                     || self
-                        .find_vfs_rsrc_file_in_directory(tracking.dir_id, &target_name)
+                        .find_vfs_rsrc_file_in_directory(dir_id, &target_name)
                         .is_some();
                 standard_file_put_reply_modern(
                     bus,
                     tracking.reply_ptr,
-                    tracking.vref,
-                    tracking.dir_id,
+                    vref,
+                    dir_id,
                     &name,
                     replacing,
                 );
             } else {
-                standard_file_put_reply_old(bus, tracking.reply_ptr, tracking.old_wd_ref, &name);
+                standard_file_put_reply_old(bus, tracking.reply_ptr, wd_ref, &name);
             }
         } else {
             standard_file_cancel_reply(bus, tracking.reply_ptr);
@@ -2919,7 +3228,7 @@ impl super::TrapDispatcher {
 
     fn standard_file_put_mouse_action(
         &self,
-        tracking: &StandardFilePutTrackingState,
+        tracking: &mut StandardFilePutTrackingState,
         v: i16,
         h: i16,
     ) -> Option<StandardFilePutAction> {
@@ -2930,6 +3239,42 @@ impl super::TrapDispatcher {
             Some(StandardFilePutAction::Save)
         } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_CANCEL_RECT) {
             Some(StandardFilePutAction::Cancel)
+        } else if Self::standard_file_point_in_rect(
+            local_v,
+            local_h,
+            STANDARD_FILE_PUT_DESKTOP_RECT,
+        ) {
+            Some(StandardFilePutAction::Desktop)
+        } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_PUT_SCROLL_RECT)
+            && !tracking.entries.is_empty()
+        {
+            let relative_v = local_v - STANDARD_FILE_PUT_SCROLL_RECT.0;
+            let height = STANDARD_FILE_PUT_SCROLL_RECT.2 - STANDARD_FILE_PUT_SCROLL_RECT.0;
+            let selected = tracking.selected.unwrap_or(0);
+            tracking.selected = Some(if relative_v < 16 {
+                selected.saturating_sub(1)
+            } else if relative_v >= height - 16 {
+                (selected + 1).min(tracking.entries.len() - 1)
+            } else if relative_v < height / 2 {
+                selected.saturating_sub(Self::standard_file_put_visible_rows())
+            } else {
+                (selected + Self::standard_file_put_visible_rows()).min(tracking.entries.len() - 1)
+            });
+            None
+        } else if Self::standard_file_point_in_rect(local_v, local_h, STANDARD_FILE_PUT_LIST_RECT)
+            && !tracking.entries.is_empty()
+        {
+            let row = ((local_v - STANDARD_FILE_PUT_LIST_RECT.0 - 2) / STANDARD_FILE_GET_ROW_HEIGHT)
+                .max(0) as usize;
+            let index = Self::standard_file_put_first_visible_index(tracking) + row;
+            if index >= tracking.entries.len() {
+                return None;
+            }
+            if tracking.selected == Some(index) && tracking.entries[index].is_directory {
+                return Some(StandardFilePutAction::Navigate);
+            }
+            tracking.selected = Some(index);
+            None
         } else {
             None
         }
@@ -2949,6 +3294,19 @@ impl super::TrapDispatcher {
         }
         if char_code == 0x1B || key_code == 0x35 || (command_down && char_code == b'.') {
             return Some(StandardFilePutAction::Cancel);
+        }
+        if command_down && key_code == 0x7E {
+            return Some(StandardFilePutAction::Parent);
+        }
+        if command_down && key_code == 0x7D {
+            return tracking
+                .selected
+                .and_then(|selected| tracking.entries.get(selected))
+                .filter(|entry| entry.is_directory)
+                .map(|_| StandardFilePutAction::Navigate);
+        }
+        if command_down && char_code.eq_ignore_ascii_case(&b'd') {
+            return Some(StandardFilePutAction::Desktop);
         }
         if command_down && char_code.eq_ignore_ascii_case(&b'a') {
             tracking.sel_start = 0;
@@ -12626,8 +12984,8 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                     let name = standard_file_default_name(bus, default_name_ptr);
-                    let vref = self.resolve_volume_ref_num(*self.app_wd_refnum);
-                    let dir_id = *self.default_dir_id;
+                    let (vref, dir_id) = self.standard_file_put_default_destination();
+                    let wd_ref = self.persist_standard_file_directory(bus, vref, dir_id);
                     if modern_reply {
                         let target_name = decode_mac_roman(&name);
                         let replacing = self
@@ -12640,7 +12998,6 @@ impl super::TrapDispatcher {
                             bus, reply_ptr, vref, dir_id, &name, replacing,
                         );
                     } else {
-                        let wd_ref = self.standard_file_old_reply_wd_ref();
                         standard_file_put_reply_old(bus, reply_ptr, wd_ref, &name);
                     }
                 } else if let Some(selection) = self.standard_file_env_selection() {
@@ -17057,7 +17414,8 @@ mod tests {
         AE_TYPE_WILDCARD, ALIAS_DISPATCH_OPERATION_ROUTES, PPC_OPERATION_ROUTES,
         SLOT_MANAGER_OPERATION_ROUTES, STANDARD_FILE_GET_DIALOG_HEIGHT,
         STANDARD_FILE_GET_DIALOG_WIDTH, STANDARD_FILE_GET_LIST_RECT, STANDARD_FILE_GET_SCROLL_RECT,
-        STANDARD_FILE_GET_VOLUME_RECT,
+        STANDARD_FILE_GET_VOLUME_RECT, STANDARD_FILE_NAME_ITEM, STANDARD_FILE_PUT_DESKTOP_RECT,
+        STANDARD_FILE_PUT_LIST_RECT, STANDARD_FILE_SAVE_RECT,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::execution_kernel::{ExecutionTaskId, ExecutionTaskState};
@@ -29777,6 +30135,392 @@ mod tests {
             .expect("created pilot metadata");
         assert_eq!(metadata.file_type, u32::from_be_bytes(*b"PIL "));
         assert_eq!(metadata.creator, u32::from_be_bytes(*b"EVO!"));
+    }
+
+    // Pack3 / Standard File ($A9EA) — SFPutFile selector $0001.
+    // IM:Files 1992 pp. 3-44 and 3-48: the Save dialog selects both a
+    // filename and a directory. Mounted images stay selectable for browsing,
+    // but their hardware lock disables acceptance.
+    #[test]
+    fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_directory() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x321200u32;
+        let original_name_ptr = 0x321300u32;
+        let locked_vref =
+            disp.mount_vfs_volume("Pathways Disk", 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+        let locked_dir = disp
+            .vfs_volume_for_ref_num(locked_vref)
+            .expect("mounted volume")
+            .root_dir_id;
+        let saves_dir = disp.ensure_vfs_directory("Saved Games");
+        let locked_wd = disp
+            .open_working_directory(locked_vref, locked_dir, 0)
+            .expect("mounted-volume working directory");
+        *disp.default_dir_id = locked_dir;
+        *disp.app_wd_refnum = locked_wd;
+        disp.yield_for_ui = true;
+        bus.write_byte(reply_ptr, 0xFF);
+        bus.write_pstring(original_name_ptr, b"Pathways Save");
+        bus.write_word(sp, 0x0001);
+        bus.write_long(sp + 2, reply_ptr);
+        bus.write_long(sp + 10, original_name_ptr);
+
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+        assert_eq!(tracking.current_dir_id, locked_dir);
+        assert_eq!(tracking.name, "Pathways Save");
+        let (_, _, label, writable) =
+            disp.standard_file_put_directory_location(tracking.current_dir_id);
+        assert_eq!(label, "Pathways Disk");
+        assert!(!writable);
+        let items = TrapDispatcher::standard_file_put_dialog_items(tracking, &label, writable);
+        assert_eq!(items[STANDARD_FILE_NAME_ITEM as usize - 1].item_type, 16);
+        assert_eq!(
+            items[STANDARD_FILE_NAME_ITEM as usize - 1].text,
+            "Pathways Save"
+        );
+        assert!(items
+            .iter()
+            .any(|item| item.text == "Save" && item.item_type == 0x84));
+
+        // Return and a direct click on the disabled Save button are no-ops.
+        for event in [
+            QueuedEvent {
+                what: 3,
+                message: 0x0000_240D,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            },
+            QueuedEvent {
+                what: 1,
+                message: 0,
+                when: 0,
+                where_v: tracking.bounds.0
+                    + (STANDARD_FILE_SAVE_RECT.0 + STANDARD_FILE_SAVE_RECT.2) / 2,
+                where_h: tracking.bounds.1
+                    + (STANDARD_FILE_SAVE_RECT.1 + STANDARD_FILE_SAVE_RECT.3) / 2,
+                modifiers: 0,
+            },
+        ] {
+            disp.event_queue.push_back(event);
+            disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.is_standard_file_put_tracking());
+            assert_eq!(bus.read_byte(reply_ptr), 0xFF);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+        }
+
+        let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+        disp.event_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: bounds.0
+                + (STANDARD_FILE_PUT_DESKTOP_RECT.0 + STANDARD_FILE_PUT_DESKTOP_RECT.2) / 2,
+            where_h: bounds.1
+                + (STANDARD_FILE_PUT_DESKTOP_RECT.1 + STANDARD_FILE_PUT_DESKTOP_RECT.3) / 2,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+        assert_eq!(tracking.current_dir_id, 2);
+        assert_eq!(tracking.name, "Pathways Save");
+        assert_eq!(
+            *disp.default_dir_id, locked_dir,
+            "browsing is not persistent"
+        );
+
+        let saves_index = tracking
+            .entries
+            .iter()
+            .position(|entry| entry.dir_id == saves_dir)
+            .expect("Saved Games directory in Desktop list");
+        let row_v = bounds.0
+            + STANDARD_FILE_PUT_LIST_RECT.0
+            + 2
+            + saves_index as i16 * super::STANDARD_FILE_GET_ROW_HEIGHT
+            + 5;
+        let row_h = bounds.1 + STANDARD_FILE_PUT_LIST_RECT.1 + 8;
+        for _ in 0..2 {
+            disp.event_queue.push_back(QueuedEvent {
+                what: 1,
+                message: 0,
+                when: 0,
+                where_v: row_v,
+                where_h: row_h,
+                modifiers: 0,
+            });
+            disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+        assert_eq!(tracking.current_dir_id, saves_dir);
+        assert_eq!(tracking.name, "Pathways Save");
+        assert_eq!(
+            *disp.default_dir_id, locked_dir,
+            "navigation is not persistent"
+        );
+
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_351B,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(!disp.is_standard_file_put_tracking());
+        assert_eq!(bus.read_byte(reply_ptr), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+        assert_eq!(*disp.default_dir_id, saves_dir);
+        assert_eq!(bus.read_long(addr::CUR_DIR_STORE), saves_dir);
+        assert_eq!(
+            bus.read_word(addr::SF_SAVE_DISK),
+            (-super::super::dispatch::BOOT_VOLUME_REF_NUM) as u16
+        );
+        let persisted_wd = *disp.app_wd_refnum;
+        assert_eq!(
+            disp.working_directory_info(persisted_wd)
+                .expect("persisted writable directory")
+                .dir_id,
+            saves_dir
+        );
+    }
+
+    #[test]
+    fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x321400u32;
+        let original_name_ptr = 0x321500u32;
+        let game_dir = disp.ensure_vfs_directory("Game");
+        let saves_dir = disp.ensure_vfs_directory("Game/Saves");
+        *disp.default_dir_id = game_dir;
+        disp.yield_for_ui = true;
+        bus.write_pstring(original_name_ptr, b"New Save");
+        bus.write_word(sp, 0x0001);
+        bus.write_long(sp + 2, reply_ptr);
+        bus.write_long(sp + 10, original_name_ptr);
+
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+        let row_v = bounds.0 + STANDARD_FILE_PUT_LIST_RECT.0 + 7;
+        let row_h = bounds.1 + STANDARD_FILE_PUT_LIST_RECT.1 + 8;
+        disp.event_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: row_v,
+            where_h: row_h,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_7D1F,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0x0100,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disp.standard_file_put_tracking
+                .as_ref()
+                .unwrap()
+                .current_dir_id,
+            saves_dir
+        );
+        // The filename remains the active editable item after navigation.
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_5858,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.standard_file_put_tracking.as_ref().unwrap().name, "X");
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_240D,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let wd_ref = bus.read_word(reply_ptr + 6) as i16;
+        assert_eq!(bus.read_byte(reply_ptr), 1);
+        assert_eq!(bus.read_pstring(reply_ptr + 10), b"X");
+        assert_eq!(
+            disp.working_directory_info(wd_ref)
+                .expect("selected directory WDRefNum")
+                .dir_id,
+            saves_dir
+        );
+
+        let pb = 0x321600u32;
+        let name_ptr = 0x321700u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_ptr);
+        bus.write_word(pb + 22, wd_ref as u16);
+        bus.write_pstring(name_ptr, b"X");
+        disp.dispatch_resource(false, 0x08, &mut cpu, &mut bus)
+            .expect("PBCreate arm")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert!(disp.vfs.contains_key("Game/Saves/X"));
+    }
+
+    #[test]
+    fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let sp = TEST_SP;
+        let reply_ptr = 0x321800u32;
+        let default_name_ptr = 0x321900u32;
+        let game_dir = disp.ensure_vfs_directory("Modern Game");
+        let saves_dir = disp.ensure_vfs_directory("Modern Game/Saves");
+        disp.vfs
+            .insert("Modern Game/Saves/Modern Save".to_string(), vec![1]);
+        disp.set_vfs_entry_metadata("Modern Game/Saves/Modern Save", *b"SAVE", *b"TEST", 0);
+        *disp.default_dir_id = game_dir;
+        disp.yield_for_ui = true;
+        bus.write_pstring(default_name_ptr, b"Modern Save");
+        bus.write_word(sp, 0x0005);
+        bus.write_long(sp + 2, reply_ptr);
+        bus.write_long(sp + 6, default_name_ptr);
+
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        disp.standard_file_put_tracking.as_mut().unwrap().selected = Some(0);
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_7D1F,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0x0100,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_240D,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(reply_ptr), 1);
+        assert_eq!(bus.read_byte(reply_ptr + 1), 1);
+        assert_eq!(
+            bus.read_word(reply_ptr + 6),
+            crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+        );
+        assert_eq!(bus.read_long(reply_ptr + 8), saves_dir);
+        assert_eq!(bus.read_pstring(reply_ptr + 12), b"Modern Save");
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(reply_ptr, 0xFF);
+        bus.write_word(sp, 0x0005);
+        bus.write_long(sp + 2, reply_ptr);
+        bus.write_long(sp + 6, default_name_ptr);
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disp.standard_file_put_tracking
+                .as_ref()
+                .unwrap()
+                .current_dir_id,
+            saves_dir
+        );
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x0000_351B,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(reply_ptr), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+    }
+
+    #[test]
+    fn sf_put_file_headless_falls_back_from_locked_volume_to_writable_boot_root() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let reply_ptr = 0x321A00u32;
+        let original_name_ptr = 0x321B00u32;
+        let volume_ref =
+            disp.mount_vfs_volume("Locked Game", 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+        let volume_root = disp
+            .vfs_volume_for_ref_num(volume_ref)
+            .expect("mounted volume")
+            .root_dir_id;
+        let mounted_wd = disp
+            .open_working_directory(volume_ref, volume_root, 0)
+            .expect("mounted-volume WDRefNum");
+        *disp.default_dir_id = volume_root;
+        *disp.app_wd_refnum = mounted_wd;
+        bus.write_pstring(original_name_ptr, b"Fallback Save");
+        bus.write_word(sp, 0x0001);
+        bus.write_long(sp + 2, reply_ptr);
+        bus.write_long(sp + 10, original_name_ptr);
+
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_byte(reply_ptr), 1);
+        assert_eq!(
+            bus.read_word(reply_ptr + 6),
+            crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+        );
+        assert_eq!(bus.read_pstring(reply_ptr + 10), b"Fallback Save");
+        assert_eq!(*disp.default_dir_id, 2);
+        assert_eq!(bus.read_long(addr::CUR_DIR_STORE), 2);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 22);
     }
 
     // Pack3 / Standard File ($A9EA) — SFPutFile selector $0001
