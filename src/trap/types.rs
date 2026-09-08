@@ -46,9 +46,7 @@ pub struct StringBuffer {
     pub pixels: Vec<u8>,
 }
 
-pub(crate) use crate::mac_roman::{
-    decode_mac_roman, decode_mac_roman_for_render, encode_mac_roman_lossy,
-};
+pub(crate) use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 
 #[allow(dead_code)]
 impl StringBuffer {
@@ -125,22 +123,16 @@ pub fn read_fsspec_name(bus: &MacMemoryBus, spec_ptr: u32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_mac_roman, decode_mac_roman_for_render, encode_mac_roman_lossy};
+    use super::{decode_mac_roman, encode_mac_roman_lossy};
 
     #[test]
-    fn mac_roman_round_trips_classic_filename_symbols() {
-        let bytes = b"MORE\xAA Library";
-        let decoded = decode_mac_roman(bytes);
-        assert_eq!(decoded, "MORE\u{2122} Library");
-        assert_eq!(encode_mac_roman_lossy(&decoded), bytes);
+    fn mac_roman_round_trips_every_classic_byte() {
+        let bytes: Vec<u8> = (u8::MIN..=u8::MAX).collect();
+        assert_eq!(encode_mac_roman_lossy(&decode_mac_roman(&bytes)), bytes);
     }
 
     #[test]
-    fn mac_roman_render_decode_expands_classic_punctuation() {
-        assert_eq!(
-            decode_mac_roman_for_render(b"Choose Monitor\xC9"),
-            "Choose Monitor..."
-        );
-        assert_eq!(decode_mac_roman_for_render(b"Marathon\xD5s"), "Marathon's");
+    fn mac_roman_lossy_encoding_replaces_only_unrepresentable_unicode() {
+        assert_eq!(encode_mac_roman_lossy("Mac 🦀 text"), b"Mac ? text");
     }
 }
