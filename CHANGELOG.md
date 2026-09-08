@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.1](https://github.com/benletchford/systemless/compare/v0.39.0...v0.39.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* package current bundled font licences in release archives ([b4bbe72](https://github.com/benletchford/systemless/commit/b4bbe7234ec916aaa4ef02e3eee5a48c04a9b4e6))
+* preserve foreground callbacks and nested modal dialog state ([#1595](https://github.com/benletchford/systemless/issues/1595)) ([4bfb5ba](https://github.com/benletchford/systemless/commit/4bfb5babc42ea72cd4764ee6fdd8fd19b00017cd))
+
 ## [0.39.0](https://github.com/benletchford/systemless/compare/v0.38.3...v0.39.0) (2026-09-07)
 
 

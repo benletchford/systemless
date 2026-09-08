@@ -12024,6 +12024,28 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-415
             // ModalDialog ($A991): Re-fire pattern: draws dialog (including resCtrl/popup controls, type 7), handles button clicks, keyboard input (Return/Escape/text), button flash animation, userItem draw proc callbacks
             (true, 0x191) => {
+                // A filter can enter another ModalDialog before returning.
+                // Each invocation owns its Pascal arguments and tracking state.
+                let call_sp = cpu.read_reg(Register::A7);
+                if self
+                    .dialog_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| call_sp < tracking.stack_ptr)
+                {
+                    self.suspended_modal_dialogs
+                        .push(self.dialog_tracking.take().unwrap());
+                    if self.dialog_filter_result_addr != 0 {
+                        bus.write_word(self.dialog_filter_result_addr, 0);
+                    }
+                }
+                if self.dialog_tracking.is_none()
+                    && self
+                        .suspended_modal_dialogs
+                        .last()
+                        .is_some_and(|tracking| tracking.stack_ptr == call_sp)
+                {
+                    self.dialog_tracking = self.suspended_modal_dialogs.pop();
+                }
                 // Check if draw procs need to finish before entering event loop.
                 if let Some(ref tracking) = self.dialog_tracking {
                     if !tracking.draw_procs_done {
@@ -23279,6 +23301,82 @@ mod tests {
             cpu.read_reg(Register::A7),
             bus.read_long(TEST_SP + 4),
         )
+    }
+
+    #[test]
+    fn nested_modal_dialog_returns_to_its_own_stack_before_resuming_parent() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(0x300000, 640, 640, 480, 8);
+        let outer = bus.alloc(170);
+        let inner = bus.alloc(170);
+        let outer_hit = bus.alloc(2);
+        let inner_hit = bus.alloc(2);
+        let result = bus.alloc(2);
+        let inner_sp = TEST_SP - 128;
+        seed_window_regions(&mut bus, inner, (100, 100, 200, 300));
+        disp.front_window = inner;
+        disp.window_bounds = (100, 100, 200, 300);
+        disp.dialog_items.insert(
+            inner,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (60, 120, 80, 180),
+                text: "OK".into(),
+                ..Default::default()
+            }],
+        );
+        let mut parent = dialog_tracking_state_for_test(outer);
+        parent.item_hit_ptr = outer_hit;
+        parent.filter_proc = 0x10000;
+        parent.last_filter_event = Some(crate::trap::dispatch::QueuedEvent {
+            what: 0,
+            message: 0,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.dialog_tracking = Some(parent);
+        disp.dialog_filter_result_addr = result;
+        bus.write_word(result, 0x0100);
+        bus.write_word(outer_hit, 99);
+        bus.write_long(inner_sp, inner_hit);
+        bus.write_long(inner_sp + 4, 0x10000);
+        cpu.write_reg(Register::A7, inner_sp);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let child = disp.dialog_tracking.as_mut().unwrap();
+        assert_eq!(child.dialog_ptr, inner);
+        assert_eq!(child.stack_ptr, inner_sp);
+        assert_eq!(disp.suspended_modal_dialogs.len(), 1);
+        assert_eq!(bus.read_word(result), 0);
+        child.last_filter_event = Some(crate::trap::dispatch::QueuedEvent {
+            what: 0,
+            message: 0,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        child.draw_procs_done = true;
+        child.rendered_pixels_final = true;
+        bus.write_word(inner_hit, 1);
+        bus.write_word(result, 0x0100);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), inner_sp + 8);
+        assert!(disp.dialog_tracking.is_none());
+        assert_eq!(bus.read_word(outer_hit), 99);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(result, 0x0100);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert!(disp.dialog_tracking.is_none());
+        assert!(disp.suspended_modal_dialogs.is_empty());
     }
 
     fn dialog_tracking_state_for_test(dialog_ptr: u32) -> DialogTrackingState {
