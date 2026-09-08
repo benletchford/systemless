@@ -530,8 +530,12 @@ pub fn draw_picture(
     // the last rect). Imaging With QuickDraw 1994, Appendix A, A-7.
     let mut last_shape_rect: Option<(i16, i16, i16, i16)> = None;
     // Text state tracked through the picture — TxFont (0x03), TxSize
-    // (0x0D), and pen position as updated by LongText / DHText / DVText /
-    // DHDVText. Default to Geneva 12 like most classic Mac UI.
+    // (0x0D), and the most recently recorded text origin used by LongText /
+    // DHText / DVText / DHDVText. The relative text opcodes store unsigned
+    // byte coordinate deltas from that origin; rendered glyph advance must
+    // not change the compressed-coordinate base. Inside Macintosh: Imaging With
+    // QuickDraw 1994, Appendix A, pp. A-6--A-7; Inside Macintosh: Text 1993,
+    // p. 3-64, Listings 3-10--3-11.
     let mut pict_font_id: i16 = 3;
     let mut pict_font_size: i16 = 12;
     let mut pict_text_face: u8 = 0;
@@ -883,21 +887,13 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                text_pen_h = text_pen_h.saturating_add(text_advance(
-                    bus,
-                    text_start,
-                    len,
-                    pict_font_id,
-                    pict_font_size,
-                    pict_text_face,
-                ));
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
                 }
             }
             0x29 => {
                 // DHText: dh(1) + count(1) + text
-                let dh = bus.read_byte(pos) as i8 as i16;
+                let dh = i16::from(bus.read_byte(pos));
                 pos += 1;
                 let len = bus.read_byte(pos) as u32;
                 pos += 1;
@@ -926,21 +922,13 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                text_pen_h = text_pen_h.saturating_add(text_advance(
-                    bus,
-                    text_start,
-                    len,
-                    pict_font_id,
-                    pict_font_size,
-                    pict_text_face,
-                ));
                 if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
                 }
             }
             0x2A => {
                 // DVText: dv(1) + count(1) + text
-                let dv = bus.read_byte(pos) as i8 as i16;
+                let dv = i16::from(bus.read_byte(pos));
                 pos += 1;
                 let len = bus.read_byte(pos) as u32;
                 pos += 1;
@@ -969,22 +957,14 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                text_pen_h = text_pen_h.saturating_add(text_advance(
-                    bus,
-                    text_start,
-                    len,
-                    pict_font_id,
-                    pict_font_size,
-                    pict_text_face,
-                ));
                 if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
                 }
             }
             0x2B => {
                 // DHDVText: dh(1) + dv(1) + count(1) + text
-                let dh = bus.read_byte(pos) as i8 as i16;
-                let dv = bus.read_byte(pos + 1) as i8 as i16;
+                let dh = i16::from(bus.read_byte(pos));
+                let dv = i16::from(bus.read_byte(pos + 1));
                 pos += 2;
                 let len = bus.read_byte(pos) as u32;
                 pos += 1;
@@ -1014,14 +994,6 @@ pub fn draw_picture(
                     bg_idx,
                     tx_mode,
                 );
-                text_pen_h = text_pen_h.saturating_add(text_advance(
-                    bus,
-                    text_start,
-                    len,
-                    pict_font_id,
-                    pict_font_size,
-                    pict_text_face,
-                ));
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
                 }
@@ -4296,30 +4268,6 @@ fn draw_picture_text(
     }
 }
 
-/// Compute total glyph advance for a PICT text run without drawing.
-fn text_advance(
-    bus: &MacMemoryBus,
-    text_ptr: u32,
-    len: u32,
-    font_id: i16,
-    font_size: i16,
-    text_face: u8,
-) -> i16 {
-    let mut w: i32 = 0;
-    for i in 0..len {
-        let ch = bus.read_byte(text_ptr + i) as char;
-        if let Some((g, _)) = crate::quickdraw::text::get_glyph(font_id, font_size, ch) {
-            w += g.advance as i32;
-        } else {
-            w += 6;
-        }
-    }
-    if text_face & 0x01 != 0 {
-        w += i32::try_from(len).unwrap_or(i32::MAX);
-    }
-    w.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
-
 /// Find the closest index in a CLUT for a given 16-bit RGB color.
 /// Quantizes to 5-bit precision then compares in 8-bit space, matching
 /// the Mac's MakeITable 32x32x32 inverse table approach.
@@ -6988,6 +6936,117 @@ mod tests {
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
+
+    fn push_v2_relative_text(commands: &mut Vec<u8>, opcode: u16, deltas: &[u8], text: &[u8]) {
+        super::recording_push_word(commands, opcode);
+        commands.extend_from_slice(deltas);
+        commands.push(text.len() as u8);
+        commands.extend_from_slice(text);
+        if !(deltas.len() + 1 + text.len()).is_multiple_of(2) {
+            commands.push(0);
+        }
+    }
+
+    fn push_v1_long_text(commands: &mut Vec<u8>, v: i16, h: i16, text: &[u8]) {
+        commands.push(0x28);
+        commands.extend_from_slice(&v.to_be_bytes());
+        commands.extend_from_slice(&h.to_be_bytes());
+        commands.push(text.len() as u8);
+        commands.extend_from_slice(text);
+    }
+
+    fn finish_v1_picture(frame: (i16, i16, i16, i16), commands: &[u8]) -> Vec<u8> {
+        let mut picture = vec![0; 10];
+        for (index, value) in [frame.0, frame.1, frame.2, frame.3].into_iter().enumerate() {
+            picture[2 + index * 2..4 + index * 2].copy_from_slice(&value.to_be_bytes());
+        }
+        picture.extend_from_slice(&[0x11, 0x01]);
+        picture.extend_from_slice(commands);
+        picture.push(0xFF);
+        let size = u16::try_from(picture.len()).unwrap();
+        picture[0..2].copy_from_slice(&size.to_be_bytes());
+        picture
+    }
+
+    fn render_text_picture(picture: &[u8], width: u16, height: u16) -> Vec<u8> {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen = 0x08_0000;
+        let pic = 0x10_0000;
+        bus.write_bytes(pic, picture);
+        bus.fill_zeros(screen, u32::from(width) * u32::from(height));
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+
+        let (drawn, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            height as i16,
+            width as i16,
+            (screen, u32::from(width), width, height, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        bus.read_bytes(screen, usize::from(width) * usize::from(height))
+    }
+
+    #[test]
+    fn pict_v2_relative_text_uses_unsigned_deltas_from_previous_origins() {
+        // Imaging With QuickDraw 1994, Appendix A, pp. A-6--A-7 defines
+        // text deltas as 0..255, unlike signed ShortLine deltas. Text 1993,
+        // p. 3-64 shows that the compressed delta base is the prior text
+        // origin rather than the pen position after glyph advance.
+        let frame = (0, 0, 320, 700);
+        let mut relative = Vec::new();
+        push_v2_relative_text(&mut relative, 0x002B, &[10, 0xFE], b"A");
+        push_v2_relative_text(&mut relative, 0x0029, &[0xFE], b"B");
+        push_v2_relative_text(&mut relative, 0x0029, &[0xF8], b"C");
+        super::recording_push_long_text(&mut relative, 20, 620, b"D");
+        push_v2_relative_text(&mut relative, 0x002A, &[0xFE], b"E");
+        let relative = super::finish_recording(frame, relative);
+
+        let mut absolute = Vec::new();
+        super::recording_push_long_text(&mut absolute, 254, 10, b"A");
+        super::recording_push_long_text(&mut absolute, 254, 264, b"B");
+        super::recording_push_long_text(&mut absolute, 254, 512, b"C");
+        super::recording_push_long_text(&mut absolute, 20, 620, b"D");
+        super::recording_push_long_text(&mut absolute, 274, 620, b"E");
+        let absolute = super::finish_recording(frame, absolute);
+
+        let actual = render_text_picture(&relative, 700, 320);
+        let expected = render_text_picture(&absolute, 700, 320);
+        assert_eq!(actual, expected);
+        for (left, right) in [(0, 100), (250, 350), (500, 600), (600, 680)] {
+            assert!(expected
+                .chunks_exact(700)
+                .any(|row| row[left..right].contains(&255)));
+        }
+    }
+
+    #[test]
+    fn pict_v1_dvtext_keeps_the_previous_text_origin() {
+        let frame = (0, 0, 64, 320);
+        let mut relative = Vec::new();
+        push_v1_long_text(&mut relative, 20, 20, b"MMMMMMMMMMMM");
+        relative.extend_from_slice(&[0x2A, 20, 1, b'X']);
+        let relative = finish_v1_picture(frame, &relative);
+
+        let mut absolute = Vec::new();
+        push_v1_long_text(&mut absolute, 20, 20, b"MMMMMMMMMMMM");
+        push_v1_long_text(&mut absolute, 40, 20, b"X");
+        let absolute = finish_v1_picture(frame, &absolute);
+
+        let actual = render_text_picture(&relative, 320, 64);
+        let expected = render_text_picture(&absolute, 320, 64);
+        assert_eq!(actual, expected);
+        assert!(expected
+            .chunks_exact(320)
+            .skip(32)
+            .any(|row| row[16..48].contains(&255)));
+    }
 
     #[test]
     fn device_itable_matches_rom_propagation_samples() {
