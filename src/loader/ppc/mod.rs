@@ -87835,12 +87835,11 @@ fn ppc_expand_compact_quilt_frames(resources: &mut Vec<PpcVfsResourceRecord>) {
     let img_type = u32::from_be_bytes(*b"#Img");
     let frms_type = u32::from_be_bytes(*b"frms");
     let pict_type = u32::from_be_bytes(*b"PICT");
-    let Some(img) = resources
+    let header_frame_count = resources
         .iter()
         .find(|resource| resource.res_type == img_type && resource.data.len() >= 8)
-    else {
-        return;
-    };
+        .map(|img| u16::from_be_bytes([img.data[6], img.data[7]]) as usize)
+        .unwrap_or(0);
     let frms_indices = resources
         .iter()
         .enumerate()
@@ -87858,7 +87857,9 @@ fn ppc_expand_compact_quilt_frames(resources: &mut Vec<PpcVfsResourceRecord>) {
     }
     let frms = resources[frms_indices[0]].clone();
     let pict = resources[pict_indices[0]].clone();
-    let header_frame_count = u16::from_be_bytes([img.data[6], img.data[7]]) as usize;
+    if pict.data.is_empty() {
+        return;
+    }
     let inferred_frame_count = frms.data.len() / 8;
     let frame_count = if header_frame_count > 1
         && frms.data.len() == header_frame_count * 8
@@ -160537,6 +160538,211 @@ pub(crate) mod tests {
             picts[frame_count - 1].res_id,
             1000 + (frame_count as i16 - 1)
         );
+    }
+
+    #[test]
+    fn hle_import_runner_open_res_file_infers_compact_quilt_frames_without_img_header() {
+        fn qdir_record(
+            res_type: &[u8; 4],
+            id: u32,
+            len: u32,
+            offset: u32,
+            name: &[u8],
+        ) -> [u8; 60] {
+            let mut record = [0u8; 60];
+            record[0..4].copy_from_slice(res_type);
+            record[4..8].copy_from_slice(&id.to_be_bytes());
+            record[8..12].copy_from_slice(&len.to_be_bytes());
+            record[12..16].copy_from_slice(&offset.to_be_bytes());
+            record[24..26].copy_from_slice(&1u16.to_be_bytes());
+            record[26..28].copy_from_slice(&(name.len() as u16).to_be_bytes());
+            record[28..28 + name.len()].copy_from_slice(name);
+            record
+        }
+
+        let pef = synthetic_pef_with_import(b"OpenResFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let name_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(name_ptr, vec![0; 128]);
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b":Game Data:BaseGuage.PICR");
+
+        let frame_count = 5usize;
+        let height = 16usize;
+        let width = 76usize;
+        let row_bytes = 80usize;
+        let frms_offset = 16;
+        let pict_offset = frms_offset + frame_count * 8;
+        let mut data = vec![0u8; pict_offset + frame_count * height * row_bytes];
+        for frame in 0..frame_count {
+            let frame_base = frms_offset + frame * 8;
+            data[frame_base..frame_base + 8]
+                .copy_from_slice(&[0, 0, 0, 0, 0, height as u8, 0, width as u8]);
+            let pict_base = pict_offset + frame * height * row_bytes;
+            for row in 0..height {
+                let row_start = pict_base + row * row_bytes;
+                data[row_start..row_start + width]
+                    .fill((frame * height + row + 1) as u8);
+                data[row_start + width..row_start + row_bytes].fill(0xa0 + frame as u8);
+            }
+            data[pict_base] = 0;
+        }
+
+        let mut qdir = Vec::new();
+        qdir.extend_from_slice(&qdir_record(
+            b"frms",
+            1000,
+            (frame_count * 8) as u32,
+            frms_offset as u32,
+            b"BaseGuage.PICR",
+        ));
+        qdir.extend_from_slice(&qdir_record(
+            b"PICT",
+            1000,
+            (frame_count * height * row_bytes) as u32,
+            pict_offset as u32,
+            b"BaseGuage.PICR",
+        ));
+        let raw_fork = serialize_resource_fork(&[ResourceForkEntry {
+            res_type: *b"qDir",
+            id: 1000,
+            name: b"Quilt Patchwork".to_vec(),
+            data: qdir,
+            attrs: 0,
+        }])
+        .unwrap();
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "Game Data/Packed Bits".to_string(),
+            data: data.into(),
+            creator: u32::from_be_bytes(*b"Game"),
+            file_type: u32::from_be_bytes(*b"bits"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.vfs_resource_files.push(PpcVfsResourceFileRecord {
+            path: "Game Data/Packed Bits".to_string(),
+            creator: u32::from_be_bytes(*b"Game"),
+            file_type: u32::from_be_bytes(*b"bits"),
+            finder_flags: 0,
+            resource_len: raw_fork.len() as u32,
+            raw_data: Some(raw_fork.into()),
+            map_attrs: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = name_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], PPC_FIRST_FILE_REF_NUM as u16 as u32);
+        let pixels = loaded.heap_cursor().saturating_add(0x10000);
+        let pict_type = u32::from_be_bytes(*b"PICT");
+        let picts = loaded
+            .vfs_resources
+            .iter()
+            .filter(|resource| resource.res_type == pict_type)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(picts.len(), frame_count);
+        let frame_rects = loaded
+            .vfs_resources
+            .iter()
+            .filter(|resource| resource.res_type == u32::from_be_bytes(*b"frms"))
+            .collect::<Vec<_>>();
+        assert_eq!(frame_rects.len(), frame_count);
+        for (frame, frame_rect) in frame_rects.into_iter().enumerate() {
+            assert_eq!(frame_rect.res_id, 1000 + frame as i16);
+            assert_eq!(
+                frame_rect.data,
+                [0, 0, 0, 0, 0, height as u8, 0, width as u8]
+            );
+        }
+        for (frame, pict) in picts.iter().enumerate() {
+            assert_eq!(pict.res_id, 1000 + frame as i16);
+            assert_eq!(pict.data.len(), 24 + height * row_bytes);
+            assert_eq!(u16::from_be_bytes([pict.data[0], pict.data[1]]), 1304);
+            assert_eq!(
+                &pict.data[2..10],
+                &[0, 0, 0, 0, 0, height as u8, 0, width as u8]
+            );
+            assert_eq!(&pict.data[10..24], &[0; 14]);
+            for row in 0..height {
+                let row_start = 24 + row * row_bytes;
+                let mut expected = vec![(frame * height + row + 1) as u8; width];
+                if row == 0 {
+                    expected[0] = 0;
+                }
+                assert_eq!(
+                    &pict.data[row_start..row_start + width],
+                    expected
+                );
+                assert_eq!(
+                    &pict.data[row_start + width..row_start + row_bytes],
+                    &[0xa0 + frame as u8; 4]
+                );
+            }
+        }
+        let img = loaded
+            .vfs_resources
+            .iter()
+            .find(|resource| resource.res_type == u32::from_be_bytes(*b"#Img"))
+            .expect("synthesized image header");
+        assert_eq!(u16::from_be_bytes([img.data[6], img.data[7]]), 5);
+        assert_eq!(u16::from_be_bytes([img.data[10], img.data[11]]), 1);
+
+        let front_buffer = PpcFrontBuffer {
+            base_addr: pixels,
+            row_bytes: row_bytes as u32,
+            width: row_bytes as u32,
+            height: height as u32,
+            depth: 8,
+        };
+        for (frame, pict) in picts.into_iter().enumerate() {
+            let zero_is_opaque = ppc_quilt_picture_zero_is_opaque(
+                &loaded.vfs_resources,
+                pict.handle,
+            );
+            assert!(!zero_is_opaque);
+            for offset in 0..height * row_bytes {
+                assert!(loaded
+                    .memory
+                    .write_u8(pixels + offset as u32, 0xee)
+                    .is_some());
+            }
+            assert!(ppc_draw_pict_bytes_to_16bpp(
+                &mut loaded.memory,
+                front_buffer,
+                &pict.data,
+                (0, 0, height as i16, width as i16),
+                &loaded.screen_clut,
+                0,
+                zero_is_opaque,
+            ));
+            assert_eq!(loaded.memory.read_u8(pixels), Some(0));
+            for row in 0..height {
+                for column in 0..width {
+                    let expected = if row == 0 && column == 0 {
+                        0
+                    } else {
+                        (frame * height + row + 1) as u8
+                    };
+                    assert_eq!(
+                        loaded
+                            .memory
+                            .read_u8(pixels + (row * row_bytes + column) as u32),
+                        Some(expected)
+                    );
+                }
+                for padding in width..row_bytes {
+                    assert_eq!(
+                        loaded
+                            .memory
+                            .read_u8(pixels + (row * row_bytes + padding) as u32),
+                        Some(0xee)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -305,12 +305,11 @@ pub fn expand_compact_quilt_frames(resources: &mut Vec<ResourceForkEntry>) {
     let frms_type = *b"frms";
     let pict_type = *b"PICT";
 
-    let Some(img) = resources
+    let header_frame_count = resources
         .iter()
         .find(|res| res.res_type == img_type && res.data.len() >= 8)
-    else {
-        return;
-    };
+        .map(|img| u16::from_be_bytes([img.data[6], img.data[7]]) as usize)
+        .unwrap_or(0);
 
     let frms_indices = resources
         .iter()
@@ -331,8 +330,10 @@ pub fn expand_compact_quilt_frames(resources: &mut Vec<ResourceForkEntry>) {
 
     let frms = resources[frms_indices[0]].clone();
     let pict = resources[pict_indices[0]].clone();
+    if pict.data.is_empty() {
+        return;
+    }
 
-    let header_frame_count = u16::from_be_bytes([img.data[6], img.data[7]]) as usize;
     let inferred_frame_count = frms.data.len() / 8;
     let frame_count = if header_frame_count > 1
         && frms.data.len() == header_frame_count * 8
@@ -584,6 +585,16 @@ pub fn materialize_quilt_resources_for_vfs(
 mod tests {
     use super::*;
 
+    fn quilt_resource(res_type: [u8; 4], id: i16, data: Vec<u8>) -> ResourceForkEntry {
+        ResourceForkEntry {
+            res_type,
+            id,
+            name: b"BaseGuage.PICR".to_vec(),
+            data,
+            attrs: 1,
+        }
+    }
+
     fn qdir_record(
         res_type: &[u8; 4],
         id: u32,
@@ -600,6 +611,105 @@ mod tests {
         record[26..28].copy_from_slice(&(name.len() as u16).to_be_bytes());
         record[28..28 + name.len()].copy_from_slice(name);
         record
+    }
+
+    #[test]
+    fn compact_quilt_frames_expand_without_an_img_header_and_preserve_row_padding() {
+        let frame_count = 5usize;
+        let height = 16usize;
+        let width = 76usize;
+        let row_bytes = 80usize;
+        let rect = [0, 0, 0, 0, 0, height as u8, 0, width as u8];
+        let mut frms = Vec::with_capacity(frame_count * rect.len());
+        let mut raw_picts = Vec::with_capacity(frame_count * height * row_bytes);
+        for frame in 0..frame_count {
+            frms.extend_from_slice(&rect);
+            for row in 0..height {
+                raw_picts.extend(std::iter::repeat_n((frame * height + row) as u8, width));
+                raw_picts.extend_from_slice(&[0xa0 + frame as u8; 4]);
+            }
+        }
+        let original_picts = raw_picts.clone();
+        let mut resources = vec![
+            quilt_resource(*b"frms", 1000, frms),
+            quilt_resource(*b"PICT", 1000, raw_picts),
+        ];
+
+        expand_compact_quilt_frames(&mut resources);
+        wrap_quilt_raw_pict_frames(&mut resources);
+        synthesize_quilt_img_resource_if_missing("BaseGuage.PICR", &mut resources);
+
+        let picts = resources
+            .iter()
+            .filter(|resource| resource.res_type == *b"PICT")
+            .collect::<Vec<_>>();
+        assert_eq!(picts.len(), frame_count);
+        let mut reassembled = Vec::new();
+        for (frame, pict) in picts.iter().enumerate() {
+            assert_eq!(pict.id, 1000 + frame as i16);
+            assert_eq!(pict.data.len(), 24 + height * row_bytes);
+            assert_eq!(u16::from_be_bytes([pict.data[0], pict.data[1]]), 1304);
+            assert_eq!(&pict.data[2..10], &rect);
+            assert_eq!(&pict.data[10..24], &[0; 14]);
+            for row in 0..height {
+                let row_start = 24 + row * row_bytes;
+                assert_eq!(
+                    &pict.data[row_start..row_start + width],
+                    vec![(frame * height + row) as u8; width]
+                );
+                assert_eq!(
+                    &pict.data[row_start + width..row_start + row_bytes],
+                    &[0xa0 + frame as u8; 4]
+                );
+            }
+            reassembled.extend_from_slice(&pict.data[24..]);
+        }
+        assert_eq!(reassembled, original_picts);
+        let img = resources
+            .iter()
+            .find(|resource| resource.res_type == *b"#Img")
+            .expect("synthesized image header");
+        assert_eq!(u16::from_be_bytes([img.data[6], img.data[7]]), 5);
+    }
+
+    #[test]
+    fn compact_quilt_frame_expansion_falls_back_from_an_invalid_header_and_rejects_bad_payloads() {
+        let rect = [0, 0, 0, 0, 0, 16, 0, 76];
+        let frms = rect.repeat(5);
+        let mut img = vec![0; 18];
+        img[6..8].copy_from_slice(&2u16.to_be_bytes());
+        let mut resources = vec![
+            quilt_resource(*b"#Img", 1000, img),
+            quilt_resource(*b"frms", 1000, frms.clone()),
+            quilt_resource(*b"PICT", 1000, vec![0; 5 * 1280]),
+        ];
+
+        expand_compact_quilt_frames(&mut resources);
+
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| resource.res_type == *b"PICT")
+                .count(),
+            5
+        );
+
+        let mut malformed = vec![
+            quilt_resource(*b"frms", 1000, frms),
+            quilt_resource(*b"PICT", 1000, vec![0; 5 * 1280 + 1]),
+        ];
+        expand_compact_quilt_frames(&mut malformed);
+        assert_eq!(malformed.len(), 2);
+        assert_eq!(malformed[0].data.len(), 40);
+        assert_eq!(malformed[1].data.len(), 6401);
+
+        let mut empty = vec![
+            quilt_resource(*b"frms", 1000, rect.repeat(5)),
+            quilt_resource(*b"PICT", 1000, Vec::new()),
+        ];
+        expand_compact_quilt_frames(&mut empty);
+        assert_eq!(empty.len(), 2);
+        assert!(empty[1].data.is_empty());
     }
 
     #[test]
