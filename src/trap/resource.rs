@@ -7688,7 +7688,7 @@ impl super::TrapDispatcher {
 
                 // Selector 26 = PBHOpenDF: open data fork by name
                 // PBHOpenDF opens the data fork of a file specified by name, vRefNum, and dirID.
-                // Files 1992, 2-271
+                // Files 1992, pp. 2-183 to 2-184
                 //
                 // Per IM:Files 9590..9598 the documented errors are
                 // noErr / nsvErr / ioErr / bdNamErr / tmfoErr / fnfErr (-43) /
@@ -7714,8 +7714,16 @@ impl super::TrapDispatcher {
                     if let Some(vfs_name) =
                         self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                     {
+                        let permission = bus.read_byte(pb + 27);
                         let refnum = self.allocate_process_file_refnum();
                         self.open_files.insert(refnum, vfs_name.clone());
+                        // Files 1992, pp. 2-183 to 2-184: PBHOpenDF uses the same
+                        // ioPermssn values as PBOpen. Record the granted
+                        // write access so later PBWrite/PBSetEOF calls honor
+                        // the open mode.
+                        if matches!(permission, 0 | 2 | 3 | 4) {
+                            self.write_refnums.insert(refnum);
+                        }
                         self.file_positions.insert(refnum, 0);
                         bus.write_word(pb + 24, refnum); // ioRefNum
                         bus.write_word(pb + 16, 0);
@@ -17427,7 +17435,7 @@ mod tests {
             disp.open_files.get(&ref_num).map(String::as_str),
             Some("Lookup Disk/Data File")
         );
-        assert!(!disp.write_refnums.contains(&ref_num));
+        assert!(disp.write_refnums.contains(&ref_num));
     }
 
     #[test]
@@ -18317,6 +18325,68 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
         assert!(bus.read_word(pb + 24) >= 100);
+    }
+
+    #[test]
+    fn fs_dispatch_pbhopendf_write_permission_allows_set_eof() {
+        // Files 1992, pp. 2-183 to 2-184: PBHOpenDF accepts fsRdWrPerm in
+        // ioPermssn.
+        // The granted permission remains attached to the refnum for later
+        // File Manager calls such as PBSetEOF (pp. 2-127 to 2-128).
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs
+            .insert("Temporary Items/Cache".to_string(), vec![1, 2, 3, 4]);
+        let dir_id = disp.ensure_vfs_directory("Temporary Items");
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Cache");
+        bus.write_byte(pb + 27, 3); // fsRdWrPerm
+        bus.write_long(pb + 48, dir_id);
+        cpu.write_reg(Register::D0, 26);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        let refnum = bus.read_word(pb + 24);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(disp.write_refnums.contains(&refnum));
+
+        bus.write_long(pb + 28, 2);
+        call(&mut disp, false, 0x12, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(disp.vfs["Temporary Items/Cache"], vec![1, 2]);
+    }
+
+    #[test]
+    fn fs_dispatch_pbhopendf_locked_volume_defers_write_error_until_set_eof() {
+        // Files 1992, pp. 2-7 to 2-8: a locked volume does not make the
+        // open fail. The attempted mutation reports wPrErr.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (volume_ref, root_dir_id) = mount_read_only_test_volume(&mut disp, "Locked Disk");
+        disp.vfs
+            .insert("Locked Disk/Cache".to_string(), vec![1, 2, 3, 4]);
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Cache");
+        bus.write_word(pb + 22, volume_ref as u16);
+        bus.write_byte(pb + 27, 3); // fsRdWrPerm
+        bus.write_long(pb + 48, root_dir_id);
+        cpu.write_reg(Register::D0, 26);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        let refnum = bus.read_word(pb + 24);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(disp.write_refnums.contains(&refnum));
+
+        bus.write_long(pb + 28, 2);
+        call(&mut disp, false, 0x12, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -44);
+        assert_eq!(bus.read_word(pb + 16) as i16, -44);
+        assert_eq!(disp.vfs["Locked Disk/Cache"], vec![1, 2, 3, 4]);
     }
 
     #[test]
