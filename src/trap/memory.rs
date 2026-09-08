@@ -1223,10 +1223,7 @@ impl super::TrapDispatcher {
                     write_memory_result(cpu, bus, NIL_HANDLE_ERR);
                 } else {
                     let ptr = bus.read_long(handle);
-                    let size = self
-                        .resource_handle_memory_size(bus, handle, ptr)
-                        .or_else(|| self.process_handle_size(bus, handle))
-                        .unwrap_or(0);
+                    let size = self.process_handle_size(bus, handle).unwrap_or(0);
                     if trace_sound_enabled() {
                         if let Some((_resource_ptr, res_type, res_id)) =
                             self.loaded_handles.get(&handle).copied()
@@ -7459,6 +7456,92 @@ mod tests {
             cpu.read_reg(Register::D0),
             50,
             "loaded resource handles should expose the resource's exact byte count"
+        );
+    }
+
+    #[test]
+    fn get_handle_size_tracks_resized_resource_handle_logical_size() {
+        // GetHandleSize reports the current logical size of the in-memory
+        // relocatable block. GetResourceSizeOnDisk/SizeResource is the API
+        // that reports the resource's unchanged on-disk size.
+        // GetHandleSize ($A025)
+        // FUNCTION GetHandleSize (h: Handle): Size;
+        // Inside Macintosh: Memory (1992), pp. 2-39--2-40; More Macintosh
+        // Toolbox (1993), p. 1-105.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut resource_bytes = vec![0x80; 199];
+        resource_bytes[165..169].copy_from_slice(b"Loca");
+        let data_ptr = bus.alloc(resource_bytes.len() as u32);
+        bus.write_bytes(data_ptr, &resource_bytes);
+        dispatcher.remember_resource_backing_data(0, *b"Xmnu", 131, resource_bytes);
+        let handle =
+            dispatcher.get_or_create_resource_handle_in_file(&mut bus, *b"Xmnu", 131, data_ptr, 0);
+        assert_eq!(dispatcher.handle_state_bits(handle), Some(0x60));
+
+        let resized_ptr = dispatcher.resize_resource_allocation(&mut bus, handle, data_ptr, 256);
+        assert_ne!(resized_ptr, 0);
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x25, &mut cpu, &mut bus)
+            .expect("GetHandleSize should be handled")
+            .expect("GetHandleSize should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 256);
+
+        let first_source = bus.alloc(1);
+        bus.write_byte(first_source, 0xFF);
+        cpu.write_reg(Register::A0, first_source);
+        cpu.write_reg(Register::A1, handle);
+        cpu.write_reg(Register::D0, 1);
+        dispatcher
+            .dispatch_memory(true, 0x1EF, &mut cpu, &mut bus)
+            .expect("PtrAndHand should be handled")
+            .expect("PtrAndHand should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x25, &mut cpu, &mut bus)
+            .expect("GetHandleSize should be handled")
+            .expect("GetHandleSize should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 257);
+
+        let mut appended_record = [0u8; 34];
+        for (index, byte) in appended_record.iter_mut().enumerate().skip(4) {
+            *byte = index as u8;
+        }
+        let record_source = bus.alloc(appended_record.len() as u32);
+        bus.write_bytes(record_source, &appended_record);
+        cpu.write_reg(Register::A0, record_source);
+        cpu.write_reg(Register::A1, handle);
+        cpu.write_reg(Register::D0, appended_record.len() as u32);
+        dispatcher
+            .dispatch_memory(true, 0x1EF, &mut cpu, &mut bus)
+            .expect("PtrAndHand should be handled")
+            .expect("PtrAndHand should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(dispatcher.handle_state_bits(handle), Some(0x60));
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x25, &mut cpu, &mut bus)
+            .expect("GetHandleSize should be handled")
+            .expect("GetHandleSize should succeed");
+        let final_size = cpu.read_reg(Register::D0);
+        assert_eq!(final_size, 291);
+        let final_ptr = bus.read_long(handle);
+        assert_eq!(
+            bus.read_bytes(
+                final_ptr + final_size - appended_record.len() as u32,
+                appended_record.len()
+            ),
+            appended_record
+        );
+        assert_eq!(bus.read_bytes(final_ptr + 165, 4), b"Loca");
+        assert_eq!(
+            dispatcher
+                .resource_backing_data
+                .get(&(0, *b"Xmnu", 131))
+                .map(Vec::len),
+            Some(199)
         );
     }
 
