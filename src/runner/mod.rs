@@ -1718,6 +1718,10 @@ pub struct FixtureRunner {
     /// must not be re-entered by our synthetic tick advancement while the callback
     /// is still unwinding back to interrupted guest code.
     active_interrupt_callback: Option<ActiveInterruptCallback>,
+    /// Interrupts may preempt a foreground dialog callback; interrupt handlers
+    /// themselves remain non-reentrant. Preserve the foreground return frame.
+    suspended_dialog_callback: Option<ActiveInterruptCallback>,
+    nested_dialog_calls: Vec<SuspendedDialogCall>,
     /// GrafPort state saved while an application-owned dialog userItem draws.
     dialog_draw_port_snapshot: Option<crate::trap::dispatch::PortStateSnapshot>,
     /// Tracking trap PC to re-fire after an asynchronous callback returns.
@@ -1937,6 +1941,8 @@ impl FixtureRunner {
             adb_callback_trampoline: 0,
             adb_packet_buffer: 0,
             active_interrupt_callback: None,
+            suspended_dialog_callback: None,
+            nested_dialog_calls: Vec::new(),
             dialog_draw_port_snapshot: None,
             deferred_tracking_refire_pc: None,
             audio: None,
@@ -5777,7 +5783,7 @@ impl FixtureRunner {
 
         while count < max_steps && !self.halted && !tick_cap_reached {
             if sound_work_only
-                && self.active_interrupt_callback.is_none()
+                && !self.callback_suspends_guest_clock()
                 && (sound_interrupt_dispatched || !self.has_pending_sound_work())
             {
                 break;
@@ -5786,7 +5792,7 @@ impl FixtureRunner {
             // File Manager async completions are interrupt work. Deliver a
             // completed request before the foreground application can inspect
             // or reuse its parameter block.
-            if !sound_work_only && self.active_interrupt_callback.is_none() {
+            if !sound_work_only && !self.callback_suspends_guest_clock() {
                 self.fire_file_completion_callback();
                 self.fire_adb_callback();
             }
@@ -5797,7 +5803,7 @@ impl FixtureRunner {
             // callbacks are paced by audio-buffer completion, and firing
             // several back-to-back at the same guest PC/tick makes games that
             // run their own mixer refill with click-sized fragments.
-            if self.active_interrupt_callback.is_none() && !sound_interrupt_dispatched {
+            if !self.callback_suspends_guest_clock() && !sound_interrupt_dispatched {
                 sound_interrupt_dispatched = self.fire_sound_callbacks();
                 if !sound_interrupt_dispatched {
                     sound_interrupt_dispatched = self.fire_sound_doubleback_callbacks();
@@ -5807,13 +5813,13 @@ impl FixtureRunner {
                 }
             }
 
-            if sound_work_only && self.active_interrupt_callback.is_none() {
+            if sound_work_only && !self.callback_suspends_guest_clock() {
                 break;
             }
 
-            if !sound_work_only && self.active_interrupt_callback.is_none() {
+            if !sound_work_only && !self.callback_suspends_guest_clock() {
                 self.fire_timer_tasks_at(self.current_timer_subtick());
-                if self.active_interrupt_callback.is_some() {
+                if self.callback_suspends_guest_clock() {
                     continue;
                 }
             }
@@ -5948,7 +5954,17 @@ impl FixtureRunner {
                         self.dispatcher
                             .finalize_dialog_draw_procs_if_idle(&mut self.bus);
                     }
-                    self.active_interrupt_callback = None;
+                    self.active_interrupt_callback = self.suspended_dialog_callback.take();
+                    if matches!(
+                        active_interrupt_callback.source,
+                        ActiveInterruptCallbackSource::DialogDrawProc
+                            | ActiveInterruptCallbackSource::DialogFilterProc
+                    ) {
+                        self.resume_parent_dialog_call(
+                            active_interrupt_callback.source
+                                == ActiveInterruptCallbackSource::DialogFilterProc,
+                        );
+                    }
                     self.refill_foreground_budget_after_async_return();
                     if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
                     {
@@ -6158,7 +6174,7 @@ impl FixtureRunner {
             // the batch retires (pre/post order is indistinguishable away
             // from a boundary).
             let charging = !sound_work_only
-                && self.active_interrupt_callback.is_none()
+                && !self.callback_suspends_guest_clock()
                 && self.frozen_ticks.is_none();
             let mut precharged = false;
             if charging && self.tick_budget <= 1 {
@@ -6171,7 +6187,7 @@ impl FixtureRunner {
                 1
             } else {
                 let mut n = (max_steps - count).min(BATCH_CHUNK);
-                if charging && self.active_interrupt_callback.is_none() {
+                if charging && !self.callback_suspends_guest_clock() {
                     n = n.min((self.tick_budget - 1).max(1) as usize);
                 }
                 n as u32
@@ -6375,7 +6391,7 @@ impl FixtureRunner {
                                 // callback's synthetic return frame: let the
                                 // callback return normally, then re-fire the
                                 // tracking trap from its original address.
-                                if self.active_interrupt_callback.is_some() {
+                                if self.callback_suspends_guest_clock() {
                                     self.deferred_tracking_refire_pc = Some(pc);
                                     continue;
                                 }
@@ -8986,11 +9002,24 @@ impl FixtureRunner {
         self.dump_trace();
     }
 
+    // Dialog Manager callbacks execute in the application's foreground, not at
+    // interrupt time. TickCount must continue changing while they animate or
+    // wait. Inside Macintosh I (1985), I-260 and I-415.
+    fn callback_suspends_guest_clock(&self) -> bool {
+        self.active_interrupt_callback.is_some_and(|callback| {
+            !matches!(
+                callback.source,
+                ActiveInterruptCallbackSource::DialogDrawProc
+                    | ActiveInterruptCallbackSource::DialogFilterProc
+            )
+        })
+    }
+
     fn charge_tick_budget(&mut self, units: i32, tick_cap: Option<u32>) -> bool {
         if units <= 0 {
             return false;
         }
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -9003,7 +9032,7 @@ impl FixtureRunner {
             }
             self.advance_guest_tick();
             self.tick_budget += self.instructions_per_tick as i32;
-            if self.active_interrupt_callback.is_some() {
+            if self.callback_suspends_guest_clock() {
                 return false;
             }
             if let Some(cap) = tick_cap {
@@ -9312,7 +9341,7 @@ impl FixtureRunner {
     }
 
     fn service_delay_ticks(&mut self, tick_cap: Option<u32>) -> bool {
-        if self.dispatcher.pending_delay_ticks == 0 || self.active_interrupt_callback.is_some() {
+        if self.dispatcher.pending_delay_ticks == 0 || self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -9332,7 +9361,7 @@ impl FixtureRunner {
             self.dispatcher.pending_delay_ticks -= 1;
             self.advance_guest_tick();
             self.tick_budget = self.instructions_per_tick as i32;
-            if self.active_interrupt_callback.is_some() {
+            if self.callback_suspends_guest_clock() {
                 break;
             }
         }
@@ -9375,7 +9404,7 @@ impl FixtureRunner {
     /// JCrsrTask runs from interrupt-time cursor/VBL maintenance. MPW
     /// Interfaces/AIncludes/LowMemEqu.a names the ProcPtr at $08EE.
     fn fire_cursor_task(&mut self) {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return;
         }
         if (self.m68k.cpu.core.get_sr() & 0x0700) >= 0x0100 {
@@ -9430,7 +9459,7 @@ impl FixtureRunner {
     /// VBL tasks run at interrupt time with A0 pointing at the task record.
     /// Processes 1994, 4-6 to 4-7; executor src/time/vbl.cpp
     fn fire_vbl_tasks(&mut self) {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return;
         }
         if (self.m68k.cpu.core.get_sr() & 0x0700) >= 0x0100 {
@@ -9544,6 +9573,7 @@ impl FixtureRunner {
         self.bus.write_long(new_sp, current_pc);
         self.m68k.cpu.write_reg(Register::A7, new_sp);
         let source = ActiveInterruptCallbackSource::Vbl;
+        self.suspend_dialog_callback_for_interrupt();
         self.active_interrupt_callback = Some(ActiveInterruptCallback {
             source,
             resume_pc: current_pc,
@@ -9603,7 +9633,7 @@ impl FixtureRunner {
     }
 
     fn fire_timer_tasks_at(&mut self, current_subtick: u64) {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return;
         }
 
@@ -9697,6 +9727,7 @@ impl FixtureRunner {
             let new_sp = sp.wrapping_sub(4);
             self.bus.write_long(new_sp, current_pc);
             self.m68k.cpu.write_reg(Register::A7, new_sp);
+            self.suspend_dialog_callback_for_interrupt();
             self.active_interrupt_callback = Some(ActiveInterruptCallback {
                 source: ActiveInterruptCallbackSource::Timer,
                 resume_pc: current_pc,
@@ -9723,7 +9754,7 @@ impl FixtureRunner {
     /// currently playing but its current_buffer is ready in guest memory,
     /// load the samples so mix_frame() can produce audio.
     fn try_load_pending_double_buffers(&mut self) {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return;
         }
 
@@ -9867,11 +9898,20 @@ impl FixtureRunner {
         self.bus.dump_stack(a_regs[7], "invalid PC");
     }
 
+    fn suspend_dialog_callback_for_interrupt(&mut self) {
+        debug_assert!(!self.callback_suspends_guest_clock());
+        if let Some(callback) = self.active_interrupt_callback.take() {
+            debug_assert!(self.suspended_dialog_callback.is_none());
+            self.suspended_dialog_callback = Some(callback);
+        }
+    }
+
     fn inject_interrupt_callback(
         &mut self,
         source: ActiveInterruptCallbackSource,
         trampoline: u32,
     ) {
+        self.suspend_dialog_callback_for_interrupt();
         let current_pc = self.m68k.cpu.read_reg(Register::PC);
         let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
@@ -9923,7 +9963,7 @@ impl FixtureRunner {
     /// parameter block and D0 equal to its final `ioResult`.
     /// Inside Macintosh: Files (1992), 2-238.
     fn fire_file_completion_callback(&mut self) -> bool {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -9963,7 +10003,7 @@ impl FixtureRunner {
     /// A2 to its registered data area, and D0 contains the command byte.
     /// Inside Macintosh Volume V (1986), pp. V-367 to V-371.
     fn fire_adb_callback(&mut self) -> bool {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
         let Some(packet) = self.dispatcher.adb.pop_pending_packet() else {
@@ -10005,7 +10045,7 @@ impl FixtureRunner {
 
     /// Fire pending Sound Manager callback procedures and file completion routines.
     fn fire_sound_callbacks(&mut self) -> bool {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -10131,7 +10171,7 @@ impl FixtureRunner {
     ///   PROCEDURE MyDoubleBackProc(chan: SndChannelPtr;
     ///                              exhaustedBuffer: SndDoubleBufferPtr);
     fn fire_sound_doubleback_callbacks(&mut self) -> bool {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -10229,6 +10269,49 @@ impl FixtureRunner {
         true
     }
 
+    fn suspend_parent_dialog_call(&mut self) {
+        let Some(callback) = self.active_interrupt_callback.take() else {
+            return;
+        };
+        debug_assert!(matches!(
+            callback.source,
+            ActiveInterruptCallbackSource::DialogDrawProc
+                | ActiveInterruptCallbackSource::DialogFilterProc
+        ));
+        self.nested_dialog_calls.push(SuspendedDialogCall {
+            callback,
+            scratch: (0..DIALOG_CALLBACK_SCRATCH_SIZE)
+                .map(|offset| {
+                    self.bus
+                        .read_byte(self.dialog_callback_scratch_base + offset)
+                })
+                .collect(),
+            addresses: [self.dialog_draw_trampoline, self.dialog_filter_trampoline],
+            draw_port: self.dialog_draw_port_snapshot.take(),
+            modeless_draw: self.dispatcher.active_modeless_dialog_draw_proc.take(),
+        });
+    }
+
+    fn resume_parent_dialog_call(&mut self, filter_completed: bool) {
+        let Some(parent) = self.nested_dialog_calls.pop() else {
+            return;
+        };
+        let result = filter_completed.then(|| {
+            self.bus
+                .read_word(self.dispatcher.dialog_filter_result_addr)
+        });
+        self.bus
+            .write_bytes(self.dialog_callback_scratch_base, &parent.scratch);
+        if let Some(result) = result {
+            self.bus
+                .write_word(self.dispatcher.dialog_filter_result_addr, result);
+        }
+        [self.dialog_draw_trampoline, self.dialog_filter_trampoline] = parent.addresses;
+        self.dialog_draw_port_snapshot = parent.draw_port;
+        self.dispatcher.active_modeless_dialog_draw_proc = parent.modeless_draw;
+        self.active_interrupt_callback = Some(parent.callback);
+    }
+
     fn dialog_callback_scratch_base(&self) -> u32 {
         self.dialog_callback_scratch_base
     }
@@ -10260,7 +10343,7 @@ impl FixtureRunner {
         dialog_ptr: u32,
         modeless: bool,
     ) -> bool {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -10294,6 +10377,8 @@ impl FixtureRunner {
         //   +20: MOVEA.L #savedRegsSP,A7       ; 4FF9 xxxx xxxx
         //   +26: MOVEM.L (SP)+,D0-D3/A0-A3    ; 4CDF 0F0F
         //   +30: RTS                            ; 4E75
+        self.suspend_parent_dialog_call();
+
         if self.dialog_draw_trampoline == 0 {
             let tramp = self.dialog_callback_scratch_base() + DIALOG_DRAW_TRAMPOLINE_OFFSET;
             self.bus.write_word(tramp, 0x48E7); // MOVEM.L regs,-(SP)
@@ -10385,7 +10470,7 @@ impl FixtureRunner {
     }
 
     fn fire_modeless_dialog_draw_proc(&mut self) -> bool {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -10425,7 +10510,7 @@ impl FixtureRunner {
     ///   5. Restores D0-D3/A0-A3
     ///   6. RTS back to interrupted code (the ModalDialog A-line)
     fn fire_dialog_draw_procs(&mut self) -> bool {
-        if self.active_interrupt_callback.is_some() {
+        if self.callback_suspends_guest_clock() {
             return false;
         }
 
@@ -10627,6 +10712,10 @@ impl FixtureRunner {
     /// 4. The trampoline saves the Boolean return value to a scratch location
     ///    so the ModalDialog re-fire path can read it
     fn fire_dialog_filter_proc(&mut self) -> bool {
+        if self.callback_suspends_guest_clock() {
+            return false;
+        }
+
         let (filter_proc, dialog_ptr, item_hit_ptr) = {
             let tracking = match self.dispatcher.dialog_tracking.as_ref() {
                 Some(t) => t,
@@ -10661,6 +10750,8 @@ impl FixtureRunner {
             }
             return false;
         }
+
+        self.suspend_parent_dialog_call();
 
         // Allocate EventRecord scratch space on first use.
         // EventRecord = what(2), message(4), when(4), where(4), modifiers(2)
@@ -29557,6 +29648,224 @@ mod tests {
         assert!(running);
         assert_eq!(*runner.dispatcher.current_port, dialog_ptr);
         assert!(runner.active_interrupt_callback.is_none());
+    }
+
+    #[test]
+    fn nested_dialog_callbacks_restore_parent_trampoline_and_child_filter_result() {
+        for child_filter in [false, true] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            let foreground = 0x0001_0000;
+            let parent = 0x0004_2000;
+            let child = 0x0004_3000;
+            let busy = 0x0005_0000;
+            let sp = 0x007F_FFC0;
+            runner.bus.write_word(foreground, 0x60FE);
+            runner.m68k.cpu.write_reg(Register::PC, foreground);
+            runner.m68k.cpu.write_reg(Register::A7, sp);
+            runner.bus.write_byte(busy, 1);
+            // Parent draws until the test releases it, then returns normally.
+            for (i, word) in [0x4E56, 0, 0x4A39, 5, 0, 0x66F8, 0x4E5E, 0x4E75]
+                .into_iter()
+                .enumerate()
+            {
+                runner.bus.write_word(parent + i as u32 * 2, word);
+            }
+            assert!(runner.inject_dialog_draw_proc(parent, 1, 0x0020_0000, false));
+            runner.run_gui_cpu_slice(100, runner.guest_tick() + 1);
+            let parent_sp = runner.m68k.cpu.read_reg(Register::A7);
+            let parent_trampoline = runner.dialog_draw_trampoline;
+            let parent_saved_sp = runner.bus.read_long(parent_trampoline + 22);
+            let code = if child_filter {
+                // Pascal Boolean TRUE at 20(A6); callee pops three pointers.
+                vec![0x4E56, 0, 0x1D7C, 1, 20, 0x4E5E, 0x4E74, 12]
+            } else {
+                vec![0x4E56, 0, 0x4E5E, 0x4E75]
+            };
+            for (i, word) in code.into_iter().enumerate() {
+                runner.bus.write_word(child + i as u32 * 2, word);
+            }
+            if child_filter {
+                runner.dispatcher.dialog_tracking = Some(dialog_tracking_for_test(child, 0x0030_0000));
+                assert!(runner.fire_dialog_filter_proc());
+            } else {
+                assert!(runner.inject_dialog_draw_proc(child, 2, 0x0020_1000, false));
+            }
+            assert_eq!(runner.nested_dialog_calls.len(), 1);
+            runner.run_gui_cpu_slice(100, runner.guest_tick() + 1);
+            assert!(runner.nested_dialog_calls.is_empty());
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), parent_sp);
+            assert_eq!(
+                runner.bus.read_long(parent_trampoline + 22),
+                parent_saved_sp
+            );
+            if child_filter {
+                assert_eq!(
+                    runner
+                        .bus
+                        .read_word(runner.dispatcher.dialog_filter_result_addr)
+                        & 0x0100,
+                    0x0100
+                );
+            }
+            runner.bus.write_byte(busy, 0);
+            runner.run_gui_cpu_slice(100, runner.guest_tick() + 1);
+            assert!(runner.active_interrupt_callback.is_none());
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        }
+    }
+
+    #[test]
+    fn sound_completion_interrupts_and_resumes_a_waiting_dialog_filter() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let foreground = 0x0001_0000;
+        let filter = 0x0004_2000;
+        let callback = 0x0004_3000;
+        let busy = 0x0005_0000;
+        let finished = busy + 1;
+        let sp = 0x007F_FFC0;
+        runner.bus.write_word(foreground, 0x60FE);
+        runner.m68k.cpu.write_reg(Register::PC, foreground);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_byte(busy, 1);
+        // LINK; wait: TST.B busy; BNE wait; ST finished; UNLK; RTD #12.
+        let code = [
+            0x4E56, 0, 0x4A39, 5, 0, 0x66F8, 0x50F9, 5, 1, 0x4E5E, 0x4E74, 12,
+        ];
+        for (i, word) in code.into_iter().enumerate() {
+            runner.bus.write_word(filter + i as u32 * 2, word);
+        }
+        // Sound completion: CLR.B busy; RTS.
+        for (i, word) in [0x4239, 5, 0, 0x4E75].into_iter().enumerate() {
+            runner.bus.write_word(callback + i as u32 * 2, word);
+        }
+        let mut tracking = dialog_tracking_for_test(filter, 0x0030_0000);
+        tracking.dialog_ptr = 0x0020_0000;
+        runner.dispatcher.dialog_tracking = Some(tracking);
+        assert!(runner.fire_dialog_filter_proc());
+        runner.run_gui_cpu_slice(100, runner.guest_tick() + 1);
+        let paused_pc = runner.m68k.cpu.read_reg(Register::PC);
+        let paused_sp = runner.m68k.cpu.read_reg(Register::A7);
+        let tick = runner.guest_tick();
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(PendingSoundCallback::Command {
+                architecture: CallbackTaskArchitecture::M68k,
+                callback_addr: callback,
+                chan_ptr: 0x0039_38C8,
+                cmd: SndCommand {
+                    cmd: crate::sound::cmd::CALLBACK,
+                    param1: 0,
+                    param2: 0,
+                },
+            });
+        let (_, running) = runner.run_pending_sound_work(1000);
+        assert!(running);
+        assert_eq!(runner.bus.read_byte(busy), 0);
+        assert_eq!(
+            runner.bus.read_byte(finished),
+            0,
+            "audio service ran foreground code"
+        );
+        assert_eq!(runner.guest_tick(), tick);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), paused_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), paused_sp);
+        assert!(matches!(
+            runner.active_interrupt_callback.map(|c| c.source),
+            Some(ActiveInterruptCallbackSource::DialogFilterProc)
+        ));
+        runner.run_gui_cpu_slice(100, tick + 1);
+        assert_eq!(runner.bus.read_byte(finished), 0xFF);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert!(runner.suspended_dialog_callback.is_none());
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn dialog_draw_callback_delay_respects_gui_deadlines_and_returns_final_ticks() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let foreground = 0x0001_0000;
+        let callback = 0x0004_2000;
+        let sp = 0x007F_FFC0;
+        runner.bus.write_word(foreground, 0x60FE);
+        runner.m68k.cpu.write_reg(Register::PC, foreground);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.set_instructions_per_tick(1_000_000);
+        // LINK; MOVEA.L #2,A0; _Delay; MOVE.L D0,$50000; UNLK; RTS.
+        for (i, word) in [
+            0x4E56, 0, 0x207C, 0, 2, 0xA03B, 0x23C0, 5, 0, 0x4E5E, 0x4E75,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            runner.bus.write_word(callback + i as u32 * 2, word);
+        }
+        assert!(runner.inject_dialog_draw_proc(callback, 1, 0x0020_0000, false));
+        let tick = runner.guest_tick();
+        runner.run_gui_cpu_slice(100, tick + 1);
+        assert_eq!(runner.guest_tick(), tick + 1);
+        assert_eq!(runner.dispatcher.pending_delay_ticks, 1);
+        assert_eq!(runner.bus.read_long(0x0005_0000), 0);
+        runner.run_gui_cpu_slice(100, tick + 2);
+        runner.run_gui_cpu_slice(100, tick + 3);
+        assert_eq!(runner.bus.read_long(0x0005_0000), tick + 2);
+        assert_eq!(runner.dispatcher.pending_delay_ticks, 0);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+    }
+
+    #[test]
+    fn dialog_callbacks_can_wait_for_ticks_across_gui_slices() {
+        for filter in [false, true] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            let foreground = 0x0001_0000;
+            let proc_addr = 0x0004_2000;
+            let sp = 0x007F_FFC0;
+            runner.bus.write_word(foreground, 0x60FE); // BRA.S *
+            runner.m68k.cpu.write_reg(Register::PC, foreground);
+            runner.m68k.cpu.write_reg(Register::A7, sp);
+            runner.instructions_per_tick = 32;
+            runner.tick_budget = 32;
+            // LINK A6,#0; MOVE.L Ticks,D0; wait: CMP.L Ticks,D0;
+            // BEQ.S wait; UNLK A6; RTS (draw) / RTD #12 (filter).
+            let code = [
+                0x4E56,
+                0,
+                0x2038,
+                0x016A,
+                0xB0B8,
+                0x016A,
+                0x67FA,
+                0x4E5E,
+                if filter { 0x4E74 } else { 0x4E75 },
+                12,
+            ];
+            for (i, word) in code.into_iter().enumerate() {
+                runner.bus.write_word(proc_addr + i as u32 * 2, word);
+            }
+            if filter {
+                let mut tracking = dialog_tracking_for_test(0, 0);
+                tracking.dialog_ptr = 0x0020_0000;
+                tracking.filter_proc = proc_addr;
+                runner.dispatcher.dialog_tracking = Some(tracking);
+                assert!(runner.fire_dialog_filter_proc());
+            } else {
+                assert!(runner.inject_dialog_draw_proc(proc_addr, 1, 0x0020_0000, false));
+            }
+            let tick = runner.guest_tick();
+            let (_, running) = runner.run_gui_cpu_slice(500, tick + 1);
+            assert!(running);
+            assert_eq!(runner.guest_tick(), tick + 1, "filter={filter}");
+            assert!(runner.active_interrupt_callback.is_some());
+            let (_, running) = runner.run_gui_cpu_slice(500, tick + 2);
+            assert!(running);
+            assert!(
+                runner.active_interrupt_callback.is_none(),
+                "filter={filter}"
+            );
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        }
     }
 
     #[test]
