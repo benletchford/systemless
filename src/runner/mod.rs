@@ -3918,7 +3918,7 @@ impl FixtureRunner {
         self.bus.write_word(addr::CUR_APREF_NUM, 0);
         if let Some(app_path) = self.dispatcher.launched_app_path() {
             let app_name = crate::trap::dispatch::TrapDispatcher::vfs_basename(app_path);
-            let name_bytes = app_name.as_bytes();
+            let name_bytes = crate::mac_roman::encode_mac_roman_lossy(app_name);
             let len = name_bytes.len().min(31);
             self.bus.write_byte(addr::CUR_APNAME, len as u8);
             for (i, &b) in name_bytes.iter().take(len).enumerate() {
@@ -15660,6 +15660,32 @@ mod tests {
         )
         .expect("CurApName is ASCII");
         assert_eq!(cur_ap_name, "Register Helper");
+    }
+
+    #[test]
+    fn init_app_writes_cur_ap_name_as_mac_roman() {
+        use crate::memory::globals::addr;
+
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .set_launched_app_path("Games/Shufflepuck Café v1.0");
+
+        let app = runner.load_app(&fork).expect("load app");
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.bus.read_pstring(addr::CUR_APNAME),
+            b"Shufflepuck Caf\x8E v1.0",
+            "CurApName is a classic Str31 and must preserve MacRoman filenames"
+        );
+        assert_eq!(
+            crate::trap::dispatch::TrapDispatcher::read_pb_filename(&runner.bus, addr::CUR_APNAME),
+            "Shufflepuck Café v1.0"
+        );
     }
 
     #[test]
