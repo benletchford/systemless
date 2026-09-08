@@ -7448,7 +7448,18 @@ impl super::TrapDispatcher {
 
                 let name_ptr = bus.read_long(pb + 18);
                 let vref = bus.read_word(pb + 22) as i16;
-                let dir_id = bus.read_long(pb + 48);
+                // Selector $001A names both PBOpenDF and PBHOpenDF. hfsBit
+                // (bit 9) selects the larger HParamBlockRec; without it,
+                // offset 48 is outside PBOpenDF's documented inputs and must
+                // not participate in lookup. Inside Macintosh Volume IV,
+                // Figure 6 and assembly-language note (IV-120); Inside
+                // Macintosh Volume VI, pp. 25-51 to 25-52.
+                let open_df_uses_hfs_pb = selector == 26 && (self.current_trap_word & 0x0200) != 0;
+                let dir_id = if selector == 26 && !open_df_uses_hfs_pb {
+                    0
+                } else {
+                    bus.read_long(pb + 48)
+                };
                 let filename = Self::read_pb_filename(bus, name_ptr);
                 let fdir_index = bus.read_word(pb + 28) as i16;
                 eprintln!(
@@ -7686,15 +7697,21 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                // Selector 26 = PBHOpenDF: open data fork by name
-                // PBHOpenDF opens the data fork of a file specified by name, vRefNum, and dirID.
-                // Files 1992, pp. 2-183 to 2-184
+                // Selector 26 = PBOpenDF / PBHOpenDF: open data fork by name.
+                // hfsBit distinguishes the basic parameter block from the HFS
+                // form that adds ioDirID. Both forms otherwise share the open,
+                // permission, and result behavior below.
                 //
                 // Per IM:Files 9590..9598 the documented errors are
                 // noErr / nsvErr / ioErr / bdNamErr / tmfoErr / fnfErr (-43) /
                 // opWrErr / permErr / dirNFErr / afpAccessDenied; the impl
                 // below writes -43 fnfErr on lookup miss.
                 if selector == 26 {
+                    let routine_name = if open_df_uses_hfs_pb {
+                        "PBHOpenDF"
+                    } else {
+                        "PBOpenDF"
+                    };
                     if vref != 0 && self.working_directory_info(vref).is_none() {
                         bus.write_word(pb + 16, (-35i16) as u16); // nsvErr
                         cpu.write_reg(Register::D0, (-35i32) as u32);
@@ -7706,7 +7723,7 @@ impl super::TrapDispatcher {
                     // code — clearing makes the failure path deterministic.
                     bus.write_word(pb + 24, 0);
                     if filename.is_empty() {
-                        eprintln!("[TRAP] FSDispatch PBHOpenDF(\"\") -> bdNamErr");
+                        eprintln!("[TRAP] FSDispatch {routine_name}(\"\") -> bdNamErr");
                         bus.write_word(pb + 16, (-37i16) as u16);
                         cpu.write_reg(Register::D0, (-37i32) as u32);
                         return Some(Ok(()));
@@ -7729,12 +7746,15 @@ impl super::TrapDispatcher {
                         bus.write_word(pb + 16, 0);
                         cpu.write_reg(Register::D0, 0);
                         eprintln!(
-                            "[TRAP] FSDispatch PBHOpenDF(\"{}\") -> refnum={} vfs=\"{}\"",
-                            filename, refnum, vfs_name
+                            "[TRAP] FSDispatch {routine_name}(\"{}\") -> refnum={} vfs=\"{}\"",
+                            filename, refnum, vfs_name,
                         );
                         return Some(Ok(()));
                     } else {
-                        eprintln!("[TRAP] FSDispatch PBHOpenDF(\"{}\") -> fnfErr", filename);
+                        eprintln!(
+                            "[TRAP] FSDispatch {routine_name}(\"{}\") -> fnfErr",
+                            filename
+                        );
                         bus.write_word(pb + 16, (-43i16) as u16);
                         cpu.write_reg(Register::D0, (-43i32) as u32);
                         return Some(Ok(()));
@@ -16154,13 +16174,65 @@ mod tests {
         bus.write_word(pb + 24, 0);
         bus.write_long(pb + 48, unrelated_dir_id);
         cpu.write_reg(Register::D0, 26);
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA060, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(
             disp.open_files.get(&bus.read_word(pb + 24)),
             Some(&"Pilots/Untitled".to_string())
         );
+    }
+
+    #[test]
+    fn open_df_hfs_bit_alone_selects_the_parameter_block_layout() {
+        // Inside Macintosh Volume IV, IV-120: hfsBit (bit 9) tells the File
+        // Manager that the parameter block contains the HFS-only ioDirID
+        // field. asyncBit (bit 10) changes completion mode, not record shape.
+        // Exercise all four spellings with offset 48 deliberately pointing at
+        // a valid unrelated directory so reading it for PBOpenDF is observable.
+        for (trap_word, uses_hfs_parameter_block) in [
+            (0xA060u16, false),
+            (0xA260, true),
+            (0xA460, false),
+            (0xA660, true),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            disp.vfs.insert("Target".to_string(), vec![1, 2, 3]);
+            let unrelated_dir_id = disp.ensure_vfs_directory("Unrelated");
+
+            let pb = 0x300000u32;
+            setup_param_block(&mut bus, &mut cpu, pb, b"Target");
+            bus.write_long(pb + 12, 0xDEAD_BEEF); // ioCompletion poison
+            bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+            bus.write_word(pb + 24, 0x7777); // ioRefNum poison
+            bus.write_byte(pb + 27, 3); // fsRdWrPerm
+            bus.write_long(pb + 48, unrelated_dir_id);
+            cpu.write_reg(Register::D0, 26);
+            let a0_before = cpu.read_reg(Register::A0);
+            let sp_before = cpu.read_reg(Register::A7);
+
+            call_trap_word(&mut disp, trap_word, &mut cpu, &mut bus).unwrap();
+
+            assert_eq!(disp.current_trap_word, trap_word);
+            assert_eq!(cpu.read_reg(Register::A0), a0_before);
+            assert_eq!(cpu.read_reg(Register::A7), sp_before);
+            assert_eq!(bus.read_long(pb + 12), 0xDEAD_BEEF);
+            if uses_hfs_parameter_block {
+                assert_eq!(cpu.read_reg(Register::D0) as i32, -43, "${trap_word:04X}");
+                assert_eq!(bus.read_word(pb + 16) as i16, -43, "${trap_word:04X}");
+                assert_eq!(bus.read_word(pb + 24), 0, "${trap_word:04X}");
+            } else {
+                assert_eq!(cpu.read_reg(Register::D0), 0, "${trap_word:04X}");
+                assert_eq!(bus.read_word(pb + 16), 0, "${trap_word:04X}");
+                let refnum = bus.read_word(pb + 24);
+                assert_eq!(
+                    disp.open_files.get(&refnum),
+                    Some(&"Target".to_string()),
+                    "${trap_word:04X}"
+                );
+                assert!(disp.write_refnums.contains(&refnum), "${trap_word:04X}");
+            }
+        }
     }
 
     // Real Mac files always have both forks; PBCreate must seed an empty
@@ -16217,7 +16289,7 @@ mod tests {
         assert_eq!(metadata.finder_flags, 0x0400);
 
         cpu.write_reg(Register::D0, 26);
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
@@ -17427,7 +17499,7 @@ mod tests {
         bus.write_long(pb + 48, root_dir_id);
         cpu.write_reg(Register::D0, 26);
 
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
         let ref_num = bus.read_word(pb + 24);
@@ -17964,7 +18036,7 @@ mod tests {
         bus.write_long(open_pb + 48, dir_id);
         cpu.write_reg(Register::D0, 26);
 
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
         assert_eq!(bus.read_word(open_pb + 16) as i16, 0);
@@ -18320,7 +18392,7 @@ mod tests {
 
         cpu.write_reg(Register::D0, 26);
 
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
@@ -18345,7 +18417,7 @@ mod tests {
         bus.write_long(pb + 48, dir_id);
         cpu.write_reg(Register::D0, 26);
 
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         let refnum = bus.read_word(pb + 24);
         assert_eq!(cpu.read_reg(Register::D0), 0);
@@ -18375,7 +18447,7 @@ mod tests {
         bus.write_long(pb + 48, root_dir_id);
         cpu.write_reg(Register::D0, 26);
 
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         let refnum = bus.read_word(pb + 24);
         assert_eq!(cpu.read_reg(Register::D0), 0);
@@ -18403,7 +18475,7 @@ mod tests {
         bus.write_word(pb + 24, 1023);
         cpu.write_reg(Register::D0, 26);
 
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0) as i32, -37);
         assert_eq!(bus.read_word(pb + 16) as i16, -37);
@@ -18430,7 +18502,7 @@ mod tests {
         bus.write_long(pb + 48, pref_dir_id);
         cpu.write_reg(Register::D0, 26);
 
-        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0) as i32, -43);
         assert_eq!(bus.read_word(pb + 16) as i16, -43);
