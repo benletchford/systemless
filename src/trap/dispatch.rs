@@ -5547,36 +5547,6 @@ impl TrapDispatcher {
         }
     }
 
-    pub(crate) fn resource_handle_memory_size(
-        &self,
-        bus: &MacMemoryBus,
-        handle: u32,
-        ptr: u32,
-    ) -> Option<u32> {
-        let size = bus.get_alloc_size(ptr)?;
-        if let Some((refnum, res_type, res_id)) = self.resource_record_for_handle(handle) {
-            if let Some(data) = self.resource_backing_data.get(&(refnum, res_type, res_id)) {
-                // A resource handle's logical size is the resource's own data
-                // length. The block behind it is padded out to a 4-byte
-                // boundary, but that padding is physical size and GetHandleSize
-                // reports the logical one.
-                // GetHandleSize ($A025)
-                // FUNCTION GetHandleSize (h: Handle): Size;
-                // Inside Macintosh Volume II, II-31; Memory 1992, 2-32
-                // ("the logical size ... not the physical size").
-                //
-                // Rounding up here hands callers that walk a resource as an
-                // array a phantom trailing element. SimCity 2000's far-model
-                // runtime derives its CREL relocation count as
-                // GetHandleSize/2, so a rounded-up size added a zero-offset
-                // entry and relocated the CODE segment's own header, leaving
-                // its jump-table entries permanently unpatched.
-                return Some(data.len() as u32);
-            }
-        }
-        Some(size)
-    }
-
     pub(crate) fn forget_resource_backing_data(
         &mut self,
         refnum: u16,
