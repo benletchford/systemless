@@ -30009,7 +30009,7 @@ mod tests {
         *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         disp.yield_for_ui = true;
 
-        bus.write_pstring(prompt_ptr, b"Pilot file:");
+        bus.write_pstring(prompt_ptr, b"Create New Player\xC9");
         bus.write_pstring(default_name_ptr, b"Untitled");
         bus.write_word(sp, 0x0005); // StandardPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -30021,6 +30021,10 @@ mod tests {
         assert!(start.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp);
         assert!(disp.is_standard_file_put_tracking());
+        assert_eq!(
+            disp.standard_file_put_tracking.as_ref().unwrap().prompt,
+            "Create New Player…"
+        );
 
         for byte in b"Rick" {
             disp.event_queue.push_back(QueuedEvent {

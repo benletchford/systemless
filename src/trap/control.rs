@@ -2,7 +2,7 @@
 
 use crate::memory::SavedPixels;
 use super::dispatch::{ControlAuxRecordState, ControlTrackingState};
-use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
+use super::types::{decode_mac_roman, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::standard_popup_menu_layout;
@@ -1328,7 +1328,7 @@ impl super::TrapDispatcher {
         let min = bus.read_word(ctrl_ptr + 20) as i16;
         let max = bus.read_word(ctrl_ptr + 22) as i16;
         let title_bytes = Self::control_title_bytes(bus, ctrl_ptr);
-        let title = decode_mac_roman_for_render(&title_bytes);
+        let title = decode_mac_roman(&title_bytes);
 
         let proc_id = self.control_manager.proc_id(ctrl_ptr);
 
@@ -4094,7 +4094,7 @@ impl super::TrapDispatcher {
                         ctrl_id,
                         proc_id,
                         proc_id >> 4,
-                        decode_mac_roman_for_render(&title),
+                        decode_mac_roman(&title),
                         r_top as i16,
                         r_left as i16,
                         r_bottom as i16,

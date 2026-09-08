@@ -6,7 +6,7 @@ use super::dispatch::{
     DialogTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
     RetainedModalDialogClickState, SelectorOperationRoute,
 };
-use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
+use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -607,7 +607,7 @@ impl super::TrapDispatcher {
         if title_ptr == 0 {
             return String::new();
         }
-        decode_mac_roman_for_render(&bus.read_pstring(title_ptr))
+        decode_mac_roman(&bus.read_pstring(title_ptr))
     }
 
     fn ensure_text_handle_size(bus: &mut MacMemoryBus, item_handle: u32, size: usize) -> u32 {
@@ -656,7 +656,7 @@ impl super::TrapDispatcher {
         item_handle: u32,
     ) -> Option<String> {
         Self::text_item_bytes_from_handle_if_present(bus, item_handle)
-            .map(|bytes| decode_mac_roman_for_render(&bytes))
+            .map(|bytes| decode_mac_roman(&bytes))
     }
 
     fn text_item_bytes_from_handle_if_present(
@@ -3414,13 +3414,13 @@ impl super::TrapDispatcher {
             let base_type = item.item_type & 0x7F;
             let item_handle = match base_type {
                 8 | 16 => {
-                    let text_bytes = item.text.as_bytes();
+                    let text_bytes = encode_mac_roman_lossy(&item.text);
                     let handle = bus.alloc(4);
                     let text_ptr = if text_bytes.is_empty() {
                         0
                     } else {
                         let ptr = bus.alloc(text_bytes.len() as u32);
-                        bus.write_bytes(ptr, text_bytes);
+                        bus.write_bytes(ptr, &text_bytes);
                         ptr
                     };
                     bus.write_long(handle, text_ptr);
@@ -3519,12 +3519,13 @@ impl super::TrapDispatcher {
         }
 
         bus.write_long(handle, ctrl_ptr);
+        let title = encode_mac_roman_lossy(&item.text);
         self.initialize_control_record(
             bus,
             ctrl_ptr,
             dialog_ptr,
             item.rect,
-            item.text.as_bytes(),
+            &title,
             true,
             value,
             0,
@@ -3884,7 +3885,7 @@ impl super::TrapDispatcher {
         for (i, byte) in title_bytes.iter_mut().enumerate() {
             *byte = bus.read_byte(ptr + 21 + i as u32);
         }
-        let title = decode_mac_roman_for_render(&title_bytes);
+        let title = decode_mac_roman(&title_bytes);
 
         // Read positioning constant after the title Pascal string.
         // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
@@ -4418,7 +4419,7 @@ impl super::TrapDispatcher {
                     // editText (16): title/text data. IM:I I-427.
                     4 | 5 | 6 | 8 | 16 => {
                         let bytes = bus.read_bytes(ptr + offset, payload_len as usize);
-                        text = decode_mac_roman_for_render(&bytes);
+                        text = decode_mac_roman(&bytes);
                     }
                     _ => {}
                 }
@@ -4874,7 +4875,7 @@ impl super::TrapDispatcher {
         }
         if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
             if (item.item_type & 0x7F) == 16 {
-                let text_len = tracking.edit_text.len();
+                let text_len = encode_mac_roman_lossy(&tracking.edit_text).len();
                 item.sel_start = sel_start.min(text_len).min(i16::MAX as usize) as i16;
                 item.sel_end = sel_end.min(text_len).min(i16::MAX as usize) as i16;
             }
@@ -4937,7 +4938,7 @@ impl super::TrapDispatcher {
 
         let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
         let existing = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
-            .unwrap_or_else(|| item.text.as_bytes().to_vec());
+            .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
         let text_handle = bus.read_long(dialog_ptr + 160);
         let te_ptr = Self::te_record_ptr(bus, text_handle);
         let (sel_start, sel_end) = if te_ptr != 0 {
@@ -4952,7 +4953,7 @@ impl super::TrapDispatcher {
         let (updated, insertion_point) =
             Self::textedit_key_result(&existing, sel_start, sel_end, key);
         let clamped_insertion = insertion_point.min(u16::MAX as usize) as u16;
-        item.text = decode_mac_roman_for_render(&updated);
+        item.text = decode_mac_roman(&updated);
         item.sel_start = clamped_insertion as i16;
         item.sel_end = clamped_insertion as i16;
 
@@ -5001,7 +5002,7 @@ impl super::TrapDispatcher {
 
         let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
         let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
-            .unwrap_or_else(|| item.text.as_bytes().to_vec());
+            .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
         self.te_set_text_contents(bus, text_handle, &text);
 
         let text_len = text.len().min(u16::MAX as usize);
@@ -5108,7 +5109,7 @@ impl super::TrapDispatcher {
             } else {
                 &item.text
             };
-            let bytes = text.as_bytes();
+            let bytes = encode_mac_roman_lossy(text);
             let len = bytes.len().min(255);
             let item_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
             if item_handle != 0 {
@@ -6590,7 +6591,10 @@ impl super::TrapDispatcher {
                     // state to themed field chrome while leaving TextEdit
                     // metrics and existing hit handling unchanged.
                     let selection_range = if item_num == edit_item {
-                        Self::dialog_item_selection_range(item, display_text.len())
+                        Self::dialog_item_selection_range(
+                            item,
+                            encode_mac_roman_lossy(display_text).len(),
+                        )
                     } else {
                         None
                     };
@@ -6657,7 +6661,7 @@ impl super::TrapDispatcher {
                         let max = bus.read_word(ctrl_ptr + 22) as i16;
                         let hilite = bus.read_byte(ctrl_ptr + 17);
                         let title =
-                            decode_mac_roman_for_render(&Self::control_title_bytes(bus, ctrl_ptr));
+                            decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
 
                         match proc_id_ctrl {
                             0 => self.draw_button_with_enabled(
@@ -6869,7 +6873,7 @@ impl super::TrapDispatcher {
                         let max = bus.read_word(ctrl_ptr + 22) as i16;
                         let hilite = bus.read_byte(ctrl_ptr + 17);
                         let title =
-                            decode_mac_roman_for_render(&Self::control_title_bytes(bus, ctrl_ptr));
+                            decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
 
                         match proc_id_ctrl {
                             0 => self.draw_button_with_enabled(
@@ -7064,7 +7068,7 @@ impl super::TrapDispatcher {
                         let max = bus.read_word(ctrl_ptr + 22) as i16;
                         let hilite = bus.read_byte(ctrl_ptr + 17);
                         let title =
-                            decode_mac_roman_for_render(&Self::control_title_bytes(bus, ctrl_ptr));
+                            decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
                         match proc_id_ctrl {
                             0 => self.draw_button_with_enabled(
                                 bus,
@@ -7199,7 +7203,10 @@ impl super::TrapDispatcher {
                         &item.text
                     };
                     let selection_range = if item_num == edit_item {
-                        Self::dialog_item_selection_range(item, display_text.len())
+                        Self::dialog_item_selection_range(
+                            item,
+                            encode_mac_roman_lossy(display_text).len(),
+                        )
                     } else {
                         None
                     };
@@ -8844,7 +8851,7 @@ impl super::TrapDispatcher {
                     if let Some(idx) = next.to_digit(10) {
                         if (idx as usize) < self.param_text.len() {
                             chars.next();
-                            out.push_str(&decode_mac_roman_for_render(
+                            out.push_str(&decode_mac_roman(
                                 &self.param_text[idx as usize],
                             ));
                             continue;
@@ -8855,6 +8862,10 @@ impl super::TrapDispatcher {
             out.push(ch);
         }
         std::borrow::Cow::Owned(out)
+    }
+
+    fn static_text_bytes(&self, text: &str) -> Vec<u8> {
+        encode_mac_roman_lossy(&self.apply_param_text(text))
     }
 
     fn draw_static_text(
@@ -8885,9 +8896,11 @@ impl super::TrapDispatcher {
             y = bottom - 1;
         }
 
-        let substituted = self.apply_param_text(text);
-        let text_bytes = substituted.as_bytes();
-        let lines = self.te_wrap_lines(font_id, raw_font_size, text_bytes, max_width);
+        // Dialog items are retained as Unicode so HLE-created text and decoded
+        // guest strings share one representation. TextEdit and QuickDraw still
+        // lay out classic bytes, so encode exactly once at that boundary.
+        let text_bytes = self.static_text_bytes(text);
+        let lines = self.te_wrap_lines(font_id, raw_font_size, &text_bytes, max_width);
 
         for (start, end) in lines {
             let mut trimmed_end = end;
@@ -8955,7 +8968,8 @@ impl super::TrapDispatcher {
         text: &str,
         selected: bool,
     ) {
-        let selection_range = selected.then_some((0, text.len()));
+        let selection_range =
+            selected.then_some((0, encode_mac_roman_lossy(text).len()));
         self.draw_edit_text_with_cursor(
             bus,
             top,
@@ -9044,7 +9058,7 @@ impl super::TrapDispatcher {
             // selection rectangle: glyphs draw at destRect.left+1, but a
             // selection beginning at character 0 includes the one-pixel inset.
             if !text.is_empty() {
-                let text_bytes = text.as_bytes();
+                let text_bytes = encode_mac_roman_lossy(text);
                 let start = selection_start.min(text_bytes.len());
                 let end = selection_end.min(text_bytes.len());
                 if start < end {
@@ -9058,7 +9072,7 @@ impl super::TrapDispatcher {
                             + self.te_measure_text_width(
                                 font_id,
                                 self.tx_size,
-                                text_bytes,
+                                &text_bytes,
                                 0,
                                 start,
                             )
@@ -9067,7 +9081,13 @@ impl super::TrapDispatcher {
                         right
                     } else {
                         left + Self::TE_LINE_LEFT_INSET
-                            + self.te_measure_text_width(font_id, self.tx_size, text_bytes, 0, end)
+                            + self.te_measure_text_width(
+                                font_id,
+                                self.tx_size,
+                                &text_bytes,
+                                0,
+                                end,
+                            )
                     };
                     if selection_left < selection_right && selection_top < selection_bottom {
                         if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
@@ -11747,7 +11767,8 @@ impl super::TrapDispatcher {
                             //  +22: contrlMax (2) = 1
                             //  +24: contrlDefProc (4) = procID encoding
                             //  +40: contrlTitle (pascal string)
-                            let title_len = item.text.len().min(255);
+                            let title = encode_mac_roman_lossy(&item.text);
+                            let title_len = title.len().min(255);
                             let ctrl_rec = bus.alloc(42 + title_len as u32);
                             bus.write_long(ctrl_rec, 0); // nextControl
                             bus.write_long(ctrl_rec + 4, dialog_ptr); // contrlOwner
@@ -11769,8 +11790,7 @@ impl super::TrapDispatcher {
                             bus.write_word(ctrl_rec + 22, 1); // contrlMax
                                                               // Write title as pascal string at offset 40
                             bus.write_byte(ctrl_rec + 40, title_len as u8);
-                            for (i, &ch) in item.text.as_bytes().iter().take(title_len).enumerate()
-                            {
+                            for (i, &ch) in title.iter().take(title_len).enumerate() {
                                 bus.write_byte(ctrl_rec + 41 + i as u32, ch);
                             }
                             // Map DITL item type to Control Manager procID
@@ -12936,7 +12956,9 @@ impl super::TrapDispatcher {
                                                     }
                                                     tracking.edit_text.push(char_code as char);
                                                 }
-                                                let cursor = tracking.edit_text.len();
+                                                let cursor =
+                                                    encode_mac_roman_lossy(&tracking.edit_text)
+                                                        .len();
                                                 Self::set_tracking_active_edit_selection(
                                                     tracking, cursor, cursor,
                                                 );
@@ -16064,7 +16086,10 @@ impl super::TrapDispatcher {
                                 // IM:I I-414 special case: (0, -1)
                                 // means "select all" — normalize
                                 // to (0, text.len()).
-                                let text_len = item.text.len() as i16;
+                                let text_len = encode_mac_roman_lossy(&item.text)
+                                    .len()
+                                    .min(i16::MAX as usize)
+                                    as i16;
                                 let (s, e) = if start_sel == 0 && end_sel == -1 {
                                     (0, text_len)
                                 } else {
@@ -16166,7 +16191,7 @@ impl super::TrapDispatcher {
                     (0, 0, 0, 0)
                 };
                 let title = if title_ptr != 0 {
-                    decode_mac_roman_for_render(&bus.read_pstring(title_ptr))
+                    decode_mac_roman(&bus.read_pstring(title_ptr))
                 } else {
                     String::new()
                 };
@@ -16550,7 +16575,7 @@ impl super::TrapDispatcher {
                 if text_str_ptr != 0 {
                     let bytes = bus.read_pstring(text_str_ptr);
                     let len = bytes.len();
-                    let text = decode_mac_roman_for_render(&bytes);
+                    let text = decode_mac_roman(&bytes);
 
                     if item_handle != 0 {
                         let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
@@ -16634,7 +16659,7 @@ impl super::TrapDispatcher {
                                 },
                             );
                         if current_edit_handle.is_some() {
-                            let bytes = tracking.edit_text.as_bytes();
+                            let bytes = encode_mac_roman_lossy(&tracking.edit_text);
                             let len = bytes.len().min(255);
                             bus.write_byte(text_ptr, len as u8);
                             for (i, byte) in bytes.iter().take(len).enumerate() {
@@ -16735,7 +16760,7 @@ impl super::TrapDispatcher {
                             (0, 0, 0, 0)
                         };
                         let title = if title_ptr != 0 {
-                            decode_mac_roman_for_render(&bus.read_pstring(title_ptr))
+                            decode_mac_roman(&bus.read_pstring(title_ptr))
                         } else {
                             String::new()
                         };
@@ -16938,6 +16963,7 @@ mod tests {
     use super::DialogItemTextStyle;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::mac_roman::decode_mac_roman;
     use crate::trap::dispatch::{
         DialogButtonTrackingState, DialogItem, DialogPopupDraw, DialogTrackingState,
         PendingDialogPopupMenu, PersistentDialogSnapshot, RetainedModalDialogClickState,
@@ -19351,7 +19377,7 @@ mod tests {
             vec![DialogItem {
                 item_type: 16,
                 rect: (10, 20, 30, 40),
-                text: "ABCDE".to_string(),
+                text: decode_mac_roman(b"A\xC9B"),
                 resource_id: 0,
                 proc_ptr: 0,
                 sel_start: 0,
@@ -19370,7 +19396,7 @@ mod tests {
 
         let item = &disp.dialog_items[&dialog_ptr][0];
         assert_eq!(item.sel_start, 0);
-        assert_eq!(item.sel_end, 5);
+        assert_eq!(item.sel_end, 3);
         assert_eq!(bus.read_word(dialog_ptr + 164), 0);
     }
 
@@ -29313,6 +29339,24 @@ mod tests {
     }
 
     #[test]
+    fn static_text_encodes_unicode_and_paramtext_once_as_mac_roman() {
+        let (mut disp, _cpu, _bus) = setup();
+        let classic = b"\x80\xA5\xAA\xC9\xD0\xD2\xDB\xDE";
+        let unicode = decode_mac_roman(classic);
+
+        assert_eq!(disp.static_text_bytes(&unicode), classic);
+
+        disp.param_text[0] = classic.to_vec();
+        assert_eq!(disp.apply_param_text("Prompt: ^0"), format!("Prompt: {unicode}"));
+        assert_eq!(
+            disp.static_text_bytes("Prompt: ^0"),
+            [b"Prompt: ".as_slice(), classic].concat()
+        );
+
+        assert_eq!(disp.static_text_bytes("unknown 🦀"), b"unknown ?");
+    }
+
+    #[test]
     fn param_text_nil_pointer_preserves_previous_slot_value() {
         // Per Inside Macintosh Volume I, I-422, passing NIL for any
         // ParamText slot must leave the prior value unchanged — apps
@@ -30108,6 +30152,64 @@ mod tests {
             disp.dialog_item_handles.get(&created_handle),
             Some(&(dialog_ptr, 0))
         );
+    }
+
+    #[test]
+    fn dialog_extended_text_keeps_classic_handle_title_and_edit_offsets() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(30);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 1); // two items
+
+        // Empty editText and button records; initialization supplies the live
+        // handles from the retained Unicode items below.
+        bus.write_byte(ditl_ptr + 14, 16);
+        bus.write_byte(ditl_ptr + 15, 0);
+        bus.write_byte(ditl_ptr + 28, 4);
+        bus.write_byte(ditl_ptr + 29, 0);
+
+        let mut items = vec![
+            DialogItem {
+                item_type: 16,
+                text: decode_mac_roman(b"A\xC9B"),
+                sel_start: 2,
+                sel_end: 2,
+                ..Default::default()
+            },
+            DialogItem {
+                item_type: 4,
+                text: decode_mac_roman(b"Go\xC9"),
+                ..Default::default()
+            },
+        ];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        let edit_handle = bus.read_long(ditl_ptr + 2);
+        let edit_ptr = bus.read_long(edit_handle);
+        assert_eq!(bus.get_alloc_size(edit_ptr), Some(3));
+        assert_eq!(bus.read_bytes(edit_ptr, 3), b"A\xC9B");
+
+        let control_handle = bus.read_long(ditl_ptr + 16);
+        let control_ptr = bus.read_long(control_handle);
+        assert_eq!(bus.read_byte(control_ptr + 40), 3);
+        assert_eq!(bus.read_bytes(control_ptr + 41, 3), b"Go\xC9");
+
+        assert!(disp.apply_dialog_select_key_to_edit_item(
+            &mut bus,
+            dialog_ptr,
+            &mut items,
+            1,
+            b'X',
+        ));
+        assert_eq!(items[0].text, "A…XB");
+        assert_eq!((items[0].sel_start, items[0].sel_end), (3, 3));
+        let updated_edit_ptr = bus.read_long(edit_handle);
+        assert_eq!(bus.get_alloc_size(updated_edit_ptr), Some(4));
+        assert_eq!(bus.read_bytes(updated_edit_ptr, 4), b"A\xC9XB");
     }
 
     #[test]

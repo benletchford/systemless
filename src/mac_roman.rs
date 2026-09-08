@@ -32,25 +32,6 @@ pub(crate) fn decode_mac_roman(bytes: &[u8]) -> String {
         .collect()
 }
 
-pub(crate) fn decode_mac_roman_for_render(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len());
-    for &byte in bytes {
-        match byte {
-            0x00..=0x7F => out.push(byte as char),
-            // The HLE chrome renderer only has ASCII glyphs plus a few symbol
-            // slots, so expand common punctuation into renderable forms.
-            0xA5 => out.push('*'),
-            0xC9 => out.push_str("..."),
-            0xCA => out.push(' '),
-            0xD0 | 0xD1 => out.push('-'),
-            0xD2 | 0xD3 => out.push('"'),
-            0xD4 | 0xD5 => out.push('\''),
-            _ => out.push(MAC_ROMAN_HIGH[(byte - 0x80) as usize]),
-        }
-    }
-    out
-}
-
 pub(crate) fn encode_mac_roman_lossy(value: &str) -> Vec<u8> {
     value
         .chars()
