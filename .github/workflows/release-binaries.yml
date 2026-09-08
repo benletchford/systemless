@@ -108,8 +108,17 @@ jobs:
               package.mkdir()
               for binary in binaries:
                   shutil.copy2(pathlib.Path("target") / target / "release" / binary, package)
-              for filename in ("LICENSE", "OFL.txt", "README.md"):
-                  shutil.copy2(filename, package)
+              documents = {
+                  "LICENSE": "LICENSE",
+                  "README.md": "README.md",
+                  "src/quickdraw/fonts/urw/LICENSE.OFL": "URW-LICENSE.OFL",
+                  "src/quickdraw/fonts/urw/LICENSE.md": "URW-LICENSE.md",
+                  "src/quickdraw/fonts/urw/README.md": "URW-README.md",
+                  "src/quickdraw/fonts/noto/OFL.txt": "Noto-OFL.txt",
+                  "src/quickdraw/fonts/noto/README.md": "Noto-README.md",
+              }
+              for source, destination in documents.items():
+                  shutil.copy2(source, package / destination)
               if windows:
                   with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
                       for path in sorted(package.iterdir()):
@@ -126,6 +135,8 @@ jobs:
               else:
                   with tarfile.open(archive) as source:
                       source.extractall(extracted, filter="data")
+              for document in documents.values():
+                  assert (extracted / name / document).is_file(), f"Archive is missing {document}"
               for binary in binaries:
                   assert (extracted / name / binary).is_file(), f"Archive is missing {binary}"
               binary = "systemless.exe" if windows else "systemless"

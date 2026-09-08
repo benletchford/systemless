@@ -1,5 +1,186 @@
 # Changelog
 
+## [0.39.1](https://github.com/benletchford/systemless/compare/v0.39.0...v0.39.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* package current bundled font licences in release archives ([b4bbe72](https://github.com/benletchford/systemless/commit/b4bbe7234ec916aaa4ef02e3eee5a48c04a9b4e6))
+* preserve foreground callbacks and nested modal dialog state ([#1595](https://github.com/benletchford/systemless/issues/1595)) ([4bfb5ba](https://github.com/benletchford/systemless/commit/4bfb5babc42ea72cd4764ee6fdd8fd19b00017cd))
+
+## [0.39.0](https://github.com/benletchford/systemless/compare/v0.38.3...v0.39.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **fonts:** replace hardcoded fonts with bundled TrueType defaults ([#1524](https://github.com/benletchford/systemless/issues/1524))
+
+### Features
+
+* **fonts:** replace hardcoded fonts with bundled TrueType defaults ([#1524](https://github.com/benletchford/systemless/issues/1524)) ([f182826](https://github.com/benletchford/systemless/commit/f1828269b579d604f4e7290105c6f9d45d36aa12))
+
+## [0.38.3](https://github.com/benletchford/systemless/compare/v0.38.2...v0.38.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* preflight native task context installation ([7102d6a](https://github.com/benletchford/systemless/commit/7102d6aa7ad3dda2bd910126e0b3bd11bf13eddf))
+* preserve MenuHook completion ownership across task switches ([a840af3](https://github.com/benletchford/systemless/commit/a840af3174fb5ef89552f0c2bcef7fafce97cffc))
+* preserve PPC engine state across context restoration ([30a66da](https://github.com/benletchford/systemless/commit/30a66da12414d3f00a3551aa6a86ad139af301da))
+* project window snapshots consistently across execution engines ([775e339](https://github.com/benletchford/systemless/commit/775e33968eba47910e14bed5659dc1f0dd1bb6ba))
+* share atomic cooperative thread yielding across ABIs ([e7b26d5](https://github.com/benletchford/systemless/commit/e7b26d5caeeb9a0ae7b002f3d403b0ad9ac14ea3))
+* share indexed horizontal reduction across graphics adapters ([#1579](https://github.com/benletchford/systemless/issues/1579)) ([3a18e98](https://github.com/benletchford/systemless/commit/3a18e985a965520e31e830e2b6e2612a96d97079))
+* share thread disposal and preserve automatic return retries ([241d021](https://github.com/benletchford/systemless/commit/241d021f6ba2fbdffdf58844bbc958d09c233ffb))
+
+
+### Code Refactoring
+
+* centralize PPC import binding transactions ([b5e5318](https://github.com/benletchford/systemless/commit/b5e5318eb8a4005eff089fe3d28d0e63e6f34979))
+* construct migrated process services coherently ([fbf56fd](https://github.com/benletchford/systemless/commit/fbf56fd1a27b23f686cd0c5032dfe04b544e0bd5))
+* encapsulate process tick state with copied access ([390f316](https://github.com/benletchford/systemless/commit/390f3164fc0d75b932750542a0e56622074a980f))
+* isolate optional PEF dump diagnostics ([b635d8d](https://github.com/benletchford/systemless/commit/b635d8dd0516ffdab89eb1abaf31f14eda3d0b00))
+* separate host execution budgets from guest capabilities ([927397c](https://github.com/benletchford/systemless/commit/927397ce09f2ba395556077ed40b2c29644514bd))
+* share cooperative NewThread creation policy ([9f29cb9](https://github.com/benletchford/systemless/commit/9f29cb986f20c552aff8b73cb825f3be4f7a5bc8))
+* share indexed vertical scaling across toolbox adapters ([a36b3b2](https://github.com/benletchford/systemless/commit/a36b3b2a2df020c60203cf71c98e690a6c3f89fa))
+* share packed identity CopyBits row transfers ([1657fb9](https://github.com/benletchford/systemless/commit/1657fb92ab03eb58a0ea68c58ad721888dac6242))
+* share rectangular CopyBits transfer outcomes ([4b3f637](https://github.com/benletchford/systemless/commit/4b3f637ee3e7972b8990bb7c35723deb042566c9))
+
+## [0.38.2](https://github.com/benletchford/systemless/compare/v0.38.1...v0.38.2) (2026-09-06)
+
+
+### Bug Fixes
+
+* match native NewPixMap handle allocation order ([0c0ff2a](https://github.com/benletchford/systemless/commit/0c0ff2ac4d1da51f5de535278f7c4078a68204ed))
+* preserve background positions when moving dialogs ([2a6230b](https://github.com/benletchford/systemless/commit/2a6230bcce86a8123a124184d942f4e78f30e9da))
+
+## [0.38.1](https://github.com/benletchford/systemless/compare/v0.38.0...v0.38.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* execute MenuHook through task-owned guest calls ([0bb7deb](https://github.com/benletchford/systemless/commit/0bb7deb2089e8fafed247174ca6ea45bb8c15d91))
+* prefer games over bundled registration utilities ([828d0c6](https://github.com/benletchford/systemless/commit/828d0c6d4d356d98626760f6f8f69bae642f2fbc))
+* resume classic menu tracking without repeating public traps ([ed4fda6](https://github.com/benletchford/systemless/commit/ed4fda674c499875dd45f4ff08b7d0daac9bcb69))
+* resume native menu tracking without repeating public imports ([95daf56](https://github.com/benletchford/systemless/commit/95daf564f2dc6af5d8251526544dfde275087b20))
+* retain menu tracking by task and enclosing call ([b47802e](https://github.com/benletchford/systemless/commit/b47802ef0769f00a3516b9179a05ef1f49481f64))
+
+
+### Code Refactoring
+
+* retain explicit menu tracking callers ([634c660](https://github.com/benletchford/systemless/commit/634c660e026d65866842f777b9ed1033b148d54d))
+* share logical popup menu requests ([fc707dc](https://github.com/benletchford/systemless/commit/fc707dc765918d805df648cea1065f05cbbbb900))
+
+## [0.38.0](https://github.com/benletchford/systemless/compare/v0.37.0...v0.38.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove the classic trap startup shadow map
+* move runner CFM ownership into the process context
+
+### Features
+
+* play QuickTime piano music tracks ([49b4392](https://github.com/benletchford/systemless/commit/49b4392d29b878a5c1bd3a8e81829f061d97caf7))
+* share CFM symbol enumeration across classic and native calls ([c412407](https://github.com/benletchford/systemless/commit/c412407d5bd46479036318ec9868a9f7c11023ff))
+* share CFM symbol lookup across classic and native calls ([c75db1e](https://github.com/benletchford/systemless/commit/c75db1eea4e9693ff26d055aeede0cc0c17bb986))
+
+
+### Bug Fixes
+
+* clip and restore dialog picture items ([d6db3ce](https://github.com/benletchford/systemless/commit/d6db3ce7adecf8588959d5e28f31056446d018aa))
+* clip window frames below the menu bar ([ac018d3](https://github.com/benletchford/systemless/commit/ac018d3ca49e451c9d21c229bd39fd8fee789cda))
+* distinguish system-code ISA from mapping protection ([f439830](https://github.com/benletchford/systemless/commit/f4398306abfc735d664ac20508f6477ba24ead87))
+* erase full-screen windows through the resolved screen address ([6ba5e75](https://github.com/benletchford/systemless/commit/6ba5e75b3077921c0cbcb4b689283c2fafef10a7))
+* establish trap tables before runner execution ([51a7f4c](https://github.com/benletchford/systemless/commit/51a7f4cdcbcb3e82ae86f2b783aea4a02fa87989))
+* isolate menu definition callback workspaces ([40a3fa8](https://github.com/benletchford/systemless/commit/40a3fa81f23b6360a8efa1d67ca1b2658cc86394))
+* preflight native arguments before changing caller state ([c80136b](https://github.com/benletchford/systemless/commit/c80136b6d06a69b6a74b93abcdff6383f2e4a041))
+* preflight shared trap construction before publication ([cdaef9e](https://github.com/benletchford/systemless/commit/cdaef9ed6af08b107a594cae95a10145caa713df))
+* preserve CFM connections when close publication fails ([762f1a2](https://github.com/benletchford/systemless/commit/762f1a23a2cac37da7642ae9e5cfa33fd283a409))
+* preserve dialog backgrounds when redrawing items ([109c508](https://github.com/benletchford/systemless/commit/109c5080d51db1d70ea747733161d24fba14428d))
+* restore Odyssey profile creation and picture colors ([5fa5cee](https://github.com/benletchford/systemless/commit/5fa5ceea81bbf340f6aefcc1b132ae2ae958dc2f))
+* resume menu bar builds without repeating guest dispatch ([5840f4a](https://github.com/benletchford/systemless/commit/5840f4a6aaefb9b2f811e8cdf05cdad02e56da36))
+* retain menu bar builds by task and enclosing call ([d0a27a9](https://github.com/benletchford/systemless/commit/d0a27a9ceef89e2fb964fbff4f13a419e9b6dca6))
+* share CopyBits row transfers across CPU routes ([c9938da](https://github.com/benletchford/systemless/commit/c9938dacc1f0ddb1b33a1d5e3da5224ec2c9eb8b))
+* share stack-local menu callbacks and retire menu-bar sizing ([c77311a](https://github.com/benletchford/systemless/commit/c77311a9278c2584d42f25469880c7d4e59a8330))
+
+
+### Code Refactoring
+
+* keep system trap identities with their code owner ([fff74ba](https://github.com/benletchford/systemless/commit/fff74bab8ead67c4838879fa3f791219c0bfe12e))
+* move runner CFM ownership into the process context ([09ec2ce](https://github.com/benletchford/systemless/commit/09ec2cebde47f2feeb9a8d6a27741d3cf8131167))
+* publish native generated code with system provenance ([0e3529b](https://github.com/benletchford/systemless/commit/0e3529bede0197679f679efcf3f72ebdaa1e9c7d))
+* remove the classic trap startup shadow map ([11508a0](https://github.com/benletchford/systemless/commit/11508a001309664b89b7e93ff6de30c363fc7c17))
+* return prepared resource invocations from shared CFM ([1738727](https://github.com/benletchford/systemless/commit/1738727c26cebdf84f527b6f7ec61e1131f5402d))
+* share CFM fragment layout and relocation planning ([0ebed8a](https://github.com/benletchford/systemless/commit/0ebed8a2f7c74d042e44d488ee7510eaaeacecee))
+* share CFM initialization records and invocation policy ([095a0fb](https://github.com/benletchford/systemless/commit/095a0fba60305293b0c81e9930258bb40ebbd811))
+* share menu release blink transitions ([8a31ea7](https://github.com/benletchford/systemless/commit/8a31ea703969d656ba4023904ea2ce01c58abc1a))
+* share trap gateway construction independently of CPU adapters ([f140a75](https://github.com/benletchford/systemless/commit/f140a75371cac2b07a8fe3ea2ac9c2c42bb0956d))
+
+## [0.37.0](https://github.com/benletchford/systemless/compare/v0.36.0...v0.37.0) (2026-09-05)
+
+
+### Features
+
+* prepare accelerated resources for native universal calls ([bc64125](https://github.com/benletchford/systemless/commit/bc6412561e0f5360789852905b59f34cdbaffa9c))
+
+
+### Bug Fixes
+
+* default to classic theme and compare classic showcase profiles ([627009a](https://github.com/benletchford/systemless/commit/627009a1fc88e8df7d4403edd3dfcac3575bca57))
+* distinguish unprepared fragments from callable procedures ([3f43990](https://github.com/benletchford/systemless/commit/3f43990c396507689c018af54c069678d864b52f))
+* own dynamic CFM initializer storage through guest return ([1660068](https://github.com/benletchford/systemless/commit/166006895b39689b99a3a68ede9a1cb478cd57eb))
+* preserve classic thread status and floating-point state ([0f98bb0](https://github.com/benletchford/systemless/commit/0f98bb01a67d7a94647bb757bcef54dac28d9592))
+* preserve window activation across toolbox calls ([482439b](https://github.com/benletchford/systemless/commit/482439b5c08c09b5fdfc6408bd31cea2a75f5fdb))
+* publish prepared fragments with their allocator commit ([71dfe98](https://github.com/benletchford/systemless/commit/71dfe98fca46052848ce7492ade6b51768e8bc3c))
+* repaint newly exposed content when reordering windows ([0f39805](https://github.com/benletchford/systemless/commit/0f39805a0083535a7684703524125370f142d4c2))
+* resolve sparse color icon tables and reuse pixel mappings ([d4a4075](https://github.com/benletchford/systemless/commit/d4a4075c78ff73a54fa4e085d0551bcc3ab9225d))
+* resume CFM loads after initializer completion ([363d861](https://github.com/benletchford/systemless/commit/363d861c94747bbb8596e023d57cf1a3f96d451d))
+* validate guest procedure mappings across CPU views ([0c8bf3a](https://github.com/benletchford/systemless/commit/0c8bf3a3057387378966bc4fe32e5adf687b6c0b))
+
+
+### Code Refactoring
+
+* activate CFM initializers through task-owned effects ([3ced57f](https://github.com/benletchford/systemless/commit/3ced57fda34b838f478276ffab829f39f5633af1))
+* complete CFM loads through the shared service ([68a5356](https://github.com/benletchford/systemless/commit/68a53561d319da7ccde63c106f2b7b6f6cda09d4))
+* transfer completed CFM operations before resumption ([7d5e1a9](https://github.com/benletchford/systemless/commit/7d5e1a90f81641a9752b2baae8d211da157c2169))
+
+## [0.36.0](https://github.com/benletchford/systemless/compare/v0.35.0...v0.36.0) (2026-09-05)
+
+
+### Features
+
+* execute native cooperative threads through the process task owner ([ba8ce41](https://github.com/benletchford/systemless/commit/ba8ce413847af53e041a9cc93e1bdbdd99ca74ea))
+* share thread stack-space queries across CPU adapters ([f9cb1e5](https://github.com/benletchford/systemless/commit/f9cb1e59cf8de72c94770ada1bcaf8467af5cc00))
+
+
+### Bug Fixes
+
+* **desktop:** exclude guest menu rows from native presentation ([563cc52](https://github.com/benletchford/systemless/commit/563cc5227d4b5e290d3be100ef6c79c8dc8f17c6))
+* preserve native time across interrupt callback returns ([96054db](https://github.com/benletchford/systemless/commit/96054db42ab8d6f67ecb5f60139da3526132926b))
+* protect native worker stacks during interrupt callbacks ([70a1003](https://github.com/benletchford/systemless/commit/70a1003d46ec0eaf7440845eb04f85c683955554))
+
+## [0.35.0](https://github.com/benletchford/systemless/compare/v0.34.1...v0.35.0) (2026-09-05)
+
+
+### Features
+
+* **desktop:** support fullscreen and use the display GPU ([027af8e](https://github.com/benletchford/systemless/commit/027af8e24189041c9499bbe9bf3cf808b9f89251))
+* **theme:** use Systemless presentation in both showcase architectures ([#1427](https://github.com/benletchford/systemless/issues/1427)) ([9bb2c1a](https://github.com/benletchford/systemless/commit/9bb2c1abf3383af615a761f92d8082db348a66da))
+
+
+### Bug Fixes
+
+* **desktop:** size game windows for the display automatically ([#1433](https://github.com/benletchford/systemless/issues/1433)) ([74fd9f7](https://github.com/benletchford/systemless/commit/74fd9f74e7e0d94f0232aaa4c945324609b35766))
+* **quickdraw:** resolve screen colors against the logical palette ([5f21681](https://github.com/benletchford/systemless/commit/5f21681e53605665214c38876008946b6688acfa))
+
+
+### Performance Improvements
+
+* **bus:** inline flat guest memory routing ([7cf6212](https://github.com/benletchford/systemless/commit/7cf6212e6450b1376444cd7019e3518eaa3c8cd4))
+* **runner:** admit safe poll traps and bound idle probes ([cc7063c](https://github.com/benletchford/systemless/commit/cc7063cd398a77f15c90a8120ff4ce4cb8afcd55))
+* **runner:** batch execution through native trap handlers ([055eb7d](https://github.com/benletchford/systemless/commit/055eb7d90da27b3e228a5097ccf676528fc1056a))
+* **trap:** avoid copying protected code ranges during lookup ([eabcd5a](https://github.com/benletchford/systemless/commit/eabcd5ad8b552425ca48bebda38289c0a3056517))
+
 ## [0.34.1](https://github.com/benletchford/systemless/compare/v0.34.0...v0.34.1) (2026-09-05)
 
 

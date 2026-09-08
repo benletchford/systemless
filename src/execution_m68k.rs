@@ -4,14 +4,159 @@
 //! must move with their context. The task store remains the process authority.
 
 use crate::cpu::{M68kCpu, Register};
-use crate::execution_kernel::ExecutionContextBank;
 use crate::guest_call::{PendingM68kExecution, SharedGuestCallStack};
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use ppc::PpcMemory;
 
+/// Stack-local Pascal MDEF lowering shared by classic and native callers.
+/// Code lives above the callback SP, so nested calls cannot overwrite it.
+/// Macintosh Toolbox Essentials (1992), pp. 3-148--3-151.
+pub(crate) struct M68kMenuDefinitionFrame {
+    pub(crate) entry: u32,
+    pub(crate) image: [u8; 60],
+}
+
+impl M68kMenuDefinitionFrame {
+    /// Emit an internal A-line return boundary inside the live callback frame.
+    /// Execution matches its PC/SP before guest trap routing; the retained
+    /// operation supplies the caller return instead of repeating guest entry.
+    pub(crate) fn trap_return(&mut self, opcode: u16) -> u32 {
+        self.image[52..54].copy_from_slice(&opcode.to_be_bytes());
+        self.entry + 52
+    }
+
+    pub(crate) const RESERVATION: u32 = 80;
+    pub(crate) const STACK_PREFIX: u32 = 58;
+
+    pub(crate) fn new(
+        call: crate::menu_manager::MenuDefinitionCall,
+        target: u32,
+        final_sp: u32,
+        release_stack: bool,
+    ) -> Option<Self> {
+        let entry = final_sp.checked_sub(Self::RESERVATION)?;
+        entry.checked_sub(Self::STACK_PREFIX)?;
+        if entry & 1 != 0 {
+            return None;
+        }
+        let mut image = [0; 60];
+        for (offset, value) in [
+            (0, 0x48e7u16),
+            (2, 0xf0f0), // MOVEM D0-D3/A0-A3,-(SP)
+            (4, 0x3f3c),
+            (6, call.message as i16 as u16),
+            (8, 0x2f3c),
+            (14, 0x2f3c),
+            (20, 0x2f3c),
+            (26, 0x2f3c),
+            (32, 0x4eb9), // JSR target
+            (38, 0x2e7c), // restore saved-register SP
+            (44, 0x4cdf),
+            (46, 0x0f0f),
+            // RTD changes PC and SP in one instruction. An interrupt must
+            // never see SP above code which the foreground will still fetch.
+            (48, 0x4e74),
+            (50, if release_stack { Self::RESERVATION as u16 } else { 0 }),
+        ] {
+            image[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        for (offset, value) in [
+            (10, call.menu_handle),
+            (16, call.menu_rect),
+            (22, call.hit_point),
+            (28, call.which_item),
+            (34, target),
+            (40, entry - 36),
+        ] {
+            image[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        Some(Self { entry, image })
+    }
+}
+
+/// Stack-local no-argument callback frame. Saved registers and code remain
+/// below the caller SP until execution retires the exact internal return.
+/// MenuHook's Pascal no-argument contract: Macintosh Toolbox Essentials
+/// (1992), p. 3-116.
+pub(crate) struct M68kMenuHookFrame {
+    pub(crate) entry: u32,
+    pub(crate) image: [u8; 32],
+}
+
+impl M68kMenuHookFrame {
+    pub(crate) fn new(target: u32, caller_sp: u32) -> Option<Self> {
+        let entry = caller_sp.checked_sub(48)?;
+        let saved_sp = entry.checked_sub(66)?;
+        if entry & 1 != 0 {
+            return None;
+        }
+        let mut image = [0; 32];
+        for (offset, word) in [
+            (0, 0x40e7u16), // MOVE SR,-(SP)
+            (2, 0x48e7),
+            (4, 0xfffe),  // MOVEM all D/A except SP
+            (6, 0x4eb9),  // JSR target
+            (12, 0x2e7c), // MOVEA.L #saved-register SP,A7
+            (18, 0x4cdf),
+            (20, 0x7fff), // restore all D/A except SP
+            (22, 0x46df), // MOVE (SP)+,SR
+            (24, 0x4e74),
+            (26, 0), // RTD into the internal boundary
+            (28, 0xa93d),
+            (30, 0x4e71),
+        ] {
+            image[offset..offset + 2].copy_from_slice(&word.to_be_bytes());
+        }
+        image[8..12].copy_from_slice(&target.to_be_bytes());
+        image[14..18].copy_from_slice(&saved_sp.to_be_bytes());
+        Some(Self { entry, image })
+    }
+}
+
+/// Consume a manager result while its stack reservation is still live, then
+/// restore the caller ABI before trap/vector lookup can invoke more guest code.
+pub(crate) fn complete_classic_manager_return<C: crate::cpu::CpuOps>(
+    calls: &SharedGuestCallStack,
+    cpu: &mut C,
+    bus: &crate::memory::MacMemoryBus,
+) -> bool {
+    use crate::memory::MemoryBus;
+    let mut hook = None;
+    let restored_sp = calls.complete_m68k_with_operation(
+        cpu.read_reg(Register::PC),
+        cpu.read_reg(Register::A7),
+        |operation| match operation {
+            crate::guest_call::ManagerContinuation::Menu(
+                crate::guest_call::MenuManagerContinuation::Definition(operation),
+            ) => {
+                let result = if bus.is_guest_address_mapped(operation.scratch, 10) {
+                    <[u8; 10]>::try_from(bus.read_bytes(operation.scratch, 10))
+                        .map(crate::menu_manager::MenuDefinitionInvocation::decode_result)
+                        .map_err(|_| ())
+                } else {
+                    Err(())
+                };
+                operation.complete_result(result);
+            }
+            crate::guest_call::ManagerContinuation::Menu(
+                crate::guest_call::MenuManagerContinuation::Hook(operation),
+            ) => hook = Some(operation),
+            _ => panic!("classic manager return has no completion consumer"),
+        },
+    );
+    if let Some(sp) = restored_sp {
+        cpu.write_reg(Register::A7, sp);
+        if let Some(hook) = hook {
+            assert!(hook.complete(), "MenuHook completion must be single-use");
+        }
+        true
+    } else {
+        false
+    }
+}
+
 pub(crate) struct M68kExecution {
     pub(crate) cpu: M68kCpu,
-    pub(crate) parked: ExecutionContextBank<M68kCpu>,
     calls: SharedGuestCallStack,
 }
 
@@ -19,24 +164,38 @@ impl M68kExecution {
     pub(crate) fn new(calls: &SharedGuestCallStack) -> Self {
         Self {
             cpu: M68kCpu::new(),
-            parked: ExecutionContextBank::default(),
             calls: calls.shared_handle(),
+        }
+    }
+
+    pub(crate) fn complete_manager_return(&mut self, bus: &crate::memory::MacMemoryBus) -> bool {
+        complete_classic_manager_return(&self.calls, &mut self.cpu, bus)
+    }
+
+    pub(crate) fn apply_task_handoff(&mut self) {
+        if let Some(context) = self.calls.take_classic_task_handoff() {
+            context.install(&mut self.cpu);
         }
     }
 
     /// A launch cannot discard contexts still associated with live calls.
     pub(crate) fn can_relaunch(&self) -> bool {
-        self.parked.is_empty() && self.calls.is_empty()
+        self.calls.current_task_is_running()
+            && !self.calls.has_parked_m68k_contexts()
+            && self.calls.is_empty()
+            && !self.calls.has_live_workers()
+            && !self.calls.has_pending_task_handoff()
     }
 
     /// Validate and park the outgoing context before installing the callback.
-    pub(crate) fn activate_pending(&mut self) -> Option<PendingM68kExecution> {
+    pub(crate) fn activate_pending(
+        &mut self,
+        native: &mut ppc::PpcCpu,
+    ) -> Option<PendingM68kExecution> {
         if let Some(active) = self.calls.active_m68k() {
             return Some(active);
         }
-        let pending = self
-            .calls
-            .activate_m68k_parking(&mut self.parked, &mut self.cpu)?;
+        let pending = self.calls.activate_m68k_parking(&mut self.cpu, native)?;
         for (index, value) in pending.registers.data.into_iter().enumerate() {
             self.cpu.core.set_d(index, value);
         }
@@ -50,22 +209,34 @@ impl M68kExecution {
 
     /// Apply a completed native result to its actual caller, then restore it.
     pub(crate) fn resume_after_powerpc(&mut self, memory: &mut PpcSectionMem) -> bool {
-        let Some(parked) = self
-            .calls
-            .commit_m68k_resume(&mut self.parked, |resume, parked| {
-                let cpu = parked.unwrap_or(&mut self.cpu);
-                if !Self::apply_m68k_resume_result(cpu, memory, resume) {
-                    return false;
-                }
-                cpu.write_reg(Register::PC, resume.return_pc);
-                cpu.write_reg(Register::A7, resume.final_sp);
-                true
-            })
+        let Some((parked, operation)) =
+            self.calls
+                .commit_m68k_resume_with_operation(|resume, parked| {
+                    let cpu = parked.unwrap_or(&mut self.cpu);
+                    if !Self::apply_m68k_resume_result(cpu, memory, resume) {
+                        return false;
+                    }
+                    cpu.write_reg(Register::PC, resume.return_pc);
+                    cpu.write_reg(Register::A7, resume.final_sp);
+                    true
+                })
         else {
             return false;
         };
         if let Some(parked) = parked {
             self.cpu = parked;
+        }
+        match operation {
+            Some(crate::guest_call::ManagerContinuation::Menu(
+                crate::guest_call::MenuManagerContinuation::Hook(operation),
+            )) => {
+                assert!(
+                    operation.complete(),
+                    "MenuHook completion must be single-use"
+                );
+            }
+            Some(_) => panic!("reverse manager return has no completion consumer"),
+            None => {}
         }
         true
     }
@@ -241,6 +412,7 @@ impl M68kExecution {
         memory: &mut PpcSectionMem,
         native: &mut ppc::PpcCpu,
         pending: crate::guest_call::PendingM68kExecution,
+        manager: &mut crate::process_context::ProcessNativeMemoryManager,
     ) -> bool {
         use crate::guest_call::M68kResultSource;
 
@@ -276,11 +448,13 @@ impl M68kExecution {
                 value
             }
         };
-        self.calls.complete_m68k_for_powerpc(
+        self.calls.complete_m68k_operation_for_powerpc(
             pending.return_pc,
             self.cpu.read_reg(Register::A7),
             result,
             native,
+            memory,
+            manager,
         )
     }
 
@@ -392,8 +566,247 @@ impl M68kExecution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::guest_call::GuestCallTarget;
+    use crate::guest_call::{
+        GuestCallTarget, M68kRegisterState, ManagerContinuation, MenuHookOperation,
+        MenuManagerContinuation, MenuTrackingCall, MenuTrackingContext, MenuTrackingOrigin,
+    };
     use crate::guest_procedure::GuestIsa;
+
+    #[test]
+    fn already_active_callback_preserves_the_live_native_reservation() {
+        const ADDRESS: u32 = 0x1000;
+        const LWARX_R12_R4_R5: u32 = (31 << 26) | (12 << 21) | (4 << 16) | (5 << 11) | (20 << 1);
+        let calls = SharedGuestCallStack::default();
+        assert!(calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x2000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+            0x4000,
+            0x3004,
+            M68kRegisterState::default(),
+            None,
+            0x5000,
+            0x6000,
+            ppc::PpcNativeReturnGpr3::Preserve,
+        ));
+        let mut engine = M68kExecution::new(&calls);
+        let mut native = ppc::PpcCpu::new();
+        native.gpr[1] = 0x7000;
+        assert!(engine.activate_pending(&mut native).is_some());
+        assert_eq!(native.reservation_address(), None);
+
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        memory.add_region(ADDRESS, 0x1122_3344u32.to_be_bytes().to_vec());
+        native.gpr[4] = ADDRESS;
+        assert_eq!(
+            native.step(&mut memory, LWARX_R12_R4_R5),
+            ppc::PpcStepResult::Stepped
+        );
+        assert_eq!(native.reservation_address(), Some(ADDRESS));
+        assert!(engine.activate_pending(&mut native).is_some());
+        assert_eq!(native.reservation_address(), Some(ADDRESS));
+    }
+
+    #[test]
+    fn classic_menu_hook_completion_waits_for_its_task_and_restores_the_caller_first() {
+        use crate::execution_kernel::ExecutionTaskState;
+        use crate::guest_call::ExecutionTaskId;
+        use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
+
+        let calls = SharedGuestCallStack::default();
+        let mut tracking = calls.menu_tracking_view();
+        let call = MenuTrackingCall {
+            request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
+            origin: MenuTrackingOrigin::M68k {
+                stack_pointer: 0x3000,
+                return_address: 0x4000,
+            },
+        };
+        let entry = tracking.enter_new_call(call);
+        *tracking = Some(test_process_menu_tracking(111));
+        let key = tracking.request_menu_hook(true).unwrap();
+        let operation = MenuHookOperation::pending(key);
+        assert!(calls.begin_m68k_with_operation(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+            None,
+            Some(ManagerContinuation::Menu(MenuManagerContinuation::Hook(
+                operation.clone(),
+            ))),
+        ));
+        assert!(tracking.bind_menu_hook(key, operation.completion.clone()));
+
+        let mut execution = M68kExecution::new(&calls);
+        execution.cpu.write_reg(Register::PC, 0x2002);
+        execution.cpu.write_reg(Register::A7, 0x3000);
+        let worker = ExecutionTaskId::from_thread_id(7);
+        assert!(calls.register_task(worker));
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(worker));
+        assert!(!execution.complete_manager_return(&crate::memory::MacMemoryBus::new(0x1000)));
+        assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
+        assert_eq!(tracking.menu_hook_key(), Some(key));
+
+        assert!(execution.complete_manager_return(&crate::memory::MacMemoryBus::new(0x1000)));
+        assert_eq!(execution.cpu.read_reg(Register::A7), 0x3000);
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(call));
+        let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
+        assert_eq!(tracking.menu_hook_key(), None);
+        *tracking.context_mut() = MenuTrackingContext::default();
+        drop(resumed);
+        drop(entry);
+        assert!(calls.remove_task(worker));
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn native_menu_hook_restores_classic_context_before_releasing_its_receipt() {
+        use crate::guest_call::ExecutionTaskId;
+        use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
+
+        let calls = SharedGuestCallStack::default();
+        let mut tracking = calls.menu_tracking_view();
+        let call = MenuTrackingCall {
+            request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
+            origin: MenuTrackingOrigin::M68k {
+                stack_pointer: 0x3000,
+                return_address: 0x4000,
+            },
+        };
+        let entry = tracking.enter_new_call(call);
+        *tracking = Some(test_process_menu_tracking(111));
+        let key = tracking.request_menu_hook(true).unwrap();
+        let operation = MenuHookOperation::pending(key);
+        assert!(calls.begin_m68k_to_powerpc_with_operation(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: 0x1000,
+                rtoc: 0x2000,
+            },
+            crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
+            0x3000,
+            0x4000,
+            None,
+            ManagerContinuation::Menu(MenuManagerContinuation::Hook(operation.clone())),
+        ));
+        assert!(tracking.bind_menu_hook(key, operation.completion.clone()));
+
+        let mut execution = M68kExecution::new(&calls);
+        execution.cpu.write_reg(Register::PC, 0xaaaa);
+        execution.cpu.write_reg(Register::A7, 0xbbbb);
+        let mut native = ppc::PpcCpu::new();
+        assert!(calls
+            .activate_powerpc_with_classic_caller(&mut native, &mut execution.cpu, 0x5000,)
+            .is_some());
+        native.pc = 0x5004;
+        assert!(!calls.complete_powerpc_for_m68k(&mut native));
+        assert_eq!(tracking.menu_hook_key(), Some(key));
+        native.pc = 0x5000;
+        assert!(calls.complete_powerpc_for_m68k(&mut native));
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), None);
+
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        assert!(execution.resume_after_powerpc(&mut memory));
+        assert_eq!(
+            (
+                execution.cpu.read_reg(Register::PC),
+                execution.cpu.read_reg(Register::A7),
+            ),
+            (0x3000, 0x4000),
+        );
+        assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(call));
+        let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
+        *tracking.context_mut() = MenuTrackingContext::default();
+        drop(resumed);
+        drop(entry);
+        assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn native_task_handoff_restores_classic_status_fpu_and_frame_state() {
+        use crate::cpu::{CpuOps, StepResult};
+        use crate::guest_call::{CooperativeThread, ExecutionTaskId, ThreadStorage};
+        use crate::memory::{MacMemoryBus, MemoryBus};
+
+        for just_reset in [false, true] {
+            let calls = SharedGuestCallStack::default();
+            calls.start_native_engine();
+            assert!(calls.bind_task_entry_isa(ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+            let mut engine = M68kExecution::new(&calls);
+            engine.cpu.core.set_sr(0x250a);
+            engine.cpu.core.fpr = std::array::from_fn(|i| m68k::fpu::FloatX80 {
+                mantissa: 0x8000_0000_0000_0021 + i as u64,
+                sign_exp: 0xffff,
+            });
+            engine.cpu.core.fpcr = 0x20;
+            engine.cpu.core.fpsr = 0x0800_0000;
+            engine.cpu.core.fpiar = 0x0010_1000;
+            engine.cpu.core.fpu_just_reset = just_reset;
+            engine.cpu.write_reg(Register::PC, 0x0010_0000);
+            engine.cpu.write_reg(Register::A0, 0x0010_2000);
+            engine.cpu.write_reg(Register::A7, 0x0010_8000);
+            let mut saved = CooperativeThread::capture(&engine.cpu);
+            // A result may update CCR after the extended snapshot was taken.
+            saved.ccr = 0x11;
+            let worker = calls
+                .create_classic_thread(
+                    saved.clone(),
+                    ThreadStorage {
+                        stack_base: 0x0010_4000,
+                        stack_limit: 0x0010_9000,
+                        ..Default::default()
+                    },
+                    false,
+                    |_| true,
+                )
+                .unwrap();
+
+            engine.cpu.core.set_sr(0);
+            engine.cpu.core.fpr.fill(Default::default());
+            engine.cpu.core.fpcr = 0;
+            engine.cpu.core.fpsr = 0;
+            engine.cpu.core.fpiar = 0;
+            engine.cpu.core.fpu_just_reset = !just_reset;
+            engine.cpu.write_reg(Register::A7, 0x0010_3000);
+            let untouched = CooperativeThread::capture(&engine.cpu);
+            let mut native = ppc::PpcCpu::new();
+            native.lr = 0x1234;
+            assert_eq!(
+                calls.yield_native_thread(&mut native, worker.thread_id()),
+                Ok(true)
+            );
+            assert_eq!(CooperativeThread::capture(&engine.cpu), untouched);
+            assert!(calls.has_classic_task_handoff());
+            engine.apply_task_handoff();
+            assert!(!calls.has_classic_task_handoff());
+            assert_eq!(engine.cpu.core.get_sr(), 0x2511);
+            assert_eq!(engine.cpu.core.a(7), saved.a_regs[7]);
+            let mut expected = saved.extended.unwrap();
+            expected.sr = 0x2511;
+            assert_eq!(engine.cpu.capture_extended_context(), Some(expected));
+
+            // Check the frame through a guest FSAVE instruction, not just
+            // the implementation's null/idle bookkeeping bit.
+            let mut bus = MacMemoryBus::new(0x400000);
+            bus.write_word(0x0010_0000, 0xf310); // FSAVE (A0)
+            bus.write_long(0x0010_2000, 0xdead_beef);
+            assert!(matches!(engine.cpu.step(&mut bus), StepResult::Ok));
+            assert_eq!(bus.read_long(0x0010_2000) == 0, just_reset);
+            let after = CooperativeThread::capture(&engine.cpu);
+            engine.apply_task_handoff();
+            assert_eq!(CooperativeThread::capture(&engine.cpu), after);
+        }
+    }
 
     #[test]
     fn relaunch_waits_for_the_bound_process_calls_to_finish() {

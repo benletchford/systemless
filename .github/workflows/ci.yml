@@ -32,12 +32,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Keep routine CI on Linux; release-please squash commits get the full
-        # cross-platform matrix.
+        # Keep routine CI on Linux; releases and explicitly labelled PRs get
+        # the full cross-platform matrix.
         os: >-
           ${{ fromJSON(
-            github.event_name == 'push' &&
-            startsWith(github.event.head_commit.message, 'chore(master): release ') &&
+            (contains(github.event.pull_request.labels.*.name, 'cross-platform') ||
+             github.event_name == 'push' &&
+             startsWith(github.event.head_commit.message, 'chore(master): release ')) &&
             '["ubuntu-latest","macos-latest","windows-latest"]' ||
             '["ubuntu-latest"]'
           ) }}
@@ -52,6 +53,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs can restore default-branch caches; their own copies cannot be
+          # reused by other PRs and compete for the repository cache budget.
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       # Compile everything (lib + the GUI binary, all features) on each OS so
       # platform-specific breakage in winit/softbuffer/cpal is caught early.
@@ -62,18 +67,33 @@ jobs:
       - name: Run library tests
         run: cargo test --lib --features test-support
 
-      - name: Run toolbox showcase integration test (68k)
-        run: cargo test --test toolbox_showcase
+      - name: Run desktop tests
+        run: cargo test --locked --bin systemless
 
-      - name: Run toolbox showcase integration test (PowerPC)
+      # Both Systemless runtime configurations use this exact optimized executable.
+      # Keep ordinary library/desktop tests in the checked debug profile above.
+      - name: Compile optimized toolbox showcase tests
+        run: cargo test --locked --profile ci-test --test toolbox_showcase --no-run
+
+      - name: Run classic showcase assertions (68k)
+        env:
+          SYSTEMLESS_VERIFY_REVIEW_GALLERY: 1
+        run: cargo test --locked --profile ci-test --test toolbox_showcase
+
+      - name: Run classic showcase assertions (PowerPC)
         env:
           SYSTEMLESS_PREFER_POWERPC: 1
-        run: cargo test --test toolbox_showcase
+          SYSTEMLESS_VERIFY_REVIEW_GALLERY: 1
+        run: cargo test --locked --profile ci-test --test toolbox_showcase
 
-      - name: Run toolbox showcase integration test (Systemless theme)
-        env:
-          SYSTEMLESS_TOOLBOX_THEME: systemless-default
-        run: cargo test --locked --test toolbox_showcase
+      - name: Upload failed showcase frames
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: toolbox-showcase-failure
+          path: /tmp/systemless-toolbox-showcase-*.png
+          if-no-files-found: ignore
+          retention-days: 7
 
   checks:
     name: headless & package
@@ -88,6 +108,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs can restore default-branch caches; their own copies cannot be
+          # reused by other PRs and compete for the repository cache budget.
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       - name: Verify reproducible toolbox showcase archive
         run: ./tests/toolbox-showcase/build.sh --verify
@@ -148,6 +172,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs can restore default-branch caches; their own copies cannot be
+          # reused by other PRs and compete for the repository cache budget.
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
       # Non-blocking for now: the tree is not yet rustfmt-clean and clippy
       # reports pre-existing warnings. Drop `continue-on-error` on each step

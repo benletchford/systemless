@@ -1,9 +1,8 @@
 //! UI theme contract for dialog, menu, control, and text rendering.
 //!
 //! The first boundary is intentionally semantic and non-invasive:
-//! `systemless-default` is the standard presentation provider, while
-//! `classic-system7` preserves the original renderer for compatibility and
-//! reference snapshots. Guest-visible Toolbox behavior remains outside this
+//! `classic-system7` is the standard presentation provider. The optional
+//! `systemless-default` provider remains available for explicit selection. Guest-visible Toolbox behavior remains outside this
 //! boundary.
 
 pub const CLASSIC_SYSTEM7_THEME: &str = "classic-system7";
@@ -203,8 +202,16 @@ impl UiTheme for ClassicSystem7Theme {
             },
             selection: Rgb8 { r: 0, g: 0, b: 0 },
             accent: Rgb8 { r: 0, g: 0, b: 0 },
-            desktop_light: Rgb8 { r: 255, g: 255, b: 255 },
-            desktop_dark: Rgb8 { r: 0, g: 0, b: 0 },
+            desktop_light: Rgb8 {
+                r: 223,
+                g: 246,
+                b: 255,
+            },
+            desktop_dark: Rgb8 {
+                r: 223,
+                g: 246,
+                b: 255,
+            },
         }
     }
 

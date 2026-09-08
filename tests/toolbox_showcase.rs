@@ -95,20 +95,12 @@ const ITEM_FILE_QUIT: i16 = 4;
 const ITEM_APPLE_ABOUT: i16 = 1;
 
 const REFERENCE_UPDATE_ENV: &str = "SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES";
-const SHOWCASE_THEME_ENV: &str = "SYSTEMLESS_TOOLBOX_THEME";
 
 fn prefer_powerpc() -> bool {
     matches!(
         std::env::var("SYSTEMLESS_PREFER_POWERPC").ok().as_deref(),
         Some("1" | "true" | "True" | "TRUE" | "yes" | "Yes" | "YES")
     )
-}
-
-fn showcase_theme() -> UiThemeId {
-    std::env::var(SHOWCASE_THEME_ENV).map_or(UiThemeId::ClassicSystem7, |theme| {
-        UiThemeId::parse(&theme)
-            .unwrap_or_else(|error| panic!("invalid {SHOWCASE_THEME_ENV}: {error}"))
-    })
 }
 
 fn menu_item_checked(snapshot: &GuestMenuSnapshot, menu_id: i16, item_number: i16) -> bool {
@@ -339,20 +331,14 @@ fn is_dark_chrome(rgb: [u8; 3]) -> bool {
 }
 
 fn reference_path(powerpc: bool, filename: &str) -> PathBuf {
-    let theme = showcase_theme();
-    assert!(
-        theme == UiThemeId::ClassicSystem7 || !powerpc,
-        "the Systemless theme reference set currently targets the 68K HLE adapter"
-    );
+    let profile = if powerpc {
+        "systemless-classic-ppc"
+    } else {
+        "systemless-classic-68k"
+    };
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/toolbox-showcase/reference")
-        .join(if theme == UiThemeId::SystemlessDefault {
-            "systemless-theme-68k"
-        } else if powerpc {
-            "systemless-ppc"
-        } else {
-            "systemless-68k"
-        })
+        .join(profile)
         .join(filename)
 }
 
@@ -402,7 +388,27 @@ fn assert_resource_browser_snapshot(runner: &mut FixtureRunner, loaded_id: Optio
     }
 }
 
+fn review_presentation_enabled() -> bool {
+    std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR").is_some()
+        || std::env::var_os("SYSTEMLESS_VERIFY_REVIEW_GALLERY").is_some()
+}
+
+fn prepare_review_presentation(runner: &mut FixtureRunner) {
+    let d = runner.dispatcher();
+    let mode = d.screen_mode;
+    let palette =
+        systemless::display::rgba_palette_from_clut_with_gamma(&d.device_clut, &d.device_gamma)
+            .map(|word| {
+                let [r, g, b, _] = word.to_le_bytes();
+                [r, g, b]
+            });
+    runner.bus_mut().prepare_outline_presentation(mode, palette);
+}
+
 fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
+    if review_presentation_enabled() {
+        prepare_review_presentation(runner);
+    }
     runner.composite_frame();
     let screen_mode = runner.dispatcher().screen_mode;
     let (_, _, width, height, _) = screen_mode;
@@ -420,15 +426,46 @@ fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
 }
 
 fn write_rgb(path: &Path, width: u32, height: u32, rgb: Vec<u8>) {
-    let image = image::RgbImage::from_raw(width, height, rgb)
-        .expect("rendered RGB buffer must match its dimensions");
-    image
-        .save(path)
+    let file = std::fs::File::create(path)
+        .unwrap_or_else(|error| panic!("failed to create {}: {error}", path.display()));
+    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+        file,
+        image::codecs::png::CompressionType::Best,
+        image::codecs::png::FilterType::Adaptive,
+    );
+    image::ImageEncoder::write_image(encoder, &rgb, width, height, image::ExtendedColorType::Rgb8)
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
 }
 
 fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
     let (width, height, actual) = rendered_rgb(runner);
+    if let Some(directory) = std::env::var_os("SYSTEMLESS_REVIEW_GALLERY_DIR") {
+        let (w, h, rgb, glyphs) = runner.bus().outline_presentation_rgb().unwrap();
+        assert_eq!((w, h), (width * 4, height * 4));
+        assert!(glyphs > 0, "review capture must contain real outline draws");
+        let guest = image::RgbImage::from_raw(width, height, actual.clone()).unwrap();
+        assert_ne!(
+            &rgb,
+            image::imageops::resize(&guest, w, h, image::imageops::FilterType::Nearest).as_raw(),
+            "review capture must not merely enlarge guest pixels: {filename}"
+        );
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        write_rgb(&directory.join(filename), w, h, rgb);
+    }
+    if std::env::var_os("SYSTEMLESS_VERIFY_REVIEW_GALLERY").is_some() {
+        let (w, h, rgb, _) = runner.bus().outline_presentation_rgb().unwrap();
+        let profile = if runner.is_powerpc_app() {
+            "systemless-classic-ppc"
+        } else {
+            "systemless-classic-68k"
+        };
+        let reference = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/toolbox-showcase/review")
+            .join(profile)
+            .join(filename);
+        compare_reference_rgb(&reference, filename, runner.is_powerpc_app(), w, h, rgb, 4);
+    }
     let reference = reference_path(runner.is_powerpc_app(), filename);
 
     if update_references() {
@@ -439,6 +476,26 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         return;
     }
 
+    compare_reference_rgb(
+        &reference,
+        filename,
+        runner.is_powerpc_app(),
+        width,
+        height,
+        actual,
+        1,
+    );
+}
+
+fn compare_reference_rgb(
+    reference: &Path,
+    filename: &str,
+    powerpc: bool,
+    width: u32,
+    height: u32,
+    actual: Vec<u8>,
+    scale: u32,
+) {
     let expected = image::open(&reference)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", reference.display()))
         .to_rgb8();
@@ -460,8 +517,8 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
             (136, 430, 150, 492),
             (198, 174, 211, 252),
         ] {
-            for v in top..bottom {
-                for h in left..right {
+            for v in top * scale..bottom * scale {
+                for h in left * scale..right * scale {
                     let offset = ((v * width + h) * 3) as usize;
                     comparison_actual[offset..offset + 3]
                         .copy_from_slice(&expected.as_raw()[offset..offset + 3]);
@@ -480,12 +537,8 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         .filter(|(expected, actual)| expected != actual)
         .count();
     let actual_path = std::env::temp_dir().join(format!(
-        "systemless-toolbox-showcase-{}-{filename}",
-        if runner.is_powerpc_app() {
-            "ppc"
-        } else {
-            "68k"
-        }
+        "systemless-toolbox-showcase-{}-{scale}x-{filename}",
+        if powerpc { "ppc" } else { "68k" }
     ));
     write_rgb(&actual_path, width, height, actual);
     panic!(
@@ -494,6 +547,17 @@ fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
         width * height,
         actual_path.display()
     );
+}
+
+fn wait_for_page_event_loop(runner: &mut FixtureRunner, label: &str) {
+    let previous = runner.event_manager_snapshot().last_record;
+    // Sprite presentation precedes the validation text and DrawControls.
+    // A fresh null event proves the guest finished that entire draw and
+    // returned to its top-level WaitNextEvent loop on either CPU adapter.
+    step_until(runner, label, |runner| {
+        let current = runner.event_manager_snapshot().last_record;
+        current != previous && current.is_some_and(|event| event.what == 0)
+    });
 }
 
 fn run_ticks(runner: &mut FixtureRunner, label: &str, ticks: u32) {
@@ -1027,9 +1091,8 @@ fn assert_popup_selected_title_pixels(
     let title_left = 247;
     for v in (win_top + 140)..(win_top + 157) {
         for h in (win_left + title_left)..(win_left + 390) {
-            let offset = (usize::try_from(v).unwrap() * width as usize
-                + usize::try_from(h).unwrap())
-                * 3;
+            let offset =
+                (usize::try_from(v).unwrap() * width as usize + usize::try_from(h).unwrap()) * 3;
             let pixel = &rgb[offset..offset + 3];
             if pixel.iter().all(|channel| *channel < 200) {
                 dark_pixels += 1;
@@ -1046,7 +1109,7 @@ fn assert_popup_selected_title_pixels(
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
     let powerpc = prefer_powerpc();
-    runner.set_ui_theme(showcase_theme());
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner
         .set_powerpc_screen_depth(if powerpc { 16 } else { 8 })
         .expect("selected PowerPC fixture screen depth must be supported");
@@ -1061,6 +1124,9 @@ fn test_toolbox_showcase() {
     );
 
     init_game(&mut runner, &app);
+    if review_presentation_enabled() {
+        prepare_review_presentation(&mut runner);
+    }
     assert_eq!(
         runner.is_powerpc_app(),
         powerpc,
@@ -1406,7 +1472,7 @@ fn test_toolbox_showcase() {
     // occlusion assertion independent of the exact font/chrome raster.
     let initial_overlap = screen_rgb(&mut runner, 330, 400);
     let initial_stack_body = screen_rgb(&mut runner, 430, 520);
-    let initial_aux_body = screen_rgb(&mut runner, 220, 240);
+    let initial_aux_body = screen_rgb(&mut runner, 280, 240);
     let initial_aux_edge = screen_rgb(&mut runner, 210, 230);
     assert_eq!(
         initial_overlap, initial_stack_body,
@@ -1783,7 +1849,7 @@ fn test_toolbox_showcase() {
     assert_eq!(initial_te.text, original_text);
     assert_eq!(initial_te.selection, (0, 0));
     assert!(initial_te.active);
-    assert_eq!(initial_te.line_count, 6);
+    assert_eq!(initial_te.line_count, 5);
     assert_reference_frame(&mut runner, "10-te-initial.png");
 
     drag_mouse(
@@ -1795,8 +1861,8 @@ fn test_toolbox_showcase() {
     );
     run_ticks(&mut runner, "TextEdit mouse selection", 1);
     let mouse_selection = showcase_textedit(&mut runner);
-    // Both native Mac OS 8.1 oracles select offsets 0 through 15 for this drag.
-    assert_eq!(mouse_selection.selection, (0, 15));
+    // The bundled outline advances place this drag after character 16.
+    assert_eq!(mouse_selection.selection, (0, 16));
     assert_eq!(mouse_selection.text, original_text);
     assert!(mouse_selection.active);
     assert_reference_frame(&mut runner, "10-te-mouse-selected.png");
@@ -2470,8 +2536,9 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     let page_dialog_sample = screen_rgb(&mut runner, 212, 223);
     let page_save_dialog_sample = screen_rgb(&mut runner, 227, 221);
-    let legacy_get_sample_point = if powerpc { (100, 100) } else { (50, 0) };
-    let legacy_save_sample_point = if powerpc { (100, 100) } else { (227, 221) };
+    // Sample the native list border, outside any font-dependent ink.
+    let legacy_get_sample_point = if powerpc { (100, 235) } else { (50, 0) };
+    let legacy_save_sample_point = if powerpc { (71, 200) } else { (227, 221) };
     let page_legacy_get_sample = screen_rgb(
         &mut runner,
         legacy_get_sample_point.0,
@@ -2658,6 +2725,7 @@ fn test_toolbox_showcase() {
             && initial_second_body[0] > initial_second_body[2].saturating_add(80),
         "initial CopyDeepMask sprite must preserve its red source color: rgb={initial_second_body:?}"
     );
+    wait_for_page_event_loop(&mut runner, "initial sprite page redraw");
     let initial_frame = rendered_rgb(&mut runner).2;
     assert_reference_frame(&mut runner, "26-sprites.png");
 
@@ -2686,6 +2754,7 @@ fn test_toolbox_showcase() {
         initial_second_body, animated_second_body,
         "Animate Sprite must change the CopyDeepMask sprite frame"
     );
+    wait_for_page_event_loop(&mut runner, "animated sprite page redraw");
     let animated_frame = rendered_rgb(&mut runner).2;
     assert_ne!(
         initial_frame, animated_frame,
@@ -2741,6 +2810,7 @@ fn test_toolbox_showcase() {
         "ScrollRect must vacate the sprite's former center"
     );
     runner.set_mouse_position(550, 760);
+    wait_for_page_event_loop(&mut runner, "scrolled sprite page redraw");
     assert_reference_frame(&mut runner, "28-sprites-scrolled.png");
 
     // Rebuild the original source after animation and scrolling. The native
@@ -2754,6 +2824,7 @@ fn test_toolbox_showcase() {
         (initial_first_body, initial_second_body),
         "reset must restore both masked sprite colors"
     );
+    wait_for_page_event_loop(&mut runner, "reset sprite page redraw");
     let (reset_width, _, reset_frame) = rendered_rgb(&mut runner);
     for v in (win_top + 80)..(win_top + 260) {
         let start = (v as usize * reset_width as usize + (win_left + 24) as usize) * 3;
@@ -3168,4 +3239,358 @@ fn test_toolbox_showcase() {
     assert_popup_selected_title_pixels(&mut runner, win_top, win_left, "Night Operations");
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "37-popup-lists-selected.png");
+}
+
+/// Regenerate the URW review gallery and verify that presentation preserves
+/// guest pixels against a fresh run with presentation disabled.
+#[test]
+#[ignore = "writes review evidence; see toolbox-showcase/outline-fonts/README.md"]
+fn capture_outline_font_showcase() {
+    let directory = PathBuf::from(
+        std::env::var_os("SYSTEMLESS_FONT_EVIDENCE_DIR")
+            .expect("set SYSTEMLESS_FONT_EVIDENCE_DIR to an output directory"),
+    );
+    assert!(
+        !prefer_powerpc(),
+        "presentation capture supports the 68k renderer"
+    );
+    let pages = [
+        (ITEM_PAGE_GRAPHICS, "graphics.png"),
+        (ITEM_PAGE_CONTROLS, "controls.png"),
+        (ITEM_PAGE_DRAWING, "drawing.png"),
+        (ITEM_PAGE_TEXTEDIT, "textedit.png"),
+        (ITEM_PAGE_STYLED_TEXT, "styled-text.png"),
+    ];
+    let mut guest_frames = Vec::new();
+    for scale in [None, Some(2), Some(4)] {
+        let mut runner = new_runner_with_screen_depth(8);
+        runner.set_ui_theme(UiThemeId::ClassicSystem7);
+        runner.set_app_start_time(3_786_912_000);
+        runner.set_menu_bar_visible(true);
+        let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+        assert!(!app.is_powerpc());
+        init_game(&mut runner, &app);
+        step_until(&mut runner, "outline font startup", |r| {
+            r.window_count() >= 1
+                && menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
+        });
+        wait_for_page_event_loop(&mut runner, "initial graphics paint");
+        if let Some(scale) = scale {
+            let mode = runner.dispatcher().screen_mode;
+            let palette = systemless::display::rgba_palette_from_clut_with_gamma(
+                &runner.dispatcher().device_clut,
+                &runner.dispatcher().device_gamma,
+            )
+            .map(|word| {
+                let [r, g, b, _] = word.to_le_bytes();
+                [r, g, b]
+            });
+            if scale == 4 {
+                runner.bus_mut().prepare_outline_presentation(mode, palette);
+            } else {
+                runner
+                    .bus_mut()
+                    .enable_outline_presentation(mode, palette, scale);
+            }
+            std::fs::create_dir_all(directory.join(format!("{scale}x"))).unwrap();
+        }
+        for (index, &(page, filename)) in pages.iter().enumerate() {
+            assert!(runner.select_guest_menu_item(MENU_PAGES, page));
+            step_until(&mut runner, filename, |r| {
+                menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, page)
+            });
+            wait_for_page_event_loop(&mut runner, filename);
+            let (width, height, pixels) = rendered_rgb(&mut runner);
+            if let Some(scale) = scale {
+                assert_eq!(
+                    pixels, guest_frames[index],
+                    "presentation changed guest pixels: {filename}"
+                );
+                let (w, h, native, glyphs) = runner.bus().outline_presentation_rgb().unwrap();
+                assert!(glyphs > 0, "capture must execute real outline draws");
+                assert_eq!((w, h), (width * scale, height * scale));
+                let guest = image::RgbImage::from_raw(width, height, pixels).unwrap();
+                let enlarged =
+                    image::imageops::resize(&guest, w, h, image::imageops::FilterType::Nearest);
+                assert_ne!(&native, enlarged.as_raw(), "must rasterize fresh outlines");
+                write_rgb(
+                    &directory.join(format!("{scale}x")).join(filename),
+                    w,
+                    h,
+                    native,
+                );
+                eprintln!("{scale}x/{filename}: {glyphs} cumulative outline draws");
+            } else {
+                guest_frames.push(pixels);
+            }
+            if page == ITEM_PAGE_STYLED_TEXT {
+                let (top, left, _, _) = runner.window_bounds();
+                assert_styled_text_page_rendered(&mut runner, top, left);
+            }
+            if page == ITEM_PAGE_TEXTEDIT {
+                assert!(!showcase_textedit(&mut runner).text.is_empty());
+            }
+        }
+    }
+}
+
+fn step_gui_until<F: FnMut(&mut FixtureRunner) -> bool>(
+    runner: &mut FixtureRunner,
+    label: &str,
+    mut condition: F,
+) {
+    for _ in 0..2000 {
+        if condition(runner) {
+            return;
+        }
+        let target = runner.guest_tick() + 1;
+        assert!(runner.run_gui_slice_with_audio(10_000, target, 0).1);
+        prepare_review_presentation(runner);
+        runner.composite_frame();
+    }
+    panic!("timeout: {label}");
+}
+
+fn finish_gui_paint(runner: &mut FixtureRunner) {
+    let previous = runner.event_manager_snapshot().last_record;
+    step_gui_until(runner, "page paint", |runner| {
+        let current = runner.event_manager_snapshot().last_record;
+        current != previous && current.is_some_and(|event| event.what == 0)
+    });
+}
+
+fn select_gui_page(runner: &mut FixtureRunner, page: i16) {
+    assert!(runner.select_guest_menu_item(MENU_PAGES, page));
+    step_gui_until(runner, "page selection", |r| {
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, page)
+    });
+    finish_gui_paint(runner);
+}
+/// Desktop frames can observe CLUT changes after a page has already painted.
+/// A fresh page must retain the same outlines as a later full window update.
+#[test]
+fn first_page_outlines_survive_palette_changes() {
+    fn text_pixels(runner: &mut FixtureRunner, page: i16) -> Vec<u8> {
+        runner.composite_frame();
+        let (top, left, _, _) = runner.window_bounds();
+        let (w, _, rgb, _) = runner.bus().outline_presentation_rgb().unwrap();
+        let mut crop = Vec::new();
+        // Compare the heading plus list/editor text. The editor's first line
+        // contains a blinking caret, so compare the unchanged following lines.
+        let body = if page == ITEM_PAGE_TEXTEDIT {
+            94..158
+        } else {
+            82..220
+        };
+        for y in (16..40).chain(body) {
+            for sy in 0..4 {
+                let start =
+                    (((top + y) as usize * 4 + sy) * w as usize + (left + 24) as usize * 4) * 3;
+                crop.extend_from_slice(&rgb[start..start + 486 * 4 * 3]);
+            }
+        }
+        crop
+    }
+    fn capture(runner: &FixtureRunner, filename: &str) {
+        if let Some(directory) = std::env::var_os("SYSTEMLESS_FIRST_PAINT_EVIDENCE_DIR") {
+            let directory = PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            let (w, h, rgb, _) = runner.bus().outline_presentation_rgb().unwrap();
+            write_rgb(&directory.join(filename), w, h, rgb);
+        }
+    }
+    let mut runner = new_runner_with_screen_depth(8);
+    runner
+        .set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 })
+        .unwrap();
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
+    runner.set_menu_bar_policy(systemless::runner::MenuBarPolicy::ForceHidden);
+    runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
+        prefer_powerpc(),
+    ));
+    runner.set_app_start_time(3_786_912_000);
+    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+    init_game(&mut runner, &app);
+    prepare_review_presentation(&mut runner);
+    step_gui_until(&mut runner, "first outline page", |r| r.window_count() >= 1);
+    finish_gui_paint(&mut runner);
+    for (target, name) in [
+        (ITEM_PAGE_DRAWING, "drawing"),
+        (ITEM_PAGE_LISTS, "lists"),
+        (ITEM_PAGE_TEXTEDIT, "textedit"),
+    ] {
+        select_gui_page(&mut runner, ITEM_PAGE_PALETTES);
+        select_gui_page(&mut runner, target);
+        if target == ITEM_PAGE_DRAWING {
+            let (top, left, _, _) = runner.window_bounds();
+            let (w, _, rgb, _) = runner.bus().outline_presentation_rgb().unwrap();
+            let mut detailed = 0;
+            for y in top + 54..top + 65 {
+                for x in left + 28..left + 215 {
+                    let first = ((y as usize * 4) * w as usize + x as usize * 4) * 3;
+                    if (0..4).any(|sy| {
+                        (0..4).any(|sx| {
+                            let i = first + (sy * w as usize + sx) * 3;
+                            rgb[i..i + 3] != rgb[first..first + 3]
+                        })
+                    }) {
+                        detailed += 1;
+                    }
+                }
+            }
+            assert!(
+                detailed > 100,
+                "drawing a picture discarded surrounding text detail: {detailed}"
+            );
+        }
+        let fresh = text_pixels(&mut runner, target);
+        capture(&runner, &format!("{name}-fresh.png"));
+        // Exercise the same screen -> offscreen -> covered screen -> restore
+        // path used by games caching text. No guest redraw is allowed to repair it.
+        let before_copy = runner.bus().outline_presentation_rgb().unwrap().2;
+        let (base, row_bytes, _, height, _) = runner.dispatcher().screen_mode;
+        let len = row_bytes * u32::from(height);
+        let scratch = runner.bus_mut().alloc(len);
+        runner.bus_mut().block_move(base, scratch, len);
+        systemless::memory::MemoryBus::fill_bytes(runner.bus_mut(), base, len, 0);
+        runner.bus_mut().block_move(scratch, base, len);
+        let restored = runner.bus().outline_presentation_rgb().unwrap().2;
+        capture(&runner, &format!("{name}-after-copy.png"));
+        assert!(
+            restored == before_copy,
+            "{name} must retain sharp pixels through an offscreen round trip without repainting; first differing byte: {:?}",
+            restored.iter().zip(&before_copy).position(|(a, b)| a != b)
+        );
+        runner.bus_mut().free(scratch);
+
+        let (top, left, _, _) = runner.window_bounds();
+        drag_mouse(&mut runner, top - 10, left + 100, top - 5, left + 100);
+        finish_gui_paint(&mut runner);
+        assert_ne!(runner.window_bounds().0, top, "drag did not move window");
+        assert!(
+            fresh == text_pixels(&mut runner, target),
+            "fresh {name} must be as sharp as drag repaint"
+        );
+        capture(&runner, &format!("{name}-after-drag.png"));
+        if target == ITEM_PAGE_TEXTEDIT {
+            let original = showcase_textedit(&mut runner).text;
+            runner.push_key_down(0x07, b'x');
+            runner.push_key_up(0x07, b'x');
+            step_gui_until(&mut runner, "typed character", |r| {
+                showcase_textedit(r).text.len() == original.len() + 1
+            });
+            finish_gui_paint(&mut runner);
+            runner.push_key_down(0x33, 8);
+            runner.push_key_up(0x33, 8);
+            step_gui_until(&mut runner, "deleted character", |r| {
+                showcase_textedit(r).text == original
+            });
+            finish_gui_paint(&mut runner);
+            assert!(
+                fresh == text_pixels(&mut runner, target),
+                "typing must not repair missing first-paint detail"
+            );
+        }
+    }
+}
+
+#[test]
+fn main_window_shrink_repaints_exposed_desktop() {
+    let mut runner = new_runner_with_screen_depth(8);
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
+    runner.set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 }).unwrap();
+    runner.set_menu_bar_visible(true);
+    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+    init_game(&mut runner, &app);
+    prepare_review_presentation(&mut runner);
+    step_until(&mut runner, "graphics ready", |r| {
+        let [red, green, blue] = screen_rgb(r, 145, 305);
+        r.window_count() > 0 && red > green.saturating_add(80) && red > blue.saturating_add(80)
+    });
+    let snapshots = runner.window_stack_snapshot();
+    let before = window_snapshot(&snapshots, "Toolbox Showcase").bounds;
+    let desktop = screen_rgb(&mut runner, 450, 650);
+    drag_mouse(&mut runner, before.2 - 3, before.3 - 3, before.2 - 100, before.3 - 150);
+    run_ticks(&mut runner, "settle shrink", 5);
+    let snapshots = runner.window_stack_snapshot();
+    let after = window_snapshot(&snapshots, "Toolbox Showcase").bounds;
+    assert_eq!((after.0, after.1), (before.0, before.1));
+    assert!(after.2 < before.2 && after.3 < before.3);
+    for (v, h) in [(80, 550), (390, 100), (390, 550)] {
+        assert_eq!(screen_rgb(&mut runner, v, h), desktop,
+            "shrinking must repaint exposed desktop at ({v}, {h})");
+    }
+    assert_windows_repainted(&mut runner, "main window shrink");
+    assert_reference_frame(&mut runner, "01-graphics-shrunk.png");
+    drag_mouse(&mut runner, before.0 - 10, before.1 + 100, 300, before.1 + 70);
+    run_ticks(&mut runner, "move shrunk window", 2);
+    assert_eq!(screen_rgb(&mut runner, 80, 100), desktop,
+        "moving the shrunk window must not restore its former contents");
+}
+
+#[test]
+fn textedit_repeated_input_and_selection_complete() {
+    let mut runner = new_runner_with_screen_depth(8);
+    runner
+        .set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 })
+        .unwrap();
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
+    runner.set_menu_bar_visible(true);
+    runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
+        prefer_powerpc(),
+    ));
+    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+    init_game(&mut runner, &app);
+    prepare_review_presentation(&mut runner);
+    step_gui_until(&mut runner, "startup", |r| r.window_count() > 0);
+    finish_gui_paint(&mut runner);
+    select_gui_page(&mut runner, ITEM_PAGE_DRAWING);
+    select_gui_page(&mut runner, ITEM_PAGE_TEXTEDIT);
+    let original = showcase_textedit(&mut runner).text;
+    // Set this to 300 for the sustained desktop-batch performance probe.
+    let count = std::env::var("SYSTEMLESS_TEXTEDIT_STRESS_KEYS")
+        .ok()
+        .map(|value| value.parse::<usize>().unwrap())
+        .unwrap_or(48);
+    let started = std::time::Instant::now();
+    for edit in 0..count {
+        let byte = b" growing text "[edit % 14];
+        runner.push_key_down(0x07, byte);
+        runner.push_key_up(0x07, byte);
+        for _ in 0..120 {
+            let tick = runner.guest_tick() + 1;
+            let batch = if prefer_powerpc() { 1_995_012 } else { 10_000 };
+            assert!(runner.run_gui_slice_with_audio(batch, tick, 0).1);
+            prepare_review_presentation(&mut runner);
+            runner.composite_frame();
+            if showcase_textedit(&mut runner).text.len() == original.len() + edit + 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            showcase_textedit(&mut runner).text.len(),
+            original.len() + edit + 1,
+            "text input stopped progressing at key {edit}"
+        );
+    }
+    eprintln!(
+        "TextEdit: {count} keys completed in {:?}",
+        started.elapsed()
+    );
+    finish_gui_paint(&mut runner);
+    let (top, left, _, _) = runner.window_bounds();
+    drag_mouse(&mut runner, top + 82, left + 35, top + 82, left + 110);
+    finish_gui_paint(&mut runner);
+    let selected = showcase_textedit(&mut runner);
+    assert!(selected.selection.1 > selected.selection.0);
+    runner.push_key_down(0x33, 8);
+    runner.push_key_up(0x33, 8);
+    step_gui_until(&mut runner, "delete selection", |r| {
+        showcase_textedit(r).text.len() < selected.text.len()
+    });
+    finish_gui_paint(&mut runner);
+    assert!(runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_GRAPHICS));
+    step_gui_until(&mut runner, "menu after editing", |r| {
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
+    });
 }

@@ -1,10 +1,10 @@
 [package]
 name = "systemless"
-version = "0.34.1"
+version = "0.39.1"
 edition = "2021"
 rust-version = "1.93"
-# Emulator code is GPL-3.0-or-later; the bitmap font artwork in
-# src/quickdraw/fonts/pixel_font/ is additionally under OFL-1.1 (see OFL.txt).
+# Emulator code is GPL-3.0-or-later.
+# Bundled URW and Noto font assets are under OFL-1.1.
 license = "GPL-3.0-or-later AND OFL-1.1"
 description = "High-Level Emulation for classic Macintosh applications"
 readme = "README.md"
@@ -23,21 +23,21 @@ include = [
     "/src/**",
     "/*.md",
     "/LICENSE",
-    "/OFL.txt",
     "/.github/assets/**",
     "/tests/toolbox-showcase/reference/native-audio/*.u8",
 ]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-m68k = { version = "0.11.6" }
-ppc = "0.5.0"
+m68k = { version = "0.13.0" }
+ppc = "0.6.0"
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ab_glyph = "0.2.32"
 ttf-parser = "0.25.1"
+skrifa = "0.43.2"
+zeno = "0.3.3"
 
 # Windowing (optional, for graphical runner)
 winit = { version = "0.30", optional = true }
@@ -112,3 +112,13 @@ tempfile = "3"
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# Execute emulator-heavy integration tests efficiently without production LTO
+# costs or dropping the runtime checks exercised by ordinary debug tests.
+[profile.ci-test]
+inherits = "dev"
+opt-level = 2
+debug = "line-tables-only"
+debug-assertions = true
+overflow-checks = true
+incremental = false

@@ -1,14 +1,15 @@
 //! Toolbox Utility trap handlers (events, Random, Sound, misc).
 
 use crate::cpu::{CpuOps, Register};
-use crate::execution_kernel::ExecutionTaskState;
-use crate::guest_call::CooperativeThread;
-use crate::guest_call::ExecutionTaskId;
+use crate::guest_call::{
+    ClassicRetirement, CooperativeThread, ExecutionTaskId, SharedGuestCallStack, ThreadStorage,
+};
+use crate::guest_procedure::{resolve_same_isa_thread_entry, GuestIsa};
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::get_font_face_scaled;
 use crate::quickdraw::text::{get_font_metrics, get_glyph};
-use crate::thread_manager::ThreadManager;
+use crate::thread_manager::{NewThreadCreationEdge, RetiredThreadStorageEdge, ThreadManager};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -658,7 +659,6 @@ const STANDARD_FILE_GET_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
 const STANDARD_FILE_GET_SEPARATOR_RECT: (i16, i16, i16, i16) = (98, 258, 99, 338);
 const STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110, 258, 131, 338);
 const STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
-const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
 
 #[inline]
 fn return_noerr_and_pop<C: CpuOps>(cpu: &mut C, bytes: u32) -> Result<()> {
@@ -1041,6 +1041,197 @@ fn force_button_true_at_pc() -> Option<u32> {
     })
 }
 
+/// Classic ABI edge for the migrated CFM symbol-query selectors.
+fn dispatch_cfm_symbols<C: CpuOps>(
+    cpu: &mut C,
+    bus: &mut MacMemoryBus,
+    cfm: Option<&crate::cfm::CfmState>,
+    bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
+) -> Result<()> {
+    use crate::cfm::CfmSymbolQuery;
+    let sp = cpu.read_reg(Register::A7);
+    if sp.checked_add(1).is_none() || !bus.is_guest_address_mapped(sp, 2) {
+        cpu.write_reg(Register::D0, (-50i32) as u32);
+        return Ok(());
+    }
+    let selector = bus.read_word(sp);
+    let argument_bytes = match selector {
+        5 => 16,
+        6 => 8,
+        7 => 20,
+        // Unmigrated selectors retain the legacy compatibility stub.
+        _ => return return_noerr(cpu),
+    };
+    let Some(cfm) = cfm else {
+        return Err(Error::UnimplementedTrap(0xAA5A));
+    };
+    let Some(result_slot) = sp.checked_add(2 + argument_bytes) else {
+        cpu.write_reg(Register::D0, (-50i32) as u32);
+        return Ok(());
+    };
+    if result_slot.checked_add(1).is_none()
+        || !bus.is_guest_address_mapped(sp, (2 + argument_bytes) as usize)
+        || !bus.is_guest_address_writable(result_slot, 2)
+    {
+        cpu.write_reg(Register::D0, (-50i32) as u32);
+        return Ok(());
+    }
+    let publish = |bus: &mut MacMemoryBus, writes: &[(u32, &[u8])]| {
+        let success = 0u16.to_be_bytes();
+        let mut writes = writes.to_vec();
+        writes.push((result_slot, &success));
+        bus.try_write_ranges_atomic(&writes)
+    };
+    let result = if selector == 5 {
+        crate::cfm::CfmFindSymbol {
+            connection: bus.read_long(sp + 14),
+            name: bus.read_long(sp + 10),
+            address: bus.read_long(sp + 6),
+            class: bus.read_long(sp + 2),
+        }
+        .complete(&cfm.connections, bus, bindings, publish)
+    } else {
+        let query = if selector == 6 {
+            CfmSymbolQuery::Count {
+                connection: bus.read_long(sp + 6),
+                count: bus.read_long(sp + 2),
+            }
+        } else {
+            CfmSymbolQuery::Indexed {
+                connection: bus.read_long(sp + 18),
+                index: bus.read_long(sp + 14),
+                name: bus.read_long(sp + 10),
+                address: bus.read_long(sp + 6),
+                class: bus.read_long(sp + 2),
+            }
+        };
+        query.complete(&cfm.connections, |writes| publish(bus, writes))
+    };
+    let error = result.err().map_or(0, |error| error.os_error());
+    if error != 0 {
+        // All semantic outputs remain unchanged when their transaction fails.
+        let _ = bus.try_write_word(result_slot, error as u16);
+    }
+    cpu.write_reg(Register::A7, result_slot);
+    cpu.write_reg(Register::D0, error as i32 as u32);
+    Ok(())
+}
+
+struct ClassicNewThreadEdge<'a, C> {
+    dispatcher: &'a mut super::TrapDispatcher,
+    cpu: &'a C,
+    bus: &'a mut MacMemoryBus,
+    thread_entry: u32,
+    thread_param: u32,
+    result_destination: u32,
+    thread_made: u32,
+    result_slot: u32,
+    trampoline: u32,
+}
+
+impl<C: CpuOps> NewThreadCreationEdge for ClassicNewThreadEdge<'_, C> {
+    fn preflight(&mut self, _size: u32) -> std::result::Result<(), i16> {
+        if self.thread_made == 0
+            || self.thread_entry & 1 != 0
+            || !self.bus.is_guest_address_mapped(self.thread_entry, 2)
+            || !self.bus.is_guest_address_writable(self.thread_made, 4)
+            || !self.bus.is_guest_address_writable(self.result_slot, 2)
+            || resolve_same_isa_thread_entry(self.bus, self.thread_entry, 0, GuestIsa::M68k)
+                .is_none()
+        {
+            return Err(-50);
+        }
+        self.trampoline = self.dispatcher.thread_return_trampoline(self.bus);
+        if self.trampoline == 0 {
+            Err(-108)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn allocate_fresh(&mut self, size: u32) -> std::result::Result<ThreadStorage, i16> {
+        let base = self.bus.alloc(size);
+        let Some(limit) = base.checked_add(size) else {
+            self.bus.free(base);
+            return Err(-108);
+        };
+        if base == 0 {
+            return Err(-108);
+        }
+        Ok(ThreadStorage {
+            result_destination: self.result_destination,
+            stack_base: base,
+            stack_limit: limit,
+            managed_pointer: false,
+        })
+    }
+
+    fn prepare_and_publish(
+        &mut self,
+        execution: &SharedGuestCallStack,
+        mut storage: ThreadStorage,
+        suspended: bool,
+    ) -> std::result::Result<Option<ExecutionTaskId>, i16> {
+        storage.result_destination = self.result_destination;
+        let Some(entry_sp) = storage.stack_limit.checked_sub(8).map(|sp| sp & !1) else {
+            return Err(-108);
+        };
+        let overlap = |address: u32, length: u32, other: u32, other_length: u32| {
+            u64::from(address) < u64::from(other) + u64::from(other_length)
+                && u64::from(other) < u64::from(address) + u64::from(length)
+        };
+        if storage.stack_base == 0
+            || storage.stack_limit < storage.stack_base
+            || entry_sp < storage.stack_base
+            || !self.bus.is_guest_address_writable(entry_sp, 8)
+            || overlap(self.thread_made, 4, entry_sp, 8)
+            || overlap(self.result_slot, 2, entry_sp, 8)
+            || overlap(self.thread_made, 4, self.result_slot, 2)
+        {
+            return Err(-50);
+        }
+        let mut thread = CooperativeThread::capture(self.cpu);
+        thread.pc = self.thread_entry;
+        thread.a_regs[7] = entry_sp;
+        let mut frame = [0u8; 8];
+        frame[..4].copy_from_slice(&self.trampoline.to_be_bytes());
+        frame[4..].copy_from_slice(&self.thread_param.to_be_bytes());
+        Ok(
+            execution.create_classic_thread(thread, storage, suspended, |task| {
+                self.bus.try_write_ranges_atomic(&[
+                    (entry_sp, &frame),
+                    (self.thread_made, &task.thread_id().to_be_bytes()),
+                    (self.result_slot, &0u16.to_be_bytes()),
+                ])
+            }),
+        )
+    }
+
+    fn release_fresh(&mut self, storage: ThreadStorage) {
+        self.bus.free(storage.stack_base);
+    }
+
+    fn finish_publication_attempt(&mut self) {}
+}
+
+struct ClassicRetiredThreadStorageEdge<'a> {
+    bus: &'a mut MacMemoryBus,
+    manager: crate::process_context::SharedProcessMemoryManager,
+}
+
+impl RetiredThreadStorageEdge for ClassicRetiredThreadStorageEdge<'_> {
+    fn release_classic(&mut self, stack_base: u32) {
+        self.bus.free(stack_base);
+    }
+
+    fn release_native(&mut self, stack_base: u32) {
+        self.manager
+            .borrow_mut()
+            .native_mut()
+            .dispose_native_ptr(stack_base);
+    }
+}
+
 impl super::TrapDispatcher {
     /// Whether `SystemTask` currently has periodic Desk Manager work to do.
     ///
@@ -1094,90 +1285,21 @@ impl super::TrapDispatcher {
     /// `kApplicationThreadID` from Threads.h — the thread the process
     /// launches on, which owns the process stack rather than a pooled one.
     const APPLICATION_THREAD_ID: u32 = 2;
-    /// `ThreadState` values from Threads.h.
-    const THREAD_STATE_READY: u16 = 0;
-    const THREAD_STATE_STOPPED: u16 = 1;
-    const THREAD_STATE_RUNNING: u16 = 2;
     /// `threadNotFoundErr` and `threadProtocolErr` from Errors.h.
     const THREAD_NOT_FOUND_ERR: i16 = crate::thread_manager::THREAD_NOT_FOUND_ERR;
     const THREAD_PROTOCOL_ERR: i16 = crate::thread_manager::THREAD_PROTOCOL_ERR;
 
-    fn capture_cooperative_thread<C: CpuOps>(
-        cpu: &C,
-        result_destination: u32,
-    ) -> CooperativeThread {
-        let d_regs = [
-            cpu.read_reg(Register::D0),
-            cpu.read_reg(Register::D1),
-            cpu.read_reg(Register::D2),
-            cpu.read_reg(Register::D3),
-            cpu.read_reg(Register::D4),
-            cpu.read_reg(Register::D5),
-            cpu.read_reg(Register::D6),
-            cpu.read_reg(Register::D7),
-        ];
-        let a_regs = [
-            cpu.read_reg(Register::A0),
-            cpu.read_reg(Register::A1),
-            cpu.read_reg(Register::A2),
-            cpu.read_reg(Register::A3),
-            cpu.read_reg(Register::A4),
-            cpu.read_reg(Register::A5),
-            cpu.read_reg(Register::A6),
-            cpu.read_reg(Register::A7),
-        ];
-        CooperativeThread {
-            d_regs,
-            a_regs,
-            pc: cpu.read_reg(Register::PC),
-            ccr: cpu.get_ccr(),
-            result_destination,
-            stack_base: 0,
-            stack_limit: 0,
-            switch_in: (0, 0),
-            switch_out: (0, 0),
-            terminator: (0, 0),
-        }
-    }
-
-    fn install_cooperative_thread<C: CpuOps>(cpu: &mut C, thread: &CooperativeThread) {
-        let d_registers = [
-            Register::D0,
-            Register::D1,
-            Register::D2,
-            Register::D3,
-            Register::D4,
-            Register::D5,
-            Register::D6,
-            Register::D7,
-        ];
-        let a_registers = [
-            Register::A0,
-            Register::A1,
-            Register::A2,
-            Register::A3,
-            Register::A4,
-            Register::A5,
-            Register::A6,
-            Register::A7,
-        ];
-        for (register, value) in d_registers.into_iter().zip(thread.d_regs) {
-            cpu.write_reg(register, value);
-        }
-        for (register, value) in a_registers.into_iter().zip(thread.a_regs) {
-            cpu.write_reg(register, value);
-        }
-        cpu.write_reg(Register::PC, thread.pc);
-        cpu.set_ccr(thread.ccr);
-    }
-
     fn thread_return_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
         if self.thread_return_trampoline == 0 {
             let trampoline = bus.alloc(8);
-            bus.write_word(trampoline, 0x303C); // MOVE.W #$FFFE,D0
-            bus.write_word(trampoline + 2, 0xFFFE);
-            bus.write_word(trampoline + 4, 0xABF2); // _ThreadDispatch
-            bus.write_word(trampoline + 6, 0x4E75); // defensive RTS
+            let code = [0x303Cu16, 0xFFFE, 0xABF2, 0x4E75]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>();
+            if trampoline == 0 || !bus.try_write_ranges_atomic(&[(trampoline, &code)]) {
+                bus.free(trampoline);
+                return 0;
+            }
             self.thread_return_trampoline = trampoline;
         }
         self.thread_return_trampoline
@@ -1204,7 +1326,7 @@ impl super::TrapDispatcher {
                 .cooperative_context(ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID))
                 .is_some()
         {
-            let thread = Self::capture_cooperative_thread(cpu, 0);
+            let thread = CooperativeThread::capture(cpu);
             self.guest_calls.save_cooperative_context(
                 ExecutionTaskId::from_thread_id(Self::APPLICATION_THREAD_ID),
                 thread,
@@ -1214,144 +1336,25 @@ impl super::TrapDispatcher {
             .cooperative_context(ExecutionTaskId::from_thread_id(thread_id))
     }
 
-    /// Save the running thread's registers into its record without
-    /// changing its scheduling state.
-    fn save_current_cooperative_thread<C: CpuOps>(&mut self, cpu: &C) {
-        let current_id = self.guest_calls.current_task().thread_id();
-        let saved = Self::capture_cooperative_thread(cpu, 0);
-        match self.cooperative_thread_snapshot(cpu, current_id) {
-            Some(mut thread) => {
-                thread.d_regs = saved.d_regs;
-                thread.a_regs = saved.a_regs;
-                thread.pc = saved.pc;
-                thread.ccr = saved.ccr;
-                self.guest_calls
-                    .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), thread);
-            }
-            None => {
-                self.guest_calls
-                    .save_cooperative_context(ExecutionTaskId::from_thread_id(current_id), saved);
-            }
-        }
-    }
-
-    /// Pick the next ready thread. `suggested_thread` wins when it names a
-    /// ready thread, matching `YieldToThread`; otherwise the ready queue
-    /// runs round-robin, as the stock 68K scheduler does.
-    fn next_ready_cooperative_thread(&mut self, suggested_thread: u32) -> Option<u32> {
-        self.guest_calls
-            .next_ready_task(
-                (suggested_thread > 1).then(|| ExecutionTaskId::from_thread_id(suggested_thread)),
-            )
-            .map(ExecutionTaskId::thread_id)
-    }
-
-    /// Validate the saved adapter context before committing the task switch.
-    fn switch_to_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, next_id: u32) -> bool {
-        let task = ExecutionTaskId::from_thread_id(next_id);
-        let Some(next) = self.guest_calls.cooperative_context(task) else {
-            return false;
-        };
-        if self.guest_calls.scheduling_state(task) != Some(ExecutionTaskState::Ready)
-            || !self.guest_calls.switch_to_task(task)
-        {
-            return false;
-        }
-        Self::install_cooperative_thread(cpu, &next);
-        true
-    }
-
-    /// Scheduling policy lives with the task cursor; this adapter only saves
-    /// and installs registers. Inside Macintosh: Thread Manager (1999), pp. 65–70.
-    fn yield_cooperative_thread<C: CpuOps>(&mut self, cpu: &mut C, suggested_thread: u32) {
-        let Some(next_id) = self.next_ready_cooperative_thread(suggested_thread) else {
-            return;
-        };
-        self.save_current_cooperative_thread(cpu);
-        self.switch_to_cooperative_thread(cpu, next_id);
-    }
-
-    /// Retire `thread_id`, storing its entry-proc result and returning its
-    /// stack to the pool so `NewThread` can recycle it.
-    fn retire_cooperative_thread(
-        &mut self,
-        thread_id: u32,
-        result: u32,
-        bus: &mut MacMemoryBus,
-    ) -> bool {
-        let task = ExecutionTaskId::from_thread_id(thread_id);
-        let Some((finished, _)) =
-            self.guest_calls
-                .retire_cooperative_context(task, None, |saved| {
-                    saved.result_destination == 0
-                        || bus.try_write_long(saved.result_destination, result)
-                })
-        else {
-            return false;
-        };
-        if finished.stack_base != 0 {
-            self.cooperative_thread_pool
-                .push((finished.stack_base, finished.stack_limit));
-        }
-        true
-    }
-
-    /// ThreadEntryProc returns a pointer in A0 at the 68K ABI edge.
-    fn finish_cooperative_thread<C: CpuOps>(
+    fn apply_classic_retirement<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
-    ) -> bool {
-        let result = cpu.read_reg(Register::A0);
-        self.finish_cooperative_thread_with_result(cpu, bus, result)
-    }
-
-    fn finish_cooperative_thread_with_result<C: CpuOps>(
-        &mut self,
-        cpu: &mut C,
-        bus: &mut MacMemoryBus,
-        result: u32,
-    ) -> bool {
-        let finished = self.guest_calls.current_task();
-        let Some(next) = self.next_ready_cooperative_thread(0) else {
-            return false;
+        recycle: bool,
+        retirement: ClassicRetirement,
+    ) {
+        let (storage, successor) = match retirement {
+            ClassicRetirement::Removed(storage) => (storage, None),
+            ClassicRetirement::Switched { storage, successor } => (storage, successor),
         };
-        let Some((saved, Some(successor))) = self.guest_calls.retire_cooperative_context(
-            finished,
-            Some(ExecutionTaskId::from_thread_id(next)),
-            |saved| {
-                saved.result_destination == 0
-                    || bus.try_write_long(saved.result_destination, result)
-            },
-        ) else {
-            return false;
+        let mut edge = ClassicRetiredThreadStorageEdge {
+            bus,
+            manager: self.process_memory_manager(),
         };
-        // The execution owner validated both contexts and committed the result.
-        // Installing this owned snapshot cannot yield or fail.
-        Self::install_cooperative_thread(cpu, &successor);
-        if saved.stack_base != 0 {
-            self.cooperative_thread_pool
-                .push((saved.stack_base, saved.stack_limit));
+        ThreadManager::release_retired_storage(storage, recycle, &mut edge);
+        if let Some(successor) = successor {
+            successor.install(cpu);
         }
-        true
-    }
-
-    /// Claim a pooled stack of at least `stack_size` bytes, or allocate a
-    /// fresh one. Returns `(base, limit)`.
-    fn acquire_cooperative_thread_stack(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        stack_size: u32,
-    ) -> (u32, u32) {
-        if let Some(position) = self
-            .cooperative_thread_pool
-            .iter()
-            .position(|(base, limit)| limit.saturating_sub(*base) >= stack_size)
-        {
-            return self.cooperative_thread_pool.swap_remove(position);
-        }
-        let base = bus.alloc(stack_size);
-        (base, base.wrapping_add(stack_size))
     }
 
     fn apple_event_handler_for(
@@ -4739,6 +4742,52 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn mix_movie_music(&mut self, output: &mut Vec<u8>, frames: usize) {
+        for state in self.movie_states.values_mut() {
+            if super::dispatch::trace_quicktime_enabled() {
+                static MIX_TRACE: std::sync::atomic::AtomicU32 =
+                    std::sync::atomic::AtomicU32::new(0);
+                if MIX_TRACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
+                    eprintln!("[QUICKTIME] music mix active={} rate={} time={} audio={} duration={} notes={}", state.active, state.rate, state.current_time, state.audio_time, state.duration, state.music.as_ref().map_or(0, Vec::len));
+                }
+            }
+            if !state.active || state.rate <= 0 {
+                continue;
+            }
+            let Some(notes) = state.music.as_ref() else {
+                continue;
+            };
+            output.resize(frames * 2, 128);
+            let rate = state.rate as f64 / 65536.0;
+            let duration = state.duration as f64 / state.time_scale as f64;
+            let mut rendered = 0;
+            while rendered < frames {
+                if state.audio_time >= duration {
+                    if state.time_base_flags & 1 == 0 {
+                        break;
+                    }
+                    state.audio_time %= duration;
+                }
+                let until_end = ((duration - state.audio_time) * crate::sound::OUTPUT_RATE as f64
+                    / rate)
+                    .ceil() as usize;
+                let count = until_end.max(1).min(frames - rendered);
+                super::movie_media::mix_music_notes(
+                    notes,
+                    state.audio_time,
+                    rate,
+                    state.volume.max(0) as f64 / 256.0,
+                    &mut output[rendered * 2..(rendered + count) * 2],
+                );
+                state.audio_time += count as f64 * rate / crate::sound::OUTPUT_RATE as f64;
+                rendered += count;
+            }
+            if state.time_base_flags & 1 != 0 {
+                state.audio_time %= duration;
+            }
+        }
+    }
+
     /// Advance the clock of every active, playing movie by the real guest
     /// time elapsed since it was last serviced, then decode and blit the frame
     /// due at the new movie time. Called from MoviesTask and the movie
@@ -4768,8 +4817,12 @@ impl super::TrapDispatcher {
                 let mut new_time = state.current_time as i64 + advance;
                 let mut finished = false;
                 if new_time >= state.duration as i64 {
-                    new_time = state.duration as i64;
-                    finished = true;
+                    if state.time_base_flags & 1 != 0 {
+                        new_time %= state.duration.max(1) as i64;
+                    } else {
+                        new_time = state.duration as i64;
+                        finished = true;
+                    }
                 }
                 state.current_time = new_time.clamp(0, state.duration as i64) as i32;
                 let has_video = state.media.as_ref().is_some_and(|m| {
@@ -5019,12 +5072,25 @@ impl super::TrapDispatcher {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn dispatch_toolbox<C: CpuOps>(
         &mut self,
         is_tool: bool,
         trap_num: u16,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
+        self.dispatch_toolbox_with_process_services(is_tool, trap_num, cpu, bus, None, None)
+    }
+
+    pub(crate) fn dispatch_toolbox_with_process_services<C: CpuOps>(
+        &mut self,
+        is_tool: bool,
+        trap_num: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        cfm: Option<&crate::cfm::CfmState>,
+        bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
     ) -> Option<Result<()>> {
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
@@ -6371,7 +6437,6 @@ impl super::TrapDispatcher {
                                 self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                             bus.write_word(sp + 8, refnum);
                             cpu.write_reg(Register::D0, refnum as u32);
-                            bus.write_word(0x0A60, 0); // ResErr = noErr
                             cpu.write_reg(Register::A7, sp + 8);
                             return Some(Ok(()));
                         }
@@ -6396,7 +6461,6 @@ impl super::TrapDispatcher {
                     let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                     bus.write_word(sp + 8, refnum);
                     cpu.write_reg(Register::D0, refnum as u32);
-                    bus.write_word(0x0A60, 0); // ResErr = noErr
                 } else {
                     eprintln!("[TRAP] OpenRFPerm: \"{}\" not found in vfs_rsrc", name);
                     bus.write_word(sp + 8, (-1i16) as u16);
@@ -9463,7 +9527,6 @@ impl super::TrapDispatcher {
                     }
                     let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                     bus.write_word(sp + 12, refnum);
-                    bus.write_word(0x0A60, 0); // ResErr = noErr
                 } else {
                     bus.write_word(sp + 12, (-1i16) as u16);
                     bus.write_word(0x0A60, (-43i16) as u16); // fnfErr
@@ -9592,7 +9655,6 @@ impl super::TrapDispatcher {
                         let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, false);
                         bus.write_word(sp + 4, refnum);
                         cpu.write_reg(Register::D0, refnum as u32);
-                        bus.write_word(0x0A60, 0); // ResErr = noErr
                         cpu.write_reg(Register::A7, sp + 4);
                         return Some(Ok(()));
                     }
@@ -11872,7 +11934,9 @@ impl super::TrapDispatcher {
                         | 0x0060
                         | 0x0064
                 ) {
-                    return self.dispatch_toolbox(true, 0x1E7, cpu, bus);
+                    return self.dispatch_toolbox_with_process_services(
+                        true, 0x1E7, cpu, bus, cfm, bindings,
+                    );
                 }
                 match selector {
                     // PROCEDURE LActivate(act: BOOLEAN;
@@ -13826,6 +13890,14 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         };
 
+                        if refnum == u16::MAX {
+                            let error = bus.read_word(0x0A60) as i16;
+                            record_movie_error(self, error);
+                            bus.write_word(sp + 10, error as u16);
+                            cpu.write_reg(Register::A7, sp + 10);
+                            cpu.write_reg(Register::D0, error as i32 as u32);
+                            return Some(Ok(()));
+                        }
                         if ref_num_ptr != 0 {
                             bus.write_word(ref_num_ptr, refnum);
                         }
@@ -13977,6 +14049,8 @@ impl super::TrapDispatcher {
                             duration,
                             time_scale,
                         );
+                        movie_state.music =
+                            super::movie_media::parse_music_track(&movie_data, &data_fork);
                         movie_state.media = media;
                         movie_state.data_fork = data_fork;
                         self.movie_states.insert(movie, movie_state);
@@ -14009,6 +14083,99 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 20);
                         cpu.write_reg(Register::D0, 0);
                         record_movie_error(self, 0);
+                        Ok(())
+                    }
+                    0x0012 => {
+                        // GetMovieTimeBase ($AAAA selector $0012)
+                        // Returns the movie-owned time base.
+                        // pascal TimeBase GetMovieTimeBase(Movie movie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-190.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let valid = self.movie_states.contains_key(&movie);
+                        bus.write_long(sp + 4, if valid { movie } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 4);
+                        record_movie_error(self, if valid { 0 } else { QUICKTIME_INVALID_MOVIE });
+                        Ok(())
+                    }
+                    0x00B2 => {
+                        // SetTimeBaseFlags ($AAAA selector $00B2)
+                        // Sets playback control flags, including loopTimeBase.
+                        // pascal void SetTimeBaseFlags(TimeBase tb, long flags);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-331–2-332.
+                        let sp = cpu.read_reg(Register::A7);
+                        let flags = bus.read_long(sp);
+                        let time_base = bus.read_long(sp + 4);
+                        if let Some(state) = self.movie_states.get_mut(&time_base) {
+                            state.time_base_flags = flags;
+                        }
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
+                    0x01B3 => {
+                        // NewMovieFromDataFork ($AAAA selector $01B3)
+                        // Loads a movie atom at an offset in an open data fork.
+                        // pascal OSErr NewMovieFromDataFork(Movie *movie, short refNum,
+                        //   long offset, short flags, Boolean *changed);
+                        // Inside Macintosh: QuickTime 1993, pp. 2-109–2-110.
+                        let sp = cpu.read_reg(Register::A7);
+                        let changed = bus.read_long(sp);
+                        let flags = bus.read_word(sp + 4);
+                        let offset = bus.read_long(sp + 6) as usize;
+                        let refnum = bus.read_word(sp + 10);
+                        let out = bus.read_long(sp + 12);
+                        let data = self
+                            .open_files
+                            .get(&refnum)
+                            .and_then(|name| self.vfs_data_fork_bytes(name));
+                        let mut error: i16 = -51;
+                        if out != 0 {
+                            bus.write_long(out, 0);
+                        }
+                        if let Some(data) = data {
+                            error = -2002;
+                            let atom = data.get(offset..).and_then(|rest| {
+                                let size = rest
+                                    .get(..4)
+                                    .map(|n| u32::from_be_bytes(n.try_into().unwrap()) as usize)?;
+                                if size < 8 || rest.get(4..8) != Some(b"moov") {
+                                    return None;
+                                }
+                                rest.get(..size)
+                            });
+                            if let Some(atom) = atom {
+                                let (rect, duration, scale) = quicktime_movie_metadata(atom);
+                                let mut state =
+                                    MovieState::new(refnum, -1, flags, rect, duration, scale);
+                                state.media = super::movie_media::parse_video_track(atom);
+                                state.music = super::movie_media::parse_music_track(atom, &data);
+                                state.active = flags & 1 != 0;
+                                if super::dispatch::trace_quicktime_enabled() {
+                                    eprintln!("[QUICKTIME] NewMovieFromDataFork offset={} duration={} scale={} notes={}",
+                                                    offset, duration, scale, state.music.as_ref().map_or(0, Vec::len));
+                                }
+                                state.data_fork = data;
+                                let movie = bus.alloc(16);
+                                if movie == 0 {
+                                    error = -108;
+                                } else if out == 0 {
+                                    bus.free(movie);
+                                    error = -50;
+                                } else {
+                                    bus.write_long(movie, u32::from_be_bytes(*b"MooV"));
+                                    self.movie_states.insert(movie, state);
+                                    bus.write_long(out, movie);
+                                    if changed != 0 {
+                                        bus.write_byte(changed, 0);
+                                    }
+                                    error = 0;
+                                }
+                            }
+                        }
+                        bus.write_word(sp + 16, error as u16);
+                        cpu.write_reg(Register::A7, sp + 16);
+                        cpu.write_reg(Register::D0, error as u32);
+                        record_movie_error(self, error);
                         Ok(())
                     }
                     0x0187 => {
@@ -14096,6 +14263,7 @@ impl super::TrapDispatcher {
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.preferred_rate = rate;
                             state.current_time = time.clamp(0, state.duration);
+                            state.audio_time = state.current_time as f64 / state.time_scale as f64;
                             0
                         } else {
                             QUICKTIME_INVALID_MOVIE
@@ -14159,6 +14327,7 @@ impl super::TrapDispatcher {
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.active = true;
                             state.rate = state.preferred_rate;
+                            state.audio_time = state.current_time as f64 / state.time_scale as f64;
                             // Begin the playback clock now so MoviesTask advances
                             // by real elapsed time from this point.
                             state.last_service_tick = Some(now);
@@ -14199,6 +14368,7 @@ impl super::TrapDispatcher {
                         let movie = bus.read_long(sp);
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.current_time = 0;
+                            state.audio_time = 0.0;
                             0
                         } else {
                             QUICKTIME_INVALID_MOVIE
@@ -15748,8 +15918,9 @@ impl super::TrapDispatcher {
             // version (>=3 supports automatic version control,
             // unregister, icon families).
             //
-            // HLE behaviour: provides one synthetic QuickTime movie
-            // controller component (`'play'`) and opaque instances for
+            // HLE behaviour: provides a synthetic QuickTime movie controller
+            // (`'play'`) plus software-instrument discovery for music media,
+            // and opaque movie-controller instances for
             // FindNextComponent/OpenComponent/CloseComponent. Component
             // calls consume selector + instance + arguments and return a
             // zero ComponentResult in the caller's four-byte result slot.
@@ -15757,6 +15928,7 @@ impl super::TrapDispatcher {
             (true, 0x02A) => {
                 const MOVIE_CONTROLLER_COMPONENT: u32 = u32::from_be_bytes(*b"play");
                 const SYNTHETIC_MOVIE_CONTROLLER: u32 = 0x00C0_0001;
+                const SOFTWARE_INSTRUMENT: u32 = 0x00C0_0002;
 
                 let d0 = cpu.read_reg(Register::D0);
                 let operation = component_dispatch_operation_route(self.current_trap_word, d0);
@@ -15854,9 +16026,16 @@ impl super::TrapDispatcher {
                         } else {
                             bus.read_long(description)
                         };
+                        let instrument_matches = (component_type == 0
+                            || component_type == u32::from_be_bytes(*b"inst"))
+                            && (description == 0
+                                || ([0, u32::from_be_bytes(*b"ss  ")]
+                                    .contains(&bus.read_long(description + 4))
+                                    && [0, u32::from_be_bytes(*b"appl")]
+                                        .contains(&bus.read_long(description + 8))));
                         let count = u32::from(
                             component_type == 0 || component_type == MOVIE_CONTROLLER_COMPONENT,
-                        );
+                        ) + u32::from(instrument_matches);
                         bus.write_long(sp + 4, count);
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, count);
@@ -15874,6 +16053,18 @@ impl super::TrapDispatcher {
                             && (component_type == 0 || component_type == MOVIE_CONTROLLER_COMPONENT)
                         {
                             SYNTHETIC_MOVIE_CONTROLLER
+                        } else if (previous == 0 || previous == SYNTHETIC_MOVIE_CONTROLLER)
+                            && (component_type == 0
+                                || component_type == u32::from_be_bytes(*b"inst"))
+                            && (description == 0
+                                || ([0, u32::from_be_bytes(*b"ss  ")]
+                                    .contains(&bus.read_long(description + 4))
+                                    && [0, u32::from_be_bytes(*b"appl")]
+                                        .contains(&bus.read_long(description + 8))))
+                        {
+                            // QuickTime Music Architecture: the instrument
+                            // component advertises the Movie Toolbox's synth.
+                            SOFTWARE_INSTRUMENT
                         } else {
                             0
                         };
@@ -16055,34 +16246,17 @@ impl super::TrapDispatcher {
                 crate::mixed_mode::enter_m68k_routine_descriptor(cpu, bus, &self.guest_calls)
             }
 
-            // CodeFragmentDispatch ($AA5A) — Code Fragment Manager
-            // Inside Macintosh: PowerPC System Software 1994
-            // (PPC SS 1994 ch.6, Gestalt cite line 1770: "if you
-            // need to know whether the Code Fragment Manager is
-            // available, you can call the Gestalt function with the
-            // selector gestaltCFMAttr"; constant cite line 4736:
-            // `#define gestaltCFMAttr 'cfrg'`).
-            // The CFM resolves and connects PowerPC code fragments
-            // ('cfrg' resources) — the loader for PowerPC native
-            // executables and shared libraries (PEF format).
-            // Selector convention: D0 = routine number; routines
-            // include GetSharedLibrary, GetDiskFragment, FindSymbol,
-            // CountSymbols, GetIndSymbol, CloseConnection, etc.
-            // Gestalt: `gestaltCFMAttr = 'cfrg'`,
-            // `gestaltCFMPresent = 0` (response bit 0).
-            //
-            // HLE behaviour: D0=0 (noErr), all other registers
-            // preserved, stack untouched. Systemless is a 68K-only HLE
-            // — apps that probe Gestalt see 'cfrg' undefined and
-            // either fall back to the 68K code path or refuse to
-            // launch. PPC fat binaries with 68K-fork still execute
-            // because the loader picks the 68K fork when CFM is
-            // absent.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::codefragmentdispatch_*
-            // CodeFragmentDispatch (CFM) ($AA5A): PPC SS 1994 ch.6 1770. D0 selector. Gestalt 'cfrg' → gestaltCFMPresent=0. HLE: D0=0, registers + stack preserved (68K-only — fat binaries fall back to 68K fork).
-            (true, 0x25A) => return_noerr(cpu),
+            // CodeFragmentDispatch ($AA5A)
+            // Finds and enumerates exports in a process CFM connection.
+            // OSErr FindSymbol(ConnectionID connID, Str255 symName,
+            //                  Ptr *symAddr, SymClass *symClass);
+            // OSErr CountSymbols(ConnectionID connID, long *symCount);
+            // OSErr GetIndSymbol(ConnectionID connID, long symIndex,
+            //                    Str255 symName, Ptr *symAddr, SymClass *symClass);
+            // PowerPC System Software (1994), pp. 3-24–3-26. Universal
+            // Interfaces 3.4, CodeFragments.h: $3F3C,$0005/$0006/$0007,$AA5A
+            // pushes a word selector before the Pascal argument frame.
+            (true, 0x25A) => dispatch_cfm_symbols(cpu, bus, cfm, bindings),
 
             // IconDispatch ($ABC9)
             // Dispatches Icon Utilities routines selected by the low word of D0.
@@ -16200,29 +16374,55 @@ impl super::TrapDispatcher {
             (true, 0x3F2) => {
                 let selector = cpu.read_reg(Register::D0) & 0xFFFF;
                 let sp = cpu.read_reg(Register::A7);
-                // Threads.h option and style bits.
-                const K_NEW_SUSPEND: u32 = 1 << 0;
-                const K_PREEMPTIVE_THREAD: u32 = 1 << 1;
 
                 let result = match selector {
                     0xFFFE => {
-                        if self.finish_cooperative_thread(cpu, bus) {
+                        let task = self.guest_calls.current_task();
+                        let result = cpu.read_reg(Register::A0);
+                        let retirement = self.guest_calls.retire_classic_thread(
+                            task,
+                            false,
+                            |saved| {
+                                saved.result_destination == 0
+                                    || bus.try_write_long(saved.result_destination, result)
+                            },
+                        );
+                        if let Ok(retirement) = retirement {
+                            self.apply_classic_retirement(cpu, bus, false, retirement);
                             return Some(Ok(()));
                         }
                         // A thread cannot finish while one of its guest
                         // continuations is suspended. This is a guest-visible
                         // protocol failure, not an emulator invariant that
                         // justifies panicking.
-                        bus.write_word(sp, Self::THREAD_PROTOCOL_ERR as u16);
                         cpu.write_reg(Register::D0, Self::THREAD_PROTOCOL_ERR as u32);
+                        if self.thread_return_trampoline != 0 {
+                            cpu.write_reg(Register::PC, self.thread_return_trampoline);
+                        }
                         return Some(Ok(()));
                     }
                     0x0205 => {
                         let suggested_thread = bus.read_long(sp);
-                        bus.write_word(sp + 4, 0);
-                        cpu.write_reg(Register::A7, sp + 4);
-                        cpu.write_reg(Register::D0, 0);
-                        self.yield_cooperative_thread(cpu, suggested_thread);
+                        let result_sp = sp.wrapping_add(4);
+                        let current = self.guest_calls.current_task();
+                        let mut outgoing = self
+                            .guest_calls
+                            .cooperative_context(current)
+                            .unwrap_or_else(|| CooperativeThread::capture(cpu));
+                        outgoing.save_registers(cpu);
+                        outgoing.d_regs[0] = 0;
+                        outgoing.a_regs[7] = result_sp;
+                        let result = self
+                            .guest_calls
+                            .yield_classic_thread(outgoing, suggested_thread);
+                        let error = result.as_ref().err().copied().unwrap_or(0);
+                        bus.write_word(result_sp, error as u16);
+                        cpu.write_reg(Register::D0, error as u32);
+                        cpu.write_reg(Register::A7, result_sp);
+                        if let Ok(crate::guest_call::ClassicYield::Switched(Some(context))) = result
+                        {
+                            context.install(cpu);
+                        }
                         return Some(Ok(()));
                     }
                     // GetCurrentThread(currentThreadID)
@@ -16246,181 +16446,174 @@ impl super::TrapDispatcher {
                         let thread_entry = bus.read_long(sp + 20);
                         let thread_style = bus.read_long(sp + 24);
 
-                        if thread_made == 0
-                            || thread_entry == 0
-                            || thread_style & K_PREEMPTIVE_THREAD != 0
-                        {
-                            if thread_made != 0 {
-                                bus.write_long(thread_made, 0);
+                        // NewThread publishes no identity until its ABI frame and
+                        // output destinations are committed. Thread Manager (1999),
+                        // pp. 56–58: threadMade is kNoThreadID on failure.
+                        let result = sp.checked_add(28).ok_or(-50_i16).and_then(|result_slot| {
+                            // The manager uses a detached shared handle so the edge can
+                            // borrow this dispatcher for trampoline preparation.
+                            let execution = self.guest_calls.shared_handle();
+                            let mut edge = ClassicNewThreadEdge {
+                                dispatcher: self,
+                                cpu,
+                                bus,
+                                thread_entry,
+                                thread_param,
+                                result_destination,
+                                thread_made,
+                                result_slot,
+                                trampoline: 0,
+                            };
+                            ThreadManager::new(&execution)
+                                .create_thread(GuestIsa::M68k, thread_style, stack_size, options, &mut edge)
+                                .map(|_| ())
+                        });
+                        match result {
+                            Ok(()) => 0,
+                            Err(error) => {
+                                if thread_made != 0 {
+                                    let _ = bus.try_write_long(thread_made, 0);
+                                }
+                                error
                             }
-                            -50
-                        } else if let Some(task) = self.guest_calls.create_task() {
-                            let thread_id = task.thread_id();
-
-                            let stack_size = if stack_size == 0 {
-                                self.cooperative_thread_stack_size
-                            } else {
-                                stack_size
-                            };
-                            let (stack_base, stack_limit) =
-                                self.acquire_cooperative_thread_stack(bus, stack_size);
-
-                            // Seed the private stack as though the entry proc
-                            // had been called by the trampoline: return
-                            // address, then its single Pascal argument.
-                            let return_trampoline = self.thread_return_trampoline(bus);
-                            let entry_sp = stack_limit.wrapping_sub(8);
-                            bus.write_long(entry_sp, return_trampoline);
-                            bus.write_long(entry_sp + 4, thread_param);
-
-                            let state = if options & K_NEW_SUSPEND != 0 {
-                                Self::THREAD_STATE_STOPPED
-                            } else {
-                                Self::THREAD_STATE_READY
-                            };
-                            let mut thread =
-                                Self::capture_cooperative_thread(cpu, result_destination);
-                            thread.pc = thread_entry;
-                            thread.a_regs[7] = entry_sp;
-                            thread.stack_base = stack_base;
-                            thread.stack_limit = stack_limit;
-                            self.guest_calls.save_cooperative_context(
-                                ExecutionTaskId::from_thread_id(thread_id),
-                                thread,
-                            );
-                            self.guest_calls.set_scheduling_state(
-                                ExecutionTaskId::from_thread_id(thread_id),
-                                if state == Self::THREAD_STATE_READY {
-                                    ExecutionTaskState::Ready
-                                } else {
-                                    ExecutionTaskState::Stopped
-                                },
-                            );
-                            bus.write_long(thread_made, thread_id);
-                            0
-                        } else {
-                            bus.write_long(thread_made, 0);
-                            -108
                         }
                     }
                     // CreateThreadPool(threadStyle, numToCreate, stackSize)
+                    // Thread Manager (1999), pp. 50–51: publish all or none.
                     0x0501 => {
                         let stack_size = bus.read_long(sp);
                         let count = bus.read_word(sp + 4) as i16;
-                        let thread_style = bus.read_long(sp + 6);
-                        if thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
+                        let style = bus.read_long(sp + 6);
+                        let result = if !sp
+                            .checked_add(10)
+                            .is_some_and(|slot| bus.is_guest_address_writable(slot, 2))
+                        {
+                            Err((-50, Vec::new()))
                         } else {
-                            let stack_size = if stack_size == 0 {
-                                self.cooperative_thread_stack_size
-                            } else {
-                                stack_size
-                            };
-                            for _ in 0..count.max(0) {
-                                let stack = self.acquire_cooperative_thread_stack(bus, stack_size);
-                                self.cooperative_thread_pool.push(stack);
+                            ThreadManager::new(&self.guest_calls).create_pool(
+                                crate::guest_procedure::GuestIsa::M68k,
+                                style,
+                                count,
+                                stack_size,
+                                |size| {
+                                    let base = bus.alloc(size);
+                                    (base != 0).then_some(crate::guest_call::ThreadStorage {
+                                        stack_base: base,
+                                        stack_limit: base.saturating_add(size),
+                                        ..Default::default()
+                                    })
+                                },
+                            )
+                        };
+                        match result {
+                            Ok(()) => 0,
+                            Err((error, storage)) => {
+                                for stack in storage {
+                                    bus.free(stack.stack_base);
+                                }
+                                error
                             }
-                            0
                         }
                     }
-                    // GetFreeThreadCount(threadStyle, freeCount)
-                    0x0402 => {
-                        let free_count = bus.read_long(sp);
-                        let thread_style = bus.read_long(sp + 4);
-                        if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
+                    // GetFreeThreadCount / GetSpecificFreeThreadCount /
+                    // GetDefaultThreadStackSize. Thread Manager (1999), pp. 52–55.
+                    0x0402 | 0x0615 | 0x0413 => {
+                        let output = bus.read_long(sp);
+                        let specific = selector == 0x0615;
+                        let style = bus.read_long(sp + if specific { 8 } else { 4 });
+                        let manager = ThreadManager::new(&self.guest_calls);
+                        let value = if selector == 0x0413 {
+                            ThreadManager::stack_size(
+                                crate::guest_procedure::GuestIsa::M68k,
+                                style,
+                                0,
+                            )
                         } else {
-                            bus.write_word(free_count, self.cooperative_thread_pool.len() as u16);
-                            0
-                        }
-                    }
-                    // GetSpecificFreeThreadCount(threadStyle, stackSize,
-                    //                            freeCount)
-                    0x0615 => {
-                        let free_count = bus.read_long(sp);
-                        let stack_size = bus.read_long(sp + 4);
-                        let thread_style = bus.read_long(sp + 8);
-                        if free_count == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
-                        } else {
-                            let matching = self
-                                .cooperative_thread_pool
-                                .iter()
-                                .filter(|(base, limit)| limit.saturating_sub(*base) >= stack_size)
-                                .count();
-                            bus.write_word(free_count, matching as u16);
-                            0
-                        }
-                    }
-                    // GetDefaultThreadStackSize(threadStyle, stackSize)
-                    0x0413 => {
-                        let stack_size = bus.read_long(sp);
-                        let thread_style = bus.read_long(sp + 4);
-                        if stack_size == 0 || thread_style & K_PREEMPTIVE_THREAD != 0 {
-                            -50
-                        } else {
-                            bus.write_long(stack_size, self.cooperative_thread_stack_size);
-                            0
-                        }
-                    }
-                    // ThreadCurrentStackSpace(thread, freeStack)
-                    0x0414 => {
-                        let free_stack = bus.read_long(sp);
-                        let thread = self.resolve_cooperative_thread_id(bus.read_long(sp + 4));
-                        if free_stack == 0 {
-                            -50
-                        } else {
-                            let running = thread == self.guest_calls.current_task().thread_id();
-                            let current_sp = cpu.read_reg(Register::A7);
-                            match self.cooperative_thread_snapshot(cpu, thread) {
-                                None => Self::THREAD_NOT_FOUND_ERR,
-                                Some(record) => {
-                                    // The application thread keeps the process
-                                    // stack, whose base this record does not
-                                    // track, so report the default size rather
-                                    // than a bogus multi-megabyte figure.
-                                    let free = if record.stack_base == 0 {
-                                        DEFAULT_COOPERATIVE_THREAD_STACK_SIZE
-                                    } else {
-                                        let stack_pointer = if running {
-                                            current_sp
-                                        } else {
-                                            record.a_regs[7]
-                                        };
-                                        stack_pointer.saturating_sub(record.stack_base)
-                                    };
-                                    bus.write_long(free_stack, free);
+                            manager
+                                .free_count(
+                                    crate::guest_procedure::GuestIsa::M68k,
+                                    style,
+                                    if specific { bus.read_long(sp + 4) } else { 0 },
+                                )
+                                .map(u32::from)
+                        };
+                        match value {
+                            Err(error) => error,
+                            Ok(value) if output != 0 => {
+                                let written = if selector == 0x0413 {
+                                    bus.try_write_long(output, value)
+                                } else {
+                                    bus.try_write_word(output, value as u16)
+                                };
+                                if written {
                                     0
+                                } else {
+                                    -50
                                 }
                             }
+                            Ok(_) => -50,
+                        }
+                    }
+                    // ThreadCurrentStackSpace ($ABF2, selector $0414)
+                    // Returns available stack bytes for the specified thread.
+                    // FUNCTION ThreadCurrentStackSpace(thread: ThreadID; VAR freeStack: LONGINT): OSErr;
+                    // Thread Manager (1999), pp. 17–18 and 61.
+                    0x0414 => {
+                        let output = bus.read_long(sp);
+                        let classic_limit = bus.read_long(crate::memory::globals::addr::APPL_LIMIT);
+                        let native_limit = {
+                            let memory_manager = self.process_memory_manager();
+                            let memory_manager = memory_manager.borrow();
+                            memory_manager.application_heap_limit(
+                                memory_manager
+                                    .native_heap_state()
+                                    .map_or(0, |heap| heap.heap_limit),
+                            )
+                        };
+                        let manager = crate::thread_manager::ThreadManager::new(&self.guest_calls);
+                        match manager.stack_space(
+                            bus.read_long(sp + 4),
+                            crate::guest_procedure::GuestIsa::M68k,
+                            cpu.read_reg(Register::A7),
+                            |isa| match isa {
+                                crate::guest_procedure::GuestIsa::M68k => classic_limit,
+                                crate::guest_procedure::GuestIsa::PowerPc => native_limit,
+                            },
+                        ) {
+                            Err(error) => error,
+                            Ok(value) if output != 0 && bus.try_write_long(output, value) => 0,
+                            Ok(_) => -50,
                         }
                     }
                     // DisposeThread(threadToDump, threadResult, recycleThread)
                     0x0504 => {
+                        // Pascal Boolean occupies the high byte of its stack word.
+                        // Thread Manager (1999), pp. 59–60.
+                        let recycle = bus.read_byte(sp) != 0;
                         let thread_result = bus.read_long(sp + 2);
                         let thread_to_dump =
                             self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
-                        if !self
-                            .guest_calls
-                            .cooperative_context(ExecutionTaskId::from_thread_id(thread_to_dump))
-                            .is_some()
-                            && thread_to_dump != Self::APPLICATION_THREAD_ID
-                        {
-                            Self::THREAD_NOT_FOUND_ERR
-                        } else if thread_to_dump == self.guest_calls.current_task().thread_id() {
-                            // Threads.h allows a thread to dispose of itself;
-                            // the call never returns to it.
-                            if self.finish_cooperative_thread_with_result(cpu, bus, thread_result) {
-                                return Some(Ok(()));
-                            } else {
-                                Self::THREAD_PROTOCOL_ERR
-                            }
-                        } else {
-                            if self.retire_cooperative_thread(thread_to_dump, thread_result, bus) {
+                        let retirement = self.guest_calls.retire_classic_thread(
+                            ExecutionTaskId::from_thread_id(thread_to_dump),
+                            recycle,
+                            |saved| {
+                                saved.result_destination == 0
+                                    || bus.try_write_long(saved.result_destination, thread_result)
+                            },
+                        );
+                        match retirement {
+                            Ok(retirement) => {
+                                let switched = matches!(
+                                    retirement,
+                                    ClassicRetirement::Switched { .. }
+                                );
+                                self.apply_classic_retirement(cpu, bus, recycle, retirement);
+                                if switched {
+                                    return Some(Ok(()));
+                                }
                                 0
-                            } else {
-                                Self::THREAD_PROTOCOL_ERR
                             }
+                            Err(error) => error,
                         }
                     }
                     // GetThreadState(threadToGet, threadState), and
@@ -16433,75 +16626,63 @@ impl super::TrapDispatcher {
                         if thread_state == 0 {
                             -50
                         } else {
-                            match ThreadManager::new(&self.guest_calls).state(thread_to_get) {
+                            let manager = ThreadManager::new(&self.guest_calls);
+                            let state = if selector == 0x060F {
+                                manager.state_given_task(bus.read_long(sp + 8), thread_to_get)
+                            } else {
+                                manager.state(thread_to_get)
+                            };
+                            match state {
                                 Ok(state) if bus.try_write_word(thread_state, state) => 0,
                                 Ok(_) => -50,
                                 Err(error) => error,
                             }
                         }
                     }
-                    // SetThreadState(threadToSet, newState, suggestedThread),
-                    // and SetThreadStateEndCritical, which additionally
-                    // performs the ThreadEndCritical the caller owes.
+                    // SetThreadState / SetThreadStateEndCritical (0xA3F2)
+                    // Set state and optionally exit a critical section atomically.
+                    // OSErr (ThreadID thread, ThreadState state, ThreadID suggested);
+                    // Inside Macintosh: Thread Manager (1999), pp. 67–72.
                     0x0508 | 0x0512 => {
-                        let suggested_thread = bus.read_long(sp);
-                        let new_state = bus.read_word(sp + 4);
-                        let thread_to_set =
-                            self.resolve_cooperative_thread_id(bus.read_long(sp + 6));
-                        let task = ExecutionTaskId::from_thread_id(thread_to_set);
-                        let requested = match new_state {
-                            Self::THREAD_STATE_READY => Some(ExecutionTaskState::Ready),
-                            Self::THREAD_STATE_STOPPED => Some(ExecutionTaskState::Stopped),
-                            Self::THREAD_STATE_RUNNING => Some(ExecutionTaskState::Running),
-                            _ => None,
-                        };
-                        if self.guest_calls.scheduling_state(task).is_none() {
-                            Self::THREAD_NOT_FOUND_ERR
-                        } else if !requested.is_some_and(|state| {
-                            if selector == 0x0512 {
-                                self.guest_calls.set_state_ending_critical(task, state)
-                            } else {
-                                self.guest_calls.set_scheduling_state(task, state)
-                            }
-                        }) {
-                            Self::THREAD_PROTOCOL_ERR
-                        } else if task == self.guest_calls.current_task()
-                            && new_state != Self::THREAD_STATE_RUNNING
-                        {
-                            // Save the ABI return before installing a different engine context.
-                            bus.write_word(sp + 10, 0);
-                            cpu.write_reg(Register::A7, sp + 10);
-                            cpu.write_reg(Register::D0, 0);
-                            self.save_current_cooperative_thread(cpu);
-                            if let Some(next_id) =
-                                self.next_ready_cooperative_thread(suggested_thread)
-                            {
-                                if self.switch_to_cooperative_thread(cpu, next_id) {
-                                    return Some(Ok(()));
+                        let suggested = bus.read_long(sp);
+                        let state = bus.read_word(sp + 4);
+                        let thread = bus.read_long(sp + 6);
+                        let current = self.guest_calls.current_task();
+                        let mut outgoing = self
+                            .guest_calls
+                            .cooperative_context(current)
+                            .unwrap_or_default();
+                        outgoing.save_registers(cpu);
+                        outgoing.d_regs[0] = 0;
+                        outgoing.a_regs[7] = sp + 10;
+                        match self.guest_calls.set_classic_thread_state(
+                            thread,
+                            state,
+                            suggested,
+                            selector == 0x0512,
+                            outgoing,
+                            || bus.try_write_word(sp + 10, 0),
+                        ) {
+                            Ok(switched) => {
+                                cpu.write_reg(Register::A7, sp + 10);
+                                cpu.write_reg(Register::D0, 0);
+                                if switched {
+                                    if let Some(next) = self.guest_calls.take_classic_task_handoff()
+                                    {
+                                        next.install(cpu);
+                                    }
                                 }
+                                return Some(Ok(()));
                             }
-                            self.guest_calls
-                                .set_scheduling_state(task, ExecutionTaskState::Running);
-                            return Some(Ok(()));
-                        } else {
-                            0
+                            Err(error) => error,
                         }
                     }
-                    // SetThreadReadyGivenTaskRef(threadTRef, threadToSet)
-                    0x0410 => {
-                        let task = ExecutionTaskId::from_thread_id(
-                            self.resolve_cooperative_thread_id(bus.read_long(sp)),
-                        );
-                        match self.guest_calls.scheduling_state(task) {
-                            None => Self::THREAD_NOT_FOUND_ERR,
-                            Some(ExecutionTaskState::Stopped) => {
-                                self.guest_calls
-                                    .set_scheduling_state(task, ExecutionTaskState::Ready);
-                                0
-                            }
-                            Some(_) => 0,
-                        }
-                    }
+                    // SetThreadReadyGivenTaskRef (0xA3F2)
+                    // Mark a stopped thread ready without switching during the call.
+                    // OSErr (ThreadTaskRef threadTRef, ThreadID threadToSet);
+                    // Inside Macintosh: Thread Manager (1999), pp. 75–76.
+                    0x0410 => ThreadManager::new(&self.guest_calls)
+                        .ready_given_task(bus.read_long(sp + 4), bus.read_long(sp)),
                     // SetThreadScheduler(threadScheduler)
                     0x0209 => {
                         self.cooperative_thread_scheduler = bus.read_long(sp);
@@ -16562,8 +16743,12 @@ impl super::TrapDispatcher {
                         if thread_t_ref == 0 {
                             -50
                         } else {
-                            bus.write_long(thread_t_ref, Self::APPLICATION_THREAD_ID);
-                            0
+                            let reference = ThreadManager::new(&self.guest_calls).task_reference();
+                            if bus.try_write_long(thread_t_ref, reference) {
+                                0
+                            } else {
+                                -50
+                            }
                         }
                     }
                     0x000B => ThreadManager::new(&self.guest_calls).begin_critical(),
@@ -17010,6 +17195,137 @@ mod tests {
             sp_before,
             "MethodDispatch should preserve the caller stack pointer"
         );
+    }
+
+    #[test]
+    fn cfm_symbol_enumeration_uses_stack_selectors_and_atomic_pascal_results() {
+        use crate::cfm::{CfmConnection, CfmExport, CfmState};
+        use crate::memory::GuestAddressSpace;
+        const STACK: u32 = 0x0100_0000;
+        const OUTPUT: u32 = STACK + 0x100;
+        let cfm = CfmState {
+            connections: vec![CfmConnection {
+                id: 7,
+                library_name: "fragment".into(),
+                main_addr: 0,
+                init_addr: 0,
+                term_addr: 0,
+                exports: vec![CfmExport {
+                    name: "Café™".into(),
+                    class: 1,
+                    address: 0x1234_5678,
+                }],
+            }],
+            ..Default::default()
+        };
+        for selector in [5, 6, 7] {
+            for fault in 0..7 {
+                let (mut disp, mut cpu, mut bus) = setup();
+                let mut memory = GuestAddressSpace::new();
+                memory.add_region(STACK, vec![0xa5; 0x200]);
+                bus.set_addressing_32_bit(true);
+                bus.attach_guest_address_space(memory.shared_view());
+                let result_slot = STACK
+                    + match selector {
+                        5 => 18,
+                        6 => 10,
+                        _ => 22,
+                    };
+                bus.write_word(STACK, selector);
+                if selector == 5 {
+                    let name = if fault == 2 {
+                        b"\x01x".as_slice()
+                    } else {
+                        b"\x05Caf\x8e\xaa".as_slice()
+                    };
+                    for (i, byte) in name.iter().enumerate() {
+                        bus.write_byte(OUTPUT + 48 + i as u32, *byte);
+                    }
+                    bus.write_long(STACK + 2, OUTPUT + 40);
+                    bus.write_long(STACK + 6, OUTPUT + 32);
+                    bus.write_long(STACK + 10, OUTPUT + 48);
+                    bus.write_long(STACK + 14, if fault == 1 { 99 } else { 7 });
+                } else if selector == 6 {
+                    bus.write_long(STACK + 2, OUTPUT);
+                    bus.write_long(STACK + 6, if fault == 1 { 99 } else { 7 });
+                } else {
+                    bus.write_long(STACK + 2, OUTPUT + 40);
+                    bus.write_long(STACK + 6, OUTPUT + 32);
+                    bus.write_long(STACK + 10, OUTPUT);
+                    bus.write_long(STACK + 14, if fault == 2 { 0 } else { 1 });
+                    bus.write_long(STACK + 18, if fault == 1 { 99 } else { 7 });
+                }
+                if fault == 3 {
+                    memory.add_readonly_region(
+                        OUTPUT + if selector == 5 { 32 } else { 0 },
+                        vec![0xa5],
+                    );
+                }
+                if fault == 4 {
+                    memory.add_readonly_region(result_slot, vec![0xa5; 2]);
+                }
+                let initial_sp = if fault == 5 { u32::MAX - 7 } else { STACK };
+                cpu.write_reg(Register::A7, initial_sp);
+                cpu.write_reg(Register::D0, 0xdead_beef); // D0 is not the selector.
+                cpu.write_reg(Register::D1, 0x1122_3344);
+                cpu.write_reg(Register::A0, 0x5566_7788);
+                let before: Vec<_> = (0..64).map(|i| bus.read_byte(OUTPUT + i)).collect();
+                let result = if fault == 6 {
+                    disp.dispatch(0xAA5A, &mut cpu, &mut bus)
+                } else {
+                    disp.dispatch_with_process_services(0xAA5A, &mut cpu, &mut bus, &cfm, None)
+                };
+                if fault == 6 {
+                    assert!(matches!(
+                        result,
+                        Err(crate::Error::UnimplementedTrap(0xAA5A))
+                    ));
+                    assert_eq!(cpu.read_reg(Register::A7), initial_sp);
+                    assert_eq!(cpu.read_reg(Register::D0), 0xdead_beef);
+                } else {
+                    assert!(result.is_ok());
+                    let error: i16 = match fault {
+                        1 => -2801,
+                        2 if selector != 6 => -2802,
+                        3..=5 => -50,
+                        _ => 0,
+                    };
+                    assert_eq!(cpu.read_reg(Register::D0), error as i32 as u32);
+                    assert_eq!(
+                        cpu.read_reg(Register::A7),
+                        if matches!(fault, 4 | 5) {
+                            initial_sp
+                        } else {
+                            result_slot
+                        }
+                    );
+                    if !matches!(fault, 4 | 5) {
+                        assert_eq!(bus.read_word(result_slot), error as u16);
+                    }
+                    if error == 0 {
+                        if selector == 6 {
+                            assert_eq!(bus.read_long(OUTPUT), 1);
+                        } else {
+                            if selector == 7 {
+                                assert_eq!(bus.read_byte(OUTPUT), 5);
+                            }
+                            assert_eq!(bus.read_long(OUTPUT + 32), 0x1234_5678);
+                            assert_eq!(bus.read_byte(OUTPUT + 40), 1);
+                        }
+                    }
+                }
+                if matches!(fault, 1 | 3..=6) || (fault == 2 && selector != 6) {
+                    assert_eq!(
+                        (0..64)
+                            .map(|i| bus.read_byte(OUTPUT + i))
+                            .collect::<Vec<_>>(),
+                        before
+                    );
+                }
+                assert_eq!(cpu.read_reg(Register::D1), 0x1122_3344);
+                assert_eq!(cpu.read_reg(Register::A0), 0x5566_7788);
+            }
+        }
     }
 
     #[test]
@@ -22262,6 +22578,81 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
+    #[test]
+    fn open_res_file_publishes_a_valid_fcb_and_preserves_other_access_paths() {
+        use crate::memory::globals::addr;
+        let (mut disp, mut cpu, mut bus) = setup();
+        let original_buffer = bus.alloc(96);
+        bus.fill_bytes(original_buffer, 96, 0);
+        bus.write_word(original_buffer, 96);
+        bus.write_long(original_buffer + 2, 1234);
+        bus.write_long(addr::FCB_S_PTR, original_buffer);
+        bus.write_word(addr::FS_FCB_LEN, 94);
+        bus.write_word(addr::CUR_APREF_NUM, 2);
+        disp.open_files.insert(96, "Other Data".to_string());
+        disp.vfs_rsrc.insert("Profiles/Player".to_string(), vec![]);
+        disp.set_vfs_entry_metadata("Profiles/Player", *b"SAVE", *b"TEST", 0);
+        let metadata = disp.vfs_file_metadata("Profiles/Player").unwrap();
+        let name_ptr = 0x200250;
+        bus.write_pstring(name_ptr, b"Profiles:Player");
+        bus.write_long(TEST_SP, name_ptr);
+
+        disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let refnum = bus.read_word(TEST_SP + 4);
+        let buffer = bus.read_long(addr::FCB_S_PTR);
+        // Files 1992, 2-81–2-83: these are the same direct FCB/VCB
+        // lookups used by classic runtime libraries to recover a volume.
+        assert_eq!(refnum, 190, "skip application and data-fork access paths");
+        assert_eq!(refnum % bus.read_word(addr::FS_FCB_LEN), 2);
+        assert!(refnum + 94 <= bus.read_word(buffer));
+        assert_eq!(bus.read_long(buffer + 2), 1234);
+        let fcb = buffer + refnum as u32;
+        assert_eq!(bus.read_long(fcb), metadata.file_id);
+        assert_eq!(bus.read_word(fcb + 4), 0x0200);
+        assert_eq!(bus.read_long(fcb + 50), u32::from_be_bytes(*b"SAVE"));
+        assert_eq!(bus.read_long(fcb + 58), metadata.parent_dir_id);
+        assert_eq!(bus.read_pstring(fcb + 62), b"Player");
+        let vcb = bus.read_long(fcb + 20);
+        assert_ne!(vcb, 0);
+        assert_eq!(bus.read_word(vcb + 78) as i16, -1);
+
+        bus.write_word(TEST_SP, refnum);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_toolbox(true, 0x19A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_bytes(fcb, 94), vec![0; 94]);
+        assert_eq!(bus.read_long(buffer + 2), 1234);
+        bus.write_long(TEST_SP, name_ptr);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 4), refnum, "reuse a closed FCB");
+    }
+
+    #[test]
+    fn open_res_file_reports_exhausted_fcb_table_without_changing_current_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs_rsrc.insert("Player".to_string(), vec![]);
+        for index in 0..342 {
+            disp.open_files
+                .insert(2 + 94 * index, "Occupied".to_string());
+        }
+        let current = disp.current_resource_refnum();
+        bus.write_pstring(0x200250, b"Player");
+        bus.write_long(TEST_SP, 0x200250);
+        disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 4) as i16, -1);
+        assert_eq!(bus.read_word(0x0A60) as i16, -42);
+        assert_eq!(disp.current_resource_refnum(), current);
+        assert_eq!(disp.refnum_for_resource_file_name("Player"), None);
+    }
+
     // Inside Macintosh Volume I (1985), p. I-115: reopening an already-open
     // resource file returns its refnum but does not make it current.
     #[test]
@@ -26035,7 +26426,7 @@ mod tests {
             disp.current_selector_operation,
             Some("selector-operation:_ComponentDispatch:0x0003:d0-moveq-immediate:8")
         );
-        assert_eq!(bus.read_long(sp + 4), 1);
+        assert_eq!(bus.read_long(sp + 4), 2);
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         disp.current_trap_word = 0xA92A;
@@ -26046,7 +26437,7 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus);
         assert!(result.expect("ComponentDispatch arm").is_ok());
         assert_eq!(disp.current_selector_operation, None);
-        assert_eq!(bus.read_long(sp + 4), 1);
+        assert_eq!(bus.read_long(sp + 4), 2);
     }
 
     #[test]
@@ -27074,6 +27465,47 @@ mod tests {
         assert!(disp.guest_calls.is_pristine());
     }
 
+    #[test]
+    fn threaddispatch_newthread_rejects_descriptor_before_allocating_and_preserves_task_id() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let thread_made = TEST_SP + 0x400;
+        let entry = 0x0004_2000;
+        let heap_before = bus.heap_bump_ptr();
+        bus.write_word(
+            entry,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+        );
+
+        let invoke =
+            |disp: &mut crate::trap::TrapDispatcher, cpu: &mut MockCpu, bus: &mut MacMemoryBus| {
+                cpu.write_reg(Register::A7, sp);
+                bus.write_long(sp, thread_made);
+                bus.write_long(sp + 4, 0);
+                bus.write_long(sp + 8, 0);
+                bus.write_long(sp + 12, 4096);
+                bus.write_long(sp + 16, 0x1234);
+                bus.write_long(sp + 20, entry);
+                bus.write_long(sp + 24, 1);
+                cpu.write_reg(Register::D0, 0x0000_0E03);
+                disp.dispatch_toolbox(true, 0x3F2, cpu, bus)
+                    .expect("ThreadDispatch should handle NewThread")
+                    .expect("NewThread should return");
+            };
+
+        invoke(&mut disp, &mut cpu, &mut bus);
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(bus.read_long(thread_made), 0);
+        assert_eq!(bus.heap_bump_ptr(), heap_before);
+        assert_eq!(disp.thread_return_trampoline, 0);
+        assert!(disp.guest_calls.is_pristine());
+
+        bus.write_word(entry, 0x4E75);
+        invoke(&mut disp, &mut cpu, &mut bus);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(thread_made), 3);
+    }
+
     /// `kApplicationThreadID` exists implicitly from launch, so
     /// `GetCurrentThread` names it and `GetThreadState` materialises its
     /// record instead of failing with threadNotFoundErr.
@@ -27202,7 +27634,7 @@ mod tests {
                 .scheduling_state(ExecutionTaskId::from_thread_id(new_id))
                 != Some(ExecutionTaskState::Ready)
         );
-        assert_eq!(disp.cooperative_thread_pool.len(), 1);
+        assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 1);
 
         // GetFreeThreadCount(threadStyle, freeCount)
         let out = TEST_SP + 0x420;
@@ -27219,6 +27651,76 @@ mod tests {
 
     /// `GetDefaultThreadStackSize` reports the size `NewThread` uses when
     /// passed 0, and refuses the preemptive style.
+    #[test]
+    fn thread_pool_creation_refuses_a_protected_pascal_result_before_allocating() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let before = bus.heap_bump_ptr();
+        bus.write_long(TEST_SP, 1024);
+        bus.write_word(TEST_SP + 4, 2);
+        bus.write_long(TEST_SP + 6, 1);
+        bus.protect_readonly_code(TEST_SP + 11, 1);
+        cpu.write_reg(Register::D0, 0x0501);
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 0);
+        assert_eq!(bus.heap_bump_ptr(), before);
+    }
+
+    #[test]
+    fn thread_pool_allocation_failure_rolls_back_and_retries_without_publishing_entries() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let base = bus.classic_heap_limit() - 1028;
+        bus.reserve_heap_until(base);
+        for (count, expected) in [(2, -108_i16), (1, 0)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0501);
+            bus.write_long(TEST_SP, 1024);
+            bus.write_word(TEST_SP + 4, count);
+            bus.write_long(TEST_SP + 6, 1);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, expected);
+            assert_eq!(
+                disp.guest_calls.classic_thread_pool_count(0),
+                usize::from(expected == 0)
+            );
+            assert_eq!(
+                bus.get_alloc_size(base),
+                if expected == 0 { Some(1024) } else { None }
+            );
+        }
+        assert_eq!(disp.guest_calls.create_task().unwrap().thread_id(), 3);
+    }
+
+    #[test]
+    fn thread_pool_creation_adds_distinct_stacks_to_the_execution_owner() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for expected_count in [3, 6] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0501);
+            bus.write_long(TEST_SP, 1024);
+            bus.write_word(TEST_SP + 4, 3);
+            bus.write_long(TEST_SP + 6, 1);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(
+                disp.guest_calls.classic_thread_pool_count(1024),
+                expected_count
+            );
+        }
+        let mut stacks = Vec::new();
+        while let Some(stack) = disp.guest_calls.take_classic_thread_stack(1024) {
+            assert!(!stacks.contains(&stack));
+            stacks.push(stack);
+        }
+        assert_eq!(stacks.len(), 6);
+    }
+
     #[test]
     fn threaddispatch_default_stack_size_is_reported_and_refuses_preemptive() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -27247,14 +27749,111 @@ mod tests {
     }
 
     #[test]
+    fn classic_stack_space_query_uses_the_parked_native_application_limit() {
+        use crate::guest_call::{GuestCallTarget, M68kRegisterState};
+        use crate::guest_procedure::GuestIsa;
+        let (mut disp, mut cpu, mut bus) = setup();
+        let output = TEST_SP + 0x400;
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, 0x1000);
+        disp.process_memory_manager()
+            .borrow_mut()
+            .set_application_heap_limit(0x8000);
+        // A detached legacy owner has no entry metadata; the retained
+        // outer native call still identifies its original stack.
+        let mut native = ppc::PpcCpu::new();
+        native.gpr[1] = 0x9000;
+        let mut classic = crate::cpu::M68kCpu::new();
+        assert!(disp.guest_calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x5000,
+                rtoc: 0
+            },
+            0x5000,
+            TEST_SP,
+            0x7000,
+            TEST_SP + 4,
+            M68kRegisterState::default(),
+            None,
+            0x8000,
+            0x2000,
+            crate::guest_call::GuestCallReturnPolicy::Preserve
+        ));
+        disp.guest_calls
+            .activate_m68k_parking(&mut classic, &mut native)
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0414);
+        bus.write_long(TEST_SP, output);
+        bus.write_long(TEST_SP + 4, 1);
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(output), 0x1000);
+    }
+
+    #[test]
+    fn threaddispatch_stack_space_tracks_application_limit_and_native_workers() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let output = TEST_SP + 0x400;
+        let invoke = |disp: &mut TrapDispatcher,
+                      cpu: &mut MockCpu,
+                      bus: &mut crate::memory::MacMemoryBus,
+                      thread: u32| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0414);
+            bus.write_long(TEST_SP, output);
+            bus.write_long(TEST_SP + 4, thread);
+            disp.dispatch_toolbox(true, 0x3f2, cpu, bus)
+                .unwrap()
+                .unwrap();
+            cpu.read_reg(Register::D0) as i16
+        };
+        for (alias, available) in [(0, 0x1200), (1, 0x800), (2, 0x400)] {
+            bus.write_long(
+                crate::memory::globals::addr::APPL_LIMIT,
+                TEST_SP - available,
+            );
+            assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, alias), 0);
+            assert_eq!(bus.read_long(output), available);
+        }
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, 0);
+        assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, 1), -619);
+        assert_eq!(bus.read_long(output), 0x400);
+        let mut native = ppc::PpcCpu::new();
+        native.gpr[1] = 0x8700;
+        let worker = disp
+            .guest_calls
+            .create_native_thread(
+                crate::guest_call::NativeThreadContext {
+                    context: native.capture_execution_context(),
+                },
+                crate::guest_call::ThreadStorage {
+                    stack_base: 0x8000,
+                    stack_limit: 0x9000,
+                    ..Default::default()
+                },
+                true,
+                |_| true,
+            )
+            .unwrap();
+        assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, worker.thread_id()), 0);
+        assert_eq!(bus.read_long(output), 0x700);
+        assert_eq!(invoke(&mut disp, &mut cpu, &mut bus, 0xdead), -618);
+        assert_eq!(bus.read_long(output), 0x700);
+    }
+
+    #[test]
     fn threaddispatch_queries_reject_protected_output_without_partial_writes() {
-        for selector in [0x0206, 0x0407] {
+        for selector in [0x0206, 0x0407, 0x0414] {
             let (mut disp, mut cpu, mut bus) = setup();
+            bus.write_long(crate::memory::globals::addr::APPL_LIMIT, TEST_SP - 0x1000);
             let out = TEST_SP + 0x100;
             bus.write_long(out, 0xaabb_ccdd);
             bus.protect_readonly_code(out + 1, 1);
             bus.write_long(TEST_SP, out);
-            if selector == 0x0407 {
+            if selector != 0x0206 {
                 bus.write_long(TEST_SP + 4, 1);
             }
             cpu.write_reg(Register::D0, selector);
@@ -27289,6 +27888,60 @@ mod tests {
     }
 
     #[test]
+    fn thread_state_preflights_successor_and_return_write_before_ending_critical() {
+        for missing_context in [true, false] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let worker = ExecutionTaskId::from_thread_id(3);
+            assert!(disp.guest_calls.register_task(worker));
+            assert!(disp
+                .guest_calls
+                .set_scheduling_state(worker, ExecutionTaskState::Ready));
+            if !missing_context {
+                assert!(disp
+                    .guest_calls
+                    .save_cooperative_context(worker, super::CooperativeThread::default()));
+            }
+            disp.guest_calls.begin_critical();
+            bus.write_long(TEST_SP, 3);
+            bus.write_word(TEST_SP + 4, 1);
+            bus.write_long(TEST_SP + 6, 1);
+            bus.write_word(TEST_SP + 10, 0x1234);
+            if !missing_context {
+                bus.protect_readonly_code(TEST_SP + 11, 1);
+            }
+            cpu.write_reg(Register::D0, 0x0512);
+            let before = disp.guest_calls.clone();
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -619);
+            assert_eq!(disp.guest_calls, before);
+            assert_eq!(disp.guest_calls.critical_depth(), 1);
+        }
+    }
+
+    fn retire_classic_for_test<C: CpuOps>(
+        disp: &mut TrapDispatcher,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        task: ExecutionTaskId,
+        result: u32,
+        recycle: bool,
+    ) -> bool {
+        let retirement = disp
+            .guest_calls
+            .retire_classic_thread(task, recycle, |saved| {
+                saved.result_destination == 0
+                    || bus.try_write_long(saved.result_destination, result)
+            });
+        let Ok(retirement) = retirement else {
+            return false;
+        };
+        disp.apply_classic_retirement(cpu, bus, recycle, retirement);
+        true
+    }
+
+    #[test]
     fn thread_retirement_rejects_partial_result_writes_and_can_retry() {
         for self_exit in [false, true] {
             let (mut disp, mut cpu, mut bus) = setup();
@@ -27301,10 +27954,14 @@ mod tests {
             assert!(disp
                 .guest_calls
                 .set_scheduling_state(worker, ExecutionTaskState::Ready));
-            let mut saved = super::CooperativeThread::default();
-            saved.result_destination = result_slot;
-            saved.stack_base = 0x1000;
-            saved.stack_limit = 0x2000;
+            let saved = super::CooperativeThread::default();
+            let mut storage = crate::guest_call::ThreadStorage {
+                result_destination: result_slot,
+                stack_base: 0x1000,
+                stack_limit: 0x2000,
+                managed_pointer: false,
+            };
+            assert!(disp.guest_calls.set_thread_storage(worker, storage));
             assert!(disp
                 .guest_calls
                 .save_cooperative_context(worker, saved.clone()));
@@ -27319,11 +27976,8 @@ mod tests {
             cpu.write_reg(Register::A0, 0xcafe_babe);
             let current = disp.guest_calls.current_task();
             let ready = disp.guest_calls.next_ready_task(None);
-            let retired = if self_exit {
-                disp.finish_cooperative_thread(&mut cpu, &mut bus)
-            } else {
-                disp.retire_cooperative_thread(worker.thread_id(), 0xcafe_babe, &mut bus)
-            };
+            let retired =
+                retire_classic_for_test(&mut disp, &mut cpu, &mut bus, worker, 0xcafe_babe, false);
             assert!(!retired);
             assert_eq!(disp.guest_calls.current_task(), current);
             assert_eq!(disp.guest_calls.next_ready_task(None), ready);
@@ -27334,21 +27988,18 @@ mod tests {
             assert_eq!(bus.read_long(result_slot), 0x1234_5678);
             assert_eq!(cpu.read_reg(Register::PC), 0x1234);
             assert_eq!(cpu.read_reg(Register::A0), 0xcafe_babe);
-            assert!(disp.cooperative_thread_pool.is_empty());
+            assert!(disp.guest_calls.classic_thread_pool_count(0) == 0);
 
-            saved.result_destination = result_slot + 8;
-            assert!(disp.guest_calls.save_cooperative_context(worker, saved));
-            let retired = if self_exit {
-                disp.finish_cooperative_thread(&mut cpu, &mut bus)
-            } else {
-                disp.retire_cooperative_thread(worker.thread_id(), 0xcafe_babe, &mut bus)
-            };
+            storage.result_destination = result_slot + 8;
+            assert!(disp.guest_calls.set_thread_storage(worker, storage));
+            let retired =
+                retire_classic_for_test(&mut disp, &mut cpu, &mut bus, worker, 0xcafe_babe, false);
             assert!(retired);
             assert_eq!(disp.guest_calls.current_task(), application);
             assert!(disp.guest_calls.cooperative_context(worker).is_none());
             assert_eq!(disp.guest_calls.scheduling_state(worker), None);
             assert_eq!(bus.read_long(result_slot + 8), 0xcafe_babe);
-            assert_eq!(disp.cooperative_thread_pool, vec![(0x1000, 0x2000)]);
+            assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 0);
             if self_exit {
                 assert_eq!(cpu.read_reg(Register::PC), 0x4321);
                 assert_eq!(cpu.read_reg(Register::A0), 0x8765);
@@ -27366,21 +28017,34 @@ mod tests {
         assert!(disp
             .guest_calls
             .set_scheduling_state(worker, ExecutionTaskState::Ready));
-        let mut saved = super::CooperativeThread::default();
-        saved.result_destination = result_slot;
-        saved.stack_base = 0x1000;
-        saved.stack_limit = 0x2000;
+        let saved = super::CooperativeThread::default();
+        assert!(disp.guest_calls.set_thread_storage(
+            worker,
+            crate::guest_call::ThreadStorage {
+                result_destination: result_slot,
+                stack_base: 0x1000,
+                stack_limit: 0x2000,
+                managed_pointer: false
+            }
+        ));
         assert!(disp
             .guest_calls
             .save_cooperative_context(worker, saved.clone()));
         assert!(disp.guest_calls.switch_to_task(worker));
         // The application is ready, but no adapter snapshot exists for it.
         cpu.write_reg(Register::A0, 0xcafe_babe);
-        assert!(!disp.finish_cooperative_thread(&mut cpu, &mut bus));
+        assert!(!retire_classic_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            worker,
+            0xcafe_babe,
+            false,
+        ));
         assert_eq!(disp.guest_calls.current_task(), worker);
         assert_eq!(disp.guest_calls.cooperative_context(worker), Some(saved));
         assert_eq!(bus.read_long(result_slot), 0x1234_5678);
-        assert!(disp.cooperative_thread_pool.is_empty());
+        assert!(disp.guest_calls.classic_thread_pool_count(0) == 0);
     }
 
     #[test]
@@ -27456,6 +28120,158 @@ mod tests {
     }
 
     #[test]
+    fn classic_newthread_obeys_pool_options_without_consuming_ids_on_refusal() {
+        // Thread Manager (1999), pp. 48, 57–58.
+        for (options, requested, expected_size, expected_error) in [
+            (0, 1024, 1024, 0),
+            (2, 1024, 1024, 0),
+            (2, 1200, 2048, 0),
+            (2 | 16, 1200, 0, -617),
+            (2 | 16 | 4, 1200, 1200, 0),
+            (2, 8192, 0, -617),
+            (2 | 4, 8192, 8192, 0),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let made = TEST_SP + 0x100;
+            let mut pooled = Vec::new();
+            // Deliberately put larger stacks first to distinguish best fit
+            // from first fit, including an exact match at the end.
+            for size in [4096, 2048, 1024] {
+                let base = bus.alloc(size);
+                pooled.push((base, size));
+                disp.guest_calls
+                    .recycle_classic_thread_stack((base, base + size));
+            }
+            for (offset, value) in [
+                (0, made),
+                (4, 0),
+                (8, options | 1),
+                (12, requested),
+                (16, 0xcafebabe),
+                (20, 0x10000),
+                (24, 1),
+            ] {
+                bus.write_long(TEST_SP + offset, value);
+            }
+            bus.write_long(made, u32::MAX);
+            cpu.write_reg(Register::D0, 0x0e03);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, expected_error);
+            if expected_error != 0 {
+                assert_eq!(bus.read_long(made), 0);
+                assert!(!disp.guest_calls.has_live_workers());
+                assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 3);
+                // A fresh request retries successfully using the unconsumed ID.
+                cpu.write_reg(Register::A7, TEST_SP);
+                cpu.write_reg(Register::D0, 0x0e03);
+                bus.write_long(TEST_SP + 8, 1);
+                disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(cpu.read_reg(Register::D0), 0);
+                assert_eq!(bus.read_long(made), 3);
+                continue;
+            }
+            let task = ExecutionTaskId::from_thread_id(bus.read_long(made));
+            let storage = disp.guest_calls.thread_storage(task).unwrap();
+            assert_eq!(storage.stack_limit - storage.stack_base, expected_size);
+            let selected = pooled.iter().find(|&&(base, _)| base == storage.stack_base);
+            let should_reuse = options & 2 != 0 && expected_size != 1200 && expected_size != 8192;
+            assert_eq!(selected.is_some(), should_reuse);
+            assert_eq!(
+                disp.guest_calls.classic_thread_pool_count(0),
+                if should_reuse { 2 } else { 3 }
+            );
+            assert_eq!(
+                disp.guest_calls.scheduling_state(task),
+                Some(ExecutionTaskState::Stopped)
+            );
+            let context = disp.guest_calls.cooperative_context(task).unwrap();
+            assert_eq!(bus.read_long(context.a_regs[7] + 4), 0xcafebabe);
+        }
+    }
+
+    #[test]
+    fn classic_thread_creation_refuses_bad_outputs_and_stacks_without_consuming_an_id() {
+        for fault in 0..4 {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let made = TEST_SP + 0x100;
+            let stack = bus.alloc(1024);
+            disp.guest_calls
+                .recycle_classic_thread_stack((stack, stack + 1024));
+            bus.write_long(stack + 1016, 0x11223344);
+            bus.write_long(stack + 1020, 0x55667788);
+            let stack_bytes = (bus.read_long(stack + 1016), bus.read_long(stack + 1020));
+            bus.write_long(made, 0xaaaaaaaa);
+            for (offset, value) in [
+                (0, made),
+                (4, 0),
+                (8, 1 | 2 | 4),
+                (12, if fault == 2 { 4 } else { 1024 }),
+                (16, 0xcafebabe),
+                (20, 0x10000),
+                (24, 1),
+            ] {
+                bus.write_long(TEST_SP + offset, value);
+            }
+            match fault {
+                0 => bus.protect_readonly_code(made + 2, 2),
+                1 => bus.protect_readonly_code(stack + 1022, 2),
+                3 => bus.protect_readonly_code(TEST_SP + 29, 1),
+                _ => {}
+            }
+            cpu.write_reg(Register::D0, 0x0e03);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+            assert_eq!(bus.read_long(made), if fault == 0 { 0xaaaaaaaa } else { 0 });
+            assert_eq!(disp.guest_calls.classic_thread_pool_count(0), 1);
+            assert!(!disp.guest_calls.has_live_workers());
+            assert_eq!(
+                (bus.read_long(stack + 1016), bus.read_long(stack + 1020)),
+                stack_bytes
+            );
+            // Retry with a valid output, return frame, size and stack. If the
+            // pool stack itself is protected, reserve another stack for retry.
+            let retry_sp = TEST_SP + 0x200;
+            let retry_made = TEST_SP + 0x300;
+            if fault == 1 {
+                disp.guest_calls.take_classic_thread_stack(1024);
+            }
+            for (offset, value) in [
+                (0, retry_made),
+                (4, 0),
+                (8, 1 | 2 | 4),
+                (12, 1024),
+                (16, 0xcafebabe),
+                (20, 0x10000),
+                (24, 1),
+            ] {
+                bus.write_long(retry_sp + offset, value);
+            }
+            cpu.write_reg(Register::A7, retry_sp);
+            cpu.write_reg(Register::D0, 0x0e03);
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(bus.read_long(retry_made), 3);
+            let worker = disp
+                .guest_calls
+                .cooperative_context(ExecutionTaskId::from_thread_id(3))
+                .unwrap();
+            assert_eq!(bus.read_long(worker.a_regs[7] + 4), 0xcafebabe);
+            assert_eq!(
+                bus.read_long(worker.a_regs[7]),
+                disp.thread_return_trampoline
+            );
+        }
+    }
+
+    #[test]
     fn threaddispatch_newthread_accepts_default_stack_and_consumes_mpw_frame() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
@@ -27486,7 +28302,23 @@ mod tests {
 
     #[test]
     fn threaddispatch_yield_to_any_thread_roundtrips_complete_68k_contexts() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, _, mut bus) = setup();
+        let mut cpu = crate::cpu::M68kCpu::new();
+        cpu.core.set_sr(0x3010);
+        cpu.core.fpr = std::array::from_fn(|i| m68k::fpu::FloatX80 {
+            mantissa: 0x8000_0000_0000_0001 + i as u64,
+            sign_exp: 0x7fff,
+        });
+        cpu.core.fpcr = 0x1234;
+        cpu.core.fpsr = 0x5678;
+        cpu.core.fpiar = 0x0010_2340;
+        let initial_fpu = (
+            cpu.core.fpr,
+            cpu.core.fpcr,
+            cpu.core.fpsr,
+            cpu.core.fpiar,
+            cpu.core.fpu_just_reset,
+        );
         let new_sp = TEST_SP;
         let thread_made = bus.alloc(4);
         let entry = 0x0012_3456;
@@ -27509,6 +28341,20 @@ mod tests {
 
         let app_sp = new_sp + 28;
         let app_pc = 0x000F_0000;
+        cpu.core.set_sr(0x851b);
+        cpu.write_reg(Register::A7, app_sp);
+        cpu.core.fpr.reverse();
+        cpu.core.fpcr = 0x4321;
+        cpu.core.fpsr = 0x8765;
+        cpu.core.fpiar = 0x0010_9870;
+        cpu.core.fpu_just_reset = false;
+        let app_fpu = (
+            cpu.core.fpr,
+            cpu.core.fpcr,
+            cpu.core.fpsr,
+            cpu.core.fpiar,
+            cpu.core.fpu_just_reset,
+        );
         cpu.write_reg(Register::PC, app_pc);
         cpu.write_reg(Register::D3, 0xCAFE_BABE);
         disp.guest_calls.begin_m68k(
@@ -27542,6 +28388,17 @@ mod tests {
             0x000D_1000,
             cpu.read_reg(Register::A7),
         );
+        assert_eq!(cpu.core.get_sr() & 0xff00, 0x3000);
+        assert_eq!(
+            (
+                cpu.core.fpr,
+                cpu.core.fpcr,
+                cpu.core.fpsr,
+                cpu.core.fpiar,
+                cpu.core.fpu_just_reset
+            ),
+            initial_fpu
+        );
         assert_eq!(cpu.read_reg(Register::PC), entry);
         assert_eq!(cpu.read_reg(Register::A5), 0x00AA_5500);
         let thread_sp = cpu.read_reg(Register::A7);
@@ -27569,10 +28426,223 @@ mod tests {
             1,
             "the suspended worker continuation must remain task-local"
         );
+        assert_eq!(cpu.core.get_sr(), 0x851b);
+        assert_eq!(
+            (
+                cpu.core.fpr,
+                cpu.core.fpcr,
+                cpu.core.fpsr,
+                cpu.core.fpiar,
+                cpu.core.fpu_just_reset
+            ),
+            app_fpu
+        );
         assert_eq!(cpu.read_reg(Register::PC), app_pc);
         assert_eq!(cpu.read_reg(Register::A7), app_sp + 4);
         assert_eq!(cpu.read_reg(Register::D3), 0xCAFE_BABE);
         assert_eq!(bus.read_word(app_sp + 4), 0);
+
+        // SetThreadState has a separate ABI path for saving the outgoing task.
+        // Refresh every register while preserving its registered hooks.
+        let app = ExecutionTaskId::from_thread_id(2);
+        let mut saved = disp.guest_calls.cooperative_context(app).unwrap();
+        saved.switch_in = (0x1000, 1);
+        saved.switch_out = (0x2000, 2);
+        saved.terminator = (0x3000, 3);
+        assert!(disp.guest_calls.save_cooperative_context(app, saved));
+        cpu.core.set_sr(0x3209);
+        cpu.core.fpr.rotate_left(1);
+        cpu.core.fpcr = 0x40;
+        cpu.core.fpsr = 0x80;
+        cpu.core.fpiar = 0x0012_1000;
+        cpu.core.fpu_just_reset = true;
+        let latest = cpu.capture_extended_context();
+        cpu.write_reg(Register::A7, app_sp);
+        bus.write_long(app_sp, 3);
+        bus.write_word(app_sp + 4, 0); // ready
+        bus.write_long(app_sp + 6, 1); // current thread
+        cpu.write_reg(Register::D0, 0x0508);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.guest_calls.current_task().thread_id(), 3);
+        let worker_sp = cpu.read_reg(Register::A7) - 8;
+        cpu.write_reg(Register::A7, worker_sp);
+        bus.write_long(worker_sp, 2);
+        cpu.write_reg(Register::D0, 0x0205);
+        disp.dispatch_toolbox(true, 0x3F2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.guest_calls.current_task(), app);
+        assert_eq!(cpu.capture_extended_context(), latest);
+        assert_eq!(cpu.read_reg(Register::A7), app_sp + 10);
+        let saved = disp.guest_calls.cooperative_context(app).unwrap();
+        assert_eq!(saved.switch_in, (0x1000, 1));
+        assert_eq!(saved.switch_out, (0x2000, 2));
+        assert_eq!(saved.terminator, (0x3000, 3));
+    }
+
+    #[test]
+    fn classic_yield_refuses_missing_successor_context_without_publishing_source() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let application = ExecutionTaskId::APPLICATION;
+        let worker = ExecutionTaskId::from_thread_id(3);
+        assert!(disp.guest_calls.register_task(worker));
+        assert!(disp
+            .guest_calls
+            .set_scheduling_state(worker, ExecutionTaskState::Ready));
+        let saved = crate::guest_call::CooperativeThread {
+            d_regs: [0x1111_0000; 8],
+            a_regs: [0x2222_0000; 8],
+            pc: 0x3333_0000,
+            ccr: 0x14,
+            extended: None,
+            switch_in: (0x4444_0000, 1),
+            switch_out: (0x5555_0000, 2),
+            terminator: (0x6666_0000, 3),
+        };
+        assert!(disp
+            .guest_calls
+            .save_cooperative_context(application, saved.clone()));
+        cpu.write_reg(Register::PC, 0x1234_5678);
+        cpu.write_reg(Register::D3, 0x89ab_cdef);
+        cpu.write_reg(Register::A5, 0x7654_3210);
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, worker.thread_id());
+        bus.write_word(sp + 4, 0xbeef);
+        cpu.write_reg(Register::D0, 0x0205);
+        let mut expected_live = crate::guest_call::CooperativeThread::capture(&cpu);
+        expected_live.d_regs[0] = (-619i16) as u32;
+        expected_live.a_regs[7] = sp.wrapping_add(4);
+        let before_extended = cpu.capture_extended_context();
+        let before_calls = disp.guest_calls.clone();
+
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-619i16) as u32);
+        assert_eq!(cpu.read_reg(Register::A7), sp.wrapping_add(4));
+        assert_eq!(bus.read_word(sp + 4), (-619i16) as u16);
+        assert_eq!(
+            crate::guest_call::CooperativeThread::capture(&cpu),
+            expected_live
+        );
+        assert_eq!(cpu.capture_extended_context(), before_extended);
+        assert_eq!(disp.guest_calls, before_calls);
+        assert_eq!(disp.guest_calls.current_task(), application);
+        assert_eq!(
+            disp.guest_calls.scheduling_state(worker),
+            Some(ExecutionTaskState::Ready)
+        );
+        assert_eq!(
+            disp.guest_calls.cooperative_context(application),
+            Some(saved)
+        );
+        assert_eq!(disp.guest_calls.cooperative_context(worker), None);
+        assert!(!disp.guest_calls.has_pending_task_handoff());
+    }
+
+    #[test]
+    fn classic_yield_refuses_during_critical_sections_without_mutating_contexts() {
+        for suggested in [0, 3] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let application = ExecutionTaskId::APPLICATION;
+            let worker = ExecutionTaskId::from_thread_id(3);
+            let worker_context = crate::guest_call::CooperativeThread {
+                pc: 0x3000,
+                a_regs: [0, 0, 0, 0, 0, 0, 0, 0x9000],
+                ..Default::default()
+            };
+            assert!(disp.guest_calls.register_task(worker));
+            assert!(disp
+                .guest_calls
+                .save_cooperative_context(worker, worker_context.clone()));
+            assert!(disp
+                .guest_calls
+                .set_scheduling_state(worker, ExecutionTaskState::Ready));
+            disp.guest_calls.begin_critical();
+            cpu.write_reg(Register::PC, 0x1234_5678);
+            cpu.write_reg(Register::D3, 0x89ab_cdef);
+            let sp = TEST_SP;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, suggested);
+            bus.write_word(sp + 4, 0xbeef);
+            cpu.write_reg(Register::D0, 0x0205);
+            let mut expected_live = crate::guest_call::CooperativeThread::capture(&cpu);
+            expected_live.d_regs[0] = (-619i16) as u32;
+            expected_live.a_regs[7] = sp.wrapping_add(4);
+            let before_extended = cpu.capture_extended_context();
+            let before_application = disp.guest_calls.cooperative_context(application);
+            let before_calls = disp.guest_calls.clone();
+
+            disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(cpu.read_reg(Register::D0), (-619i16) as u32);
+            assert_eq!(cpu.read_reg(Register::A7), sp.wrapping_add(4));
+            assert_eq!(bus.read_word(sp + 4), (-619i16) as u16);
+            assert_eq!(
+                crate::guest_call::CooperativeThread::capture(&cpu),
+                expected_live
+            );
+            assert_eq!(cpu.capture_extended_context(), before_extended);
+            assert_eq!(disp.guest_calls, before_calls);
+            assert_eq!(disp.guest_calls.current_task(), application);
+            assert_eq!(disp.guest_calls.critical_depth(), 1);
+            assert_eq!(
+                disp.guest_calls.cooperative_context(application),
+                before_application
+            );
+            assert_eq!(
+                disp.guest_calls.cooperative_context(worker),
+                Some(worker_context)
+            );
+            assert!(!disp.guest_calls.has_pending_task_handoff());
+        }
+    }
+
+    #[test]
+    fn classic_yield_to_any_without_successor_returns_without_publishing_snapshot() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = u32::MAX - 3;
+        cpu.write_reg(Register::PC, 0x1234_5678);
+        cpu.write_reg(Register::D3, 0x89ab_cdef);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0205);
+        let mut expected_live = crate::guest_call::CooperativeThread::capture(&cpu);
+        expected_live.d_regs[0] = 0;
+        expected_live.a_regs[7] = 0;
+        let before_extended = cpu.capture_extended_context();
+        let before_application = disp
+            .guest_calls
+            .cooperative_context(ExecutionTaskId::APPLICATION);
+        let before_calls = disp.guest_calls.clone();
+
+        disp.dispatch_toolbox(true, 0x3f2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), 0);
+        assert_eq!(
+            crate::guest_call::CooperativeThread::capture(&cpu),
+            expected_live
+        );
+        assert_eq!(cpu.capture_extended_context(), before_extended);
+        assert_eq!(disp.guest_calls, before_calls);
+        assert_eq!(
+            disp.guest_calls.current_task(),
+            ExecutionTaskId::APPLICATION
+        );
+        assert_eq!(
+            disp.guest_calls
+                .cooperative_context(ExecutionTaskId::APPLICATION),
+            before_application
+        );
+        assert!(!disp.guest_calls.has_pending_task_handoff());
     }
 
     #[test]
@@ -33762,6 +34832,95 @@ mod tests {
         );
         assert_eq!(bus.read_word(sp), (-43i16) as u16);
         assert_eq!(cpu.read_reg(Register::D0), (-43i16) as u32);
+    }
+
+    #[test]
+    fn movie_data_fork_loader_checks_offsets_and_pascal_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let mut mvhd = vec![0; 100];
+        mvhd[12..16].copy_from_slice(&600u32.to_be_bytes());
+        mvhd[16..20].copy_from_slice(&1200u32.to_be_bytes());
+        let mut file = vec![0x77; 32];
+        file.extend(quicktime_atom(*b"moov", &quicktime_atom(*b"mvhd", &mvhd)));
+        disp.vfs.insert("score".to_string(), file);
+        disp.open_files.insert(128, "score".to_string());
+        for (offset, expected) in [(32, 0i16), (0, -2002), (u32::MAX, -2002)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x01B3);
+            bus.write_long(TEST_SP, 0x300010);
+            bus.write_word(TEST_SP + 4, 1);
+            bus.write_long(TEST_SP + 6, offset);
+            bus.write_word(TEST_SP + 10, 128);
+            bus.write_long(TEST_SP + 12, 0x300000);
+            bus.write_long(TEST_SP + 18, 0xCAFE_BABE);
+            disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+            assert_eq!(bus.read_word(TEST_SP + 16) as i16, expected);
+            assert_eq!(bus.read_long(TEST_SP + 18), 0xCAFE_BABE);
+            if expected == 0 {
+                let movie = bus.read_long(0x300000);
+                assert_eq!(disp.movie_states[&movie].duration, 1200);
+                assert_eq!(disp.movie_states[&movie].time_scale, 600);
+                assert_eq!(bus.read_byte(0x300010), 0);
+            } else {
+                assert_eq!(bus.read_long(0x300000), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn movie_music_controls_stop_mute_seek_and_loop() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let movie = 0x300100;
+        let mut state = super::MovieState::new(0, -1, 1, (0, 0, 0, 0), 600, 600);
+        state.music = Some(vec![super::super::movie_media::MusicNote {
+            start: 0.0,
+            duration: 0.8,
+            pitch: 60.0,
+            velocity: 1.0,
+            part: 0,
+        }]);
+        disp.movie_states.insert(movie, state);
+        let call = |disp: &mut TrapDispatcher,
+                    cpu: &mut MockCpu,
+                    bus: &mut MacMemoryBus,
+                    selector: u32| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            disp.dispatch_toolbox(true, 0x2AA, cpu, bus)
+                .unwrap()
+                .unwrap();
+        };
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x0012);
+        assert_eq!(bus.read_long(TEST_SP + 4), movie);
+        bus.write_long(TEST_SP, 1);
+        bus.write_long(TEST_SP + 4, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x00B2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x000B);
+        let mut output = Vec::new();
+        disp.mix_movie_music(&mut output, 2205);
+        assert!(output.iter().any(|&b| b != 128));
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x002F);
+        output.clear();
+        disp.mix_movie_music(&mut output, 2205);
+        assert!(output.iter().all(|&b| b == 128));
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x000D);
+        assert_eq!(disp.movie_states[&movie].audio_time, 0.0);
+        disp.mix_movie_music(&mut Vec::new(), 22050 + 2205);
+        assert!((disp.movie_states[&movie].audio_time - 0.1).abs() < 1e-9);
+        bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x000C);
+        output.clear();
+        disp.mix_movie_music(&mut output, 2205);
+        assert!(output.is_empty());
     }
 
     #[test]

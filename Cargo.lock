@@ -882,6 +882,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "font-types"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e64eb721ca85a34323425f4041adc5d82704d3782d5f8f03793bc012419dce23"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1200,9 +1209,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "m68k"
-version = "0.11.6"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aaedc7710ba71202eb3f539c1be37f171083c17253c26a9eba5f96d24137095"
+checksum = "b7e614e34e0fe46c6b8d6e9e8b778eb6bc6ff1e0ffafabcb8243f2bd2c9f5b29"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1777,9 +1786,9 @@ dependencies = [
 
 [[package]]
 name = "ppc"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cc5839a690e28cb2552c77d1d57ce04cd462c312ad1ad0757b30133b02303c8"
+checksum = "e3c3398a600341cf4832aa283433bc481194ebbefe68d42baf8b140601d5a19b"
 dependencies = [
  "ieee-apsqrt",
  "rustc_apfloat",
@@ -1873,6 +1882,16 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "read-fonts"
+version = "0.40.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e47cf772000d7aea67a6ea51de8a21b77674aaa538f3b523d89ae6514bf45bb4"
+dependencies = [
+ "bytemuck",
+ "font-types",
 ]
 
 [[package]]
@@ -2095,6 +2114,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
+name = "skrifa"
+version = "0.43.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbe997d0f2480442d727488fbe2150779114cbe480ecdbadef58b33e0318ffb"
+dependencies = [
+ "bytemuck",
+ "read-fonts",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2219,9 +2248,8 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.34.1"
+version = "0.39.1"
 dependencies = [
- "ab_glyph",
  "clap",
  "cpal",
  "flate2",
@@ -2237,6 +2265,7 @@ dependencies = [
  "ppc",
  "serde",
  "serde_json",
+ "skrifa",
  "softbuffer",
  "stuffit",
  "tempfile",
@@ -2244,6 +2273,7 @@ dependencies = [
  "tracing",
  "ttf-parser",
  "winit",
+ "zeno",
  "zip",
 ]
 
@@ -3125,6 +3155,12 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+
+[[package]]
+name = "zeno"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
 
 [[package]]
 name = "zerocopy"

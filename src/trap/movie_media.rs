@@ -387,6 +387,203 @@ fn parse_inline_clut(id: &[u8], depth: u16) -> Option<Vec<[u8; 3]>> {
     Some(table)
 }
 
+/// A note in QuickTime music media, expressed in seconds and MIDI units.
+#[derive(Clone, Debug)]
+pub(crate) struct MusicNote {
+    pub start: f64,
+    pub duration: f64,
+    pub pitch: f64,
+    pub velocity: f64,
+    pub part: u16,
+}
+
+/// Decode the note events in a music track. Event bit layouts are specified
+/// by Apple's QuickTimeMusic.h (Universal Interfaces), Music Media Events.
+/// Samples use the media time scale; rest events advance the event cursor,
+/// while note durations do not delay the following event (polyphony).
+pub(crate) fn parse_music_track(moov: &[u8], data: &[u8]) -> Option<Vec<MusicNote>> {
+    let inner = find_atom(moov, b"moov").unwrap_or(moov);
+    let mut result = None;
+    for_each_atom(inner, |kind, trak| {
+        if kind != b"trak" || result.is_some() {
+            return;
+        }
+        let Some(mdia) = find_atom(trak, b"mdia") else {
+            return;
+        };
+        let Some(hdlr) = find_atom(mdia, b"hdlr") else {
+            return;
+        };
+        if hdlr.get(8..12) != Some(b"musi") {
+            return;
+        }
+        let Some(mdhd) = find_atom(mdia, b"mdhd") else {
+            return;
+        };
+        let scale = be32(mdhd, if mdhd.first() == Some(&1) { 20 } else { 12 });
+        if scale == 0 {
+            return;
+        }
+        let Some(stbl) = find_atom(mdia, b"minf").and_then(|m| find_atom(m, b"stbl")) else {
+            return;
+        };
+        let Some(stsd) = find_atom(stbl, b"stsd") else {
+            return;
+        };
+        if stsd.get(12..16) != Some(b"musi") {
+            return;
+        }
+        let Some(sz) = find_atom(stbl, b"stsz") else {
+            return;
+        };
+        let count = be32(sz, 8) as usize;
+        // Bound every table by its actual bytes before using the common
+        // expansion helpers. Malformed media must not allocate by file counts.
+        if count > data.len() / 4 || (be32(sz, 4) == 0 && count > sz.len().saturating_sub(12) / 4) {
+            return;
+        }
+        for (name, width) in [(b"stsc", 12), (b"stco", 4), (b"stts", 8)] {
+            let Some(table) = find_atom(stbl, name) else {
+                return;
+            };
+            if be32(table, 4) as usize > table.len().saturating_sub(8) / width {
+                return;
+            }
+        }
+        let (sample_size, sample_count, sizes) = parse_stsz(sz);
+        let tables = SampleTables {
+            stsc: parse_stsc(find_atom(stbl, b"stsc").unwrap()),
+            chunks: parse_stco(find_atom(stbl, b"stco").unwrap()),
+            stts: parse_stts(find_atom(stbl, b"stts").unwrap()),
+            stss: Vec::new(),
+            sample_size,
+            sample_count,
+            sizes,
+        };
+        if tables.stts.iter().map(|&(n, _)| u64::from(n)).sum::<u64>() != count as u64 {
+            return;
+        }
+        if tables.stsc.iter().any(|&(first, n, _)| {
+            first == 0 || first as usize > tables.chunks.len() || n as usize > count
+        }) {
+            return;
+        }
+        let mut notes = Vec::new();
+        let mut sustain_changes = Vec::new();
+        for sample in expand_samples(&tables) {
+            let Some(end) = sample.offset.checked_add(sample.size) else {
+                return;
+            };
+            let Some(bytes) = data.get(sample.offset..end) else {
+                return;
+            };
+            let mut time = sample.start_time as f64 / scale as f64;
+            let mut off = 0;
+            while off + 4 <= bytes.len() {
+                let word = be32(bytes, off);
+                let length = match word >> 30 {
+                    0 | 1 => 1,
+                    2 => 2,
+                    _ => (word & 0xffff) as usize,
+                };
+                if length == 0 || length > (bytes.len() - off) / 4 {
+                    return;
+                }
+                let part = ((word >> 24) & 31) as u16;
+                match word >> 29 {
+                    0 => time += (word & 0xffffff) as f64 / scale as f64,
+                    1 => notes.push(MusicNote {
+                        start: time,
+                        duration: (word & 2047) as f64 / scale as f64,
+                        pitch: ((word >> 18) & 63) as f64 + 32.0,
+                        velocity: ((word >> 11) & 127) as f64 / 127.0,
+                        part,
+                    }),
+                    2 if (word >> 16) & 255 == 64 => {
+                        let down = word & 0xffff >= 64 * 256;
+                        sustain_changes.push((part, time, down));
+                    }
+                    _ if word >> 28 == 9 => {
+                        let next = be32(bytes, off + 4);
+                        notes.push(MusicNote {
+                            start: time,
+                            duration: (next & 0x3fffff) as f64 / scale as f64,
+                            pitch: (word & 0xffff) as f64,
+                            velocity: ((next >> 22) & 127) as f64 / 127.0,
+                            part: ((word >> 16) & 4095) as u16,
+                        });
+                    }
+                    _ => {}
+                }
+                off += length * 4;
+            }
+        }
+        // The sustain pedal holds released notes until the next pedal-up.
+        for note in &mut notes {
+            let end = note.start + note.duration;
+            let down = sustain_changes
+                .iter()
+                .rev()
+                .find(|&&(p, t, _)| p == note.part && t <= end)
+                .is_some_and(|&(_, _, down)| down);
+            if down {
+                if let Some(&(_, up, _)) = sustain_changes
+                    .iter()
+                    .find(|&&(p, t, down)| p == note.part && t > end && !down)
+                {
+                    note.duration = up - note.start;
+                }
+            }
+        }
+        notes.sort_by(|a, b| a.start.total_cmp(&b.start));
+        result = Some(notes);
+    });
+    result
+}
+
+/// Deterministic polyphonic piano synthesis. The oscillators and decaying
+/// partials are generated here; no proprietary QuickTime instrument samples
+/// are copied. This is an approximation of the instrument timbre.
+pub(crate) fn mix_music_notes(
+    notes: &[MusicNote],
+    start: f64,
+    rate: f64,
+    volume: f64,
+    output: &mut [u8],
+) {
+    let step = rate / crate::sound::OUTPUT_RATE as f64;
+    let finish = start + output.len() as f64 / 2.0 * step;
+    for note in notes {
+        if note.start > finish {
+            break;
+        }
+        if note.start + note.duration + 0.18 < start || note.velocity == 0.0 {
+            continue;
+        }
+        let frequency = 440.0 * 2.0f64.powf((note.pitch - 69.0) / 12.0);
+        for (i, frame) in output.chunks_exact_mut(2).enumerate() {
+            let age = start + i as f64 * step - note.start;
+            if age < 0.0 || age > note.duration + 0.18 {
+                continue;
+            }
+            let release = if age > note.duration {
+                (1.0 - (age - note.duration) / 0.18).max(0.0)
+            } else {
+                1.0
+            };
+            let envelope = (age / 0.004).min(1.0) * (-age / 2.8).exp() * release;
+            let phase = std::f64::consts::TAU * frequency * age;
+            let wave = phase.sin()
+                + 0.35 * (2.0 * phase).sin() * (-age * 1.5).exp()
+                + 0.15 * (3.0 * phase).sin() * (-age * 3.0).exp();
+            let sample = (wave * envelope * note.velocity * volume * 22.0) as i32;
+            for channel in frame {
+                *channel = (*channel as i32 + sample).clamp(0, 255) as u8;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +594,99 @@ mod tests {
         v.extend_from_slice(t);
         v.extend_from_slice(body);
         v
+    }
+
+    fn music_movie(events: &[u32]) -> (Vec<u8>, Vec<u8>) {
+        let data: Vec<u8> = events.iter().flat_map(|w| w.to_be_bytes()).collect();
+        let mut mdhd = vec![0; 24];
+        mdhd[12..16].copy_from_slice(&600u32.to_be_bytes());
+        let mut handler = vec![0; 24];
+        handler[8..12].copy_from_slice(b"musi");
+        let mut description = vec![0; 28];
+        description[4..8].copy_from_slice(&1u32.to_be_bytes());
+        description[8..12].copy_from_slice(&20u32.to_be_bytes());
+        description[12..16].copy_from_slice(b"musi");
+        let words = |values: &[u32]| {
+            values
+                .iter()
+                .flat_map(|w| w.to_be_bytes())
+                .collect::<Vec<_>>()
+        };
+        let stbl = [
+            atom(b"stsd", &description),
+            atom(b"stsc", &words(&[0, 1, 1, 1, 1])),
+            atom(b"stco", &words(&[0, 1, 0])),
+            atom(b"stsz", &words(&[0, 0, 1, data.len() as u32])),
+            atom(b"stts", &words(&[0, 1, 1, 600])),
+        ]
+        .concat();
+        let mdia = [
+            atom(b"mdhd", &mdhd),
+            atom(b"hdlr", &handler),
+            atom(b"minf", &atom(b"stbl", &stbl)),
+        ]
+        .concat();
+        (atom(b"moov", &atom(b"trak", &atom(b"mdia", &mdia))), data)
+    }
+
+    #[test]
+    fn music_events_preserve_polyphony_pitch_duration_and_sustain() {
+        let note = 0x20000000 | ((60 - 32) << 18) | (100 << 11) | 60;
+        let (moov, data) = music_movie(&[
+            600,
+            0x40407f00,
+            note,
+            0x90000045,
+            (100 << 22) | 120,
+            180,
+            0x40400000,
+        ]);
+        let notes = parse_music_track(&moov, &data).unwrap();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].start, 1.0);
+        assert_eq!(notes[1].start, 1.0);
+        assert_eq!(notes[0].pitch, 60.0);
+        assert_eq!(notes[1].pitch, 69.0);
+        assert!((notes[0].duration - 0.3).abs() < 1e-9);
+        assert!((notes[1].duration - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn music_rejects_truncated_events_and_out_of_file_sample_offsets() {
+        let (moov, data) = music_movie(&[0x90000045]);
+        assert!(parse_music_track(&moov, &data).is_none());
+        let (mut moov, data) = music_movie(&[600, 0x20001020]);
+        let pos = moov.windows(4).position(|s| s == b"stco").unwrap();
+        moov[pos + 12..pos + 16].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(parse_music_track(&moov, &data).is_none());
+    }
+
+    #[test]
+    fn music_synthesis_obeys_rest_release_and_volume() {
+        let notes = vec![MusicNote {
+            start: 1.0,
+            duration: 0.25,
+            pitch: 69.0,
+            velocity: 0.8,
+            part: 0,
+        }];
+        let mut silence = vec![128; 2205 * 2];
+        mix_music_notes(&notes, 0.0, 1.0, 1.0, &mut silence);
+        assert!(silence.iter().all(|&v| v == 128));
+        let mut audible = silence.clone();
+        mix_music_notes(&notes, 1.0, 1.0, 1.0, &mut audible);
+        assert!(audible.iter().filter(|&&v| v != 128).count() > 3000);
+        let mut muted = silence.clone();
+        mix_music_notes(&notes, 1.0, 1.0, 0.0, &mut muted);
+        assert_eq!(muted, silence);
+        mix_music_notes(&notes, 1.5, 1.0, 1.0, &mut silence);
+        assert_eq!(muted, silence);
+        let mut whole = vec![128; 4410];
+        mix_music_notes(&notes, 1.0, 1.0, 1.0, &mut whole);
+        let mut split = vec![128; 4410];
+        mix_music_notes(&notes, 1.0, 1.0, 1.0, &mut split[..2200]);
+        mix_music_notes(&notes, 1.0 + 1100.0 / 22050.0, 1.0, 1.0, &mut split[2200..]);
+        assert_eq!(whole, split);
     }
 
     #[test]

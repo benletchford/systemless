@@ -132,6 +132,15 @@ impl DstClip {
         Self { rect, regions }
     }
 
+    pub(crate) fn intersect_rect(&mut self, rect: DstClipRect) {
+        self.rect = (
+            self.rect.0.max(rect.0),
+            self.rect.1.max(rect.1),
+            self.rect.2.min(rect.2),
+            self.rect.3.min(rect.3),
+        );
+    }
+
     pub(crate) fn rect(&self) -> DstClipRect {
         self.rect
     }
@@ -3342,8 +3351,7 @@ fn invert_dst_rect(
                 bus.write_byte(addr, byte ^ (1 << bit));
             } else {
                 let addr = sb + (y as u32) * srb + (x as u32);
-                let byte = bus.read_byte(addr);
-                bus.write_byte(addr, byte ^ 0xFF);
+                bus.invert_screen_byte(addr);
             }
         }
     }
@@ -3461,7 +3469,7 @@ fn draw_shape_round_rect(
                     bus.write_byte(addr, bus.read_byte(addr) ^ (1 << bit));
                 } else {
                     let addr = screen_base + (y as u32) * screen_rb + x as u32;
-                    bus.write_byte(addr, bus.read_byte(addr) ^ 0xFF);
+                    bus.invert_screen_byte(addr);
                 }
                 continue;
             }
@@ -3749,8 +3757,7 @@ fn draw_shape_oval_or_arc(
                     bus.write_byte(addr, byte ^ (1 << bit));
                 } else {
                     let addr = sb + (y as u32) * srb + (x as u32);
-                    let byte = bus.read_byte(addr);
-                    bus.write_byte(addr, byte ^ 0xFF);
+                    bus.invert_screen_byte(addr);
                 }
             } else {
                 plot_dst_pixel(
@@ -4004,8 +4011,7 @@ fn render_pict_polygon(
                         }
                         if pixel_size == 8 {
                             let addr = screen_base + (dy as u32) * screen_rb + (dx as u32);
-                            let old = bus.read_byte(addr);
-                            bus.write_byte(addr, old ^ 0xFF);
+                            bus.invert_screen_byte(addr);
                         } else {
                             // 1bpp not commonly hit by PICT invert;
                             // skip for now.

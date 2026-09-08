@@ -2,7 +2,7 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::loader::CodeSegmentHeader;
-use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
+use crate::machine_profile::{REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE};
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -2674,10 +2674,8 @@ impl super::TrapDispatcher {
                 let pc = cpu.read_reg(Register::PC); // past A9F0
                 let a9f0_addr = pc.wrapping_sub(2);
 
-                let is_loadseg_trampoline = self
-                    .tool_trap_trampolines
-                    .get(&0xA9F0)
-                    .copied()
+                let is_loadseg_trampoline = bus
+                    .system_trap_gateway(0xA9F0)
                     .is_some_and(|addr| addr == a9f0_addr);
 
                 let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
@@ -3563,7 +3561,12 @@ impl super::TrapDispatcher {
                     // Inside Macintosh: Operating System Utilities 1994,
                     // p. 1-24: gestalt68k = 1, gestaltPowerPC = 2.
                     b"sysa" => {
-                        cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(
+                            Register::A0,
+                            REFERENCE_M68K_EXECUTION_CAPABILITIES
+                                .system_architecture
+                                .expect("68K Gestalt supports gestaltSysArchitecture"),
+                        );
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltOSTable / gestaltToolboxTable return the bases
@@ -3612,7 +3615,7 @@ impl super::TrapDispatcher {
                     b"cput" => {
                         cpu.write_reg(
                             Register::A0,
-                            REFERENCE_MACHINE_PROFILE.gestalt_native_cpu_type,
+                            REFERENCE_M68K_EXECUTION_CAPABILITIES.native_cpu_type,
                         );
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -3620,7 +3623,7 @@ impl super::TrapDispatcher {
                     b"proc" => {
                         cpu.write_reg(
                             Register::A0,
-                            REFERENCE_MACHINE_PROFILE.gestalt_processor_type,
+                            REFERENCE_M68K_EXECUTION_CAPABILITIES.processor_type,
                         );
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -3686,12 +3689,12 @@ impl super::TrapDispatcher {
                     }
                     // gestaltFPUType ('fpu ') -> 68040 FPU
                     b"fpu " => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_fpu_type);
+                        cpu.write_reg(Register::A0, REFERENCE_M68K_EXECUTION_CAPABILITIES.fpu_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltMMUType ('mmu ') -> 68040 MMU
                     b"mmu " => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.gestalt_mmu_type);
+                        cpu.write_reg(Register::A0, REFERENCE_M68K_EXECUTION_CAPABILITIES.mmu_type);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltSoundAttr ('snd ') -> advertise a full late-68k
@@ -7205,7 +7208,6 @@ impl super::TrapDispatcher {
                                 self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
                             bus.write_word(sp + 6, refnum);
                             cpu.write_reg(Register::D0, refnum as u32);
-                            bus.write_word(0x0A60, 0); // ResErr = noErr
                         } else {
                             // FSpOpenResFile failure semantics:
                             // - If the file exists but has no resource fork, return
@@ -8045,7 +8047,7 @@ impl super::TrapDispatcher {
         decode_mac_roman(&bus.read_pstring(name_ptr))
     }
 
-    fn write_pstring(bus: &mut MacMemoryBus, ptr: u32, value: &str) {
+    pub(crate) fn write_pstring(bus: &mut MacMemoryBus, ptr: u32, value: &str) {
         if ptr == 0 {
             return;
         }
@@ -8784,7 +8786,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::super::dispatch::{LoadedResources, ResourceFileMap};
-    use super::super::test_helpers::{setup, TEST_SP};
+    use super::super::test_helpers::{setup, setup_with_trap_tables, TEST_SP};
     use super::QUICKTIME_NUM_VERSION_6_0_FINAL;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
@@ -9603,7 +9605,7 @@ mod tests {
         context.attach_memory(0, shared, &mut native);
         let foreign = native.shared_view();
         bus.attach_guest_address_space(foreign);
-        disp.attach_process_context(&mut context);
+        disp.attach_unconverted_process_services(&mut context);
 
         let memory_manager = disp.process_memory_manager();
         let handle = {
@@ -12530,13 +12532,14 @@ mod tests {
 
     #[test]
     fn loadseg_auto_pop_old_trap_uses_original_mpw_caller_entry() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
 
         let seg_addr = 0x220000u32;
         bus.write_word(seg_addr, 0x0000);
         bus.write_word(seg_addr + 2, 0x0000);
         disp.register_segments(HashMap::from([(2i16, seg_addr)]));
-        disp.native_trap_table.insert(0xA9A0, 0x310000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x310000)
+            .unwrap();
 
         let entry_addr = 0x240000u32;
         bus.write_word(entry_addr, 0x0010);
@@ -12581,7 +12584,7 @@ mod tests {
 
     #[test]
     fn loadseg_native_old_trap_recovers_the_recorded_original_call() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         let preserved_d_regs = [
             0xD300_0003,
             0xD400_0004,
@@ -12636,7 +12639,8 @@ mod tests {
         // to recovery of the original A-line call.
         let handler = 0x300000u32;
         bus.write_word(handler, 0x4E71); // NOP
-        disp.native_trap_table.insert(0xA9F0, handler);
+        disp.install_trap_address(&mut bus, 0xA9F0, handler)
+            .unwrap();
         cpu.write_reg(Register::PC, entry_addr + 8);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 2);
@@ -12707,7 +12711,7 @@ mod tests {
 
     #[test]
     fn loadseg_native_old_trap_restores_the_recorded_think_stack() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         let seg_addr = 0x220000u32;
         bus.write_word(seg_addr, 0x0000);
         bus.write_word(seg_addr + 2, 0x0000);
@@ -12721,7 +12725,8 @@ mod tests {
 
         let handler = 0x300000u32;
         bus.write_word(handler, 0x4E71); // NOP
-        disp.native_trap_table.insert(0xA9F0, handler);
+        disp.install_trap_address(&mut bus, 0xA9F0, handler)
+            .unwrap();
         cpu.write_reg(Register::PC, entry_addr + 2);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 0xBEEF);
@@ -12843,13 +12848,14 @@ mod tests {
 
     #[test]
     fn loadseg_defers_to_native_getresource_hook_when_installed() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
 
         let seg_addr = 0x230000u32;
         bus.write_word(seg_addr, 0x0000);
         bus.write_word(seg_addr + 2, 0x0000);
         disp.register_segments(HashMap::from([(1i16, seg_addr)]));
-        disp.native_trap_table.insert(0xA9A0, 0x300000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x300000)
+            .unwrap();
 
         let island_addr = 0x240000u32;
         bus.write_word(island_addr, 0x0000);
@@ -13040,11 +13046,12 @@ mod tests {
 
     #[test]
     fn tool_trampoline_bypasses_later_native_trap_handler() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         setup_resources(&mut disp, &mut bus, b"TEST", 7, &[0xAA, 0xBB]);
 
         let trampoline = disp.get_or_create_tool_trap_trampoline(&mut bus, 0xA9A0);
-        disp.native_trap_table.insert(0xA9A0, 0x300000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x300000)
+            .unwrap();
 
         let return_pc = 0x12345678;
         bus.write_long(TEST_SP, return_pc);
@@ -13069,9 +13076,10 @@ mod tests {
 
     #[test]
     fn guest_auto_pop_old_trap_stub_bypasses_native_trap_handler() {
-        let (mut disp, mut cpu, mut bus) = setup();
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         setup_resources(&mut disp, &mut bus, b"TEST", 7, &[0xAA, 0xBB]);
-        disp.native_trap_table.insert(0xA9A0, 0x300000);
+        disp.install_trap_address(&mut bus, 0xA9A0, 0x300000)
+            .unwrap();
 
         let return_pc = 0x12345678;
         bus.write_word(TEST_SP, 7);
@@ -14039,7 +14047,7 @@ mod tests {
         let new_sp = cpu.read_reg(Register::A7);
         assert_eq!(new_sp, TEST_SP + 6);
         let refnum = bus.read_word(new_sp);
-        assert!(refnum >= 100);
+        assert_eq!(refnum % 94, 2, "resource refnum is an HFS FCB offset");
         assert_eq!(cpu.read_reg(Register::D0), refnum as u32);
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(bus.read_word(0x0A5A), refnum);

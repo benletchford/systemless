@@ -429,8 +429,7 @@ pub(crate) enum TrapManagerMemoryResult {
 ///
 /// Topology is immutable in the generated [`RawTrapRoute`] map and in the
 /// profile materialized by the dispatcher. Process-specific patch state is
-/// retained only in guest table bytes (with the pre-materialization mirror as
-/// a compatibility fallback); pending invocation state remains dispatcher
+/// retained only in guest table bytes; pending invocation state remains dispatcher
 /// execution state. Keeping this service stateless is intentional: every
 /// operation re-reads the guest bytes so direct table writes are authoritative.
 #[derive(Clone, Copy, Debug, Default)]

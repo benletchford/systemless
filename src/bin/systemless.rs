@@ -47,10 +47,10 @@ use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
-use systemless::ui_theme::UiThemeId;
 #[cfg(target_os = "macos")]
 use systemless::runner::MenuBarPolicy;
 use systemless::trap::dispatch::ScreenCopyBitsRect;
+use systemless::ui_theme::UiThemeId;
 
 #[cfg(not(target_os = "macos"))]
 use softbuffer::Surface;
@@ -65,6 +65,39 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 use winit::window::WindowAttributes;
 use winit::window::WindowId;
+
+/// Opt-in stall diagnostics; disabled runs avoid reading the clock per phase.
+struct FramePhaseTimer {
+    phase: &'static str,
+    start: Option<std::time::Instant>,
+}
+
+impl FramePhaseTimer {
+    fn new(phase: &'static str) -> Self {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled =
+            *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PROFILE_FRAMES").is_some());
+        Self {
+            phase,
+            start: enabled.then(std::time::Instant::now),
+        }
+    }
+}
+
+impl Drop for FramePhaseTimer {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let elapsed = start.elapsed();
+            if elapsed >= std::time::Duration::from_millis(50) {
+                eprintln!(
+                    "[SLOW-FRAME] {}: {:.1} ms",
+                    self.phase,
+                    elapsed.as_secs_f64() * 1000.0
+                );
+            }
+        }
+    }
+}
 
 /// Initial screen dimensions: 800x600 8bpp color mode by default.
 const INITIAL_SCREEN_WIDTH: u32 = 800;
@@ -149,18 +182,24 @@ struct Cli {
     #[arg(long, value_name = "BITS", value_parser = parse_screen_depth)]
     screen_depth: Option<u16>,
 
-    /// Integer host-pixel scale (1 is one host pixel per guest pixel)
-    #[arg(long, value_name = "N", default_value_t = 1, value_parser = parse_display_scale)]
-    display_scale: u32,
+    /// Override automatic window sizing with an integer physical-pixel scale
+    #[arg(long, value_name = "N", value_parser = parse_display_scale)]
+    display_scale: Option<u32>,
 
     /// Guest chrome theme
     #[arg(
         long,
         value_name = "THEME",
-        default_value = "systemless-default",
+        default_value = "classic-system7",
         value_parser = UiThemeId::parse
     )]
     ui_theme: UiThemeId,
+    /// Start in a borderless fullscreen space. On systems where macOS selects
+    /// direct scan-out for the fullscreen surface this measurably reduced
+    /// pointer-to-screen latency in testing; the benefit depends on the
+    /// machine and compositor state.
+    #[arg(long)]
+    fullscreen: bool,
 
     /// Replay input events from a script during a headless run. Events are
     /// scheduled by retired instruction count, so a run replays identically
@@ -198,6 +237,122 @@ fn guest_scaled_physical_size(
     winit::dpi::PhysicalSize::new(
         width.saturating_mul(display_scale),
         height.saturating_mul(display_scale),
+    )
+}
+
+/// Fit guest content into a host-pixel box, including fractional enlargement
+/// and downscaling. Integer rounding here used to progressively shrink windows
+/// when a game changed its crop or resolution.
+fn fit_window_size(
+    width: u32,
+    height: u32,
+    bounds: winit::dpi::PhysicalSize<u32>,
+) -> winit::dpi::PhysicalSize<u32> {
+    let width = f64::from(width.max(1));
+    let height = f64::from(height.max(1));
+    let scale =
+        (f64::from(bounds.width.max(1)) / width).min(f64::from(bounds.height.max(1)) / height);
+    winit::dpi::PhysicalSize::new(
+        (width * scale).round().max(1.0) as u32,
+        (height * scale).round().max(1.0) as u32,
+    )
+}
+
+/// On macOS, start at one guest pixel per logical point. Other platforms
+/// target a 960×720-point box. Leave room for desktop chrome on small monitors
+/// and apply backing DPI once before fitting the content.
+fn automatic_window_size(
+    width: u32,
+    height: u32,
+    monitor: Option<winit::dpi::PhysicalSize<u32>>,
+    scale_factor: f64,
+) -> winit::dpi::PhysicalSize<u32> {
+    let dpi = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    #[cfg(target_os = "macos")]
+    let logical_bounds = (f64::from(width.max(1)), f64::from(height.max(1)));
+    #[cfg(not(target_os = "macos"))]
+    let logical_bounds = (960.0, 720.0);
+    let mut bounds = winit::dpi::PhysicalSize::new(
+        (logical_bounds.0 * dpi).round().max(1.0) as u32,
+        (logical_bounds.1 * dpi).round().max(1.0) as u32,
+    );
+    if let Some(monitor) = monitor.filter(|m| m.width > 0 && m.height > 0) {
+        bounds.width = bounds.width.min((f64::from(monitor.width) * 0.8) as u32);
+        bounds.height = bounds.height.min((f64::from(monitor.height) * 0.8) as u32);
+    }
+    fit_window_size(width, height, bounds)
+}
+
+/// Use the actual window's display, including the macOS menu bar and Dock
+/// exclusions. Other platforms leave a conservative margin around the monitor.
+fn window_monitor_bounds(
+    window: &Window,
+) -> Option<(
+    winit::dpi::PhysicalPosition<i32>,
+    winit::dpi::PhysicalSize<u32>,
+)> {
+    let monitor = window.current_monitor()?;
+    let position = monitor.position();
+    let size = monitor.size();
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::AppKit(handle) = handle.as_raw() {
+                // SAFETY: winit owns the NSView/NSWindow, and this helper is
+                // called on the AppKit main thread during window creation.
+                unsafe {
+                    let view: &NSObject = handle.ns_view.cast().as_ref();
+                    let native_window: *mut NSObject = msg_send![view, window];
+                    if let Some(native_window) = native_window.as_ref() {
+                        let screen: *mut NSObject = msg_send![native_window, screen];
+                        if let Some(screen) = screen.as_ref() {
+                            let frame: objc2_foundation::CGRect = msg_send![screen, frame];
+                            let visible: objc2_foundation::CGRect = msg_send![screen, visibleFrame];
+                            let dpi = window.scale_factor();
+                            if visible.size.width > 0.0 && visible.size.height > 0.0 {
+                                // AppKit's Y axis points up; winit's points down.
+                                let left = (visible.origin.x - frame.origin.x) * dpi;
+                                let top = (frame.origin.y + frame.size.height
+                                    - visible.origin.y
+                                    - visible.size.height)
+                                    * dpi;
+                                return Some((
+                                    winit::dpi::PhysicalPosition::new(
+                                        position.x.saturating_add(left.round() as i32),
+                                        position.y.saturating_add(top.round() as i32),
+                                    ),
+                                    winit::dpi::PhysicalSize::new(
+                                        (visible.size.width * dpi).round().max(1.0) as u32,
+                                        (visible.size.height * dpi).round().max(1.0) as u32,
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some((position, size))
+}
+
+fn guest_resize_scale(
+    display_scale: Option<u32>,
+    fullscreen: bool,
+    maximized: bool,
+) -> Option<u32> {
+    display_scale.filter(|_| !fullscreen && !maximized)
+}
+
+fn window_guest_resize_scale(window: &Window, display_scale: Option<u32>) -> Option<u32> {
+    guest_resize_scale(
+        display_scale,
+        window.fullscreen().is_some(),
+        window.is_maximized(),
     )
 }
 
@@ -414,7 +569,7 @@ fn persist_content_rect(
 #[cfg(target_os = "macos")]
 fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
     attrs
-        .with_disallow_hidpi(true)
+        .with_disallow_hidpi(false)
         .with_accepts_first_mouse(true)
 }
 
@@ -560,6 +715,7 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
+    presentation_argb: Vec<u32>,
     #[cfg(target_os = "macos")]
     content_rect: Option<ContentRect>,
     #[cfg(target_os = "macos")]
@@ -594,7 +750,7 @@ struct App {
     #[cfg(target_os = "macos")]
     window_resize_events: u64,
     #[cfg(not(target_os = "macos"))]
-    scaled_row: Vec<u32>,
+    scaled_frame: Vec<u32>,
     runner: Option<FixtureRunner>,
     save_store: Option<DesktopSaveStore>,
     game_path: PathBuf,
@@ -628,6 +784,7 @@ struct App {
     /// unchanged, for native expose/resize events that need a fresh drawable.
     #[cfg(target_os = "macos")]
     force_gpu_present: bool,
+    start_fullscreen: bool,
     /// Show the Systemless debug overlay on top of the game framebuffer.
     debug_overlay_visible: bool,
     #[cfg(target_os = "macos")]
@@ -641,9 +798,9 @@ struct App {
     addressing_24_bit: bool,
     /// Explicit guest framebuffer depth, or architecture defaults.
     screen_depth: Option<u16>,
-    /// Explicit integer host-pixel scale. Physical sizing keeps compositor
-    /// DPI from silently changing the requested guest-to-host ratio.
-    display_scale: u32,
+    /// None chooses a comfortable monitor-aware size; Some preserves an
+    /// explicit physical guest-to-host pixel ratio.
+    display_scale: Option<u32>,
     /// Selected guest chrome presentation provider.
     ui_theme: UiThemeId,
     #[cfg(target_os = "macos")]
@@ -673,8 +830,9 @@ impl App {
             native_integrations,
             addressing_24_bit,
             Some(screen_depth),
-            1,
+            Some(1),
             UiThemeId::ClassicSystem7,
+            false,
         )
     }
 
@@ -684,8 +842,9 @@ impl App {
         native_integrations: bool,
         addressing_24_bit: bool,
         screen_depth: Option<u16>,
-        display_scale: u32,
+        display_scale: Option<u32>,
         ui_theme: UiThemeId,
+        start_fullscreen: bool,
     ) -> Self {
         #[cfg(not(target_os = "macos"))]
         let _ = native_integrations;
@@ -717,6 +876,7 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
             frame_argb: Vec::new(),
+            presentation_argb: Vec::new(),
             #[cfg(target_os = "macos")]
             content_rect: cached_content.as_ref().map(|cache| cache.content),
             #[cfg(target_os = "macos")]
@@ -742,7 +902,7 @@ impl App {
             #[cfg(target_os = "macos")]
             window_resize_events: 0,
             #[cfg(not(target_os = "macos"))]
-            scaled_row: Vec::new(),
+            scaled_frame: Vec::new(),
             runner: None,
             save_store: None,
             game_path,
@@ -762,6 +922,7 @@ impl App {
             force_next_render: true,
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
+            start_fullscreen,
             debug_overlay_visible: false,
             #[cfg(target_os = "macos")]
             host_cursor: host_cursor::HostCursor::new(),
@@ -798,21 +959,31 @@ impl App {
             .unwrap_or(winit::dpi::PhysicalSize::new(sw, sh));
 
         #[cfg(target_os = "macos")]
-        let content = presentation_content_rect(
-            self.content_rect.unwrap_or(ContentRect {
+        let content = if self.debug_overlay_visible {
+            ContentRect {
                 left: 0,
                 top: 0,
                 width: sw,
                 height: sh,
-            }),
-            self.runner.as_ref().and_then(|runner| {
-                runner
-                    .dispatcher()
-                    .visible_dialog_structure_bounds(runner.bus())
-            }),
-            sw,
-            sh,
-        );
+            }
+        } else {
+            presentation_content_rect(
+                self.content_rect.unwrap_or(ContentRect {
+                    left: 0,
+                    top: 0,
+                    width: sw,
+                    height: sh,
+                }),
+                self.runner.as_ref().and_then(|runner| {
+                    runner
+                        .dispatcher()
+                        .visible_dialog_structure_bounds(runner.bus())
+                }),
+                sw,
+                sh,
+                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+            )
+        };
         #[cfg(not(target_os = "macos"))]
         let content = ContentRect {
             left: 0,
@@ -858,6 +1029,7 @@ impl App {
             );
         }
         game::init_game(&mut runner, &app);
+        runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
         // Configure the wall-clock-paced GUI from the loaded architecture's
@@ -1027,6 +1199,11 @@ impl App {
     }
 
     fn step_frame(&mut self) {
+        self.step_frame_with_clock(std::time::Instant::now);
+    }
+
+    fn step_frame_with_clock(&mut self, mut host_now: impl FnMut() -> std::time::Instant) {
+        let _timing = FramePhaseTimer::new("CPU and audio frame");
         let Some(runner) = self.runner.as_ref() else {
             return;
         };
@@ -1035,7 +1212,7 @@ impl App {
             return;
         }
 
-        let now = runner.host_now();
+        let now = host_now();
         // Seed the wall-clock origin from the guest's current tick, not `now`.
         // The runner boots with a non-zero TickCount (DEFAULT_LAUNCH_TICKS ≈ 600
         // ≈ 10s of simulated post-boot time), so anchoring the origin at `now`
@@ -1084,12 +1261,12 @@ impl App {
             .unwrap_or(now);
 
         let slice_budget = game::MAX_INSTRUCTIONS_PER_FRAME;
-        let audio_interval = self
+        let presentation_interval = self
             .last_audio_mix_time
             .replace(now)
             .map(|previous| now.saturating_duration_since(previous))
-            .unwrap_or(FRAME_DURATION)
-            .min(MAX_AUDIO_MIX_INTERVAL);
+            .unwrap_or(FRAME_DURATION);
+        let audio_interval = presentation_interval.min(MAX_AUDIO_MIX_INTERVAL);
         let audio_samples =
             Self::audio_samples_for_duration(audio_interval, &mut self.audio_sample_remainder);
         if std::env::var_os("SYSTEMLESS_TRACE_AUDIO").is_some()
@@ -1103,6 +1280,7 @@ impl App {
         }
 
         let runner = self.runner.as_mut().expect("runner checked above");
+        runner.advance_menu_presentation_clock(presentation_interval);
         // A PPC HLE slice currently borrows its large mutable state by moving
         // collections into a dispatch closure and restoring them afterward.
         // Yield once per guest VBL rather than paying that boundary thousands
@@ -1128,7 +1306,7 @@ impl App {
             if runner.guest_tick() >= effective_target || runner.is_halted() {
                 break;
             }
-            if runner.host_now() >= cpu_deadline {
+            if host_now() >= cpu_deadline {
                 break;
             }
 
@@ -1145,12 +1323,17 @@ impl App {
             } else {
                 remaining_audio.div_ceil(batches_left)
             };
-            let (steps, running) =
-                runner.run_gui_slice_with_audio(batch_size, effective_target, batch_audio);
+            let (steps, running) = {
+                let _timing = FramePhaseTimer::new("foreground CPU batch");
+                runner.run_gui_cpu_slice(batch_size, effective_target)
+            };
             total_steps += steps;
             foreground_steps += steps;
             audio_mixed += batch_audio;
             if batch_audio > 0 {
+                // CPU batches share one presentation pass in render_frame.
+                // Keep audio callbacks serviced without repainting every window.
+                runner.mix_gui_audio_slice(batch_audio);
                 if let Some(steps) = service_pending_sound_work(
                     runner,
                     cpu_deadline,
@@ -1264,6 +1447,7 @@ impl App {
     }
 
     fn render_frame(&mut self) {
+        let _timing = FramePhaseTimer::new("render frame (main thread)");
         let render_start = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         let force_gpu_present = self.force_gpu_present;
@@ -1280,7 +1464,14 @@ impl App {
         let Some(runner) = self.runner.as_mut() else {
             return;
         };
-        runner.composite_frame();
+        {
+            let _timing = FramePhaseTimer::new("outline palette preparation");
+            runner.prepare_text_presentation();
+        }
+        {
+            let _timing = FramePhaseTimer::new("window compositing");
+            runner.composite_frame();
+        }
         let presented_tick = runner.guest_tick();
 
         let (_, _, scrn_right, scrn_bottom, _) = runner.dispatcher().screen_mode;
@@ -1288,6 +1479,13 @@ impl App {
         let game_h = scrn_bottom as u32;
         let mut buf_w = size.width;
         let mut buf_h = size.height;
+        #[cfg(target_os = "macos")]
+        let mut presentation_rect = ContentRect {
+            left: 0,
+            top: 0,
+            width: game_w,
+            height: game_h,
+        };
 
         #[cfg(target_os = "macos")]
         let mut core_animation_transaction: Option<CoreAnimationTransaction> = None;
@@ -1503,15 +1701,21 @@ impl App {
                 self.content_rect_active_margin_frames = 0;
                 self.content_rect_relearn_after_full = invalidated_crop.is_some();
                 persist_content_rect(&self.game_path, screen_mode, rect);
+                let rect = presentation_content_rect(
+                    rect,
+                    None,
+                    game_w,
+                    game_h,
+                    native_menu_bar_height(Some(runner), self.native_integrations),
+                );
                 if let Some(window) = self.window.as_ref() {
-                    let current = window.inner_size();
-                    let integer_scale = (current.width / rect.width)
-                        .min(current.height / rect.height)
-                        .max(1);
-                    let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
-                        rect.width.saturating_mul(integer_scale),
-                        rect.height.saturating_mul(integer_scale),
-                    ));
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                        let _ = window.request_inner_size(guest_scaled_physical_size(
+                            rect.width,
+                            rect.height,
+                            scale,
+                        ));
+                    }
                 }
                 self.window_sized_content_rect = Some(rect);
             }
@@ -1522,6 +1726,13 @@ impl App {
                 width: game_w,
                 height: game_h,
             });
+            let stable_content = presentation_content_rect(
+                stable_content,
+                None,
+                game_w,
+                game_h,
+                native_menu_bar_height(Some(runner), self.native_integrations),
+            );
             let desired_content = presentation_content_rect(
                 stable_content,
                 runner
@@ -1529,7 +1740,16 @@ impl App {
                     .visible_dialog_structure_bounds(runner.bus()),
                 game_w,
                 game_h,
+                native_menu_bar_height(Some(runner), self.native_integrations),
             );
+            let allow_guest_resize = self.window.as_ref().is_some_and(|window| {
+                window_guest_resize_scale(window, self.display_scale).is_some()
+            });
+            if !allow_guest_resize {
+                self.pending_window_transition = None;
+                self.transient_window_restore_geometry = None;
+                self.window_sized_content_rect = Some(desired_content);
+            }
             if let Some(pending) = self.pending_window_transition {
                 if pending.content != desired_content {
                     // The dialog changed or closed before AppKit delivered the
@@ -1561,7 +1781,21 @@ impl App {
             } else {
                 self.window_sized_content_rect != Some(desired_content)
             };
-            if transition_needed {
+            if !transition_needed && self.window_sized_content_rect != Some(desired_content) {
+                // Guest writes to MBarHeight can change the visible rows even
+                // when the learned gameplay crop and screen mode are unchanged.
+                if let Some(window) = self.window.as_ref() {
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                        let _ = window.request_inner_size(guest_scaled_physical_size(
+                            desired_content.width,
+                            desired_content.height,
+                            scale,
+                        ));
+                    }
+                }
+                self.window_sized_content_rect = Some(desired_content);
+            }
+            if transition_needed && allow_guest_resize {
                 let (target_size, target_position) = if desired_content != stable_content {
                     if self.transient_window_restore_geometry.is_none() {
                         self.transient_window_restore_geometry = Some(TransientWindowGeometry {
@@ -1640,8 +1874,13 @@ impl App {
                 }
             }
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
+            presentation_rect = content;
             let palette = display::argb_palette_from_clut_with_gamma(&device_clut, &device_gamma);
-            if let Some(surface) = self.surface.as_mut() {
+            if let Some(surface) = self
+                .surface
+                .as_mut()
+                .filter(|_| !runner.bus().has_visible_outline_detail())
+            {
                 let presented_directly = surface
                     .present_guest_frame(
                         framebuffer,
@@ -1675,6 +1914,10 @@ impl App {
             &device_gamma,
             &mut frame_argb,
         );
+        let guest_frame = runner
+            .bus()
+            .has_visible_outline_detail()
+            .then(|| frame_argb.clone());
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
         }
@@ -1689,14 +1932,56 @@ impl App {
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
 
+        let mut presented = std::mem::take(&mut self.presentation_argb);
+        #[cfg(target_os = "macos")]
+        let logical_size = (presentation_rect.width, presentation_rect.height);
+        #[cfg(not(target_os = "macos"))]
+        let logical_size = (game_w, game_h);
+        let output_scale = display::outline_output_scale(logical_size, (buf_w, buf_h));
+        let mut used_outlines = false;
+        #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
+        let (game_w, game_h) = if let Some((width, height)) =
+            guest_frame.as_ref().and_then(|guest| {
+                let _timing = FramePhaseTimer::new("outline pixel expansion");
+                runner
+                    .bus()
+                    .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
+            }) {
+            #[cfg(target_os = "macos")]
+            {
+                let scale = width / game_w;
+                presentation_rect.left *= scale;
+                presentation_rect.top *= scale;
+                presentation_rect.width *= scale;
+                presentation_rect.height *= scale;
+            }
+            std::mem::swap(&mut frame_argb, &mut presented);
+            used_outlines = true;
+            (width, height)
+        } else {
+            (game_w, game_h)
+        };
+
         #[cfg(target_os = "macos")]
         {
             let Some(surface) = self.surface.as_mut() else {
+                if used_outlines {
+                    std::mem::swap(&mut frame_argb, &mut presented);
+                }
+                self.presentation_argb = presented;
                 self.frame_argb = frame_argb;
                 return;
             };
+            crop_argb_frame(&mut frame_argb, game_w, presentation_rect);
+            let _timing = FramePhaseTimer::new("raster presentation submission");
             surface
-                .present(&frame_argb, game_w, game_h, buf_w, buf_h)
+                .present(
+                    &frame_argb,
+                    presentation_rect.width,
+                    presentation_rect.height,
+                    buf_w,
+                    buf_h,
+                )
                 .expect("Failed to present Metal framebuffer");
         }
 
@@ -1708,11 +1993,15 @@ impl App {
             let draw_y = draw_y as usize;
             let draw_w = draw_w as usize;
             let draw_h = draw_h as usize;
-            let mut scaled_row = std::mem::take(&mut self.scaled_row);
+            let mut scaled_frame = std::mem::take(&mut self.scaled_frame);
 
             let Some(surface) = self.surface.as_mut() else {
+                if used_outlines {
+                    std::mem::swap(&mut frame_argb, &mut presented);
+                }
+                self.presentation_argb = presented;
                 self.frame_argb = frame_argb;
-                self.scaled_row = scaled_row;
+                self.scaled_frame = scaled_frame;
                 return;
             };
 
@@ -1739,24 +2028,27 @@ impl App {
                     buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
                 }
             } else {
-                scaled_row.resize(draw_w, 0xFF000000);
+                display::resize_argb_coverage(
+                    &frame_argb,
+                    (game_w, game_h),
+                    (draw_w as u32, draw_h as u32),
+                    &mut scaled_frame,
+                );
                 for row in 0..draw_h {
-                    let source_y = row * game_h as usize / draw_h;
-                    let src_row =
-                        &frame_argb[source_y * game_w as usize..(source_y + 1) * game_w as usize];
-                    for (destination_x, pixel) in scaled_row.iter_mut().enumerate() {
-                        let source_x = destination_x * game_w as usize / draw_w;
-                        *pixel = src_row[source_x];
-                    }
                     let dst_offset = (draw_y + row) * buf_w as usize + draw_x;
-                    buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
+                    buffer[dst_offset..dst_offset + draw_w]
+                        .copy_from_slice(&scaled_frame[row * draw_w..(row + 1) * draw_w]);
                 }
             }
 
-            self.scaled_row = scaled_row;
+            self.scaled_frame = scaled_frame;
             buffer.present().expect("Failed to present buffer");
         }
 
+        if used_outlines {
+            std::mem::swap(&mut frame_argb, &mut presented);
+        }
+        self.presentation_argb = presented;
         self.frame_argb = frame_argb;
         self.last_presented_guest_tick = Some(presented_tick);
         self.force_next_render = false;
@@ -1827,12 +2119,69 @@ fn physical_to_mac_in_viewport(
     )
 }
 
+#[cfg(target_os = "macos")]
+fn crop_argb_frame(frame: &mut Vec<u32>, screen_width: u32, content: ContentRect) {
+    let width = content.width as usize;
+    for row in 0..content.height as usize {
+        let source = (content.top as usize + row) * screen_width as usize + content.left as usize;
+        frame.copy_within(source..source + width, row * width);
+    }
+    frame.truncate(width * content.height as usize);
+}
+
+#[cfg(target_os = "macos")]
+fn native_menu_bar_height(runner: Option<&FixtureRunner>, native_integrations: bool) -> u32 {
+    use systemless::memory::MemoryBus;
+    if !native_integrations {
+        return 0;
+    }
+    runner.map_or(0, |runner| {
+        u32::from(
+            runner
+                .bus()
+                .read_word(systemless::memory::globals::addr::MBAR_HEIGHT),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn presentation_content_rect(
+    base: ContentRect,
+    transient_bounds: Option<(i16, i16, i16, i16)>,
+    screen_width: u32,
+    screen_height: u32,
+    hidden_menu_height: u32,
+) -> ContentRect {
+    let content = expanded_content_rect(base, transient_bounds, screen_width, screen_height);
+    // MBarHeight is guest geometry, not a fixed 20-pixel constant. Keep it
+    // intact in guest memory and exclude it only when presenting native menus.
+    // Inside Macintosh Volume V, V-245.
+    if hidden_menu_height == 0 || hidden_menu_height >= screen_height {
+        return content;
+    }
+    let bottom = content.top.saturating_add(content.height);
+    let top = content.top.max(hidden_menu_height);
+    if top >= bottom {
+        return ContentRect {
+            left: 0,
+            top: hidden_menu_height,
+            width: screen_width,
+            height: screen_height - hidden_menu_height,
+        };
+    }
+    ContentRect {
+        top,
+        height: bottom - top,
+        ..content
+    }
+}
+
 /// Extend a stable gameplay crop just enough to include transient system UI.
 /// The learned/cached rectangle remains unchanged, so dismissing a dialog
 /// restores the normal viewport without relearning it or resizing the native
 /// window.
 #[cfg(target_os = "macos")]
-fn presentation_content_rect(
+fn expanded_content_rect(
     base: ContentRect,
     transient_bounds: Option<(i16, i16, i16, i16)>,
     screen_width: u32,
@@ -2165,19 +2514,29 @@ impl App {
         // dialog expansion all change it (issue #1049).
         let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
         let (sw, sh) = (u32::from(sw), u32::from(sh));
-        let content = presentation_content_rect(
-            self.content_rect.unwrap_or(ContentRect {
+        let content = if self.debug_overlay_visible {
+            ContentRect {
                 left: 0,
                 top: 0,
                 width: sw,
                 height: sh,
-            }),
-            runner
-                .dispatcher()
-                .visible_dialog_structure_bounds(runner.bus()),
-            sw,
-            sh,
-        );
+            }
+        } else {
+            presentation_content_rect(
+                self.content_rect.unwrap_or(ContentRect {
+                    left: 0,
+                    top: 0,
+                    width: sw,
+                    height: sh,
+                }),
+                runner
+                    .dispatcher()
+                    .visible_dialog_structure_bounds(runner.bus()),
+                sw,
+                sh,
+                native_menu_bar_height(Some(runner), self.native_integrations),
+            )
+        };
         let size = window.inner_size();
         let scale =
             host_cursor::presentation_scale(content.width, content.height, size.width, size.height);
@@ -2194,10 +2553,21 @@ impl ApplicationHandler for App {
                 native_application::set_application_icon(self.native_app_icon.as_ref());
             }
             #[cfg(target_os = "macos")]
-            let initial_size = self
-                .content_rect
-                .map(|content| (content.width, content.height))
-                .unwrap_or((INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT));
+            let initial_size = {
+                let content = presentation_content_rect(
+                    self.content_rect.unwrap_or(ContentRect {
+                        left: 0,
+                        top: 0,
+                        width: INITIAL_SCREEN_WIDTH,
+                        height: INITIAL_SCREEN_HEIGHT,
+                    }),
+                    None,
+                    INITIAL_SCREEN_WIDTH,
+                    INITIAL_SCREEN_HEIGHT,
+                    native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                );
+                (content.width, content.height)
+            };
             #[cfg(not(target_os = "macos"))]
             let initial_size = (INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT);
             #[cfg(target_os = "macos")]
@@ -2208,13 +2578,24 @@ impl ApplicationHandler for App {
             };
             #[cfg(not(target_os = "macos"))]
             let window_title = "Systemless - Macintosh Emulator";
+            let monitor = event_loop.primary_monitor();
+            let initial_window_size = self.display_scale.map_or_else(
+                || {
+                    automatic_window_size(
+                        initial_size.0,
+                        initial_size.1,
+                        monitor.as_ref().map(|monitor| monitor.size()),
+                        monitor
+                            .as_ref()
+                            .map_or(1.0, |monitor| monitor.scale_factor()),
+                    )
+                },
+                |scale| guest_scaled_physical_size(initial_size.0, initial_size.1, scale),
+            );
             let window_attrs = Window::default_attributes()
                 .with_title(window_title)
-                .with_inner_size(guest_scaled_physical_size(
-                    initial_size.0,
-                    initial_size.1,
-                    self.display_scale,
-                ))
+                .with_visible(false)
+                .with_inner_size(initial_window_size)
                 .with_resizable(true);
             let window_attrs = platform_window_attrs(window_attrs);
 
@@ -2223,6 +2604,28 @@ impl ApplicationHandler for App {
                     .create_window(window_attrs)
                     .expect("Failed to create window"),
             );
+            // The window manager may choose a different monitor from the
+            // primary one. Resolve its actual DPI before showing the window.
+            if self.display_scale.is_none() {
+                let bounds = window_monitor_bounds(&window);
+                let target = automatic_window_size(
+                    initial_size.0,
+                    initial_size.1,
+                    bounds.map(|(_, size)| size),
+                    window.scale_factor(),
+                );
+                let _ = window.request_inner_size(target);
+                if let Some((origin, extent)) = bounds {
+                    window.set_outer_position(winit::dpi::PhysicalPosition::new(
+                        origin
+                            .x
+                            .saturating_add((extent.width.saturating_sub(target.width) / 2) as i32),
+                        origin.y.saturating_add(
+                            (extent.height.saturating_sub(target.height) / 2) as i32,
+                        ),
+                    ));
+                }
+            }
             // The guest cursor is the host pointer on macOS; it is drawn into
             // the frame elsewhere.
             #[cfg(target_os = "macos")]
@@ -2231,6 +2634,10 @@ impl ApplicationHandler for App {
             }
             #[cfg(not(target_os = "macos"))]
             window.set_cursor_visible(false);
+            if self.start_fullscreen {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            }
+            window.set_visible(true);
 
             #[cfg(target_os = "macos")]
             let surface = metal_present::MetalPresenter::new(window.clone())
@@ -2437,11 +2844,13 @@ impl ApplicationHandler for App {
                 self.current_screen_width = sw;
                 self.current_screen_height = sh;
                 if let Some(window) = &self.window {
-                    let _ = window.request_inner_size(guest_scaled_physical_size(
-                        sw,
-                        sh,
-                        self.display_scale,
-                    ));
+                    // Automatic sizing owns only the initial geometry. Keep
+                    // the user's window through guest mode changes and fit
+                    // the new framebuffer into it during presentation.
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                        let _ =
+                            window.request_inner_size(guest_scaled_physical_size(sw, sh, scale));
+                    }
                 }
                 self.force_next_render = true;
             }
@@ -2460,8 +2869,9 @@ fn run_gui(
     native_integrations: bool,
     addressing_24_bit: bool,
     screen_depth: Option<u16>,
-    display_scale: u32,
+    display_scale: Option<u32>,
     ui_theme: UiThemeId,
+    fullscreen: bool,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -2481,6 +2891,7 @@ fn run_gui(
         screen_depth,
         display_scale,
         ui_theme,
+        fullscreen,
     );
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
@@ -2737,6 +3148,7 @@ fn main() {
             cli.screen_depth,
             cli.display_scale,
             cli.ui_theme,
+            cli.fullscreen,
         );
     }
 }
@@ -3162,26 +3574,122 @@ mod tests {
         assert!(cli.prefer_powerpc);
         assert!(cli.addressing_24_bit);
         assert_eq!(cli.screen_depth, Some(4));
-        assert_eq!(cli.display_scale, 2);
+        assert_eq!(cli.display_scale, Some(2));
         assert_eq!(cli.ui_theme, UiThemeId::SystemlessDefault);
         assert_eq!(cli.max_instructions, Some(1234));
     }
 
     #[test]
-    fn cli_defaults_to_one_physical_host_pixel_and_systemless_theme() {
+    fn cli_defaults_to_automatic_window_size_and_classic_theme() {
         let cli = Cli::try_parse_from(["systemless", "game.sit"])
             .expect("default display scale should parse");
-        assert_eq!(cli.display_scale, 1);
+        assert_eq!(cli.display_scale, None);
         assert_eq!(cli.screen_depth, None);
-        assert_eq!(cli.ui_theme, UiThemeId::SystemlessDefault);
+        assert_eq!(cli.ui_theme, UiThemeId::ClassicSystem7);
         assert_eq!(
-            guest_scaled_physical_size(800, 600, cli.display_scale),
+            guest_scaled_physical_size(800, 600, 1),
             winit::dpi::PhysicalSize::new(800, 600)
         );
 
         let invalid = Cli::try_parse_from(["systemless", "--display-scale", "0", "game.sit"])
             .expect_err("zero display scale should be rejected");
         assert_eq!(invalid.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn automatic_windows_have_the_same_logical_size_across_dpi() {
+        use winit::dpi::PhysicalSize;
+        for dpi in [1.0, 1.25, 1.5, 2.0, 3.0] {
+            let monitor = PhysicalSize::new((1920.0 * dpi) as u32, (1080.0 * dpi) as u32);
+            for (width, height) in [(320, 240), (640, 480), (1600, 1200), (4096, 3072)] {
+                assert_eq!(
+                    automatic_window_size(width, height, Some(monitor), dpi),
+                    PhysicalSize::new((960.0 * dpi) as u32, (720.0 * dpi) as u32)
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn automatic_mac_windows_use_guest_points_at_native_and_retina_dpi() {
+        use winit::dpi::PhysicalSize;
+        for dpi in [1.0, 2.0] {
+            let monitor = PhysicalSize::new((2560.0 * dpi) as u32, (1600.0 * dpi) as u32);
+            for (width, height) in [(320, 200), (640, 480), (800, 600), (800, 580)] {
+                let expected = PhysicalSize::new(
+                    (f64::from(width) * dpi) as u32,
+                    (f64::from(height) * dpi) as u32,
+                );
+                assert_eq!(
+                    automatic_window_size(width, height, Some(monitor), dpi),
+                    expected
+                );
+                assert_eq!(automatic_window_size(width, height, None, dpi), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_windows_fit_small_and_portrait_monitors() {
+        use winit::dpi::PhysicalSize;
+        for monitor in [
+            PhysicalSize::new(800, 600),
+            PhysicalSize::new(1080, 1920),
+            PhysicalSize::new(640, 360),
+        ] {
+            for (width, height) in [(640, 480), (320, 200), (480, 900), (4096, 2160)] {
+                let size = automatic_window_size(width, height, Some(monitor), 2.0);
+                assert!(size.width > 0 && size.height > 0);
+                assert!(size.width <= monitor.width * 4 / 5);
+                assert!(size.height <= monitor.height * 4 / 5);
+                assert!(
+                    (f64::from(size.width) / f64::from(width)
+                        - f64::from(size.height) / f64::from(height))
+                    .abs()
+                        < 0.01
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_windows_have_safe_monitor_and_dpi_fallbacks() {
+        use winit::dpi::PhysicalSize;
+        let (width, height) = if cfg!(target_os = "macos") {
+            (640, 480)
+        } else {
+            (960, 720)
+        };
+        for dpi in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                automatic_window_size(640, 480, None, dpi),
+                PhysicalSize::new(width, height)
+            );
+        }
+        assert_eq!(
+            automatic_window_size(640, 480, Some(PhysicalSize::new(0, 0)), 2.0),
+            PhysicalSize::new(width * 2, height * 2)
+        );
+        let zero = automatic_window_size(0, 0, None, 1.0);
+        assert!(zero.width > 0 && zero.height > 0);
+    }
+
+    #[test]
+    fn guest_layout_changes_preserve_automatic_fullscreen_and_maximized_windows() {
+        for fullscreen in [false, true] {
+            for maximized in [false, true] {
+                assert_eq!(guest_resize_scale(None, fullscreen, maximized), None);
+            }
+        }
+        assert_eq!(guest_resize_scale(Some(2), false, false), Some(2));
+        assert_eq!(guest_resize_scale(Some(2), true, false), None);
+        assert_eq!(guest_resize_scale(Some(2), false, true), None);
+        assert_eq!(
+            guest_scaled_physical_size(640, 480, 2),
+            winit::dpi::PhysicalSize::new(1280, 960)
+        );
     }
 
     #[test]
@@ -3635,14 +4143,35 @@ mod tests {
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
         );
-        let pc = runner.bus_mut().alloc(256 * 1024);
-        for offset in (0..256 * 1024).step_by(2) {
-            runner.bus_mut().write_word(pc + offset, 0x4E71); // NOP
-        }
+        let pc = runner.bus_mut().alloc(2);
+        runner.bus_mut().write_word(pc, 0x60FE); // BRA.S *
         runner.cpu_mut().write_reg(Register::PC, pc);
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
         runner.bus_mut().write_long(0x016A, 0);
         runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
+
+        // Install a guest menu so repeated batch-level compositing is observable.
+        // NewMenu: Inside Macintosh I-352; InsertMenu: Toolbox Essentials 3-108.
+        let title = runner.bus_mut().alloc(5);
+        runner.bus_mut().write_bytes(title, b"\x04File");
+        runner.bus_mut().write_word(pc, 0xA931);
+        runner.bus_mut().write_long(0x0008_0000, title);
+        runner.bus_mut().write_word(0x0008_0004, 1);
+        assert!(runner.run_gui_cpu_slice(1, u32::MAX).1);
+        let menu = runner.bus().read_long(0x0008_0006);
+        assert_ne!(menu, 0);
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
+        runner.bus_mut().write_word(pc, 0xA935);
+        runner.bus_mut().write_word(0x0008_0000, 0);
+        runner.bus_mut().write_long(0x0008_0002, menu);
+        assert!(runner.run_gui_cpu_slice(1, u32::MAX).1);
+        runner.bus_mut().write_word(pc, 0x60FE);
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        let screen = runner.bus_mut().alloc(800 * 600);
+        runner.dispatcher_mut().screen_mode = (screen, 800, 800, 600, 8);
+        runner.bus_mut().write_word(0x0BAA, 20);
+        runner.bus_mut().fill_bytes(screen, 800 * 20, 0xAA);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);
@@ -3651,13 +4180,21 @@ mod tests {
         app.last_presented_guest_tick = Some(0);
         app.force_next_render = false;
 
-        app.step_frame();
+        // Keep the frame budget independent of emulator setup time and host
+        // scheduling. The instruction cap still bounds foreground execution.
+        app.step_frame_with_clock(|| now);
 
         let runner = app.runner.as_ref().unwrap();
         assert!(
             app.total_instructions > 0,
             "test setup should execute foreground startup work"
         );
+        assert_eq!(
+            runner.bus().read_byte(screen + 400),
+            0xAA,
+            "CPU and audio batches must defer chrome painting until presentation"
+        );
+        assert!(!runner.is_halted(), "foreground loop must remain runnable");
         assert_eq!(
             runner.guest_tick(),
             0,
@@ -3666,6 +4203,12 @@ mod tests {
         assert!(
             app.should_render_frame(),
             "same-tick foreground drawing progress should force a present"
+        );
+        app.runner.as_mut().unwrap().composite_frame();
+        assert_ne!(
+            app.runner.as_ref().unwrap().bus().read_byte(screen + 400),
+            0xAA,
+            "the presentation pass must still paint the menu"
         );
     }
 
@@ -3782,7 +4325,11 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner.dispatcher_mut().sound_manager_mut().channels.push(chan);
+        runner
+            .dispatcher_mut()
+            .sound_manager_mut()
+            .channels
+            .push(chan);
         runner
             .dispatcher_mut()
             .sound_manager_mut()
@@ -3896,7 +4443,11 @@ mod tests {
             1,
             8,
         );
-        runner.dispatcher_mut().sound_manager_mut().channels.push(chan);
+        runner
+            .dispatcher_mut()
+            .sound_manager_mut()
+            .channels
+            .push(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);
@@ -4292,6 +4843,96 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn software_presentation_uses_the_same_cropped_pixels() {
+        let mut frame: Vec<u32> = (0..24).collect();
+        crop_argb_frame(
+            &mut frame,
+            6,
+            ContentRect {
+                left: 1,
+                top: 1,
+                width: 4,
+                height: 3,
+            },
+        );
+        assert_eq!(frame, vec![7, 8, 9, 10, 13, 14, 15, 16, 19, 20, 21, 22]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_menu_viewport_excludes_only_reserved_guest_rows() {
+        let full = ContentRect {
+            left: 0,
+            top: 0,
+            width: 800,
+            height: 600,
+        };
+        let visible = ContentRect {
+            top: 20,
+            height: 580,
+            ..full
+        };
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 20), visible);
+        assert_eq!(
+            presentation_content_rect(visible, None, 800, 600, 20),
+            visible
+        );
+        // Guest fullscreen and disabled native integration keep every row.
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 0), full);
+        // Respect non-default fonts, and ignore invalid heights.
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 24).top, 24);
+        assert_eq!(presentation_content_rect(full, None, 800, 600, 600), full);
+        assert_eq!(
+            presentation_content_rect(full, None, 800, 600, u32::MAX),
+            full
+        );
+        assert_eq!(
+            physical_to_mac_in_viewport(0.0, 0.0, visible, 1600, 1160),
+            (20, 0)
+        );
+        assert_eq!(
+            physical_to_mac_in_viewport(1599.0, 1159.0, visible, 1600, 1160),
+            (599, 799)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_menu_dialog_expansion_does_not_restore_hidden_menu_rows() {
+        let game = ContentRect {
+            left: 100,
+            top: 100,
+            width: 600,
+            height: 400,
+        };
+        let expanded = presentation_content_rect(game, Some((0, 40, 550, 760)), 800, 600, 20);
+        assert_eq!(
+            expanded,
+            ContentRect {
+                left: 40,
+                top: 20,
+                width: 720,
+                height: 530
+            }
+        );
+        assert_eq!(presentation_content_rect(game, None, 800, 600, 20), game);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_menu_viewport_reads_guest_height_without_mutating_it() {
+        use systemless::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        runner.bus_mut().write_word(MBAR_HEIGHT, 24);
+        assert_eq!(native_menu_bar_height(Some(&runner), true), 24);
+        assert_eq!(native_menu_bar_height(Some(&runner), false), 0);
+        assert_eq!(runner.bus().read_word(MBAR_HEIGHT), 24);
+        runner.bus_mut().write_word(MBAR_HEIGHT, 0);
+        assert_eq!(native_menu_bar_height(Some(&runner), true), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn visible_dialog_temporarily_extends_cached_gameplay_crop() {
         let gameplay = ContentRect {
             left: 80,
@@ -4300,7 +4941,7 @@ mod tests {
             height: 392,
         };
         assert_eq!(
-            presentation_content_rect(gameplay, Some((85, 228, 233, 572)), 800, 600),
+            presentation_content_rect(gameplay, Some((85, 228, 233, 572)), 800, 600, 0),
             ContentRect {
                 left: 80,
                 top: 85,
@@ -4309,7 +4950,7 @@ mod tests {
             }
         );
         assert_eq!(
-            presentation_content_rect(gameplay, None, 800, 600),
+            presentation_content_rect(gameplay, None, 800, 600, 0),
             gameplay,
             "dismissing the dialog must restore the cached gameplay crop"
         );

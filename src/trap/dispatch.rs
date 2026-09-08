@@ -4,11 +4,14 @@
 //! `impl TrapDispatcher` blocks with `dispatch_*` methods that return
 //! `Option<Result<()>>` — `Some` if the trap was handled, `None` to pass through.
 
+use crate::memory::SavedPixels;
+pub(crate) use super::gateways::TrapTableProfile;
+#[cfg(test)]
+use super::gateways::{M68K_68040_COME_FROM_TRAPS, POWERPC_604_COME_FROM_TRAPS};
 pub(crate) use super::manager::{
-    raw_trap_route, OsRoutineVariant, RawTrapRoute, OS_TRAP_TABLE_BASE, OS_TRAP_TABLE_SLOTS,
+    raw_trap_route, OsRoutineVariant, OS_TRAP_TABLE_BASE, OS_TRAP_TABLE_SLOTS,
     TOOLBOX_TRAP_TABLE_BASE, TOOLBOX_TRAP_TABLE_SLOTS,
 };
-#[cfg(test)]
 #[cfg(test)]
 use super::manager::{resolve_trap_table_target, TrapTableTarget, COME_FROM_PATCH_SIGNATURE};
 use super::manager::{
@@ -24,7 +27,8 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    PendingFileCompletion, ProcessContext, ProcessForkMap, ProcessKeyRepeatState,
+    MigratedProcessHandles, PendingFileCompletion, ProcessContext, ProcessForkMap,
+    ProcessKeyRepeatState,
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
     SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
@@ -531,14 +535,14 @@ pub struct DialogTrackingState {
     /// Active editText item index (1-based, 0=none)
     pub edit_item: i16,
     /// Framebuffer pixels saved under the dialog (for restore on dismiss)
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
     /// Saved stack pointer from ModalDialog's first call
     pub stack_ptr: u32,
     /// Pointer to the itemHit variable (where to write the result)
     pub item_hit_ptr: u32,
     /// Snapshot of the fully-rendered dialog pixels (including pictures).
     /// Used by redraw_chrome to restore the dialog without re-parsing PICTs.
-    pub rendered_pixels: Vec<u8>,
+    pub rendered_pixels: SavedPixels,
     /// Remaining flash toggles (6 = 3 flashes). 0 = not flashing.
     pub flash_remaining: u8,
     /// Frames left in the current flash toggle phase
@@ -555,6 +559,7 @@ pub struct DialogTrackingState {
     pub draw_procs_done: bool,
     /// Whether rendered_pixels has been re-snapshotted after draw procs completed.
     pub rendered_pixels_final: bool,
+    pub(crate) filter_presentation_epoch: Option<u64>,
     /// Optional ModalDialog filter procedure pointer.
     /// FUNCTION MyFilter(dialog: DialogPtr; VAR event: EventRecord; VAR itemHit: INTEGER): BOOLEAN;
     /// Inside Macintosh Volume I, I-417
@@ -597,7 +602,7 @@ pub(crate) struct StandardFilePutTrackingState {
     pub sel_start: i16,
     pub sel_end: i16,
     pub bounds: (i16, i16, i16, i16),
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
 }
 
 /// Candidate file shown by a retained Standard File get dialog.
@@ -629,7 +634,7 @@ pub(crate) struct StandardFileGetTrackingState {
     pub file_types: Option<Vec<u32>>,
     pub selected: usize,
     pub bounds: (i16, i16, i16, i16),
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
 }
 
 /// Popup-menu control state owned by an active ModalDialog loop.
@@ -639,7 +644,7 @@ pub struct DialogPopupTrackingState {
     pub ctrl_ptr: u32,
     pub active_menu: usize,
     pub highlighted_item: i16,
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
     pub dropdown_rect: (i16, i16, i16, i16),
 }
 
@@ -679,7 +684,7 @@ pub struct DialogUserItemTrackingState {
 #[derive(Clone, Debug)]
 pub(crate) struct PersistentDialogSnapshot {
     pub bounds: (i16, i16, i16, i16),
-    pub pixels: Vec<u8>,
+    pub pixels: SavedPixels,
 }
 
 /// State for controls tracked through TrackControl.
@@ -691,7 +696,7 @@ pub(crate) struct ControlTrackingState {
     pub popup_tracking: bool,
     pub active_menu: usize,
     pub highlighted_item: i16,
-    pub saved_pixels: Vec<u8>,
+    pub saved_pixels: SavedPixels,
     pub dropdown_rect: (i16, i16, i16, i16),
     pub popup_content_top: i16,
     pub popup_scroll_direction: Option<crate::menu_manager::MenuScrollDirection>,
@@ -726,7 +731,7 @@ pub(crate) struct ScrollbarThumbTrackingState {
     pub thumb_size: i16,
     pub slop_rect: (i16, i16, i16, i16),
     pub outline_rect: Option<(i16, i16, i16, i16)>,
-    pub saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
 }
 
 /// Retained state for TrackBox while the mouse button remains down.
@@ -750,7 +755,7 @@ pub(crate) struct WindowTrackingState {
     pub bounds_rect: (i16, i16, i16, i16),
     pub original_outline_rect: (i16, i16, i16, i16),
     pub outline_rect: (i16, i16, i16, i16),
-    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
     pub command_down: bool,
 }
 
@@ -780,7 +785,7 @@ pub(crate) struct GrowWindowTrackingState {
     pub start_point: (i16, i16),
     pub size_rect: (i16, i16, i16, i16),
     pub outline_rect: (i16, i16, i16, i16),
-    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
 }
 
 /// Retained state shared by DragGrayRgn and DragTheRgn while the mouse
@@ -797,11 +802,11 @@ pub(crate) struct RegionTrackingState {
     pub axis: i16,
     pub original_outline_rect: (i16, i16, i16, i16),
     pub outline_rect: Option<(i16, i16, i16, i16)>,
-    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, SavedPixels)>,
     pub outline_pattern: [u8; 8],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PortDrawState {
     pub fg_color: (u16, u16, u16),
     pub bg_color: (u16, u16, u16),
@@ -840,13 +845,13 @@ impl Default for PortDrawState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PortRegionSnapshot {
     pub handle: u32,
     pub bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PortStateSnapshot {
     pub port: u32,
     pub gdevice: u32,
@@ -929,12 +934,6 @@ pub(crate) struct OsTrapDispatchFrame {
     a1: u32,
     a2: u32,
 }
-
-/// Stack size handed to a cooperative thread when `NewThread` is passed 0
-/// and the size reported by `GetDefaultThreadStackSize`. The 68K Thread
-/// Manager's own default is a small multiple of a page; 32K comfortably
-/// covers the Toolbox call depth Systemless threads reach.
-pub(crate) const DEFAULT_COOPERATIVE_THREAD_STACK_SIZE: u32 = 32 * 1024;
 
 /// In-flight AppleEvent handler call. Built by Pack8 routine 27
 /// (`AEProcessAppleEvent`) when it dispatches a registered handler;
@@ -1093,90 +1092,6 @@ pub(crate) struct InverseTableCacheEntry {
     pub bytes: Vec<u8>,
 }
 
-/// Pre-initialization compatibility mirror of native trap installations.
-///
-/// Focused dispatcher tests and early startup consult this before the raw
-/// guest tables exist. It is never an authority for an active process: once
-/// the raw guest tables are materialized, their longs are authoritative and
-/// direct guest stores must be visible without synchronization.
-/// The default `HashMap` paid
-/// SipHash plus a SwissTable probe per lookup, and a linear scan is
-/// unbounded: `SetTrapAddress`/`NSetTrapAddress` can populate arbitrarily
-/// many slots, so an application that patches many traps would make the
-/// hottest dispatch path O(n).
-///
-/// Every key producer normalizes into two bands — the Operating System
-/// table `0xA000..=0xA0FF` (`trap_address_table_key`, and dispatch's
-/// `0xA000 | (trap & 0x00FF)`) and the Toolbox table `0xA800..=0xABFF`
-/// (`0xA800 | (trap & 0x03FF)`) — 1,280 possible keys in total, so the
-/// table direct-indexes them: O(1) for any occupancy, no hashing, no
-/// probe, ~10 KB once. Keys outside the two bands (which no production
-/// caller generates) go to a spill list so the `HashMap`-shaped contract
-/// stays total; the dispatch path never touches it because its keys are
-/// in-band by construction.
-#[derive(Debug, Clone)]
-pub(crate) struct TrapWordMap {
-    bands: Box<[Option<u32>; Self::SLOTS]>,
-    spill: Vec<(u16, u32)>,
-}
-
-impl Default for TrapWordMap {
-    fn default() -> Self {
-        Self {
-            bands: Box::new([None; Self::SLOTS]),
-            spill: Vec::new(),
-        }
-    }
-}
-
-impl TrapWordMap {
-    const OS_SLOTS: usize = 0x100;
-    const TOOL_SLOTS: usize = 0x400;
-    const SLOTS: usize = Self::OS_SLOTS + Self::TOOL_SLOTS;
-
-    fn slot(trap: u16) -> Option<usize> {
-        match trap {
-            0xA000..=0xA0FF => Some(usize::from(trap - 0xA000)),
-            0xA800..=0xABFF => Some(Self::OS_SLOTS + usize::from(trap - 0xA800)),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn get(&self, trap: &u16) -> Option<&u32> {
-        match Self::slot(*trap) {
-            Some(index) => self.bands[index].as_ref(),
-            None => self
-                .spill
-                .iter()
-                .find(|(word, _)| word == trap)
-                .map(|(_, handler)| handler),
-        }
-    }
-
-    pub(crate) fn insert(&mut self, trap: u16, handler: u32) -> Option<u32> {
-        match Self::slot(trap) {
-            Some(index) => self.bands[index].replace(handler),
-            None => match self.spill.iter_mut().find(|(word, _)| *word == trap) {
-                Some(slot) => Some(std::mem::replace(&mut slot.1, handler)),
-                None => {
-                    self.spill.push((trap, handler));
-                    None
-                }
-            },
-        }
-    }
-
-    pub(crate) fn remove(&mut self, trap: &u16) -> Option<u32> {
-        match Self::slot(*trap) {
-            Some(index) => self.bands[index].take(),
-            None => {
-                let index = self.spill.iter().position(|(word, _)| word == trap)?;
-                Some(self.spill.swap_remove(index).1)
-            }
-        }
-    }
-}
-
 /// Rust adapter identities allowed for one canonical A-line operation row.
 /// `Nonterminal` is a declared registry state, distinct from an accidental
 /// omission: its gateway remains callable and reports the exact raw word until
@@ -1231,22 +1146,6 @@ pub(crate) fn default_trap_route(trap_word: u16) -> &'static DefaultTrapRoute {
     &DEFAULT_TRAP_ROUTES[usize::from(raw_trap_route(trap_word).table_index)]
 }
 
-/// Trap-table topology selected for the emulated Mac OS 8.1 machine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TrapTableProfile {
-    M68k68040,
-    PowerPc604,
-}
-
-/// Profile-specific classification layered over the generated raw-word map.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ProfileTrapRoute {
-    pub(crate) raw: RawTrapRoute,
-    pub(crate) default_is_unimplemented: bool,
-    pub(crate) has_permanent_come_from: bool,
-    pub(crate) default_gateway_word: u16,
-}
-
 /// Application-context portion of the writable Trap Manager topology.
 ///
 /// The Process Manager saves process-specific system globals when it switches
@@ -1262,70 +1161,6 @@ pub(crate) struct TrapTableProcessContext {
     default_exception_vectors: [u32; 2],
     pending_native_trap_calls: HashMap<u16, Vec<NativeTrapCallState>>,
     current_trap_caller: Option<u32>,
-}
-
-// Permanent come-from heads observed in the selected Mac OS 8.1 profiles.
-// Trap Manager APIs expose and replace the successor behind each head, while
-// the raw low-memory table continues to contain the head itself. IM:OSUtils
-// (1994), pp. 8-8--8-9 and 8-25--8-31.
-const M68K_68040_COME_FROM_TRAPS: &[u16] = &[
-    0xA002, 0xA003, 0xA008, 0xA00A, 0xA012, 0xA023, 0xA024, 0xA030, 0xA031, 0xA054, 0xA078, 0xA823,
-    0xA869, 0xA873, 0xA879, 0xA88B, 0xA893, 0xA89C, 0xA8A1, 0xA8B5, 0xA8CF, 0xA8E4, 0xA8E5, 0xA8EA,
-    0xA8EC, 0xA905, 0xA908, 0xA909, 0xA90A, 0xA90C, 0xA90D, 0xA91E, 0xA924, 0xA956, 0xA972, 0xA999,
-    0xA9A0, 0xA9A2, 0xA9C9, 0xA9DC, 0xA9E1, 0xA9ED, 0xA9EF, 0xAA00, 0xAA1F, 0xAA27, 0xAA43, 0xAA4E,
-    0xAAFB,
-];
-
-const POWERPC_604_COME_FROM_TRAPS: &[u16] = &[0xA823, 0xA851, 0xA996, 0xA999, 0xAAFB];
-
-// Reviewed default-address aliases observed repeatedly in the selected 68040
-// profile. Universal Interfaces 3.4 assigns CloseCPort to $AA02 while Inside
-// Macintosh Volume V, V-72/V-291 records its earlier $A87D entry. The same
-// profile also shares the compound-handle disposal routine used by
-// DisposePixPat and DisposeCCursor; IM:V V-55/V-63 shows their common leading
-// map/data/expanded-data/expanded-map layout. The selected 604 profile exposes
-// distinct addresses for all four slots, so these aliases are profile-local.
-const M68K_68040_DEFAULT_GATEWAY_ALIASES: &[(u16, u16)] = &[(0xAA02, 0xA87D), (0xAA26, 0xAA08)];
-
-// Both selected Mac OS 8.1 profiles identify the modern 1,024-entry Toolbox
-// table's `$AA6E` slot as the `Unimplemented` logical identity. All other
-// captured slots have callable defaults. IM:OSUtils (1994), pp. 8-22 and
-// 8-32; IM:Overview (1992), pp. 9-14--9-15.
-const MAC_OS_81_UNIMPLEMENTED_TRAPS: &[u16] = &[0xAA6E];
-
-impl TrapTableProfile {
-    fn come_from_traps(self) -> &'static [u16] {
-        match self {
-            Self::M68k68040 => M68K_68040_COME_FROM_TRAPS,
-            Self::PowerPc604 => POWERPC_604_COME_FROM_TRAPS,
-        }
-    }
-
-    fn unimplemented_traps(self) -> &'static [u16] {
-        match self {
-            Self::M68k68040 | Self::PowerPc604 => MAC_OS_81_UNIMPLEMENTED_TRAPS,
-        }
-    }
-
-    fn default_gateway_word(self, canonical_word: u16) -> u16 {
-        match self {
-            Self::M68k68040 => M68K_68040_DEFAULT_GATEWAY_ALIASES
-                .iter()
-                .find_map(|&(alias, target)| (alias == canonical_word).then_some(target))
-                .unwrap_or(canonical_word),
-            Self::PowerPc604 => canonical_word,
-        }
-    }
-
-    pub(crate) fn route(self, trap_word: u16) -> ProfileTrapRoute {
-        let raw = *raw_trap_route(trap_word);
-        ProfileTrapRoute {
-            raw,
-            default_is_unimplemented: self.unimplemented_traps().contains(&raw.canonical_word),
-            has_permanent_come_from: self.come_from_traps().contains(&raw.canonical_word),
-            default_gateway_word: self.default_gateway_word(raw.canonical_word),
-        }
-    }
 }
 
 /// Trap dispatcher with resource fork access and emulator state.
@@ -1467,9 +1302,6 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline template used by the
     /// Control Manager to call a guest CDEF procedure.
     pub(crate) control_def_trampoline: u32,
-    /// Address of the lazily-allocated trampoline used by the Menu Manager to
-    /// call an application MDEF procedure.
-    pub(crate) menu_def_trampoline: u32,
     /// Reusable trampoline cells for multi-control CDEF callback chains.
     pub(crate) control_def_trampoline_chain: Vec<u32>,
     /// Address of the lazily-allocated trampoline used by DeferUserFn
@@ -1494,10 +1326,6 @@ pub struct TrapDispatcher {
     pub(crate) cooperative_thread_scheduler: u32,
     /// Default cooperative stack size reported by
     /// `GetDefaultThreadStackSize` and used when `NewThread` is passed 0.
-    pub(crate) cooperative_thread_stack_size: u32,
-    /// Cooperative stacks banked by `CreateThreadPool` and recycled by
-    /// `DisposeThread`, reused by `NewThread` before allocating.
-    pub(crate) cooperative_thread_pool: Vec<(u32, u32)>,
     /// Synthetic Component Manager instances opened for HLE-provided
     /// components such as the QuickTime movie controller.
     pub(crate) synthetic_component_instances: HashSet<u32>,
@@ -1566,22 +1394,6 @@ pub struct TrapDispatcher {
     /// MenuInfo.menuProc remains guest-visible and some applications invoke
     /// the procedure directly.
     pub(crate) system_mdef_cache: HashMap<i16, u32>,
-    /// Cache of allocated OS-trap trampolines for GetTrapAddress.
-    /// Each entry is a 4-byte allocation containing the canonical OS trap
-    /// word followed by RTS. Direct calls preserve the JSR return address on
-    /// the stack while the register-based trap runs. Calls originating at a
-    /// cached trampoline bypass a later patch so saved-old pointers continue
-    /// to reach the original system routine. Inside Macintosh: Operating
-    /// System Utilities (1994), pp. 8-23--8-30.
-    pub(crate) os_trap_trampolines: HashMap<u16, u32>,
-    /// Cache of allocated tool-trap trampolines for GetTrapAddress.
-    /// Each entry is a 2-byte allocation containing the auto-pop
-    /// variant of the canonical tool-trap word. When the guest does
-    /// `JSR (trampoline)` the dispatcher pops the saved return PC,
-    /// runs the trap, and resumes at the JSR caller — see
-    /// [`Self::get_or_create_tool_trap_trampoline`]. Inside Macintosh Volume
-    /// II, II-384 (NGetTrapAddress); IM:V V-577 (auto-pop bit).
-    pub(crate) tool_trap_trampolines: HashMap<u16, u32>,
     /// Protected callable nonterminal entry returned as the standard `StdPix`
     /// procedure by `SetStdCProcs`. QuickTime (1993), pp. 3-137--3-139 defines
     /// the distinct eight-argument routine; until that operation is complete,
@@ -1738,6 +1550,9 @@ pub struct TrapDispatcher {
     /// Total guest instructions retired so far.
     pub(crate) instruction_count: u64,
     /// Front window pointer
+    /// Keep activation independent of the shared WindowList's stacking order:
+    /// BringToFront does not activate, and an invisible frontmost NewWindow
+    /// can be active. Macintosh Toolbox Essentials (1992), pp. 4-76 and 4-90.
     pub(crate) front_window: u32,
     /// Pointer to the Window Manager port (`WMgrPort` low-memory global).
     /// Inside Macintosh Volume I, I-282.
@@ -1782,7 +1597,7 @@ pub struct TrapDispatcher {
     /// Saved framebuffer pixels under transient/non-document windows.
     /// Used to emulate Window Manager save-under behavior for dialog-like
     /// windows created through the Window Manager rather than Dialog Manager.
-    pub(crate) window_saved_under_pixels: HashMap<u32, (i16, i16, i16, i16, Vec<u8>)>,
+    pub(crate) window_saved_under_pixels: HashMap<u32, (i16, i16, i16, i16, SavedPixels)>,
     /// Aux-control state keyed by ControlHandle. On System 7.5.3 in 32-bit
     /// mode, each control has a stable AuxCtlRec even before custom colors are
     /// installed, so HLE GetAuxCtl currently treats aux-record presence as the
@@ -1803,8 +1618,8 @@ pub struct TrapDispatcher {
     /// (`runner::idle_cycle_trap_is_journal_complete`).
     pub(crate) window_list: crate::process_context::SharedProcessWindowList,
     /// Whether `window_list` is the process-owned registry rather than a
-    /// standalone dispatcher fixture. Attached dispatchers derive the cached
-    /// front window even when the process list becomes empty.
+    /// standalone dispatcher fixture. The classic frame renderer leaves
+    /// native-owned windows in this shared list to the native renderer.
     pub(crate) process_window_list_attached: bool,
     /// Set once the game has entered fullscreen (window covers entire screen
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
@@ -1829,14 +1644,6 @@ pub struct TrapDispatcher {
     pub(crate) menu_tracking: SharedProcessMenuTracking,
     /// Process-owned nested guest-procedure continuations shared by both CPUs.
     pub(crate) guest_calls: SharedGuestCallStack,
-    /// Custom popup MDEF state before its returned rectangle creates a pane.
-    pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
-    /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
-    pub(crate) pending_menu_bar_build: Option<super::menu::PendingMenuBarBuild>,
-    /// Caller QuickDraw state restored after a retained custom MDEF finishes.
-    pub(crate) menu_definition_port_state: Option<PortStateSnapshot>,
-    /// 68k call frame parked while the shared Menu Manager state yields.
-    pub(crate) menu_tracking_stack_ptr: u32,
     /// A host-native menu selection waiting for the guest's normal
     /// FindWindow -> MenuSelect event path.  It is consumed only by
     /// MenuSelect and revalidated against the live menu list there.
@@ -2175,26 +1982,6 @@ pub struct TrapDispatcher {
     pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
     /// Complete bitmap PICT captured by CopyBits during OpenPicture.
     pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
-    /// Pre-initialization compatibility mapping from a canonical trap word to
-    /// a native 68K handler. SetTrapAddress keeps it available for focused
-    /// standalone tests and early startup before a process table exists. It
-    /// is cleared when a process table is activated and is ignored whenever
-    /// `trap_tables_materialized` is true; initialized runners dispatch
-    /// exclusively from writable guest cells. Native handlers execute as
-    /// simulated JSR targets, allowing CRT-installed LoadSeg, UnloadSeg, and
-    /// ExitToShell patches to relocate code normally.
-    //
-    // Deletion gate: migrate the remaining direct pre-initialization writers
-    // in runner/loader fixtures to an explicit process-table setup, then
-    // remove this field and the unmaterialized fallback together. Keeping the
-    // field until those callers move is intentional compatibility debt, not a
-    // second active-process authority.
-    pub(crate) native_trap_table: TrapWordMap,
-    /// Whether the selected profile's two raw trap tables have been written
-    /// into guest low memory. Before application initialization, focused trap
-    /// unit tests retain the host-map fallback; afterwards the guest longs are
-    /// authoritative, including writes performed directly by native code.
-    pub(crate) trap_tables_materialized: bool,
     /// Machine profile belonging to the currently installed process table.
     /// `None` means no application trap context is active.
     pub(crate) trap_table_profile: Option<TrapTableProfile>,
@@ -2228,6 +2015,7 @@ pub struct TrapDispatcher {
     pub(crate) vbl_tasks: crate::process_context::SharedProcessVblTasks,
     /// Active dialog tracking state (non-None while ModalDialog is tracking input)
     pub dialog_tracking: Option<DialogTrackingState>,
+    pub(crate) suspended_modal_dialogs: Vec<DialogTrackingState>,
     /// Active Standard File Package save dialog tracking state.
     pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
     /// Active Standard File Package open dialog tracking state.
@@ -2257,7 +2045,7 @@ pub struct TrapDispatcher {
     pub(crate) dialog_filter_result_addr: u32,
     /// Saved background pixels for dialogs that returned a non-dismissing item
     /// (e.g., checkbox click). Keyed by dialog_ptr. Reused when ModalDialog re-enters.
-    pub(crate) dialog_saved_pixels: HashMap<u32, Vec<u8>>,
+    pub(crate) dialog_saved_pixels: HashMap<u32, SavedPixels>,
     /// Rendered front-dialog pixels retained after a visible dialog draw,
     /// including first-show shells and ModalDialog returns before DisposDialog
     /// closes the window.
@@ -2363,6 +2151,9 @@ pub(crate) struct MovieState {
     pub active: bool,
     /// Parsed video track (sample tables + codec), if the movie carries one.
     pub media: Option<super::movie_media::VideoTrack>,
+    pub music: Option<Vec<super::movie_media::MusicNote>>,
+    pub audio_time: f64,
+    pub time_base_flags: u32,
     /// The movie's data-fork bytes; `media` sample offsets index into this.
     pub data_fork: Vec<u8>,
     /// Lazily-created Cinepak decoder, retained so inter frames composite on
@@ -2400,6 +2191,9 @@ impl MovieState {
             time_scale: time_scale.max(1),
             active: true,
             media: None,
+            music: None,
+            audio_time: 0.0,
+            time_base_flags: 0,
             data_fork: Vec::new(),
             decoder: None,
             rle_decoder: None,
@@ -2436,8 +2230,8 @@ impl TrapDispatcher {
         &mut self.sound_manager
     }
 
-    /// Attach shared process resources to this dispatcher.
-    pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+    /// Attach process services outside the construction-owned migration pair.
+    pub(crate) fn attach_unconverted_process_services(&mut self, context: &mut ProcessContext) {
         let mut memory_manager = None;
         context.attach_memory_manager(&mut memory_manager);
         let memory_manager = memory_manager.expect("process context supplies a Memory Manager");
@@ -2472,7 +2266,6 @@ impl TrapDispatcher {
             .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_sound_manager(&mut self.sound_manager);
-        context.attach_tick_state(&mut self.tick_state);
         context.attach_callback_tasks(
             &mut self.timer_tasks,
             &mut self.vbl_tasks,
@@ -2498,7 +2291,6 @@ impl TrapDispatcher {
         );
         context.attach_event_queue(&mut self.event_queue);
         context.attach_input_state(&mut self.input_state);
-        context.attach_menu_tracking(&mut self.menu_tracking);
         context.attach_window_list(&mut self.window_list);
         self.process_window_list_attached = true;
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
@@ -2513,7 +2305,6 @@ impl TrapDispatcher {
         );
         self.attach_memory_manager_handle(memory_manager);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
-        context.attach_guest_calls(&mut self.guest_calls);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
         context.attach_apple_event_launch_state(&mut self.apple_event_launch_state);
     }
@@ -2919,7 +2710,7 @@ impl TrapDispatcher {
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
     ) -> Vec<u8> {
-        self.save_dialog_pixels(bus, rect)
+        self.save_dialog_pixels(bus, rect).into_vec()
     }
 
     /// Test-only: invoke restore_dialog_pixels for the byte-isomorphism
@@ -2931,7 +2722,7 @@ impl TrapDispatcher {
         rect: (i16, i16, i16, i16),
         saved: &[u8],
     ) {
-        self.restore_dialog_pixels(bus, rect, saved);
+        self.restore_dialog_pixels(bus, rect, &saved.to_vec().into());
     }
 
     /// Return the process-scoped wrapping Macintosh tick counter.
@@ -3405,6 +3196,32 @@ impl TrapDispatcher {
     }
 
     pub fn new() -> Self {
+        Self::new_inner(MigratedProcessHandles {
+            ticks: SharedProcessTickState::default(),
+            execution: SharedGuestCallStack::default(),
+        })
+    }
+
+    pub(crate) fn new_with_migrated_handles(handles: MigratedProcessHandles) -> Self {
+        Self::new_inner(handles)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_constructed_from_migrated_handles(
+        &self,
+        handles: &MigratedProcessHandles,
+    ) -> bool {
+        self.tick_state.ptr_eq(&handles.ticks)
+            && self.guest_calls.ptr_eq(&handles.execution)
+            && self.menu_tracking.is_view_of(&self.guest_calls)
+    }
+
+    fn new_inner(handles: MigratedProcessHandles) -> Self {
+        let MigratedProcessHandles {
+            ticks: tick_state,
+            execution: guest_calls,
+        } = handles;
+        let menu_tracking = guest_calls.menu_tracking_view();
         let mut process_file_system = SharedProcessFileSystem::default();
         *process_file_system.vfs_directories = vec![ProcessVfsDirectory {
             dir_id: 2,
@@ -3469,7 +3286,6 @@ impl TrapDispatcher {
             list_def_trampoline: 0,
             window_def_trampoline: 0,
             control_def_trampoline: 0,
-            menu_def_trampoline: 0,
             control_def_trampoline_chain: Vec::new(),
             defer_user_fn_trampoline: 0,
             qddone_seen_ports: HashSet::new(),
@@ -3477,8 +3293,6 @@ impl TrapDispatcher {
             ppc_initialized: false,
             thread_return_trampoline: 0,
             cooperative_thread_scheduler: 0,
-            cooperative_thread_stack_size: DEFAULT_COOPERATIVE_THREAD_STACK_SIZE,
-            cooperative_thread_pool: Vec::new(),
             synthetic_component_instances: HashSet::new(),
             next_synthetic_component_instance: 0x00C1_0001,
             saved_draw_old_regions: HashMap::new(),
@@ -3492,8 +3306,6 @@ impl TrapDispatcher {
             system_kmap_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
             system_mdef_cache: HashMap::new(),
-            os_trap_trampolines: HashMap::new(),
-            tool_trap_trampolines: HashMap::new(),
             std_pix_gateway: 0,
             param_text: SharedProcessDialogText::default(),
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -3542,7 +3354,7 @@ impl TrapDispatcher {
             tx_size: 12,
             outline_preferred: false,
             preserve_glyph: false,
-            tick_state: SharedProcessTickState::default(),
+            tick_state,
             power_idle_last_update_tick: 0,
             power_idle_disable_count: 0,
             serial_port_a_powered: false,
@@ -3572,12 +3384,8 @@ impl TrapDispatcher {
             menu_bar_hidden: false,
             sound_manager: SharedProcessSoundManager::default(),
             menus: Vec::new(),
-            menu_tracking: SharedProcessMenuTracking::default(),
-            guest_calls: SharedGuestCallStack::default(),
-            menu_definition_tracking: None,
-            pending_menu_bar_build: None,
-            menu_definition_port_state: None,
-            menu_tracking_stack_ptr: 0,
+            menu_tracking,
+            guest_calls,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
@@ -3709,8 +3517,6 @@ impl TrapDispatcher {
             fill_black_override: None,
             recording_picture: None,
             recording_picture_bitmap: None,
-            native_trap_table: TrapWordMap::default(),
-            trap_tables_materialized: false,
             trap_table_profile: None,
             trap_exception_vector_defaults: None,
             pending_native_trap_calls: HashMap::new(),
@@ -3720,6 +3526,7 @@ impl TrapDispatcher {
             sleep_queue: Vec::new(),
             vbl_tasks: Default::default(),
             dialog_tracking: None,
+            suspended_modal_dialogs: Vec::new(),
             standard_file_put_tracking: None,
             standard_file_get_tracking: None,
             dialog_items: HashMap::new(),
@@ -3838,13 +3645,13 @@ impl TrapDispatcher {
         &self,
         menu_tracking: Option<&ProcessMenuTrackingState>,
     ) -> bool {
-        self.pending_menu_bar_build.is_some()
+        self.guest_calls.menu_bar_build().is_some()
             || self
                 .menu_tracking
                 .as_ref()
                 .or(menu_tracking)
                 .and_then(crate::menu_manager::MenuTrackingState::active_definition)
-                .or(self.menu_definition_tracking.as_ref())
+                .or(self.menu_tracking.context().definition.as_ref())
                 .is_some_and(|tracking| tracking.pending_invocation().is_some())
     }
 
@@ -3854,17 +3661,8 @@ impl TrapDispatcher {
     /// tracking loops is active and the trap is the matching routine. Strips
     /// the auto-pop bit (0x0400) so auto-pop variants match too.
     pub fn is_tracking_refire(&self, opcode: u16) -> bool {
-        self.is_tracking_refire_with_menu_tracking(opcode, self.is_menu_tracking())
-    }
 
-    pub(crate) fn is_tracking_refire_with_menu_tracking(
-        &self,
-        opcode: u16,
-        is_menu_tracking: bool,
-    ) -> bool {
         let trap_no_autopop = opcode & !0x0400;
-        let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
-        let is_menu_bar_build_refire = trap_no_autopop == 0xA9C0;
         let is_dialog_refire =
             matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
         let is_standard_file_refire = trap_no_autopop == 0xA9EA;
@@ -3874,9 +3672,7 @@ impl TrapDispatcher {
         let is_track_box_refire = trap_no_autopop == 0xA83B;
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
-        (is_menu_refire && is_menu_tracking)
-            || (is_menu_bar_build_refire && self.pending_menu_bar_build.is_some())
-            || (is_dialog_refire && self.is_dialog_tracking())
+        (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
             || (is_control_refire
@@ -6041,6 +5837,112 @@ impl TrapDispatcher {
         }
     }
 
+    // Inside Macintosh: Files (1992), pp. 2-81–2-83: an HFS file
+    // reference number is 2 + 94*n, an offset into the FCB buffer.
+    // Resource Manager access paths share that namespace with data forks.
+    fn allocate_resource_file_fcb(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        path: &str,
+        writable: bool,
+    ) -> std::result::Result<u16, i16> {
+        use crate::memory::globals::addr;
+        const FCB_SIZE: u16 = 94;
+        const MAX_FCBS: u16 = 342;
+        let old_buffer = bus.read_long(addr::FCB_S_PTR);
+        let old_size = if old_buffer == 0 {
+            0
+        } else {
+            bus.read_word(old_buffer)
+        };
+        let refnum = (0..MAX_FCBS)
+            .map(|index| 2 + FCB_SIZE * index)
+            .find(|refnum| {
+                *refnum != bus.read_word(addr::CUR_APREF_NUM)
+                    && !self.open_files.contains_key(refnum)
+                    && !self.synthetic_drivers.contains_key(refnum)
+                    && !self
+                        .resources
+                        .as_ref()
+                        .is_some_and(|r| r.files.contains_key(refnum))
+                    && (*refnum >= old_size || bus.read_long(old_buffer + *refnum as u32) == 0)
+            })
+            .ok_or(-42i16)?; // tmfoErr
+        let required = refnum + FCB_SIZE;
+        let buffer = if required > old_size {
+            let new_buffer = bus.alloc(required as u32);
+            if new_buffer == 0 {
+                return Err(-108); // memFullErr
+            }
+            bus.fill_bytes(new_buffer, required as u32, 0);
+            if old_buffer != 0 {
+                let previous = bus.read_bytes(old_buffer, old_size as usize);
+                bus.write_bytes(new_buffer, &previous);
+            }
+            bus.write_word(new_buffer, required);
+            bus.write_long(addr::FCB_S_PTR, new_buffer);
+            if old_buffer != 0 {
+                bus.free(old_buffer);
+            }
+            new_buffer
+        } else {
+            old_buffer
+        };
+        bus.write_word(addr::FS_FCB_LEN, FCB_SIZE);
+
+        // Files 1992, pp. 2-79–2-83: fcbVPtr identifies the volume's VCB;
+        // vcbVRefNum is the signed word at byte 78 of that record.
+        let volume_ref = self
+            .vfs_volume_for_path(path)
+            .map(|volume| volume.ref_num)
+            .unwrap_or(BOOT_VOLUME_REF_NUM);
+        let mut vcb = bus.read_long(addr::VCB_Q_HDR + 2);
+        while vcb != 0 && bus.read_word(vcb + 78) != volume_ref as u16 {
+            vcb = bus.read_long(vcb);
+        }
+        if vcb == 0 {
+            vcb = bus.alloc(178);
+            if vcb == 0 {
+                return Err(-108);
+            }
+            bus.fill_bytes(vcb, 178, 0);
+            bus.write_word(vcb + 8, 0x4244);
+            bus.write_word(vcb + 78, volume_ref as u16);
+            let volume_name = self
+                .vfs_volume_for_ref_num(volume_ref)
+                .map(|volume| volume.name.as_str())
+                .unwrap_or(BOOT_VOLUME_NAME);
+            Self::write_pstring(
+                bus,
+                vcb + 44,
+                &volume_name.chars().take(27).collect::<String>(),
+            );
+            let tail = bus.read_long(addr::VCB_Q_HDR + 6);
+            if tail == 0 {
+                bus.write_long(addr::VCB_Q_HDR + 2, vcb);
+            } else {
+                bus.write_long(tail, vcb);
+            }
+            bus.write_long(addr::VCB_Q_HDR + 6, vcb);
+        }
+        let metadata = self
+            .vfs_file_metadata(path)
+            .expect("existing resource file");
+        let len = self.vfs_rsrc.get(path).map_or(0, |data| data.len() as u32);
+        let fcb = buffer + refnum as u32;
+        bus.fill_bytes(fcb, FCB_SIZE as u32, 0);
+        bus.write_long(fcb, metadata.file_id);
+        bus.write_word(fcb + 4, 0x0200 | if writable { 0x0100 } else { 0 });
+        bus.write_long(fcb + 8, len);
+        bus.write_long(fcb + 12, len);
+        bus.write_long(fcb + 20, vcb);
+        bus.write_long(fcb + 50, metadata.file_type);
+        bus.write_long(fcb + 58, metadata.parent_dir_id);
+        let name = Self::hfs_name_from_vfs_component(Self::vfs_basename(path));
+        Self::write_pstring(bus, fcb + 62, &name.chars().take(31).collect::<String>());
+        Ok(refnum)
+    }
+
     /// Allocate a new loaded resource-file slot for the given VFS key.
     ///
     /// The caller is responsible for resolving duplicates before calling
@@ -6054,7 +5956,13 @@ impl TrapDispatcher {
         wants_write: bool,
     ) -> u16 {
         let rsrc_data = self.vfs_rsrc.get(vfs_key).unwrap().clone();
-        let refnum = self.allocate_process_file_refnum();
+        let refnum = match self.allocate_resource_file_fcb(bus, vfs_key, wants_write) {
+            Ok(refnum) => refnum,
+            Err(error) => {
+                bus.write_word(0x0A60, error as u16);
+                return u16::MAX;
+            }
+        };
         if let Some(fork) = ResourceFork::parse(&rsrc_data) {
             self.merge_resources_from_fork(&fork, bus, refnum);
         } else {
@@ -6065,6 +5973,7 @@ impl TrapDispatcher {
             self.write_refnums.insert(refnum);
         }
         self.set_current_resource_refnum(bus, refnum);
+        bus.write_word(0x0A60, 0);
         refnum
     }
 
@@ -6182,6 +6091,10 @@ impl TrapDispatcher {
         }
 
         self.write_refnums.remove(&refnum);
+        let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
+        if fcb_buffer != 0 && refnum % 94 == 2 && refnum + 94 <= bus.read_word(fcb_buffer) {
+            bus.fill_bytes(fcb_buffer + refnum as u32, 94, 0);
+        }
         bus.write_word(0x0A5A, self.current_resource_refnum());
 
         if trace_resfile_enabled() {
@@ -6694,43 +6607,7 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         trap_word: u16,
     ) -> u32 {
-        let canonical_trap_word = raw_trap_route(0xA800 | (trap_word & 0x03FF)).canonical_word;
-        if let Some(&addr) = self.tool_trap_trampolines.get(&canonical_trap_word) {
-            // The returned address represents a ROM trap entry. Re-seed the
-            // synthetic instruction on every lookup so guest code that
-            // temporarily writes through the saved address cannot corrupt a
-            // later JSR through the same trap pointer.
-            bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
-            return addr;
-        }
-        let addr = bus.alloc_synthetic(2);
-        bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
-        bus.protect_readonly_code(addr, 2);
-        self.tool_trap_trampolines.insert(canonical_trap_word, addr);
-        addr
-    }
-
-    /// Allocate a stable callable gateway for one Operating System trap-table
-    /// slot. OS traps use register conventions, so the JSR return address stays
-    /// at the top of the stack while the canonical A-line executes and the
-    /// following RTS returns to the caller.
-    pub(crate) fn get_or_create_os_trap_trampoline(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        trap_word: u16,
-    ) -> u32 {
-        let canonical_trap_word = raw_trap_route(0xA000 | (trap_word & 0x00FF)).canonical_word;
-        if let Some(&addr) = self.os_trap_trampolines.get(&canonical_trap_word) {
-            bus.write_readonly_code_word(addr, canonical_trap_word);
-            bus.write_readonly_code_word(addr + 2, 0x4E75);
-            return addr;
-        }
-        let addr = bus.alloc_synthetic(4);
-        bus.write_readonly_code_word(addr, canonical_trap_word);
-        bus.write_readonly_code_word(addr + 2, 0x4E75);
-        bus.protect_readonly_code(addr, 4);
-        self.os_trap_trampolines.insert(canonical_trap_word, addr);
-        addr
+        bus.get_or_create_system_trap_gateway(0xA800 | (trap_word & 0x03FF))
     }
 
     fn canonical_trap_word(trap_word: u16) -> u16 {
@@ -6742,47 +6619,14 @@ impl TrapDispatcher {
         raw_trap_route(trap_word).table_address
     }
 
-    fn default_trap_gateway(&self, trap_word: u16) -> Option<u32> {
-        let canonical = Self::canonical_trap_word(trap_word);
-        let gateway_word = self.trap_table_profile.map_or(canonical, |profile| {
-            profile.route(canonical).default_gateway_word
-        });
-        if (canonical & 0x0800) != 0 {
-            self.tool_trap_trampolines.get(&gateway_word).copied()
-        } else {
-            self.os_trap_trampolines.get(&gateway_word).copied()
-        }
+    fn default_trap_gateway(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
+        bus.default_system_trap_gateway(self.trap_table_profile?, trap_word)
     }
 
+    #[cfg(test)]
     fn write_readonly_code_long(bus: &mut MacMemoryBus, address: u32, value: u32) {
         bus.write_readonly_code_word(address, (value >> 16) as u16);
         bus.write_readonly_code_word(address + 2, value as u16);
-    }
-
-    /// Allocate the stable system-owned head used by a permanent come-from
-    /// patch. Its first four bytes are the Trap Manager signature
-    /// `$60064EF9`: normal entry branches around the exit JMP to a minimal
-    /// patch body, which then branches back to that same logical successor.
-    fn create_trap_come_from_head(&mut self, bus: &mut MacMemoryBus, successor: u32) -> u32 {
-        let head = bus.alloc_synthetic(10);
-        bus.write_readonly_code_word(head, 0x6006); // BRA.S patch body
-        bus.write_readonly_code_word(head + 2, 0x4EF9); // exit JMP absolute
-        Self::write_readonly_code_long(bus, head + 4, successor);
-        bus.write_readonly_code_word(head + 8, 0x60F8); // patch body: BRA.S exit JMP
-        bus.protect_readonly_code(head, 10);
-        head
-    }
-
-    /// Allocate the protected restart gateway named by a generated exception
-    /// vector. Line-A and line-F faults stack the faulting instruction's PC;
-    /// RTE therefore retries it after the writable vector cell has been
-    /// restored. Ordinary generated-default dispatch is recognized before
-    /// entering this gateway.
-    fn create_exception_vector_gateway(bus: &mut MacMemoryBus) -> u32 {
-        let gateway = bus.alloc_synthetic(2);
-        bus.write_readonly_code_word(gateway, 0x4E73); // RTE
-        bus.protect_readonly_code(gateway, 2);
-        gateway
     }
 
     /// Create an inactive, profile-complete table for a new process.
@@ -6792,60 +6636,18 @@ impl TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
-    ) -> TrapTableProcessContext {
-        let mut raw_entries =
-            Vec::with_capacity(usize::from(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS));
-        let unimplemented_gateway = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
-        for slot in 0..OS_TRAP_TABLE_SLOTS {
-            let trap_word = 0xA000 | slot;
-            let route = profile.route(trap_word);
-            let default = if route.default_is_unimplemented {
-                self.os_trap_trampolines
-                    .insert(trap_word, unimplemented_gateway);
-                unimplemented_gateway
-            } else {
-                self.get_or_create_os_trap_trampoline(bus, route.default_gateway_word)
-            };
-            let default = self
-                .pre_materialization_trap_handler(trap_word)
-                .unwrap_or(default);
-            raw_entries.push(if route.has_permanent_come_from {
-                self.create_trap_come_from_head(bus, default)
-            } else {
-                default
-            });
-        }
-        for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
-            let trap_word = 0xA800 | slot;
-            let route = profile.route(trap_word);
-            let default = if route.default_is_unimplemented {
-                self.tool_trap_trampolines
-                    .insert(trap_word, unimplemented_gateway);
-                unimplemented_gateway
-            } else {
-                self.get_or_create_tool_trap_trampoline(bus, route.default_gateway_word)
-            };
-            let default = self
-                .pre_materialization_trap_handler(trap_word)
-                .unwrap_or(default);
-            raw_entries.push(if route.has_permanent_come_from {
-                self.create_trap_come_from_head(bus, default)
-            } else {
-                default
-            });
-        }
-        let default_exception_vectors = [
-            Self::create_exception_vector_gateway(bus),
-            Self::create_exception_vector_gateway(bus),
-        ];
-        TrapTableProcessContext {
+    ) -> Result<TrapTableProcessContext> {
+        let image = bus
+            .create_system_trap_table(profile)
+            .ok_or(Error::TrapTableInitialization)?;
+        Ok(TrapTableProcessContext {
             profile,
-            raw_entries,
-            raw_exception_vectors: default_exception_vectors,
-            default_exception_vectors,
+            raw_entries: image.raw_entries,
+            raw_exception_vectors: image.exception_vectors,
+            default_exception_vectors: image.exception_vectors,
             pending_native_trap_calls: HashMap::new(),
             current_trap_caller: None,
-        }
+        })
     }
 
     /// Save the active application's trap context and restore another one.
@@ -6900,19 +6702,15 @@ impl TrapDispatcher {
         self.current_trap_caller = incoming.current_trap_caller;
         self.trap_table_profile = Some(incoming.profile);
         self.trap_exception_vector_defaults = Some(incoming.default_exception_vectors);
-        self.trap_tables_materialized = true;
-        self.native_trap_table = TrapWordMap::default();
         outgoing
     }
 
     /// Discard the active application's trap context during process teardown.
     pub(crate) fn teardown_trap_table_process_context(&mut self) {
-        self.native_trap_table = TrapWordMap::default();
         self.pending_native_trap_calls.clear();
         self.current_trap_caller = None;
         self.trap_table_profile = None;
         self.trap_exception_vector_defaults = None;
-        self.trap_tables_materialized = false;
     }
 
     /// Materialize the selected machine profile's complete raw Trap Manager
@@ -6923,25 +6721,45 @@ impl TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
-    ) {
-        let context = self.create_trap_table_process_context(bus, profile);
+    ) -> Result<()> {
+        if !bus.is_guest_address_writable(OS_TRAP_TABLE_BASE, usize::from(OS_TRAP_TABLE_SLOTS) * 4)
+            || !bus.is_guest_address_writable(
+                TOOLBOX_TRAP_TABLE_BASE,
+                usize::from(TOOLBOX_TRAP_TABLE_SLOTS) * 4,
+            )
+            || !bus.is_guest_address_writable(0x28, 8)
+        {
+            return Err(Error::TrapTableInitialization);
+        }
+        let context = self.create_trap_table_process_context(bus, profile)?;
         let _ = self.switch_trap_table_process_context(bus, context);
+        Ok(())
+    }
+
+    /// Establish standalone classic trap tables before lookup or patching.
+    /// Repeated initialization preserves active cells and in-flight calls.
+    /// Keep the dispatcher paired with its original code-memory owner.
+    /// Inside Macintosh: Operating System Utilities (1994), pp. 8-4--8-9.
+    pub fn initialize_trap_tables(&mut self, bus: &mut MacMemoryBus) -> Result<()> {
+        if self.trap_table_profile.is_some() {
+            return Ok(());
+        }
+        self.materialize_trap_tables(bus, TrapTableProfile::M68k68040)
     }
 
     /// Whether low-memory exception vector 10 still names this process's
-    /// generated A-line dispatcher identity. Before a process topology is
-    /// materialized, retain the historical direct-HLE behavior used by
-    /// focused manager tests.
+    /// generated A-line dispatcher identity. An inactive context has no
+    /// default vector identity.
     pub(crate) fn aline_vector_is_default(&self, bus: &MacMemoryBus) -> bool {
         self.trap_exception_vector_defaults
-            .is_none_or(|defaults| bus.read_long(0x28) == defaults[0])
+            .is_some_and(|defaults| bus.read_long(0x28) == defaults[0])
     }
 
     /// Whether low-memory exception vector 11 still names this process's
     /// generated line-F handler identity.
     pub(crate) fn fline_vector_is_default(&self, bus: &MacMemoryBus) -> bool {
         self.trap_exception_vector_defaults
-            .is_none_or(|defaults| bus.read_long(0x2C) == defaults[1])
+            .is_some_and(|defaults| bus.read_long(0x2C) == defaults[1])
     }
 
     /// Return the logical address currently selected by a materialized raw
@@ -6949,9 +6767,7 @@ impl TrapDispatcher {
     /// is the default gateway; dispatch uses [`Self::native_trap_handler`] to
     /// distinguish that default from an installed patch.
     pub(crate) fn trap_table_address(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
-        if !self.trap_tables_materialized {
-            return None;
-        }
+        self.trap_table_profile?;
         let canonical = Self::canonical_trap_word(trap_word);
         let kind = if raw_trap_route(canonical).is_toolbox {
             TrapTableKind::Toolbox
@@ -6980,26 +6796,8 @@ impl TrapDispatcher {
     /// guest can patch a trap with an ordinary longword store.
     pub(crate) fn native_trap_handler(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
         let canonical = Self::canonical_trap_word(trap_word);
-        if self.trap_tables_materialized {
-            let logical = self.trap_table_address(bus, canonical)?;
-            if self.default_trap_gateway(canonical) == Some(logical) {
-                None
-            } else {
-                Some(logical)
-            }
-        } else {
-            self.pre_materialization_trap_handler(canonical)
-        }
-    }
-
-    /// Read the compatibility projection only while no guest trap table is
-    /// active. This guard is deliberately separate from the active lookup so
-    /// a later refactor cannot accidentally let the mirror win over guest
-    /// table bytes.
-    fn pre_materialization_trap_handler(&self, canonical: u16) -> Option<u32> {
-        (!self.trap_tables_materialized)
-            .then(|| self.native_trap_table.get(&canonical).copied())
-            .flatten()
+        let logical = self.trap_table_address(bus, canonical)?;
+        (self.default_trap_gateway(bus, canonical) != Some(logical)).then_some(logical)
     }
 
     pub(crate) fn install_trap_address(
@@ -7008,27 +6806,9 @@ impl TrapDispatcher {
         trap_word: u16,
         handler: u32,
     ) -> std::result::Result<(), TrapManagerSetError> {
+        self.initialize_trap_tables(bus)
+            .map_err(|_| TrapManagerSetError::UnreadableTable)?;
         let canonical = Self::canonical_trap_word(trap_word);
-        if !self.trap_tables_materialized {
-            let protected_code = bus.protected_code_ownership();
-            TrapManager::validate_handler_with_provenance(
-                handler,
-                |address| bus.try_read_long(address),
-                move |address| protected_code.contains(address),
-            )?;
-            if self.default_trap_gateway(canonical) == Some(handler) {
-                self.native_trap_table.remove(&canonical);
-            } else {
-                self.native_trap_table.insert(canonical, handler);
-            }
-            return Ok(());
-        }
-
-        let entry = if self.default_trap_gateway(canonical) == Some(handler) {
-            self.default_trap_gateway(canonical).unwrap_or(handler)
-        } else {
-            handler
-        };
         let kind = if raw_trap_route(canonical).is_toolbox {
             TrapTableKind::Toolbox
         } else {
@@ -7038,7 +6818,7 @@ impl TrapDispatcher {
         TrapManager::set_address_with_provenance(
             canonical,
             kind,
-            entry,
+            handler,
             |operation| match operation {
                 TrapManagerMemoryOp::ReadLong(address) => bus
                     .try_read_long(address)
@@ -7548,19 +7328,40 @@ impl TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Result<()> {
+        self.dispatch_inner(trap, cpu, bus, None, None)
+    }
+
+    pub(crate) fn dispatch_with_process_services<C: CpuOps>(
+        &mut self,
+        trap: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        cfm: &crate::cfm::CfmState,
+        bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
+    ) -> Result<()> {
+        self.dispatch_inner(trap, cpu, bus, Some(cfm), bindings)
+    }
+
+    fn dispatch_inner<C: CpuOps>(
+        &mut self,
+        trap: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        cfm: Option<&crate::cfm::CfmState>,
+        bindings: Option<&mut dyn crate::cfm::CfmSymbolBindings>,
+    ) -> Result<()> {
+        if crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus)
+            && (self.resume_completed_menu_bar_build(cpu, bus)
+                || self.resume_menu_tracking(cpu, bus).is_some())
+        {
+            return Ok(());
+        }
+        self.initialize_trap_tables(bus)?;
         // Low-memory Ticks is guest-owned writable state. Import it at the
         // ABI boundary before any manager, trace, or diagnostic path observes
         // the process clock so a direct guest store cannot be shadowed by a
         // stale host pacing snapshot.
         self.read_tick_count(bus);
-        if self.process_window_list_attached {
-            self.front_window = self
-                .window_list
-                .iter()
-                .copied()
-                .find(|window| bus.read_byte(window.wrapping_add(110)) != 0)
-                .unwrap_or(0);
-        }
         // Opt-in per-trap wall-clock timing.
         let timing_start = if trap_timing_enabled() {
             Some(std::time::Instant::now())
@@ -7718,10 +7519,9 @@ impl TrapDispatcher {
         let input_route = raw_trap_route(trap);
         let input_base_trap = input_route.canonical_word;
         let default_os_gateway_call = !input_route.is_toolbox
-            && self
-                .os_trap_trampolines
-                .get(&input_base_trap)
-                .is_some_and(|&addr| pc == addr + 2);
+            && bus
+                .system_trap_gateway(input_base_trap)
+                .is_some_and(|addr| pc == addr + 2);
         // A JMP to a saved OS gateway keeps the dispatcher's synthesized
         // return long at the top of the original argument stack. A JSR to the
         // same saved pointer has its own return frame and is an independent
@@ -7756,7 +7556,7 @@ impl TrapDispatcher {
         let route = raw_trap_route(effective_trap);
         let is_tool = route.is_toolbox;
         // Count game traps: from game code (PC < 0x800000), NOT during
-        // menu/dialog tracking loops (synthetic HLE re-dispatches), and
+        // remaining tracking loops (synthetic HLE re-dispatches), and
         // NOT idle-loop traps (GetNextEvent, WaitNextEvent, EventAvail)
         // which fire at wildly different rates depending on CPU speed.
         let trap_number = route.table_slot;
@@ -7855,10 +7655,9 @@ impl TrapDispatcher {
             });
         let default_tool_gateway_call = is_tool
             && auto_pop
-            && (self
-                .tool_trap_trampolines
-                .get(&base_trap)
-                .is_some_and(|&addr| pc == addr + 2)
+            && (bus
+                .system_trap_gateway(base_trap)
+                .is_some_and(|addr| pc == addr + 2)
                 || saved_tool_daisy_chain_call);
         let os_dispatch_frame = if is_tool {
             None
@@ -7876,7 +7675,10 @@ impl TrapDispatcher {
             deliver_os_trap_word(cpu, effective_trap);
         }
         if !default_os_gateway_call && !default_tool_gateway_call {
-            if let Some(handler_addr) = self.native_trap_handler(bus, base_trap) {
+            let handler_addr = self
+                .trap_table_address(bus, base_trap)
+                .ok_or(Error::TrapTableLookup(base_trap))?;
+            if self.default_trap_gateway(bus, base_trap) != Some(handler_addr) {
                 // Simulate JSR to native handler: push return PC, jump to
                 // handler. For an auto-pop trap, the dispatcher's documented
                 // return target is the caller address removed from the glue
@@ -7997,11 +7799,13 @@ impl TrapDispatcher {
                     })
             })
             .or_else(|| {
-                self.dispatch_toolbox(is_tool, trap_num, cpu, bus)
-                    .map(|result| {
-                        selected_adapter = TrapAdapterId::Toolbox;
-                        result
-                    })
+                self.dispatch_toolbox_with_process_services(
+                    is_tool, trap_num, cpu, bus, cfm, bindings,
+                )
+                .map(|result| {
+                    selected_adapter = TrapAdapterId::Toolbox;
+                    result
+                })
             })
             .or_else(|| {
                 self.dispatch_sane(is_tool, trap_num, cpu, bus)
@@ -8043,7 +7847,7 @@ impl TrapDispatcher {
         }
         // Handle auto-pop return.
         // Only push ret_addr back when the CURRENT trap is one of the
-        // menu/dialog refire traps (matches the runner's is_tracking_refire
+        // remaining refire traps (matches the runner's is_tracking_refire
         // logic). is_tracking_refire is shared so dispatch.rs and runner.rs
         // can never diverge on the match logic.
         if let Some(ret_addr) = saved_return_addr {
@@ -8110,7 +7914,7 @@ mod tests {
     use super::*;
     use crate::cpu::{CpuOps, Register};
     use crate::trap::menu::test_tracked_menu_state;
-    use crate::trap::test_helpers::setup;
+    use crate::trap::test_helpers::{setup, setup_with_trap_tables};
     use std::collections::VecDeque;
 
     #[test]
@@ -8465,8 +8269,10 @@ mod tests {
     fn generated_profile_routes_cover_all_raw_words_and_live_table_cells() {
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
-            let unimplemented = dispatcher.default_trap_gateway(0xAA6E).unwrap();
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
+            let unimplemented = dispatcher.default_trap_gateway(&bus, 0xAA6E).unwrap();
 
             for low_word in 0u16..0x1000 {
                 let word = 0xA000 | low_word;
@@ -8638,7 +8444,9 @@ mod tests {
                     0xA000 | slot
                 };
                 let (mut dispatcher, mut cpu, mut bus) = setup();
-                dispatcher.materialize_trap_tables(&mut bus, profile);
+                dispatcher
+                    .materialize_trap_tables(&mut bus, profile)
+                    .expect("trap table construction requires writable cells and system storage");
                 let saved_default = dispatcher.trap_table_address(&bus, canonical_word).unwrap();
                 let profile_route = profile.route(canonical_word);
                 let invoked_word = bus.read_word(saved_default);
@@ -8702,7 +8510,7 @@ mod tests {
     ) -> u32 {
         cpu.write_reg(Register::D0, 0xFFFF_0000 | u32::from(trap_word));
         let saved_gateway = dispatcher
-            .default_trap_gateway(getter)
+            .default_trap_gateway(bus, getter)
             .expect("materialized Trap Manager getter gateway");
         cpu.write_reg(Register::PC, saved_gateway + 2);
         dispatcher
@@ -8722,7 +8530,7 @@ mod tests {
         cpu.write_reg(Register::D0, 0xFFFF_0000 | u32::from(trap_word));
         cpu.write_reg(Register::A0, handler);
         let saved_gateway = dispatcher
-            .default_trap_gateway(setter)
+            .default_trap_gateway(bus, setter)
             .expect("materialized Trap Manager setter gateway");
         cpu.write_reg(Register::PC, saved_gateway + 2);
         dispatcher
@@ -8745,7 +8553,9 @@ mod tests {
 
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, mut cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
 
             for table_index in 0..(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS) {
                 let is_toolbox = table_index >= OS_TRAP_TABLE_SLOTS;
@@ -9016,69 +8826,285 @@ mod tests {
     }
 
     #[test]
-    fn trap_word_map_preserves_the_hashmap_contract() {
-        let mut map = super::TrapWordMap::default();
-        // First insert returns None; lookup sees it.
-        assert_eq!(map.insert(0xA9F0, 0x1000), None);
-        assert_eq!(map.get(&0xA9F0), Some(&0x1000));
-        assert_eq!(map.get(&0xA9F1), None, "absent key misses");
-        // Replacement returns the previous handler and keeps one entry.
-        assert_eq!(map.insert(0xA9F0, 0x2000), Some(0x1000));
-        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
-        // A second key coexists.
-        assert_eq!(map.insert(0xA146, 0x3000), None);
-        assert_eq!(map.get(&0xA9F0), Some(&0x2000));
-        assert_eq!(map.get(&0xA146), Some(&0x3000));
-        // Removal returns the value exactly once and clears lookup.
-        assert_eq!(map.remove(&0xA9F0), Some(0x2000));
-        assert_eq!(map.remove(&0xA9F0), None, "second remove is a miss");
-        assert_eq!(map.get(&0xA9F0), None);
-        // The untouched key survives its neighbor's removal.
-        assert_eq!(map.get(&0xA146), Some(&0x3000));
-        // Replace-then-remove on the survivor behaves like HashMap too.
-        assert_eq!(map.insert(0xA146, 0x4000), Some(0x3000));
-        assert_eq!(map.remove(&0xA146), Some(0x4000));
-        assert_eq!(map.get(&0xA146), None);
+    fn standalone_trap_initialization_preserves_live_patches_and_restarts_after_teardown() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let word = 0xA078; // SwapMMUMode has a permanent head on the classic profile.
+        let entry = OS_TRAP_TABLE_BASE + 0x78 * 4;
+        cpu.write_reg(Register::D0, 0x78);
+        dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+        let default = cpu.read_reg(Register::A0);
+        let initial_head = bus.read_long(entry);
+        assert_ne!(default, 0);
+        assert_ne!(initial_head, default);
+        assert_eq!(
+            bus.read_long(initial_head),
+            super::super::manager::COME_FROM_PATCH_SIGNATURE
+        );
+        assert_eq!(
+            dispatcher.trap_table_profile,
+            Some(TrapTableProfile::M68k68040)
+        );
+
+        let patch = 0x0021_0000;
+        bus.write_long(entry, patch);
+        let vectors = [bus.read_long(0x28), bus.read_long(0x2C)];
+        bus.write_long(0x2C, patch);
+        dispatcher.initialize_trap_tables(&mut bus).unwrap();
+        assert_eq!(bus.read_long(entry), patch);
+        assert_eq!(bus.read_long(0x2C), patch);
+        cpu.write_reg(Register::PC, 0x0020_0002);
+        dispatcher.dispatch(word, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), patch);
+        let sp = cpu.read_reg(Register::A7);
+        dispatcher.initialize_trap_tables(&mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(dispatcher.pending_native_trap_calls[&word].len(), 1);
+
+        dispatcher.teardown_trap_table_process_context();
+        dispatcher.initialize_trap_tables(&mut bus).unwrap();
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+        assert_ne!(bus.read_long(entry), initial_head);
+        assert_eq!(dispatcher.trap_table_address(&bus, word), Some(default));
+        assert_ne!([bus.read_long(0x28), bus.read_long(0x2C)], vectors);
+        assert!(dispatcher.aline_vector_is_default(&bus));
+        assert!(dispatcher.fline_vector_is_default(&bus));
     }
 
     #[test]
-    fn trap_word_map_stays_exact_at_full_occupancy_and_off_band() {
-        // SetTrapAddress can populate every slot of both trap tables, so
-        // fill them completely: 256 OS words and 1,024 Toolbox words.
-        let mut map = super::TrapWordMap::default();
-        for os in 0xA000u16..=0xA0FF {
-            assert_eq!(map.insert(os, u32::from(os) | 0x10_0000), None);
+    fn replacement_dispatcher_reuses_memory_owned_defaults_with_fresh_process_heads() {
+        let (mut first, _, mut bus) = setup();
+        first
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .unwrap();
+        let tick = first.trap_table_address(&bus, 0xA975).unwrap();
+        let protected_cell = raw_trap_route(0xA823).table_address;
+        let head = bus.read_long(protected_cell);
+        let vectors = [bus.read_long(0x28), bus.read_long(0x2c)];
+        let mut second = TrapDispatcher::new();
+        second
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .unwrap();
+        assert_eq!(second.trap_table_address(&bus, 0xA975), Some(tick));
+        assert_eq!(bus.read_word(tick), 0xAD75);
+        assert_ne!(bus.read_long(protected_cell), head);
+        assert_ne!([bus.read_long(0x28), bus.read_long(0x2c)], vectors);
+        bus.write_word(tick, 0xffff);
+        assert_eq!(bus.read_word(tick), 0xAD75);
+    }
+
+    #[test]
+    fn profile_materialization_refuses_before_mutating_active_process() {
+        for failure in 0..6 {
+            let (mut dispatcher, _, mut bus) = setup();
+            dispatcher
+                .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+                .unwrap();
+            let tick_cell = raw_trap_route(0xA975).table_address;
+            bus.write_long(tick_cell, 0x1234_5678);
+            dispatcher.current_trap_caller = Some(0x0020_1000);
+            dispatcher.pending_native_trap_calls.insert(
+                0xA975,
+                vec![NativeTrapCallState {
+                    return_pc: 0x0020_2000,
+                    argument_sp: 0x003f_ff00,
+                    os_dispatch_frame: None,
+                    preserved_d_regs: [1; 5],
+                    preserved_a_regs: [2; 5],
+                }],
+            );
+            match failure {
+                0 => {
+                    while bus.synthetic_code_allocation_start(4).is_some() {
+                        bus.alloc_synthetic(4);
+                    }
+                }
+                1 => bus.protect_readonly_code(OS_TRAP_TABLE_BASE, 4),
+                2 => bus.protect_readonly_code(TOOLBOX_TRAP_TABLE_BASE, 4),
+                3 => bus.protect_readonly_code(0x28, 4),
+                4 | 5 => {
+                    let address = if failure == 4 {
+                        bus.synthetic_code_allocation_start(4).unwrap()
+                    } else {
+                        OS_TRAP_TABLE_BASE
+                    };
+                    let mut foreign = crate::memory::GuestAddressSpace::new();
+                    foreign.add_readonly_region(address, vec![0x55; 4]);
+                    bus.attach_guest_address_space(foreign.shared_view());
+                }
+                _ => unreachable!(),
+            }
+            let low_memory = bus.read_bytes(0, 0x2000);
+            let (base, len) = bus.synthetic_reservation_range().unwrap();
+            let code = bus.read_bytes(base, len as usize);
+            let next = bus.synthetic_code_allocation_start(4);
+            let defaults = dispatcher.trap_exception_vector_defaults;
+            let tick_default = bus.system_trap_gateway(0xA975);
+            assert!(matches!(
+                dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::PowerPc604),
+                Err(Error::TrapTableInitialization)
+            ));
+            assert_eq!(bus.read_bytes(0, 0x2000), low_memory);
+            assert_eq!(bus.read_bytes(base, len as usize), code);
+            assert_eq!(bus.synthetic_code_allocation_start(4), next);
+            assert_eq!(
+                dispatcher.trap_table_profile,
+                Some(TrapTableProfile::M68k68040)
+            );
+            assert_eq!(dispatcher.trap_exception_vector_defaults, defaults);
+            assert_eq!(bus.system_trap_gateway(0xA975), tick_default);
+            assert_eq!(dispatcher.current_trap_caller, Some(0x0020_1000));
+            assert_eq!(bus.read_long(tick_cell), 0x1234_5678);
+            let frames = &dispatcher.pending_native_trap_calls[&0xA975];
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].return_pc, 0x0020_2000);
+            assert_eq!(frames[0].argument_sp, 0x003f_ff00);
+            assert_eq!(frames[0].preserved_d_regs, [1; 5]);
+            assert_eq!(frames[0].preserved_a_regs, [2; 5]);
+            if failure >= 4 {
+                bus.detach_guest_address_space();
+                dispatcher
+                    .materialize_trap_tables(&mut bus, TrapTableProfile::PowerPc604)
+                    .unwrap();
+                assert_eq!(
+                    dispatcher.trap_table_profile,
+                    Some(TrapTableProfile::PowerPc604)
+                );
+                assert_eq!(dispatcher.current_trap_caller, None);
+                assert!(dispatcher.pending_native_trap_calls.is_empty());
+                assert_ne!(bus.read_long(tick_cell), 0x1234_5678);
+            }
         }
-        for tool in 0xA800u16..=0xABFF {
-            assert_eq!(map.insert(tool, u32::from(tool) | 0x20_0000), None);
+    }
+
+    #[test]
+    fn standalone_trap_initialization_refuses_unavailable_memory_atomically_and_retries() {
+        for failure in 0..7 {
+            let (mut dispatcher, mut cpu, _) = setup();
+            let mut bus = MacMemoryBus::new(match failure {
+                0 => 0x1000,
+                4 => 32 * 1024 * 1024,
+                _ => 4 * 1024 * 1024,
+            });
+            match failure {
+                1 => {
+                    assert_ne!(bus.alloc_synthetic(64 * 1024), 0);
+                }
+                2 => bus.protect_readonly_code(TOOLBOX_TRAP_TABLE_BASE, 4),
+                4 => bus.set_addressing_32_bit(false),
+                5 => bus.protect_readonly_code(0x28, 4),
+                6 => bus.protect_readonly_code(OS_TRAP_TABLE_BASE, 4),
+                3 => {
+                    let address = bus.synthetic_code_allocation_start(4).unwrap();
+                    let mut foreign = crate::memory::GuestAddressSpace::new();
+                    foreign.add_readonly_region(address, vec![0x55; 4]);
+                    bus.attach_guest_address_space(foreign.shared_view());
+                }
+                _ => {}
+            }
+            let low_memory = bus.read_bytes(0, 0x2000.min(bus.ram_size() as usize));
+            let synthetic = bus
+                .synthetic_reservation_range()
+                .map(|(base, len)| (base, bus.read_bytes(base, len as usize)));
+            cpu.write_reg(Register::D0, 0x78);
+            cpu.write_reg(Register::A0, 0x1234_5678);
+            cpu.write_reg(Register::PC, 0x0020_0002);
+            let sp = cpu.read_reg(Register::A7);
+            assert!(matches!(
+                dispatcher.initialize_trap_tables(&mut bus),
+                Err(Error::TrapTableInitialization)
+            ));
+            assert!(matches!(
+                dispatcher.dispatch(0xA346, &mut cpu, &mut bus),
+                Err(Error::TrapTableInitialization)
+            ));
+            for number in [0x46, 0x47] {
+                assert!(matches!(
+                    dispatcher.dispatch_memory(false, number, &mut cpu, &mut bus),
+                    Some(Err(Error::TrapTableInitialization))
+                ));
+            }
+            assert_eq!(bus.read_bytes(0, low_memory.len()), low_memory);
+            if let Some((base, bytes)) = synthetic {
+                assert_eq!(bus.read_bytes(base, bytes.len()), bytes);
+            }
+            assert_eq!(cpu.read_reg(Register::D0), 0x78);
+            assert_eq!(cpu.read_reg(Register::A0), 0x1234_5678);
+            assert_eq!(cpu.read_reg(Register::PC), 0x0020_0002);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert_eq!(dispatcher.trap_count, 0);
+            assert_eq!(dispatcher.trap_table_profile, None);
+            assert!(!dispatcher.aline_vector_is_default(&bus));
+            assert!(!dispatcher.fline_vector_is_default(&bus));
+            assert!(bus.system_trap_gateways_are_empty());
+            if failure == 3 {
+                bus.detach_guest_address_space();
+            } else {
+                bus = MacMemoryBus::new(4 * 1024 * 1024);
+            }
+            dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+            assert_ne!(cpu.read_reg(Register::A0), 0);
+            assert_eq!(
+                dispatcher.trap_table_profile,
+                Some(TrapTableProfile::M68k68040)
+            );
         }
-        // Every lookup is exact at full occupancy — the boundary the
-        // linear-scan design regressed on.
-        for os in 0xA000u16..=0xA0FF {
-            assert_eq!(map.get(&os), Some(&(u32::from(os) | 0x10_0000)));
-        }
-        for tool in 0xA800u16..=0xABFF {
-            assert_eq!(map.get(&tool), Some(&(u32::from(tool) | 0x20_0000)));
-        }
-        // Replacement and removal stay exact with every slot occupied.
-        assert_eq!(map.insert(0xA9F0, 0xDEAD), Some(0xA9F0 | 0x20_0000));
-        assert_eq!(map.remove(&0xA9F0), Some(0xDEAD));
-        assert_eq!(map.get(&0xA9F0), None);
+    }
+
+    #[test]
+    fn classic_getter_does_not_reconstruct_a_default_for_a_cyclic_guest_chain() {
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
+        let entry = OS_TRAP_TABLE_BASE + 0x78 * 4;
+        let head = bus.read_long(entry);
+        let default = dispatcher.trap_table_address(&bus, 0xA078).unwrap();
+        assert!(bus.try_write_protected_code_long(head + 4, head));
+        cpu.write_reg(Register::D0, 0x78);
+        dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(bus.read_long(entry), head);
+        assert_eq!(bus.read_long(head + 4), head);
+        assert!(bus.try_write_protected_code_long(head + 4, default));
+        cpu.write_reg(Register::D0, 0x78);
+        dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), default);
+    }
+
+    #[test]
+    fn malformed_trap_entry_refuses_dispatch_but_preserves_saved_default_gateway_calls() {
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
+        let entry = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
+        let default = dispatcher.trap_table_address(&bus, 0xA975).unwrap();
+        let head =
+            crate::trap::gateways::TrapSystemGateways::create_come_from_head(&mut bus, default);
+        assert!(bus.try_write_protected_code_long(head + 4, head));
+        bus.write_long(entry, head);
+        let sp = cpu.read_reg(Register::A7);
+        let sentinel = 0xABCD_EF01;
+        bus.write_long(sp, sentinel);
+        cpu.write_reg(Register::PC, 0x0020_0002);
+        assert!(matches!(
+            dispatcher.dispatch(0xA975, &mut cpu, &mut bus),
+            Err(Error::TrapTableLookup(0xA975))
+        ));
         assert_eq!(
-            map.get(&0xA9F1),
-            Some(&(0xA9F1 | 0x20_0000)),
-            "neighbors survive"
+            bus.read_long(sp),
+            sentinel,
+            "no TickCount result was delivered"
         );
-        // The band boundaries themselves: words between the OS and
-        // Toolbox tables, and past the Toolbox table, are storable and
-        // retrievable (spill), and absent ones stay absent.
-        for off_band in [0x01F4u16, 0xA100, 0xA7FF, 0xAC00, 0xFFFF] {
-            assert_eq!(map.get(&off_band), None);
-            assert_eq!(map.insert(off_band, 0xBEEF), None);
-            assert_eq!(map.get(&off_band), Some(&0xBEEF));
-            assert_eq!(map.remove(&off_band), Some(0xBEEF));
-            assert_eq!(map.get(&off_band), None);
-        }
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+
+        // A saved system address deliberately bypasses the current patch
+        // head, even if the application has since corrupted that head.
+        // Inside Macintosh: Operating System Utilities (1994), pp. 8-23--8-30.
+        let return_pc = 0x0020_0100;
+        bus.write_long(sp, return_pc);
+        bus.write_long(sp + 4, sentinel);
+        bus.write_long(crate::memory::globals::addr::TICKS, 1234);
+        cpu.write_reg(Register::PC, default + 2);
+        dispatcher.dispatch(0xAD75, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_long(sp + 4), 1234);
+        assert_eq!(bus.read_long(head + 4), head);
     }
 
     #[test]
@@ -9120,7 +9146,9 @@ mod tests {
     #[test]
     fn materialized_trap_tables_contain_all_callable_profile_entries() {
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
 
         for slot in 0..OS_TRAP_TABLE_SLOTS {
             let trap_word = 0xA000 | slot;
@@ -9162,7 +9190,9 @@ mod tests {
     fn machine_profiles_generate_distinct_protected_exception_vector_defaults() {
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
             let defaults = dispatcher.trap_exception_vector_defaults.unwrap();
 
             assert_ne!(defaults[0], defaults[1]);
@@ -9196,7 +9226,9 @@ mod tests {
             (TrapTableProfile::PowerPc604, POWERPC_604_COME_FROM_TRAPS),
         ] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
             let mut observed = Vec::new();
             for slot in 0..OS_TRAP_TABLE_SLOTS {
                 let word = 0xA000 | slot;
@@ -9228,7 +9260,9 @@ mod tests {
         let second_protected_patch = 0x0022_0000;
         let second_direct_patch = 0x0022_1000;
 
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let first_head = bus.read_long(protected_entry);
         let first_defaults = dispatcher.trap_exception_vector_defaults.unwrap();
         assert_eq!([bus.read_long(0x28), bus.read_long(0x2C)], first_defaults);
@@ -9250,8 +9284,9 @@ mod tests {
         );
         dispatcher.current_trap_caller = Some(0x0023_1000);
 
-        let fresh_second =
-            dispatcher.create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604);
+        let fresh_second = dispatcher
+            .create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604)
+            .unwrap();
         let first_context = dispatcher
             .switch_trap_table_process_context(&mut bus, fresh_second)
             .expect("first process context must be saved");
@@ -9327,7 +9362,6 @@ mod tests {
         assert_eq!(dispatcher.current_trap_caller, Some(0x0024_1000));
 
         dispatcher.teardown_trap_table_process_context();
-        assert!(!dispatcher.trap_tables_materialized);
         assert_eq!(dispatcher.trap_table_profile, None);
         assert_eq!(dispatcher.trap_exception_vector_defaults, None);
         assert!(dispatcher.pending_native_trap_calls.is_empty());
@@ -9342,7 +9376,9 @@ mod tests {
 
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, _cpu, mut bus) = setup();
-            dispatcher.materialize_trap_tables(&mut bus, profile);
+            dispatcher
+                .materialize_trap_tables(&mut bus, profile)
+                .expect("trap table construction requires writable cells and system storage");
             let unimplemented = dispatcher.trap_table_address(&bus, 0xAA6E).unwrap();
             let mut matching_slots = Vec::new();
 
@@ -9389,7 +9425,9 @@ mod tests {
         let aliases = [(0xA87D, 0xAA02), (0xAA08, 0xAA26)];
 
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         for (target, alias) in aliases {
             assert_eq!(
                 dispatcher.trap_table_address(&bus, target),
@@ -9404,8 +9442,9 @@ mod tests {
             );
         }
 
-        let second =
-            dispatcher.create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604);
+        let second = dispatcher
+            .create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604)
+            .unwrap();
         let _first = dispatcher
             .switch_trap_table_process_context(&mut bus, second)
             .expect("68040 context must be saved");
@@ -9427,7 +9466,9 @@ mod tests {
     #[test]
     fn a_profile_default_alias_keeps_independent_patch_and_restore_state() {
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
 
         for (target, alias, patch) in [(0xA87D, 0xAA02, 0x0021_0000), (0xAA08, 0xAA26, 0x0021_1000)]
         {
@@ -9466,7 +9507,9 @@ mod tests {
         // address saved from $AA02 must therefore execute the shared $A87D
         // procedure and retain its one-CGrafPtr Pascal stack contract.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let gateway = dispatcher.trap_table_address(&bus, 0xAA02).unwrap();
         let return_pc = 0x0020_0000;
         let sp = 0x003F_FF00;
@@ -9490,7 +9533,9 @@ mod tests {
     #[test]
     fn trap_manager_mutates_hidden_successor_without_replacing_raw_head() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA078;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let head = bus.read_long(raw_entry);
@@ -9518,7 +9563,9 @@ mod tests {
     #[test]
     fn trap_manager_mutates_the_last_exit_in_a_multi_head_chain() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA078;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let first = bus.read_long(raw_entry);
@@ -9552,7 +9599,9 @@ mod tests {
     #[test]
     fn direct_raw_write_can_bypass_a_permanent_come_from_head() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xAAFB;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let old_head = bus.read_long(raw_entry);
@@ -9571,7 +9620,7 @@ mod tests {
         assert_eq!(bus.read_long(raw_entry), replacement);
         assert_eq!(
             bus.read_long(old_head + 4),
-            dispatcher.default_trap_gateway(trap_word).unwrap()
+            dispatcher.default_trap_gateway(&bus, trap_word).unwrap()
         );
     }
 
@@ -9581,7 +9630,9 @@ mod tests {
         // Set/NSet installs the supplied address; no guest address range is a
         // host-only restoration token.
         let (mut dispatcher, _cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA004;
         let handler = 0x00F0_A004;
 
@@ -9602,7 +9653,9 @@ mod tests {
     #[test]
     fn nset_rejects_a_come_from_head_as_the_new_handler() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let trap_word = 0xA078;
         let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
         let head = bus.read_long(raw_entry);
@@ -9620,7 +9673,9 @@ mod tests {
     #[test]
     fn direct_raw_table_write_is_authoritative_for_dispatch() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let handler = 0x0021_0000;
         let return_pc = 0x0020_0002;
         let sp = 0x003F_FF00;
@@ -9639,7 +9694,9 @@ mod tests {
     #[test]
     fn trap_manager_apis_and_raw_table_long_stay_coherent() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .expect("trap table construction requires writable cells and system storage");
         let entry_address = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
         let default = bus.read_long(entry_address);
         let handler = 0x0021_0000;
@@ -9740,11 +9797,13 @@ mod tests {
 
     #[test]
     fn native_trap_dispatch_returns_past_the_a_line_opcode() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let trap_pc = 0x0020_0000u32;
         let handler_addr = 0x0021_0000u32;
         let sp = 0x003F_FF00u32;
-        dispatcher.native_trap_table.insert(0xA9F0, handler_addr);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA9F0, handler_addr)
+            .unwrap();
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, sp);
 
@@ -9803,14 +9862,16 @@ mod tests {
         let return_pc = 0x0020_0002u32;
         let sp = 0x003F_FF00u32;
         for variant in 0u16..8 {
-            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
             let trap_word = 0xA039 | (variant << 8); // ReadDateTime variants
             let original_d1 = 0xD1D1_BEEF;
             let original_d2 = 0xD2D2_BEEF;
             let original_a0 = 0xA0A0_BEEF;
             let original_a1 = 0xA1A1_BEEF;
             let original_a2 = 0xA2A2_BEEF;
-            dispatcher.native_trap_table.insert(0xA039, handler_addr);
+            dispatcher
+                .install_trap_address(&mut bus, 0xA039, handler_addr)
+                .unwrap();
             cpu.write_reg(Register::PC, return_pc);
             cpu.write_reg(Register::A7, sp);
             cpu.write_reg(Register::D1, original_d1);
@@ -9869,8 +9930,8 @@ mod tests {
 
     #[test]
     fn saved_os_gateway_tail_uses_the_original_variant_dispatch_frame() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA01E);
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
+        let gateway = bus.get_or_create_system_trap_gateway(0xA01E);
         let handler = 0x0021_0000u32;
         let return_pc = 0x0020_0002u32;
         let sp = 0x003F_FF00u32;
@@ -9879,7 +9940,9 @@ mod tests {
         let original_d2 = 0xD2D2_BEEF;
         let original_a1 = 0xA1A1_BEEF;
         let original_a2 = 0xA2A2_BEEF;
-        dispatcher.native_trap_table.insert(0xA01E, handler);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA01E, handler)
+            .unwrap();
         cpu.write_reg(Register::PC, return_pc);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 4);
@@ -9915,8 +9978,8 @@ mod tests {
 
     #[test]
     fn saved_os_gateway_subroutine_keeps_the_outer_dispatch_frame() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
+        let gateway = bus.get_or_create_system_trap_gateway(0xA039);
         let handler = 0x0021_0000u32;
         let patch_continuation = 0x0021_0100u32;
         let return_pc = 0x0020_0002u32;
@@ -9927,7 +9990,9 @@ mod tests {
         let original_a0 = 0xA0A0_BEEF;
         let original_a1 = 0xA1A1_BEEF;
         let original_a2 = 0xA2A2_BEEF;
-        dispatcher.native_trap_table.insert(0xA039, handler);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA039, handler)
+            .unwrap();
         bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);
         cpu.write_reg(Register::PC, return_pc);
         cpu.write_reg(Register::A7, sp);
@@ -9990,12 +10055,14 @@ mod tests {
 
     #[test]
     fn native_auto_pop_trap_enters_patch_with_the_glue_callers_return_frame() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let trap_pc = 0x0020_0000u32;
         let handler_addr = 0x0021_0000u32;
         let caller_pc = 0x0022_0000u32;
         let sp = 0x003F_FF00u32;
-        dispatcher.native_trap_table.insert(0xA975, handler_addr);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA975, handler_addr)
+            .unwrap();
         bus.write_long(sp, caller_pc);
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, sp);
@@ -10013,13 +10080,15 @@ mod tests {
 
     #[test]
     fn nested_same_native_trap_calls_retain_lifo_call_state() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let handler_addr = 0x0021_0000u32;
         let outer_return = 0x0020_0002u32;
         let inner_return = 0x0021_0102u32;
         let outer_sp = 0x003F_FF00u32;
         let inner_sp = 0x003F_FE00u32;
-        dispatcher.native_trap_table.insert(0xA9F0, handler_addr);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA9F0, handler_addr)
+            .unwrap();
 
         cpu.write_reg(Register::PC, outer_return);
         cpu.write_reg(Register::A7, outer_sp);
@@ -10054,12 +10123,14 @@ mod tests {
 
     #[test]
     fn saved_tool_trap_gateway_bypasses_a_later_patch() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
         let gateway = dispatcher.get_or_create_tool_trap_trampoline(&mut bus, 0xA975);
         let caller_pc = 0x0021_0000u32;
         let sp = 0x003F_FF00u32;
         dispatcher.set_tick_count_for_test(&mut bus, 0x1234_5678);
-        dispatcher.native_trap_table.insert(0xA975, 0x0030_0000);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA975, 0x0030_0000)
+            .unwrap();
         bus.write_long(sp, caller_pc);
         cpu.write_reg(Register::PC, 0x0020_0002);
         cpu.write_reg(Register::A7, sp);
@@ -10086,13 +10157,15 @@ mod tests {
 
     #[test]
     fn saved_os_trap_gateway_bypasses_a_later_patch() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
+        let (mut dispatcher, mut cpu, mut bus) = setup_with_trap_tables();
+        let gateway = bus.get_or_create_system_trap_gateway(0xA039);
         let sp = 0x003F_FF00u32;
         let output = 0x0020_0000u32;
         bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);
         bus.write_long(sp, 0x0021_0000);
-        dispatcher.native_trap_table.insert(0xA039, 0x0030_0000);
+        dispatcher
+            .install_trap_address(&mut bus, 0xA039, 0x0030_0000)
+            .unwrap();
         cpu.write_reg(Register::PC, gateway + 2);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::A0, output);
@@ -10166,10 +10239,10 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             stack_ptr: 0,
             item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
+            rendered_pixels: Default::default(),
             flash_remaining: 0,
             flash_delay: 0,
             flash_item: 0,
@@ -10177,6 +10250,7 @@ mod tests {
             draw_proc_queue: VecDeque::new(),
             draw_procs_done: true,
             rendered_pixels_final: true,
+            filter_presentation_epoch: None,
             filter_proc: 0,
             game_managed: false,
             last_filter_event: None,
@@ -10194,7 +10268,7 @@ mod tests {
             popup_tracking: true,
             active_menu: 0,
             highlighted_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             dropdown_rect: (0, 0, 0, 0),
             popup_content_top: 0,
             popup_scroll_direction: None,
@@ -10622,14 +10696,14 @@ mod tests {
     }
 
     #[test]
-    fn is_tracking_refire_true_for_menu_traps_when_menu_tracking() {
+    fn menu_tracking_uses_operation_resumption_instead_of_refiring() {
         let mut disp = TrapDispatcher::new();
         install_menu_tracking(&mut disp);
-        assert!(disp.is_tracking_refire(0xA93D));
-        assert!(disp.is_tracking_refire(0xA80B));
+        assert!(!disp.is_tracking_refire(0xA93D));
+        assert!(!disp.is_tracking_refire(0xA80B));
         // Auto-pop variants share the same predicate.
-        assert!(disp.is_tracking_refire(0xAD3D));
-        assert!(disp.is_tracking_refire(0xAC0B));
+        assert!(!disp.is_tracking_refire(0xAD3D));
+        assert!(!disp.is_tracking_refire(0xAC0B));
     }
 
     #[test]
@@ -10907,7 +10981,7 @@ mod tests {
     fn attached_event_queue_remains_shared_through_panic() {
         let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
@@ -10940,6 +11014,36 @@ mod tests {
     }
 
     #[test]
+    fn migrated_constructor_uses_exact_process_tick_and_execution_owners() {
+        let mut context = ProcessContext::default();
+        let handles = context.migrated_handles();
+        let expected_ticks = handles.ticks.shared_handle();
+        let expected_execution = handles.execution.shared_handle();
+
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(handles);
+
+        assert!(dispatcher.tick_state.ptr_eq(&expected_ticks));
+        assert!(dispatcher.guest_calls.ptr_eq(&expected_execution));
+        assert!(dispatcher.menu_tracking.is_view_of(&dispatcher.guest_calls));
+
+        dispatcher.attach_unconverted_process_services(&mut context);
+        assert!(dispatcher.tick_state.ptr_eq(&expected_ticks));
+        assert!(dispatcher.guest_calls.ptr_eq(&expected_execution));
+        assert!(dispatcher.menu_tracking.is_view_of(&dispatcher.guest_calls));
+    }
+
+    #[test]
+    fn standalone_constructors_create_independent_coherent_service_owners() {
+        let first = TrapDispatcher::new();
+        let second = TrapDispatcher::new();
+
+        assert!(!first.tick_state.ptr_eq(&second.tick_state));
+        assert!(!first.guest_calls.ptr_eq(&second.guest_calls));
+        assert!(first.menu_tracking.is_view_of(&first.guest_calls));
+        assert!(second.menu_tracking.is_view_of(&second.guest_calls));
+    }
+
+    #[test]
     fn fresh_dispatcher_uses_filesystem_resource_manager_owner() {
         let mut dispatcher = TrapDispatcher::new();
         let owner: &ProcessResourceManagerState = &dispatcher.process_file_system.resource_manager;
@@ -10966,8 +11070,8 @@ mod tests {
         let mut first = TrapDispatcher::new();
         let mut second = TrapDispatcher::new();
 
-        first.attach_process_context(&mut context);
-        second.attach_process_context(&mut context);
+        first.attach_unconverted_process_services(&mut context);
+        second.attach_unconverted_process_services(&mut context);
 
         assert!(first
             .process_file_system
@@ -11033,8 +11137,8 @@ mod tests {
         let mut first = TrapDispatcher::new();
         let mut second = TrapDispatcher::new();
 
-        first.attach_process_context(&mut context);
-        second.attach_process_context(&mut context);
+        first.attach_unconverted_process_services(&mut context);
+        second.attach_unconverted_process_services(&mut context);
         assert!(first
             .pending_file_completions
             .ptr_eq(&second.pending_file_completions));
@@ -11049,12 +11153,12 @@ mod tests {
 
     #[test]
     fn attached_menu_tracking_mutates_process_context_immediately() {
-        let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x1234,
         )));
-        dispatcher.attach_process_context(&mut context);
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         assert_eq!(
             dispatcher.menu_tracking.as_ref().map(|t| t.menu_handle),
@@ -11076,12 +11180,12 @@ mod tests {
 
     #[test]
     fn attached_menu_tracking_remains_shared_through_panic() {
-        let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x5678,
         )));
-        dispatcher.attach_process_context(&mut context);
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
+        dispatcher.attach_unconverted_process_services(&mut context);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatcher.menu_tracking.as_mut().unwrap().highlighted_item = 9;
@@ -11103,12 +11207,12 @@ mod tests {
 
     #[test]
     fn attached_process_state_remains_canonical_through_panic() {
-        let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x9abc,
         )));
-        dispatcher.attach_process_context(&mut context);
+        let mut dispatcher = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
+        dispatcher.attach_unconverted_process_services(&mut context);
         let memory_manager = context.memory_manager_handle().clone();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -11162,8 +11266,8 @@ mod tests {
         let mut second = TrapDispatcher::new();
         let mut first_context = ProcessContext::default();
         let mut second_context = ProcessContext::default();
-        first.attach_process_context(&mut first_context);
-        second.attach_process_context(&mut second_context);
+        first.attach_unconverted_process_services(&mut first_context);
+        second.attach_unconverted_process_services(&mut second_context);
 
         first.track_handle_ptr(0x2200, 0x1100);
         first.set_handle_state_bits(0x1100, 0x80);
@@ -11185,7 +11289,7 @@ mod tests {
         dispatcher.set_handle_state_bits(0x1100, 0x80);
 
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         let attached = dispatcher.process_memory_manager();
 
         assert!(!attached.ptr_eq(&standalone));
@@ -11218,7 +11322,7 @@ mod tests {
         );
 
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         let attached = dispatcher.process_memory_manager();
 
         assert!(!attached.ptr_eq(&standalone));
@@ -11240,7 +11344,7 @@ mod tests {
         assert_ne!(ptr, 0);
 
         let mut context = ProcessContext::default();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         context.attach_classic_memory_bus(&mut bus);
 
         assert_eq!(
@@ -11293,7 +11397,7 @@ mod tests {
         let shared = native.shared_view();
         bus.attach_guest_address_space(shared);
         let mut dispatcher = TrapDispatcher::new();
-        dispatcher.attach_process_context(&mut context);
+        dispatcher.attach_unconverted_process_services(&mut context);
         let replacement = vec![0x5a; 48];
 
         assert!(dispatcher.replace_process_native_handle_bytes(

@@ -84,6 +84,8 @@ pub fn scripted_menuselect_enabled_item_input_trace() -> Result<String, String> 
         if dispatcher.menu_tracking.is_none() {
             break;
         }
+        let tick = bus.read_long(addr::TICKS).wrapping_add(1);
+        bus.write_long(addr::TICKS, tick);
         scripted_call_menu_trap(
             &mut dispatcher,
             &mut cpu,
@@ -1342,6 +1344,9 @@ fn scripted_call_menu_trap(
     trap_num: u16,
     label: &str,
 ) -> Result<(), String> {
+    if matches!(trap_num, 0x13d | 0x00b) && dispatcher.resume_menu_tracking(cpu, bus).is_some() {
+        return Ok(());
+    }
     dispatcher
         .dispatch_menu(true, trap_num, cpu, bus)
         .ok_or_else(|| format!("{label} was not handled"))?

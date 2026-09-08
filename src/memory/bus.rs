@@ -479,6 +479,8 @@ pub struct MacMemoryBus {
     synthetic_ptr: u32,
     /// Lower bound of the fixed reservation for future synthetic allocations.
     synthetic_floor: u32,
+    /// Stable trap defaults share the lifetime of their allocated system code.
+    trap_gateways: crate::trap::gateways::TrapSystemGateways,
     /// Guest writes cannot modify synthesized ROM-like instruction stubs.
     readonly_code_ranges: Vec<(u32, u32)>,
     /// Half-open bounding box over `readonly_code_ranges`, maintained on
@@ -495,6 +497,7 @@ pub struct MacMemoryBus {
     /// guest memory unchanged, while still allowing temporary stack writes
     /// that are restored before the cycle closes.
     write_probe_original: Option<WriteProbeJournal>,
+    pub(crate) presentation: super::presentation::PresentationSlot,
     /// The journal's allocation between probes. Probes start more than a
     /// million times in a long SimCity 2000 session; reusing one map keeps
     /// the table's capacity instead of regrowing it from empty each time.
@@ -596,7 +599,7 @@ fn protected_ranges_overlap(ranges: &[(u32, u32)], address: u64, end: u64) -> bo
 /// of the tick.
 pub(crate) const WRITE_PROBE_MAX_ENTRIES: usize = 4096;
 
-/// Stable shared ownership of the runner's flat RAM allocation.
+/// Stable shared ownership of flat RAM or runtime-generated system code.
 ///
 /// `FixtureRunner` serializes access to its 68k bus and native application
 /// behind `&mut self`. A mapped [`SharedRamRegion`] can therefore expose the
@@ -626,7 +629,7 @@ impl SharedRam {
     }
 }
 
-/// A stable subrange of runner RAM mapped into another CPU bus.
+/// A stable subrange of runtime-owned RAM mapped into an address space.
 #[derive(Clone)]
 pub(crate) struct SharedRamRegion {
     ram: SharedRam,
@@ -644,6 +647,17 @@ impl std::fmt::Debug for SharedRamRegion {
 }
 
 impl SharedRamRegion {
+    /// Own a complete fixed allocation without constructing a classic bus.
+    /// Access still follows the same serialized shared-region contract.
+    pub(crate) fn from_owned_bytes(bytes: Vec<u8>) -> Self {
+        let len = bytes.len();
+        Self {
+            ram: SharedRam(Rc::new(UnsafeCell::new(bytes.into_boxed_slice()))),
+            offset: 0,
+            len,
+        }
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.len
     }
@@ -705,13 +719,7 @@ impl SharedRamRegion {
     }
 
     pub(crate) fn detached_clone(&self) -> Self {
-        let bytes = self.snapshot();
-        let ram = SharedRam(Rc::new(UnsafeCell::new(bytes.into_boxed_slice())));
-        Self {
-            len: ram.len(),
-            ram,
-            offset: 0,
-        }
+        Self::from_owned_bytes(self.snapshot())
     }
 }
 
@@ -745,11 +753,12 @@ impl Hasher for AddressHasher {
 }
 
 /// Original contents of the aligned 32-bit words a probe's writes touched,
-/// keyed by the word's address. One insert per word instead of one per
+/// keyed by the word's address, with a four-bit mask of the bytes written.
+/// One insert per word instead of one per
 /// byte; the bytes of a word a write did not touch cannot change while a
 /// probe is armed (every writer goes through the bus and fastmem is
 /// withdrawn), so comparing them at the end is harmless.
-type WriteProbeJournal = HashMap<u32, u32, BuildHasherDefault<AddressHasher>>;
+type WriteProbeJournal = HashMap<u32, (u32, u8), BuildHasherDefault<AddressHasher>>;
 
 /// An armed write journal temporarily detached from the bus by
 /// [`MacMemoryBus::suspend_write_probe`]; hand it back with
@@ -1152,6 +1161,9 @@ impl MacMemoryBus {
         if (count as i32) <= 0 {
             return;
         }
+        if self.presentation_active() && self.copy_ram_bytes(src, dst, count) {
+            return;
+        }
         let count_usize = count as usize;
         let flat_route = self.route(src, count_usize) == GuestMemoryRoute::Flat
             && self.route(dst, count_usize) == GuestMemoryRoute::Flat;
@@ -1159,11 +1171,13 @@ impl MacMemoryBus {
         let fast = flat_route
             && !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
         let fast = flat_route
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         let translated_src = self.range_translates_contiguously(src, count_usize);
         let translated_dst = self.range_translates_contiguously(dst, count_usize);
         let src_for_overlap = self.translate_guest_address(src);
@@ -1225,9 +1239,11 @@ impl MacMemoryBus {
             heap_allocator: SharedClassicHeapAllocator::default(),
             synthetic_ptr: screen_buffer_start,
             synthetic_floor,
+            trap_gateways: crate::trap::gateways::TrapSystemGateways::default(),
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
+            presentation: Default::default(),
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1318,9 +1334,11 @@ impl MacMemoryBus {
             heap_allocator: SharedClassicHeapAllocator::default(),
             synthetic_ptr: screen_buffer_start,
             synthetic_floor,
+            trap_gateways: crate::trap::gateways::TrapSystemGateways::default(),
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
+            presentation: Default::default(),
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1332,6 +1350,7 @@ impl MacMemoryBus {
     /// Retain one native process's sparse mappings for serialized cross-ISA access.
     pub(crate) fn attach_guest_address_space(&mut self, memory: SharedGuestAddressSpace) {
         debug_assert!(self.foreign_address_space.is_none());
+        memory.set_presentation(self.presentation.clone());
         self.foreign_address_space = Some(memory);
     }
 
@@ -1420,7 +1439,17 @@ impl MacMemoryBus {
     /// This is the atomic preflight for routed bulk copies: a mixed flat /
     /// sparse span may be valid, while any hole or read-only byte rejects the
     /// operation before the first destination byte changes.
-    fn is_guest_address_writable(&self, address: u32, len: usize) -> bool {
+    pub(crate) fn is_guest_address_writable(&self, address: u32, len: usize) -> bool {
+        if len == 0 {
+            return true;
+        }
+        // A complete flat route needs one protection-range check. Keep bulk
+        // drawing on the bulk path rather than checking every pixel byte.
+        if self.route(address, len) == GuestMemoryRoute::Flat {
+            return u32::try_from(len).ok().is_some_and(|len| {
+                !self.readonly_code_overlaps(self.translate_guest_address(address), len)
+            });
+        }
         (0..len).all(|offset| {
             let guest_address = address.wrapping_add(offset as u32);
             let translated = self.translate_guest_address(guest_address);
@@ -1450,6 +1479,37 @@ impl MacMemoryBus {
     /// Commit a 16-bit ABI result only when all routed bytes accept writes.
     pub(crate) fn try_write_word(&mut self, address: u32, value: u16) -> bool {
         self.try_write_bytes_atomic(address, &value.to_be_bytes())
+    }
+
+    /// Commit a prepared operation's discontiguous outputs together. No guest
+    /// code or mapping mutation may run between preflight and these writes.
+    pub(crate) fn try_write_ranges_atomic(&mut self, writes: &[(u32, &[u8])]) -> bool {
+        if writes
+            .iter()
+            .any(|(address, bytes)| !self.is_guest_address_writable(*address, bytes.len()))
+        {
+            return false;
+        }
+        let originals: Vec<Vec<u8>> = writes
+            .iter()
+            .map(|(address, bytes)| {
+                (0..bytes.len())
+                    .map(|offset| self.read_byte(address.wrapping_add(offset as u32)))
+                    .collect()
+            })
+            .collect();
+        for (index, (address, bytes)) in writes.iter().enumerate() {
+            if !self.try_write_bytes_atomic(*address, bytes) {
+                for ((address, _), original) in
+                    writes[..index].iter().zip(&originals[..index]).rev()
+                {
+                    let restored = self.try_write_bytes_atomic(*address, original);
+                    debug_assert!(restored);
+                }
+                return false;
+            }
+        }
+        true
     }
 
     /// Read one guest longword only when all four routed bytes are mapped.
@@ -1629,12 +1689,39 @@ impl MacMemoryBus {
         let unchanged = !self.write_probe_invalid
             && original
                 .iter()
-                .all(|(&word, &value)| self.ram.read_long_in_bounds(word as usize) == value);
+                .all(|(&word, &(value, _))| self.ram.read_long_in_bounds(word as usize) == value);
         self.write_probe_spare = original;
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
         self.write_probe_uncapped = false;
         unchanged
+    }
+
+    /// Finish host drawing and return exactly the bytes it wrote, including
+    /// same-value writes. Those still erase any retained outline coverage.
+    pub(crate) fn finish_write_probe_ranges(&mut self) -> Vec<std::ops::Range<u32>> {
+        assert!(!self.write_probe_invalid && !self.write_probe_overflowed);
+        let mut addresses = Vec::new();
+        if let Some(journal) = &self.write_probe_original {
+            for (&word, &(_, mask)) in journal {
+                for byte in 0..4 {
+                    if mask & (1 << byte) != 0 {
+                        addresses.push(word + byte);
+                    }
+                }
+            }
+        }
+        addresses.sort_unstable();
+        let mut ranges: Vec<std::ops::Range<u32>> = Vec::new();
+        for address in addresses {
+            if let Some(last) = ranges.last_mut().filter(|last| last.end == address) {
+                last.end += 1;
+            } else {
+                ranges.push(address..address + 1);
+            }
+        }
+        self.cancel_write_probe();
+        ranges
     }
 
     /// Close the journal, keeping its allocation for the next probe.
@@ -1651,6 +1738,9 @@ impl MacMemoryBus {
     /// before the write, which the caller does.
     #[inline]
     fn only_write_probe_blocks_fast_path(&self) -> bool {
+        if self.presentation_active() {
+            return false;
+        }
         #[cfg(debug_assertions)]
         if WATCHPOINT_ARMED.load(Ordering::Relaxed) {
             return false;
@@ -1682,7 +1772,10 @@ impl MacMemoryBus {
                 .write_probe_original
                 .as_mut()
                 .expect("write probe checked above");
-            journal.entry(word).or_insert(original);
+            let first_byte = address.saturating_sub(word).min(4);
+            let last_byte = (end - u64::from(word)).min(4) as u32;
+            let mask = (((1u16 << last_byte) - 1) & !((1u16 << first_byte) - 1)) as u8;
+            journal.entry(word).or_insert((original, 0)).1 |= mask;
             if !self.write_probe_uncapped && journal.len() > WRITE_PROBE_MAX_ENTRIES {
                 // Too much written for a wait cycle: void the probe now so
                 // the fast paths (and fastmem) come back for the work in
@@ -1729,6 +1822,59 @@ impl MacMemoryBus {
 
     pub fn alloc(&mut self, size: u32) -> u32 {
         self.heap_allocator.allocate(size, 4, self.synthetic_floor)
+    }
+
+    pub(crate) fn system_trap_gateway(&self, word: u16) -> Option<u32> {
+        self.trap_gateways.get(word)
+    }
+
+    pub(crate) fn default_system_trap_gateway(
+        &self,
+        profile: crate::trap::gateways::TrapTableProfile,
+        word: u16,
+    ) -> Option<u32> {
+        self.trap_gateways.default_gateway(profile, word)
+    }
+
+    /// Publish through one synchronous owner operation. Publication only writes
+    /// owned storage and cannot execute guest code or reenter a manager; no
+    /// reference to the temporarily moved registry escapes this operation.
+    pub(crate) fn get_or_create_system_trap_gateway(&mut self, word: u16) -> u32 {
+        let mut gateways = std::mem::take(&mut self.trap_gateways);
+        let address = gateways.get_or_create(self, word);
+        self.trap_gateways = gateways;
+        address
+    }
+
+    /// Build an inactive process image using this allocation's system identities.
+    /// The shared constructor checks capacity before publication. Restore the
+    /// same registry on either success or refusal, without an attachment alias.
+    pub(crate) fn create_system_trap_table(
+        &mut self,
+        profile: crate::trap::gateways::TrapTableProfile,
+    ) -> Option<crate::trap::gateways::TrapTableImage> {
+        let mut gateways = std::mem::take(&mut self.trap_gateways);
+        let image = gateways.create_table(self, profile);
+        self.trap_gateways = gateways;
+        image
+    }
+
+    #[cfg(test)]
+    pub(crate) fn system_trap_gateways_are_empty(&self) -> bool {
+        self.trap_gateways.is_empty()
+    }
+
+    /// Preflight a synthetic code allocation without consuming storage.
+    /// Generated code writes target this bus's own RAM, so an unrelated
+    /// foreign overlay cannot stand in for its backing allocation.
+    pub(crate) fn synthetic_code_allocation_start(&self, size: u32) -> Option<u32> {
+        let aligned = Self::allocation_bucket_size(size);
+        let start = self.synthetic_ptr.checked_sub(aligned)?;
+        (start >= self.synthetic_floor
+            && self.translate_guest_address(start) == start
+            && self.route(start, aligned as usize) == GuestMemoryRoute::Flat
+            && self.is_guest_address_writable(start, aligned as usize))
+        .then_some(start)
     }
 
     /// Allocate Systemless-owned memory without consuming or perturbing the
@@ -1920,6 +2066,15 @@ impl MacMemoryBus {
         {
             return false;
         }
+        if self.presentation_observes(src, len as usize)
+            || self.presentation_observes(dst, len as usize)
+        {
+            let pixels = self.save_pixel_bytes(src, len as usize);
+            for offset in 0..len {
+                self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| index);
+            }
+            return true;
+        }
         if self.route(src, len as usize) != GuestMemoryRoute::Flat
             || self.route(dst, len as usize) != GuestMemoryRoute::Flat
         {
@@ -1977,6 +2132,17 @@ impl MacMemoryBus {
             || !self.is_guest_address_writable(dst, len as usize)
         {
             return false;
+        }
+        if self.presentation_observes(src, len as usize)
+            || self.presentation_observes(dst, len as usize)
+        {
+            let pixels = self.save_pixel_bytes(src, len as usize);
+            for offset in 0..len {
+                self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| {
+                    map[index as usize]
+                });
+            }
+            return true;
         }
         if self.route(src, len as usize) != GuestMemoryRoute::Flat
             || self.route(dst, len as usize) != GuestMemoryRoute::Flat
@@ -2124,11 +2290,27 @@ impl MacMemoryBus {
         ((translated as u64).saturating_add(len as u64) <= address_space_end).then_some(translated)
     }
 
+    #[inline]
+    fn presentation_observes(&self, address: u32, len: usize) -> bool {
+        self.presentation.as_ref().is_some_and(|p| {
+            self.range_translates_contiguously(address, len)
+                .is_none_or(|address| p.observes_range(address, len))
+        })
+    }
+
+    #[inline]
+    fn presentation_active(&self) -> bool {
+        self.presentation.is_some()
+    }
+
     /// Raw window over guest RAM for the m68k fastmem path, or `None`
     /// while any per-access diagnostic (framebuffer-write tracer, memory
     /// read/write tracer, watchpoint) needs to observe individual bus
     /// accesses — fastmem reads/writes bypass those hooks entirely.
     pub(crate) fn fast_mem_window(&mut self) -> Option<(*mut u8, u32)> {
+        if self.presentation_active() {
+            return None;
+        }
         if !self.addressing_32_bit
             || self.foreign_address_space.is_some()
             || fb_write_trace_range().is_some()
@@ -2271,6 +2453,9 @@ impl MemoryBus for MacMemoryBus {
         }
         if self.readonly_code_overlaps(address, 1) {
             return;
+        }
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.write(address, value);
         }
         self.record_write_probe_range(address, 1);
         maybe_log_mem_write(address, 1, value as u32);
@@ -2477,11 +2662,13 @@ impl MemoryBus for MacMemoryBus {
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, 2);
         #[cfg(not(debug_assertions))]
         let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, 2);
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 2 <= self.ram_size as u64)
         {
@@ -2541,11 +2728,13 @@ impl MemoryBus for MacMemoryBus {
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, 4);
         #[cfg(not(debug_assertions))]
         let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, 4);
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 4 <= self.ram_size as u64)
         {
@@ -2636,9 +2825,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, data.len());
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, data.len());
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(data.len() as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
@@ -2673,9 +2865,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, len as usize);
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, len as usize);
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
@@ -2718,9 +2913,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_active();
         if fast && span <= u64::from(u32::MAX) {
             if let Some(start) = self.range_translates_contiguously(address, span as usize) {
                 let end = u64::from(start) + span;
@@ -2758,9 +2956,12 @@ impl MemoryBus for MacMemoryBus {
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
-            && self.write_probe_original.is_none();
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, len as usize);
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none()
+            && !self.presentation_observes(address, len as usize);
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
         if translated.is_some() && end <= self.ram_size as u64 {
@@ -2790,9 +2991,160 @@ impl MemoryBus for MacMemoryBus {
     }
 }
 
+impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
+    fn trap_code_allocation_bucket(&self, size: u32) -> u32 {
+        Self::allocation_bucket_size(size)
+    }
+
+    fn can_allocate_trap_code(&self, size: u32) -> bool {
+        let table_end = crate::trap::manager::TOOLBOX_TRAP_TABLE_BASE
+            + u32::from(crate::trap::manager::TOOLBOX_TRAP_TABLE_SLOTS) * 4;
+        self.synthetic_code_allocation_start(size)
+            .is_some_and(|start| start >= table_end)
+    }
+
+    fn publish_trap_code(&mut self, existing: Option<u32>, words: &[u16]) -> u32 {
+        let size = words.len() as u32 * 2;
+        let address = existing.unwrap_or_else(|| self.alloc_synthetic(size));
+        for (index, &word) in words.iter().enumerate() {
+            self.write_readonly_code_word(address + index as u32 * 2, word);
+        }
+        if existing.is_none() {
+            self.protect_readonly_code(address, size);
+        }
+        address
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drawing_write_ranges_include_same_value_and_unaligned_writes() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.begin_uncapped_write_probe();
+        bus.write_byte(101, 0);
+        bus.write_word(107, 0);
+        bus.write_bytes(108, &[0; 7]);
+        bus.write_long(201, 0);
+        assert_eq!(
+            bus.finish_write_probe_ranges(),
+            vec![101..102, 107..115, 201..205]
+        );
+        bus.begin_write_probe();
+        bus.write_long(107, 0);
+        assert!(bus.finish_write_probe_unchanged());
+        bus.begin_write_probe();
+        bus.write_byte(108, 1);
+        assert!(!bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn attached_m68k_trace_observes_hle_rewrite_with_unchanged_head() {
+        use m68k::{BatchExit, CpuCore, StepResult};
+
+        const HEAD: u32 = 0x1000;
+        const LOOP_WORDS: [u16; 5] = [0x5280, 0x5281, 0x5347, 0x66f8, 0xa000];
+
+        fn install_loop(bus: &mut MacMemoryBus) {
+            for (index, word) in LOOP_WORDS.into_iter().enumerate() {
+                MemoryBus::write_word(bus, HEAD + index as u32 * 2, word);
+            }
+        }
+
+        fn new_cpu() -> CpuCore {
+            let mut cpu = CpuCore::new();
+            cpu.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
+            cpu.pc = HEAD;
+            cpu.set_d(7, 10_001);
+            cpu
+        }
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        install_loop(&mut bus);
+        let foreign = crate::memory::GuestAddressSpace::new();
+        bus.attach_guest_address_space(foreign.shared_view());
+        assert!(bus.fast_mem_window().is_none());
+
+        let mut cpu = new_cpu();
+        let warm = cpu.run_batch(&mut bus, 40_000, &[]);
+        assert_eq!(warm.instructions, 40_000);
+        assert_eq!(warm.exit, BatchExit::BudgetExhausted);
+        assert_eq!(cpu.pc, HEAD);
+
+        let mut reference_bus = MacMemoryBus::new(64 * 1024);
+        install_loop(&mut reference_bus);
+        let mut reference = new_cpu();
+        for _ in 0..40_000 {
+            assert!(matches!(
+                reference.step(&mut reference_bus),
+                StepResult::Ok { .. }
+            ));
+        }
+        assert_eq!(reference.pc, HEAD);
+        assert_eq!(cpu.dar, reference.dar);
+        assert_eq!(cpu.get_sr(), reference.get_sr());
+        assert_eq!((cpu.d(0), cpu.d(1)), (10_000, 10_000));
+        assert_eq!((reference.d(0), reference.d(1)), (10_000, 10_000));
+
+        MemoryBus::write_word(&mut bus, HEAD + 2, 0x5481);
+        MemoryBus::write_word(&mut reference_bus, HEAD + 2, 0x5481);
+        assert_eq!(MemoryBus::read_word(&bus, HEAD + 2), 0x5481);
+        cpu.set_d(7, 2);
+        reference.set_d(7, 2);
+
+        let actual = cpu.run_batch(&mut bus, 32, &[]);
+        let mut reference_retired = 0;
+        let mut reference_opcode = None;
+        for _ in 0..32 {
+            match reference.step(&mut reference_bus) {
+                StepResult::Ok { .. } => reference_retired += 1,
+                StepResult::AlineTrap { opcode } => {
+                    reference_opcode = Some(opcode);
+                    break;
+                }
+                other => panic!("unexpected stepped exit: {other:?}"),
+            }
+        }
+        let reference_opcode = reference_opcode.expect("stepped execution did not reach A-line");
+
+        assert_eq!(actual.instructions, reference_retired);
+        assert_eq!(reference_opcode, 0xa000);
+        assert_eq!(actual.exit, BatchExit::AlineTrap { opcode: 0xa000 });
+        assert_eq!((cpu.d(0), cpu.d(1)), (10_002, 10_004));
+        assert_eq!(cpu.dar, reference.dar);
+        assert_eq!(cpu.pc, reference.pc);
+        assert_eq!(cpu.pc, HEAD + 10);
+        assert_eq!(cpu.ppc, reference.ppc);
+        assert_eq!(cpu.ppc, HEAD + 8);
+        assert_eq!(cpu.get_sr(), reference.get_sr());
+        assert_eq!(cpu.ir, reference.ir);
+    }
+
+    #[test]
+    fn system_trap_code_lifetime_is_independent_between_memory_owners() {
+        let mut first = MacMemoryBus::new(4 * 1024 * 1024);
+        let mut second = MacMemoryBus::new(4 * 1024 * 1024);
+        second.alloc_synthetic(32);
+        let first_gateway = first.get_or_create_system_trap_gateway(0xA975);
+        let second_gateway = second.get_or_create_system_trap_gateway(0xA975);
+        assert_ne!(first_gateway, second_gateway);
+        first.write_readonly_code_word(first_gateway, 0);
+        assert_eq!(second.read_word(second_gateway), 0xAD75);
+        assert_eq!(
+            first.get_or_create_system_trap_gateway(0xAD75),
+            first_gateway
+        );
+        assert_eq!(first.read_word(first_gateway), 0xAD75);
+        drop(first);
+        assert_eq!(second.system_trap_gateway(0xA975), Some(second_gateway));
+        assert_eq!(
+            second.get_or_create_system_trap_gateway(0xAD75),
+            second_gateway
+        );
+        assert_eq!(second.read_word(second_gateway), 0xAD75);
+    }
 
     #[test]
     fn twenty_four_bit_mode_translates_scalar_and_bulk_accesses() {
@@ -3702,6 +4054,20 @@ mod tests {
     }
 
     #[test]
+    fn prepared_discontiguous_writes_refuse_before_changing_any_destination() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_long(0x2000, 0x11223344);
+        bus.write_long(0x3000, 0x55667788);
+        bus.protect_readonly_code(0x3002, 2);
+        assert!(!bus.try_write_ranges_atomic(&[(0x2000, &[1, 2, 3, 4]), (0x3000, &[5, 6, 7, 8])]));
+        assert_eq!(bus.read_long(0x2000), 0x11223344);
+        assert_eq!(bus.read_long(0x3000), 0x55667788);
+        assert!(bus.try_write_ranges_atomic(&[(0x2000, &[1, 2, 3, 4]), (0x3000, &[5, 6])]));
+        assert_eq!(bus.read_long(0x2000), 0x01020304);
+        assert_eq!(bus.read_long(0x3000), 0x05067788);
+    }
+
+    #[test]
     fn bus_detects_foreign_ordinary_sparse_addresses_only_when_attached() {
         use crate::memory::GuestAddressSpace;
 
@@ -3767,7 +4133,7 @@ mod tests {
             .expect("read-only alias");
         // SAFETY: access remains serialized as above.
         unsafe {
-            memory.add_shared_readonly_region(ALIAS + 4, readonly);
+            memory.add_shared_readonly_region(None, ALIAS + 4, readonly);
         }
         let before = bus.read_byte(ALIAS + 4);
         bus.write_byte(ALIAS + 4, before ^ 0xff);
@@ -3797,6 +4163,18 @@ mod tests {
 
         bus.set_addressing_32_bit(false);
         assert!(bus.is_guest_address_mapped(0x00ff_ffff, 2));
+    }
+
+    #[test]
+    fn writable_range_preflight_preserves_empty_ranges_and_flat_protection() {
+        let mut bus = MacMemoryBus::new(0x10000);
+        bus.protect_readonly_code(0x3000, 4);
+        assert!(bus.is_guest_address_writable(0x3001, 0));
+        assert!(bus.is_guest_address_writable(u32::MAX, 0));
+        assert!(!bus.is_guest_address_writable(0x3001, 1));
+        assert!(!bus.is_guest_address_writable(0x2FFF, 2));
+        assert!(bus.is_guest_address_writable(0x2FFE, 2));
+        assert!(bus.is_guest_address_writable(0x3004, 2));
     }
 
     #[test]

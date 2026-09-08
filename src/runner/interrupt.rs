@@ -12,7 +12,6 @@ pub(crate) enum ActiveInterruptCallbackSource {
     FileCompletion,
     DialogDrawProc,
     DialogFilterProc,
-    MenuHook,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -46,4 +45,14 @@ pub(crate) fn interrupt_callback_sr(source: ActiveInterruptCallbackSource, saved
         }
         _ => saved_sr,
     }
+}
+
+/// Foreground dialog procedures can open another dialog before returning.
+/// Preserve the shared trampoline and drawing state until the child returns.
+pub(crate) struct SuspendedDialogCall {
+    pub callback: ActiveInterruptCallback,
+    pub scratch: Vec<u8>,
+    pub addresses: [u32; 2],
+    pub draw_port: Option<crate::trap::dispatch::PortStateSnapshot>,
+    pub modeless_draw: Option<u32>,
 }

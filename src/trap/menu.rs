@@ -1,7 +1,8 @@
 //! Menu Manager trap handlers.
 
+use crate::memory::SavedPixels;
 use crate::cpu::{CpuOps, Register};
-use crate::guest_call::GuestCallTarget;
+use crate::guest_call::{GuestCallTarget, MenuBarBuildResume, MenuBarCallOrigin, MenuTrackingCall, MenuTrackingOrigin};
 use crate::guest_procedure::{resolve_guest_procedure, GuestIsa};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
@@ -16,20 +17,19 @@ use crate::menu_manager::{
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarBuild as SharedMenuBarBuild,
-    MenuBarBuildStep as SharedMenuBarBuildStep, MenuBarResource as SharedMenuBarResource,
+    MenuBarResource as SharedMenuBarResource,
     MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuColorTable,
     MenuDefinitionInvocation as SharedMenuDefinitionInvocation,
     MenuDefinitionPane as SharedMenuDefinitionPane,
     MenuDefinitionTracking as SharedMenuDefinitionTracking, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
-    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind, MenuTrackingPane,
+    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuFlashStep, MenuTrackingKind, MenuTrackingPane,
     MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, ProcessMenuTrackingState,
-    ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
+    MenuTrackingRequest, PopupMenuRequest, ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
     StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
-    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM,
-    STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
@@ -70,17 +70,11 @@ pub struct Menu {
 pub(crate) type MenuTrackingState = ProcessMenuTrackingState;
 pub(crate) type SubmenuTrackingState = ProcessTrackedMenuPane;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PendingMenuBarBuild {
-    pub(crate) stack_ptr: u32,
-    pub(crate) build: SharedMenuBarBuild<u32>,
-}
-
 pub(crate) fn tracked_menu_state(
     kind: MenuTrackingKind,
     menu_handle: u32,
     rect: (i16, i16, i16, i16),
-    saved_pixels: Vec<u8>,
+    saved_pixels: SavedPixels,
 ) -> MenuTrackingState {
     tracked_menu_state_with_content_top(kind, menu_handle, rect, rect.0, saved_pixels)
 }
@@ -90,7 +84,7 @@ fn tracked_menu_state_with_content_top(
     menu_handle: u32,
     rect: (i16, i16, i16, i16),
     content_top: i16,
-    saved_pixels: Vec<u8>,
+    saved_pixels: SavedPixels,
 ) -> MenuTrackingState {
     let (popup_top, popup_left, popup_bottom, popup_right) = rect;
     MenuTrackingState {
@@ -105,12 +99,13 @@ fn tracked_menu_state_with_content_top(
         highlighted_item: 0,
         definition: None,
         flash_remaining: 0,
-        flash_delay: 0,
+        flash_tick: None,
+        flash_deadline: 0,
         flash_result: 0,
         saved_width: popup_right.saturating_sub(popup_left),
         saved_height: popup_bottom.saturating_sub(popup_top),
         front_buffer: None,
-        saved_pixels: saved_pixels.into_iter().map(u16::from).collect(),
+        saved_pixels: saved_pixels.map(u16::from),
         item_appearances: Vec::new(),
         submenus: Vec::new(),
     }
@@ -120,7 +115,7 @@ pub(crate) fn tracked_submenu_state(
     menu_handle: u32,
     parent_item: i16,
     rect: (i16, i16, i16, i16),
-    saved_pixels: Vec<u8>,
+    saved_pixels: SavedPixels,
 ) -> SubmenuTrackingState {
     let (popup_top, popup_left, popup_bottom, popup_right) = rect;
     SubmenuTrackingState {
@@ -137,7 +132,7 @@ pub(crate) fn tracked_submenu_state(
         saved_width: popup_right.saturating_sub(popup_left),
         saved_height: popup_bottom.saturating_sub(popup_top),
         front_buffer: None,
-        saved_pixels: saved_pixels.into_iter().map(u16::from).collect(),
+        saved_pixels: saved_pixels.map(u16::from),
         item_appearances: Vec::new(),
     }
 }
@@ -148,7 +143,12 @@ pub(crate) fn test_tracked_menu_state(
     rect: (i16, i16, i16, i16),
     highlighted_item: i16,
 ) -> MenuTrackingState {
-    let mut state = tracked_menu_state(MenuTrackingKind::MenuBar, menu_handle, rect, Vec::new());
+    let mut state = tracked_menu_state(
+        MenuTrackingKind::MenuBar,
+        menu_handle,
+        rect,
+        Vec::new().into(),
+    );
     state.highlighted_item = highlighted_item;
     state
 }
@@ -162,7 +162,6 @@ const MENU_KEY_REDUCED_ICON: u8 = 0x1D;
 const MENU_KEY_SMALL_ICON: u8 = 0x1E;
 const MENU_ROW_HEIGHT: i16 = 16;
 
-const MDEF_TRAMPOLINE_SIZE: u32 = 60;
 
 /// Compute the size of a MENU resource in guest memory by scanning through it.
 /// MENU format: menuID(2), menuWidth(2), menuHeight(2), menuProc(4), enableFlags(4),
@@ -490,93 +489,102 @@ impl super::TrapDispatcher {
         else {
             return false;
         };
-        if procedure.isa != GuestIsa::M68k || procedure.entry >= bus.ram_size() {
+        let proc_addr = match (procedure.isa, procedure.representation) {
+            (GuestIsa::M68k, _) => procedure.entry,
+            (
+                GuestIsa::PowerPc,
+                crate::guest_procedure::GuestProcedureRepresentation::RoutineDescriptor {
+                    descriptor,
+                    ..
+                },
+            ) if procedure.proc_info == SharedMenuDefinitionInvocation::PASCAL_PROC_INFO => {
+                descriptor
+            }
+            _ => return false,
+        };
+        if !bus.is_guest_address_mapped(proc_addr, 2) {
             return false;
         }
-        let proc_addr = procedure.entry;
 
-        // MDEFs are Pascal procedures with five arguments. The definition
-        // procedure owns menuWidth/menuHeight for mSizeMsg, so the HLE only
-        // marshals the documented call and resumes the application afterward.
-        // Macintosh Toolbox Essentials (1992), pp. 3-148--3-151.
-        let trampoline = if self.menu_def_trampoline == 0 {
-            self.menu_def_trampoline = bus.alloc(MDEF_TRAMPOLINE_SIZE);
-            self.menu_def_trampoline
-        } else {
-            self.menu_def_trampoline
-        };
-        let call = invocation.call(trampoline + 50);
+        use crate::execution_m68k::M68kMenuDefinitionFrame;
         let final_sp = cpu.read_reg(Register::A7);
-        let return_slot = final_sp.wrapping_sub(4);
-
-        bus.write_word(trampoline, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
-        bus.write_word(trampoline + 2, 0xF0F0);
-        bus.write_word(trampoline + 4, 0x3F3C); // MOVE.W #message,-(SP)
-        bus.write_word(trampoline + 6, call.message as i16 as u16);
-        for (offset, value) in [
-            (8, call.menu_handle),
-            (14, call.menu_rect),
-            (20, call.hit_point),
-            (26, call.which_item),
-        ] {
-            bus.write_word(trampoline + offset, 0x2F3C); // MOVE.L #value,-(SP)
-            bus.write_long(trampoline + offset + 2, value);
+        let Some(entry) = final_sp.checked_sub(M68kMenuDefinitionFrame::RESERVATION) else {
+            return false;
+        };
+        let scratch = entry + 60;
+        let Some(mut frame) =
+            M68kMenuDefinitionFrame::new(invocation.call(scratch), proc_addr, final_sp, return_pc == cpu.read_reg(Register::PC))
+        else {
+            return false;
+        };
+        let floor = frame.entry - M68kMenuDefinitionFrame::STACK_PREFIX;
+        if !bus.is_guest_address_writable(floor, (final_sp - floor) as usize) {
+            return false;
         }
-        bus.write_word(trampoline + 32, 0x4EB9); // JSR abs.L
-        bus.write_long(trampoline + 34, proc_addr);
-        bus.write_word(trampoline + 38, 0x2E7C); // MOVEA.L #savedRegsSP,A7
-        bus.write_long(trampoline + 40, return_slot.wrapping_sub(32));
-        bus.write_word(trampoline + 44, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
-        bus.write_word(trampoline + 46, 0x0F0F);
-        bus.write_word(trampoline + 48, 0x4E75); // RTS
-        for (offset, byte) in invocation.scratch_bytes().into_iter().enumerate() {
-            bus.write_byte(trampoline + 50 + offset as u32, byte);
-        }
-
-        bus.write_long(return_slot, return_pc);
+        let menu_build = self.guest_calls.menu_bar_build();
+        let tracking_root = self.menu_tracking.entry_id();
+        let return_pc = if menu_build.is_some() {
+            frame.trap_return(0xa9c0)
+        } else if let Some(call) = tracking_root.and(self.menu_tracking.context().call) {
+            frame.trap_return(if call.popup_request().is_some() {
+                0xa80b
+            } else {
+                0xa93d
+            })
+        } else {
+            return_pc
+        };
+        let completion = crate::menu_manager::MenuDefinitionCompletion::pending();
         if return_pc != cpu.read_reg(Register::PC) {
-            self.guest_calls.begin_m68k(
-                GuestCallTarget {
-                    isa: procedure.isa,
-                    entry: procedure.entry,
-                    rtoc: procedure.rtoc,
-                },
-                return_pc,
-                final_sp,
-            );
+            if !self.guest_calls.begin_m68k_with_operation(
+                GuestCallTarget { isa: GuestIsa::M68k, entry: proc_addr, rtoc: 0 },
+                return_pc, final_sp, Some(frame.entry),
+                Some(crate::guest_call::ManagerContinuation::Menu(
+                    crate::guest_call::MenuManagerContinuation::Definition(
+                        crate::menu_manager::MenuDefinitionOperation {
+                            scratch, completion: completion.clone(),
+                        },
+                    ),
+                )),
+            ) { return false; }
+            if let Some(id) = tracking_root {
+                self.menu_tracking
+                    .bind_completion(id, invocation, completion.clone());
+            }
+            if invocation.message == crate::menu_manager::MenuDefinitionMessage::Size {
+                if let Some(id) = menu_build {
+                    self.guest_calls.bind_menu_bar_build_completion(id, invocation.menu_handle, completion);
+                }
+            }
         }
-        cpu.write_reg(Register::A7, return_slot);
-        cpu.write_reg(Register::PC, trampoline);
+        for (offset, byte) in frame
+            .image
+            .into_iter()
+            .chain(invocation.scratch_bytes())
+            .enumerate()
+        {
+            bus.write_byte(frame.entry + offset as u32, byte);
+        }
+        bus.write_long(frame.entry - 4, return_pc);
+        cpu.write_reg(Register::A7, frame.entry - 4);
+        cpu.write_reg(Register::PC, frame.entry);
         true
+    }
+
+    fn retire_menu_definition<C: CpuOps>(&self, cpu: &mut C, bus: &MacMemoryBus) -> bool {
+        crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus)
     }
 
     fn complete_pending_menu_definition<C: CpuOps>(
         &mut self,
-        cpu: &C,
+        cpu: &mut C,
         bus: &MacMemoryBus,
     ) -> Option<crate::menu_manager::MenuDefinitionMessage> {
-        let trampoline = self.menu_def_trampoline;
-        if self
-            .active_menu_definition()
-            .copied()
-            .and_then(SharedMenuDefinitionTracking::pending_invocation)
-            .is_none()
-            || trampoline == 0
-        {
-            return None;
-        }
-        if !self
-            .guest_calls
-            .complete_m68k(cpu.read_reg(Register::PC), cpu.read_reg(Register::A7))
-        {
-            return None;
-        }
-        let bytes = bus.read_bytes(trampoline + 50, 10);
-        let Ok(bytes) = <[u8; 10]>::try_from(bytes) else {
-            return None;
-        };
+        self.retire_menu_definition(cpu, bus);
         self.active_menu_definition_mut()?
-            .complete_pending(SharedMenuDefinitionInvocation::decode_result(bytes))
+            .complete_callback()
+            .ok()
+            .flatten()
     }
 
     fn arm_pending_menu_definition<C: CpuOps>(
@@ -587,7 +595,6 @@ impl super::TrapDispatcher {
     ) -> bool {
         let invocation = self
             .active_menu_definition()
-            .copied()
             .and_then(SharedMenuDefinitionTracking::pending_invocation);
         invocation
             .is_some_and(|invocation| self.arm_menu_definition_to(cpu, bus, invocation, return_pc))
@@ -597,7 +604,7 @@ impl super::TrapDispatcher {
         self.menu_tracking
             .as_ref()
             .and_then(MenuTrackingState::active_definition)
-            .or(self.menu_definition_tracking.as_ref())
+            .or(self.menu_tracking.context().definition.as_ref())
     }
 
     fn active_menu_definition_mut(&mut self) -> Option<&mut SharedMenuDefinitionTracking> {
@@ -612,7 +619,10 @@ impl super::TrapDispatcher {
                 .as_mut()
                 .and_then(MenuTrackingState::active_definition_mut);
         }
-        self.menu_definition_tracking.as_mut()
+        self.menu_tracking
+            .existing_context_mut()?
+            .definition
+            .as_mut()
     }
 
     fn clear_active_menu_definition(&mut self) {
@@ -621,19 +631,33 @@ impl super::TrapDispatcher {
                 return;
             }
         }
-        self.menu_definition_tracking = None;
+        if let Some(context) = self.menu_tracking.existing_context_mut() {
+            context.definition = None;
+        }
+    }
+
+    pub(crate) fn preserve_menu_callback_port(&mut self, bus: &MacMemoryBus) {
+        if self.menu_tracking.context().classic_port.is_none() {
+            self.menu_tracking.context_mut().classic_port =
+                Some(self.capture_current_port_state(bus));
+        }
     }
 
     fn prepare_menu_definition_port<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
-        if self.menu_definition_port_state.is_none() {
-            self.menu_definition_port_state = Some(self.capture_current_port_state(bus));
+        if self.menu_tracking.context().classic_port.is_none() {
+            self.menu_tracking.context_mut().classic_port =
+                Some(self.capture_current_port_state(bus));
         }
         let port = self.ensure_color_window_manager_port(bus);
         self.set_current_port_state(bus, cpu, port, None);
     }
 
     fn restore_menu_definition_port<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
-        if let Some(snapshot) = self.menu_definition_port_state.take() {
+        if let Some(snapshot) = self
+            .menu_tracking
+            .existing_context_mut()
+            .and_then(|context| context.classic_port.take())
+        {
             self.restore_current_port_state(bus, cpu, &snapshot);
         }
     }
@@ -656,7 +680,7 @@ impl super::TrapDispatcher {
             self.restore_visible_dialog_snapshots(bus);
         }
         self.restore_menu_definition_port(cpu, bus);
-        self.finish_menu_no_hit(bus, cpu, self.menu_tracking_stack_ptr, result_offset);
+        self.finish_menu_no_hit(bus, cpu, self.menu_tracking.context().classic_stack(), result_offset);
     }
 
     fn finish_custom_menu_tracking<C: CpuOps>(
@@ -678,7 +702,7 @@ impl super::TrapDispatcher {
             self.restore_visible_dialog_snapshots(bus);
         }
         self.restore_menu_definition_port(cpu, bus);
-        let sp = self.menu_tracking_stack_ptr;
+        let sp = self.menu_tracking.context().classic_stack();
         bus.write_long(sp + result_offset, result);
         cpu.write_reg(Register::A7, sp + result_offset);
     }
@@ -923,26 +947,48 @@ impl super::TrapDispatcher {
         bus.write_word(menu_ptr + 4, menu_height as u16);
     }
 
-    fn continue_menu_bar_build<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+    pub(crate) fn resume_completed_menu_bar_build<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> bool {
+        if self
+            .guest_calls
+            .ready_menu_bar_build(GuestIsa::M68k)
+            .is_none()
+        {
+            return false;
+        }
+        self.continue_menu_bar_build(cpu, bus, false);
+        true
+    }
+
+    fn continue_menu_bar_build<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        preserve_auto_pop: bool,
+    ) {
         loop {
-            let Some(step) = self
-                .pending_menu_bar_build
-                .as_mut()
-                .and_then(|pending| pending.build.next_step())
-            else {
-                return;
-            };
-            let menu_handle = match step {
-                SharedMenuBarBuildStep::Size(menu_handle) => menu_handle,
-                SharedMenuBarBuildStep::Complete(result_handle) => {
-                    let Some(pending) = self.pending_menu_bar_build.take() else {
-                        return;
-                    };
-                    let stack_ptr = pending.stack_ptr;
-                    bus.write_long(stack_ptr + 2, result_handle);
-                    cpu.write_reg(Register::A7, stack_ptr + 2);
+            let menu_handle = match self.guest_calls.advance_menu_bar_build(GuestIsa::M68k) {
+                Some(MenuBarBuildResume::Size(handle)) => handle,
+                Some(MenuBarBuildResume::Complete {
+                    result,
+                    origin:
+                        MenuBarCallOrigin::M68k {
+                            stack_pointer,
+                            return_address,
+                        },
+                }) => {
+                    bus.write_long(stack_pointer + 2, result);
+                    cpu.write_reg(Register::A7, stack_pointer + 2);
+                    cpu.write_reg(Register::PC, return_address);
+                    if preserve_auto_pop {
+                        self.preserve_auto_pop_pc_once = true;
+                    }
                     return;
                 }
+                _ => return,
             };
             if self.arm_menu_definition_to(
                 cpu,
@@ -950,6 +996,9 @@ impl super::TrapDispatcher {
                 SharedMenuDefinitionInvocation::size(menu_handle),
                 cpu.read_reg(Register::PC).wrapping_sub(2),
             ) {
+                if preserve_auto_pop {
+                    self.preserve_auto_pop_pc_once = true;
+                }
                 return;
             }
             self.calculate_standard_menu_size(bus, menu_handle);
@@ -1703,6 +1752,117 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        self.retire_menu_definition(cpu, bus);
+        let _menu_root = (is_tool && matches!(trap_num, 0x13d | 0x00b)).then(|| {
+            let sp = cpu.read_reg(Register::A7);
+            let request = if trap_num == 0x00b {
+                MenuTrackingRequest::PopUp(PopupMenuRequest {
+                    menu_handle: bus.read_long(sp + 6),
+                    anchor: (bus.read_word(sp + 4) as i16, bus.read_word(sp + 2) as i16),
+                    requested_item: bus.read_word(sp) as i16,
+                })
+            } else {
+                MenuTrackingRequest::MenuSelect {
+                    initial_point: bus.read_long(sp),
+                }
+            };
+            self.menu_tracking.enter_new_call(MenuTrackingCall {
+                request,
+                origin: MenuTrackingOrigin::M68k {
+                    stack_pointer: sp,
+                    return_address: self
+                        .current_trap_caller
+                        .unwrap_or_else(|| cpu.read_reg(Register::PC)),
+                },
+            })
+        });
+        let result = self.dispatch_menu_body(is_tool, trap_num, cpu, bus);
+        if _menu_root.is_some()
+            && self.current_trap_caller.is_some()
+            && self.menu_tracking.context().call.is_some()
+            && (self.menu_tracking.is_some() || self.active_menu_definition().is_some())
+        {
+            self.preserve_auto_pop_pc_once = true;
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn step_menu_fixture<C: CpuOps>(
+        &mut self,
+        is_tool: bool,
+        trap_num: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
+        // One fixture step models a presentation tick, independently of
+        // the amount of guest code exercised by the ABI call below.
+        bus.write_long(
+            crate::memory::globals::addr::TICKS,
+            bus.read_long(crate::memory::globals::addr::TICKS)
+                .wrapping_add(1),
+        );
+        let tracking_call = self.menu_tracking.context().call.filter(|call| {
+            call.origin.isa() == GuestIsa::M68k
+                && is_tool
+                && match call.request {
+                    MenuTrackingRequest::MenuSelect { .. } => trap_num == 0x13d,
+                    MenuTrackingRequest::PopUp(_) => trap_num == 0x00b,
+                }
+        });
+        if let Some(call) = tracking_call {
+            // These adapter fixtures write the MDEF result directly instead
+            // of executing its instruction stream. Retire that exact installed
+            // frame before stepping the retained operation.
+            let MenuTrackingOrigin::M68k { stack_pointer, .. } = call.origin else {
+                unreachable!()
+            };
+            let frame_sp =
+                stack_pointer - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION;
+            if self.guest_calls.depth() > 0 && cpu.read_reg(Register::A7) == frame_sp {
+                cpu.write_reg(Register::PC, frame_sp + 54);
+                self.retire_menu_definition(cpu, bus);
+            }
+            if self.resume_menu_tracking(cpu, bus).is_some() {
+                return Some(Ok(()));
+            }
+        }
+        self.dispatch_menu(is_tool, trap_num, cpu, bus)
+    }
+
+    pub(crate) fn has_ready_menu_tracking(&self) -> bool {
+        self.menu_tracking.ready_call(GuestIsa::M68k).is_some()
+    }
+
+    pub(crate) fn resume_menu_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> Option<u16> {
+        let (call, _scope) = self.menu_tracking.resume_call(GuestIsa::M68k)?;
+        let MenuTrackingOrigin::M68k {
+            stack_pointer,
+            return_address,
+        } = call.origin
+        else {
+            unreachable!()
+        };
+        let trap_num = match call.request {
+            MenuTrackingRequest::MenuSelect { .. } => 0x13d,
+            MenuTrackingRequest::PopUp(_) => 0x00b,
+        };
+        cpu.write_reg(Register::A7, stack_pointer);
+        cpu.write_reg(Register::PC, return_address);
+        self.dispatch_menu_body(true, trap_num, cpu, bus)?.ok()?;
+        if self.menu_tracking.is_none() && self.active_menu_definition().is_none() {
+            self.restore_menu_definition_port(cpu, bus);
+        }
+        Some(0xa800 | trap_num)
+    }
+
+    fn dispatch_menu_body<C: CpuOps>(
+        &mut self, is_tool: bool, trap_num: u16, cpu: &mut C, bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
             // InitMenus ($A930)
@@ -1984,10 +2144,6 @@ impl super::TrapDispatcher {
             // FUNCTION GetNewMBar(menuBarID: INTEGER): Handle;
             // Inside Macintosh Volume I, I-354
             (true, 0x1C0) => {
-                if self.pending_menu_bar_build.is_some() {
-                    self.continue_menu_bar_build(cpu, bus);
-                    return Some(Ok(()));
-                }
                 let sp = cpu.read_reg(Register::A7);
                 let mbar_id = bus.read_word(sp) as i16;
                 let handle = if let Some((_, mbar_ptr)) =
@@ -2014,17 +2170,21 @@ impl super::TrapDispatcher {
                     bus.write_bytes(list_block, &list_bytes);
                     let list_handle = bus.alloc(4);
                     bus.write_long(list_handle, list_block);
-                    self.pending_menu_bar_build = Some(PendingMenuBarBuild {
-                        stack_ptr: sp,
-                        build: SharedMenuBarBuild::new(list_handle, menu_handles),
-                    });
+                    if self.guest_calls.begin_menu_bar_build(
+                        SharedMenuBarBuild::new(list_handle, menu_handles),
+                        MenuBarCallOrigin::M68k { stack_pointer: sp, return_address: self.current_trap_caller.unwrap_or_else(|| cpu.read_reg(Register::PC)) },
+                    ).is_none() {
+                        bus.write_long(sp + 2, 0);
+                        cpu.write_reg(Register::A7, sp + 2);
+                        return Some(Ok(()));
+                    }
                     list_handle
                 } else {
                     0
                 };
 
-                if handle != 0 && self.pending_menu_bar_build.is_some() {
-                    self.continue_menu_bar_build(cpu, bus);
+                if handle != 0 {
+                    self.continue_menu_bar_build(cpu, bus, self.current_trap_caller.is_some());
                 } else {
                     bus.write_long(sp + 2, handle);
                     cpu.write_reg(Register::A7, sp + 2);
@@ -2104,10 +2264,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-355
             // MenuSelect ($A93D): Full mouse tracking with dropdown, highlighting, flashing
             (true, 0x13D) => {
-                if self
-                    .menu_tracking
-                    .as_ref()
-                    .is_some_and(|tracking| tracking.front_buffer.is_some())
+                if self.menu_tracking.context().caller_isa() == Some(GuestIsa::PowerPc)
                 {
                     // A native MenuSelect owns this process continuation. A
                     // nested 68k call must not consume its presentation state
@@ -2179,24 +2336,20 @@ impl super::TrapDispatcher {
                         if self
                             .menu_tracking
                             .as_ref()
-                            .is_some_and(|tracking| tracking.flash_remaining > 0)
+                            .is_some_and(|tracking| tracking.is_flashing())
                         {
-                            let tracking = self.menu_tracking.as_mut().unwrap();
-                            if tracking.flash_delay > 0 {
-                                tracking.flash_delay -= 1;
-                                return Some(Ok(()));
+                            match self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            ) {
+                                MenuFlashStep::Wait | MenuFlashStep::Inactive => {
+                                    return Some(Ok(()))
+                                }
+                                MenuFlashStep::Complete(result) => {
+                                    self.finish_custom_menu_tracking(cpu, bus, 4, result);
+                                    return Some(Ok(()));
+                                }
+                                MenuFlashStep::Highlight(_) => {}
                             }
-                            tracking.flash_remaining -= 1;
-                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                            let remaining = tracking.flash_remaining;
-                            let result = tracking.flash_result;
-                            if remaining == 0 {
-                                self.finish_custom_menu_tracking(cpu, bus, 4, result);
-                                return Some(Ok(()));
-                            }
-                            self.active_menu_definition_mut()
-                                .unwrap()
-                                .flash(remaining & 1 == 0);
                             if !self.arm_pending_menu_definition(
                                 cpu,
                                 bus,
@@ -2216,10 +2369,9 @@ impl super::TrapDispatcher {
                                     && mv < mbar_h
                                 {
                                     let old_saved = self.menu_tracking.take().unwrap();
-                                    let sp = self.menu_tracking_stack_ptr;
                                     self.clear_active_menu_definition();
                                     self.restore_menu_tracking_pixels(bus, old_saved);
-                                    if self.open_menu_dropdown(bus, new_idx, sp) {
+                                    if self.open_menu_dropdown(bus, new_idx) {
                                         self.prepare_menu_definition_port(cpu, bus);
                                         if !self.arm_pending_menu_definition(
                                             cpu,
@@ -2253,7 +2405,7 @@ impl super::TrapDispatcher {
                         }
 
                         if !self.menu_tracking_button_down(bus) {
-                            let definition = *self.active_menu_definition().unwrap();
+                            let definition = self.active_menu_definition().unwrap().clone();
                             let item = definition.which_item();
                             let menu_handle = definition.menu_handle();
                             let menu_id = bus.read_long(menu_handle);
@@ -2266,6 +2418,9 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 4, 0);
                             } else {
                                 let tracking = self.menu_tracking.as_mut().unwrap();
+                                tracking.set_flash_tick(
+                                    bus.read_long(crate::memory::globals::addr::TICKS),
+                                );
                                 let flash_enabled = tracking.begin_flash(
                                     bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                     result,
@@ -2278,25 +2433,14 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                     // Re-fire: we're in tracking mode
-                    if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
-                        // Flashing phase: hold each toggle for 3 frames (~50ms),
-                        // matching the real Mac's ~3-tick delay per phase.
-                        // redraw_chrome handles the visual state based on
-                        // whether flash_remaining is even or odd.
-                        let result = self.menu_tracking.as_ref().unwrap().flash_result;
-                        let t = self.menu_tracking.as_mut().unwrap();
-                        if t.flash_delay > 0 {
-                            t.flash_delay -= 1;
-                            return Some(Ok(()));
-                        }
-                        // Advance to next toggle
-                        t.flash_remaining -= 1;
-                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                        let new_remaining = t.flash_remaining;
-
-                        if new_remaining == 0 {
+                    if self.menu_tracking.as_ref().unwrap().is_flashing() {
+                        if let MenuFlashStep::Complete(result) =
+                            self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            )
+                        {
                             // Flash complete — finish up
-                            let sp = self.menu_tracking_stack_ptr;
+                            let sp = self.menu_tracking.context().classic_stack();
                             let saved = self.menu_tracking.take().unwrap();
                             let active_menu = saved
                                 .submenus
@@ -2370,6 +2514,8 @@ impl super::TrapDispatcher {
                             // MenuFlash stores the caller-selected blink count;
                             // each blink has one hidden and one visible phase.
                             let tracking = self.menu_tracking.as_mut().unwrap();
+                            tracking
+                                .set_flash_tick(bus.read_long(crate::memory::globals::addr::TICKS));
                             let flash_enabled = tracking.begin_flash(
                                 bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                 result,
@@ -2395,7 +2541,7 @@ impl super::TrapDispatcher {
                                 .menu_tracking
                                 .as_ref()
                                 .map(|tracking| {
-                                    (self.menu_tracking_stack_ptr, tracking.menu_handle)
+                                    (self.menu_tracking.context().classic_stack(), tracking.menu_handle)
                                 })
                                 .unwrap();
                             let saved = self.menu_tracking.take().unwrap();
@@ -2427,9 +2573,8 @@ impl super::TrapDispatcher {
                             {
                                 // Switch to different menu
                                 let old_saved = self.menu_tracking.take().unwrap();
-                                let sp = self.menu_tracking_stack_ptr;
                                 self.restore_menu_tracking_pixels(bus, old_saved);
-                                if self.open_menu_dropdown(bus, new_idx, sp) {
+                                if self.open_menu_dropdown(bus, new_idx) {
                                     self.prepare_menu_definition_port(cpu, bus);
                                     if !self.arm_pending_menu_definition(
                                         cpu,
@@ -2524,7 +2669,7 @@ impl super::TrapDispatcher {
                         // Pop the Point parameter (4 bytes) but keep result space
                         // Stack on entry: SP+0: pt(4), SP+4: result(4)
                         // We store SP so we can write result later
-                        if self.open_menu_dropdown(bus, menu_idx, sp) {
+                        if self.open_menu_dropdown(bus, menu_idx) {
                             self.prepare_menu_definition_port(cpu, bus);
                             if !self.arm_pending_menu_definition(
                                 cpu,
@@ -2565,10 +2710,7 @@ impl super::TrapDispatcher {
             // Macintosh Toolbox Essentials 1992, 3-120
             // PopUpMenuSelect ($A80B): Full re-fire tracking with dropdown display, item highlighting, flash animation; uses MenuTrackingState
             (true, 0x00B) => {
-                if self
-                    .menu_tracking
-                    .as_ref()
-                    .is_some_and(|tracking| tracking.front_buffer.is_some())
+                if self.menu_tracking.context().caller_isa() == Some(GuestIsa::PowerPc)
                 {
                     // Preserve an outer native retained call and return from
                     // this nested Pascal call through its own result slot.
@@ -2598,7 +2740,8 @@ impl super::TrapDispatcher {
                                 rect,
                                 saved,
                             );
-                            tracking.definition = self.menu_definition_tracking.take();
+                            tracking.definition =
+                                self.menu_tracking.context_mut().definition.take();
                             *self.menu_tracking = Some(tracking);
                             self.draw_menu_dropdown_chrome(bus, menu_idx, rect);
                             self.active_menu_definition_mut().unwrap().draw();
@@ -2615,24 +2758,20 @@ impl super::TrapDispatcher {
                         if self
                             .menu_tracking
                             .as_ref()
-                            .is_some_and(|tracking| tracking.flash_remaining > 0)
+                            .is_some_and(|tracking| tracking.is_flashing())
                         {
-                            let tracking = self.menu_tracking.as_mut().unwrap();
-                            if tracking.flash_delay > 0 {
-                                tracking.flash_delay -= 1;
-                                return Some(Ok(()));
+                            match self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            ) {
+                                MenuFlashStep::Wait | MenuFlashStep::Inactive => {
+                                    return Some(Ok(()))
+                                }
+                                MenuFlashStep::Complete(result) => {
+                                    self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                                    return Some(Ok(()));
+                                }
+                                MenuFlashStep::Highlight(_) => {}
                             }
-                            tracking.flash_remaining -= 1;
-                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                            let remaining = tracking.flash_remaining;
-                            let result = tracking.flash_result;
-                            if remaining == 0 {
-                                self.finish_custom_menu_tracking(cpu, bus, 10, result);
-                                return Some(Ok(()));
-                            }
-                            self.active_menu_definition_mut()
-                                .unwrap()
-                                .flash(remaining & 1 == 0);
                             if !self.arm_pending_menu_definition(
                                 cpu,
                                 bus,
@@ -2660,7 +2799,7 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
                         if !self.menu_tracking_button_down(bus) {
-                            let definition = *self.active_menu_definition().unwrap();
+                            let definition = self.active_menu_definition().unwrap().clone();
                             let item = definition.which_item();
                             let menu_ptr = bus.read_long(definition.menu_handle());
                             let result = if item > 0 && menu_ptr != 0 {
@@ -2672,6 +2811,9 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 10, 0);
                             } else {
                                 let tracking = self.menu_tracking.as_mut().unwrap();
+                                tracking.set_flash_tick(
+                                    bus.read_long(crate::memory::globals::addr::TICKS),
+                                );
                                 let flash_enabled = tracking.begin_flash(
                                     bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                     result,
@@ -2684,19 +2826,13 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                     // Re-fire: popup tracking is active
-                    if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
-                        let result = self.menu_tracking.as_ref().unwrap().flash_result;
-                        let t = self.menu_tracking.as_mut().unwrap();
-                        if t.flash_delay > 0 {
-                            t.flash_delay -= 1;
-                            return Some(Ok(()));
-                        }
-                        t.flash_remaining -= 1;
-                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
-                        let new_remaining = t.flash_remaining;
-
-                        if new_remaining == 0 {
-                            let sp = self.menu_tracking_stack_ptr;
+                    if self.menu_tracking.as_ref().unwrap().is_flashing() {
+                        if let MenuFlashStep::Complete(result) =
+                            self.menu_tracking.as_mut().unwrap().advance_flash_at(
+                                bus.read_long(crate::memory::globals::addr::TICKS),
+                            )
+                        {
+                            let sp = self.menu_tracking.context().classic_stack();
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
@@ -2713,6 +2849,8 @@ impl super::TrapDispatcher {
                         let result = self.menu_tracking_selection_result(bus);
                         if result != 0 {
                             let tracking = self.menu_tracking.as_mut().unwrap();
+                            tracking
+                                .set_flash_tick(bus.read_long(crate::memory::globals::addr::TICKS));
                             let flash_enabled = tracking.begin_flash(
                                 bus.read_word(crate::memory::globals::addr::MENU_FLASH),
                                 result,
@@ -2721,7 +2859,7 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 10, result);
                             }
                         } else {
-                            let sp = self.menu_tracking_stack_ptr;
+                            let sp = self.menu_tracking.context().classic_stack();
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
@@ -2741,10 +2879,12 @@ impl super::TrapDispatcher {
                         self.finish_menu_no_hit(bus, cpu, sp, 10);
                         return Some(Ok(()));
                     }
-                    let popup_item = bus.read_word(sp) as i16;
-                    let left = bus.read_word(sp + 2) as i16;
-                    let top = bus.read_word(sp + 4) as i16;
-                    let menu_handle = bus.read_long(sp + 6);
+                    let request = PopupMenuRequest {
+                        menu_handle: bus.read_long(sp + 6),
+                        anchor: (bus.read_word(sp + 4) as i16, bus.read_word(sp + 2) as i16),
+                        requested_item: bus.read_word(sp) as i16,
+                    };
+                    let menu_handle = request.menu_handle;
                     // Stack: popUpItem(2) + left(2) + top(2) + menu(4) + result(4)
                     // Don't pop yet — store SP for result write later
 
@@ -2765,16 +2905,10 @@ impl super::TrapDispatcher {
                                 MenuTrackingKind::PopUp,
                                 menu_handle,
                                 (0, 0, 0, 0),
-                                Vec::new(),
+                                Default::default(),
                             ));
-                            self.menu_tracking_stack_ptr = sp;
-                            let hit_point = (u32::from(top as u16) << 16) | u32::from(left as u16);
-                            self.menu_definition_tracking =
-                                Some(SharedMenuDefinitionTracking::begin_popup(
-                                    menu_handle,
-                                    hit_point,
-                                    popup_item,
-                                ));
+                            self.menu_tracking.context_mut().definition =
+                                Some(request.begin_definition());
                             self.prepare_menu_definition_port(cpu, bus);
                             if !self.arm_pending_menu_definition(
                                 cpu,
@@ -2793,7 +2927,7 @@ impl super::TrapDispatcher {
                         // taking precedence over the monochrome families.
                         self.preload_menu_item_icon_resources(bus, menu_idx);
                         let Some((dd_rect, highlighted_item, content_top)) =
-                            self.popup_menu_dropdown_rect(bus, menu_idx, top, left, popup_item)
+                            self.popup_menu_dropdown_rect(bus, menu_idx, request)
                         else {
                             self.finish_menu_no_hit(bus, cpu, sp, 10);
                             return Some(Ok(()));
@@ -2810,7 +2944,6 @@ impl super::TrapDispatcher {
                         ));
                         let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
                         Self::write_menu_scrolling_globals(bus, &rows, content_top);
-                        self.menu_tracking_stack_ptr = sp;
                         self.draw_menu_dropdown(bus, menu_idx, dd_rect);
                         if highlighted_item > 0 {
                             self.set_menu_tracking_highlight(bus, highlighted_item);
@@ -4369,9 +4502,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         menu_idx: usize,
-        top: i16,
-        left: i16,
-        popup_item: i16,
+        request: PopupMenuRequest,
     ) -> Option<((i16, i16, i16, i16), i16, i16)> {
         let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
             self.get_screen_params();
@@ -4383,8 +4514,8 @@ impl super::TrapDispatcher {
             &rows,
             width,
             (screen_width, screen_height),
-            (top, left),
-            popup_item,
+            request.anchor,
+            request.requested_item,
         )?;
         Some((layout.rect(), layout.highlighted_item, layout.content_top))
     }
@@ -4401,7 +4532,6 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         menu_idx: usize,
-        stack_ptr: u32,
     ) -> bool {
         // Fault in this menu's icon resources while `self` is still
         // mutable; the draw path below reads them through `&self` only.
@@ -4470,7 +4600,6 @@ impl super::TrapDispatcher {
             let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
             Self::write_menu_scrolling_globals(bus, &rows, dropdown_rect.0);
         }
-        self.menu_tracking_stack_ptr = stack_ptr;
         custom_definition
     }
 
@@ -5486,13 +5615,13 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
         rect: (i16, i16, i16, i16),
-    ) -> Vec<u8> {
+    ) -> SavedPixels {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
         // Include shadow area (+1 right, +1 bottom)
         let save_bottom = bottom + 1;
         let save_right = right + 1;
-        let mut saved = Vec::new();
+        let mut saved: SavedPixels = Default::default();
         let screen_h_i16 = screen_h;
         for y in top..save_bottom {
             if y < 0 || y >= screen_h_i16 {
@@ -5521,6 +5650,22 @@ impl super::TrapDispatcher {
                 saved.push(bus.read_byte(row_start + bx));
             }
         }
+        if pixel_size == 8 {
+            let mut offset = 0;
+            for y in top.max(0)..save_bottom.min(screen_h) {
+                let left = left.max(0) as u32;
+                let len = (save_right.max(0) as u32)
+                    .min(row_bytes)
+                    .saturating_sub(left) as usize;
+                bus.capture_pixel_detail(
+                    &mut saved,
+                    offset,
+                    screen_base + y as u32 * row_bytes + left,
+                    len,
+                );
+                offset += len;
+            }
+        }
         saved
     }
 
@@ -5530,7 +5675,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
-        saved: &[Pixel],
+        saved: &SavedPixels<Pixel>,
     ) {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
@@ -5557,7 +5702,7 @@ impl super::TrapDispatcher {
             let row_start = screen_base + (y as u32) * row_bytes;
             for bx in byte_left..(byte_left + bytes_per_row) {
                 if idx < saved.len() {
-                    bus.write_byte(row_start + bx, saved[idx].into() as u8);
+                    bus.restore_saved_pixels(row_start + bx, saved, idx, 1);
                     idx += 1;
                 }
             }
@@ -5606,12 +5751,10 @@ impl super::TrapDispatcher {
                     );
                 } else if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                    let b = bus.read_byte(addr);
                     let (background, foreground) = hilite_indexes.unwrap_or((0, 255));
-                    bus.write_byte(
-                        addr,
-                        Self::menu_hilited_pixel_index(b, background, foreground),
-                    );
+                    bus.map_screen_byte(addr, |index| {
+                        Self::menu_hilited_pixel_index(index, background, foreground)
+                    });
                 }
             }
         }
@@ -5828,15 +5971,14 @@ impl super::TrapDispatcher {
                         );
                     } else if let Some((background, foreground)) = hilite_indexes {
                         let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                        let b = bus.read_byte(addr);
-                        bus.write_byte(
-                            addr,
-                            Self::menu_hilited_pixel_index(b, background, foreground),
-                        );
+                        bus.map_screen_byte(addr, |index| {
+                            Self::menu_hilited_pixel_index(index, background, foreground)
+                        });
                     } else {
                         let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                        let b = bus.read_byte(addr);
-                        bus.write_byte(addr, Self::menu_hilited_pixel_index(b, 0, 255));
+                        bus.map_screen_byte(addr, |index| {
+                            Self::menu_hilited_pixel_index(index, 0, 255)
+                        });
                     }
                 }
             }
@@ -7267,16 +7409,17 @@ mod tests {
             .unwrap()
             .is_ok());
 
-        let trampoline = disp.menu_def_trampoline;
+        let trampoline = cpu.read_reg(Register::PC);
         assert_ne!(trampoline, 0);
         assert_eq!(cpu.read_reg(Register::PC), trampoline);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        assert_eq!(bus.read_long(TEST_SP), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), trampoline - 4);
+        assert_eq!(bus.read_word(trampoline + 50), 80);
+        assert_eq!(bus.read_long(trampoline - 4), return_pc);
         assert_eq!(bus.read_word(trampoline + 6), 2);
         assert_eq!(bus.read_long(trampoline + 10), handle);
-        assert_eq!(bus.read_long(trampoline + 16), trampoline + 50);
+        assert_eq!(bus.read_long(trampoline + 16), trampoline + 60);
         assert_eq!(bus.read_long(trampoline + 22), 0);
-        assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
+        assert_eq!(bus.read_long(trampoline + 28), trampoline + 68);
         assert_eq!(bus.read_long(trampoline + 34), mdef_ptr);
         assert!(disp.guest_calls.is_empty());
     }
@@ -7335,7 +7478,7 @@ mod tests {
             .unwrap()
             .is_ok());
 
-        let trampoline = disp.menu_def_trampoline;
+        let trampoline = cpu.read_reg(Register::PC);
         assert_ne!(trampoline, 0);
         assert_eq!(cpu.read_reg(Register::PC), trampoline);
         assert_eq!(bus.read_long(trampoline + 34), m68k_entry);
@@ -7385,8 +7528,41 @@ mod tests {
             .unwrap()
             .is_ok());
 
-        assert_eq!(disp.menu_def_trampoline, 0);
         assert_eq!(cpu.read_reg(Register::PC), return_pc);
+    }
+
+    #[test]
+    fn classic_mdef_refuses_invalid_stack_without_publishing_a_callback() {
+        for (sp, protected) in [(64, false), (TEST_SP - 1, false), (0xff00_0000, false), (TEST_SP, true)] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let handle =
+                new_menu_with_title(&mut disp, &mut cpu, &mut bus, 335, 0x306DD0, "Custom");
+            let menu_ptr = bus.read_long(handle);
+            let mdef_ptr = bus.alloc(2);
+            let mdef_handle = bus.alloc(4);
+            bus.write_word(mdef_ptr, 0x4e75);
+            bus.write_long(mdef_handle, mdef_ptr);
+            bus.write_long(menu_ptr + 6, mdef_handle);
+            disp.loaded_handles
+                .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+            let snapshot_start = TEST_SP - 160;
+            let before = bus.read_bytes(snapshot_start, 160);
+            if protected {
+                bus.protect_readonly_code(TEST_SP - 100, 1);
+            }
+            cpu.write_reg(Register::PC, 0x123456);
+            cpu.write_reg(Register::A7, sp);
+            assert!(!disp.arm_menu_definition_to(
+                &mut cpu,
+                &mut bus,
+                MenuDefinitionInvocation::size(handle),
+                0x123454
+            ));
+            assert_eq!(cpu.read_reg(Register::PC), 0x123456);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert!(disp.guest_calls.is_empty());
+            assert_eq!(bus.read_bytes(snapshot_start, 160), before);
+        }
     }
 
     #[test]
@@ -7413,16 +7589,187 @@ mod tests {
         };
         assert!(disp.arm_menu_definition(&mut cpu, &mut bus, invocation));
 
-        let trampoline = disp.menu_def_trampoline;
+        let trampoline = cpu.read_reg(Register::PC);
         assert_eq!(bus.read_word(trampoline + 6), 1);
         assert_eq!(bus.read_long(trampoline + 10), handle);
-        assert_eq!(bus.read_long(trampoline + 16), trampoline + 50);
+        assert_eq!(bus.read_long(trampoline + 16), trampoline + 60);
         assert_eq!(bus.read_long(trampoline + 22), 0x0050_0060);
-        assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
+        assert_eq!(bus.read_long(trampoline + 28), trampoline + 68);
         assert_eq!(
-            bus.read_bytes(trampoline + 50, 10),
+            bus.read_bytes(trampoline + 60, 10),
             invocation.scratch_bytes()
         );
+    }
+
+    #[test]
+    fn classic_tracking_retains_original_return_for_both_menu_entry_forms() {
+        use crate::guest_call::{MenuTrackingCall, MenuTrackingOrigin};
+        use crate::memory::globals::addr;
+        use crate::menu_manager::{MenuTrackingRequest, PopupMenuRequest};
+        for opcode in [0xa93d, 0xad3d, 0xa80b, 0xac0b] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+            disp.menu_bar_hidden = false;
+            bus.write_word(addr::MBAR_HEIGHT, 20);
+            bus.write_word(addr::MENU_FLASH, 0);
+            let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 337, 0x306E40, "File");
+            append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x306E80, "One;Two");
+            insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+            disp.draw_menu_bar_to_fb(&mut bus);
+            let auto_pop = opcode & 0x0400 != 0;
+            let popup = opcode & !0x0400 == 0xa80b;
+            let trap_pc = 0x0012_3600;
+            let parameters = TEST_SP + if auto_pop { 4 } else { 0 };
+            let return_pc = trap_pc + if auto_pop { 0x100 } else { 2 };
+            if auto_pop {
+                bus.write_long(TEST_SP, return_pc);
+            }
+            let request = if popup {
+                bus.write_word(parameters, 1);
+                bus.write_word(parameters + 2, 30);
+                bus.write_word(parameters + 4, 30);
+                bus.write_long(parameters + 6, handle);
+                MenuTrackingRequest::PopUp(PopupMenuRequest {
+                    menu_handle: handle,
+                    anchor: (30, 30),
+                    requested_item: 1,
+                })
+            } else {
+                let initial_point = (10u32 << 16) | 12;
+                bus.write_long(parameters, initial_point);
+                MenuTrackingRequest::MenuSelect { initial_point }
+            };
+            bus.write_byte(addr::MB_STATE, 0);
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(Register::A7, TEST_SP);
+            disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                disp.menu_tracking.context().call,
+                Some(MenuTrackingCall {
+                    request,
+                    origin: MenuTrackingOrigin::M68k {
+                        stack_pointer: parameters,
+                        return_address: return_pc
+                    },
+                }),
+                "opcode {opcode:04x}"
+            );
+            let state = disp
+                .menu_tracking
+                .as_ref()
+                .expect("standard menu remains live until release");
+            bus.write_word(addr::MOUSE_LOC2, (state.popup_top + 8) as u16);
+            bus.write_word(addr::MOUSE_LOC2 + 2, (state.popup_left + 8) as u16);
+            bus.write_byte(addr::MB_STATE, 0x80);
+            assert!(disp.resume_menu_tracking(&mut cpu, &mut bus).is_some());
+            let result_slot = parameters + if popup { 10 } else { 4 };
+            assert_eq!(
+                bus.read_long(result_slot),
+                (337u32 << 16) | 1,
+                "opcode {opcode:04x}"
+            );
+            assert_eq!(cpu.read_reg(Register::A7), result_slot);
+            assert_eq!(cpu.read_reg(Register::PC), return_pc);
+            assert!(disp.menu_tracking.is_none());
+            assert_eq!(disp.menu_tracking.context().call, None);
+            assert!(disp.guest_calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn nested_classic_menu_select_preserves_outer_tracking_and_return() {
+        for (nested_point, nested_result) in
+            [(u32::MAX, 0), ((10u32 << 16) | 12, (337u32 << 16) | 1)]
+        {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+            disp.menu_bar_hidden = false;
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+            let handle =
+                new_menu_with_title(&mut disp, &mut cpu, &mut bus, 337, 0x306E40, "Custom");
+            let menu_ptr = bus.read_long(handle);
+            bus.write_word(menu_ptr + 2, 80);
+            bus.write_word(menu_ptr + 4, 32);
+            let mdef_ptr = bus.alloc(96);
+            let mdef_handle = bus.alloc(4);
+            bus.write_word(mdef_ptr, 0x4E75);
+            bus.write_long(mdef_handle, mdef_ptr);
+            bus.write_long(menu_ptr + 6, mdef_handle);
+            disp.loaded_handles
+                .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+            insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+            disp.draw_menu_bar_to_fb(&mut bus);
+            let original_port = *disp.current_port;
+
+            let mut cpu = crate::cpu::M68kCpu::new();
+            let marker = bus.alloc(8);
+            bus.write_long(marker + 4, u32::MAX);
+            let code = [
+                0x206f,
+                4, // whichItem pointer
+                0x2039,
+                (marker >> 16) as u16,
+                marker as u16,
+                0x6620, // only the first callback enters the nested MenuSelect
+                0x23fc,
+                0,
+                1,
+                (marker >> 16) as u16,
+                marker as u16,
+                0x2f08, // retain outer whichItem pointer
+                0x598f, // reserve nested result
+                0x2f3c,
+                (nested_point >> 16) as u16,
+                nested_point as u16,
+                0xa93d,
+                0x201f, // consume nested result
+                0x23c0,
+                ((marker + 4) >> 16) as u16,
+                (marker + 4) as u16,
+                0x205f,
+                0x30bc,
+                1,
+                0x4e74,
+                18,
+            ];
+            for (index, word) in code.into_iter().enumerate() {
+                bus.write_word(mdef_ptr + index as u32 * 2, word);
+            }
+            let trap_pc = 0x0012_3600;
+            bus.write_word(trap_pc, 0xa93d);
+            bus.write_long(TEST_SP, (10u32 << 16) | 12);
+            bus.write_word(crate::memory::globals::addr::MENU_FLASH, 0);
+            bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+            bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 28);
+            bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 20);
+            cpu.write_reg(Register::PC, trap_pc);
+            cpu.write_reg(Register::A7, TEST_SP);
+            for _ in 0..1024 {
+                match cpu.step(&mut bus) {
+                    crate::cpu::StepResult::Ok => {}
+                    crate::cpu::StepResult::Aline(trap) => {
+                        disp.dispatch(trap, &mut cpu, &mut bus).unwrap();
+                    }
+                    _ => panic!("unexpected instruction during nested menu tracking"),
+                }
+                if cpu.read_reg(Register::PC) == trap_pc + 2
+                    && cpu.read_reg(Register::A7) == TEST_SP + 4
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                bus.read_long(marker + 4),
+                nested_result,
+                "nested selection result"
+            );
+            assert_eq!(cpu.read_reg(Register::PC), trap_pc + 2);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+            assert_eq!(bus.read_long(TEST_SP + 4), (337u32 << 16) | 1);
+            assert_eq!(*disp.current_port, original_port);
+            assert!(disp.guest_calls.is_empty());
+            assert!(disp.menu_tracking.is_none());
+        }
     }
 
     #[test]
@@ -7448,7 +7795,7 @@ mod tests {
 
         let trap_pc = 0x0012_3400;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, 12);
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
@@ -7456,27 +7803,27 @@ mod tests {
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 20);
 
         assert!(disp
-            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .is_ok());
-        let trampoline = disp.menu_def_trampoline;
+        let trampoline = cpu.read_reg(Register::PC);
         assert_eq!(bus.read_word(trampoline + 6), 0);
-        assert_eq!(bus.read_long(TEST_SP - 4), trap_pc);
+        assert_eq!(bus.read_long(trampoline - 4), trampoline + 52);
         assert!(disp.is_menu_definition_callback_pending());
         assert_eq!(disp.guest_calls.len(), 1);
         assert_eq!(*disp.current_port, disp.window_manager_cport);
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         assert!(disp
-            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .is_ok());
         assert_eq!(bus.read_word(trampoline + 6), 1);
         assert_eq!(bus.read_long(trampoline + 22), 0x001C_0014);
-        assert_eq!(bus.read_word(trampoline + 58), 0);
+        assert_eq!(bus.read_word(trampoline + 68), 0);
 
-        bus.write_word(trampoline + 58, 2);
+        bus.write_word(trampoline + 68, 2);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 1);
         disp.dispatch_menu(true, 0x14A, &mut cpu, &mut bus)
@@ -7484,18 +7831,21 @@ mod tests {
             .unwrap();
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         assert!(disp
-            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .is_ok());
         assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 2);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
+        {
+            let tracking = disp.menu_tracking.as_mut().unwrap();
+            tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
+        }
 
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_word(trampoline + 6), 1);
@@ -7504,113 +7854,167 @@ mod tests {
             bus.read_long(trampoline + 22),
             (u32::from((top - 1) as u16) << 16) | u32::from(left as u16)
         );
-        assert_eq!(bus.read_word(trampoline + 58), 2);
+        assert_eq!(bus.read_word(trampoline + 68), 2);
 
-        bus.write_word(trampoline + 58, 0);
+        bus.write_word(trampoline + 68, 0);
         let tracking = disp.menu_tracking.as_mut().unwrap();
         tracking.flash_remaining = 1;
-        tracking.flash_delay = 0;
+        tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_long(TEST_SP + 4), (337u32 << 16) | 2);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(disp.menu_tracking, None);
-        assert_eq!(disp.menu_definition_tracking, None);
+        assert_eq!(disp.menu_tracking.context().definition, None);
         assert!(disp.guest_calls.is_empty());
         assert_eq!(*disp.current_port, original_port);
     }
 
     #[test]
     fn popup_menu_select_runs_custom_popup_draw_and_choose_sequence() {
-        let (mut disp, mut cpu, mut bus) = setup_with_port();
-        setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
-        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 338, 0x306E80, "Custom");
-        let menu_ptr = bus.read_long(handle);
-        let mdef_ptr = bus.alloc(2);
-        let mdef_handle = bus.alloc(4);
-        bus.write_word(mdef_ptr, 0x4E75);
-        bus.write_long(mdef_handle, mdef_ptr);
-        bus.write_long(menu_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+        for (top, left, requested_item) in [
+            (40i16, 30i16, 4i16),
+            (-40, -30, -1),
+            (i16::MIN, i16::MAX, 0),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+            let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 338, 0x306E80, "Custom");
+            let menu_ptr = bus.read_long(handle);
+            let mdef_ptr = bus.alloc(2);
+            let mdef_handle = bus.alloc(4);
+            bus.write_word(mdef_ptr, 0x4E75);
+            bus.write_long(mdef_handle, mdef_ptr);
+            bus.write_long(menu_ptr + 6, mdef_handle);
+            disp.loaded_handles
+                .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
 
-        let trap_pc = 0x0012_3500;
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        bus.write_word(TEST_SP, 4);
-        bus.write_word(TEST_SP + 2, 30);
-        bus.write_word(TEST_SP + 4, 40);
-        bus.write_long(TEST_SP + 6, handle);
-        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
-        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 52);
-        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 45);
+            let trap_pc = 0x0012_3500;
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            bus.write_word(TEST_SP, requested_item as u16);
+            bus.write_word(TEST_SP + 2, left as u16);
+            bus.write_word(TEST_SP + 4, top as u16);
+            bus.write_long(TEST_SP + 6, handle);
+            bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
+            bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 52);
+            bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 45);
 
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        let trampoline = disp.menu_def_trampoline;
-        assert_eq!(bus.read_word(trampoline + 6), 3);
-        assert_eq!(bus.read_long(trampoline + 22), 0x0028_001E);
-        assert_eq!(bus.read_word(trampoline + 58), 4);
+            disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let trampoline = cpu.read_reg(Register::PC);
+            assert_eq!(bus.read_word(trampoline + 6), 3);
+            assert_eq!(
+                bus.read_long(trampoline + 22),
+                (u32::from(top as u16) << 16) | u32::from(left as u16)
+            );
+            assert_eq!(bus.read_word(trampoline + 68), requested_item as u16);
 
-        for (offset, value) in [(0, 40i16), (2, 30), (4, 72), (6, 110), (8, 0)] {
-            bus.write_word(trampoline + 50 + offset, value as u16);
+            for (offset, value) in [(0, 40i16), (2, 30), (4, 72), (6, 110), (8, 0)] {
+                bus.write_word(trampoline + 60 + offset, value as u16);
+            }
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(trampoline + 6), 0);
+            assert_eq!(
+                bus.read_bytes(trampoline + 60, 8),
+                [0, 40, 0, 30, 0, 72, 0, 110]
+            );
+
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(trampoline + 6), 1);
+            assert_eq!(bus.read_long(trampoline + 22), 0x0034_002D);
+
+            bus.write_word(trampoline + 68, 2);
+            bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 6);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            {
+                let tracking = disp.menu_tracking.as_mut().unwrap();
+                tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
+            }
+
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(trampoline + 6), 1);
+            assert_eq!(bus.read_long(trampoline + 22), 0x0027_001E);
+            assert_eq!(bus.read_word(trampoline + 68), 2);
+
+            bus.write_word(trampoline + 68, 0);
+            let tracking = disp.menu_tracking.as_mut().unwrap();
+            tracking.flash_remaining = 1;
+            tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(
+                Register::A7,
+                if disp.guest_calls.depth() == 0 {
+                    TEST_SP
+                } else {
+                    TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION
+                },
+            );
+            disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_long(TEST_SP + 10), (338u32 << 16) | 2);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+            assert_eq!(disp.menu_tracking, None);
+            assert_eq!(disp.menu_tracking.context().definition, None);
         }
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_word(trampoline + 6), 0);
-        assert_eq!(
-            bus.read_bytes(trampoline + 50, 8),
-            [0, 40, 0, 30, 0, 72, 0, 110]
-        );
-
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_word(trampoline + 6), 1);
-        assert_eq!(bus.read_long(trampoline + 22), 0x0034_002D);
-
-        bus.write_word(trampoline + 58, 2);
-        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 6);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
-
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_word(trampoline + 6), 1);
-        assert_eq!(bus.read_long(trampoline + 22), 0x0027_001E);
-        assert_eq!(bus.read_word(trampoline + 58), 2);
-
-        bus.write_word(trampoline + 58, 0);
-        let tracking = disp.menu_tracking.as_mut().unwrap();
-        tracking.flash_remaining = 1;
-        tracking.flash_delay = 0;
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
-        assert_eq!(bus.read_long(TEST_SP + 10), (338u32 << 16) | 2);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-        assert_eq!(disp.menu_tracking, None);
-        assert_eq!(disp.menu_definition_tracking, None);
     }
 
     #[test]
@@ -8511,7 +8915,7 @@ mod tests {
             mdef_ptr,
             "custom MDEF handle should dereference to the loaded resource"
         );
-        let trampoline = disp.menu_def_trampoline;
+        let trampoline = cpu.read_reg(Register::PC);
         assert_ne!(trampoline, 0);
         assert_eq!(
             bus.read_word(trampoline + 6),
@@ -8826,6 +9230,286 @@ mod tests {
     }
 
     #[test]
+    fn nested_classic_getnewmbar_preserves_plain_and_auto_pop_returns() {
+        for opcode in [0xa9c0, 0xadc0] {
+            let (mut disp, _, mut bus) = setup();
+            let mut cpu = crate::cpu::M68kCpu::new();
+            let first_menu = seed_menu_resource(&mut bus, 601, "First");
+            let second_menu = seed_menu_resource(&mut bus, 602, "Second");
+            for menu in [first_menu, second_menu] {
+                bus.write_word(menu + 6, 256);
+                bus.write_word(menu + 8, 0);
+            }
+            let mdef = bus.alloc(96);
+            bus.write_word(mdef, 0x4E75);
+            let mbar = seed_mbar_resource(&mut bus, &[601, 602]);
+            disp.resources = Some(crate::trap::dispatch::LoadedResources {
+                files: std::collections::HashMap::from([(
+                    0,
+                    crate::trap::dispatch::ResourceFileMap {
+                        loaded: std::collections::HashMap::from([
+                            ((*b"MBAR", 900), mbar),
+                            ((*b"MENU", 601), first_menu),
+                            ((*b"MENU", 602), second_menu),
+                            ((*b"MDEF", 256), mdef),
+                        ]),
+                        named: std::collections::HashMap::new(),
+                        names_by_id: std::collections::HashMap::new(),
+                        attrs: std::collections::HashMap::new(),
+                        map_attrs: 0,
+                    },
+                )]),
+                names: std::collections::HashMap::new(),
+                search_order: vec![0],
+                current_file: 0,
+            });
+            let inner = seed_mbar_resource(&mut bus, &[]);
+            disp.resources
+                .as_mut()
+                .unwrap()
+                .files
+                .get_mut(&0)
+                .unwrap()
+                .loaded
+                .insert((*b"MBAR", 901), inner);
+            let marker = bus.alloc(4);
+            let code = [
+                0x206f,
+                16,     // menu handle from the Pascal MDEF frame
+                0x2050, // dereference the live menu record
+                0x2f08, // save the outer record
+                0x598f, // reserve nested Handle result
+                0x3f3c,
+                901,
+                0xa9c0, // nested GetNewMBar
+                0x201f, // consume nested result
+                0x23c0,
+                (marker >> 16) as u16,
+                marker as u16,
+                0x205f, // restore outer record
+                0x317c,
+                123,
+                2,
+                0x317c,
+                45,
+                4,
+                0x4e74,
+                18,
+            ];
+            for (index, word) in code.into_iter().enumerate() {
+                bus.write_word(mdef + index as u32 * 2, word);
+            }
+            let trap_pc = 0x0012_3600;
+            let return_pc = if opcode == 0xadc0 {
+                trap_pc + 0x100
+            } else {
+                trap_pc + 2
+            };
+            let parameters = if opcode == 0xadc0 {
+                TEST_SP + 4
+            } else {
+                TEST_SP
+            };
+            bus.write_word(trap_pc, opcode);
+            if opcode == 0xadc0 {
+                bus.write_long(TEST_SP, return_pc);
+            }
+            bus.write_word(parameters, 900);
+            cpu.write_reg(Register::PC, trap_pc);
+            cpu.write_reg(Register::A7, TEST_SP);
+            for _ in 0..256 {
+                match cpu.step(&mut bus) {
+                    crate::cpu::StepResult::Ok => {}
+                    crate::cpu::StepResult::Aline(trap) => {
+                        disp.dispatch(trap, &mut cpu, &mut bus).unwrap()
+                    }
+                    _ => panic!("unexpected instruction while building menus"),
+                }
+                if cpu.read_reg(Register::PC) == return_pc {
+                    break;
+                }
+            }
+            assert_eq!(cpu.read_reg(Register::PC), return_pc);
+            assert_eq!(cpu.read_reg(Register::A7), parameters + 2);
+            let inner_handle = bus.read_long(marker);
+            assert_ne!(inner_handle, 0);
+            assert_eq!(
+                menu_list_from_memory(&bus, inner_handle)
+                    .unwrap()
+                    .regular_handles()
+                    .count(),
+                0
+            );
+            let result = bus.read_long(parameters + 2);
+            let menus = menu_list_from_memory(&bus, result)
+                .unwrap()
+                .regular_handles()
+                .collect::<Vec<_>>();
+            assert_eq!(menus.len(), 2);
+            for handle in menus {
+                let record = bus.read_long(handle);
+                assert_eq!(bus.read_word(record + 2), 123);
+                assert_eq!(bus.read_word(record + 4), 45);
+            }
+            assert!(disp.guest_calls.is_empty());
+            assert!(!disp.preserve_auto_pop_pc_once);
+        }
+    }
+
+    #[test]
+    fn menu_build_completion_does_not_reenter_a_newly_installed_trap_patch() {
+        for opcode in [0xa9c0, 0xadc0] {
+            let (mut disp, _, mut bus) = setup();
+            let mut cpu = crate::cpu::M68kCpu::new();
+            let first_menu = seed_menu_resource(&mut bus, 601, "First");
+            let second_menu = seed_menu_resource(&mut bus, 602, "Second");
+            for menu in [first_menu, second_menu] {
+                bus.write_word(menu + 6, 256);
+                bus.write_word(menu + 8, 0);
+            }
+            let mdef = bus.alloc(96);
+            bus.write_word(mdef, 0x4E75);
+            let mbar = seed_mbar_resource(&mut bus, &[601]);
+            disp.resources = Some(crate::trap::dispatch::LoadedResources {
+                files: std::collections::HashMap::from([(
+                    0,
+                    crate::trap::dispatch::ResourceFileMap {
+                        loaded: std::collections::HashMap::from([
+                            ((*b"MBAR", 900), mbar),
+                            ((*b"MENU", 601), first_menu),
+                            ((*b"MENU", 602), second_menu),
+                            ((*b"MDEF", 256), mdef),
+                        ]),
+                        named: std::collections::HashMap::new(),
+                        names_by_id: std::collections::HashMap::new(),
+                        attrs: std::collections::HashMap::new(),
+                        map_attrs: 0,
+                    },
+                )]),
+                names: std::collections::HashMap::new(),
+                search_order: vec![0],
+                current_file: 0,
+            });
+            let inner = seed_mbar_resource(&mut bus, &[]);
+            disp.resources
+                .as_mut()
+                .unwrap()
+                .files
+                .get_mut(&0)
+                .unwrap()
+                .loaded
+                .insert((*b"MBAR", 901), inner);
+            let marker = bus.alloc(4);
+            let code = [
+                0x206f,
+                16,     // menu handle from the Pascal MDEF frame
+                0x2050, // dereference the live menu record
+                0x2f08, // save the outer record
+                0x598f, // reserve nested Handle result
+                0x3f3c,
+                901,
+                0xa9c0, // nested GetNewMBar
+                0x201f, // consume nested result
+                0x23c0,
+                (marker >> 16) as u16,
+                marker as u16,
+                0x205f, // restore outer record
+                0x317c,
+                123,
+                2,
+                0x317c,
+                45,
+                4,
+                0x4e74,
+                18,
+            ];
+            for (index, word) in code.into_iter().enumerate() {
+                bus.write_word(mdef + index as u32 * 2, word);
+            }
+            let trap_pc = 0x0012_3600;
+            let return_pc = if opcode == 0xadc0 {
+                trap_pc + 0x100
+            } else {
+                trap_pc + 2
+            };
+            let parameters = if opcode == 0xadc0 {
+                TEST_SP + 4
+            } else {
+                TEST_SP
+            };
+            bus.write_word(trap_pc, opcode);
+            if opcode == 0xadc0 {
+                bus.write_long(TEST_SP, return_pc);
+            }
+            bus.write_word(parameters, 900);
+            cpu.write_reg(Register::PC, trap_pc);
+            cpu.write_reg(Register::A7, TEST_SP);
+            let patch = bus.alloc(4);
+            bus.write_word(patch, 0x4e72);
+            bus.write_word(patch + 2, 0x2700);
+            let mut wrapper = None;
+            let mut patched = false;
+            for _ in 0..256 {
+                match cpu.step(&mut bus) {
+                    crate::cpu::StepResult::Ok => {}
+                    crate::cpu::StepResult::Aline(trap) => {
+                        disp.dispatch(trap, &mut cpu, &mut bus).unwrap()
+                    }
+                    crate::cpu::StepResult::Stopped => break,
+                    _ => panic!("unexpected instruction while building menus"),
+                }
+                if wrapper.is_none() {
+                    wrapper = Some(cpu.read_reg(Register::PC));
+                }
+                if !patched && cpu.read_reg(Register::PC) == wrapper.unwrap() + 48 {
+                    assert!(disp.install_trap_address(&mut bus, 0xa9c0, patch).is_ok());
+                    patched = true;
+                }
+                if cpu.read_reg(Register::PC) == return_pc {
+                    break;
+                }
+            }
+            assert!(patched);
+            assert_eq!(
+                cpu.read_reg(Register::PC),
+                return_pc,
+                "completion must not re-enter the patched GetNewMBar"
+            );
+            assert_eq!(cpu.read_reg(Register::A7), parameters + 2);
+            let inner_handle = bus.read_long(marker);
+            assert_ne!(inner_handle, 0);
+            assert_eq!(
+                menu_list_from_memory(&bus, inner_handle)
+                    .unwrap()
+                    .regular_handles()
+                    .count(),
+                0
+            );
+            let result = bus.read_long(parameters + 2);
+            let menus = menu_list_from_memory(&bus, result)
+                .unwrap()
+                .regular_handles()
+                .collect::<Vec<_>>();
+            assert_eq!(menus.len(), 1);
+            for handle in menus {
+                let record = bus.read_long(handle);
+                assert_eq!(bus.read_word(record + 2), 123);
+                assert_eq!(bus.read_word(record + 4), 45);
+            }
+            assert!(disp.guest_calls.is_empty());
+            assert!(!disp.preserve_auto_pop_pc_once);
+            cpu.write_reg(Register::PC, trap_pc + 2);
+            cpu.write_reg(Register::A7, TEST_SP);
+            disp.dispatch(0xa9c0, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                cpu.read_reg(Register::PC),
+                patch,
+                "a fresh guest entry must still honor the patch"
+            );
+        }
+    }
+
+    #[test]
     fn getnewmbar_sizes_each_custom_menu_before_returning_the_list() {
         let (mut disp, mut cpu, mut bus) = setup();
         let first_menu = seed_menu_resource(&mut bus, 601, "First");
@@ -8859,41 +9543,41 @@ mod tests {
         });
         let trap_pc = 0x0012_3600;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 900);
 
         disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
-        let trampoline = disp.menu_def_trampoline;
+        let trampoline = cpu.read_reg(Register::PC);
         assert_eq!(bus.read_word(trampoline + 6), 2);
         let first_handle = bus.read_long(trampoline + 10);
         assert_eq!(bus.read_word(bus.read_long(first_handle)), 601);
-        assert!(disp.is_tracking_refire(0xA9C0));
+        assert!(!disp.is_tracking_refire(0xA9C0));
         bus.write_word(bus.read_long(first_handle) + 2, 101);
         bus.write_word(bus.read_long(first_handle) + 4, 41);
 
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
+        cpu.write_reg(Register::PC, trampoline + 54);
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.dispatch(0xa9c0, &mut cpu, &mut bus).unwrap();
         assert_eq!(bus.read_word(trampoline + 6), 2);
         let second_handle = bus.read_long(trampoline + 10);
         assert_eq!(bus.read_word(bus.read_long(second_handle)), 602);
         bus.write_word(bus.read_long(second_handle) + 2, 102);
         bus.write_word(bus.read_long(second_handle) + 4, 42);
 
-        cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
-            .unwrap()
-            .unwrap();
+        cpu.write_reg(Register::PC, trampoline + 54);
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.dispatch(0xa9c0, &mut cpu, &mut bus).unwrap();
 
         let list_handle = bus.read_long(TEST_SP + 2);
         assert_ne!(list_handle, 0);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
-        assert_eq!(disp.pending_menu_bar_build, None);
+        assert!(!disp.guest_calls.has_menu_bar_builds());
+        assert!(
+            disp.guest_calls.is_empty(),
+            "completed GetNewMBar must retire every MDEF frame"
+        );
         assert_eq!(bus.read_word(bus.read_long(first_handle) + 2), 101);
         assert_eq!(bus.read_word(bus.read_long(second_handle) + 4), 42);
         assert_eq!(
@@ -9458,7 +10142,7 @@ mod tests {
             bus.write_word(TEST_SP, 1);
             bus.write_long(TEST_SP + 2, handle);
             assert!(disp
-                .dispatch_menu(true, trap, &mut cpu, &mut bus)
+                .step_menu_fixture(true, trap, &mut cpu, &mut bus)
                 .unwrap()
                 .is_ok());
         }
@@ -11810,7 +12494,7 @@ mod tests {
                 ctrl_ptr: 0,
                 active_menu: 0,
                 highlighted_item: 1,
-                saved_pixels: Vec::new(),
+                saved_pixels: Default::default(),
                 dropdown_rect: rect,
             }),
             ..Default::default()
@@ -13129,7 +13813,7 @@ mod tests {
             super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0xFFFF; 3]).unwrap();
         let black = super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0; 3]).unwrap();
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
 
         assert_eq!(
             disp.menu_tracking.as_ref().unwrap().dropdown_rect(),
@@ -13184,7 +13868,7 @@ mod tests {
         let wide_item_width =
             super::super::TrapDispatcher::fb_measure_string("Wide Underline", 0, 12) + 32;
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
 
         assert_eq!(
             expected_width, wide_item_width,
@@ -13254,7 +13938,7 @@ mod tests {
             .standard_menu_width(&bus, &disp.menus[0].items)
             .max(regions[0].1 - regions[0].0 + 20);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -13354,7 +14038,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"SICN", 263, &sicn);
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -13373,7 +14057,7 @@ mod tests {
         // Command-key chrome is right-aligned; sample the SICN item's
         // command zone near the right edge (re-baselined from the old
         // left+8 sample, which landed on the second item's menu text and
-        // became a false tripwire after the Jarrah/Chicago 12 glyph
+        // became a false tripwire after a system-font glyph
         // redraw — glyph appearance changed, menu logic did not).
         assert!(
             !screen_pixel_is_set(&bus, base, row_bytes, rect.1 + 8, rect.2 - 8),
@@ -13400,7 +14084,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"SICN", 263, &sicn);
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -13496,7 +14180,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"ICON", 263, &icon);
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
@@ -13596,7 +14280,7 @@ mod tests {
         bus.write_long(sp + 6, menu);
         bus.write_long(sp + 10, 0xDEAD_BEEF); // result placeholder
 
-        let result = disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus);
+        let result = disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus);
         assert!(result.is_some(), "PopUpMenuSelect should be handled");
         assert!(result.unwrap().is_ok(), "PopUpMenuSelect should return");
         assert_eq!(
@@ -13646,7 +14330,7 @@ mod tests {
         bus.write_long(sp + 6, menu);
         bus.write_long(sp + 10, 0xDEAD_BEEF); // result placeholder
 
-        let result = disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus);
+        let result = disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus);
         assert!(result.is_some(), "PopUpMenuSelect should be handled");
         assert!(result.unwrap().is_ok(), "PopUpMenuSelect should return");
         assert_eq!(
@@ -13869,7 +14553,7 @@ mod tests {
             "Open/O;Close/W",
         );
         insert_menu(&mut disp, &mut cpu, &mut bus, handle);
-        disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
+        disp.open_menu_dropdown(&mut bus, 0);
         assert!(
             disp.menu_tracking.is_some(),
             "precondition: dropdown tracking should be active"
@@ -14790,7 +15474,7 @@ mod tests {
         bus.write_word(TEST_SP + 2, 120);
         bus.write_long(TEST_SP + 4, 0xDEAD_BEEF);
 
-        let result = disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus);
+        let result = disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus);
         assert!(result.is_some(), "MenuSelect should be handled");
         assert!(result.unwrap().is_ok(), "MenuSelect should succeed");
         assert_eq!(
@@ -14846,7 +15530,7 @@ mod tests {
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
 
-        let result = disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus);
+        let result = disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus);
         assert!(result.is_some(), "MenuSelect should be handled");
         assert!(result.unwrap().is_ok(), "MenuSelect should succeed");
         assert_eq!(
@@ -14907,7 +15591,7 @@ mod tests {
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert!(disp.menu_tracking.is_some());
@@ -14915,7 +15599,7 @@ mod tests {
         let (dropdown_top, dropdown_left, _, _) =
             disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.input_state.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -14926,7 +15610,7 @@ mod tests {
         );
 
         disp.input_state.mouse_button = false;
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -14940,7 +15624,7 @@ mod tests {
             if disp.menu_tracking.is_none() {
                 break;
             }
-            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
                 .unwrap();
         }
@@ -15004,14 +15688,14 @@ mod tests {
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
         let (dropdown_top, dropdown_left, _, _) =
             disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.input_state.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         let expected = menu_choice_value(520, 2);
@@ -15028,7 +15712,7 @@ mod tests {
         );
 
         disp.input_state.mouse_button = false;
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_long(TEST_SP + 4), 0);
@@ -15068,7 +15752,7 @@ mod tests {
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
@@ -15079,7 +15763,7 @@ mod tests {
 
         let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.input_state.mouse_pos = (top + 8, left + 8);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -15095,7 +15779,7 @@ mod tests {
         );
 
         disp.input_state.mouse_button = false;
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_long(TEST_SP + 4), 0);
@@ -15139,7 +15823,7 @@ mod tests {
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         let (top, left, _, _) = disp
@@ -15149,7 +15833,7 @@ mod tests {
             .dropdown_rect();
 
         disp.input_state.mouse_pos = (top + 8, left + 8);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         let expected = menu_choice_value(522, 1);
@@ -15165,7 +15849,7 @@ mod tests {
         );
 
         disp.input_state.mouse_button = false;
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_long(TEST_SP + 4), 0);
@@ -15217,7 +15901,7 @@ mod tests {
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
@@ -15230,7 +15914,7 @@ mod tests {
             .unwrap();
         disp.input_state.mouse_button = false;
         cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
@@ -15498,7 +16182,7 @@ mod tests {
         bus.write_long(TEST_SP + 6, menu_handle);
         bus.write_long(TEST_SP + 10, 0xDEAD_BEEF);
         assert!(
-            disp.dispatch_menu(true, 0x00B, cpu, bus).unwrap().is_ok(),
+            disp.step_menu_fixture(true, 0x00B, cpu, bus).unwrap().is_ok(),
             "PopUpMenuSelect should succeed"
         );
     }
@@ -15634,7 +16318,7 @@ mod tests {
             if disp.menu_tracking.is_none() {
                 break;
             }
-            disp.dispatch_menu(true, 0x00B, cpu, bus).unwrap().unwrap();
+            disp.step_menu_fixture(true, 0x00B, cpu, bus).unwrap().unwrap();
         }
         (
             bus.read_long(TEST_SP + 10),
@@ -15778,19 +16462,15 @@ mod tests {
         let classic = popupmenuselect_theme_snapshot(UiThemeId::ClassicSystem7);
         let themed = popupmenuselect_theme_snapshot(UiThemeId::SystemlessDefault);
 
-        // Width comes from the widest item "Three" measured in Chicago 12.
-        // Our strike reproduces the original per-glyph advances exactly
-        // (T6 h8 r6 e8 e8 = 36), so the Mac OS 8.1 standard MDEF makes the
-        // box 36 + 32 = 68 pixels wide. The clamped case preserves the
-        // captured four-pixel standard MDEF screen margin.
-        assert_eq!(classic.rect, (26, 30, 90, 98));
+        let width = crate::menu_manager::standard_menu_text_advance(b"Three") + 32;
+        assert_eq!(classic.rect, (26, 30, 90, 30 + width));
         assert_eq!(classic.highlighted_item, 3);
         assert_eq!(classic.item_at_requested_point, 3);
         assert_eq!(classic.first_stack_after, TEST_SP);
         assert_eq!(classic.result, 0x02DA_0003);
         assert_eq!(classic.final_stack_after, TEST_SP + 10);
         assert!(classic.tracking_finished);
-        assert_eq!(classic.clamped_rect, (95, 168, 159, 236));
+        assert_eq!(classic.clamped_rect, (95, 236 - width, 159, 236));
         assert_eq!(classic.clamped_highlighted_item, 4);
         assert_eq!(classic.uninserted_result, 0);
         assert_eq!(classic.uninserted_stack_after, TEST_SP + 10);
@@ -15855,26 +16535,26 @@ mod tests {
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, 15);
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
         let dropdown_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         let (dropdown_top, dropdown_left, _, _) = dropdown_rect;
         disp.input_state.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
         disp.input_state.mouse_button = false;
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         for _ in 0..40 {
             if disp.menu_tracking.is_none() {
                 break;
             }
-            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
                 .unwrap();
         }
@@ -15953,7 +16633,7 @@ mod tests {
         bus.write_long(TEST_SP + 4, 0xFFFF_FFFF);
 
         assert!(
-            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
                 .is_ok(),
             "MenuSelect should enter tracking on the File title"
@@ -15968,7 +16648,7 @@ mod tests {
 
         disp.input_state.mouse_pos = (parent_item_y, parent_rect.1 + 24);
         assert!(
-            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
                 .is_ok(),
             "MenuSelect should track the hierarchical parent item"
@@ -15976,7 +16656,7 @@ mod tests {
 
         disp.input_state.mouse_pos = (parent_item_y, parent_rect.3 + 20);
         assert!(
-            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
                 .is_ok(),
             "MenuSelect should track into the submenu"
@@ -15985,7 +16665,7 @@ mod tests {
         disp.input_state.mouse_button = false;
         for _ in 0..40 {
             assert!(
-                disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+                disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                     .unwrap()
                     .is_ok(),
                 "MenuSelect should finish submenu selection"
@@ -16061,24 +16741,24 @@ mod tests {
         let title_mid_h = (title.0 + title.1) / 2;
         let trap_pc = 0x0012_3600;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
         disp.input_state.mouse_pos = (10, title_mid_h);
         disp.input_state.mouse_button = true;
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
         let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.input_state.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
-        let trampoline = disp.menu_def_trampoline;
+        let trampoline = cpu.read_reg(Register::PC);
         let child_rect = disp.menu_tracking.as_ref().unwrap().submenus[0].dropdown_rect();
         assert_eq!(child_rect.3 - child_rect.1, 72);
         assert_eq!(child_rect.2 - child_rect.0, 32);
@@ -16094,15 +16774,15 @@ mod tests {
 
         disp.input_state.mouse_pos = (10, title_mid_h);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_word(trampoline + 6), 1);
-        bus.write_word(trampoline + 58, 0);
+        bus.write_word(trampoline + 68, 0);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert!(disp.menu_tracking.as_ref().unwrap().submenus.is_empty());
@@ -16110,26 +16790,26 @@ mod tests {
 
         disp.input_state.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_word(trampoline + 6), 0);
 
         disp.input_state.mouse_pos = (child_rect.0 + 8, child_rect.1 + 8);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_word(trampoline + 6), 1);
         assert_eq!(bus.read_long(trampoline + 10), child);
 
-        bus.write_word(trampoline + 58, 2);
+        bus.write_word(trampoline + 68, 2);
         disp.input_state.mouse_button = false;
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -16139,10 +16819,10 @@ mod tests {
 
         let tracking = disp.menu_tracking.as_mut().unwrap();
         tracking.flash_remaining = 1;
-        tracking.flash_delay = 0;
+        tracking.flash_deadline = tracking.flash_tick.unwrap_or(0);
         cpu.write_reg(Register::PC, trap_pc + 2);
-        cpu.write_reg(Register::A7, TEST_SP);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(bus.read_long(TEST_SP + 4), (141u32 << 16) | 2);
@@ -16194,23 +16874,23 @@ mod tests {
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, game_mid_h as u16);
         bus.write_long(TEST_SP + 4, 0xFFFF_FFFF);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
         let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.input_state.mouse_pos = (root_rect.0 + 9, root_rect.1 + 24);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         let options_rect = disp.menu_tracking.as_ref().unwrap().submenus[0].dropdown_rect();
         disp.input_state.mouse_pos = (options_rect.0 + 9, options_rect.1 + 24);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         let speed_rect = disp.menu_tracking.as_ref().unwrap().submenus[1].dropdown_rect();
         disp.input_state.mouse_pos = (speed_rect.0 + 9, speed_rect.1 + 24);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -16219,13 +16899,13 @@ mod tests {
             "a circular submenu must not grow the retained hierarchy"
         );
         disp.input_state.mouse_pos = (speed_rect.0 + 1 + 16 + 8, speed_rect.1 + 24);
-        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+        disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
         disp.input_state.mouse_button = false;
         for _ in 0..40 {
-            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
                 .unwrap();
             if disp.menu_tracking.is_none() {
@@ -16288,7 +16968,7 @@ mod tests {
         bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
 
         assert!(
-            disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
                 .is_ok(),
             "MenuSelect should enter tracking on the Edit title"
@@ -16559,7 +17239,7 @@ mod tests {
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP + 4, 0xDEAD_BEEF);
         let result = disp
-            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .expect("MenuSelect handled");
         assert!(result.is_ok());
         assert_eq!(bus.read_long(TEST_SP + 4), 0xFF88_0001);

@@ -1,6 +1,7 @@
 //! Architecture-neutral Menu Manager records and list operations.
 
 use crate::mac_roman::decode_mac_roman;
+use crate::memory::SavedPixels;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
 use std::cell::RefCell;
@@ -20,7 +21,7 @@ pub(crate) fn menu_flash_phase_count(count: u16) -> u32 {
     u32::from(count) * 2
 }
 
-pub(crate) const STANDARD_MENU_FLASH_PHASE_DELAY: u8 = 3;
+pub(crate) const STANDARD_MENU_FLASH_PHASE_DELAY: u32 = 3;
 
 /// Horizontal origin of the first standard menu title's logical hit cell.
 pub(crate) const STANDARD_MENU_BAR_FIRST_TITLE_LEFT: i16 = 11;
@@ -168,18 +169,48 @@ pub(crate) struct MenuBarBuild<Handle> {
     result_handle: Option<Handle>,
     menu_handles: Vec<Handle>,
     next_menu: usize,
+    completion: Option<MenuDefinitionCompletion>,
 }
 
-impl<Handle: Copy> MenuBarBuild<Handle> {
+impl<Handle: Copy + PartialEq> MenuBarBuild<Handle> {
     pub(crate) fn new(result_handle: Handle, menu_handles: Vec<Handle>) -> Self {
         Self {
             result_handle: Some(result_handle),
             menu_handles,
             next_menu: 0,
+            completion: None,
         }
     }
 
+    pub(crate) fn bind_completion(&mut self, handle: Handle, completion: MenuDefinitionCompletion) {
+        if self.completion.is_none()
+            && self
+                .next_menu
+                .checked_sub(1)
+                .and_then(|index| self.menu_handles.get(index))
+                == Some(&handle)
+        {
+            self.completion = Some(completion);
+        }
+    }
+
+    /// Only this build's published, unconsumed callback receipt can resume it.
+    pub(crate) fn callback_ready(&self) -> bool {
+        self.completion.as_ref().is_some_and(|completion| {
+            matches!(
+                *completion.0.borrow(),
+                MenuDefinitionCompletionState::Ready(_)
+            )
+        })
+    }
+
     pub(crate) fn next_step(&mut self) -> Option<MenuBarBuildStep<Handle>> {
+        if let Some(completion) = self.completion.as_ref() {
+            // mSizeMsg publishes dimensions in the live menu record, not its
+            // rectangle/item arguments. The receipt gates callback retirement.
+            let _ = completion.take()?;
+            self.completion = None;
+        }
         if let Some(handle) = self.menu_handles.get(self.next_menu).copied() {
             self.next_menu += 1;
             Some(MenuBarBuildStep::Size(handle))
@@ -190,6 +221,10 @@ impl<Handle: Copy> MenuBarBuild<Handle> {
 }
 
 impl MenuDefinitionInvocation {
+    /// MyMenuDef is Pascal, has no result, and takes 2/4/4/4/4-byte parameters.
+    /// PowerPC System Software (1994), pp. 2-12--2-16.
+    pub(crate) const PASCAL_PROC_INFO: u32 = 0x0000_ff80;
+
     pub(crate) fn size(menu_handle: u32) -> Self {
         Self {
             message: MenuDefinitionMessage::Size,
@@ -232,19 +267,84 @@ impl MenuDefinitionInvocation {
     }
 }
 
+/// A single-use completion channel for one logical MDEF invocation.
+/// Cloning retains identity; it never duplicates a pending callback.
+#[derive(Clone, Debug)]
+pub(crate) struct MenuDefinitionCompletion(Rc<RefCell<MenuDefinitionCompletionState>>);
+
+#[derive(Debug)]
+enum MenuDefinitionCompletionState {
+    Pending,
+    Ready(Result<MenuDefinitionResult, ()>),
+    Consumed,
+}
+
+impl PartialEq for MenuDefinitionCompletion {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for MenuDefinitionCompletion {}
+
+impl MenuDefinitionCompletion {
+    pub(crate) fn pending() -> Self {
+        Self(Rc::new(RefCell::new(
+            MenuDefinitionCompletionState::Pending,
+        )))
+    }
+    pub(crate) fn take(&self) -> Option<Result<MenuDefinitionResult, ()>> {
+        let mut state = self.0.borrow_mut();
+        match std::mem::replace(&mut *state, MenuDefinitionCompletionState::Consumed) {
+            MenuDefinitionCompletionState::Ready(result) => Some(result),
+            MenuDefinitionCompletionState::Pending => {
+                *state = MenuDefinitionCompletionState::Pending;
+                None
+            }
+            MenuDefinitionCompletionState::Consumed => None,
+        }
+    }
+}
+
+/// Execution owns this operation and its allocation until the exact callback
+/// returns. Copy results before releasing guest storage or running more code.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MenuDefinitionOperation {
+    pub(crate) scratch: u32,
+    pub(crate) completion: MenuDefinitionCompletion,
+}
+
+impl MenuDefinitionOperation {
+    pub(crate) fn complete(self, memory: &mut crate::memory::GuestAddressSpace) {
+        let mut bytes = [0; 10];
+        let result = memory
+            .read_bytes_into(self.scratch, &mut bytes)
+            .map(|()| MenuDefinitionInvocation::decode_result(bytes))
+            .ok_or(());
+        self.complete_result(result);
+    }
+
+    pub(crate) fn complete_result(self, result: Result<MenuDefinitionResult, ()>) {
+        let mut state = self.completion.0.borrow_mut();
+        if matches!(*state, MenuDefinitionCompletionState::Pending) {
+            *state = MenuDefinitionCompletionState::Ready(result);
+        }
+    }
+}
+
 /// Architecture-neutral continuation for an application-defined MDEF.
 ///
 /// The Menu Manager owns the current rectangle, previous item, and callback
 /// ordering. CPU adapters only execute `pending_invocation` and return its
 /// two by-reference results. Macintosh Toolbox Essentials (1992),
 /// pp. 3-87--3-91 and 3-148--3-151.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MenuDefinitionTracking {
     menu_handle: u32,
     menu_rect: (i16, i16, i16, i16),
     which_item: i16,
     last_hit_point: Option<u32>,
     pending_invocation: Option<MenuDefinitionInvocation>,
+    completion: Option<MenuDefinitionCompletion>,
 }
 
 impl MenuDefinitionTracking {
@@ -254,6 +354,7 @@ impl MenuDefinitionTracking {
             menu_rect,
             which_item: 0,
             last_hit_point: None,
+            completion: None,
             pending_invocation: Some(MenuDefinitionInvocation {
                 message: MenuDefinitionMessage::Draw,
                 menu_handle,
@@ -270,6 +371,7 @@ impl MenuDefinitionTracking {
             menu_rect: (0, 0, 0, 0),
             which_item,
             last_hit_point: None,
+            completion: None,
             pending_invocation: Some(MenuDefinitionInvocation {
                 message: MenuDefinitionMessage::PopUp,
                 menu_handle,
@@ -280,8 +382,30 @@ impl MenuDefinitionTracking {
         }
     }
 
-    pub(crate) fn pending_invocation(self) -> Option<MenuDefinitionInvocation> {
+    pub(crate) fn pending_invocation(&self) -> Option<MenuDefinitionInvocation> {
         self.pending_invocation
+    }
+
+    pub(crate) fn bind_completion(
+        &mut self,
+        invocation: MenuDefinitionInvocation,
+        completion: MenuDefinitionCompletion,
+    ) {
+        if self.pending_invocation == Some(invocation) {
+            self.completion = Some(completion);
+        }
+    }
+
+    pub(crate) fn complete_callback(&mut self) -> Result<Option<MenuDefinitionMessage>, ()> {
+        let Some(result) = self
+            .completion
+            .as_ref()
+            .and_then(MenuDefinitionCompletion::take)
+        else {
+            return Ok(None);
+        };
+        self.completion = None;
+        Ok(self.complete_pending(result?))
     }
 
     pub(crate) fn complete_pending(
@@ -289,6 +413,7 @@ impl MenuDefinitionTracking {
         result: MenuDefinitionResult,
     ) -> Option<MenuDefinitionMessage> {
         let completed = self.pending_invocation.take()?;
+        self.completion = None;
         self.menu_rect = result.menu_rect;
         self.which_item = result.which_item;
         Some(completed.message)
@@ -325,7 +450,7 @@ impl MenuDefinitionTracking {
     /// contract unhighlights on an outside point and highlights on the saved
     /// selection point; repeated `mChooseMsg` calls produce the blink.
     /// Inside Macintosh Volume I (1985), p. I-366.
-    pub(crate) fn flash(&mut self, visible: bool) -> Option<MenuDefinitionInvocation> {
+    fn flash(&mut self, visible: bool) -> Option<MenuDefinitionInvocation> {
         if self.pending_invocation.is_some() {
             return None;
         }
@@ -359,15 +484,15 @@ impl MenuDefinitionTracking {
         Some(invocation)
     }
 
-    pub(crate) fn which_item(self) -> i16 {
+    pub(crate) fn which_item(&self) -> i16 {
         self.which_item
     }
 
-    pub(crate) fn menu_handle(self) -> u32 {
+    pub(crate) fn menu_handle(&self) -> u32 {
         self.menu_handle
     }
 
-    pub(crate) fn menu_rect(self) -> (i16, i16, i16, i16) {
+    pub(crate) fn menu_rect(&self) -> (i16, i16, i16, i16) {
         self.menu_rect
     }
 }
@@ -376,8 +501,8 @@ const MAX_MENU_ITEMS: usize = 1024;
 
 /// The public Menu Manager operation that owns an active tracking session.
 ///
-/// Guest ABI continuation details deliberately live in the architecture
-/// adapter rather than in this manager-owned state.
+/// Guest ABI continuation details live in the execution-owned menu root,
+/// separate from this manager's tracking policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MenuTrackingKind {
     MenuBar,
@@ -515,15 +640,14 @@ pub(crate) fn standard_menu_bar_title_baseline(
         + ascent
 }
 
-/// Align the replacement system-menu artwork to the standard title baseline.
+/// Center the system-menu artwork independently of the selected font metrics.
 pub(crate) fn standard_menu_bar_system_mark_top(
     menu_bar_height: i16,
-    ascent: i16,
-    descent: i16,
+    _ascent: i16,
+    _descent: i16,
 ) -> i16 {
-    standard_menu_bar_title_baseline(menu_bar_height, ascent, descent)
-        .saturating_sub(ascent)
-        .saturating_add(1)
+    let height = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS.len() as i16;
+    (menu_bar_height.saturating_sub(1).saturating_sub(height) / 2).max(0)
 }
 
 /// Result of one standard scrolling-menu pointer update.
@@ -678,8 +802,17 @@ pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) saved_width: i16,
     pub(crate) saved_height: i16,
     pub(crate) front_buffer: Surface,
-    pub(crate) saved_pixels: Vec<Pixel>,
+    pub(crate) saved_pixels: SavedPixels<Pixel>,
     pub(crate) item_appearances: Vec<Appearance>,
+}
+
+/// The next presentation or completion step of the shared release blink.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuFlashStep {
+    Inactive,
+    Wait,
+    Highlight(bool),
+    Complete(u32),
 }
 
 /// One retained Menu Manager tracking continuation.
@@ -701,12 +834,13 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     /// Application-defined item drawing and hit-testing for the root pane.
     pub(crate) definition: Option<MenuDefinitionTracking>,
     pub(crate) flash_remaining: u32,
-    pub(crate) flash_delay: u8,
+    pub(crate) flash_tick: Option<u32>,
+    pub(crate) flash_deadline: u32,
     pub(crate) flash_result: u32,
     pub(crate) saved_width: i16,
     pub(crate) saved_height: i16,
     pub(crate) front_buffer: Surface,
-    pub(crate) saved_pixels: Vec<Pixel>,
+    pub(crate) saved_pixels: SavedPixels<Pixel>,
     pub(crate) item_appearances: Vec<Appearance>,
     pub(crate) submenus: Vec<TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>,
 }
@@ -734,12 +868,13 @@ pub(crate) fn test_process_menu_tracking(menu_handle: u32) -> ProcessMenuTrackin
         highlighted_item: 1,
         definition: None,
         flash_remaining: 0,
-        flash_delay: 0,
+        flash_tick: None,
+        flash_deadline: 0,
         flash_result: 0,
         saved_width: 101,
         saved_height: 41,
         front_buffer: None,
-        saved_pixels: Vec::new(),
+        saved_pixels: Default::default(),
         item_appearances: Vec::new(),
         submenus: Vec::new(),
     }
@@ -853,7 +988,7 @@ pub(crate) trait TrackedMenuPaneView {
     fn saved_width(&self) -> i16;
     fn saved_height(&self) -> i16;
     fn front_buffer(&self) -> Self::Surface;
-    fn saved_pixels(&self) -> &[Self::Pixel];
+    fn saved_pixels(&self) -> &crate::memory::SavedPixels<Self::Pixel>;
     fn item_appearances(&self) -> &[Self::Appearance];
 }
 
@@ -894,7 +1029,7 @@ macro_rules! impl_tracked_menu_pane_view {
             fn front_buffer(&self) -> Self::Surface {
                 self.front_buffer
             }
-            fn saved_pixels(&self) -> &[Self::Pixel] {
+            fn saved_pixels(&self) -> &crate::memory::SavedPixels<Self::Pixel> {
                 &self.saved_pixels
             }
             fn item_appearances(&self) -> &[Self::Appearance] {
@@ -915,13 +1050,77 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
     /// complete the originating call immediately.
     pub(crate) fn begin_flash(&mut self, count: u16, result: u32) -> bool {
         self.flash_remaining = menu_flash_phase_count(count);
-        self.flash_delay = if self.flash_remaining == 0 {
+        self.flash_deadline = if self.flash_remaining == 0 {
             0
         } else {
-            STANDARD_MENU_FLASH_PHASE_DELAY
+            self.flash_tick
+                .unwrap_or(0)
+                .wrapping_add(STANDARD_MENU_FLASH_PHASE_DELAY)
         };
         self.flash_result = result;
         self.flash_remaining != 0
+    }
+
+    pub(crate) fn is_flashing(&self) -> bool {
+        self.flash_remaining != 0
+    }
+
+    /// The frontend supplies its 60 Hz target while application time is frozen.
+    /// Headless execution supplies guest ticks. Never move this clock backward.
+    pub(crate) fn set_flash_tick(&mut self, tick: u32) {
+        if self
+            .flash_tick
+            .is_none_or(|previous| tick.wrapping_sub(previous) < 0x8000_0000)
+        {
+            self.flash_tick = Some(tick);
+        }
+    }
+
+    pub(crate) fn advance_flash_at(&mut self, tick: u32) -> MenuFlashStep {
+        self.set_flash_tick(tick);
+        self.advance_flash()
+    }
+
+    /// Advance by elapsed presentation ticks, retaining the release result throughout
+    /// the blink. Custom panes receive the same phases through their MDEF.
+    /// A pending guest call must complete before another phase can be issued.
+    /// Macintosh Toolbox Essentials (1992), SetMenuFlash; Inside Macintosh
+    /// Volume I (1985), p. I-366, menu definition blinking protocol.
+    pub(crate) fn advance_flash(&mut self) -> MenuFlashStep {
+        if !self.is_flashing() {
+            return MenuFlashStep::Inactive;
+        }
+        if self.active_definition().is_some_and(|definition| {
+            definition.pending_invocation().is_some()
+        }) {
+            return MenuFlashStep::Wait;
+        }
+        let elapsed = self
+            .flash_tick
+            .unwrap_or(0)
+            .wrapping_sub(self.flash_deadline);
+        if elapsed >= 0x8000_0000 {
+            return MenuFlashStep::Wait;
+        }
+        // Standard panes can skip missed visual phases after a slow frame.
+        // Custom definitions must receive every Choose callback in order.
+        let phases = if self.active_definition().is_some() {
+            1
+        } else {
+            (1 + elapsed / STANDARD_MENU_FLASH_PHASE_DELAY).min(self.flash_remaining)
+        };
+        self.flash_remaining -= phases;
+        self.flash_deadline = self
+            .flash_deadline
+            .wrapping_add(phases * STANDARD_MENU_FLASH_PHASE_DELAY);
+        if self.flash_remaining == 0 {
+            return MenuFlashStep::Complete(self.flash_result);
+        }
+        let visible = self.flash_remaining & 1 == 0;
+        if let Some(definition) = self.active_definition_mut() {
+            definition.flash(visible);
+        }
+        MenuFlashStep::Highlight(visible)
     }
 
     pub(crate) fn active_definition_pane(&self) -> Option<MenuDefinitionPane> {
@@ -940,6 +1139,18 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
                     .is_some()
                     .then_some(MenuDefinitionPane::Root)
             })
+    }
+
+    /// MenuSelect calls its no-argument hook repeatedly while held. A pending
+    /// definition must return before another callback can take execution.
+    /// Macintosh Toolbox Essentials (1992), p. 3-116.
+    pub(crate) fn should_invoke_menu_hook(&self, mouse_down: bool) -> bool {
+        self.kind == MenuTrackingKind::MenuBar
+            && mouse_down
+            && self
+                .active_definition()
+                .and_then(MenuDefinitionTracking::pending_invocation)
+                .is_none()
     }
 
     pub(crate) fn active_definition(&self) -> Option<&MenuDefinitionTracking> {
@@ -2219,6 +2430,29 @@ impl MenuRows {
 const STANDARD_POPUP_SCREEN_MARGIN: i16 = 4;
 const STANDARD_POPUP_BOTTOM_RESERVE: i16 = 20;
 const STANDARD_POPUP_SCROLL_STEP: i16 = 16;
+
+/// Logical entry to a retained Menu Manager interaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuTrackingRequest {
+    MenuSelect { initial_point: u32 },
+    PopUp(PopupMenuRequest),
+}
+
+/// Logical PopUpMenuSelect arguments, independent of the caller's return ABI.
+/// Macintosh Toolbox Essentials (1992), pp. 3-119--3-120.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PopupMenuRequest {
+    pub(crate) menu_handle: u32,
+    pub(crate) anchor: (i16, i16),
+    pub(crate) requested_item: i16,
+}
+
+impl PopupMenuRequest {
+    pub(crate) fn begin_definition(self) -> MenuDefinitionTracking {
+        let hit_point = (u32::from(self.anchor.0 as u16) << 16) | u32::from(self.anchor.1 as u16);
+        MenuDefinitionTracking::begin_popup(self.menu_handle, hit_point, self.requested_item)
+    }
+}
 
 /// Position the standard Mac OS 8.1 pop-up menu and its uncropped content.
 ///
@@ -3551,6 +3785,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mdef_completion_is_single_use_even_when_its_operation_is_cloned() {
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let invocation = MenuDefinitionInvocation {
+            message: MenuDefinitionMessage::Choose,
+            menu_handle: 0x100,
+            menu_rect: (1, 2, 3, 4),
+            hit_point: 0,
+            which_item: 2,
+        };
+        memory.add_region(0x1000, invocation.scratch_bytes().to_vec());
+        let completion = MenuDefinitionCompletion::pending();
+        let operation = MenuDefinitionOperation {
+            scratch: 0x1000,
+            completion: completion.clone(),
+        };
+        assert_eq!(completion.take(), None);
+        operation.clone().complete(&mut memory);
+        memory.write_bytes(0x1000, &[0; 10]).unwrap();
+        operation.clone().complete(&mut memory);
+        assert_eq!(
+            completion.take(),
+            Some(Ok(MenuDefinitionInvocation::decode_result(
+                invocation.scratch_bytes()
+            )))
+        );
+        operation.complete(&mut memory);
+        assert_eq!(completion.take(), None);
+    }
+
+    #[test]
+    fn mdef_failed_result_is_delivered_once_without_consuming_another_receipt() {
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let failed = MenuDefinitionCompletion::pending();
+        let other = MenuDefinitionCompletion::pending();
+        assert_ne!(failed, other);
+        assert_eq!(failed, failed.clone());
+        MenuDefinitionOperation {
+            scratch: 0x1000,
+            completion: failed.clone(),
+        }
+        .complete(&mut memory);
+        assert_eq!(failed.take(), Some(Err(())));
+        assert_eq!(failed.take(), None);
+        assert_eq!(other.take(), None);
+        memory.add_region(0x1000, vec![0; 10]);
+        MenuDefinitionOperation {
+            scratch: 0x1000,
+            completion: other.clone(),
+        }
+        .complete(&mut memory);
+        assert_eq!(
+            other.take(),
+            Some(Ok(MenuDefinitionInvocation::decode_result([0; 10])))
+        );
+    }
+
+    #[test]
     fn cloned_menu_tracking_state_is_a_detached_runtime_snapshot() {
         let live = Some(test_process_menu_tracking(0x0012_3456));
 
@@ -3588,12 +3879,146 @@ mod tests {
         let mut tracking = tracking_with_child(1u32, 2);
         assert!(tracking.begin_flash(1, 0x0080_0002));
         assert_eq!(tracking.flash_remaining, 2);
-        assert_eq!(tracking.flash_delay, STANDARD_MENU_FLASH_PHASE_DELAY);
+        assert_eq!(tracking.flash_deadline, STANDARD_MENU_FLASH_PHASE_DELAY);
         assert_eq!(tracking.flash_result, 0x0080_0002);
         assert!(!tracking.begin_flash(0, 0x0080_0003));
         assert_eq!(tracking.flash_remaining, 0);
-        assert_eq!(tracking.flash_delay, 0);
+        assert_eq!(tracking.flash_deadline, 0);
         assert_eq!(tracking.flash_result, 0x0080_0003);
+    }
+
+    #[test]
+    fn menu_flash_completes_each_blink_before_returning_the_release_result_once() {
+        for kind in [MenuTrackingKind::MenuBar, MenuTrackingKind::PopUp] {
+            for count in [0, 1, 3] {
+                let mut tracking = test_process_menu_tracking(128);
+                tracking.kind = kind;
+                let result = 0x0080_0002;
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Inactive);
+                assert_eq!(tracking.begin_flash(count, result), count != 0);
+                for phase in 0..u32::from(count) * 2 {
+                    for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
+                        assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                        tracking.set_flash_tick(tracking.flash_tick.unwrap_or(0).wrapping_add(1));
+                    }
+                    let expected = if phase + 1 == u32::from(count) * 2 {
+                        MenuFlashStep::Complete(result)
+                    } else {
+                        MenuFlashStep::Highlight(phase & 1 != 0)
+                    };
+                    assert_eq!(tracking.advance_flash(), expected);
+                }
+                assert!(!tracking.is_flashing());
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Inactive);
+            }
+        }
+    }
+
+    #[test]
+    fn menu_flash_duration_ignores_poll_rate_and_catches_up_after_slow_frames() {
+        for start in [100, u32::MAX - 8] {
+            let mut tracking = test_process_menu_tracking(128);
+            tracking.set_flash_tick(start);
+            tracking.begin_flash(3, 0x0080_0002);
+            for _ in 0..100 {
+                assert_eq!(tracking.advance_flash_at(start), MenuFlashStep::Wait);
+            }
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(3)),
+                MenuFlashStep::Highlight(false)
+            );
+            // A slow renderer skips missed visual phases without stretching
+            // the configured three blinks beyond 18 ticks (300 ms).
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(12)),
+                MenuFlashStep::Highlight(true)
+            );
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(18)),
+                MenuFlashStep::Complete(0x0080_0002)
+            );
+            assert_eq!(
+                tracking.advance_flash_at(start.wrapping_add(19)),
+                MenuFlashStep::Inactive
+            );
+        }
+    }
+
+    #[test]
+    fn menu_flash_waits_for_the_active_definition_and_keeps_its_release_point() {
+        for child in [false, true] {
+            let mut tracking = tracking_with_child(128u32, 129);
+            let rect = (20, 30, 60, 90);
+            let point = (40 << 16) | 50;
+            let selected = MenuDefinitionResult {
+                menu_rect: rect,
+                which_item: 2,
+            };
+            let mut definition = MenuDefinitionTracking::begin_draw(129, rect);
+            definition.complete_pending(selected);
+            definition.choose(point).unwrap();
+            definition.complete_pending(selected);
+            if child {
+                tracking.submenus[0].definition = Some(definition);
+            } else {
+                tracking.definition = Some(definition);
+            }
+            assert!(tracking.begin_flash(2, 0x0081_0002));
+            for visible in [false, true, false] {
+                for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
+                    assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                    tracking.set_flash_tick(tracking.flash_tick.unwrap_or(0).wrapping_add(1));
+                }
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Highlight(visible));
+                let invocation = tracking
+                    .active_definition()
+                    .unwrap()
+                    .pending_invocation()
+                    .unwrap();
+                assert_eq!(invocation.message, MenuDefinitionMessage::Choose);
+                assert_eq!(
+                    invocation.hit_point,
+                    if visible { point } else { (19 << 16) | 30 }
+                );
+                let completion = MenuDefinitionCompletion::pending();
+                tracking
+                    .active_definition_mut()
+                    .unwrap()
+                    .bind_completion(invocation, completion.clone());
+                let before = (tracking.flash_remaining, tracking.flash_deadline);
+                for _ in 0..10 {
+                    assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                }
+                assert_eq!((tracking.flash_remaining, tracking.flash_deadline), before);
+                MenuDefinitionOperation {
+                    scratch: 0,
+                    completion,
+                }
+                .complete_result(Ok(MenuDefinitionResult {
+                    which_item: if visible { 2 } else { 0 },
+                    ..selected
+                }));
+                // Publication alone must not permit a phase to replace the
+                // invocation whose result has not yet been consumed.
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                assert_eq!(
+                    tracking
+                        .active_definition_mut()
+                        .unwrap()
+                        .complete_callback(),
+                    Ok(Some(MenuDefinitionMessage::Choose))
+                );
+            }
+            for _ in 0..STANDARD_MENU_FLASH_PHASE_DELAY {
+                assert_eq!(tracking.advance_flash(), MenuFlashStep::Wait);
+                tracking.set_flash_tick(tracking.flash_tick.unwrap_or(0).wrapping_add(1));
+            }
+            assert_eq!(
+                tracking.advance_flash(),
+                MenuFlashStep::Complete(0x0081_0002)
+            );
+            assert_eq!(tracking.advance_flash(), MenuFlashStep::Inactive);
+        }
     }
 
     #[test]
@@ -3620,6 +4045,23 @@ mod tests {
         );
         assert_eq!(MenuDefinitionMessage::Draw as i16, 0);
         assert_eq!(MenuDefinitionMessage::PopUp as i16, 3);
+    }
+
+    #[test]
+    fn menu_bar_build_waits_for_its_own_callback_before_advancing() {
+        let mut build = MenuBarBuild::new(1u32, vec![2, 3]);
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Size(2)));
+        let completion = MenuDefinitionCompletion::pending();
+        build.bind_completion(2, completion.clone());
+        assert_eq!(build.next_step(), None);
+        let nested = MenuDefinitionCompletion::pending();
+        build.bind_completion(2, nested.clone());
+        MenuDefinitionOperation { scratch: 0, completion: nested }.complete_result(Ok(MenuDefinitionInvocation::decode_result([0; 10])));
+        assert_eq!(build.next_step(), None, "nested receipt must not release the outer build");
+        MenuDefinitionOperation { scratch: 0, completion }.complete_result(Ok(MenuDefinitionInvocation::decode_result([0; 10])));
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Size(3)));
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Complete(1)));
+        assert_eq!(build.next_step(), None);
     }
 
     #[test]
@@ -3840,12 +4282,13 @@ mod tests {
             highlighted_item: 1,
             definition: None,
             flash_remaining: 0,
-            flash_delay: 0,
+            flash_tick: None,
+            flash_deadline: 0,
             flash_result: 0,
             saved_width: 100,
             saved_height: 40,
             front_buffer: (),
-            saved_pixels: Vec::new(),
+            saved_pixels: Default::default(),
             item_appearances: Vec::new(),
             submenus: vec![TrackedMenuPane {
                 parent_item: 1,
@@ -3861,7 +4304,7 @@ mod tests {
                 saved_width: 100,
                 saved_height: 40,
                 front_buffer: (),
-                saved_pixels: Vec::new(),
+                saved_pixels: Default::default(),
                 item_appearances: Vec::new(),
             }],
         }
@@ -4236,17 +4679,19 @@ mod tests {
 
     #[test]
     fn standard_menu_text_measurement_is_shared_between_gateways() {
-        // The frozen 68040 and 604 profiles both measure "Three" as
-        // T6+h8+r6+e8+e8 = 36 pixels in the Roman system font. The standard
-        // MDEF then adds its 32-pixel non-indicator columns.
-        assert_eq!(standard_menu_text_advance(b"Three"), 36);
+        let face = crate::quickdraw::fonts::get_font_face_or_default(0, 12);
+        let expected: i16 = b"Three"
+            .iter()
+            .map(|c| i16::from(face.glyphs[(c - 32) as usize].advance))
+            .sum();
+        assert_eq!(standard_menu_text_advance(b"Three"), expected);
         assert_eq!(
             standard_menu_width([StandardMenuItemWidth {
-                text: standard_menu_text_advance(b"Three"),
+                text: expected,
                 icon: 0,
-                command: 0,
+                command: 0
             }]),
-            68
+            expected + 32
         );
 
         assert!(is_standard_system_menu_title(&[0x14]));
@@ -5086,7 +5531,7 @@ mod tests {
         assert_eq!(region.title_origin(), 18);
         assert_eq!(region.highlighted_rect(20), (1, 9, 19, 48));
         assert_eq!(standard_menu_bar_title_baseline(20, 11, 2), 14);
-        assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 4);
+        assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 3);
     }
 
     #[test]
@@ -5175,7 +5620,7 @@ mod tests {
             menu_rect: (20, 80, 52, 152),
             which_item: 3,
         });
-        classic.submenus[0].definition = Some(classic_definition);
+        classic.submenus[0].definition = Some(classic_definition.clone());
         assert_eq!(classic.selection(|_, _| false), Some((1, 3)));
         let closed = classic.close_submenus_from(0);
         assert!(classic.active_definition().is_none());
@@ -5187,7 +5632,7 @@ mod tests {
             menu_rect: (20, 80, 52, 152),
             which_item: 3,
         });
-        powerpc.submenus[0].definition = Some(powerpc_definition);
+        powerpc.submenus[0].definition = Some(powerpc_definition.clone());
         assert_eq!(powerpc.selection(|_, _| false), Some((0x2000, 3)));
         let closed = powerpc.close_submenus_from(0);
         assert!(powerpc.active_definition().is_none());

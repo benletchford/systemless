@@ -8,10 +8,10 @@ The Systemless emulator and runtime code in this public repository is
 distributed under GPL-3.0-or-later. See [LICENSE](./LICENSE) for the full licence
 text.
 
-Some components have additional component-specific licences. In particular,
-the original bitmap font sources in `src/quickdraw/fonts/pixel_font/` are also
-available under the SIL Open Font License 1.1, with "Systemless" as the Reserved
-Font Name. See [OFL.txt](./OFL.txt).
+Bundled URW Core 35 and Noto Sans Symbols 2 fonts are distributed under the
+SIL Open Font License 1.1. See their [URW source record](src/quickdraw/fonts/urw/README.md)
+and [Noto source record](src/quickdraw/fonts/noto/README.md), including the original
+copyright and licence notices.
 
 ## Separate commercial licensing
 
