@@ -1643,6 +1643,93 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn restore_window_manager_desktop(&self, bus: &mut MacMemoryBus) {
+        let (_, _, screen_width, screen_height, _) = self.get_screen_params();
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        if self.menu_bar_hidden
+            || self.fullscreen_locked
+            || menu_bar_height <= 0
+            || screen_width <= 0
+            || screen_height <= 0
+        {
+            return;
+        }
+
+        let mut desktop = vec![(
+            menu_bar_height.min(screen_height),
+            0,
+            screen_height,
+            screen_width,
+        )];
+        let mut saw_owned_surface = false;
+        let mut seen = HashSet::new();
+        let fallback = if self.window_list.is_empty() && self.front_window != 0 {
+            Some(self.front_window)
+        } else {
+            None
+        };
+        for window in self.window_list.iter().copied().chain(fallback) {
+            if window == 0
+                || !seen.insert(window)
+                || !self.window_visible(bus, window)
+                || self.windows_placed_offscreen.contains(&window)
+            {
+                continue;
+            }
+            let Some(structure) = self.window_structure_rect(bus, window) else {
+                continue;
+            };
+            saw_owned_surface = true;
+            desktop = desktop
+                .into_iter()
+                .flat_map(|rect| Self::rect_difference_parts(rect, structure))
+                .collect();
+        }
+        for bounds in self.active_host_overlay_rects() {
+            saw_owned_surface = true;
+            desktop = desktop
+                .into_iter()
+                .flat_map(|rect| Self::rect_difference_parts(rect, bounds))
+                .collect();
+        }
+        if !saw_owned_surface {
+            return;
+        }
+
+        // GrayRgn is Window Manager-owned desktop space outside every visible
+        // window structure or retained host overlay. Restore it during the same
+        // host composition pass that restores window frames, so direct screen
+        // writes cannot survive there while application-owned pixels remain
+        // authoritative.
+        // Macintosh Toolbox Essentials (1992), pp. 4-113 to 4-119.
+        for (top, left, bottom, right) in desktop {
+            self.fill_theme_desktop_rect(bus, top, left, bottom, right);
+        }
+    }
+
+    /// Retained Standard File dialogs draw directly into the framebuffer and
+    /// have no WindowRecord to contribute to WindowList. Their procID=2 frame
+    /// extends one pixel beyond the stored content bounds.
+    fn active_host_overlay_rects(&self) -> impl Iterator<Item = (i16, i16, i16, i16)> + '_ {
+        let frame_rect = |(top, left, bottom, right): (i16, i16, i16, i16)| {
+            (
+                top.saturating_sub(1),
+                left.saturating_sub(1),
+                bottom.saturating_add(1),
+                right.saturating_add(1),
+            )
+        };
+        self.standard_file_get_tracking
+            .iter()
+            .map(move |tracking| frame_rect(tracking.bounds))
+            .chain(
+                self.standard_file_put_tracking
+                    .iter()
+                    .map(move |tracking| frame_rect(tracking.bounds)),
+            )
+            .chain(self.external_host_overlay_rects.iter().copied())
+    }
+
     /// Draw a horizontal line in the framebuffer
     pub(crate) fn fb_hline(
         bus: &mut MacMemoryBus,
@@ -5075,6 +5162,7 @@ impl super::TrapDispatcher {
         }
 
         self.restore_kiosk_dialog_desktop_background(bus);
+        self.restore_window_manager_desktop(bus);
 
         if !self.menus.is_empty() && !self.fullscreen_locked && !self.menu_bar_hidden {
             self.draw_menu_bar_to_fb(bus);
@@ -5337,11 +5425,14 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod redraw_chrome_tests {
-    use super::super::dispatch::{ControlTrackingState, DialogItem, ScreenCopyBitsRect};
+    use super::super::dispatch::{
+        ControlTrackingState, DialogItem, ScreenCopyBitsRect, StandardFileGetTrackingState,
+        StandardFilePutTrackingState,
+    };
     use super::super::menu::{test_tracked_menu_state, tracked_submenu_state, Menu, MenuItem};
     use super::super::test_helpers::setup_with_port;
     use super::super::TrapDispatcher;
-    use crate::memory::MemoryBus;
+    use crate::memory::{MemoryBus, SavedPixels};
 
     // Window/port layout from `setup_with_port`:
     //   port_ptr      = 0x181000
@@ -6979,6 +7070,139 @@ mod redraw_chrome_tests {
             "the save-under snapshot must retain the binary desktop pattern"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
+    }
+
+    #[test]
+    fn redraw_chrome_repairs_exposed_desktop_from_window_ownership() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.menu_bar_hidden = false;
+        disp.fullscreen_locked = false;
+        disp.front_window = PORT_PTR;
+        *disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (129, 144, 471, 656);
+        disp.window_proc_id = 1;
+        disp.window_proc_ids.insert(PORT_PTR, 1);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+        set_window_structure_rect(&mut bus, PORT_PTR, (128, 143, 473, 658));
+
+        let content_probe = screen_base + 300 * row_bytes + 400;
+        let menu_bar_probe = screen_base + 10 * row_bytes + 40;
+        bus.write_byte(content_probe, 0x4D);
+
+        disp.redraw_chrome(&mut bus);
+
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        let white = TrapDispatcher::logical_white_pixel_index(&bus);
+        for &(x, y) in &[(40u32, 171u32), (59, 241), (67, 361), (72, 470)] {
+            let pattern = super::STANDARD_GRAY_PATTERN[(y % 8) as usize];
+            let expected = if pattern & (0x80 >> (x % 8)) != 0 {
+                black
+            } else {
+                white
+            };
+            assert_eq!(
+                bus.read_byte(screen_base + y * row_bytes + x),
+                expected,
+                "Window Manager-owned desktop pixel ({x},{y}) must be restored"
+            );
+        }
+        assert_eq!(
+            bus.read_byte(content_probe),
+            0x4D,
+            "desktop composition must preserve application-owned window pixels"
+        );
+        assert_eq!(
+            bus.read_byte(menu_bar_probe),
+            0x7E,
+            "desktop composition must leave the menu bar to the Menu Manager"
+        );
+        assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
+    }
+
+    #[test]
+    fn redraw_chrome_preserves_active_standard_file_overlay_bounds() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, _, screen_h, _) = disp.screen_mode;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+        disp.fullscreen_locked = false;
+        disp.front_window = PORT_PTR;
+        *disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (40, 700, 500, 790);
+        disp.window_proc_id = 1;
+        disp.window_proc_ids.insert(PORT_PTR, 1);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+        set_window_structure_rect(&mut bus, PORT_PTR, (39, 699, 502, 792));
+
+        let get_bounds = (50, 0, 228, 356);
+        disp.standard_file_get_tracking = Some(StandardFileGetTrackingState {
+            modern_reply: false,
+            reply_ptr: 0,
+            stack_ptr: 0,
+            pop_total: 0,
+            entries: Vec::new(),
+            current_dir_id: 2,
+            file_types: None,
+            selected: 0,
+            bounds: get_bounds,
+            saved_pixels: SavedPixels::default(),
+        });
+        bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
+        let get_probe = screen_base + 50 * row_bytes;
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(
+            bus.read_byte(get_probe),
+            0x7E,
+            "SFGetFile overlay pixels outside WindowList must remain visible"
+        );
+
+        disp.standard_file_get_tracking = None;
+        let external_bounds = (60, 2, 238, 358);
+        disp.external_host_overlay_rects = vec![external_bounds];
+        bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
+        let external_probe = screen_base + 60 * row_bytes + 2;
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(
+            bus.read_byte(external_probe),
+            0x7E,
+            "attached CPU host overlay pixels outside WindowList must remain visible"
+        );
+
+        disp.external_host_overlay_rects.clear();
+        let put_bounds = (200, 8, 460, 368);
+        disp.standard_file_put_tracking = Some(StandardFilePutTrackingState {
+            modern_reply: false,
+            reply_ptr: 0,
+            stack_ptr: 0,
+            pop_total: 0,
+            entries: Vec::new(),
+            current_dir_id: 2,
+            selected: None,
+            prompt: String::new(),
+            name: String::new(),
+            sel_start: 0,
+            sel_end: 0,
+            bounds: put_bounds,
+            saved_pixels: SavedPixels::default(),
+        });
+        bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
+        let put_probe = screen_base + 200 * row_bytes + 8;
+        let desktop_probe = screen_base + 500 * row_bytes + 600;
+        disp.redraw_chrome(&mut bus);
+        assert_eq!(
+            bus.read_byte(put_probe),
+            0x7E,
+            "StandardPutFile overlay pixels outside WindowList must remain visible"
+        );
+        assert_ne!(
+            bus.read_byte(desktop_probe),
+            0x7E,
+            "unowned desktop pixels must still be restored"
+        );
     }
 
     #[test]

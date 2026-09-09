@@ -7267,6 +7267,7 @@ impl FixtureRunner {
 
     fn sync_ppc_deferred_host_state(&mut self) {
         let Some(mut native_context) = self.native.take(NativeEngineRole::Application) else {
+            self.dispatcher.external_host_overlay_rects.clear();
             return;
         };
         let mut ppc_app = native_context.adapter_mut();
@@ -7274,9 +7275,11 @@ impl FixtureRunner {
         self.render_ppc_completed_frames(&mut ppc_app, pc);
         self.sync_ppc_front_buffer_to_host(&mut ppc_app);
         self.persist_ppc_vfs_to_host(&mut ppc_app);
+        let host_overlay_rects = ppc_app.toolbox_startup.retained_host_overlay_rects();
         self.native
             .restore(native_context)
             .unwrap_or_else(|_| panic!("native context lost its owner"));
+        self.dispatcher.external_host_overlay_rects = host_overlay_rects;
     }
 
     fn record_ppc_import_trace(&mut self, trace: &[PpcHleImportTraceEntry]) {

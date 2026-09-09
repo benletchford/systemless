@@ -2013,6 +2013,9 @@ pub struct TrapDispatcher {
     pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
     /// Active Standard File Package open dialog tracking state.
     pub(crate) standard_file_get_tracking: Option<StandardFileGetTrackingState>,
+    /// Bounds owned by retained host overlays in an attached CPU adapter.
+    /// These surfaces draw directly into the framebuffer without WindowRecords.
+    pub(crate) external_host_overlay_rects: Vec<(i16, i16, i16, i16)>,
     /// Parsed dialog items keyed by dialog pointer, for GetDItem/ModalDialog
     pub dialog_items: HashMap<u32, Vec<DialogItem>>,
     /// Original rects for items hidden via HideDialogItem,
@@ -3519,6 +3522,7 @@ impl TrapDispatcher {
             suspended_modal_dialogs: Vec::new(),
             standard_file_put_tracking: None,
             standard_file_get_tracking: None,
+            external_host_overlay_rects: Vec::new(),
             dialog_items: HashMap::new(),
             hidden_dialog_item_rects: HashMap::new(),
             dialog_item_handles: HashMap::new(),

@@ -3202,6 +3202,18 @@ impl Default for PpcToolboxStartupState {
 }
 
 impl PpcToolboxStartupState {
+    pub(crate) fn retained_host_overlay_rects(&self) -> Vec<(i16, i16, i16, i16)> {
+        self.standard_file_get_tracking
+            .iter()
+            .map(|tracking| tracking.bounds)
+            .chain(
+                self.standard_file_put_tracking
+                    .iter()
+                    .map(|tracking| tracking.bounds),
+            )
+            .collect()
+    }
+
     fn active_menu_definition(&self) -> Option<&MenuDefinitionTracking> {
         self.execution
             .menu()
