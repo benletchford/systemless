@@ -6631,6 +6631,12 @@ impl super::TrapDispatcher {
                                 self.draw_icon(
                                     bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
                                 );
+                            } else if let Some(icon_ptr) =
+                                self.synthesize_system_icon(bus, item.resource_id)
+                            {
+                                self.draw_icon(
+                                    bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
+                                );
                             }
                         }
                     }
@@ -13937,6 +13943,13 @@ impl super::TrapDispatcher {
                         icon_id, h, ptr
                     );
                     h
+                } else if let Some(ptr) = self.synthesize_system_icon(bus, icon_id) {
+                    let h = self.get_or_create_resource_handle(bus, *b"ICON", icon_id, ptr);
+                    eprintln!(
+                        "[TRAP] GetIcon({}) -> system handle=${:08X} ptr=${:08X}",
+                        icon_id, h, ptr
+                    );
+                    h
                 } else {
                     eprintln!("[TRAP] GetIcon({}) -> NIL (not found)", icon_id);
                     0
@@ -17630,6 +17643,42 @@ mod tests {
         data.extend_from_slice(&items_id.to_be_bytes());
         data.extend_from_slice(&stages.to_be_bytes());
         data
+    }
+
+    #[test]
+    fn alert_draws_standard_system_icon_one_when_application_resource_is_missing() {
+        // MTE 1992 pp. 6-153 and 7-63: an iconItem names an ICON
+        // resource. Resource Manager searches the open resource chain, which
+        // includes the System file after the application resource fork.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alert_id = 3298;
+        let ditl_id = 3299;
+        let icon_id = 1i16.to_be_bytes();
+        let alrt = build_test_alrt((100, 100, 220, 400), ditl_id, 0x5555);
+        let ditl = build_test_ditl_items(&[
+            (0xA0, (16, 16, 48, 48), icon_id.as_slice()),
+            (4, (76, 210, 96, 270), b"OK"),
+        ]);
+        disp.install_test_resource(&mut bus, *b"ALRT", alert_id, &alrt);
+        disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+        assert_eq!(pixel_size, 8);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, alert_id as u16);
+
+        disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            [
+                bus.read_byte(screen_base + 116 * row_bytes + 116),
+                bus.read_byte(screen_base + 147 * row_bytes + 147),
+            ],
+            [0xFF, 0xFF],
+            "ICON 1 should fall through to the standard System alert icon"
+        );
     }
 
     #[test]
@@ -23128,7 +23177,7 @@ mod tests {
         disp.install_test_resource(
             &mut bus,
             *b"ICON",
-            421,
+            1,
             &monochrome_icon_resource_with_points(&[(0, 0), (15, 15), (31, 31)]),
         );
         disp.dialog_items.insert(
@@ -23138,7 +23187,7 @@ mod tests {
                     item_type: 32, // icon item
                     rect: (8, 8, 40, 40),
                     text: String::new(),
-                    resource_id: 421,
+                    resource_id: 1,
                     proc_ptr: 0,
                     sel_start: 0,
                     sel_end: 0,
@@ -37402,6 +37451,21 @@ mod tests {
     // ---- GetIcon ($A9BB) — IM:I I-473 contract ----
 
     #[test]
+    fn get_icon_returns_standard_system_icon_one_after_application_chain_miss() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 1);
+
+        let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
+
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(handle, 0);
+        let ptr = bus.read_long(handle);
+        assert_eq!(bus.get_alloc_size(ptr), Some(128));
+        assert_eq!(bus.read_long(ptr), 0xFFFF_FFFF);
+        assert_eq!(bus.read_long(ptr + 124), 0xFFFF_FFFF);
+    }
+
+    #[test]
     fn get_icon_returns_nil_when_resource_missing() {
         // IM:I I-473: "If the resource can't be read, GetIcon
         // returns NIL." Critical for apps that defensively check
@@ -37409,7 +37473,7 @@ mod tests {
         // always returned a non-NIL handle to uninitialised
         // memory which broke that branch.
         let (mut disp, mut cpu, mut bus) = setup();
-        bus.write_word(TEST_SP, 1); // iconID = 1, no ICON 1 installed
+        bus.write_word(TEST_SP, 999); // non-system icon ID, no resource installed
         let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
         assert_eq!(
             cpu.read_reg(Register::A7),
@@ -37435,8 +37499,8 @@ mod tests {
         // with a recognisable sentinel pattern so handle deref
         // assertions can verify "this is the right resource."
         let icon_data: Vec<u8> = (0..128).map(|i| (i as u8).wrapping_mul(7)).collect();
-        let res_ptr = disp.install_test_resource(&mut bus, *b"ICON", 128, &icon_data);
-        bus.write_word(TEST_SP, 128);
+        let res_ptr = disp.install_test_resource(&mut bus, *b"ICON", 1, &icon_data);
+        bus.write_word(TEST_SP, 1);
 
         let _ = disp.dispatch_dialog(true, 0x1BB, &mut cpu, &mut bus);
         let handle = bus.read_long(TEST_SP + 2);

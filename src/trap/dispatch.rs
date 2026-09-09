@@ -1367,6 +1367,11 @@ pub struct TrapDispatcher {
     /// allocation per call would leak a 68-byte block per frame.
     /// Inside Macintosh Volume I, I-474.
     pub(crate) system_cursor_cache: HashMap<i16, u32>,
+    /// Cache of synthetic System-file `'ICON'` resources used by standard
+    /// dialogs. Systemless does not mount a System file, so well-known icons
+    /// are synthesized only after the application resource chain misses.
+    /// Macintosh Toolbox Essentials (1992), pp. 6-153 and 7-63.
+    pub(crate) system_icon_cache: HashMap<i16, u32>,
     /// Cache of synthetic System-file `'clut'` resource pointers for
     /// standard indexed depths. Systemless does not mount the System
     /// resource fork, but some installers call `GetResource('clut', depth)`
@@ -3296,6 +3301,7 @@ impl TrapDispatcher {
             system_str_cache: HashMap::new(),
             system_intl_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
+            system_icon_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
             system_wctb_cache: HashMap::new(),
             system_kchr_cache: HashMap::new(),
@@ -6539,6 +6545,42 @@ impl TrapDispatcher {
         bus.write_word(ptr + 64, hot_v as u16);
         bus.write_word(ptr + 66, hot_h as u16);
         self.system_cursor_cache.insert(cursor_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate and cache the standard System-file `'ICON'` resource ID 1.
+    ///
+    /// Dialog `iconItem` records name an ICON resource, and Resource Manager
+    /// searches the open resource chain through the System file when the
+    /// application does not supply it. Systemless has no mounted System file,
+    /// so this preserves that final lookup while leaving application resources
+    /// authoritative. Macintosh Toolbox Essentials (1992), pp. 6-153 and 7-63.
+    pub(crate) fn synthesize_system_icon(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        icon_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_icon_cache.get(&icon_id) {
+            return Some(ptr);
+        }
+        let body: &[u8] = match icon_id {
+            1 => &[
+                0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x7F, 0xFF, 0xFF, 0x80, 0x7F, 0xFF, 0xFF, 0x80, 0x7F,
+                0xFF, 0xFF, 0x80, 0x7F, 0xFF, 0xFF, 0x80, 0x7F, 0xC0, 0xFF, 0x88, 0x7F, 0x00, 0x3F,
+                0x88, 0x7E, 0x00, 0x1F, 0x88, 0x7C, 0x00, 0x0F, 0x80, 0x78, 0x00, 0x07, 0x80, 0x78,
+                0x00, 0x07, 0x80, 0x70, 0x00, 0x03, 0x80, 0x71, 0xDD, 0xC3, 0x80, 0x70, 0x00, 0x03,
+                0x80, 0x70, 0x00, 0x03, 0x80, 0x71, 0xDD, 0x43, 0x80, 0x70, 0x00, 0x03, 0x80, 0x70,
+                0x00, 0x03, 0x80, 0x71, 0xD7, 0x03, 0x80, 0x70, 0x00, 0x03, 0x87, 0xF0, 0x00, 0x03,
+                0x81, 0xF1, 0xEE, 0xC3, 0x81, 0xF0, 0x00, 0x07, 0x81, 0xF0, 0x00, 0x07, 0x81, 0xF0,
+                0x00, 0x0F, 0x81, 0xE0, 0x00, 0x1F, 0x8F, 0x80, 0x00, 0x7F, 0x81, 0xFF, 0xFF, 0xFF,
+                0x81, 0xFF, 0xFF, 0xFF, 0x81, 0xFF, 0xFF, 0xFF, 0x81, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0xFF,
+            ],
+            _ => return None,
+        };
+        let ptr = bus.alloc(body.len() as u32);
+        bus.write_bytes(ptr, body);
+        self.system_icon_cache.insert(icon_id, ptr);
         Some(ptr)
     }
 
