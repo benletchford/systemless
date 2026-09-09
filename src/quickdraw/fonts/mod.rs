@@ -2,6 +2,7 @@
 //! Guest FONT/NFNT/sfnt resources and explicit local overrides take precedence.
 
 mod bundled;
+mod compatibility;
 pub mod families;
 mod resources;
 pub mod style;
@@ -362,7 +363,7 @@ mod tests {
         assert_eq!(face.metrics.ascent, 1);
     }
 
-    fn distinctive_override_blob() -> override_format::Blob {
+    fn distinctive_override_blob(font_id: i16, size: i16) -> override_format::Blob {
         let glyphs: Vec<Glyph> = (0..override_format::GLYPH_COUNT)
             .map(|_| Glyph {
                 width: 0,
@@ -374,8 +375,8 @@ mod tests {
             })
             .collect();
         override_format::Blob {
-            font_id: FONT_CHICAGO,
-            size: 12,
+            font_id,
+            size,
             style: override_format::STYLE_PLAIN,
             metrics: FontMetrics {
                 ascent: 99,
@@ -439,7 +440,8 @@ mod tests {
 
         let blob_path = dir.join("chicago_12_plain.bin");
         let mut buf = Vec::new();
-        override_format::write_blob(&mut buf, &distinctive_override_blob()).unwrap();
+        override_format::write_blob(&mut buf, &distinctive_override_blob(FONT_CHICAGO, 12))
+            .unwrap();
         fs::write(&blob_path, &buf).unwrap();
 
         let overrides = override_format::load_directory(&dir);
@@ -461,5 +463,25 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_geneva9_override_keeps_its_own_metrics() {
+        let mut overrides = HashMap::new();
+        let blob = distinctive_override_blob(FONT_GENEVA, 9);
+        let face = Box::leak(Box::new(FontFace {
+            font_id: blob.font_id,
+            size: blob.size,
+            metrics: blob.metrics,
+            glyphs: Box::leak(blob.glyphs.into_boxed_slice()),
+            data: Box::leak(blob.data.into_boxed_slice()),
+        }));
+        overrides.insert((FONT_GENEVA, 9), &*face);
+
+        let resolved = get_font_face_with_overrides(&overrides, FONT_GENEVA, 9)
+            .expect("explicit Geneva 9 override");
+        assert!(resolved.glyphs.iter().all(|glyph| glyph.advance == 13));
+        assert_eq!(resolved.metrics.wid_max, 13);
+        assert!(std::ptr::eq(resolved, face));
     }
 }

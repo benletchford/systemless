@@ -13,6 +13,12 @@ SIL Open Font License 1.1. See their [URW source record](src/quickdraw/fonts/urw
 and [Noto source record](src/quickdraw/fonts/noto/README.md), including the original
 copyright and licence notices.
 
+The Geneva 9 ASCII compatibility advances are a separate data component under
+the SIL Open Font License 1.1. See its [source record](src/quickdraw/fonts/compatibility/README.md)
+and [licence notice](src/quickdraw/fonts/compatibility/OFL.txt). The GPL runtime
+embeds these separately licensed values while URW continues to supply the glyph
+pixels and bearings.
+
 ## Separate commercial licensing
 
 Ben Letchford may make software for which he holds sufficient rights available

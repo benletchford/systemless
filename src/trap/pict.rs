@@ -7105,6 +7105,43 @@ mod tests {
     }
 
     #[test]
+    fn pict_geneva9_bold_run_matches_classic_relative_text_origins() {
+        const FIRST: &[u8] = b"This is your shooter.  There are many like it, ";
+        const SECOND: &[u8] = b"but this one is yours.  Mind it well, cuz it is ";
+        const THIRD: &[u8] = b"made of ";
+        let frame = (0, 0, 96, 700);
+        let text_state = |commands: &mut Vec<u8>| {
+            super::recording_push_word(commands, 0x0003); // TxFont
+            super::recording_push_word(commands, 3); // Geneva
+            super::recording_push_word(commands, 0x0004); // TxFace
+            commands.extend_from_slice(&[1, 0]); // bold and v2 padding
+            super::recording_push_word(commands, 0x000D); // TxSize
+            super::recording_push_word(commands, 9);
+        };
+
+        let mut relative = Vec::new();
+        text_state(&mut relative);
+        push_v2_relative_text(&mut relative, 0x002B, &[65, 56], FIRST);
+        push_v2_relative_text(&mut relative, 0x0029, &[0xFE], SECOND);
+        push_v2_relative_text(&mut relative, 0x0029, &[0xF8], THIRD);
+        let relative = super::finish_recording(frame, relative);
+
+        let mut continuous = Vec::new();
+        text_state(&mut continuous);
+        let mut text = Vec::new();
+        text.extend_from_slice(FIRST);
+        text.extend_from_slice(SECOND);
+        text.extend_from_slice(THIRD);
+        super::recording_push_long_text(&mut continuous, 56, 65, &text);
+        let continuous = super::finish_recording(frame, continuous);
+
+        let relative = render_text_picture(&relative, 700, 96);
+        let continuous = render_text_picture(&continuous, 700, 96);
+        assert_eq!(relative, continuous);
+        assert!(relative.contains(&255));
+    }
+
+    #[test]
     fn device_itable_matches_rom_propagation_samples() {
         let table = build_device_itable(&TrapDispatcher::standard_mac_8bpp_clut());
 

@@ -29,7 +29,12 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
     if let Some(faces) = cache.get(&(font_id, size)) {
         return Some(*faces);
     }
-    let faces = rasterize(font_id, size, bytes)?;
+    let faces = rasterize(
+        font_id,
+        size,
+        bytes,
+        super::compatibility::bundled_advances(font_id, size),
+    )?;
     cache.insert((font_id, size), faces);
     Some(faces)
 }
@@ -64,7 +69,12 @@ impl skrifa::outline::OutlinePen for OutlinePath {
 // outline fonts generate a strike at the requested point size. At the logical
 // 72-dpi screen, one point is one em pixel. Keep QuickDraw's binary masks and
 // boolean transfer modes; hint before thresholding to retain small stems.
-pub(super) fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option<Faces> {
+pub(super) fn rasterize(
+    font_id: i16,
+    size: i16,
+    bytes: &'static [u8],
+    compatibility_advances: Option<&'static [u8; 95]>,
+) -> Option<Faces> {
     use skrifa::{
         instance::{LocationRef, Size},
         outline::{DrawSettings, HintingInstance, Target},
@@ -141,9 +151,15 @@ pub(super) fn rasterize(font_id: i16, size: i16, bytes: &'static [u8]) -> Option
         }
         Some(result)
     };
-    let ascii = (0x20u8..=0x7e)
+    let mut ascii = (super::compatibility::FIRST_ASCII_CODE
+        ..=super::compatibility::LAST_ASCII_CODE)
         .map(|code| glyph(char::from(code)))
         .collect::<Option<Vec<_>>>()?;
+    if let Some(compatibility_advances) = compatibility_advances {
+        for (glyph, advance) in ascii.iter_mut().zip(compatibility_advances) {
+            glyph.advance = *advance;
+        }
+    }
     let extended = (0x80u8..=0xff)
         .map(|code| {
             Some(MacRomanGlyph {
@@ -329,6 +345,147 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GENEVA9_ADVANCES: &[u8; 95] = include_bytes!("compatibility/geneva9-advances.bin");
+    const EXPECTED_GENEVA9_ADVANCES: [u8; 95] = [
+        3, 3, 5, 7, 6, 9, 8, 3, 4, 4, 7, 6, 4, 5, 3, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 4, 4, 5, 6,
+        5, 6, 8, 7, 6, 6, 6, 5, 5, 6, 6, 3, 6, 6, 5, 8, 6, 6, 6, 6, 6, 6, 6, 6, 6, 8, 6, 6, 5, 4,
+        6, 4, 4, 6, 3, 5, 5, 5, 5, 5, 4, 5, 5, 3, 4, 5, 3, 8, 5, 5, 5, 5, 5, 5, 4, 5, 6, 8, 6, 6,
+        5, 4, 2, 4, 6,
+    ];
+
+    fn ascii_width(face: &FontFace, text: &[u8]) -> i16 {
+        text.iter()
+            .map(|byte| i16::from(face.glyphs[usize::from(*byte - b' ')].advance))
+            .sum()
+    }
+
+    fn assert_same_glyph_except_advance(left: &Glyph, right: &Glyph) {
+        assert_eq!(left.width, right.width);
+        assert_eq!(left.height, right.height);
+        assert_eq!(left.origin_x, right.origin_x);
+        assert_eq!(left.origin_y, right.origin_y);
+        assert_eq!(left.data_offset, right.data_offset);
+    }
+
+    #[test]
+    fn geneva9_compatibility_component_has_exact_ofl_advance_bytes() {
+        assert_eq!(*GENEVA9_ADVANCES, EXPECTED_GENEVA9_ADVANCES);
+        assert_eq!(GENEVA9_ADVANCES.len(), usize::from(0x7eu8 - 0x20 + 1));
+    }
+
+    #[test]
+    fn bundled_geneva9_uses_compatibility_advances() {
+        let (face, _) = super::face(FONT_GENEVA, 9).expect("bundled Geneva 9");
+        assert_eq!(
+            face.glyphs
+                .iter()
+                .map(|glyph| glyph.advance)
+                .collect::<Vec<_>>(),
+            GENEVA9_ADVANCES.as_slice()
+        );
+    }
+
+    #[test]
+    fn bundled_application9_uses_geneva9_compatibility_advances() {
+        let (face, _) = super::face(FONT_APPLICATION, 9).expect("bundled Application 9");
+        assert_eq!(
+            face.glyphs
+                .iter()
+                .map(|glyph| glyph.advance)
+                .collect::<Vec<_>>(),
+            GENEVA9_ADVANCES.as_slice()
+        );
+    }
+
+    #[test]
+    fn geneva9_apeiron_phrase_spans_match_recorded_origins() {
+        const FIRST: &[u8] = b"This is your shooter.  There are many like it, ";
+        const SECOND: &[u8] = b"but this one is yours.  Mind it well, cuz it is ";
+        let (face, _) = super::face(FONT_GENEVA, 9).expect("bundled Geneva 9");
+
+        assert_eq!((FIRST.len(), SECOND.len()), (47, 48));
+        assert_eq!(ascii_width(face, FIRST), 207);
+        assert_eq!(ascii_width(face, SECOND), 200);
+        let bold = crate::quickdraw::text::QuickDrawTextStyle::from_bits(
+            crate::quickdraw::text::QuickDrawTextStyle::BOLD_BIT,
+        );
+        assert_eq!(
+            FIRST
+                .iter()
+                .map(|byte| bold
+                    .glyph_advance(i32::from(face.glyphs[usize::from(*byte - b' ')].advance)))
+                .sum::<i32>(),
+            254
+        );
+        assert_eq!(
+            SECOND
+                .iter()
+                .map(|byte| bold
+                    .glyph_advance(i32::from(face.glyphs[usize::from(*byte - b' ')].advance)))
+                .sum::<i32>(),
+            248
+        );
+    }
+
+    #[test]
+    fn geneva9_compatibility_keeps_urw_raster_extended_metrics_and_wid_max() {
+        let bytes = super::bytes(FONT_GENEVA).expect("bundled Geneva bytes");
+        let (raw, raw_extended) = super::rasterize(FONT_GENEVA, 9, bytes, None).unwrap();
+        let (bundled, bundled_extended) = super::face(FONT_GENEVA, 9).unwrap();
+
+        assert_eq!(raw.data, bundled.data);
+        for (raw_glyph, bundled_glyph) in raw.glyphs.iter().zip(bundled.glyphs) {
+            assert_same_glyph_except_advance(raw_glyph, bundled_glyph);
+        }
+        for (raw_glyph, bundled_glyph) in raw_extended.glyphs.iter().zip(bundled_extended.glyphs) {
+            assert_eq!(raw_glyph.mac_code, bundled_glyph.mac_code);
+            assert_same_glyph_except_advance(&raw_glyph.glyph, &bundled_glyph.glyph);
+            assert_eq!(raw_glyph.glyph.advance, bundled_glyph.glyph.advance);
+        }
+        let expected_wid_max = GENEVA9_ADVANCES
+            .iter()
+            .copied()
+            .chain(raw_extended.glyphs.iter().map(|entry| entry.glyph.advance))
+            .max()
+            .unwrap();
+        assert_eq!(bundled.metrics.wid_max, i16::from(expected_wid_max));
+    }
+
+    #[test]
+    fn compatibility_does_not_change_other_bundled_faces_or_guest_sfnt_rasterization() {
+        for (font_id, size) in [
+            (FONT_GENEVA, 8),
+            (FONT_GENEVA, 10),
+            (FONT_APPLICATION, 10),
+            (FONT_HELVETICA, 9),
+        ] {
+            let bytes = super::bytes(font_id).unwrap();
+            let (raw, _) = super::rasterize(font_id, size, bytes, None).unwrap();
+            let (bundled, _) = super::face(font_id, size).unwrap();
+            assert_eq!(
+                raw.glyphs
+                    .iter()
+                    .map(|glyph| glyph.advance)
+                    .collect::<Vec<_>>(),
+                bundled
+                    .glyphs
+                    .iter()
+                    .map(|glyph| glyph.advance)
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        let guest_bytes = include_bytes!("urw/NimbusMonoPS-Regular.ttf");
+        let (guest, _) = super::rasterize(FONT_GENEVA, 9, guest_bytes, None).unwrap();
+        assert!(
+            guest
+                .glyphs
+                .windows(2)
+                .all(|pair| pair[0].advance == pair[1].advance),
+            "a guest sfnt registered as Geneva 9 must retain its monospaced metrics"
+        );
+    }
 
     #[test]
     fn menu_symbols_have_outline_coverage_at_both_resolutions() {
