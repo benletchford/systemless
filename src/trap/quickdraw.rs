@@ -24665,10 +24665,18 @@ impl super::TrapDispatcher {
         if count == 0 || count > 256 {
             return None;
         }
+        // Device color tables reserve ColorSpec.value for the Color Manager;
+        // their pixel values are implicit from each entry's ordinal position.
+        // Inside Macintosh Volume V (1986), "Color QuickDraw Resource Formats".
+        let uses_implicit_values = (bus.read_word(table_ptr + 4) & 0x8000) != 0;
         let mut clut = *self.device_clut;
         for ordinal in 0..count {
             let entry = table_ptr + 8 + ordinal as u32 * 8;
-            let value = usize::from(bus.read_word(entry));
+            let value = if uses_implicit_values {
+                ordinal
+            } else {
+                usize::from(bus.read_word(entry))
+            };
             if value < 256 {
                 clut[value] = [
                     bus.read_word(entry + 2),
@@ -25019,11 +25027,11 @@ impl super::TrapDispatcher {
             }
         }
 
-        let dst_clut = if is_screen_port {
-            *self.device_clut
-        } else {
-            self.read_port_clut(bus, bus.read_long(pix_map_ptr + 42))
-        };
+        // Expand into the destination port's logical ColorTable. The hardware
+        // CLUT can be transiently dimmed while the stored pixel indexes must
+        // retain their colors, as with DrawPicture above.
+        // Imaging With QuickDraw (1994), pp. 4-12..4-14 and 4-23.
+        let dst_clut = self.read_port_clut(bus, bus.read_long(pix_map_ptr + 42));
         let mut src_to_dst = [0u8; 256];
         for (value, dst) in src_to_dst.iter_mut().enumerate() {
             let rgb = src_clut[value];
@@ -34584,6 +34592,7 @@ mod tests {
         d.device_clut[7] = [0x1111, 0x0000, 0x0000];
         d.device_clut[8] = [0x0000, 0x2222, 0x0000];
         d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        *d.color_manager_clut = *d.device_clut;
 
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
@@ -34636,6 +34645,67 @@ mod tests {
         assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 1, 1), 8);
         assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 2, 1), 7);
         assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 3, 1), 8);
+    }
+
+    #[test]
+    fn fillcrect_raw_pixpat_uses_logical_screen_table_during_hardware_fade() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        *d.device_clut = [[0, 0, 0]; 256];
+        *d.color_manager_clut = [[0, 0, 0]; 256];
+
+        let logical_colors = [
+            [0x1111, 0x0000, 0x0000],
+            [0x0000, 0x2222, 0x0000],
+            [0x0000, 0x0000, 0x3333],
+        ];
+        let ctab_handle = make_test_ctab_handle(&mut bus, &logical_colors, 1, 0x8000);
+        let port = *d.current_port;
+        let pixmap = bus.read_long(bus.read_long(port + 2));
+        bus.write_long(pixmap + 42, ctab_handle);
+
+        let rect_ptr = bus.alloc(8);
+        write_rect(&mut bus, rect_ptr, 0, 0, 2, 4);
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let result = d.dispatch_quickdraw(true, 0x20E, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let expected = [[0, 1, 2, 1], [2, 1, 0, 1]];
+        for (y, row) in expected.iter().enumerate() {
+            for (x, expected_pixel) in row.iter().enumerate() {
+                assert_eq!(
+                    read_surface_pixel(&bus, screen_base, row_bytes, x as u32, y as u32),
+                    *expected_pixel,
+                    "raw PixPat must match the logical destination ColorTable during a hardware fade"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_pixpat_device_color_table_uses_ordinal_entry_positions() {
+        let (d, _cpu, mut bus) = setup();
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+        let pp_ptr = bus.read_long(pp_handle);
+        let pat_map = pp_ptr + bus.read_long(pp_ptr + 2);
+        let ctab = pp_ptr + bus.read_long(pat_map + 38);
+        bus.write_word(ctab + 4, 0x8000); // device table: values are implicit
+
+        let expected = [
+            [0x1111, 0x0000, 0x0000],
+            [0x0000, 0x2222, 0x0000],
+            [0x0000, 0x0000, 0x3333],
+        ];
+        for ordinal in 0..expected.len() {
+            bus.write_word(ctab + 8 + ordinal as u32 * 8, 0);
+        }
+
+        let pixpat = d
+            .decode_raw_pixpat(&bus, pp_handle)
+            .expect("raw type-1 PixPat should decode");
+        assert_eq!(&pixpat.clut[..expected.len()], &expected);
     }
 
     #[test]
@@ -34712,6 +34782,7 @@ mod tests {
         d.device_clut[7] = [0x1111, 0x0000, 0x0000];
         d.device_clut[8] = [0x0000, 0x2222, 0x0000];
         d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        *d.color_manager_clut = *d.device_clut;
 
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
@@ -34788,6 +34859,7 @@ mod tests {
         d.device_clut[7] = [0x1111, 0x0000, 0x0000];
         d.device_clut[8] = [0x0000, 0x2222, 0x0000];
         d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        *d.color_manager_clut = *d.device_clut;
 
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
