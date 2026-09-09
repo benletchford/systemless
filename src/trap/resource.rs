@@ -2606,7 +2606,16 @@ impl super::TrapDispatcher {
             // CurResFile ($A994): Returns the current resource-file refnum from the live Resource Manager search state
             (true, 0x194) => {
                 let sp = cpu.read_reg(Register::A7);
-                let refnum = self.current_resource_refnum();
+                let internal_refnum = self.current_resource_refnum();
+                // The initial application resource map uses internal key 0,
+                // while CurApRefNum stores its guest-visible FCB refnum.
+                // CurResFile reports the latter. Inside Macintosh Volume I,
+                // p. I-116.
+                let refnum = if internal_refnum == 0 {
+                    bus.read_word(addr::CUR_APREF_NUM)
+                } else {
+                    internal_refnum
+                };
                 if super::dispatch::trace_resfile_enabled() {
                     eprintln!(
                         "[TRAP] CurResFile -> {} (PC=${:08X})",
@@ -12419,6 +12428,17 @@ mod tests {
         assert_eq!(sp, TEST_SP, "SP should be unchanged");
         let refnum = bus.read_word(sp);
         assert_eq!(refnum, 0);
+    }
+
+    #[test]
+    fn cur_res_file_translates_the_internal_application_map_key_to_its_fcb_refnum() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(addr::CUR_APREF_NUM, 2);
+
+        call(&mut disp, true, 0x194, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(TEST_SP), 2);
     }
 
     // ================================================================
