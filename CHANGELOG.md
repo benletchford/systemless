@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.39.4](https://github.com/benletchford/systemless/compare/v0.39.3...v0.39.4) (2026-09-09)
+
+
+### Bug Fixes
+
+* **dialog:** restore the standard system alert icon ([#1639](https://github.com/benletchford/systemless/issues/1639)) ([715d605](https://github.com/benletchford/systemless/commit/715d605f9b71bc8672395d54a37a20ebb8081f22))
+* **fonts:** restore classic Geneva 9 advances ([7ef19f3](https://github.com/benletchford/systemless/commit/7ef19f3ed6c3d2e8833d135751c6b763bf567821))
+* **framebuffer:** preserve the classic desktop pattern ([#1631](https://github.com/benletchford/systemless/issues/1631)) ([5aca6a7](https://github.com/benletchford/systemless/commit/5aca6a76212f5ebff19fc74da7c65624dd7c25d1))
+* **framebuffer:** restore exposed desktop around windows ([#1636](https://github.com/benletchford/systemless/issues/1636)) ([d21ce0b](https://github.com/benletchford/systemless/commit/d21ce0bf4db519dfc5baca741d152ca78f5561e6))
+* **game:** mount packed disk volumes safely ([#1637](https://github.com/benletchford/systemless/issues/1637)) ([cd153c0](https://github.com/benletchford/systemless/commit/cd153c0a9ca8cdc929750388354715f154fc9840))
+* **quickdraw:** preserve raw PixPat colors ([#1635](https://github.com/benletchford/systemless/issues/1635)) ([b1cfe3d](https://github.com/benletchford/systemless/commit/b1cfe3d851d6c17016223239598ca79a60ad5f0e))
+* **resource:** report application refnum from CurResFile ([#1640](https://github.com/benletchford/systemless/issues/1640)) ([f22581c](https://github.com/benletchford/systemless/commit/f22581c791d5c106c6bcade3cf90814209afc391))
+* **runner:** preserve callbacks during tracking refires ([#1638](https://github.com/benletchford/systemless/issues/1638)) ([b08d37d](https://github.com/benletchford/systemless/commit/b08d37d50b0665510e3ab869ad8895c6e2a36966))
+
 ## [0.39.3](https://github.com/benletchford/systemless/compare/v0.39.2...v0.39.3) (2026-09-09)
 
 
