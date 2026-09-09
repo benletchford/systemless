@@ -4182,6 +4182,7 @@ fn draw_picture_text(
     let screen_w = screen_w as i32;
     let screen_h = screen_h as i32;
     let mut cur_h: i32 = pen_h as i32;
+    let styled_advance = |advance: i32| advance + i32::from(text_face & 0x01 != 0);
     let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
     let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
     for i in 0..len {
@@ -4261,9 +4262,9 @@ fn draw_picture_text(
                     }
                 }
             }
-            cur_h += glyph.advance as i32;
+            cur_h += styled_advance(glyph.advance as i32);
         } else {
-            cur_h += 6;
+            cur_h += styled_advance(6);
         }
     }
 }
@@ -7046,6 +7047,61 @@ mod tests {
             .chunks_exact(320)
             .skip(32)
             .any(|row| row[16..48].contains(&255)));
+    }
+
+    fn render_v1_styled_text_pair(face: u8, missing: bool) -> (Vec<u8>, Vec<u8>) {
+        let glyph_advance = i16::from(
+            crate::quickdraw::text::get_glyph(3, 9, 'A')
+                .expect("bundled Geneva substitute must contain A")
+                .0
+                .advance,
+        );
+        let picture = |face: u8, split: bool, missing: bool| {
+            let mut commands = Vec::new();
+            commands.extend_from_slice(&[0x03, 0x00, 0x03]); // TxFont Geneva
+            commands.extend_from_slice(&[0x04, face]); // TxFace
+            commands.extend_from_slice(&[0x0D, 0x00, 0x09]); // TxSize 9
+            if split {
+                push_v1_long_text(&mut commands, 20, 20, b"A");
+                push_v1_long_text(
+                    &mut commands,
+                    20,
+                    20 + glyph_advance
+                        + i16::from(face & 1)
+                        + if missing { 6 + i16::from(face & 1) } else { 0 },
+                    b"A",
+                );
+            } else {
+                push_v1_long_text(
+                    &mut commands,
+                    20,
+                    20,
+                    if missing { b"A\x01A" } else { b"AA" },
+                );
+            }
+            finish_v1_picture((0, 0, 48, 80), &commands)
+        };
+
+        (
+            render_text_picture(&picture(face, false, missing), 80, 48),
+            render_text_picture(&picture(face, true, missing), 80, 48),
+        )
+    }
+
+    #[test]
+    fn pict_v1_bold_text_advances_each_glyph_by_style_width() {
+        let (plain_run, plain_absolute) = render_v1_styled_text_pair(0, false);
+        assert_eq!(plain_run, plain_absolute);
+        assert!(plain_run.contains(&255));
+
+        let (bold_run, bold_absolute) = render_v1_styled_text_pair(1, false);
+        assert_eq!(bold_run, bold_absolute);
+    }
+
+    #[test]
+    fn pict_v1_bold_text_advances_missing_glyphs_by_style_width() {
+        let (bold_missing_run, bold_missing_absolute) = render_v1_styled_text_pair(1, true);
+        assert_eq!(bold_missing_run, bold_missing_absolute);
     }
 
     #[test]
