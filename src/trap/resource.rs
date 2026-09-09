@@ -1835,6 +1835,18 @@ impl super::TrapDispatcher {
                     eprintln!("[RSRC] GetResource('snd ', {}) -> not found", res_id);
                 }
 
+                if res_type == *b"ICON" {
+                    if let Some(ptr) = self.synthesize_system_icon(bus, res_id) {
+                        let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0);
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"STR " {
                     if let Some(ptr) = self.synthesize_system_str(bus, res_id) {
                         let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
@@ -9841,6 +9853,22 @@ mod tests {
     // ================================================================
     // 1b. GetResource (0x1A0) — not found
     // ================================================================
+    #[test]
+    fn get_resource_returns_standard_system_icon_one_after_application_chain_miss() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 1u16);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"ICON"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        let ptr = bus.read_long(handle);
+        assert_eq!(bus.get_alloc_size(ptr), Some(128));
+        assert_eq!(bus.read_long(ptr), 0xFFFF_FFFF);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
     #[test]
     fn get_resource_miss_returns_nil_with_noerr() {
         let (mut disp, mut cpu, mut bus) = setup();
