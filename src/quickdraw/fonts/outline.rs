@@ -34,6 +34,7 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
         size,
         bytes,
         super::compatibility::bundled_advances(font_id, size),
+        super::compatibility::bundled_wid_max(font_id, size),
     )?;
     cache.insert((font_id, size), faces);
     Some(faces)
@@ -74,6 +75,7 @@ pub(super) fn rasterize(
     size: i16,
     bytes: &'static [u8],
     compatibility_advances: Option<&'static [u8; 95]>,
+    compatibility_wid_max: Option<i16>,
 ) -> Option<Faces> {
     use skrifa::{
         instance::{LocationRef, Size},
@@ -186,7 +188,20 @@ pub(super) fn rasterize(
             .max()
             .unwrap_or(0),
     );
-    let wid_max = all().map(|g| i16::from(g.advance)).max().unwrap_or(0);
+    let mapped_wid_max = all().map(|g| i16::from(g.advance)).max().unwrap_or(0);
+    // Inside Macintosh: Text (1993), pp. 3-66 and 3-74: GetFontInfo.widMax
+    // is the integer width of the largest glyph in the selected font.
+    let selected_wid_max = if let Some(wid_max) = compatibility_wid_max {
+        wid_max
+    } else if compatibility_advances.is_some() {
+        mapped_wid_max
+    } else {
+        metrics
+            .max_width
+            .map(|width| width.round().clamp(0.0, f32::from(i16::MAX)) as i16)
+            .unwrap_or(mapped_wid_max)
+    };
+    let wid_max = selected_wid_max.max(mapped_wid_max);
     let data = Box::leak(data.into_boxed_slice());
     let face = Box::leak(Box::new(FontFace {
         font_id,
@@ -431,7 +446,7 @@ mod tests {
     #[test]
     fn geneva9_compatibility_keeps_urw_raster_extended_metrics_and_wid_max() {
         let bytes = super::bytes(FONT_GENEVA).expect("bundled Geneva bytes");
-        let (raw, raw_extended) = super::rasterize(FONT_GENEVA, 9, bytes, None).unwrap();
+        let (raw, raw_extended) = super::rasterize(FONT_GENEVA, 9, bytes, None, None).unwrap();
         let (bundled, bundled_extended) = super::face(FONT_GENEVA, 9).unwrap();
 
         assert_eq!(raw.data, bundled.data);
@@ -453,15 +468,50 @@ mod tests {
     }
 
     #[test]
+    fn monaco_compatibility_changes_only_the_selected_maximum_advance() {
+        let bytes = super::bytes(FONT_MONACO).expect("bundled Monaco bytes");
+        for size in [14, 23] {
+            let (raw, raw_extended) =
+                super::rasterize(FONT_MONACO, size, bytes, None, None).unwrap();
+            let (bundled, bundled_extended) = super::face(FONT_MONACO, size).unwrap();
+
+            assert_eq!(raw.data, bundled.data);
+            assert_eq!(raw.glyphs.len(), bundled.glyphs.len());
+            for (raw_glyph, bundled_glyph) in raw.glyphs.iter().zip(bundled.glyphs) {
+                assert_same_glyph_except_advance(raw_glyph, bundled_glyph);
+                assert_eq!(raw_glyph.advance, bundled_glyph.advance);
+            }
+            assert_eq!(raw_extended.data, bundled_extended.data);
+            assert_eq!(raw_extended.glyphs.len(), bundled_extended.glyphs.len());
+            for (raw_glyph, bundled_glyph) in raw_extended
+                .glyphs
+                .iter()
+                .zip(bundled_extended.glyphs)
+            {
+                assert_eq!(raw_glyph.mac_code, bundled_glyph.mac_code);
+                assert_same_glyph_except_advance(&raw_glyph.glyph, &bundled_glyph.glyph);
+                assert_eq!(raw_glyph.glyph.advance, bundled_glyph.glyph.advance);
+            }
+            assert_eq!(
+                bundled.metrics.wid_max,
+                super::super::compatibility::bundled_wid_max(FONT_MONACO, size)
+                    .expect("classic scalable Monaco maximum advance")
+            );
+            assert_ne!(raw.metrics.wid_max, bundled.metrics.wid_max);
+        }
+    }
+
+    #[test]
     fn compatibility_does_not_change_other_bundled_faces_or_guest_sfnt_rasterization() {
         for (font_id, size) in [
             (FONT_GENEVA, 8),
             (FONT_GENEVA, 10),
             (FONT_APPLICATION, 10),
             (FONT_HELVETICA, 9),
+            (FONT_COURIER, 23),
         ] {
             let bytes = super::bytes(font_id).unwrap();
-            let (raw, _) = super::rasterize(font_id, size, bytes, None).unwrap();
+            let (raw, _) = super::rasterize(font_id, size, bytes, None, None).unwrap();
             let (bundled, _) = super::face(font_id, size).unwrap();
             assert_eq!(
                 raw.glyphs
@@ -474,10 +524,11 @@ mod tests {
                     .map(|glyph| glyph.advance)
                     .collect::<Vec<_>>()
             );
+            assert_eq!(raw.metrics.wid_max, bundled.metrics.wid_max);
         }
 
         let guest_bytes = include_bytes!("urw/NimbusMonoPS-Regular.ttf");
-        let (guest, _) = super::rasterize(FONT_GENEVA, 9, guest_bytes, None).unwrap();
+        let (guest, _) = super::rasterize(FONT_GENEVA, 9, guest_bytes, None, None).unwrap();
         assert!(
             guest
                 .glyphs
