@@ -1849,7 +1849,8 @@ fn test_toolbox_showcase() {
     assert_eq!(initial_te.text, original_text);
     assert_eq!(initial_te.selection, (0, 0));
     assert!(initial_te.active);
-    assert_eq!(initial_te.line_count, 5);
+    // The classic Geneva 9 advances wrap this text into six lines.
+    assert_eq!(initial_te.line_count, 6);
     assert_reference_frame(&mut runner, "10-te-initial.png");
 
     drag_mouse(
@@ -1861,8 +1862,8 @@ fn test_toolbox_showcase() {
     );
     run_ticks(&mut runner, "TextEdit mouse selection", 1);
     let mouse_selection = showcase_textedit(&mut runner);
-    // The bundled outline advances place this drag after character 16.
-    assert_eq!(mouse_selection.selection, (0, 16));
+    // The classic Geneva 9 advances place this drag after character 15.
+    assert_eq!(mouse_selection.selection, (0, 15));
     assert_eq!(mouse_selection.text, original_text);
     assert!(mouse_selection.active);
     assert_reference_frame(&mut runner, "10-te-mouse-selected.png");
@@ -2536,8 +2537,8 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     let page_dialog_sample = screen_rgb(&mut runner, 212, 223);
     let page_save_dialog_sample = screen_rgb(&mut runner, 227, 221);
-    // Sample the native list border, outside any font-dependent ink.
-    let legacy_get_sample_point = if powerpc { (100, 235) } else { (50, 0) };
+    // Sample persistent page/dialog contrast outside font-dependent ink.
+    let legacy_get_sample_point = if powerpc { (160, 10) } else { (50, 0) };
     let legacy_save_sample_point = if powerpc { (71, 200) } else { (227, 221) };
     let page_legacy_get_sample = screen_rgb(
         &mut runner,

@@ -351,11 +351,15 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 Systemless uses bundled URW Core 35 TrueType fonts by default. Skrifa hints
 outlines at the requested point size and Zeno rasterizes them, without relying
 on fonts installed on the host. Noto Sans Symbols 2 supplies missing menu symbols.
-Guest FONT/NFNT/sfnt resources and explicit local bitmap overrides take precedence.
+For unresolved Application and Geneva requests at 9 points, URW still supplies
+the raster masks and bearings while a [separately sourced compatibility table](src/quickdraw/fonts/compatibility/README.md)
+supplies printable-ASCII advances. Guest FONT/NFNT/sfnt resources and explicit
+local bitmap overrides take precedence.
 
 The old hand-drawn font catalogue has been removed. Classic family names remain
-compatibility identifiers; the substitutes have their own metrics, so text widths
-and wrapping can differ from Apple's fonts. See the
+compatibility identifiers; except for the documented Geneva 9 ASCII advances,
+the substitutes have their own metrics, so text widths and wrapping can differ
+from Apple's fonts. See the
 [family mapping and URW provenance](src/quickdraw/fonts/urw/README.md) and
 [Noto provenance](src/quickdraw/fonts/noto/README.md).
 
@@ -427,8 +431,9 @@ Systemless intentionally diverges from it, and why.
 The open-source Systemless emulator/runtime is licensed under
 GPL-3.0-or-later.
 
-Some components have additional component-specific licensing, including the
-original Systemless bitmap fonts under the SIL Open Font License 1.1.
+Some components have additional component-specific licensing, including bundled
+fonts and [Geneva 9 compatibility advances](src/quickdraw/fonts/compatibility/README.md)
+under the SIL Open Font License 1.1.
 
-See [LICENSING.md](./LICENSING.md), [LICENSE](./LICENSE), and
-[OFL.txt](./OFL.txt) for details.
+See [LICENSING.md](./LICENSING.md), [LICENSE](./LICENSE), and the
+[component OFL notice](src/quickdraw/fonts/compatibility/OFL.txt) for details.

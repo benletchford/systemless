@@ -30496,6 +30496,133 @@ mod tests {
     }
 
     #[test]
+    fn geneva9_bold_draw_and_measure_paths_share_classic_phrase_advance() {
+        const TEXT: &[u8] = b"This is your shooter.  There are many like it, ";
+        const EXPECTED: i16 = 254;
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.tx_font = crate::quickdraw::fonts::FONT_GENEVA;
+        d.tx_size = 9;
+        d.tx_face = 1; // bold
+        let pascal = 0x300000u32;
+        let raw = 0x300100u32;
+        bus.write_byte(pascal, TEXT.len() as u8);
+        bus.write_bytes(pascal + 1, TEXT);
+        bus.write_bytes(raw, TEXT);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pascal);
+        d.dispatch_quickdraw(true, 0x08C, &mut cpu, &mut bus).unwrap().unwrap();
+        let string_width = bus.read_word(TEST_SP + 4) as i16;
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, TEXT.len() as u16);
+        bus.write_word(TEST_SP + 2, 0);
+        bus.write_long(TEST_SP + 4, raw);
+        d.dispatch_quickdraw(true, 0x086, &mut cpu, &mut bus).unwrap().unwrap();
+        let text_width = bus.read_word(TEST_SP + 8) as i16;
+
+        let numer = 0x300200u32;
+        let denom = 0x300204u32;
+        let info = 0x300208u32;
+        for point in [numer, denom] {
+            bus.write_word(point, 1);
+            bus.write_word(point + 2, 1);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, info);
+        bus.write_long(TEST_SP + 4, denom);
+        bus.write_long(TEST_SP + 8, numer);
+        bus.write_long(TEST_SP + 12, raw);
+        bus.write_word(TEST_SP + 16, TEXT.len() as u16);
+        d.dispatch_quickdraw(true, 0x0ED, &mut cpu, &mut bus).unwrap().unwrap();
+        let std_tx_meas = bus.read_word(TEST_SP + 18) as i16;
+
+        let char_locs = 0x300300u32;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, char_locs);
+        bus.write_long(TEST_SP + 4, raw);
+        bus.write_word(TEST_SP + 8, TEXT.len() as u16);
+        d.dispatch_quickdraw(true, 0x037, &mut cpu, &mut bus).unwrap().unwrap();
+        let measure_text = bus.read_word(char_locs + TEXT.len() as u32 * 2) as i16;
+
+        let mut char_width_sum = 0i16;
+        for byte in TEXT {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, u16::from(*byte));
+            d.dispatch_quickdraw(true, 0x08D, &mut cpu, &mut bus).unwrap().unwrap();
+            char_width_sum += bus.read_word(TEST_SP + 2) as i16;
+        }
+
+        d.pn_loc = (32, 20);
+        for byte in TEXT {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, u16::from(*byte));
+            d.dispatch_quickdraw(true, 0x083, &mut cpu, &mut bus).unwrap().unwrap();
+        }
+        let draw_char = d.pn_loc.1 - 20;
+
+        d.pn_loc = (40, 20);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pascal);
+        d.dispatch_quickdraw(true, 0x084, &mut cpu, &mut bus).unwrap().unwrap();
+        let draw_string = d.pn_loc.1 - 20;
+
+        d.pn_loc = (56, 20);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, TEXT.len() as u16);
+        bus.write_word(TEST_SP + 2, 0);
+        bus.write_long(TEST_SP + 4, raw);
+        d.dispatch_quickdraw(true, 0x085, &mut cpu, &mut bus).unwrap().unwrap();
+        let draw_text = d.pn_loc.1 - 20;
+
+        assert_eq!(
+            [string_width, text_width, std_tx_meas, measure_text,
+             char_width_sum, draw_char, draw_string, draw_text],
+            [EXPECTED; 8]
+        );
+    }
+
+    #[test]
+    fn geneva9_compatibility_keeps_missing_glyph_style_advance_separate() {
+        const TEXT: &[u8] = b"A\x01A";
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.tx_font = crate::quickdraw::fonts::FONT_GENEVA;
+        d.tx_size = 9;
+        d.tx_face = 1; // bold: classic A is 7+1; missing remains 6+1
+        let pascal = 0x300000u32;
+        let raw = 0x300100u32;
+        bus.write_byte(pascal, TEXT.len() as u8);
+        bus.write_bytes(pascal + 1, TEXT);
+        bus.write_bytes(raw, TEXT);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        d.dispatch_quickdraw(true, 0x08D, &mut cpu, &mut bus).unwrap().unwrap();
+        let missing_char_width = bus.read_word(TEST_SP + 2) as i16;
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pascal);
+        d.dispatch_quickdraw(true, 0x08C, &mut cpu, &mut bus).unwrap().unwrap();
+        let string_width = bus.read_word(TEST_SP + 4) as i16;
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, TEXT.len() as u16);
+        bus.write_word(TEST_SP + 2, 0);
+        bus.write_long(TEST_SP + 4, raw);
+        d.dispatch_quickdraw(true, 0x086, &mut cpu, &mut bus).unwrap().unwrap();
+        let text_width = bus.read_word(TEST_SP + 8) as i16;
+
+        d.pn_loc = (40, 20);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pascal);
+        d.dispatch_quickdraw(true, 0x084, &mut cpu, &mut bus).unwrap().unwrap();
+        let draw_width = d.pn_loc.1 - 20;
+
+        assert_eq!(missing_char_width, 7);
+        assert_eq!([string_width, text_width, draw_width], [23; 3]);
+    }
+
+    #[test]
     fn test_text_width() {
         let (mut d, mut cpu, mut bus) = setup();
         let buf = 0x300000u32;
