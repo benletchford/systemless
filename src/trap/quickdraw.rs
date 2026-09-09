@@ -17720,7 +17720,7 @@ impl super::TrapDispatcher {
     }
 
     /// Read a 256-entry CLUT from a CTabHandle in guest memory.
-    /// Falls back to the device CLUT if the handle is NULL.
+    /// Falls back to the Color Manager shadow if the handle is NULL.
     /// Imaging With QuickDraw 1994, p. 4-82
     fn read_port_clut_with_provenance(
         &self,
@@ -17728,14 +17728,6 @@ impl super::TrapDispatcher {
         ctab_handle: u32,
     ) -> ([[u16; 3]; 256], bool) {
         if ctab_handle == 0 {
-            return (*self.color_manager_clut, true);
-        }
-        let screen_ctab_handle = if self.main_gdevice_handle != 0 {
-            Self::gdevice_ctab_handle(bus, self.main_gdevice_handle)
-        } else {
-            0
-        };
-        if ctab_handle == screen_ctab_handle {
             return (*self.color_manager_clut, true);
         }
         let handle_is_mapped = bus.is_guest_address_mapped(ctab_handle, 4);
@@ -17776,27 +17768,25 @@ impl super::TrapDispatcher {
     fn read_indexed_destination_clut_with_provenance(
         &self,
         bus: &MacMemoryBus,
-        ctab_handle: u32,
+        mut ctab_handle: u32,
         pixel_size: u32,
         screen_destination: bool,
     ) -> Option<([[u16; 3]; 256], bool)> {
         if !matches!(pixel_size, 1 | 2 | 4 | 8) {
             return None;
         }
+        if screen_destination && ctab_handle == 0 && self.main_gdevice_handle != 0 {
+            ctab_handle = Self::gdevice_ctab_handle(bus, self.main_gdevice_handle);
+        }
         let (mut clut, known) = if pixel_size == 1 {
             let mut monochrome = [[0u16; 3]; 256];
             monochrome[0] = [0xFFFF, 0xFFFF, 0xFFFF];
             (monochrome, true)
-        } else if screen_destination {
-            // CopyBits uses the current GDevice's ColorTable for an indexed
-            // destination because the Color Manager needs that table's
-            // inverse table to translate source colors to destination
-            // indices. In this model `color_manager_clut` is the effective
-            // logical GDevice table; `device_clut` is the transient physical
-            // hardware view used while fades are in progress. Imaging With
-            // QuickDraw (1994), p. 3-117.
-            (*self.color_manager_clut, true)
         } else {
+            // CopyBits uses the destination GDevice's ColorTable for indexed
+            // color matching. The private Color Manager and physical display
+            // CLUTs have separate bookkeeping roles and cannot replace that
+            // guest table. Imaging With QuickDraw (1994), p. 3-117.
             self.read_port_clut_with_provenance(bus, ctab_handle)
         };
         if pixel_size < 8 {
@@ -19154,12 +19144,10 @@ impl super::TrapDispatcher {
             return dst_info.ctab_handle;
         }
 
-        // Screen-targeted blits should use the live device CLUT view
-        // (color_manager_clut, returned via ctab_handle 0). The GDevice's
-        // in-memory ColorTable may be stale — during seeded palette windows,
-        // PreserveSeededPicture updates device_clut and color_manager_clut
-        // but skips the GDevice ctab write. Check the screen case FIRST
-        // so we never return the GDevice ctab handle for screen blits.
+        // Keep the screen sentinel so indexed destination lookup can resolve
+        // the main GDevice ColorTable at the point of color matching. It may
+        // fall back to the private Color Manager shadow only when no usable
+        // guest screen table exists.
         if dst_info.base == self.screen_mode.0
             && dst_info.row_bytes == self.screen_mode.1
             && dst_info.pixel_size == u32::from(self.screen_mode.4)
@@ -23830,13 +23818,6 @@ impl super::TrapDispatcher {
             return;
         }
         self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
-        let target_gdh = if self.main_gdevice_handle != 0 {
-            self.main_gdevice_handle
-        } else {
-            self.palette_target_gdevice_handle(bus)
-        };
-        let ctab_handle = Self::gdevice_ctab_handle(bus, target_gdh);
-        let _ = self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count, None);
         // Note: color_manager_clut is NOT updated here. Low-level video
         // driver SetEntries only changes the hardware CLUT for palette
         // animation. QuickDraw's index mapping (ITable) stays stable.
@@ -23850,8 +23831,8 @@ impl super::TrapDispatcher {
         count: i16,
     ) {
         let num_entries = (count + 1) as u32;
-        // Low-level SetEntries always targets the screen's hardware CLUT
-        // and GDevice ColorTable, regardless of the current GrafPort.
+        // Low-level SetEntries always targets the screen's hardware CLUT,
+        // regardless of the current GrafPort.
         // On real Mac OS, the video driver SetEntries operates on the
         // screen device even when an offscreen GWorld is current.
         // Inside Macintosh Volume V, V-143
@@ -23993,7 +23974,8 @@ impl super::TrapDispatcher {
         if !Self::set_entries_request_in_range(bus, table_ptr, start, count) {
             return;
         }
-        if !*self.device_gamma_explicit {
+        let target_is_screen = self.set_entries_target_is_screen(bus);
+        if target_is_screen && !*self.device_gamma_explicit {
             *self.device_gamma = crate::display::default_display_gamma();
         }
         let incoming_default_palette = start == 0
@@ -24007,7 +23989,7 @@ impl super::TrapDispatcher {
         // next scene's SetEntries / SeedFromPicture can publish a fresh
         // cm[] without being blocked by the prior scene's palette.
         // Inside Macintosh Volume V, V-143.
-        let preserve_seeded_picture_palette = self.set_entries_target_is_screen(bus)
+        let preserve_seeded_picture_palette = target_is_screen
             && incoming_default_palette
             && self.current_tick() < self.seeded_picture_palette_until_tick
             && !Self::uses_canonical_system_8bpp_clut(&self.seeded_picture_palette);
@@ -24069,7 +24051,6 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let target_is_screen = self.set_entries_target_is_screen(bus);
         let is_full_replace = start == 0 && count == 255;
         let previous_frame_was_dimmed =
             Self::clut_is_dimmed_derivative_of(&self.device_clut, &self.color_manager_clut);
@@ -24080,7 +24061,9 @@ impl super::TrapDispatcher {
         // second-guess the caller with a "looks like a fade" bypass that
         // substitutes a scaled `color_manager_clut`.
         //
-        self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
+        if target_is_screen {
+            self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
+        }
         // Publish `device_clut → color_manager_clut` only on a full-replace
         // SetEntries (start=0, count=255) that represents a fresh palette
         // install. Static dark scene palettes still need to publish so
@@ -24112,11 +24095,11 @@ impl super::TrapDispatcher {
                         table_ptr,
                         &self.color_manager_clut,
                     )));
-        if is_full_replace {
+        if target_is_screen && is_full_replace {
             // Only a full-table update of the screen GDevice can put the
             // screen hardware into this transient-fade state. Offscreen
             // palette installs must never affect screen CopyBits decisions.
-            self.screen_palette_fade_active = target_is_screen && transient_fade_table;
+            self.screen_palette_fade_active = transient_fade_table;
         }
         // In sequence mode, ColorSpec.value is ignored; it is commonly filled
         // with a repeated Color Manager client ID. The RGB fields still replace
@@ -24160,11 +24143,7 @@ impl super::TrapDispatcher {
     }
 
     fn set_entries_target_gdevice_handle(&self, bus: &MacMemoryBus) -> u32 {
-        if self.main_gdevice_handle != 0 {
-            self.main_gdevice_handle
-        } else {
-            self.palette_target_gdevice_handle(bus)
-        }
+        self.palette_target_gdevice_handle(bus)
     }
 
     fn set_entries_target_is_screen(&self, bus: &MacMemoryBus) -> bool {
@@ -27475,12 +27454,13 @@ mod tests {
     }
 
     #[test]
-    fn test_set_entries_reseeds_gdevice_color_table() {
+    fn palette_authority_low_level_set_entries_only_changes_hardware() {
         let (mut d, _cpu, mut bus) = setup();
         d.ensure_main_gdevice(&mut bus);
         let ctab_handle = d.current_gdevice_ctab_handle(&bus);
         let ctab_ptr = bus.read_long(ctab_handle);
-        let initial_seed = bus.read_long(ctab_ptr);
+        let before_ctab = bus.read_bytes(ctab_ptr, 8 + 256 * 8);
+        let before_shadow = *d.color_manager_clut;
 
         let table_ptr = bus.alloc(8);
         bus.write_word(table_ptr, 1); // value
@@ -27490,12 +27470,9 @@ mod tests {
 
         d.apply_set_entries(&mut bus, table_ptr, -1, 0);
 
-        let reseeded = bus.read_long(ctab_ptr);
-        let entry = ctab_ptr + 8 + 8; // index 1
-        assert_eq!(bus.read_word(entry + 2), 0x1111);
-        assert_eq!(bus.read_word(entry + 4), 0x2222);
-        assert_eq!(bus.read_word(entry + 6), 0x3333);
-        assert_ne!(reseeded, initial_seed);
+        assert_eq!(d.device_clut[1], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(bus.read_bytes(ctab_ptr, 8 + 256 * 8), before_ctab);
+        assert_eq!(*d.color_manager_clut, before_shadow);
     }
 
     #[test]
@@ -27518,6 +27495,7 @@ mod tests {
         assert_eq!(bus.read_word(entry + 2), 0x1111);
         assert_eq!(bus.read_word(entry + 4), 0x2222);
         assert_eq!(bus.read_word(entry + 6), 0x3333);
+        assert_eq!(d.device_clut[17], [0x1111, 0x2222, 0x3333]);
         assert_eq!(
             bus.read_long(ctab_ptr),
             next_seed,
@@ -27553,6 +27531,25 @@ mod tests {
         bus.write_word(entry + 6, 0xCCCC);
         let updated_clut = d.read_port_clut(&bus, ctab_handle);
         assert_eq!(updated_clut[5], [0xAAAA, 0xBBBB, 0xCCCC]);
+    }
+
+    #[test]
+    fn palette_authority_screen_destination_uses_guest_gdevice_table() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+        let ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, main_gdh);
+        let ctab_ptr = bus.read_long(ctab_handle);
+        let entry = ctab_ptr + 8 + 42 * 8;
+        bus.write_word(entry + 2, 0x1111);
+        bus.write_word(entry + 4, 0x7777);
+        bus.write_word(entry + 6, 0xDDDD);
+        *d.color_manager_clut = [[0xFFFE; 3]; 256];
+
+        let clut = d
+            .read_indexed_destination_clut(&bus, 0, 8, true)
+            .expect("8-bit indexed destination");
+
+        assert_eq!(clut[42], [0x1111, 0x7777, 0xDDDD]);
     }
 
     #[test]
@@ -27619,7 +27616,7 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_bits_destination_ctab_uses_live_device_clut_for_screen_blit() {
+    fn test_copy_bits_destination_ctab_defers_screen_gdevice_resolution() {
         let (mut d, _cpu, mut bus) = setup();
         d.ensure_main_gdevice(&mut bus);
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
@@ -45275,10 +45272,13 @@ mod tests {
     }
 
     #[test]
-    fn test_low_level_set_entries_updates_screen_ctab_not_current_offscreen_gworld() {
+    fn test_low_level_set_entries_updates_screen_hardware_not_guest_ctables() {
         let (mut d, mut cpu, mut bus) = setup();
         let main_gdh = d.ensure_main_gdevice(&mut bus);
         let main_ctab = TrapDispatcher::gdevice_ctab_handle(&bus, main_gdh);
+        let main_ctab_ptr = bus.read_long(main_ctab);
+        let before_main = bus.read_bytes(main_ctab_ptr, 8 + 256 * 8);
+        let before_shadow = *d.color_manager_clut;
 
         let bounds_ptr = 0x300000u32;
         let gworld_ptr_ptr = 0x300100u32;
@@ -45314,11 +45314,8 @@ mod tests {
         bus.write_word(table_ptr + 6, 0x3333);
         d.apply_set_entries(&mut bus, table_ptr, -1, 0);
 
-        let main_ctab_ptr = bus.read_long(main_ctab);
-        let main_entry = main_ctab_ptr + 8 + 17 * 8;
-        assert_eq!(bus.read_word(main_entry + 2), 0x1111);
-        assert_eq!(bus.read_word(main_entry + 4), 0x2222);
-        assert_eq!(bus.read_word(main_entry + 6), 0x3333);
+        assert_eq!(d.device_clut[17], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(bus.read_bytes(main_ctab_ptr, 8 + 256 * 8), before_main);
         assert_eq!(
             [
                 bus.read_word(gw_entry + 2),
@@ -45327,6 +45324,7 @@ mod tests {
             ],
             before_offscreen
         );
+        assert_eq!(*d.color_manager_clut, before_shadow);
     }
 
     // $AB1C is not documented as SetGWorld; Systemless treats it as a no-op.
@@ -47457,10 +47455,18 @@ mod tests {
         d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
 
         let target_rgb = [0x1357, 0x2468, 0x369C];
+        let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let screen_ctab = bus.read_long(screen_ctab_handle);
+        for (index, rgb) in [(7u32, [0, 0, 0]), (42, target_rgb)] {
+            let entry = screen_ctab + 8 + index * 8;
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
         d.device_clut[7] = [0, 0, 0];
         d.device_clut[42] = target_rgb;
-        d.color_manager_clut[7] = [0, 0, 0];
-        d.color_manager_clut[42] = target_rgb;
+        d.color_manager_clut[7] = [0xEEEE; 3];
+        d.color_manager_clut[42] = [0xEEEE; 3];
 
         let port = bus.alloc(64);
         bus.write_long(port + 2, pixmap_handle);
@@ -48140,58 +48146,67 @@ mod tests {
     }
 
     #[test]
-    fn test_setentries_publishes_screen_palette_when_offscreen_gdevice_current() {
-        let (mut d, _cpu, mut bus) = setup_with_port();
+    fn palette_authority_setentries_targets_current_gdevice() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
         let main_gdh = d.ensure_main_gdevice(&mut bus);
-        let main_gd = bus.read_long(main_gdh);
-        let main_pm_handle = bus.read_long(main_gd + 22);
-        let main_pm = bus.read_long(main_pm_handle);
-        let main_ctab_handle = bus.read_long(main_pm + 42);
+        let main_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, main_gdh);
         let main_ctab = bus.read_long(main_ctab_handle);
+        let before_main_ctab = bus.read_bytes(main_ctab, 8 + 256 * 8);
+        let before_device = *d.device_clut;
+        let before_shadow = *d.color_manager_clut;
 
-        let offscreen_pixmap = 0x337000u32;
-        let offscreen_ctab_handle = 0x337200u32;
-        let offscreen_pm_handle = 0x337400u32;
-        let offscreen_gd = 0x337500u32;
-        let offscreen_gdh = 0x337600u32;
-        write_color_table(
-            &mut bus,
-            offscreen_ctab_handle,
-            0,
-            &[(0, 0x1111, 0x2222, 0x3333)],
-        );
+        let offscreen_ctab_handle = 0x337000u32;
+        let offscreen_pixmap = 0x337A00u32;
+        let offscreen_pm_handle = 0x337B00u32;
+        let offscreen_gd = 0x337C00u32;
+        let offscreen_gdh = 0x337D00u32;
+        let entries: Vec<_> = (0..256u16)
+            .map(|index| (index, 0x1111, 0x2222, 0x3333))
+            .collect();
+        write_color_table(&mut bus, offscreen_ctab_handle, 0x1234_5678, &entries);
+        let offscreen_ctab = bus.read_long(offscreen_ctab_handle);
+        bus.write_word(offscreen_ctab + 4, 0x8000);
+        let offscreen_entry_42 = offscreen_ctab + 8 + 42 * 8;
+        bus.write_word(offscreen_entry_42, 0xA5FE);
         write_pixmap_8(
             &mut bus,
             offscreen_pixmap,
-            0x338000,
+            0x338000u32,
             1,
             1,
             offscreen_ctab_handle,
         );
         bus.write_long(offscreen_pm_handle, offscreen_pixmap);
+        bus.write_word(offscreen_gd + 2, 0x007A);
         bus.write_long(offscreen_gd + 22, offscreen_pm_handle);
         bus.write_long(offscreen_gdh, offscreen_gd);
         *d.current_gdevice = offscreen_gdh;
+        bus.write_long(0x0CC8, offscreen_gdh);
+        let before_offscreen_seed = bus.read_long(offscreen_ctab);
 
         let table_ptr = 0x339000u32;
-        for index in 0..256u32 {
-            let entry = table_ptr + index * 8;
-            bus.write_word(entry, index as u16);
-            bus.write_word(entry + 2, (index as u16) << 8);
-            bus.write_word(entry + 4, ((255 - index) as u16) << 8);
-            bus.write_word(entry + 6, 0x5500);
-        }
+        bus.write_word(table_ptr, 0xDEAD);
+        bus.write_word(table_ptr + 2, 0x4444);
+        bus.write_word(table_ptr + 4, 0x5555);
+        bus.write_word(table_ptr + 6, 0x6666);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, table_ptr);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 6, 42);
 
-        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+        let result = d.dispatch_quickdraw(true, 0x23F, &mut cpu, &mut bus);
 
-        assert_eq!(d.device_clut[42], [0x2A00, 0xD500, 0x5500]);
-        assert_eq!(d.color_manager_clut[42], [0x2A00, 0xD500, 0x5500]);
-        let main_entry_42 = main_ctab + 8 + 42 * 8;
-        assert_eq!(bus.read_word(main_entry_42 + 2), 0x2A00);
-        assert_eq!(bus.read_word(main_entry_42 + 4), 0xD500);
-        assert_eq!(bus.read_word(main_entry_42 + 6), 0x5500);
-        let offscreen_ctab = bus.read_long(offscreen_ctab_handle);
-        assert_eq!(bus.read_word(offscreen_ctab + 8 + 2), 0x1111);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_long(0x0CC8), offscreen_gdh);
+        assert_eq!(bus.read_word(offscreen_entry_42), 0xA57A);
+        assert_eq!(bus.read_word(offscreen_entry_42 + 2), 0x4444);
+        assert_eq!(bus.read_word(offscreen_entry_42 + 4), 0x5555);
+        assert_eq!(bus.read_word(offscreen_entry_42 + 6), 0x6666);
+        assert_ne!(bus.read_long(offscreen_ctab), before_offscreen_seed);
+        assert_eq!(bus.read_bytes(main_ctab, 8 + 256 * 8), before_main_ctab);
+        assert_eq!(*d.device_clut, before_device);
+        assert_eq!(*d.color_manager_clut, before_shadow);
     }
 
     #[test]

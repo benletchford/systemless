@@ -6321,6 +6321,23 @@ mod redraw_chrome_tests {
         handle
     }
 
+    fn write_ctab_colors(
+        bus: &mut crate::memory::MacMemoryBus,
+        ctab_handle: u32,
+        clut: &[[u16; 3]; 256],
+        entry_count: usize,
+    ) {
+        let ctab = bus.read_long(ctab_handle);
+        for (index, [red, green, blue]) in
+            clut.iter().copied().enumerate().take(entry_count)
+        {
+            let entry = ctab + 8 + index as u32 * 8;
+            bus.write_word(entry + 2, red);
+            bus.write_word(entry + 4, green);
+            bus.write_word(entry + 6, blue);
+        }
+    }
+
     fn install_8bpp_cgrafport(
         bus: &mut crate::memory::MacMemoryBus,
         base: u32,
@@ -8133,6 +8150,7 @@ mod redraw_chrome_tests {
 
         let mut dst_clut = TrapDispatcher::standard_mac_8bpp_clut();
         dst_clut[1] = [0x1234, 0x5678, 0x9abc];
+        write_ctab_colors(&mut bus, screen_ctab_handle, &dst_clut, 4);
         *disp.color_manager_clut = dst_clut;
         *disp.device_clut = dst_clut;
         let mut src_clut = dst_clut;
@@ -8183,6 +8201,8 @@ mod redraw_chrome_tests {
         for (index, color) in destination_indices.into_iter().zip(colors) {
             dst_clut[index as usize] = color;
         }
+        let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdevice_handle);
+        write_ctab_colors(&mut bus, screen_ctab_handle, &dst_clut, 256);
         *disp.color_manager_clut = dst_clut;
         *disp.device_clut = dst_clut;
 
@@ -8233,6 +8253,8 @@ mod redraw_chrome_tests {
         ];
         let mut dst_clut = [[0u16; 3]; 256];
         dst_clut[..4].copy_from_slice(&colors);
+        let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdevice_handle);
+        write_ctab_colors(&mut bus, screen_ctab_handle, &dst_clut, 4);
         *disp.color_manager_clut = dst_clut;
         *disp.device_clut = dst_clut;
 
