@@ -22,13 +22,16 @@ use stuffit::{SitArchive, SitEntry};
 
 const LEGACY_WEB_PACK_MAGIC: &[u8; 4] = b"KPK1";
 const WEB_PACK_MAGIC: &[u8; 4] = b"KPK2";
+const VOLUME_WEB_PACK_MAGIC: &[u8; 4] = b"KPK3";
 const WEB_PACK_INITIAL_FORK_RESERVE_BYTES: usize = 1024 * 1024;
 const MAX_ZIP_ENTRIES: usize = 4096;
 const MAX_ZIP_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ZIP_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 
 fn is_web_pack(file_data: &[u8]) -> bool {
-    file_data.starts_with(WEB_PACK_MAGIC) || file_data.starts_with(LEGACY_WEB_PACK_MAGIC)
+    file_data.starts_with(VOLUME_WEB_PACK_MAGIC)
+        || file_data.starts_with(WEB_PACK_MAGIC)
+        || file_data.starts_with(LEGACY_WEB_PACK_MAGIC)
 }
 
 fn is_zip_archive(file_data: &[u8]) -> bool {
@@ -115,8 +118,8 @@ pub fn pack_stuffit_for_web(file_data: &[u8]) -> Result<Vec<u8>, String> {
     let archive =
         SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
 
-    let file_entries = collect_stuffit_payload_files(&archive)?;
-    pack_payload_files_for_web(file_entries)
+    let payload = payload_from_stuffit_archive(&archive, 1)?;
+    pack_payload_for_web(payload)
 }
 
 /// Prepack one or more supported game containers into a single web pack.
@@ -128,21 +131,27 @@ pub fn pack_game_sources_for_web(
     sources: &[&[u8]],
     include_prefixes: &[&str],
 ) -> Result<Vec<u8>, String> {
-    let mut file_entries = Vec::new();
+    let mut payload = Payload {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        volumes: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
     for source in sources {
-        if is_stuffit_archive(source) {
+        let source_payload = if is_stuffit_archive(source) {
             let archive = SitArchive::parse(source)
                 .map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
-            file_entries.extend(collect_stuffit_payload_files(&archive)?);
+            payload_from_stuffit_archive(&archive, 1)?
         } else if let Some(image) = crate::disk_image::extract_dc42_or_hfs(source)? {
-            file_entries.extend(payload_from_disk_image(image, 1)?.files);
+            payload_from_disk_image(image, 1)?
         } else if is_zip_archive(source) {
-            file_entries.extend(collect_zip_payload(source)?.files);
+            collect_zip_payload(source)?
         } else {
             return Err(
                 "Game source is not a StuffIt archive, ZIP archive, or HFS disk image".to_string(),
             );
-        }
+        };
+        merge_payload(&mut payload, source_payload);
     }
 
     if !include_prefixes.is_empty() {
@@ -150,19 +159,31 @@ pub fn pack_game_sources_for_web(
             .iter()
             .map(|prefix| crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(prefix))
             .collect::<Vec<_>>();
-        file_entries.retain(|entry| {
+        payload.files.retain(|entry| {
             let path = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&entry.name);
             normalized_prefixes
                 .iter()
                 .any(|prefix| vfs_path_matches_remove(&path, prefix))
         });
+        let retained_paths = payload
+            .files
+            .iter()
+            .map(|entry| crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&entry.name))
+            .collect::<Vec<_>>();
+        payload.volumes.retain(|(volume_name, _)| {
+            let volume_name =
+                crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(volume_name);
+            retained_paths
+                .iter()
+                .any(|path| vfs_path_matches_remove(path, &volume_name))
+        });
     }
 
-    if file_entries.is_empty() {
+    if payload.files.is_empty() {
         return Err("No files matched the requested game sources".to_string());
     }
 
-    pack_payload_files_for_web(file_entries)
+    pack_payload_for_web(payload)
 }
 
 fn pack_payload_files_for_web(file_entries: Vec<PayloadFile>) -> Result<Vec<u8>, String> {
@@ -170,6 +191,47 @@ fn pack_payload_files_for_web(file_entries: Vec<PayloadFile>) -> Result<Vec<u8>,
     out.extend_from_slice(WEB_PACK_MAGIC);
     out.extend_from_slice(&(file_entries.len() as u32).to_be_bytes());
 
+    append_web_pack_files(&mut out, file_entries)?;
+    Ok(out)
+}
+
+fn pack_payload_for_web(payload: Payload) -> Result<Vec<u8>, String> {
+    if payload.volumes.is_empty() {
+        return pack_payload_files_for_web(payload.files);
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(VOLUME_WEB_PACK_MAGIC);
+    out.extend_from_slice(&(payload.volumes.len() as u32).to_be_bytes());
+    for (name, info) in payload.volumes {
+        let name_bytes = name.as_bytes();
+        if name_bytes.len() > u16::MAX as usize {
+            return Err(format!(
+                "Volume name too long for web pack: {name} ({} bytes)",
+                name_bytes.len()
+            ));
+        }
+        out.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(&info.attributes.to_be_bytes());
+        out.extend_from_slice(&info.file_count.to_be_bytes());
+        out.extend_from_slice(&info.allocation_block_count.to_be_bytes());
+        out.extend_from_slice(&info.allocation_block_size.to_be_bytes());
+        out.extend_from_slice(&info.clump_size.to_be_bytes());
+        out.extend_from_slice(&info.free_blocks.to_be_bytes());
+        out.extend_from_slice(&info.bitmap_start.to_be_bytes());
+        out.extend_from_slice(&info.allocation_pointer.to_be_bytes());
+        out.extend_from_slice(&info.allocation_start.to_be_bytes());
+        out.extend_from_slice(&info.next_catalog_id.to_be_bytes());
+        out.extend_from_slice(&info.created_date.to_be_bytes());
+        out.extend_from_slice(&info.modified_date.to_be_bytes());
+    }
+    out.extend_from_slice(&(payload.files.len() as u32).to_be_bytes());
+    append_web_pack_files(&mut out, payload.files)?;
+    Ok(out)
+}
+
+fn append_web_pack_files(out: &mut Vec<u8>, file_entries: Vec<PayloadFile>) -> Result<(), String> {
     for entry in file_entries {
         let name_bytes = entry.name.as_bytes();
         if name_bytes.len() > u16::MAX as usize {
@@ -191,7 +253,7 @@ fn pack_payload_files_for_web(file_entries: Vec<PayloadFile>) -> Result<Vec<u8>,
         out.extend_from_slice(&entry.rsrc);
     }
 
-    Ok(out)
+    Ok(())
 }
 
 /// Load a game from a file path, trying explicit containers before macOS resource forks.
@@ -492,7 +554,7 @@ fn load_web_pack(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
     loader.finish(runner)
 }
 
-/// Incremental loader for Systemless web packs (`KPK1` and `KPK2`).
+/// Incremental loader for Systemless web packs (`KPK1`, `KPK2`, and `KPK3`).
 ///
 /// The standard `load_game` path consumes the whole pack synchronously. Browser
 /// frontends can use this loader to copy large data/resource forks in bounded
@@ -523,13 +585,59 @@ impl<'a> WebPackLoader<'a> {
         }
 
         let mut offset = WEB_PACK_MAGIC.len();
-        let has_finder_metadata = file_data.starts_with(WEB_PACK_MAGIC);
+        let has_volumes = file_data.starts_with(VOLUME_WEB_PACK_MAGIC);
+        let has_finder_metadata = has_volumes || file_data.starts_with(WEB_PACK_MAGIC);
+        let volumes = if has_volumes {
+            let volume_count = read_u32_be(file_data, &mut offset)? as usize;
+            let mut volumes = Vec::new();
+            for _ in 0..volume_count {
+                let name_len = read_u16_be(file_data, &mut offset)? as usize;
+                let name_bytes = read_exact(file_data, &mut offset, name_len)?;
+                let name = String::from_utf8(name_bytes.to_vec())
+                    .map_err(|_| "Invalid UTF-8 in web pack volume name".to_string())?;
+                let info = crate::disk_image::DiskImageVolumeInfo {
+                    attributes: read_u16_be(file_data, &mut offset)?,
+                    file_count: read_u16_be(file_data, &mut offset)?,
+                    allocation_block_count: read_u16_be(file_data, &mut offset)?,
+                    allocation_block_size: read_u32_be(file_data, &mut offset)?,
+                    clump_size: read_u32_be(file_data, &mut offset)?,
+                    free_blocks: read_u16_be(file_data, &mut offset)?,
+                    bitmap_start: read_u16_be(file_data, &mut offset)?,
+                    allocation_pointer: read_u16_be(file_data, &mut offset)?,
+                    allocation_start: read_u16_be(file_data, &mut offset)?,
+                    next_catalog_id: read_u32_be(file_data, &mut offset)?,
+                    created_date: read_u32_be(file_data, &mut offset)?,
+                    modified_date: read_u32_be(file_data, &mut offset)?,
+                };
+                volumes.push((name, info));
+            }
+            volumes
+        } else {
+            Vec::new()
+        };
         let total_entries = read_u32_be(file_data, &mut offset)? as usize;
         {
             let dispatcher = runner.dispatcher_mut();
             dispatcher.vfs.reserve(total_entries);
             dispatcher.vfs_rsrc.reserve(total_entries);
             dispatcher.vfs_metadata.reserve(total_entries);
+            for (name, info) in volumes {
+                dispatcher.mount_vfs_volume(
+                    &name,
+                    info.attributes,
+                    info.file_count,
+                    info.allocation_block_count,
+                    info.allocation_block_size,
+                    info.clump_size,
+                    info.free_blocks,
+                    info.bitmap_start,
+                    info.allocation_pointer,
+                    info.allocation_start,
+                    info.next_catalog_id,
+                    info.created_date,
+                    info.modified_date,
+                );
+            }
         }
 
         Ok(Some(Self {
@@ -1049,6 +1157,24 @@ struct Payload {
     skipped_disk_image_errors: Vec<String>,
 }
 
+fn merge_payload(target: &mut Payload, source: Payload) {
+    target.dirs.extend(source.dirs);
+    target.files.extend(source.files);
+    for (name, info) in source.volumes {
+        let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&name);
+        if target.volumes.iter().any(|(existing, _)| {
+            crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(existing)
+                .eq_ignore_ascii_case(&normalized)
+        }) {
+            continue;
+        }
+        target.volumes.push((name, info));
+    }
+    target
+        .skipped_disk_image_errors
+        .extend(source.skipped_disk_image_errors);
+}
+
 #[derive(Debug)]
 struct PayloadFile {
     name: String,
@@ -1243,10 +1369,6 @@ fn parse_macbinary_payload(
         finder_flags: (u16::from(file_data[73]) << 8) | u16::from(file_data[101]),
         executable_priority,
     })
-}
-
-fn collect_stuffit_payload_files(archive: &SitArchive) -> Result<Vec<PayloadFile>, String> {
-    Ok(payload_from_stuffit_archive(archive, 1)?.files)
 }
 
 fn payload_from_stuffit_archive(
@@ -3270,16 +3392,53 @@ mod tests {
         builder.add_file("keep.dat", b"runtime data", 0o100644);
         builder.add_file("drop.dat", b"unrelated demo", 0o100644);
         let image = builder.build();
+        let extracted = crate::disk_image::extract_dc42_or_hfs(&image)
+            .unwrap()
+            .expect("HFS+ image");
+        let volume_name = extracted.volume_name;
+        let volume_info = extracted.volume_info;
 
         let packed = pack_game_sources_for_web(&[&image], &["HFS+ Disk Image:keep.dat"])
             .expect("HFS source should pack");
 
-        assert_eq!(&packed[0..4], WEB_PACK_MAGIC);
-        assert_eq!(u32::from_be_bytes(packed[4..8].try_into().unwrap()), 1);
-        let mut offset = 8;
+        assert_eq!(&packed[0..4], VOLUME_WEB_PACK_MAGIC);
+        let (volumes, total_entries, mut offset) = read_volume_web_pack_header(&packed);
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].0, volume_name);
+        assert_eq!(total_entries, 1);
         let name_len = read_u16_be(&packed, &mut offset).unwrap() as usize;
         let name = read_exact(&packed, &mut offset, name_len).unwrap();
         assert_eq!(name, b"HFS+ Disk Image/keep.dat");
+
+        let mut runner = new_runner();
+        let mut loader = WebPackLoader::new(&mut runner, &packed).unwrap().unwrap();
+        while !loader.load_next_chunk(&mut runner, 3).unwrap() {}
+        let mounted = runner
+            .dispatcher()
+            .vfs_volume_by_name(&volume_name)
+            .expect("packed disk-image root should remain a mounted volume");
+        assert_eq!(mounted.file_count, volume_info.file_count);
+        assert_eq!(
+            mounted.attributes,
+            volume_info.attributes | 0x0080,
+            "packed disk images remain hardware locked"
+        );
+        assert_eq!(
+            mounted.allocation_block_count,
+            volume_info.allocation_block_count
+        );
+        assert_eq!(
+            mounted.allocation_block_size,
+            volume_info.allocation_block_size
+        );
+        assert_eq!(mounted.clump_size, volume_info.clump_size);
+        assert_eq!(mounted.free_blocks, volume_info.free_blocks);
+        assert_eq!(mounted.bitmap_start, volume_info.bitmap_start);
+        assert_eq!(mounted.allocation_pointer, volume_info.allocation_pointer);
+        assert_eq!(mounted.allocation_start, volume_info.allocation_start);
+        assert_eq!(mounted.next_catalog_id, volume_info.next_catalog_id);
+        assert_eq!(mounted.created_date, volume_info.created_date);
+        assert_eq!(mounted.modified_date, volume_info.modified_date);
     }
 
     #[test]
@@ -3294,8 +3453,14 @@ mod tests {
         let packed = pack_game_sources_for_web(&[&application_image, &data_image], &[])
             .expect("multiple HFS sources should merge");
 
-        assert_eq!(&packed[0..4], WEB_PACK_MAGIC);
-        assert_eq!(u32::from_be_bytes(packed[4..8].try_into().unwrap()), 2);
+        assert_eq!(&packed[0..4], VOLUME_WEB_PACK_MAGIC);
+        let (volumes, total_entries, _) = read_volume_web_pack_header(&packed);
+        assert_eq!(
+            volumes.len(),
+            1,
+            "matching volume roots should be deduplicated"
+        );
+        assert_eq!(total_entries, 2);
         assert!(packed
             .windows(b"HFS+ Disk Image/Application".len())
             .any(|window| window == b"HFS+ Disk Image/Application"));
@@ -3441,6 +3606,44 @@ mod tests {
         bytes
     }
 
+    fn read_volume_web_pack_header(
+        bytes: &[u8],
+    ) -> (
+        Vec<(String, crate::disk_image::DiskImageVolumeInfo)>,
+        usize,
+        usize,
+    ) {
+        assert_eq!(&bytes[..4], VOLUME_WEB_PACK_MAGIC);
+        let mut offset = 4;
+        let count = read_u32_be(bytes, &mut offset).unwrap() as usize;
+        let mut volumes = Vec::new();
+        for _ in 0..count {
+            let name_len = read_u16_be(bytes, &mut offset).unwrap() as usize;
+            let name =
+                String::from_utf8(read_exact(bytes, &mut offset, name_len).unwrap().to_vec())
+                    .unwrap();
+            volumes.push((
+                name,
+                crate::disk_image::DiskImageVolumeInfo {
+                    attributes: read_u16_be(bytes, &mut offset).unwrap(),
+                    file_count: read_u16_be(bytes, &mut offset).unwrap(),
+                    allocation_block_count: read_u16_be(bytes, &mut offset).unwrap(),
+                    allocation_block_size: read_u32_be(bytes, &mut offset).unwrap(),
+                    clump_size: read_u32_be(bytes, &mut offset).unwrap(),
+                    free_blocks: read_u16_be(bytes, &mut offset).unwrap(),
+                    bitmap_start: read_u16_be(bytes, &mut offset).unwrap(),
+                    allocation_pointer: read_u16_be(bytes, &mut offset).unwrap(),
+                    allocation_start: read_u16_be(bytes, &mut offset).unwrap(),
+                    next_catalog_id: read_u32_be(bytes, &mut offset).unwrap(),
+                    created_date: read_u32_be(bytes, &mut offset).unwrap(),
+                    modified_date: read_u32_be(bytes, &mut offset).unwrap(),
+                },
+            ));
+        }
+        let total_entries = read_u32_be(bytes, &mut offset).unwrap() as usize;
+        (volumes, total_entries, offset)
+    }
+
     fn make_legacy_web_pack(entry: &TestWebPackEntry<'_>) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(LEGACY_WEB_PACK_MAGIC);
@@ -3497,6 +3700,75 @@ mod tests {
         assert_eq!(metadata.file_type, u32::from_be_bytes(*b"TEXT"));
         assert_eq!(metadata.creator, u32::from_be_bytes(*b"????"));
         assert_eq!(metadata.finder_flags, 0);
+    }
+
+    #[test]
+    fn web_pack_loader_mounts_unicode_volume_metadata() {
+        let info = crate::disk_image::DiskImageVolumeInfo {
+            attributes: 0x8000,
+            file_count: 7,
+            allocation_block_count: 4096,
+            allocation_block_size: 2048,
+            clump_size: 8192,
+            free_blocks: 123,
+            bitmap_start: 4,
+            allocation_pointer: 9,
+            allocation_start: 12,
+            next_catalog_id: 42,
+            created_date: 0x1234_5678,
+            modified_date: 0x8765_4321,
+        };
+        let pack = pack_payload_for_web(Payload {
+            dirs: Vec::new(),
+            files: vec![PayloadFile {
+                name: "Bolo™ CD/Data".to_string(),
+                data: b"disc data".to_vec(),
+                rsrc: Vec::new(),
+                file_type: *b"DATA",
+                creator: *b"TEST",
+                finder_flags: 0,
+                executable_priority: 1,
+            }],
+            volumes: vec![("Bolo™ CD".to_string(), info)],
+            skipped_disk_image_errors: Vec::new(),
+        })
+        .unwrap();
+        let mut runner = new_runner();
+        let mut loader = WebPackLoader::new(&mut runner, &pack).unwrap().unwrap();
+
+        while !loader.load_next_chunk(&mut runner, 2).unwrap() {}
+
+        let volume = runner
+            .dispatcher()
+            .vfs_volume_by_name("Bolo™ CD")
+            .expect("Unicode volume name should survive the web pack");
+        assert_eq!(volume.file_count, 7);
+        assert_eq!(volume.allocation_block_size, 2048);
+        assert_eq!(volume.clump_size, 8192);
+        assert_eq!(volume.next_catalog_id, 42);
+        assert_eq!(volume.created_date, 0x1234_5678);
+        assert_eq!(volume.modified_date, 0x8765_4321);
+        assert_eq!(
+            runner.dispatcher().vfs.get("Bolo™ CD/Data"),
+            Some(&b"disc data".to_vec())
+        );
+    }
+
+    #[test]
+    fn web_pack_loader_rejects_truncated_volume_metadata_before_mounting() {
+        let mut pack = Vec::from(VOLUME_WEB_PACK_MAGIC.as_slice());
+        pack.extend_from_slice(&1u32.to_be_bytes());
+        pack.extend_from_slice(&7u16.to_be_bytes());
+        pack.extend_from_slice(b"Partial");
+        let mut runner = new_runner();
+
+        let err = match WebPackLoader::new(&mut runner, &pack) {
+            Ok(_) => panic!("truncated volume metadata should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("truncated"), "{err}");
+        assert!(runner.dispatcher().vfs_volume_by_name("Partial").is_none());
     }
 
     #[test]
@@ -4056,6 +4328,47 @@ mod tests {
 
         assert_eq!(payload.volumes.len(), 1);
         assert_eq!(payload.volumes[0].0, volume_name);
+
+        let pack = pack_game_sources_for_web(&[&zip], &[]).expect("ZIP source should pack");
+        let (volumes, total_entries, _) = read_volume_web_pack_header(&pack);
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].0, volume_name);
+        assert_eq!(total_entries, 1);
+    }
+
+    #[test]
+    fn stuffit_web_pack_preserves_nested_disk_image_volume_metadata() {
+        let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        builder.add_file("Data File", b"contents", 0o100644);
+        let image = builder.build();
+        let volume_name = crate::disk_image::extract_dc42_or_hfs(&image)
+            .unwrap()
+            .expect("HFS+ image")
+            .volume_name;
+        let mut archive = SitArchive::new();
+        archive.add_entry(SitEntry {
+            name: "Data.img".to_string(),
+            data_fork: image,
+            resource_fork: Vec::new(),
+            file_type: *b"dImg",
+            creator: *b"ddsk",
+            is_folder: false,
+            data_method: 0,
+            rsrc_method: 0,
+            data_ulen: 0,
+            rsrc_ulen: 0,
+            finder_flags: 0,
+            is_compressed: false,
+            format: stuffit::ArchiveFormat::Sit5,
+        });
+        let sit = archive.serialize_compressed().unwrap();
+
+        let pack = pack_stuffit_for_web(&sit).expect("StuffIt source should pack");
+        let (volumes, total_entries, _) = read_volume_web_pack_header(&pack);
+
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].0, volume_name);
+        assert_eq!(total_entries, 1);
     }
 
     #[test]

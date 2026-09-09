@@ -4388,6 +4388,10 @@ impl super::TrapDispatcher {
             // PBHGetVInfo ($A207): HFS variant aliased onto $A007
             (false, 0x07) => {
                 let pb = cpu.read_reg(Register::A0);
+                let is_hfs_variant = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
                 let volume_index = bus.read_word(pb + 28) as i16;
                 let requested_vref = bus.read_word(pb + 22) as i16;
                 let requested_name = Self::read_pb_filename(bus, bus.read_long(pb + 18));
@@ -4541,13 +4545,19 @@ impl super::TrapDispatcher {
                 bus.write_word(pb + 56, allocation_start); // ioAlBlSt
                 bus.write_long(pb + 58, next_catalog_id); // ioVNxtCNID
                 bus.write_word(pb + 62, free_blocks); // ioVFrBlk
-                bus.write_word(pb + 64, 0x4244); // ioVSigWord (HFS)
+                // VolumeParam ends after ioVFrBlk at byte 64. Only the HFS
+                // HVolumeParam supplied to PBHGetVInfo has the fields that
+                // follow it. Files 1992, pp. 2-91--2-92 and 2-96--2-97.
+                if is_hfs_variant {
+                    bus.write_word(pb + 64, 0x4244); // ioVSigWord (HFS)
 
-                // The extracted volume is a File Manager abstraction, not a
-                // claim about the source image's physical device or driver.
-                bus.write_word(pb + 66, 0); // ioVDrvInfo
-                bus.write_word(pb + 68, 0); // ioVDRefNum
-                bus.write_word(pb + 70, 0); // ioVFSID (File Manager)
+                    // The extracted volume is a File Manager abstraction,
+                    // not a claim about the source image's physical device
+                    // or driver.
+                    bus.write_word(pb + 66, 0); // ioVDrvInfo
+                    bus.write_word(pb + 68, 0); // ioVDRefNum
+                    bus.write_word(pb + 70, 0); // ioVFSID (File Manager)
+                }
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -15723,6 +15733,44 @@ mod tests {
         // Volume name
         let len = bus.read_byte(name_buf) as usize;
         assert_eq!(len, 11);
+    }
+
+    #[test]
+    fn pb_get_vinfo_does_not_write_past_the_basic_volume_parameter_block() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_long(pb + 64, 0xDEAD_BEEF);
+        bus.write_long(pb + 68, 0xCAFE_BABE);
+
+        call_trap_word(&mut disp, 0xA007, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(pb + 64), 0xDEAD_BEEF);
+        assert_eq!(bus.read_long(pb + 68), 0xCAFE_BABE);
+    }
+
+    #[test]
+    fn pb_hget_vinfo_writes_the_extended_hfs_volume_fields() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_long(pb + 64, 0xDEAD_BEEF);
+        bus.write_long(pb + 68, 0xCAFE_BABE);
+
+        call_trap_word(&mut disp, 0xA207, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 64), 0x4244, "ioVSigWord");
+        assert_eq!(bus.read_word(pb + 66), 0, "ioVDrvInfo");
+        assert_eq!(bus.read_word(pb + 68), 0, "ioVDRefNum");
+        assert_eq!(bus.read_word(pb + 70), 0, "ioVFSID");
     }
 
     #[test]
