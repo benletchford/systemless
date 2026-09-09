@@ -6366,6 +6366,18 @@ impl FixtureRunner {
                                     self.deferred_tracking_refire_pc = Some(pc);
                                     continue;
                                 }
+                                // A retained manager can redirect execution into an
+                                // application callback before it refires. ModalDialog,
+                                // for example, enters a custom CDEF after establishing
+                                // its tracking state. Preserve that guest PC; replacing
+                                // it with the A-line address would skip the callback and
+                                // leave the dialog unable to consume queued input.
+                                let post_dispatch_pc = self.m68k.cpu.read_reg(Register::PC);
+                                if post_dispatch_pc != pc
+                                    && post_dispatch_pc != pc.wrapping_add(2)
+                                {
+                                    continue;
+                                }
                                 // A retained TrackControl may have redirected
                                 // execution into its guest action procedure.
                                 // That callback returns directly to this trap;
@@ -27872,6 +27884,90 @@ mod tests {
             })
         ));
         assert_ne!(runner.m68k.cpu.read_reg(Register::PC), base);
+    }
+
+    #[test]
+    fn modal_dialog_refire_preserves_application_cdef_callback_redirection() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let side_effect = 0x0001_2000u32;
+        let dialog_ptr = runner.bus.alloc(200);
+        let control_handle = runner.bus.alloc(4);
+        let control_ptr = runner.bus.alloc(36);
+        let cdef_handle = runner.bus.alloc(4);
+        let cdef_proc = runner.bus.alloc(20);
+
+        runner.bus.write_word(base, 0xA991); // _ModalDialog
+        runner.bus.write_word(cdef_proc, 0x4E56); // LINK A6,#0
+        runner.bus.write_word(cdef_proc + 2, 0);
+        runner.bus.write_word(cdef_proc + 4, 0x33FC); // MOVE.W #$CAFE,(abs).L
+        runner.bus.write_word(cdef_proc + 6, 0xCAFE);
+        runner.bus.write_long(cdef_proc + 8, side_effect);
+        runner.bus.write_word(cdef_proc + 12, 0x4E5E); // UNLK A6
+        runner.bus.write_word(cdef_proc + 14, 0x4E74); // RTD #12
+        runner.bus.write_word(cdef_proc + 16, 12);
+        runner.bus.write_long(cdef_handle, cdef_proc);
+
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.m68k.cpu,
+            dialog_ptr,
+            0,
+            100,
+            120,
+            220,
+            360,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        runner.dispatcher.front_window = dialog_ptr;
+        runner.dispatcher.window_bounds = (100, 120, 220, 360);
+        runner.dispatcher.dialog_items.insert(dialog_ptr, Vec::new());
+
+        runner.bus.write_long(control_handle, control_ptr);
+        runner.bus.write_long(control_ptr, 0);
+        runner.bus.write_long(control_ptr + 4, dialog_ptr);
+        runner.bus.write_word(control_ptr + 8, 10);
+        runner.bus.write_word(control_ptr + 10, 10);
+        runner.bus.write_word(control_ptr + 12, 50);
+        runner.bus.write_word(control_ptr + 14, 80);
+        runner.bus.write_byte(control_ptr + 16, 255);
+        runner.bus.write_byte(control_ptr + 17, 0);
+        runner.bus.write_long(control_ptr + 24, cdef_handle);
+        runner.bus.write_long(dialog_ptr + 140, control_handle);
+        runner
+            .dispatcher
+            .control_manager
+            .register(control_handle, control_ptr, 160 << 4, 0);
+
+        let item_hit = runner.bus.alloc(2);
+        runner.bus.write_long(sp, item_hit);
+        runner.bus.write_long(sp + 4, 0);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+
+        let (steps, running) = runner.run_gui_slice_with_audio(1, 0, 0);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(
+            runner.m68k.cpu.read_reg(Register::PC),
+            runner.dispatcher.control_def_trampoline,
+            "ModalDialog must not replace the CDEF callback entry with its refire PC"
+        );
+
+        let (_steps, running) = runner.run_steps(64, None);
+        assert!(running);
+        assert_eq!(
+            runner.bus.read_word(side_effect),
+            0xCAFE,
+            "the application CDEF must execute before ModalDialog refires"
+        );
     }
 
     #[test]
