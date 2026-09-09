@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.3](https://github.com/benletchford/systemless/compare/v0.39.2...v0.39.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **quickdraw:** advance bold PICT text by style width ([eb6d3ad](https://github.com/benletchford/systemless/commit/eb6d3adba2ddf16102e11ded864d96c621be061d))
+* **quickdraw:** use guest device color tables for matching ([cfd7dba](https://github.com/benletchford/systemless/commit/cfd7dba5683081183657a8b1bb8a313c1135fbeb))
+
 ## [0.39.2](https://github.com/benletchford/systemless/compare/v0.39.1...v0.39.2) (2026-09-08)
 
 
