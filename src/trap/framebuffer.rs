@@ -632,7 +632,11 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        if pixel_size == 1 {
+        // The classic Window Manager paints the desktop with its binary
+        // DeskPattern. Keep that pattern on the logical black/white endpoints
+        // so application palette installs cannot recolor the desktop.
+        // Macintosh Toolbox Essentials (1992), pp. 4-112 to 4-113.
+        if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
             Self::fb_fill_pattern_rect(
                 bus,
                 screen_base,
@@ -1574,7 +1578,7 @@ impl super::TrapDispatcher {
     fn refresh_saved_under_with_desktop_pattern(&mut self, bus: &MacMemoryBus, window: u32) {
         let (_, _, _, _, pixel_size) = self.get_screen_params();
         let palette = self.ui_theme().palette();
-        let (black, white) = if pixel_size == 1 {
+        let (black, white) = if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
             (
                 Self::logical_black_pixel_index(bus),
                 Self::logical_white_pixel_index(bus),
@@ -6930,6 +6934,9 @@ mod redraw_chrome_tests {
     fn redraw_chrome_restores_desktop_pattern_behind_single_kiosk_dialog() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
         let (screen_base, row_bytes, screen_w, screen_h, _) = disp.screen_mode;
+        let mut application_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        application_clut[36] = [0xDFDF, 0xF6F6, 0xFFFF];
+        disp.install_application_clut(&mut bus, application_clut);
         bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 0xFF);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
 
@@ -6948,15 +6955,17 @@ mod redraw_chrome_tests {
 
         disp.redraw_chrome(&mut bus);
 
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        let white = TrapDispatcher::logical_white_pixel_index(&bus);
         assert_eq!(
             bus.read_byte(screen_base),
-            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_dark),
-            "exposed desktop uses the theme color"
+            black,
+            "classic desktop starts with the binary pattern's black pixel"
         );
         assert_eq!(
             bus.read_byte(screen_base + 1),
-            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light),
-            "adjacent desktop pixels use the same solid color"
+            white,
+            "classic desktop alternates to the binary pattern's white pixel"
         );
         assert_eq!(
             bus.read_byte(screen_base + 120 * row_bytes + 200),
@@ -6966,8 +6975,8 @@ mod redraw_chrome_tests {
         let saved = &disp.window_saved_under_pixels[&PORT_PTR].4;
         assert_eq!(
             &saved[..2],
-            &[disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light); 2],
-            "the save-under snapshot must retain the themed desktop"
+            &[black, white],
+            "the save-under snapshot must retain the binary desktop pattern"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
     }

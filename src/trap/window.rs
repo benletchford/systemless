@@ -12416,6 +12416,8 @@ mod tests {
             800,
             [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
         );
+        let old_content_probe = screen_base + 200 * 800 + 410;
+        let patterned_desktop_pixel = bus.read_byte(old_content_probe);
 
         let window_addr = bus.alloc(256);
         disp.init_cgraf_window(
@@ -12435,7 +12437,6 @@ mod tests {
             0,
         );
 
-        let old_content_probe = screen_base + 200 * 800 + 410;
         assert_eq!(
             bus.read_byte(old_content_probe),
             0,
@@ -12446,8 +12447,8 @@ mod tests {
 
         assert_eq!(
             bus.read_byte(old_content_probe),
-            disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light),
-            "host menu suppression must preserve the themed desktop"
+            patterned_desktop_pixel,
+            "host menu suppression must preserve the patterned desktop"
         );
         let new_content_probe = screen_base + 250 * 800 + 460;
         assert_eq!(
