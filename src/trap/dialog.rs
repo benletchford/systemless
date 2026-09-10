@@ -10002,7 +10002,7 @@ impl super::TrapDispatcher {
             && (self.menu_bar_hidden || self.fullscreen_locked || menu_bar_height == 0)
     }
 
-    fn screen_is_hidden_menu_game_surface(&self, bus: &MacMemoryBus) -> bool {
+    pub(super) fn screen_is_hidden_menu_game_surface(&self, bus: &MacMemoryBus) -> bool {
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         self.menu_bar_hidden || self.fullscreen_locked || menu_bar_height == 0
     }

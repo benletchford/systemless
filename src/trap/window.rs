@@ -1999,6 +1999,44 @@ impl super::TrapDispatcher {
                 return;
             }
 
+            let (_, _, screen_width, screen_height, _) = self.get_screen_params();
+            let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+            let fullscreen_plain_owner = front_proc_id == 2
+                && self.fullscreen_locked
+                && menu_bar_height == 0
+                && *self.current_port == window_ptr
+                && self
+                    .window_list
+                    .iter()
+                    .filter(|&&window| self.window_visible(bus, window))
+                    .count()
+                    == 1
+                && front_rect.0 <= 0
+                && front_rect.1 <= 0
+                && front_rect.2 >= screen_height
+                && front_rect.3 >= screen_width
+                && self.resolve_copy_bitmap(bus, window_ptr + 2).base == self.screen_mode.0;
+            if fullscreen_plain_owner {
+                if let Some(rect) = self.last_screen_copybits_rect {
+                    let src_width = rect.src_right.saturating_sub(rect.src_left);
+                    let src_height = rect.src_bottom.saturating_sub(rect.src_top);
+                    let dst_width = rect.dst_right.saturating_sub(rect.dst_left);
+                    let dst_height = rect.dst_bottom.saturating_sub(rect.dst_top);
+                    let destination =
+                        (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right);
+                    let unscaled = src_width == dst_width && src_height == dst_height;
+                    let safe_margins = self.kiosk_stage_margins_are_uniform(bus, destination)
+                        || self.kiosk_stage_margins_are_black_or_standard_desktop(bus, destination);
+                    if unscaled
+                        && safe_margins
+                        && self
+                            .fill_kiosk_stage_around_rect_for_hidden_game_surface(bus, destination)
+                    {
+                        return;
+                    }
+                }
+            }
+
             if !Self::window_is_document_proc(front_proc_id) {
                 if let (Some(rect), Some(front_structure)) = (
                     self.last_screen_copybits_rect,
