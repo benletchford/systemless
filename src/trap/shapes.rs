@@ -1414,12 +1414,19 @@ impl super::TrapDispatcher {
         let fg_idx;
         let bg_idx;
         let mut indexed_clut = None;
-        if matches!(pixel_size, 2 | 4 | 8) && is_color {
-            let pix_map_handle = bus.read_long(port.wrapping_add(2));
-            let port_ctab_handle = if pix_map_handle != 0 {
-                let pix_map_ptr = bus.read_long(pix_map_handle);
-                if pix_map_ptr != 0 {
-                    bus.read_long(pix_map_ptr + 42)
+        if matches!(pixel_size, 2 | 4 | 8) {
+            let is_screen_port = pix_base == self.screen_mode.0
+                && pix_row_bytes == self.screen_mode.1
+                && pixel_size == self.screen_mode.4;
+            let port_ctab_handle = if is_color {
+                let pix_map_handle = bus.read_long(port.wrapping_add(2));
+                if pix_map_handle != 0 {
+                    let pix_map_ptr = bus.read_long(pix_map_handle);
+                    if pix_map_ptr != 0 {
+                        bus.read_long(pix_map_ptr + 42)
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 }
@@ -1430,9 +1437,6 @@ impl super::TrapDispatcher {
             // cscSetEntries updates the hardware palette immediately even when
             // the Color Manager table is stale. Offscreen ports continue to
             // use their own ColorTable.
-            let is_screen_port = pix_base == self.screen_mode.0
-                && pix_row_bytes == self.screen_mode.1
-                && pixel_size == self.screen_mode.4;
             let current_ctab_handle = if port == *self.current_port {
                 self.current_gdevice_ctab_handle(bus)
             } else {
@@ -1471,7 +1475,7 @@ impl super::TrapDispatcher {
                 effective_fg_color,
                 pixel_size,
                 &port_clut,
-                (resolved_color_fields & 0x01) != 0,
+                is_color && (resolved_color_fields & 0x01) != 0,
                 generated_pen_rgb.is_some(),
             );
             bg_idx = indexed_shape_color_index(
@@ -1479,23 +1483,9 @@ impl super::TrapDispatcher {
                 effective_bg_color,
                 pixel_size,
                 &port_clut,
-                (resolved_color_fields & 0x02) != 0,
+                is_color && (resolved_color_fields & 0x02) != 0,
                 generated_back_rgb.is_some(),
             );
-            if trace_dialog_text_enabled() && matches!(op, ShapeOp::Glyph(_)) {
-                eprintln!(
-                    "[DIALOG-TEXT] Glyph colors port=${:08X} fgRGB=({:04X},{:04X},{:04X}) bgRGB=({:04X},{:04X},{:04X}) fgIdx={} bgIdx={}",
-                    port,
-                    self.fg_color.0,
-                    self.fg_color.1,
-                    self.fg_color.2,
-                    self.bg_color.0,
-                    self.bg_color.1,
-                    self.bg_color.2,
-                    fg_idx,
-                    bg_idx,
-                );
-            }
         } else {
             fg_idx = 255;
             bg_idx = 0;
@@ -2110,6 +2100,22 @@ mod tests {
         assert_eq!(
             indexed_shape_color_index(95, (0xF2D7, 0x0856, 0x84EC), 8, &clut, true, true,),
             181
+        );
+    }
+
+    #[test]
+    fn basic_grafport_on_indexed_screen_maps_rgb_to_clut() {
+        let mut clut = [[0, 0, 0]; 256];
+        clut[0] = [0xFFFF, 0xFFFF, 0xFFFF]; // white at index 0
+        clut[30] = [0xFFFF, 0x0000, 0xFFFF]; // magenta at index 30 (not white)
+
+        // In a basic GrafPort, port+84 contains the classic QuickDraw color
+        // constant (e.g. whiteColor = 30), NOT an indexed pixel value.
+        // It must map the port's logical RGB (white) to index 0 using the CLUT,
+        // rather than treating 30 as an already-resolved pixel index.
+        assert_eq!(
+            indexed_shape_color_index(30, (0xFFFF, 0xFFFF, 0xFFFF), 8, &clut, false, false),
+            0
         );
     }
 
