@@ -51,3 +51,11 @@ The source file should hash to `2578381b...` and the component to
 records, in source order, reproduces `geneva9-advances.bin` exactly.
 
 See [OFL.txt](OFL.txt) for the component's copyright and licence notice.
+
+## Monaco maximum advance
+
+The bundled Monaco substitute retains its own outline pixels and per-glyph
+advances. Its `widMax` compatibility metric is derived at each requested size
+from the classic scalable Monaco family's normalized maximum advance of
+1552/2048 em. This is metadata only; no original font software or glyph artwork
+is included.

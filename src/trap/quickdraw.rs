@@ -30016,6 +30016,50 @@ mod tests {
     }
 
     #[test]
+    fn getfontinfo_widmax_matches_selected_outline_maximum_advance() {
+        use skrifa::MetadataProvider;
+
+        let mut bytes =
+            include_bytes!("../quickdraw/fonts/urw/NimbusMonoPS-Regular.ttf").to_vec();
+        let hhea_offset = (0..u16::from_be_bytes([bytes[4], bytes[5]]) as usize)
+            .find_map(|index| {
+                let record = 12 + index * 16;
+                (&bytes[record..record + 4] == b"hhea").then(|| {
+                    u32::from_be_bytes([
+                        bytes[record + 8],
+                        bytes[record + 9],
+                        bytes[record + 10],
+                        bytes[record + 11],
+                    ]) as usize
+                })
+            })
+            .expect("hhea table");
+        bytes[hhea_offset + 10..hhea_offset + 12].copy_from_slice(&1552u16.to_be_bytes());
+        let font = skrifa::FontRef::new(&bytes).expect("selected outline font");
+        let selected_maximum = font
+            .metrics(skrifa::instance::Size::new(14.0), skrifa::instance::LocationRef::default())
+            .max_width
+            .expect("selected font maximum advance")
+            .round() as i16;
+        let family_id = 30_014;
+        assert!(crate::quickdraw::fonts::register_resource_outline_font(
+            family_id,
+            &bytes
+        ));
+
+        let (mut d, mut cpu, mut bus) = setup();
+        d.tx_font = family_id;
+        d.tx_size = 14;
+        let info_ptr = 0x300000;
+        bus.write_long(TEST_SP, info_ptr);
+        d.dispatch_quickdraw(true, 0x08B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(info_ptr + 4) as i16, selected_maximum);
+    }
+
+    #[test]
     fn test_text_mode() {
         let (mut d, mut cpu, mut bus) = setup();
         bus.write_word(TEST_SP, 2u16); // srcOr
