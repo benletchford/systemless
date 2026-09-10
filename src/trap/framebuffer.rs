@@ -1152,6 +1152,27 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
     ) -> bool {
+        self.fill_kiosk_stage_around_rect_when(bus, rect, self.menu_bar_hidden)
+    }
+
+    pub(super) fn fill_kiosk_stage_around_rect_for_hidden_game_surface(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        self.fill_kiosk_stage_around_rect_when(
+            bus,
+            rect,
+            self.screen_is_hidden_menu_game_surface(bus),
+        )
+    }
+
+    fn fill_kiosk_stage_around_rect_when(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        screen_is_hidden: bool,
+    ) -> bool {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let (top, left, bottom, right) = rect;
@@ -1162,7 +1183,7 @@ impl super::TrapDispatcher {
             && top >= 0
             && (screen_width - right - left).abs() <= 1
             && (screen_height - bottom - top).abs() <= 1;
-        if !self.menu_bar_hidden
+        if !screen_is_hidden
             || !large
             || !centered
             || (width >= screen_width && height >= screen_height)
@@ -1291,6 +1312,64 @@ impl super::TrapDispatcher {
             }
         }
         margin_index.is_some()
+    }
+
+    pub(super) fn kiosk_stage_margins_are_black_or_standard_desktop(
+        &self,
+        bus: &MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if pixel_size != 8 || self.ui_theme_id() != UiThemeId::ClassicSystem7 {
+            return false;
+        }
+        let (top, left, bottom, right) = rect;
+        if top < 0
+            || left < 0
+            || bottom > screen_height
+            || right > screen_width
+            || top >= bottom
+            || left >= right
+        {
+            return false;
+        }
+
+        let black = Self::logical_black_pixel_index(bus);
+        let white = Self::logical_white_pixel_index(bus);
+        let mut saw_margin = false;
+        let mut pixels = vec![0; screen_width as usize];
+        for y in 0..screen_height {
+            let ranges = if y < top || y >= bottom {
+                [(0, screen_width), (0, 0)]
+            } else {
+                [(0, left), (right, screen_width)]
+            };
+            let pattern = crate::window_manager::STANDARD_DESKTOP_PATTERN
+                [y.rem_euclid(8) as usize];
+            for (start, end) in ranges {
+                let length = end.saturating_sub(start) as usize;
+                if length == 0 {
+                    continue;
+                }
+                saw_margin = true;
+                bus.read_bytes_into(
+                    screen_base + y as u32 * row_bytes + start as u32,
+                    &mut pixels[..length],
+                );
+                for (offset, &pixel) in pixels[..length].iter().enumerate() {
+                    if pixel == black {
+                        continue;
+                    }
+                    let x = start + offset as i16;
+                    let pattern_is_white = (pattern >> (7 - x.rem_euclid(8))) & 1 == 0;
+                    if pixel != white || !pattern_is_white {
+                        return false;
+                    }
+                }
+            }
+        }
+        saw_margin
     }
 
     /// Fill a rectangle in the framebuffer
@@ -5950,6 +6029,122 @@ mod redraw_chrome_tests {
             None,
             "screen chrome must not resolve through an offscreen TheGDevice when MainDevice is NIL"
         );
+    }
+
+    #[test]
+    fn fullscreen_plain_window_stages_retained_copybits_over_partial_desktop_pattern() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, pixel_size) = disp.screen_mode;
+        let retained = (60i16, 80i16, 540i16, 720i16);
+
+        // The observed screen has a standard black/white desktop pattern whose
+        // white half has already been partly cleared to black. The retained CopyBits
+        // destination contains all application-owned edge and artwork pixels.
+        TrapDispatcher::fb_fill_pattern_rect(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            0,
+            0,
+            screen_h as i16,
+            screen_w as i16,
+            crate::window_manager::STANDARD_DESKTOP_PATTERN,
+        );
+        for y in 0..screen_h as i16 {
+            for x in 0..screen_w as i16 {
+                let outside =
+                    y < retained.0 || y >= retained.2 || x < retained.1 || x >= retained.3;
+                if outside && (x + y).rem_euclid(6) == 1 {
+                    bus.write_byte(screen_base + y as u32 * row_bytes + x as u32, 255);
+                }
+            }
+        }
+        TrapDispatcher::fb_fill_rect_index(
+            &mut bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_w as i16,
+            screen_h as i16,
+            retained.0,
+            retained.1,
+            retained.2,
+            retained.3,
+            42,
+        );
+        // Application-owned nonblack edge pixels are inside the retained
+        // destination even though a later visual-content crop can exclude them.
+        for y in retained.0..retained.2 {
+            bus.write_byte(screen_base + y as u32 * row_bytes + 714, 43);
+        }
+        let retained_before: Vec<u8> = (retained.0..retained.2)
+            .flat_map(|y| {
+                bus.read_bytes(
+                    screen_base + y as u32 * row_bytes + retained.1 as u32,
+                    (retained.3 - retained.1) as usize,
+                )
+            })
+            .collect();
+
+        // Exact observed ownership: one visible plainDBox has a full-screen
+        // global port while MBarHeight=0 has locked fullscreen presentation.
+        bus.write_long(PORT_PTR + 2, screen_base);
+        bus.write_word(PORT_PTR + 6, row_bytes as u16);
+        bus.write_word(PORT_PTR + 8, (-60i16) as u16);
+        bus.write_word(PORT_PTR + 10, (-80i16) as u16);
+        bus.write_word(PORT_PTR + 12, 540);
+        bus.write_word(PORT_PTR + 14, 720);
+        bus.write_word(PORT_PTR + 16, (-60i16) as u16);
+        bus.write_word(PORT_PTR + 18, (-80i16) as u16);
+        bus.write_word(PORT_PTR + 20, 540);
+        bus.write_word(PORT_PTR + 22, 720);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        set_window_structure_rect(&mut bus, PORT_PTR, (59, 79, 661, 881));
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        disp.front_window = PORT_PTR;
+        *disp.current_port = PORT_PTR;
+        *disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (0, 0, screen_h as i16, screen_w as i16);
+        disp.window_proc_id = 2;
+        disp.window_proc_ids.insert(PORT_PTR, 2);
+        disp.menu_bar_hidden = false;
+        disp.fullscreen_locked = true;
+        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[43] = [0xFFFF, 0, 0];
+        disp.device_clut[255] = [0, 0, 0];
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: retained.0,
+            dst_left: retained.1,
+            dst_bottom: retained.2,
+            dst_right: retained.3,
+        });
+
+        disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
+
+        assert!(screen_pixel_is_black(&disp, &bus, 1, 0));
+        for y in 0..screen_h as i16 {
+            for x in 0..screen_w as i16 {
+                if y < retained.0 || y >= retained.2 || x < retained.1 || x >= retained.3 {
+                    assert!(screen_pixel_is_black(&disp, &bus, x, y));
+                }
+            }
+        }
+        let retained_after: Vec<u8> = (retained.0..retained.2)
+            .flat_map(|y| {
+                bus.read_bytes(
+                    screen_base + y as u32 * row_bytes + retained.1 as u32,
+                    (retained.3 - retained.1) as usize,
+                )
+            })
+            .collect();
+        assert_eq!(retained_after, retained_before);
     }
 
     #[test]
