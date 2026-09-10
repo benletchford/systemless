@@ -3317,6 +3317,22 @@ impl super::TrapDispatcher {
             return;
         }
 
+        // CopyBits into the physical screen is an explicit application
+        // presentation operation. Once one has occurred, replaying a
+        // separate window backing port would create a second compositor and
+        // can erase screen-owned artwork that is not present in that port.
+        // Keep the screen framebuffer authoritative, matching the manual
+        // CPort bridge above. Imaging With QuickDraw (1994), 3-112--3-114.
+        if self.copybits_screen_count != 0 {
+            if trace {
+                eprintln!(
+                    "[BLIT] skip: screen already has explicit CopyBits output (count={})",
+                    self.copybits_screen_count
+                );
+            }
+            return;
+        }
+
         // Read the port's rowBytes (from pixMap for CGrafPort, portBits for GrafPort)
         let port_rb = if is_cgraf_port {
             (bus.read_word(port_pixmap_ptr + 4) & 0x3FFF) as u32
@@ -8214,6 +8230,42 @@ mod redraw_chrome_tests {
             bus.read_byte(row30_x97),
             0,
             "1bpp src bit=0 must still use the active ColorTable's white index"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_preserves_explicit_screen_copybits_over_window_backing() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(4 * 2);
+        disp.screen_mode = (screen_base, 4, 4, 2, 8);
+        bus.write_long(0x0824, screen_base);
+
+        let source_base = bus.alloc(4 * 2);
+        install_8bpp_cgrafport(&mut bus, source_base, 4, 4, 2, 0);
+        bus.write_bytes(
+            source_base,
+            &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+        );
+        bus.fill_bytes(screen_base, 4 * 2, 0xAA);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 2, 4);
+
+        // The normal HLE window bridge is still needed before an application
+        // takes ownership of the physical framebuffer.
+        disp.blit_window_to_screen(&mut bus);
+        assert_eq!(bus.read_bytes(screen_base, 4), vec![0x11, 0x22, 0x33, 0x44]);
+
+        // An explicit screen CopyBits makes the framebuffer authoritative.
+        // The stale/offscreen window backing must not be replayed over it.
+        bus.fill_bytes(screen_base, 4 * 2, 0xAA);
+        disp.copybits_screen_count = 1;
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_bytes(screen_base, 4 * 2),
+            vec![0xAA; 4 * 2],
+            "an explicit screen CopyBits must prevent the window bridge from erasing screen-owned pixels"
         );
     }
 
