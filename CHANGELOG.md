@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.5](https://github.com/benletchford/systemless/compare/v0.39.4...v0.39.5) (2026-09-10)
+
+
+### Bug Fixes
+
+* clear patterned margins around fullscreen game surfaces ([#1643](https://github.com/benletchford/systemless/issues/1643)) ([e39cdba](https://github.com/benletchford/systemless/commit/e39cdba04906fa2eb9c666335756ed345268e96e))
+* **fonts:** restore classic Monaco maximum advances ([#1641](https://github.com/benletchford/systemless/issues/1641)) ([6c0ecb2](https://github.com/benletchford/systemless/commit/6c0ecb2e294454bbf8f6c2d660b2b5536e918687))
+
 ## [0.39.4](https://github.com/benletchford/systemless/compare/v0.39.3...v0.39.4) (2026-09-09)
 
 
