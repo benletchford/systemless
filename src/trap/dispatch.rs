@@ -1819,8 +1819,19 @@ pub struct TrapDispatcher {
     /// ~20-30ns measurement overhead per trap when enabled. Dump via
     /// `print_trap_timing_histogram`.
     pub trap_time_ns: Box<[u64; 4096]>,
-    /// Number of copybits_screen events emitted (screen-affecting draws).
+    /// Cumulative number of effective CopyBits draws into the screen.
+    ///
+    /// This lifetime is intentional: desktop content-rect detection compares
+    /// successive totals. Compositor suppression uses
+    /// `last_screen_copybits_tick` instead of treating this counter as a
+    /// current-frame flag.
     pub copybits_screen_count: u64,
+    /// Guest tick in which the most recent effective screen CopyBits occurred.
+    ///
+    /// The window-backing bridge must defer only for the frame that contains
+    /// the explicit screen draw; the cumulative event count cannot express
+    /// that lifetime.
+    pub(crate) last_screen_copybits_tick: Option<u32>,
     /// Most recent sizeable CopyBits blit into the screen framebuffer.
     pub last_screen_copybits_rect: Option<ScreenCopyBitsRect>,
     /// Largest non-fullscreen FrameRect drawn into the screen framebuffer in
@@ -2735,6 +2746,22 @@ impl TrapDispatcher {
         self.tick_state.current_tick()
     }
 
+    /// Record an effective CopyBits draw into the physical screen.
+    ///
+    /// Keep the cumulative counter for trace/content-rect consumers while
+    /// retaining the guest tick separately for frame-scoped compositor policy.
+    pub(crate) fn note_screen_copybits(&mut self) {
+        self.copybits_screen_count += 1;
+        self.last_screen_copybits_tick = Some(self.current_tick());
+    }
+
+    /// Whether an explicit screen CopyBits occurred during the current guest
+    /// frame. Repeated host redraws in this tick must preserve that output,
+    /// while a later tick may resume the offscreen-window bridge.
+    pub(crate) fn screen_copybits_in_current_tick(&self) -> bool {
+        self.last_screen_copybits_tick == Some(self.current_tick())
+    }
+
     /// Resolve the architecture-neutral TickCount operation from the
     /// guest-visible low-memory value. A direct guest write is accepted at
     /// the ABI boundary and updates the host pacing snapshot; it is never
@@ -3461,6 +3488,7 @@ impl TrapDispatcher {
             trap_histogram: Box::new([0u64; 4096]),
             trap_time_ns: Box::new([0u64; 4096]),
             copybits_screen_count: 0,
+            last_screen_copybits_tick: None,
             last_screen_copybits_rect: None,
             last_screen_frame_rect: None,
             last_screen_frame_rect_tick: 0,

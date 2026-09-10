@@ -3388,7 +3388,7 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 if let Some(rect) = screen_copybits_rect {
-                    self.copybits_screen_count += 1;
+                    self.note_screen_copybits();
                     self.note_screen_copybits_rect(
                         rect.src_top,
                         rect.src_left,
@@ -37245,6 +37245,8 @@ mod tests {
 
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
+        assert_eq!(d.copybits_screen_count, 1);
+        assert_eq!(d.last_screen_copybits_tick, Some(d.current_tick()));
         assert_eq!(bus.read_byte(screen_base + 2 * 16 + 2), 0x7A);
 
         bus.write_byte(screen_base + 2 * 16 + 2, 0);

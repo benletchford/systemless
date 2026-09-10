@@ -3318,15 +3318,18 @@ impl super::TrapDispatcher {
         }
 
         // CopyBits into the physical screen is an explicit application
-        // presentation operation. Once one has occurred, replaying a
-        // separate window backing port would create a second compositor and
-        // can erase screen-owned artwork that is not present in that port.
-        // Keep the screen framebuffer authoritative, matching the manual
-        // CPort bridge above. Imaging With QuickDraw (1994), 3-112--3-114.
-        if self.copybits_screen_count != 0 {
+        // presentation operation. While the current guest frame contains
+        // one, replaying a separate window backing port would create a second
+        // compositor and can erase screen-owned artwork that is not present
+        // in that port. Keep the screen framebuffer authoritative for this
+        // frame, then allow the bridge again on the next tick. The cumulative
+        // event counter is deliberately not used here because it also feeds
+        // longer-lived trace/content-rect consumers. Imaging With QuickDraw
+        // (1994), 3-112--3-114.
+        if self.screen_copybits_in_current_tick() {
             if trace {
                 eprintln!(
-                    "[BLIT] skip: screen already has explicit CopyBits output (count={})",
+                    "[BLIT] skip: current frame already has explicit CopyBits output (count={})",
                     self.copybits_screen_count
                 );
             }
@@ -8259,13 +8262,23 @@ mod redraw_chrome_tests {
         // An explicit screen CopyBits makes the framebuffer authoritative.
         // The stale/offscreen window backing must not be replayed over it.
         bus.fill_bytes(screen_base, 4 * 2, 0xAA);
-        disp.copybits_screen_count = 1;
+        disp.note_screen_copybits();
         disp.blit_window_to_screen(&mut bus);
 
         assert_eq!(
             bus.read_bytes(screen_base, 4 * 2),
             vec![0xAA; 4 * 2],
             "an explicit screen CopyBits must prevent the window bridge from erasing screen-owned pixels"
+        );
+
+        // The cumulative event count remains nonzero for content-rect
+        // detection, but it must not suppress a later guest frame.
+        disp.set_tick_count_for_test(&mut bus, 101);
+        disp.blit_window_to_screen(&mut bus);
+        assert_eq!(
+            bus.read_bytes(screen_base, 4 * 2),
+            vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+            "the next guest frame must resume compositing the offscreen window backing"
         );
     }
 
