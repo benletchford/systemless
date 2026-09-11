@@ -3200,7 +3200,7 @@ impl super::TrapDispatcher {
         self.set_window_vis_from_content(bus, window_ptr, false);
     }
 
-    fn visible_windows_behind(&self, bus: &MacMemoryBus, window_ptr: u32) -> Vec<u32> {
+    pub(super) fn visible_windows_behind(&self, bus: &MacMemoryBus, window_ptr: u32) -> Vec<u32> {
         let Some(index) = self
             .window_list
             .iter()
@@ -3215,7 +3215,7 @@ impl super::TrapDispatcher {
             .collect()
     }
 
-    fn invalidate_exposed_windows(
+    pub(super) fn invalidate_exposed_windows(
         &mut self,
         bus: &mut MacMemoryBus,
         windows: &[u32],
