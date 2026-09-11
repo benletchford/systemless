@@ -27613,6 +27613,8 @@ mod tests {
         runner.bus.write_word(base + 6, 0x64F8);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(1_000);
+        runner.tick_budget = 777;
         runner.m68k.cpu.write_reg(Register::D7, 500);
         runner.m68k.cpu.write_reg(Register::A7, sp - 4);
         runner.m68k.cpu.write_reg(Register::PC, base + 4);
@@ -27626,6 +27628,11 @@ mod tests {
         assert_eq!(runner.bus.read_long(sp - 4), 102);
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(
+            runner.tick_budget,
+            runner.instructions_per_tick() as i32,
+            "a capped synthetic boundary must leave a fresh tick budget"
+        );
     }
 
     #[test]
@@ -27650,6 +27657,8 @@ mod tests {
         runner.bus.write_long(target_addr, 400);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(1_000);
+        runner.tick_budget = 777;
         runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.m68k.cpu.write_reg(Register::D0, 0xDEAD_BEEF);
@@ -27681,6 +27690,12 @@ mod tests {
         );
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(runner.bus.read_long(sp - 4), base + 4);
+
+        assert_eq!(
+            runner.tick_budget,
+            runner.instructions_per_tick() as i32,
+            "an interrupted synthetic boundary must leave a fresh tick budget"
+        );
 
         let active = runner
             .active_interrupt_callback
