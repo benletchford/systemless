@@ -5658,6 +5658,7 @@ impl super::TrapDispatcher {
         self.restore_window_manager_desktop(bus);
 
         if !self.menus.is_empty() && !self.fullscreen_locked && !self.menu_bar_hidden {
+            self.refresh_menus_from_memory(bus);
             self.draw_menu_bar_to_fb(bus);
         }
         // Skip chrome for borderless/dialog window types that have no title bar.

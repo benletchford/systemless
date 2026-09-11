@@ -1677,8 +1677,10 @@ impl super::TrapDispatcher {
         names
     }
 
-    fn refresh_menus_from_memory(&mut self, bus: &MacMemoryBus) {
-        let menu_list = self.current_menu_list(bus).unwrap_or_default();
+    pub(crate) fn refresh_menus_from_memory(&mut self, bus: &MacMemoryBus) {
+        let Some(menu_list) = self.current_menu_list(bus) else {
+            return;
+        };
         self.apply_menu_list_membership(bus, &menu_list);
         for menu in &mut self.menus {
             refresh_menu_from_memory(bus, menu);
@@ -11384,6 +11386,32 @@ mod tests {
             crate::runner::MenuBarPolicy::GuestControlled
         );
         assert!(!disp.menu_bar_hidden);
+    }
+
+    #[test]
+    fn redraw_chrome_reconciles_menu_membership_before_painting() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 300, 0x302000, "File");
+        let game = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 301, 0x302020, "Game");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+        insert_menu(&mut disp, &mut cpu, &mut bus, game);
+
+        disp.menus
+            .iter_mut()
+            .find(|menu| menu.handle == file)
+            .unwrap()
+            .visible_in_menu_bar = false;
+
+        disp.redraw_chrome(&mut bus);
+
+        assert!(disp
+            .menus
+            .iter()
+            .find(|menu| menu.handle == file)
+            .unwrap()
+            .visible_in_menu_bar);
     }
 
     #[test]
