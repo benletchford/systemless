@@ -6280,12 +6280,17 @@ impl super::TrapDispatcher {
             self.get_screen_params();
         let (top, left, bottom, right) = bounds;
 
-        // Fill dialog background with white — but skip for game-managed
-        // dialogs whose in-bounds items are userItems, since the game draws
-        // its own background and the white fill would overwrite that content.
+        // A dialog window's content is erased to its background before the
+        // application draws (Window Manager PaintOne; IM:I I-282, I-296).
+        // Game-managed dialogs (every in-bounds item is a userItem) still get
+        // that default erase on the first manager paint; once the application
+        // has painted the dialog itself its pixels are authoritative and must
+        // not be clobbered by a synthesized shell.
         let game_managed = Self::dialog_is_game_managed(bounds, items);
+        let app_painted = self.dialogs_drawn_by_app.contains(&dialog_ptr);
+        let clear_background = !game_managed || !app_painted;
         let content_color = self.window_semantic_color(bus, dialog_ptr, 0);
-        if !game_managed {
+        if clear_background {
             if let Some((red, green, blue)) = content_color {
                 let pixel_index =
                     Self::nearest_palette_index(&self.device_clut, [red, green, blue]);
@@ -6304,9 +6309,9 @@ impl super::TrapDispatcher {
                 );
             }
         }
-        if game_managed {
+        if !clear_background {
             eprintln!(
-                "[DIALOG] Skipping white fill for game-managed dialog at ({},{},{},{}), {} items",
+                "[DIALOG] Preserving app-painted dialog background at ({},{},{},{}), {} items",
                 top,
                 left,
                 bottom,
@@ -6331,9 +6336,9 @@ impl super::TrapDispatcher {
             themed_frame,
             proc_id,
             true,
-            !game_managed && content_color.is_none(),
+            clear_background && content_color.is_none(),
         ) {
-            if !game_managed && content_color.is_none() {
+            if clear_background && content_color.is_none() {
                 Self::fb_fill_rect(
                     bus,
                     screen_base,
@@ -31762,6 +31767,166 @@ mod tests {
         assert!(
             !disp.dialog_visible_snapshots.contains_key(&dialog_ptr),
             "ShowWindow redraw must not retain a stale shell for app-drawn all-userItem dialogs"
+        );
+    }
+
+    #[test]
+    fn game_managed_dialog_clears_background_until_the_application_paints() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let screen_base = 0x300000u32;
+        for offset in 0..64u32 * 64 {
+            bus.write_byte(screen_base + offset, 0x11);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+
+        bus.write_long(dialog_ptr + 2, screen_base);
+        bus.write_word(dialog_ptr + 6, 64);
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 12, 20);
+        bus.write_word(dialog_ptr + 14, 20);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 20);
+        bus.write_word(dialog_ptr + 22, 20);
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        disp.window_proc_ids.insert(dialog_ptr, 2);
+
+        let items = vec![DialogItem {
+            item_type: 0x80,
+            rect: (2, 2, 10, 10),
+            text: String::new(),
+            resource_id: 0,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+        assert!(TrapDispatcher::dialog_is_game_managed((0, 0, 20, 20), &items));
+        disp.dialog_items.insert(dialog_ptr, items.clone());
+
+        let probe = screen_base + 5 * 64 + 5;
+        disp.draw_dialog(
+            &mut bus,
+            (0, 0, 20, 20),
+            2,
+            "",
+            &items,
+            0,
+            "",
+            0,
+            false,
+            dialog_ptr,
+        );
+        assert_ne!(
+            bus.read_byte(probe),
+            0x11,
+            "a game-managed dialog still defaults its background on the first manager paint"
+        );
+
+        bus.write_byte(probe, 0x22);
+        disp.dialogs_drawn_by_app.insert(dialog_ptr);
+        disp.draw_dialog(
+            &mut bus,
+            (0, 0, 20, 20),
+            2,
+            "",
+            &items,
+            0,
+            "",
+            0,
+            false,
+            dialog_ptr,
+        );
+        assert_eq!(
+            bus.read_byte(probe),
+            0x22,
+            "an application-painted game-managed dialog must not be cleared again"
+        );
+    }
+
+    #[test]
+    fn select_window_erases_newly_exposed_dialog_background() {
+        // A dialog created behind a full-screen window has an empty visRgn at
+        // ShowWindow, so the manager skips its PaintOne erase. SelectWindow
+        // then brings it to the front; the newly exposed content must be
+        // erased (not left showing the window that was in front).
+        // Inside Macintosh Volume I, I-284, I-286, I-296.
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((128 * 128) as u32);
+        for offset in 0..128u32 * 128 {
+            bus.write_byte(screen_base + offset, 0x11);
+        }
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 128, 128, 128, 8);
+
+        let alloc_region = |bus: &mut crate::memory::MacMemoryBus,
+                            rect: Option<(i16, i16, i16, i16)>| {
+            let data = bus.alloc(10);
+            bus.write_word(data, 10);
+            match rect {
+                Some((top, left, bottom, right)) => {
+                    bus.write_word(data + 2, top as u16);
+                    bus.write_word(data + 4, left as u16);
+                    bus.write_word(data + 6, bottom as u16);
+                    bus.write_word(data + 8, right as u16);
+                }
+                None => {
+                    bus.write_long(data + 2, 0);
+                    bus.write_long(data + 6, 0);
+                }
+            }
+            let handle = bus.alloc(4);
+            bus.write_long(handle, data);
+            handle
+        };
+
+        // Full-screen window in front of the dialog to begin with.
+        let occluder = bus.alloc(170);
+        bus.write_word(occluder + 6, 128);
+        bus.write_word(occluder + 8, 0);
+        bus.write_word(occluder + 10, 0);
+        bus.write_word(occluder + 12, 128);
+        bus.write_word(occluder + 14, 128);
+        bus.write_byte(occluder + 110, 0xFF);
+        let occluder_struc = alloc_region(&mut bus, Some((0, 0, 128, 128)));
+        bus.write_long(occluder + 114, occluder_struc);
+
+        // Dialog below the menu bar so CalcVis does not clip it to empty.
+        let dialog_ptr = bus.alloc(170);
+        bus.write_word(dialog_ptr + 6, 128);
+        bus.write_word(dialog_ptr + 8, (-40i16) as u16);
+        bus.write_word(dialog_ptr + 10, (-40i16) as u16);
+        bus.write_word(dialog_ptr + 12, 40);
+        bus.write_word(dialog_ptr + 14, 40);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 40);
+        bus.write_word(dialog_ptr + 22, 40);
+        bus.write_word(dialog_ptr + 108, 2);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        let cont = alloc_region(&mut bus, Some((40, 40, 80, 80)));
+        bus.write_long(dialog_ptr + 118, cont);
+        let vis = alloc_region(&mut bus, None);
+        bus.write_long(dialog_ptr + 24, vis);
+
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.window_proc_ids.insert(dialog_ptr, 2);
+        *disp.window_list = vec![occluder, dialog_ptr];
+        disp.front_window = occluder;
+
+        let probe = screen_base + 60 * 128 + 60;
+        bus.write_byte(probe, 0x42);
+
+        disp.activate_as_front_window(&mut bus, dialog_ptr);
+
+        assert_eq!(disp.front_window, dialog_ptr);
+        assert_ne!(
+            bus.read_byte(probe),
+            0x42,
+            "SelectWindow must erase the dialog background once it is newly exposed"
         );
     }
 
