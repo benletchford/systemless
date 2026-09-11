@@ -448,6 +448,10 @@ impl SndChannel {
         self.playing.is_some() || self.file_paused
     }
 
+    pub fn playback_sample_rate(&self) -> Option<u32> {
+        self.playing.as_ref().map(|playing| playing.sample_rate_fixed)
+    }
+
     pub(crate) fn guest_visible(&self) -> bool {
         self.guest_visible
     }
