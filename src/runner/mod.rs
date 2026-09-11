@@ -11427,18 +11427,23 @@ fn load_app_generic<M: MemoryBus>(
 
         let word_2_3 = u16::from_be_bytes([jt_data[entry_offset + 2], jt_data[entry_offset + 3]]);
         let (offset, segment) = if word_2_3 == 0xA9F0 {
-            // FAR Format
+            // FAR format: segment.w, LoadSeg.w, offset.l.
             let seg = i16::from_be_bytes([jt_data[entry_offset], jt_data[entry_offset + 1]]);
-            let off = u16::from_be_bytes([jt_data[entry_offset + 6], jt_data[entry_offset + 7]]);
+            let off = u32::from_be_bytes([
+                jt_data[entry_offset + 4],
+                jt_data[entry_offset + 5],
+                jt_data[entry_offset + 6],
+                jt_data[entry_offset + 7],
+            ]);
             (off, seg)
         } else if word_2_3 == 0xFFFF {
             // NULL
-            (0u16, 0i16)
+            (0u32, 0i16)
         } else {
             // NEAR Format
             let off = u16::from_be_bytes([jt_data[entry_offset], jt_data[entry_offset + 1]]);
             let seg = i16::from_be_bytes([jt_data[entry_offset + 4], jt_data[entry_offset + 5]]);
-            (off, seg)
+            (u32::from(off), seg)
         };
 
         jump_table.push(JumpTableEntry {
@@ -11647,12 +11652,11 @@ fn load_app_generic<M: MemoryBus>(
             for (i, entry) in jump_table.iter_mut().enumerate() {
                 if entry.segment == code_res.id {
                     entry.loaded = true;
-                    let effective_offset = entry.offset as u32;
                     // MPW far-model jump-table offsets are measured from the
                     // beginning of the CODE segment. The first externally
                     // callable routine can therefore sit at offset $28, just
                     // after the 40-byte far header.
-                    entry.address = user_addr + effective_offset;
+                    entry.address = user_addr + entry.offset;
 
                     let jt_addr = jt_base + (i as u32 * 8);
                     bus.write_word(jt_addr, code_res.id as u16);
@@ -11661,7 +11665,7 @@ fn load_app_generic<M: MemoryBus>(
                     if trace_load_enabled() {
                         eprintln!(
                             "[LOAD] JT[{}] -> CODE {} @ ${:08X} (far-model, off=${:04X})",
-                            i, code_res.id, entry.address, effective_offset
+                            i, code_res.id, entry.address, entry.offset
                         );
                     }
                 }
@@ -15347,6 +15351,32 @@ mod tests {
             code1_base + 0x28,
             "MPW far offsets must not be adjusted by the 40-byte header twice"
         );
+    }
+
+    #[test]
+    fn load_app_executes_far_jump_table_routine_above_64k() {
+        let offset = 0x0001_A114u32;
+        let mut code0 = minimal_code0(40, 0x2000, 8, 32);
+        code0[16..20].copy_from_slice(&[0x00, 0x01, 0xA9, 0xF0]);
+        code0[20..24].copy_from_slice(&offset.to_be_bytes());
+
+        let mut code1 = vec![0; offset as usize + 4];
+        code1[..2].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        // Distinct routines expose accidental truncation during execution.
+        code1[0xA114..0xA118].copy_from_slice(&[0x70, 0x01, 0x4E, 0x75]);
+        code1[offset as usize..].copy_from_slice(&[0x70, 0x2A, 0x4E, 0x75]);
+        let bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"CODE", 1, &code1)]);
+        let fork = ResourceFork::parse(&bytes).expect("synthetic far-model resource fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = runner.load_app(&fork).expect("load far-model application");
+        let jt = app.a5_base + app.code0_header.jump_table_offset;
+
+        runner.cpu_mut().write_reg(Register::PC, jt + 2);
+        runner.step(); // JMP through the patched slot.
+        runner.step(); // MOVEQ from the selected routine.
+        assert_eq!(runner.cpu().read_reg(Register::D0), 42);
+        assert_eq!(app.jump_table[0].offset, offset);
+        assert_eq!(runner.bus.read_long(jt + 4), app.segment_bases[&1] + offset);
     }
 
     #[test]
