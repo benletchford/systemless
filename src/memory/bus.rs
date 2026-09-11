@@ -1151,7 +1151,9 @@ impl MacMemoryBus {
     /// inside RAM and no watchpoint is armed, uses `slice::copy_within`
     /// — one bounds check, memmove-grade throughput. Falls back to
     /// byte-at-a-time (preserving the overlap-handling order from
-    /// Inside Macintosh II-44) when the fast path doesn't apply.
+    /// Inside Macintosh II-44) when the fast path doesn't apply. A request
+    /// that crosses the active address-width boundary or is not fully mapped
+    /// and writable is rejected before that fallback can wrap an address.
     pub fn block_move(&mut self, src: u32, dst: u32, count: u32) {
         // `Size` is a signed Macintosh LONGINT. A negative byte count is
         // invalid; treating its bit pattern as an unsigned length would let
@@ -1161,10 +1163,26 @@ impl MacMemoryBus {
         if (count as i32) <= 0 {
             return;
         }
+        let count_usize = count as usize;
+        // The byte-wise fallback increments guest addresses with wrapping.
+        // Reject an address-width crossing, unmapped source, or unwritable
+        // destination before it can turn a malformed request into writes to
+        // unrelated guest state. Inside Macintosh: Memory (1992),
+        // pp. 2-59--2-60 defines BlockMove as a complete byte-range copy.
+        if self
+            .range_translates_contiguously(src, count_usize)
+            .is_none()
+            || self
+                .range_translates_contiguously(dst, count_usize)
+                .is_none()
+            || !self.is_guest_address_mapped(src, count_usize)
+            || !self.is_guest_address_writable(dst, count_usize)
+        {
+            return;
+        }
         if self.presentation_active() && self.copy_ram_bytes(src, dst, count) {
             return;
         }
-        let count_usize = count as usize;
         let flat_route = self.route(src, count_usize) == GuestMemoryRoute::Flat
             && self.route(dst, count_usize) == GuestMemoryRoute::Flat;
         #[cfg(debug_assertions)]
@@ -3918,6 +3936,35 @@ mod tests {
             0xAA,
             "out-of-bounds copy should report failure before writing"
         );
+    }
+
+    #[test]
+    fn block_move_rejects_ranges_that_wrap_the_24_bit_address_space() {
+        let mut bus = MacMemoryBus::new(0x0100_0000);
+        bus.set_addressing_32_bit(false);
+
+        const SOURCE: u32 = 0x00FF_FFFE;
+        const LOW_MEMORY: u32 = 0x0200;
+        let sentinel = [0xC0, 0xDE, 0xCA, 0xFE];
+        bus.write_bytes(SOURCE, &[1, 2]);
+        bus.write_bytes(LOW_MEMORY, &sentinel);
+
+        bus.block_move(SOURCE, LOW_MEMORY, sentinel.len() as u32);
+
+        assert_eq!(bus.read_bytes(LOW_MEMORY, sentinel.len()), sentinel);
+    }
+
+    #[test]
+    fn block_move_rejects_unmapped_sources_before_writing_code_bytes() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        const UNMAPPED_SOURCE: u32 = 0x0100_0000;
+        const CODE: u32 = 0x3000;
+        let sentinel = [0x4E, 0x75, 0x60, 0x00];
+        bus.write_bytes(CODE, &sentinel);
+
+        bus.block_move(UNMAPPED_SOURCE, CODE, sentinel.len() as u32);
+
+        assert_eq!(bus.read_bytes(CODE, sentinel.len()), sentinel);
     }
 
     #[test]
