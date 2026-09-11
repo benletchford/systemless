@@ -63,12 +63,20 @@ jobs:
       - name: Build all targets
         run: cargo build --all-targets --all-features
 
-      # test-support enables the scripted_traces module and its tests.
+      # test-support enables the scripted_traces module and its tests. The
+      # debugger is an opt-in feature, so this run also covers its disabled
+      # path; the next step exercises the enabled one.
       - name: Run library tests
         run: cargo test --lib --features test-support
 
+      - name: Run debugger library tests
+        run: cargo test --lib --features test-support,debug
+
       - name: Run desktop tests
         run: cargo test --locked --bin systemless
+
+      - name: Run debugger desktop tests
+        run: cargo test --locked --bin systemless --features debug-server
 
       # Both Systemless runtime configurations use this exact optimized executable.
       # Keep ordinary library/desktop tests in the checked debug profile above.

@@ -129,7 +129,7 @@ impl<T> NativeExecution<T> {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "debug"))]
     pub(crate) fn companion(&self) -> Option<&T> {
         self.companion.installed()
     }

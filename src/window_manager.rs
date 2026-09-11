@@ -42,7 +42,7 @@ pub(crate) fn grow_dimensions_from_drag(
 /// contract only needs to know which screen area is dirty/visible; the guest
 /// region records remain private implementation details.
 #[doc(hidden)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WindowSnapshot {
     pub title: String,
     pub bounds: WindowRect,
