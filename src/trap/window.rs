@@ -2549,7 +2549,14 @@ impl super::TrapDispatcher {
         // it tracks the window rather than following it around as a fixed
         // local inset.
         let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        if mbar_h > 0 && !self.menu_bar_hidden {
+        let (window_top, window_left, window_bottom, window_right) =
+            self.window_global_port_rect(bus, window_ptr);
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        let exact_fullscreen = window_top <= 0
+            && window_left <= 0
+            && window_bottom >= screen_height as i16
+            && window_right >= screen_width as i16;
+        if mbar_h > 0 && !self.menu_bar_hidden && !exact_fullscreen {
             if let Some((top, left, bottom, right)) = Self::region_handle_rect(bus, vis_handle) {
                 if top < mbar_h {
                     let clipped = (top.max(mbar_h), left, bottom, right);
@@ -3502,12 +3509,17 @@ impl super::TrapDispatcher {
         // coordinates every time the window list changes, which keeps it
         // correct after the window moves.
         let mut region_content_rect = (0, 0, port_height, port_width);
-        if self.menu_bar_hidden
-            && matches!(wind_proc_id, 1 | 2 | 3 | 5)
+        let exact_fullscreen = wind_top <= 0
+            && wind_left <= 0
+            && wind_bottom >= screen_h as i16
+            && wind_right >= screen_w as i16;
+        let host_hidden_near_fullscreen = self.menu_bar_hidden
             && wind_top <= mbar_h.saturating_add(2)
             && wind_left <= 2
             && wind_bottom >= screen_h as i16 - 2
-            && wind_right >= screen_w as i16 - 2
+            && wind_right >= screen_w as i16 - 2;
+        if matches!(wind_proc_id, 1 | 2 | 3 | 5)
+            && (exact_fullscreen || host_hidden_near_fullscreen)
         {
             // Kiosk-mode expansion genuinely enlarges the content area to the
             // screen-backed PixMap, so it applies to the regions too.
@@ -6662,6 +6674,37 @@ mod tests {
             ),
             (0, 0, 600, 800),
             "initial update region should be the expanded visible region in global coordinates"
+        );
+    }
+
+    #[test]
+    fn init_cgraf_window_prepares_exact_fullscreen_plain_window_before_guest_hides_menu_bar() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            0,
+            0,
+            600,
+            800,
+            "",
+            2,
+            true,
+            true,
+            false,
+            0,
+        );
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 600, 800),
+            "an exact full-screen plain window must accept drawing behind the menu before MBarHeight reaches zero"
         );
     }
 
