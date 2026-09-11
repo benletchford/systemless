@@ -6314,7 +6314,7 @@ impl super::TrapDispatcher {
                 items.len()
             );
         }
-        let themed_frame = match proc_id {
+        let themed_frame = match proc_id & 0x0F {
             1 => (
                 top - Self::DBOX_FRAME_MARGIN,
                 left - Self::DBOX_FRAME_MARGIN,
@@ -6356,7 +6356,7 @@ impl super::TrapDispatcher {
             // procID 2 = plainDBox (single border, no title)
             // procID 3 = altDBoxProc (shadow border, no title)
             // procID 4 = noGrowDocProc (title bar + border, no grow)
-            match proc_id {
+            match proc_id & 0x0F {
                 1 => {
                     self.draw_classic_dbox_frame(bus, top, left, bottom, right);
                 }
@@ -6521,49 +6521,6 @@ impl super::TrapDispatcher {
 
             let enabled = (item.item_type & 0x80) == 0;
             match base_type {
-                // Button (ctrlItem + btnCtrl = 4)
-                4 => {
-                    // IM:I I-405: itemDisable stops Dialog Manager event
-                    // reporting, while the standard System 7 control
-                    // appearance is unchanged. Route the semantic state to
-                    // non-classic theme chrome without changing metrics or
-                    // existing hit handling.
-                    self.draw_button_with_enabled(
-                        bus,
-                        abs_top,
-                        abs_left,
-                        abs_bottom,
-                        abs_right,
-                        &item.text,
-                        auto_default_outline && item_num == default_item,
-                        enabled,
-                    );
-                }
-                // Checkbox (ctrlItem + chkCtrl = 5)
-                5 => {
-                    let checked = self
-                        .dialog_control_values
-                        .get(&(dialog_ptr, item_num))
-                        .copied()
-                        .unwrap_or(0)
-                        != 0;
-                    self.draw_checkbox_with_enabled(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked, enabled,
-                    );
-                }
-                // Radio button (ctrlItem + radCtrl = 6)
-                6 => {
-                    let selected = self
-                        .dialog_control_values
-                        .get(&(dialog_ptr, item_num))
-                        .copied()
-                        .unwrap_or(0)
-                        != 0;
-                    self.draw_radio_with_enabled(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, selected,
-                        enabled,
-                    );
-                }
                 // Static text (8)
                 8 => {
                     let style = self.dialog_item_text_style(bus, dialog_ptr, i);
@@ -6647,114 +6604,6 @@ impl super::TrapDispatcher {
                     // fully-outside clip happens above the match).
                     if !skip_pictures && item.resource_id != 0 {
                         self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
-                    }
-                }
-                // resCtrl — DITL item backed by a live CNTL resource.
-                // Macintosh Toolbox Essentials 1992, 3-31.
-                7 => {
-                    if let Some(ctrl_handle) =
-                        self.dialog_control_handle_for_item(dialog_ptr, item_num)
-                    {
-                        let ctrl_ptr = bus.read_long(ctrl_handle);
-                        let proc_id_ctrl =
-                            self.control_manager.proc_id(ctrl_ptr);
-                        let value = self
-                            .dialog_control_values
-                            .get(&(dialog_ptr, item_num))
-                            .copied()
-                            .unwrap_or_else(|| bus.read_word(ctrl_ptr + 18) as i16);
-                        let min = bus.read_word(ctrl_ptr + 20) as i16;
-                        let max = bus.read_word(ctrl_ptr + 22) as i16;
-                        let hilite = bus.read_byte(ctrl_ptr + 17);
-                        let title =
-                            decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
-
-                        match proc_id_ctrl {
-                            0 => self.draw_button_with_enabled(
-                                bus,
-                                abs_top,
-                                abs_left,
-                                abs_bottom,
-                                abs_right,
-                                &title,
-                                auto_default_outline && item_num == default_item,
-                                enabled,
-                            ),
-                            1 => self.draw_checkbox_with_enabled(
-                                bus,
-                                abs_top,
-                                abs_left,
-                                abs_bottom,
-                                abs_right,
-                                &title,
-                                value != 0,
-                                enabled,
-                            ),
-                            2 => self.draw_radio_with_enabled(
-                                bus,
-                                abs_top,
-                                abs_left,
-                                abs_bottom,
-                                abs_right,
-                                &title,
-                                value != 0,
-                                enabled,
-                            ),
-                            16 => self.draw_scroll_bar(
-                                bus, abs_top, abs_left, abs_bottom, abs_right, value, min, max,
-                                hilite,
-                            ),
-                            proc_id if Self::is_popup_menu_proc_id(proc_id) => {
-                                let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
-                                let selected = value.max(1) as usize;
-                                let item_title = self.popup_menu_item_title(bus, menu_id, selected);
-                                let title_width = self.popup_control_title_width(ctrl_ptr, max);
-                                let (draw_top, draw_left, draw_bottom, draw_right) = self
-                                    .popup_control_box_rect(
-                                        bus,
-                                        abs_top,
-                                        abs_left,
-                                        abs_bottom,
-                                        abs_right,
-                                        menu_id,
-                                        title_width,
-                                        proc_id,
-                                    );
-                                self.draw_popup_control_label(
-                                    bus,
-                                    abs_top,
-                                    abs_left,
-                                    abs_bottom,
-                                    draw_left,
-                                    &title,
-                                    enabled && hilite != 255,
-                                );
-                                self.draw_popup_control_with_state(
-                                    bus,
-                                    draw_top,
-                                    draw_left,
-                                    draw_bottom,
-                                    draw_right,
-                                    &item_title.unwrap_or_default(),
-                                    enabled && hilite != 255,
-                                    hilite == 1,
-                                );
-                            }
-                            // Application CDEF pixels are supplied by the
-                            // guest callback after the HLE dialog shell.
-                            _ => {}
-                        }
-                    } else {
-                        self.draw_button_with_enabled(
-                            bus,
-                            abs_top,
-                            abs_left,
-                            abs_bottom,
-                            abs_right,
-                            "",
-                            auto_default_outline && item_num == default_item,
-                            enabled,
-                        );
                     }
                 }
                 // userItem (0) and unknown: skip
@@ -6954,9 +6803,21 @@ impl super::TrapDispatcher {
                                     hilite == 1,
                                 );
                             }
-                            // Application CDEF pixels are supplied by the
-                            // guest callback after the HLE dialog shell.
-                            _ => {}
+                            // For controls with custom/unhandled CDEFs (e.g. proc_id 16000),
+                            // render button fallback chrome with the control title so
+                            // dialog buttons remain functional and visible.
+                            _ => {
+                                self.draw_button_with_enabled(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &title,
+                                    auto_default_outline && item_num == default_item,
+                                    enabled,
+                                );
+                            }
                         }
                     } else {
                         self.draw_button_with_enabled(
@@ -7164,9 +7025,20 @@ impl super::TrapDispatcher {
                                     hilite == 1,
                                 );
                             }
-                            // Preserve application CDEF pixels across the
-                            // post-callback retained-dialog resnapshot.
-                            _ => {}
+                            // For controls with custom/unhandled CDEFs (e.g. proc_id 16000),
+                            // render button fallback chrome with the control title.
+                            _ => {
+                                self.draw_button_with_enabled(
+                                    bus,
+                                    abs_top,
+                                    abs_left,
+                                    abs_bottom,
+                                    abs_right,
+                                    &title,
+                                    auto_default_outline && item_num == default_item,
+                                    enabled,
+                                );
+                            }
                         }
                     } else {
                         self.draw_button_with_enabled(
@@ -8457,22 +8329,6 @@ impl super::TrapDispatcher {
         self.draw_checkbox_state(bus, top, left, bottom, _right, title, checked, true, false);
     }
 
-    fn draw_checkbox_with_enabled(
-        &self,
-        bus: &mut MacMemoryBus,
-        top: i16,
-        left: i16,
-        bottom: i16,
-        _right: i16,
-        title: &str,
-        checked: bool,
-        enabled: bool,
-    ) {
-        self.draw_checkbox_with_enabled_and_inactive(
-            bus, top, left, bottom, _right, title, checked, enabled, false,
-        );
-    }
-
     fn draw_checkbox_with_enabled_and_inactive(
         &self,
         bus: &mut MacMemoryBus,
@@ -8616,21 +8472,6 @@ impl super::TrapDispatcher {
         self.draw_radio_state(bus, top, left, bottom, _right, title, selected, true, false);
     }
 
-    fn draw_radio_with_enabled(
-        &self,
-        bus: &mut MacMemoryBus,
-        top: i16,
-        left: i16,
-        bottom: i16,
-        _right: i16,
-        title: &str,
-        selected: bool,
-        enabled: bool,
-    ) {
-        self.draw_radio_with_enabled_and_inactive(
-            bus, top, left, bottom, _right, title, selected, enabled, false,
-        );
-    }
 
     fn draw_radio_with_enabled_and_inactive(
         &self,

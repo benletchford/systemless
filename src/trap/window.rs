@@ -1359,7 +1359,9 @@ impl super::TrapDispatcher {
         content_rect: (i16, i16, i16, i16),
         proc_id: i16,
     ) -> (i16, i16, i16, i16) {
-        match proc_id {
+        // Mac OS procID encodes (wdef_id << 4) | (variant & 0x0F).
+        // Inside Macintosh Volume I, I-275.
+        match proc_id & 0x0F {
             // Match the standard WDEF chrome drawn by the HLE paths. A
             // dBoxProc must not transiently inherit the 19-pixel title area
             // of a document window while a frontend is sizing its viewport.
