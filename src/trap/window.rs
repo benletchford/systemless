@@ -12457,7 +12457,7 @@ mod tests {
             [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
         );
         let old_content_probe = screen_base + 200 * 800 + 410;
-        let patterned_desktop_pixel = bus.read_byte(old_content_probe);
+        let desktop_pixel = disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light);
 
         let window_addr = bus.alloc(256);
         disp.init_cgraf_window(
@@ -12487,8 +12487,8 @@ mod tests {
 
         assert_eq!(
             bus.read_byte(old_content_probe),
-            patterned_desktop_pixel,
-            "host menu suppression must preserve the patterned desktop"
+            desktop_pixel,
+            "host menu suppression must restore the light-blue desktop"
         );
         let new_content_probe = screen_base + 250 * 800 + 460;
         assert_eq!(

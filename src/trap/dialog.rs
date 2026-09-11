@@ -7439,7 +7439,7 @@ impl super::TrapDispatcher {
         );
     }
 
-    fn draw_classic_dbox_frame(
+    pub(crate) fn draw_classic_dbox_frame(
         &self,
         bus: &mut MacMemoryBus,
         top: i16,
@@ -7452,13 +7452,10 @@ impl super::TrapDispatcher {
         // dialog item border. IM:I I-273 describes a modal dialog box as a
         // rectangular window with its border inside the structure edge; the
         // boundsRect remains the grafPort content region (IM:I I-282).
-        self.fill_dialog_rect(
+        self.erase_structure_frame_around_content(
             bus,
-            top - margin,
-            left - margin,
-            bottom + margin,
-            right + margin,
-            false,
+            (top - margin, left - margin, bottom + margin, right + margin),
+            (top, left, bottom, right),
         );
 
         // System 7.5.3's standard WDEF draws an asymmetric black structure
@@ -26456,6 +26453,25 @@ mod tests {
             (44..59).any(|v| bus.read_byte(screen_base + v as u32 * 320 + h as u32) == gray_index)
         });
         assert!(label_ink, "disabled labels should use device-gray ink");
+    }
+
+    #[test]
+    fn modal_window_redraw_preserves_initial_border_and_guest_content() {
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            let (mut disp, _cpu, mut bus) = setup();
+            let base = 0x300000;
+            disp.set_ui_theme_id(theme);
+            disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+            let bounds = (40, 40, 100, 140);
+            disp.draw_dialog(&mut bus, bounds, 1, "", &[], 0, "", 0, false, 0);
+            // Guest content must survive a WDEF-only frame refresh.
+            bus.write_byte(base + 60 * 64 + 8, 0xA5);
+            let before = bus.read_bytes(base, 64 * 342).to_vec();
+            disp.window_bounds = bounds;
+            disp.window_proc_id = 1;
+            disp.draw_window_frame(&mut bus);
+            assert_eq!(bus.read_bytes(base, 64 * 342), before, "{theme:?}");
+        }
     }
 
     #[test]

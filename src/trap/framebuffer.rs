@@ -632,11 +632,10 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        // The classic Window Manager paints the desktop with its binary
-        // DeskPattern. Keep that pattern on the logical black/white endpoints
-        // so application palette installs cannot recolor the desktop.
+        // Preserve the Window Manager DeskPattern geometry, using the theme's
+        // desktop colors when the framebuffer supports color.
         // Macintosh Toolbox Essentials (1992), pp. 4-112 to 4-113.
-        if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+        if pixel_size == 1 {
             Self::fb_fill_pattern_rect(
                 bus,
                 screen_base,
@@ -1657,7 +1656,7 @@ impl super::TrapDispatcher {
     fn refresh_saved_under_with_desktop_pattern(&mut self, bus: &MacMemoryBus, window: u32) {
         let (_, _, _, _, pixel_size) = self.get_screen_params();
         let palette = self.ui_theme().palette();
-        let (black, white) = if self.ui_theme_id() == UiThemeId::ClassicSystem7 || pixel_size == 1 {
+        let (black, white) = if pixel_size == 1 {
             (
                 Self::logical_black_pixel_index(bus),
                 Self::logical_white_pixel_index(bus),
@@ -4795,7 +4794,7 @@ impl super::TrapDispatcher {
     /// pixels untouched. WDEFs erase their structure region before drawing
     /// borders, but in the HLE framebuffer the content area may already hold
     /// app-rendered pixels that should not be replaced with white.
-    fn erase_structure_frame_around_content(
+    pub(crate) fn erase_structure_frame_around_content(
         &self,
         bus: &mut MacMemoryBus,
         structure: (i16, i16, i16, i16),
@@ -4966,7 +4965,7 @@ impl super::TrapDispatcher {
         let (wind_top, wind_left, wind_bottom, wind_right) = self.window_bounds;
         if matches!(self.window_proc_id, 1 | 2 | 3 | 5) {
             let frame = match self.window_proc_id {
-                1 => (wind_top - 8, wind_left - 8, wind_bottom + 3, wind_right + 8),
+                1 => (wind_top - 8, wind_left - 8, wind_bottom + 8, wind_right + 8),
                 2 => (wind_top - 1, wind_left - 1, wind_bottom + 1, wind_right + 1),
                 3 => (wind_top - 1, wind_left - 1, wind_bottom + 3, wind_right + 3),
                 5 => (
@@ -5005,31 +5004,9 @@ impl super::TrapDispatcher {
                 );
             }
             1 => {
-                // dBoxProc: double border
-                // Structure region = content expanded by 8
-                // WDEF erases structure, then draws:
-                //   1. Outer 1px border at (content-8, content-8, content+3, content+8)
-                //   2. Inner 2px border at (content-5, content-5, content+3, content+5)
-                // Note: bottom offset is +3 (not +8), making the border asymmetric.
-                let struc_top = wind_top - 8;
-                let struc_left = wind_left - 8;
-                let struc_bottom = wind_bottom + 3;
-                let struc_right = wind_right + 8;
-                self.erase_structure_frame_around_content(
-                    bus,
-                    (struc_top, struc_left, struc_bottom, struc_right),
-                    (wind_top, wind_left, wind_bottom, wind_right),
-                );
-                // Outer 1px border
-                self.draw_rect_border(bus, struc_top, struc_left, struc_bottom, struc_right);
-                // Inner 2px border (content-5 top/left/right, content+3 bottom)
-                self.draw_thick_rect_border(
-                    bus,
-                    wind_top - 5,
-                    wind_left - 5,
-                    struc_bottom,
-                    wind_right + 5,
-                );
+                // WDEF and Dialog Manager draws share the same structure frame.
+                // Inside Macintosh Volume I, I-273.
+                self.draw_classic_dbox_frame(bus, wind_top, wind_left, wind_bottom, wind_right);
             }
             3 => {
                 // altDBoxProc: single border + 2px drop shadow
@@ -7241,17 +7218,12 @@ mod redraw_chrome_tests {
 
         disp.redraw_chrome(&mut bus);
 
-        let black = TrapDispatcher::logical_black_pixel_index(&bus);
-        let white = TrapDispatcher::logical_white_pixel_index(&bus);
-        assert_eq!(
-            bus.read_byte(screen_base),
-            black,
-            "classic desktop starts with the binary pattern's black pixel"
-        );
+        let blue = disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light);
+        assert_eq!(bus.read_byte(screen_base), blue);
         assert_eq!(
             bus.read_byte(screen_base + 1),
-            white,
-            "classic desktop alternates to the binary pattern's white pixel"
+            blue,
+            "Classic 7 uses a solid light-blue desktop"
         );
         assert_eq!(
             bus.read_byte(screen_base + 120 * row_bytes + 200),
@@ -7261,8 +7233,8 @@ mod redraw_chrome_tests {
         let saved = &disp.window_saved_under_pixels[&PORT_PTR].4;
         assert_eq!(
             &saved[..2],
-            &[black, white],
-            "the save-under snapshot must retain the binary desktop pattern"
+            &[blue, blue],
+            "the save-under snapshot must retain the blue desktop"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
     }
@@ -7290,15 +7262,8 @@ mod redraw_chrome_tests {
 
         disp.redraw_chrome(&mut bus);
 
-        let black = TrapDispatcher::logical_black_pixel_index(&bus);
-        let white = TrapDispatcher::logical_white_pixel_index(&bus);
+        let expected = disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light);
         for &(x, y) in &[(40u32, 171u32), (59, 241), (67, 361), (72, 470)] {
-            let pattern = super::STANDARD_GRAY_PATTERN[(y % 8) as usize];
-            let expected = if pattern & (0x80 >> (x % 8)) != 0 {
-                black
-            } else {
-                white
-            };
             assert_eq!(
                 bus.read_byte(screen_base + y * row_bytes + x),
                 expected,
