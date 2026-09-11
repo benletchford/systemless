@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.39.6](https://github.com/benletchford/systemless/compare/v0.39.5...v0.39.6) (2026-09-11)
+
+
+### Bug Fixes
+
+* animate palettes shared with the active window ([03f9baa](https://github.com/benletchford/systemless/commit/03f9baacb9ef64a69e098b78bb5e9ffed0b25f06))
+* **desktop:** use the Systemless theme by default ([#1655](https://github.com/benletchford/systemless/issues/1655)) ([c973793](https://github.com/benletchford/systemless/commit/c973793cd685bdd7eb80deadc31236bb7ff2fe8b))
+* preserve 32-bit far-model jump table offsets ([302c642](https://github.com/benletchford/systemless/commit/302c6423af3c5cd1af5ff201686ee5bb037edd20))
+* preserve classic chrome and align modal dialog redraws ([41412ef](https://github.com/benletchford/systemless/commit/41412efb8347b05bd5234a114f032cacb906133d))
+* refill budget at guest tick boundaries ([f399e8f](https://github.com/benletchford/systemless/commit/f399e8fca9f9684a18c471834b939297053232eb))
+* relocate far intrasegment calls from the code base ([78a7be6](https://github.com/benletchford/systemless/commit/78a7be64252d1be56dad0a8c77babdb535261fdf))
+* **trap:** decode window proc variant for dialog structure and borders ([#1656](https://github.com/benletchford/systemless/issues/1656)) ([ab75c4a](https://github.com/benletchford/systemless/commit/ab75c4a5fefef06030d14f3bd70735713da277e1))
+
 ## [0.39.5](https://github.com/benletchford/systemless/compare/v0.39.4...v0.39.5) (2026-09-10)
 
 
