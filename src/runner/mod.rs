@@ -5587,6 +5587,10 @@ impl FixtureRunner {
                 }
             }
             self.advance_guest_tick();
+            // This path bypasses `charge_tick_budget`, so each synthetic
+            // vertical-retrace boundary must start with a full budget.
+            // Inside Macintosh: Processes (1993), p. 3-46.
+            self.tick_budget = self.instructions_per_tick as i32;
             if self.active_interrupt_callback.is_some() {
                 return AdvanceResult::Interrupted;
             }
@@ -27008,6 +27012,35 @@ mod tests {
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 12);
         // 4 synthesised instructions accounted for.
         assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn spin_fastfwd_refills_instruction_budget_at_each_elapsed_guest_tick() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        // Same template A shape as the witness above: the fast-forward
+        // starts immediately after the TickCount trap.
+        runner.bus.write_word(base, 0x594F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0x5380);
+        runner.bus.write_word(base + 8, 0xB680);
+        runner.bus.write_word(base + 10, 0x62F4);
+        runner.bus.write_word(base + 12, 0x4E71);
+
+        runner.set_instructions_per_tick(1_000);
+        runner.tick_budget = 777;
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.m68k.cpu.write_reg(Register::D3, 500);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 501);
+        assert_eq!(runner.tick_budget, 1_000);
     }
 
     /// Rejection case — `MOVE.L (A7)+, D1` followed by `SUBQ.L #imm,
