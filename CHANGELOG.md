@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.39.7](https://github.com/benletchford/systemless/compare/v0.39.6...v0.39.7) (2026-09-11)
+
+
+### Bug Fixes
+
+* **headless:** replay simulated time with GUI wait scheduling ([74a567d](https://github.com/benletchford/systemless/commit/74a567d88e5d9a850995b26155a7714bf588d592))
+* invalidate windows behind disposed dialogs ([3711d48](https://github.com/benletchford/systemless/commit/3711d482db90e11329bd73f3b1bf019ce9ee8087))
+* **menu:** reconcile guest menus before chrome redraw ([#1667](https://github.com/benletchford/systemless/issues/1667)) ([4cc028b](https://github.com/benletchford/systemless/commit/4cc028bd06448401e1d4f317480bb2d8b0daa671))
+* resolve basic grafport colors to device clut on indexed screen ([1071356](https://github.com/benletchford/systemless/commit/1071356f33785ce1152b5b3af00e87a09a62bb01))
+
+
+### Performance Improvements
+
+* **chrome:** cache themed frame and menu artwork ([6e1b721](https://github.com/benletchford/systemless/commit/6e1b7219eddcbc881089195b57e163f40a32605a))
+* defer native chrome repaint during sound callback slices ([11a5725](https://github.com/benletchford/systemless/commit/11a5725599dfa401e5fb87891c485b93a4503729))
+* **menu:** resolve menu-mark colors through a device-table mirror ([54a71c3](https://github.com/benletchford/systemless/commit/54a71c3f94d0be274ebc8611fca8e554b9b9e601))
+
 ## [0.39.6](https://github.com/benletchford/systemless/compare/v0.39.5...v0.39.6) (2026-09-11)
 
 
