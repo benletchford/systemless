@@ -28450,6 +28450,39 @@ mod tests {
     }
 
     #[test]
+    fn time_driven_modal_wait_avoids_instruction_budget_refire_storm() {
+        fn modal_runner() -> FixtureRunner {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.bus.write_word(0x10000, 0xA991);
+            runner.m68k.cpu.write_reg(Register::PC, 0x10000);
+            runner.m68k.cpu.write_reg(Register::A7, 0x100000);
+            runner.set_guest_tick_for_test(0);
+            runner.bus.write_long(0x016A, 0);
+            runner.set_instructions_per_tick(10_000);
+            runner.dispatcher.dialog_tracking = Some(dialog_tracking_for_test(0, 0));
+            runner
+        }
+        let mut diagnostic = modal_runner();
+        let mut timed = modal_runner();
+        let (diagnostic_steps, diagnostic_running) = diagnostic.run_steps(20_000, Some(2));
+        let (timed_steps, timed_running) = timed.run_gui_cpu_slice(20_000, 2);
+        assert!(diagnostic_running && timed_running);
+        assert_eq!(diagnostic.guest_tick(), 2);
+        assert_eq!(timed.guest_tick(), 2);
+        assert!(
+            diagnostic_steps > 1_000,
+            "legacy mode consumes synthetic refires"
+        );
+        assert_eq!(timed_steps, 2, "one idle refire per simulated tick");
+        for register in [Register::PC, Register::A7] {
+            assert_eq!(
+                diagnostic.m68k.cpu.read_reg(register),
+                timed.m68k.cpu.read_reg(register)
+            );
+        }
+    }
+
+    #[test]
     fn gui_modaldialog_idle_refire_runs_until_tick_cap() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;

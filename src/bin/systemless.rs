@@ -16,6 +16,8 @@
 
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
+#[path = "desktop/headless_time.rs"]
+mod headless_time;
 #[cfg(target_os = "macos")]
 #[path = "desktop/host_cursor.rs"]
 mod host_cursor;
@@ -130,6 +132,17 @@ fn foreground_cpu_batch_instructions(powerpc: bool, instructions_per_tick: u32) 
     }
 }
 
+/// Both realtime frontends must use the loaded architecture's execution rate.
+/// Calling GUI slice methods alone does not change the fixture's much smaller
+/// default budget, which would put identical tick-script inputs at different
+/// points in application startup.
+fn configure_realtime_execution_rate(runner: &mut FixtureRunner) -> u32 {
+    let instructions =
+        systemless::runner::default_realtime_instructions_per_tick(runner.is_powerpc_app());
+    runner.set_instructions_per_tick(instructions);
+    instructions
+}
+
 /// A learned crop is discarded when substantial drawing persists in the area
 /// it excludes. This catches apps whose large offscreen playfield is only one
 /// part of a full-screen layout without reacting to a cursor or brief overlay.
@@ -170,6 +183,33 @@ struct Cli {
     #[arg(long, value_name = "N")]
     max_instructions: Option<usize>,
 
+    /// Run headlessly for this many simulated frontend ticks (60.15 Hz),
+    /// using GUI wait/callback scheduling. Defaults to 600 without legacy options.
+    #[arg(
+        long,
+        requires = "headless",
+        conflicts_with_all = ["max_instructions", "input_script"],
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    max_ticks: Option<u32>,
+
+    /// Input script timestamped in elapsed frontend ticks, not instructions
+    #[arg(
+        long,
+        requires = "max_ticks",
+        conflicts_with = "input_script",
+        value_name = "FILE"
+    )]
+    tick_input_script: Option<PathBuf>,
+
+    /// Deterministic Mac-epoch startup seconds for simulated-time headless runs
+    #[arg(
+        long,
+        requires = "headless",
+        conflicts_with_all = ["max_instructions", "input_script"]
+    )]
+    headless_start_time: Option<u32>,
+
     /// Prefer a native PowerPC slice when a classic 68K slice is also available
     #[arg(long, visible_alias = "prefer-ppc")]
     prefer_powerpc: bool,
@@ -201,9 +241,8 @@ struct Cli {
     #[arg(long)]
     fullscreen: bool,
 
-    /// Replay input events from a script during a headless run. Events are
-    /// scheduled by retired instruction count, so a run replays identically
-    /// every time and two builds can be compared on matched work.
+    /// Legacy diagnostic input script timestamped in retired instructions.
+    /// Not a matched-time workload: wait optimizations change when inputs land.
     #[arg(long, value_name = "FILE")]
     input_script: Option<PathBuf>,
 }
@@ -356,12 +395,9 @@ fn window_guest_resize_scale(window: &Window, display_scale: Option<u32>) -> Opt
     )
 }
 
-/// One scripted input, delivered once the run has retired `at`
-/// instructions.
-///
-/// Scheduling on the instruction count rather than wall time is the whole
-/// point: a wall-clock schedule would land differently on a faster build,
-/// which is exactly the comparison these scripts exist to make.
+/// One scripted input. The caller explicitly chooses the clock: retired
+/// instructions for legacy diagnostic scripts, or elapsed simulated frontend
+/// ticks for time-based replays. Neither clock is host wall time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScriptedInput {
     at: usize,
@@ -581,6 +617,15 @@ fn platform_window_attrs(attrs: WindowAttributes) -> WindowAttributes {
 fn service_pending_sound_work(
     runner: &mut FixtureRunner,
     _cpu_deadline: std::time::Instant,
+    slice_budget: usize,
+    total_steps: usize,
+    reserved_sound_steps: &mut usize,
+) -> Option<usize> {
+    service_pending_sound_work_budgeted(runner, slice_budget, total_steps, reserved_sound_steps)
+}
+
+fn service_pending_sound_work_budgeted(
+    runner: &mut FixtureRunner,
     slice_budget: usize,
     total_steps: usize,
     reserved_sound_steps: &mut usize,
@@ -1034,12 +1079,7 @@ impl App {
         runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
-        // Configure the wall-clock-paced GUI from the loaded architecture's
-        // machine profile. Scripted harnesses retain their smaller default
-        // unless they explicitly opt into realtime pacing.
-        let ipt =
-            systemless::runner::default_realtime_instructions_per_tick(runner.is_powerpc_app());
-        runner.set_instructions_per_tick(ipt);
+        let ipt = configure_realtime_execution_rate(&mut runner);
         eprintln!("[SYSTEMLESS] Instructions per tick: {}", ipt);
 
         // Initialize audio output.
@@ -2999,6 +3039,9 @@ fn run_headless(
     script: &[ScriptedInput],
     ui_theme: UiThemeId,
 ) {
+    eprintln!(
+        "[HEADLESS] Legacy instruction-budget diagnostic mode: retained Toolbox waits may re-fire repeatedly; do not use these totals as GUI CPU measurements. Use --max-ticks with --tick-input-script for time-based runs."
+    );
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
 
@@ -3116,7 +3159,13 @@ fn main() {
     eprintln!("[SYSTEMLESS] Game: {}", game_path.display());
 
     if cli.headless {
-        let script = match cli.input_script.as_deref() {
+        let timed = cli.max_instructions.is_none() && cli.input_script.is_none();
+        let script_path = if timed {
+            cli.tick_input_script.as_deref()
+        } else {
+            cli.input_script.as_deref()
+        };
+        let script = match script_path {
             Some(path) => {
                 let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
                     eprintln!("Error: cannot read input script {}: {e}", path.display());
@@ -3129,14 +3178,26 @@ fn main() {
             }
             None => Vec::new(),
         };
-        run_headless(
-            &game_path,
-            cli.max_instructions.unwrap_or(5_000_000),
-            cli.addressing_24_bit,
-            cli.screen_depth,
-            &script,
-            cli.ui_theme,
-        );
+        if timed {
+            headless_time::run(
+                &game_path,
+                cli.max_ticks.unwrap_or(600),
+                cli.headless_start_time.unwrap_or(3_871_497_600),
+                cli.addressing_24_bit,
+                cli.screen_depth,
+                &script,
+                cli.ui_theme,
+            );
+        } else {
+            run_headless(
+                &game_path,
+                cli.max_instructions.unwrap_or(5_000_000),
+                cli.addressing_24_bit,
+                cli.screen_depth,
+                &script,
+                cli.ui_theme,
+            );
+        }
     } else {
         if cli.input_script.is_some() {
             eprintln!("Error: --input-script requires --headless");
@@ -4268,6 +4329,15 @@ mod tests {
 
     #[test]
     fn step_frame_services_pending_sound_before_late_same_tick_audio_mix() {
+        check_pending_sound_before_audio_mix(false);
+    }
+
+    #[test]
+    fn headless_frame_services_pending_sound_before_audio_mix() {
+        check_pending_sound_before_audio_mix(true);
+    }
+
+    fn check_pending_sound_before_audio_mix(headless: bool) {
         use systemless::cpu::Register;
         use systemless::memory::MemoryBus;
         use systemless::sound::{
@@ -4280,7 +4350,7 @@ mod tests {
         let scheduled_frame_end = now;
         let (mut runner, queued) = gui_runner_with_recording_audio();
         let interrupted_pc = runner.bus_mut().alloc(2);
-        runner.bus_mut().write_word(interrupted_pc, 0x4E71); // foreground NOP
+        runner.bus_mut().write_word(interrupted_pc, 0x60FE); // foreground BRA.S *
         runner.cpu_mut().write_reg(Register::PC, interrupted_pc);
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
 
@@ -4348,7 +4418,11 @@ mod tests {
         app.start_time = Some(scheduled_frame_end);
         app.next_frame_time = Some(scheduled_frame_end);
 
-        app.step_frame();
+        if headless {
+            headless_time::frame(app.runner.as_mut().unwrap(), 366);
+        } else {
+            app.step_frame();
+        }
 
         let queued = queued.borrow();
         assert!(
@@ -4368,6 +4442,15 @@ mod tests {
 
     #[test]
     fn step_frame_services_doubleback_between_late_audio_chunks() {
+        check_doubleback_between_audio_chunks(false);
+    }
+
+    #[test]
+    fn headless_frame_services_doubleback_between_audio_chunks() {
+        check_doubleback_between_audio_chunks(true);
+    }
+
+    fn check_doubleback_between_audio_chunks(headless: bool) {
         use systemless::cpu::Register;
         use systemless::memory::MemoryBus;
         use systemless::sound::{DoubleBufferState, SndChannel, OUTPUT_RATE};
@@ -4377,7 +4460,7 @@ mod tests {
         let now = std::time::Instant::now();
         let (mut runner, queued) = gui_runner_with_recording_audio();
         let interrupted_pc = runner.bus_mut().alloc(2);
-        runner.bus_mut().write_word(interrupted_pc, 0x4E71); // foreground NOP
+        runner.bus_mut().write_word(interrupted_pc, 0x60FE); // foreground BRA.S *
         runner.cpu_mut().write_reg(Register::PC, interrupted_pc);
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
 
@@ -4456,7 +4539,11 @@ mod tests {
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
 
-        app.step_frame();
+        if headless {
+            headless_time::frame(app.runner.as_mut().unwrap(), 366);
+        } else {
+            app.step_frame();
+        }
 
         let queued = queued.borrow();
         assert!(

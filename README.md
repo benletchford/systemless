@@ -68,6 +68,33 @@ The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
 phases that take at least 50 ms. During normal gameplay, drawable waits on the
 presentation worker do not block the guest CPU or input handling.
 
+### Headless replays
+
+`systemless --headless --max-ticks 600 game.sit` runs 600 simulated frontend
+ticks (about ten seconds) without opening a window or sleeping in host time.
+It uses the GUI runner's retained-wait/callback scheduling, advances audio,
+uses the same architecture-specific instruction rate as the GUI, and
+composites once per frontend tick. This is also the default headless
+mode when neither legacy instruction option is supplied.
+
+Use `--tick-input-script inputs.txt` with `--max-ticks` to replay inputs;
+each line is `<elapsed-tick> <action> [args]`, e.g. `120 mousedown 317 491`
+and `122 mouseup 317 491` (coordinates are vertical, horizontal). The
+frontend clock continues while menu tracking freezes guest TickCount.
+Reports include both clocks and actual instruction work. Startup Mac time
+is fixed for repeatability; `--headless-start-time SECONDS` overrides it.
+Inputs at or beyond the endpoint are rejected. The summary also reports
+same-tick frames and frames that exhausted the instruction safety budget;
+those counters help detect stalled or unmatched workloads. Use a fresh copy
+of the same save files for each comparison (saves live beside the archive).
+
+`--max-instructions` and `--input-script` retain the old instruction-clock
+diagnostic mode. Retained modal waits can re-fire repeatedly in that mode,
+so its CPU totals are **not a proxy for GUI or gameplay CPU usage**. Tick
+scripts and instruction scripts cannot be combined. Time-based headless
+results still exclude the host window, compositor, and physical audio device;
+compare equal game progress and outputs, and verify windowed CPU separately.
+
 ## Try it in your browser
 
 | [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
