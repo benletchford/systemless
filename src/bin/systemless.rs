@@ -537,7 +537,7 @@ struct ContentRect {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 struct CachedContentRect {
     version: u8,
     screen_width: u16,
@@ -569,6 +569,19 @@ fn load_cached_content_rect(game_path: &std::path::Path) -> Option<CachedContent
     let bytes = std::fs::read(&path).ok()?;
     let cache: CachedContentRect = serde_json::from_slice(&bytes).ok()?;
     valid_cached_content_rect(&cache).then_some(cache)
+}
+
+#[cfg(target_os = "macos")]
+fn cached_content_rect_for_presentation(
+    cache: Option<CachedContentRect>,
+    native_integrations: bool,
+) -> Option<CachedContentRect> {
+    native_integrations.then_some(cache).flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn should_learn_content_rect(debug_overlay_visible: bool, native_integrations: bool) -> bool {
+    !debug_overlay_visible && native_integrations
 }
 
 #[cfg(target_os = "macos")]
@@ -904,7 +917,10 @@ impl App {
         #[cfg(target_os = "macos")]
         let native_app_name = native_menu_app_name.clone();
         #[cfg(target_os = "macos")]
-        let cached_content = load_cached_content_rect(&game_path);
+        let cached_content = cached_content_rect_for_presentation(
+            load_cached_content_rect(&game_path),
+            native_integrations,
+        );
         #[cfg(target_os = "macos")]
         if let Some(cache) = cached_content.as_ref() {
             eprintln!(
@@ -1550,7 +1566,7 @@ impl App {
         let mouse_pos = runner.dispatcher().mouse_position();
 
         #[cfg(target_os = "macos")]
-        if !self.debug_overlay_visible {
+        if should_learn_content_rect(self.debug_overlay_visible, self.native_integrations) {
             let screen_signature = (screen_mode.2, screen_mode.3, screen_mode.4);
             if self.content_rect_screen_mode != Some(screen_signature) {
                 self.content_rect_screen_mode = Some(screen_signature);
@@ -4799,6 +4815,35 @@ mod tests {
             ..valid
         };
         assert!(!valid_cached_content_rect(&out_of_bounds));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_native_presentation_ignores_cached_viewports_and_skips_learning() {
+        let cache = CachedContentRect {
+            version: 2,
+            screen_width: 800,
+            screen_height: 600,
+            pixel_size: 8,
+            content: ContentRect {
+                left: 80,
+                top: 100,
+                width: 640,
+                height: 400,
+            },
+        };
+
+        assert_eq!(
+            cached_content_rect_for_presentation(Some(cache), false),
+            None
+        );
+        assert_eq!(
+            cached_content_rect_for_presentation(Some(cache), true),
+            Some(cache)
+        );
+        assert!(!should_learn_content_rect(false, false));
+        assert!(!should_learn_content_rect(true, true));
+        assert!(should_learn_content_rect(false, true));
     }
 
     #[test]
