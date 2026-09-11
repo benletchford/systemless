@@ -9822,6 +9822,8 @@ impl super::TrapDispatcher {
                 .last()
                 .is_some_and(|(previous, _, _, _)| *previous == self.front_window);
         let was_front = self.front_window == dialog_ptr || retained_modal_is_logical_front;
+        let was_visible = self.window_visible(bus, dialog_ptr);
+        let windows_behind = self.visible_windows_behind(bus, dialog_ptr);
         let retained_visible_bounds = self
             .dialog_visible_snapshots
             .get(&dialog_ptr)
@@ -9848,7 +9850,7 @@ impl super::TrapDispatcher {
             .is_some_and(|saved| self.saved_pixels_are_mostly_logical_white(saved));
         let mut restored_stale_saved_under = false;
 
-        if was_front && !initial_draw_deferred {
+        if was_front && was_visible && !initial_draw_deferred {
             if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
                 restored_stale_saved_under = self.saved_pixels_are_mostly_logical_white(&saved);
                 self.restore_dialog_pixels(bus, dialog_record_bounds, &saved);
@@ -9904,6 +9906,9 @@ impl super::TrapDispatcher {
         }
 
         self.untrack_window(bus, dialog_ptr);
+        if was_visible {
+            self.invalidate_exposed_windows(bus, &windows_behind, Some(exposed_rect));
+        }
 
         if was_front {
             if let Some((mut prev_window, mut prev_bounds, prev_proc_id, prev_title)) =
@@ -9941,14 +9946,16 @@ impl super::TrapDispatcher {
                         self.queue_window_activation_event(bus, prev_window, true);
                     }
                     self.draw_single_window_chrome_inline(bus, prev_window, true);
-                    let exposed_local = (
-                        exposed_rect.0.saturating_sub(prev_bounds.0),
-                        exposed_rect.1.saturating_sub(prev_bounds.1),
-                        exposed_rect.2.saturating_sub(prev_bounds.0),
-                        exposed_rect.3.saturating_sub(prev_bounds.1),
-                    );
-                    self.invalidate_window_rect(bus, prev_window, exposed_local);
-                    self.queue_window_update_event(prev_window);
+                    if was_visible {
+                        let exposed_local = (
+                            exposed_rect.0.saturating_sub(prev_bounds.0),
+                            exposed_rect.1.saturating_sub(prev_bounds.1),
+                            exposed_rect.2.saturating_sub(prev_bounds.0),
+                            exposed_rect.3.saturating_sub(prev_bounds.1),
+                        );
+                        self.invalidate_window_rect(bus, prev_window, exposed_local);
+                        self.queue_window_update_event(prev_window);
+                    }
                 }
                 let should_repair_stale_exposure = restored_stale_saved_under
                     && if prev_window != 0 {
@@ -11636,8 +11643,9 @@ impl super::TrapDispatcher {
             // Only restore when `was_front` holds: a non-front dialog
             // would require the saved bounds to still be valid, but
             // by the time we'd get here the window stack has already
-            // moved on. In practice modal dialogs are always the front
-            // window, so this covers every real case.
+            // moved on. A visible dialog close separately invalidates every
+            // visible window behind its structure; a hidden dialog exposes
+            // nothing and therefore does not queue a repaint.
             //
             // Inside Macintosh Volume I, I-283 (CloseWindow), I-425 (DisposDialog)
             //
@@ -27840,6 +27848,7 @@ mod tests {
         let dialog_ptr = 0x200000u32;
         disp.front_window = dialog_ptr;
         disp.window_bounds = bounds;
+        bus.write_byte(dialog_ptr + 110, 0xFF);
 
         for y in 92u32..158 {
             for x in 92u32..208 {
@@ -27978,6 +27987,7 @@ mod tests {
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
         disp.window_bounds = (100, 120, 220, 320);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
         bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
         let a5 = cpu.read_reg(Register::A5);
         let global_ptr = bus.read_long(a5);
@@ -28012,6 +28022,281 @@ mod tests {
                 .iter()
                 .any(|event| event.what == 6 && event.message == prev_window),
             "DisposDialog must queue updateEvt for the newly exposed front window"
+        );
+    }
+
+    #[test]
+    fn dispos_dialog_invalidates_all_visible_windows_behind_and_delivers_updates() {
+        // DisposDialog calls CloseWindow, so PaintBehind must make every
+        // visible window behind the removed structure dirty. A modal dialog
+        // can span more than one underlying window; invalidating only the
+        // promoted front window leaves the other window's exposed map stale.
+        // Inside Macintosh Volume I (1985), pp. I-283, I-293;
+        // Macintosh Toolbox Essentials (1992), pp. 4-118, 6-119..6-120.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_sent_open_app_event_for_test(true);
+        disp.menu_bar_hidden = true;
+
+        let screen_base = disp.screen_mode.0;
+        let back = bus.alloc(256);
+        let middle = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            screen_base,
+            40,
+            320,
+            260,
+            620,
+            "Back",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            middle,
+            screen_base,
+            40,
+            20,
+            260,
+            320,
+            "Middle",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.validate_window_rect(&mut bus, middle, (0, 0, 220, 300));
+        disp.validate_window_rect(&mut bus, back, (0, 0, 220, 300));
+
+        let dialog_ptr = bus.alloc(256);
+        disp.window_stack.push((
+            middle,
+            (40, 20, 260, 320),
+            2,
+            "Middle".to_string(),
+        ));
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            dialog_ptr,
+            screen_base,
+            90,
+            200,
+            190,
+            450,
+            "Dialog",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        bus.write_word(dialog_ptr + 108, 2); // dialogKind
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.validate_window_rect(&mut bus, dialog_ptr, (0, 0, 100, 250));
+        disp.event_queue.clear();
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let middle_update = TrapDispatcher::region_handle_rect(
+            &bus,
+            bus.read_long(middle + 122),
+        );
+        let back_update = TrapDispatcher::region_handle_rect(
+            &bus,
+            bus.read_long(back + 122),
+        );
+        assert_eq!(
+            middle_update,
+            Some((89, 199, 191, 320)),
+            "the promoted window must receive the exposed dialog structure"
+        );
+        assert_eq!(
+            back_update,
+            Some((89, 320, 191, 451)),
+            "every visible window behind the dialog must receive its exposed part"
+        );
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == middle),
+            "DisposDialog must queue updateEvt for the promoted window"
+        );
+        assert!(
+            disp.event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == back),
+            "DisposDialog must queue updateEvt for every exposed window"
+        );
+
+        let event_ptr = bus.alloc(16);
+        let event_sp = TEST_SP - 8;
+        let mut delivered_windows = Vec::new();
+        for _ in 0..2 {
+            cpu.write_reg(Register::A7, event_sp);
+            bus.write_long(event_sp, event_ptr);
+            bus.write_word(event_sp + 4, 1 << 6); // updateEvt only
+            bus.write_word(event_sp + 6, 0);
+
+            disp.dispatch_toolbox(true, 0x170, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(event_ptr), 6, "GetNextEvent should deliver updateEvt");
+            assert_eq!(bus.read_word(event_sp + 6), 0xFFFF);
+
+            let window = bus.read_long(event_ptr + 2);
+            assert!(
+                [middle, back].contains(&window),
+                "updateEvt should name an exposed window"
+            );
+            assert!(
+                !delivered_windows.contains(&window),
+                "each exposed window should receive one updateEvt"
+            );
+            assert!(
+                TrapDispatcher::region_handle_rect(
+                    &bus,
+                    bus.read_long(window + 122),
+                )
+                .is_some(),
+                "the delivered updateEvt must still have a non-empty updateRgn"
+            );
+
+            disp.begin_update_window(&mut bus, window);
+            assert_eq!(
+                TrapDispatcher::region_handle_rect(
+                    &bus,
+                    bus.read_long(window + 122),
+                ),
+                None,
+                "BeginUpdate must consume the delivered update region"
+            );
+            disp.end_update_window(&mut bus, window);
+            delivered_windows.push(window);
+        }
+        delivered_windows.sort_unstable();
+        let mut expected_windows = vec![middle, back];
+        expected_windows.sort_unstable();
+        assert_eq!(delivered_windows, expected_windows);
+        assert!(disp.debug_update_event_seen);
+    }
+
+    #[test]
+    fn dispos_dialog_hidden_or_invalid_target_does_not_expose_windows() {
+        // A hidden dialog has never covered the screen, and an invalid
+        // DialogPtr is a defensive failure path. Neither may manufacture an
+        // updateEvt or dirty a visible window behind the dialog.
+        // Inside Macintosh Volume I (1985), pp. I-278, I-283, I-425.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_sent_open_app_event_for_test(true);
+        disp.menu_bar_hidden = true;
+
+        let previous = bus.alloc(256);
+        let previous_bounds = (40, 40, 260, 340);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            previous,
+            disp.screen_mode.0,
+            previous_bounds.0,
+            previous_bounds.1,
+            previous_bounds.2,
+            previous_bounds.3,
+            "Previous",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.validate_window_rect(
+            &mut bus,
+            previous,
+            (0, 0, previous_bounds.2 - previous_bounds.0, previous_bounds.3 - previous_bounds.1),
+        );
+        disp.event_queue.clear();
+
+        let hidden = bus.alloc(256);
+        disp.window_stack.push((
+            previous,
+            previous_bounds,
+            2,
+            "Previous".to_string(),
+        ));
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            hidden,
+            disp.screen_mode.0,
+            100,
+            120,
+            180,
+            320,
+            "Hidden",
+            2,
+            false,
+            false,
+            false,
+            0,
+        );
+        bus.write_word(hidden + 108, 2); // dialogKind
+        disp.dialog_items.insert(hidden, Vec::new());
+        assert_eq!(bus.read_byte(hidden + 110), 0, "fixture dialog must be hidden");
+        disp.event_queue.clear();
+
+        bus.write_long(TEST_SP, 0xDEAD_BEEFu32);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.window_list.contains(&hidden));
+        assert_eq!(disp.front_window, hidden);
+        assert_eq!(
+            TrapDispatcher::region_handle_rect(
+                &bus,
+                bus.read_long(previous + 122),
+            ),
+            None,
+            "an invalid DialogPtr must be a no-op"
+        );
+        assert!(
+            !disp
+                .event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == previous),
+            "an invalid DialogPtr must not queue updateEvt"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, hidden);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(!disp.window_list.contains(&hidden));
+        assert_eq!(disp.front_window, previous);
+        assert_eq!(
+            TrapDispatcher::region_handle_rect(
+                &bus,
+                bus.read_long(previous + 122),
+            ),
+            None,
+            "disposing a hidden dialog must not dirty the visible window behind it"
+        );
+        assert!(
+            !disp
+                .event_queue
+                .iter()
+                .any(|event| event.what == 6 && event.message == previous),
+            "disposing a hidden dialog must not queue updateEvt"
         );
     }
 
@@ -28792,6 +29077,7 @@ mod tests {
         let dialog_ptr = 0x200000u32;
         disp.front_window = dialog_ptr;
         disp.window_bounds = bounds;
+        bus.write_byte(dialog_ptr + 110, 0xFF);
 
         // Paint the save area with 0xCC — the "dialog pixels" that
         // should be overwritten on dispose.
@@ -28846,6 +29132,7 @@ mod tests {
         bus.write_word(dialog_ptr + 18, 0);
         bus.write_word(dialog_ptr + 20, 50);
         bus.write_word(dialog_ptr + 22, 100);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
         disp.dialog_items.insert(dialog_ptr, Vec::new());
         disp.dialog_modal_entered.insert(dialog_ptr);
         disp.front_window = predecessor;
@@ -28934,6 +29221,7 @@ mod tests {
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
         disp.window_bounds = bounds;
+        bus.write_byte(dialog_ptr + 110, 0xFF);
         *disp.window_list = vec![dialog_ptr];
         disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
 
@@ -29159,6 +29447,7 @@ mod tests {
         let dialog_ptr = 0x200000u32;
         disp.front_window = dialog_ptr;
         disp.window_bounds = bounds;
+        bus.write_byte(dialog_ptr + 110, 0xFF);
 
         // Paint the entire screen area of interest (including a
         // generous border around the save rect) with 0xAA.
