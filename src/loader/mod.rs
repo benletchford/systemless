@@ -96,7 +96,7 @@ impl Code0Header {
 #[derive(Debug, Clone)]
 pub struct JumpTableEntry {
     /// Byte offset within the target segment of the call destination.
-    pub offset: u16,
+    pub offset: u32,
     /// CODE resource ID containing the call destination.
     pub segment: i16,
     /// True once the segment has been loaded and the slot patched.
