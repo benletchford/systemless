@@ -5587,6 +5587,10 @@ impl FixtureRunner {
                 }
             }
             self.advance_guest_tick();
+            // This path bypasses `charge_tick_budget`, so each synthetic
+            // vertical-retrace boundary must start with a full budget.
+            // Inside Macintosh: Processes (1993), p. 3-46.
+            self.tick_budget = self.instructions_per_tick as i32;
             if self.active_interrupt_callback.is_some() {
                 return AdvanceResult::Interrupted;
             }
@@ -27010,6 +27014,35 @@ mod tests {
         assert_eq!(count, 4);
     }
 
+    #[test]
+    fn spin_fastfwd_refills_instruction_budget_at_each_elapsed_guest_tick() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        // Same template A shape as the witness above: the fast-forward
+        // starts immediately after the TickCount trap.
+        runner.bus.write_word(base, 0x594F);
+        runner.bus.write_word(base + 2, 0xA975);
+        runner.bus.write_word(base + 4, 0x201F);
+        runner.bus.write_word(base + 6, 0x5380);
+        runner.bus.write_word(base + 8, 0xB680);
+        runner.bus.write_word(base + 10, 0x62F4);
+        runner.bus.write_word(base + 12, 0x4E71);
+
+        runner.set_instructions_per_tick(1_000);
+        runner.tick_budget = 777;
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.m68k.cpu.write_reg(Register::D3, 500);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let mut count = 0usize;
+        let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+        assert!(!hit_cap);
+        assert_eq!(runner.guest_tick(), 501);
+        assert_eq!(runner.tick_budget, 1_000);
+    }
+
     /// Rejection case — `MOVE.L (A7)+, D1` followed by `SUBQ.L #imm,
     /// D0` (different registers) must NOT match. Ensures the
     /// register-consistency check in `try_spin_template_a` guards
@@ -27580,6 +27613,8 @@ mod tests {
         runner.bus.write_word(base + 6, 0x64F8);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(1_000);
+        runner.tick_budget = 777;
         runner.m68k.cpu.write_reg(Register::D7, 500);
         runner.m68k.cpu.write_reg(Register::A7, sp - 4);
         runner.m68k.cpu.write_reg(Register::PC, base + 4);
@@ -27593,6 +27628,11 @@ mod tests {
         assert_eq!(runner.bus.read_long(sp - 4), 102);
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(
+            runner.tick_budget,
+            runner.instructions_per_tick() as i32,
+            "a capped synthetic boundary must leave a fresh tick budget"
+        );
     }
 
     #[test]
@@ -27617,6 +27657,8 @@ mod tests {
         runner.bus.write_long(target_addr, 400);
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(1_000);
+        runner.tick_budget = 777;
         runner.m68k.cpu.write_reg(Register::PC, base + 4);
         runner.m68k.cpu.write_reg(Register::A7, sp);
         runner.m68k.cpu.write_reg(Register::D0, 0xDEAD_BEEF);
@@ -27648,6 +27690,12 @@ mod tests {
         );
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(runner.bus.read_long(sp - 4), base + 4);
+
+        assert_eq!(
+            runner.tick_budget,
+            runner.instructions_per_tick() as i32,
+            "an interrupted synthetic boundary must leave a fresh tick budget"
+        );
 
         let active = runner
             .active_interrupt_callback
