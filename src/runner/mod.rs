@@ -11209,7 +11209,13 @@ fn apply_mpw_far_segment_relocations<M: MemoryBus>(
             pc_relocation_count = offsets.len();
             for offset in offsets {
                 let addr = segment_addr.wrapping_add(offset);
-                let relocated = bus.read_long(addr).wrapping_add(segment_addr);
+                // Intrasegment addresses are relative to the code following
+                // the far header, unlike jump-table entry offsets.
+                // Mac OS Runtime Architectures, 10-20, 10-24..10-25.
+                let relocated = bus
+                    .read_long(addr)
+                    .wrapping_add(segment_addr)
+                    .wrapping_add(MpwFarSegmentHeader::SIZE as u32);
                 bus.write_long(addr, relocated);
             }
         }
@@ -15388,7 +15394,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x28,
         ]);
 
-        let mut code1 = vec![0u8; 0x60];
+        let mut code1 = vec![0u8; 0x130];
         code1[0..2].copy_from_slice(&0xFFFFu16.to_be_bytes());
         code1[20..24].copy_from_slice(&0x50u32.to_be_bytes());
         code1[28..32].copy_from_slice(&0x54u32.to_be_bytes());
@@ -15396,6 +15402,8 @@ mod tests {
         code1[0x2A..0x2E].copy_from_slice(&0x100u32.to_be_bytes());
         code1[0x30..0x32].copy_from_slice(&[0x20, 0x79]); // MOVEA.L absolute
         code1[0x32..0x36].copy_from_slice(&0x40u32.to_be_bytes());
+        code1[0x100..0x104].copy_from_slice(&[0x70, 0x01, 0x4E, 0x75]);
+        code1[0x128..0x12C].copy_from_slice(&[0x70, 0x2A, 0x4E, 0x75]);
         code1[0x50..0x54].copy_from_slice(&[
             0x19, // A5 relocation at byte offset 0x32
             0x00, 0x00, 0x00,
@@ -15414,9 +15422,13 @@ mod tests {
 
         assert_eq!(
             runner.bus.read_long(code1_base + 0x2A),
-            code1_base + 0x100,
-            "PC relocation stream must add the loaded segment address"
+            code1_base + MpwFarSegmentHeader::SIZE as u32 + 0x100,
+            "PC relocation stream must add the loaded code address after the far header"
         );
+        runner.cpu_mut().write_reg(Register::PC, code1_base + 0x28);
+        runner.step(); // JSR using the relocated code-relative address.
+        runner.step(); // MOVEQ at the destination, not 40 bytes before it.
+        assert_eq!(runner.cpu().read_reg(Register::D0), 42);
         assert_eq!(
             runner.bus.read_long(code1_base + 0x32),
             app.a5_base + 0x40,
