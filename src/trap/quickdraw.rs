@@ -17490,13 +17490,13 @@ impl super::TrapDispatcher {
         // pmAnimated entries immediately. A pmExplicit entry still observes
         // its existing device cell during ordinary palette activation, so the
         // animation traps must update the changed cell before reactivation.
-        // Restrict the write to the front window's exact association: a
-        // background window may update its palette without changing the live
-        // screen until that window becomes active.
+        // Windows can share a palette. Animation through either association
+        // changes the same active device cells, while an unrelated background
+        // palette must not change the front window's color environment.
         // Inside Macintosh Volume V (1986), V-164; Volume VI (1991), 20-13.
         if usage & PM_ANIMATED == 0
             || window == 0
-            || window != self.front_window
+            || self.window_palette_handle(self.front_window) != palette_handle
             || self.window_palette_handle_exact(window) != palette_handle
         {
             return;
@@ -17612,11 +17612,17 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         window: u32,
     ) {
-        if window == 0 || window != self.front_window {
+        if window == 0 {
             return;
         }
 
         let palette_handle = self.window_palette_handle_exact(window);
+        if window != self.front_window
+            && (palette_handle == 0
+                || palette_handle != self.window_palette_handle(self.front_window))
+        {
+            return;
+        }
         if palette_handle == 0 {
             // With neither a window palette nor an application-default
             // palette, Palette Manager restores the System palette. This is
@@ -44212,6 +44218,47 @@ mod tests {
             TrapDispatcher::read_palette_color_info(&bus, palette, 1),
             Some((animated_rgb, usage, 0))
         );
+    }
+
+    #[test]
+    fn animatepalette_through_shared_window_updates_only_the_active_palette() {
+        for shares_palette in [true, false] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let front = 0x0020_6100;
+            let other = 0x0020_6200;
+            let usage = super::PM_ANIMATED | super::PM_EXPLICIT;
+            let active = d.create_palette_from_ctab(&mut bus, 3, 0, usage, 0);
+            let palette = if shares_palette {
+                active
+            } else {
+                d.create_palette_from_ctab(&mut bus, 3, 0, usage, 0)
+            };
+            d.set_window_palette_association(front, active, 0);
+            d.set_window_palette_association(other, palette, 0);
+            d.front_window = front;
+            d.activate_associated_palette_for_window(&mut bus, front);
+            let before = *d.device_clut;
+            let rgb = [0x1357, 0x2468, 0xBEEF];
+            let ctab = make_test_ctab_handle(&mut bus, &[rgb], 0x3333_4444, 0);
+            bus.write_word(TEST_SP, 1);
+            bus.write_word(TEST_SP + 2, 1);
+            bus.write_word(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 6, ctab);
+            bus.write_long(TEST_SP + 10, other);
+            assert!(d
+                .dispatch_quickdraw(true, 0x29A, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+            let mut expected = before;
+            if shares_palette {
+                expected[1] = rgb;
+            }
+            assert_eq!(*d.device_clut, expected);
+            assert_eq!(
+                TrapDispatcher::read_palette_color_info(&bus, palette, 1).unwrap().0,
+                rgb
+            );
+        }
     }
 
     #[test]
