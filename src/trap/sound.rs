@@ -193,9 +193,10 @@ impl super::TrapDispatcher {
         let mut samples = Self::reserve_legacy_sound_samples(sample_count)?;
         samples.resize(sample_count, 0);
         bus.read_bytes_into(buffer + 6, &mut samples);
-        let sample_rate_fixed = (u64::from(LEGACY_SOUND_SAMPLE_RATE)
-            .saturating_mul(u64::from(sampling_factor)))
-        .min(u64::from(u32::MAX)) as u32;
+        let sample_rate_fixed = ((u64::from(sound::RATE_22KHZ_FIXED)
+            * u64::from(sampling_factor))
+            >> 16)
+            .min(u64::from(u32::MAX)) as u32;
         Ok((samples, sample_rate_fixed))
     }
 
@@ -3239,8 +3240,29 @@ mod tests {
             disp.write_device_driver(&mut bus, -4, free_form, 10),
             Ok(10)
         );
+        let chan = disp
+            .legacy_sound_driver_channel
+            .and_then(|ptr| disp.sound_manager.find_channel_mut(ptr))
+            .expect("legacy sound driver channel allocated");
+        assert_eq!(chan.playback_sample_rate(), Some(crate::sound::RATE_22KHZ_FIXED));
         let free_form_mix = disp.sound_manager.mix_frame(4);
         assert!(free_form_mix.iter().any(|sample| *sample != 0x80));
+
+        // Test fractional samplingRate (e.g. Stunt Copter 1/6th factor $2AAA -> ~3,709 Hz)
+        let free_form_frac = 0x2F1000;
+        bus.write_word(free_form_frac, 0);
+        bus.write_long(free_form_frac + 2, 0x0000_2AAA);
+        bus.write_bytes(free_form_frac + 6, &[0x20, 0xE0, 0x20, 0xE0]);
+        assert_eq!(
+            disp.write_device_driver(&mut bus, -4, free_form_frac, 10),
+            Ok(10)
+        );
+        let chan_frac = disp
+            .legacy_sound_driver_channel
+            .and_then(|ptr| disp.sound_manager.find_channel_mut(ptr))
+            .expect("legacy sound driver channel allocated");
+        let expected_frac_rate = ((u64::from(crate::sound::RATE_22KHZ_FIXED) * 0x2AAA) >> 16) as u32;
+        assert_eq!(chan_frac.playback_sample_rate(), Some(expected_frac_rate));
 
         let square = 0x300000;
         bus.write_word(square, (-1i16) as u16);
