@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.8](https://github.com/benletchford/systemless/compare/v0.39.7...v0.39.8) (2026-09-11)
+
+
+### Bug Fixes
+
+* **desktop:** preserve full guest viewport without native integrations ([#1669](https://github.com/benletchford/systemless/issues/1669)) ([c60c927](https://github.com/benletchford/systemless/commit/c60c92760abe1d0e2cfcec6798b914c6ac588ba2))
+* **window:** prepare fullscreen regions before menu hiding ([#1672](https://github.com/benletchford/systemless/issues/1672)) ([b89bbcf](https://github.com/benletchford/systemless/commit/b89bbcfa4a3928976c25fd31c3b90517455c2a62))
+
 ## [0.39.7](https://github.com/benletchford/systemless/compare/v0.39.6...v0.39.7) (2026-09-11)
 
 
