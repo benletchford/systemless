@@ -606,7 +606,9 @@ fn service_pending_sound_work(
         remaining.min(SOUND_CALLBACK_SLICE_INSTRUCTIONS)
     };
 
-    let (steps, _running) = runner.run_pending_sound_work(callback_budget);
+    // This slice services audio interrupts, not a presentation frame. The
+    // outer presentation pass restores native chrome once.
+    let (steps, _running) = runner.run_gui_pending_sound_work(callback_budget);
     if using_reserved_slice {
         *reserved_sound_steps = reserved_sound_steps.saturating_add(steps);
     }
