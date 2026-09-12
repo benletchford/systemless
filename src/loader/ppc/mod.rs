@@ -97655,7 +97655,7 @@ pub(crate) mod tests {
             .dispatch_toolbox(true, 0x170, &mut classic_cpu, &mut classic_bus)
             .unwrap()
             .is_ok());
-        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0xffff);
+        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0x0100);
         assert_eq!(classic_bus.read_word(classic_event), 23);
         assert!(context.event_queue().is_empty());
 
@@ -97705,7 +97705,7 @@ pub(crate) mod tests {
             .dispatch_toolbox(true, 0x171, &mut classic_cpu, &mut classic_bus)
             .unwrap()
             .is_ok());
-        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0xffff);
+        assert_eq!(classic_bus.read_word(TEST_SP + 6), 0x0100);
         assert_eq!(classic_bus.read_word(classic_event), 23);
         assert_eq!(context.event_queue().len(), 1);
 

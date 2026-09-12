@@ -5481,8 +5481,11 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                // Return BOOLEAN result on stack
-                bus.write_word(sp + 6, if has_event { 0xFFFF } else { 0 });
+                // Return BOOLEAN result on stack. A Pascal BOOLEAN keeps its
+                // value byte in the high half of the word-aligned result slot,
+                // so TRUE is 0x0100 (Executor src/emutrap.c PascalToCCall
+                // rettype 1 clears the word, then stores the byte high-first).
+                bus.write_word(sp + 6, if has_event { 0x0100 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
             }
@@ -5577,8 +5580,9 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                // Return BOOLEAN result on stack
-                bus.write_word(sp + 14, if has_event { 0xFFFF } else { 0 });
+                // Return BOOLEAN result on stack (truth byte in the high half
+                // of the slot, so TRUE is 0x0100; see GetNextEvent).
+                bus.write_word(sp + 14, if has_event { 0x0100 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 14);
                 // Gate field-map allocation behind is_trace_recording()
                 // because WNE is hot path; record_trace_event's own
@@ -5627,7 +5631,8 @@ impl super::TrapDispatcher {
                         ev.where_h,
                         ev.modifiers,
                     );
-                    bus.write_word(sp + 6, 0xFFFF);
+                    // Pascal BOOLEAN result: truth byte in the high half.
+                    bus.write_word(sp + 6, 0x0100);
                     self.debug_event_queue_probe.event_avail = Some(EventProbeResult {
                         available: true,
                         record: EventRecordSnapshot {
@@ -5733,7 +5738,7 @@ impl super::TrapDispatcher {
             // press. A queued mouseDown for that press must not end tracking;
             // a queued mouseUp does.
             // Inside Macintosh Volume I, I-259
-            // Reference: Executor src/toolevent.cpp C_StillDown
+            // Reference: Executor src/toolevent.c C_StillDown
             // StillDown ($A973): Returns TRUE if button is down and no mouseUp is pending.
             (true, 0x173) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -5754,7 +5759,7 @@ impl super::TrapDispatcher {
                         self.input_state.mouse_button, has_mouse_up_event, pc
                     );
                 }
-                bus.write_word(sp, if result { 0xFFFF } else { 0 });
+                bus.write_word(sp, if result { 0x0100 } else { 0 });
                 Ok(())
             }
 
@@ -5764,7 +5769,7 @@ impl super::TrapDispatcher {
             // mirrors unmatched queued mouseDowns into MBState for code that
             // polls after an injected press, but paired mouseDown/mouseUp
             // events must not create a phantom press after release.
-            // Reference: Executor src/toolevent.cpp C_Button
+            // Reference: Executor src/toolevent.c C_Button
             // Button ($A974): Tests current mouse-button state.
             (true, 0x174) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -5795,7 +5800,7 @@ impl super::TrapDispatcher {
                     self.debug_button_false_count = self.debug_button_false_count.saturating_add(1);
                 }
                 self.debug_last_button_result = Some(pressed);
-                bus.write_word(sp, if pressed { 0xFFFF } else { 0 });
+                bus.write_word(sp, if pressed { 0x0100 } else { 0 });
                 Ok(())
             }
 
@@ -5894,9 +5899,16 @@ impl super::TrapDispatcher {
             // FUNCTION BitTst(bytePtr: Ptr; bitNum: LONGINT): BOOLEAN;
             // Inside Macintosh Volume I, I-472
             //
-            // Returns 0xFFFF for TRUE, 0x0000 for FALSE. MPW C inspects
-            // the HIGH byte of a Pascal BOOLEAN word, so a bare `1` would
-            // be misread as FALSE. Matches StillDown's 0xFFFF convention.
+            // Returns 0x0100 for TRUE, 0x0000 for FALSE. Inside Macintosh
+            // Volume I (1985), p. I-86 defines BOOLEAN as a one-byte value in
+            // bit 0; Pascal functions return it in the high half of the
+            // word-aligned result slot (Inside Macintosh Volume V (1986),
+            // p. V-124; Imaging With QuickDraw (1994), p. 5-22). Executor's
+            // src/emutrap.c PascalToCCall encodes this literally for rettype 1:
+            // it clears the result word, then writes the BOOLEAN byte at the
+            // high address. Writing `0x0001` would put the value in the padding
+            // low byte and read as FALSE, while `0xFFFF` is nonzero for C but
+            // fails a Pascal `Boolean = TRUE` comparison.
             // BitTst ($A85D): Tests bit in memory: FUNCTION BitTst(bytePtr: Ptr; bitNum: LONGINT): BOOLEAN; bit 0 = MSB per IM:I I-472
             (true, 0x05D) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -5908,7 +5920,7 @@ impl super::TrapDispatcher {
                 let bit_pos = 7 - (bit_num & 7) as u32;
                 let byte_val = bus.read_byte(byte_ptr.wrapping_add(byte_offset));
                 let result_word: u16 = if (byte_val >> bit_pos) & 1 != 0 {
-                    0xFFFF
+                    0x0100
                 } else {
                     0x0000
                 };
@@ -10600,7 +10612,7 @@ impl super::TrapDispatcher {
             // Works like StillDown, but if the button is NOT still down from the
             // original press, removes the preceding mouseUp event from the queue.
             // Inside Macintosh Volume I, I-259
-            // Reference: Executor src/toolevent.cpp C_WaitMouseUp
+            // Reference: Executor src/toolevent.c C_WaitMouseUp
             // WaitMouseUp ($A977): Like StillDown, but removes mouseUp from queue if button not still held (IM Vol I, I-259)
             (true, 0x177) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -10631,7 +10643,7 @@ impl super::TrapDispatcher {
                         self.debug_wait_mouse_up_false_count.saturating_add(1);
                 }
                 self.debug_last_wait_mouse_up_result = Some(still_down);
-                bus.write_word(sp, if still_down { 0xFFFF } else { 0 });
+                bus.write_word(sp, if still_down { 0x0100 } else { 0 });
                 Ok(())
             }
 
@@ -15125,7 +15137,8 @@ impl super::TrapDispatcher {
                         } else {
                             QUICKTIME_INVALID_MOVIE
                         };
-                        bus.write_word(sp + 4, if status.unwrap_or(true) { 0xFFFF } else { 0 });
+                        // Pascal BOOLEAN result in the high byte of its slot.
+                        bus.write_word(sp + 4, if status.unwrap_or(true) { 0x0100 } else { 0 });
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, err as u32);
                         record_movie_error(self, err);
@@ -18560,8 +18573,8 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        // Event found: result = 0xFFFF
-        assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+        // Event found: result = 0x0100
+        assert_eq!(bus.read_word(sp + 6), 0x0100);
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
         // Event record: what field at event_ptr+0 (word) = 1 (mouseDown)
         assert_eq!(bus.read_word(event_ptr), 1);
@@ -18620,7 +18633,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 2);
         assert_eq!(
             bus.read_word(get_next_sp + 6),
-            0xFFFF,
+            0x0100,
             "GetNextEvent should report the pending update event"
         );
         assert_eq!(
@@ -18902,7 +18915,7 @@ mod tests {
         let second = disp.dispatch_toolbox(true, 0x170, &mut cpu, &mut bus);
         assert!(second.is_some());
         assert!(second.unwrap().is_ok());
-        assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 6), 0x0100);
         assert_eq!(bus.read_word(event_ptr), 1);
         assert!(disp.event_queue.is_empty());
     }
@@ -18999,7 +19012,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 14), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 14), 0x0100);
         assert_eq!(cpu.read_reg(Register::A7), sp + 14);
         assert_eq!(bus.read_word(event_ptr), 15);
         assert_eq!(bus.read_long(event_ptr + 2), 0xFA00_0000);
@@ -19102,7 +19115,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         // Should return TRUE (event found)
-        assert_eq!(bus.read_word(sp + 14), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 14), 0x0100);
         // what = kHighLevelEvent (23)
         assert_eq!(bus.read_word(event_ptr), 23);
         // message = kCoreEventClass ('aevt' = 0x61657674)
@@ -19174,7 +19187,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 6), 0x0100);
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
         // Event record should have what=1
         assert_eq!(bus.read_word(event_ptr), 1);
@@ -19259,7 +19272,7 @@ mod tests {
         let peek = disp.dispatch_toolbox(true, 0x171, &mut cpu, &mut bus);
         assert!(peek.is_some());
         assert!(peek.unwrap().is_ok());
-        assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 6), 0x0100);
         assert_eq!(bus.read_word(event_ptr), 1);
         assert_eq!(bus.read_long(event_ptr + 2), 0xCAFEBABE);
         assert_eq!(disp.event_queue.len(), 1);
@@ -19272,7 +19285,7 @@ mod tests {
         let dequeue = disp.dispatch_toolbox(true, 0x170, &mut cpu, &mut bus);
         assert!(dequeue.is_some());
         assert!(dequeue.unwrap().is_ok());
-        assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 6), 0x0100);
         assert_eq!(bus.read_word(event_ptr), 1);
         assert_eq!(bus.read_long(event_ptr + 2), 0xCAFEBABE);
         assert!(disp.event_queue.is_empty());
@@ -19293,7 +19306,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 6), 0x0100);
         assert_eq!(bus.read_word(event_ptr), 23);
         assert_eq!(bus.read_long(event_ptr + 2), 0x61657674);
         assert_eq!(disp.event_queue.len(), 1);
@@ -19315,7 +19328,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 6), 0x0100);
         assert_eq!(bus.read_word(event_ptr), 23);
         assert_eq!(bus.read_long(event_ptr + 2), 0x61657674);
         assert!(disp.event_queue.is_empty());
@@ -19516,7 +19529,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp), 0xFFFF);
+        assert_eq!(bus.read_word(sp), 0x0100);
         // SP unchanged for StillDown
         assert_eq!(cpu.read_reg(Register::A7), sp);
     }
@@ -19535,7 +19548,7 @@ mod tests {
 
         assert_eq!(
             bus.read_word(sp),
-            0xFFFF,
+            0x0100,
             "StillDown should keep tracking while the original queued mouseDown is still pending"
         );
         assert_eq!(cpu.read_reg(Register::A7), sp);
@@ -19589,7 +19602,7 @@ mod tests {
 
         assert_eq!(
             bus.read_word(sp),
-            0xFFFF,
+            0x0100,
             "WaitMouseUp should keep tracking while only the original mouseDown is queued"
         );
         assert!(disp.event_queue.iter().any(|event| event.what == 1));
@@ -19629,7 +19642,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_word(sp), 0xFFFF);
+        assert_eq!(bus.read_word(sp), 0x0100);
         assert_eq!(cpu.read_reg(Register::A7), sp);
     }
 
@@ -19663,7 +19676,7 @@ mod tests {
 
         assert_eq!(
             bus.read_word(sp),
-            0xFFFF,
+            0x0100,
             "Button should observe the current internal physical press even if MBState is stale"
         );
         assert_eq!(cpu.read_reg(Register::A7), sp);
@@ -19711,7 +19724,7 @@ mod tests {
         bus.write_word(sp, 0);
         let result = disp.dispatch_toolbox(true, 0x174, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(sp), 0xFFFF); // Button sees $0172 = pressed
+        assert_eq!(bus.read_word(sp), 0x0100); // Button sees $0172 = pressed
 
         // After the runner advances a tick, it would write $0172 = 0x80.
         // Simulate that:
@@ -35863,7 +35876,7 @@ mod tests {
         assert!(result.is_some(), "IsMovieDone should be handled");
         assert!(result.unwrap().is_ok(), "IsMovieDone should return");
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(bus.read_word(sp + 4), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 4), 0x0100);
     }
 
     #[test]
