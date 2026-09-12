@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.40.0](https://github.com/benletchford/systemless/compare/v0.39.9...v0.40.0) (2026-09-12)
+
+
+### Features
+
+* **debugger:** add opt-in inspection, execution control, and captures ([#1680](https://github.com/benletchford/systemless/issues/1680)) ([791ca1a](https://github.com/benletchford/systemless/commit/791ca1a6d43265a98457a6200d3ba99e3581fcc1))
+
+
+### Bug Fixes
+
+* **toolbox:** return Pascal Booleans in the result word's high byte ([#1684](https://github.com/benletchford/systemless/issues/1684)) ([a9958fb](https://github.com/benletchford/systemless/commit/a9958fbd477debd687496084b3d8a11a63c7c2fb))
+* **trap:** redraw dialog background when brought to front ([#1678](https://github.com/benletchford/systemless/issues/1678)) ([2162942](https://github.com/benletchford/systemless/commit/216294208a8f244d9d5bcfcaae0d64d9bdcbc75d))
+
 ## [0.39.9](https://github.com/benletchford/systemless/compare/v0.39.8...v0.39.9) (2026-09-12)
 
 
