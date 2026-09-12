@@ -53,6 +53,8 @@ pub mod binhex;
 pub mod callback_manager;
 mod control_manager;
 pub mod cpu;
+#[cfg(feature = "debug")]
+pub mod debug;
 pub mod debug_overlay;
 pub mod disk_image;
 pub mod display;

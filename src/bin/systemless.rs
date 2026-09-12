@@ -34,6 +34,29 @@ mod native_bundle;
 #[path = "desktop/native_menu.rs"]
 mod native_menu;
 
+#[cfg(all(feature = "debug-server", unix))]
+#[path = "desktop/debug_server.rs"]
+mod debug_server;
+#[cfg(not(all(feature = "debug-server", unix)))]
+mod debug_server {
+    use std::path::Path;
+
+    pub struct DebugServer;
+
+    impl DebugServer {
+        pub fn bind(_path: &Path) -> std::io::Result<Self> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "debug socket transport requires the `debug-server` feature on a Unix platform",
+            ))
+        }
+
+        pub fn pump(&mut self, _runner: &mut systemless::runner::FixtureRunner) -> usize {
+            0
+        }
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -245,6 +268,13 @@ struct Cli {
     /// Not a matched-time workload: wait optimizations change when inputs land.
     #[arg(long, value_name = "FILE")]
     input_script: Option<PathBuf>,
+
+    /// Expose the debugger over a Unix-domain socket. One controlling client
+    /// sends one JSON request per line and receives one JSON reply per line;
+    /// requests are applied on the runner thread between frames. Headless
+    /// runs start paused until the client resumes or steps execution.
+    #[arg(long, value_name = "PATH")]
+    debug_socket: Option<PathBuf>,
 }
 
 fn parse_screen_depth(value: &str) -> Result<u16, String> {
@@ -812,7 +842,9 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     scaled_frame: Vec<u32>,
     runner: Option<FixtureRunner>,
+    debug_server: Option<debug_server::DebugServer>,
     save_store: Option<DesktopSaveStore>,
+    guest_exit_reported: bool,
     game_path: PathBuf,
     initialized: bool,
     total_instructions: u64,
@@ -967,7 +999,9 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             scaled_frame: Vec::new(),
             runner: None,
+            debug_server: None,
             save_store: None,
+            guest_exit_reported: false,
             game_path,
             initialized: false,
             total_instructions: 0,
@@ -2842,6 +2876,9 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let (Some(server), Some(runner)) = (self.debug_server.as_mut(), self.runner.as_mut()) {
+            server.pump(runner);
+        }
         let now = std::time::Instant::now();
         let next = self.next_frame_time.unwrap_or(now);
 
@@ -2870,13 +2907,18 @@ impl ApplicationHandler for App {
         self.step_frame();
         self.flush_ready_mouse_release();
         if self.guest_requested_exit() {
-            self.sync_save_files(true);
-            eprintln!(
-                "[SYSTEMLESS] Guest exited. Total instructions: {}",
-                self.total_instructions
-            );
-            event_loop.exit();
-            return;
+            if !self.guest_exit_reported {
+                self.sync_save_files(true);
+                eprintln!(
+                    "[SYSTEMLESS] Guest exited. Total instructions: {}",
+                    self.total_instructions
+                );
+                self.guest_exit_reported = true;
+            }
+            if self.debug_server.is_none() {
+                event_loop.exit();
+                return;
+            }
         }
         self.sync_save_files(false);
 
@@ -2917,6 +2959,9 @@ impl ApplicationHandler for App {
         if self.should_render_frame() {
             self.render_frame();
         }
+        if let Some(runner) = self.runner.as_mut() {
+            runner.finish_gui_frame();
+        }
         self.frame_count += 1;
     }
 }
@@ -2930,6 +2975,7 @@ fn run_gui(
     display_scale: Option<u32>,
     ui_theme: UiThemeId,
     fullscreen: bool,
+    debug_socket: Option<PathBuf>,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -2951,6 +2997,18 @@ fn run_gui(
         ui_theme,
         fullscreen,
     );
+    if let Some(path) = debug_socket {
+        match debug_server::DebugServer::bind(&path) {
+            Ok(server) => app.debug_server = Some(server),
+            Err(error) => {
+                eprintln!(
+                    "Error: cannot bind debug socket {}: {error}",
+                    path.display()
+                );
+                std::process::exit(1);
+            }
+        }
+    }
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
     // entering the event loop so startup never exposes an empty host window.
@@ -3047,6 +3105,35 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
     eprintln!("[HEADLESS] Screenshot #{}: {} (ticks={})", num, path, ticks);
 }
 
+// Both headless clocks use the same transport and command-safe point. A debug
+// run starts paused so the simulated clock cannot outrun client attachment.
+fn bind_headless_debug_server(
+    path: Option<PathBuf>,
+    runner: &mut FixtureRunner,
+) -> Option<debug_server::DebugServer> {
+    let path = path?;
+    let server = debug_server::DebugServer::bind(&path).unwrap_or_else(|error| {
+        eprintln!("Error: cannot bind debug socket {}: {error}", path.display());
+        std::process::exit(1);
+    });
+    #[cfg(all(feature = "debug-server", unix))]
+    systemless::debug::handle_debug_request(runner, systemless::debug::DebugRequest::Pause)
+        .expect("initial debugger pause");
+    let _ = runner;
+    eprintln!("[HEADLESS] Debugger paused at startup; connect and resume to execute");
+    Some(server)
+}
+
+fn wait_for_debug_resume(server: &mut debug_server::DebugServer, runner: &mut FixtureRunner) {
+    loop {
+        server.pump(runner);
+        if !runner.debug_is_paused() && !runner.is_halted() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 fn run_headless(
     game_path: &std::path::Path,
     max_instructions: usize,
@@ -3054,6 +3141,7 @@ fn run_headless(
     screen_depth: Option<u16>,
     script: &[ScriptedInput],
     ui_theme: UiThemeId,
+    debug_socket: Option<PathBuf>,
 ) {
     eprintln!(
         "[HEADLESS] Legacy instruction-budget diagnostic mode: retained Toolbox waits may re-fire repeatedly; do not use these totals as GUI CPU measurements. Use --max-ticks with --tick-input-script for time-based runs."
@@ -3084,12 +3172,17 @@ fn run_headless(
     }
     game::init_game(&mut runner, &app);
 
+    let mut debug_server = bind_headless_debug_server(debug_socket, &mut runner);
+
     let chunk = 100_000;
     let mut total: usize = 0;
     let mut last_screenshot = 0usize;
     let mut next_event = 0usize;
 
     while total < max_instructions {
+        if let Some(server) = debug_server.as_mut() {
+            wait_for_debug_resume(server, &mut runner);
+        }
         // Deliver everything the script has scheduled at or before this
         // point, then run only as far as the next event so its delivery
         // point comes from the script and not from the chunk size.
@@ -3142,6 +3235,17 @@ fn run_headless(
     save_screenshot(&runner, 9999);
     // Measurement-only: prints nothing unless SYSTEMLESS_WAIT_STATS is set.
     systemless::runner::dump_wait_stats();
+    if debug_server.is_some() && runner.is_halted() {
+        eprintln!(
+            "[HEADLESS] Debugger remains available after terminal stop (press Ctrl-C to exit)"
+        );
+        loop {
+            if let Some(server) = debug_server.as_mut() {
+                server.pump(&mut runner);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
 
 fn main() {
@@ -3203,6 +3307,7 @@ fn main() {
                 cli.screen_depth,
                 &script,
                 cli.ui_theme,
+                cli.debug_socket,
             );
         } else {
             run_headless(
@@ -3212,6 +3317,7 @@ fn main() {
                 cli.screen_depth,
                 &script,
                 cli.ui_theme,
+                cli.debug_socket,
             );
         }
     } else {
@@ -3228,6 +3334,7 @@ fn main() {
             cli.display_scale,
             cli.ui_theme,
             cli.fullscreen,
+            cli.debug_socket,
         );
     }
 }

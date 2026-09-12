@@ -27,7 +27,7 @@ pub struct QueuedEvent {
 /// exposed to guest code. Keeping the full-width message and posting tick
 /// here lets 68K and PowerPC showcase probes assert identical behavior
 /// without reading ABI-specific guest memory layouts.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventRecordSnapshot {
     pub what: u16,
     pub message: u32,
@@ -38,7 +38,7 @@ pub struct EventRecordSnapshot {
 }
 
 /// Result from one Event Manager queue probe call.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventProbeResult {
     pub available: bool,
     pub record: EventRecordSnapshot,
@@ -48,7 +48,7 @@ pub struct EventProbeResult {
 /// the showcase. Each optional value records the most recent call of that
 /// kind, preserving the returned event type even after a later call consumes
 /// the queue entry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventQueueProbeSnapshot {
     pub post_result: Option<i16>,
     pub event_avail: Option<EventProbeResult>,
@@ -59,7 +59,7 @@ pub struct EventQueueProbeSnapshot {
 /// Architecture-neutral Event Manager state exposed by deterministic fixture
 /// runners. This is intentionally semantic: callers can assert queue order,
 /// live input, lifecycle delivery, and cursor state on either CPU adapter.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventManagerSnapshot {
     pub last_record: Option<EventRecordSnapshot>,
     pub queue_probe: EventQueueProbeSnapshot,

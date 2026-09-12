@@ -36,6 +36,8 @@ pub enum Register {
 /// Outcome of a single 68k instruction step. Returned by
 /// [`FixtureRunner::step`](crate::runner::FixtureRunner::step).
 pub enum StepResult {
+    /// Execution is currently blocked by the runner; no instruction retired.
+    Blocked,
     /// The instruction completed normally and execution may continue.
     Ok,
     /// The CPU executed `STOP`, or the wrapper normalized an unsupported

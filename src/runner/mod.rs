@@ -187,6 +187,11 @@ pub mod interrupt;
 pub mod ppc_exec;
 pub mod vfs;
 
+#[cfg(feature = "debug")]
+mod debug_support;
+#[cfg(not(feature = "debug"))]
+mod debug_support_disabled;
+
 pub(crate) use idle::*;
 pub(crate) use interrupt::*;
 pub(crate) use ppc_exec::*;
@@ -1816,6 +1821,8 @@ pub struct FixtureRunner {
     /// GPU instead of being rasterized into guest memory.
     external_q3_renderer_enabled: bool,
     pending_q3_gpu_frame: Option<PpcQ3GpuFrame>,
+    #[cfg(feature = "debug")]
+    pub(crate) debug: crate::debug::DebuggerCoordinator,
 }
 
 impl FixtureRunner {
@@ -1970,6 +1977,8 @@ impl FixtureRunner {
             q3_completed_frame_index: 0,
             external_q3_renderer_enabled: false,
             pending_q3_gpu_frame: None,
+            #[cfg(feature = "debug")]
+            debug: crate::debug::DebuggerCoordinator::fresh(),
         }
     }
 
@@ -2034,6 +2043,10 @@ impl FixtureRunner {
     /// state. Showcase and embedding tests can use this instead of relying on
     /// rendered pixels or 68K/PPC-specific EventRecord offsets.
     pub fn event_manager_snapshot(&self) -> EventManagerSnapshot {
+        self.event_manager_snapshot_with_limit(usize::MAX)
+    }
+
+    pub(crate) fn event_manager_snapshot_with_limit(&self, limit: usize) -> EventManagerSnapshot {
         let queue = self.process_context.event_queue();
         let ppc_state = self.native.application().map(|app| &app.toolbox_startup);
         let last_record: Option<EventRecordSnapshot> = self
@@ -2060,7 +2073,7 @@ impl FixtureRunner {
             last_record,
             queue_probe,
             queue_len: queue.len(),
-            queued_event_types: queue.iter().map(|event| event.what).collect(),
+            queued_event_types: queue.iter().take(limit).map(|event| event.what).collect(),
             mouse_position: self.dispatcher.mouse_position(),
             mouse_button: self.dispatcher.input_state.mouse_button,
             button_result,
@@ -2171,6 +2184,21 @@ impl FixtureRunner {
         &mut self.bus
     }
 
+    pub fn debug_is_paused(&self) -> bool {
+        self.guest_work_is_suspended()
+    }
+
+    fn guest_work_is_suspended(&self) -> bool {
+        #[cfg(feature = "debug")]
+        {
+            return self.debug.is_paused();
+        }
+        #[cfg(not(feature = "debug"))]
+        {
+            return false;
+        }
+    }
+
     pub fn dispatcher(&self) -> &crate::trap::dispatch::TrapDispatcher {
         &self.dispatcher
     }
@@ -2195,12 +2223,6 @@ impl FixtureRunner {
         )
     }
 
-    /// Return the live Window Manager stack in front-to-back order.
-    ///
-    /// This hidden fixture/diagnostic seam deliberately has the same shape for
-    /// classic and native PowerPC execution.  It lets deterministic tests
-    /// assert z-order, geometry, activation, occlusion-derived visible
-    /// regions, and pending repaint regions without relying on screenshots.
     #[doc(hidden)]
     pub fn window_stack_snapshot(&mut self) -> Vec<WindowSnapshot> {
         crate::window_manager::snapshot_window_stack(&self.dispatcher.window_list, |address| {
@@ -2670,6 +2692,9 @@ impl FixtureRunner {
     /// This remains independent of CPU catch-up limits and frozen app ticks.
     /// Toolbox Essentials (1992), SetMenuFlash, p. 3-142.
     pub fn advance_menu_presentation_clock(&mut self, elapsed: std::time::Duration) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         let Some(tracking) = self.process_context.menu_tracking() else {
             self.menu_presentation_remainder = 0;
             return;
@@ -2699,6 +2724,9 @@ impl FixtureRunner {
     /// Synchronize deferred PPC visual/VFS state and composite chrome/dialog overlays.
     /// Call before reading raw pixels for screenshots.
     pub fn composite_frame(&mut self) {
+        if self.guest_work_is_suspended() && !self.halted {
+            return;
+        }
         self.sync_ppc_deferred_host_state();
         self.redraw_chrome_outside_idle_journal();
     }
@@ -2767,6 +2795,9 @@ impl FixtureRunner {
     /// reads them directly sees the new coordinates immediately. Leaves
     /// MBState ($0172) untouched. Inside Macintosh Volume II, II-371.
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         let (v, h) = self.canonical_mouse_position(v, h);
         self.dispatcher.set_mouse_position(v, h);
         self.sync_mouse_position_lowmem();
@@ -2888,6 +2919,9 @@ impl FixtureRunner {
     /// mouseDown -> FindWindow -> MenuSelect path.  Returns false if the menu
     /// or item is no longer present, enabled, and selectable.
     pub fn select_guest_menu_item(&mut self, menu_id: i16, item_number: i16) -> bool {
+        if self.guest_work_is_suspended() {
+            return false;
+        }
         // Host input is an ABI boundary too: a guest store to `$016A` made
         // since the last trap must be visible before the queued EventRecord
         // receives its `when` timestamp.
@@ -2924,6 +2958,9 @@ impl FixtureRunner {
     /// globals here so that code polling the low-memory locations directly
     /// (instead of calling Button or GetNextEvent) sees the correct state.
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         let (v, h) = self.canonical_mouse_position(v, h);
         self.push_canonical_mouse_down(v, h);
     }
@@ -2966,6 +3003,9 @@ impl FixtureRunner {
     /// many loop iterations after a click-up.
     /// Inside Macintosh Volume II, II-371
     pub fn push_mouse_up(&mut self, v: i16, h: i16) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         let (v, h) = self.canonical_mouse_position(v, h);
         self.push_canonical_mouse_up(v, h);
     }
@@ -3020,6 +3060,9 @@ impl FixtureRunner {
 
     /// Inject a key-down event, applying arrow→numpad remapping if configured.
     pub fn push_key_down(&mut self, mac_key: u8, char_code: u8) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.read_tick_count(&self.bus);
         self.dispatcher.with_process_state(|d| {
@@ -3032,6 +3075,9 @@ impl FixtureRunner {
 
     /// Inject a key-up event, applying arrow→numpad remapping if configured.
     pub fn push_key_up(&mut self, mac_key: u8, char_code: u8) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         let (key, char_code) = self.remap_key(mac_key, char_code);
         self.dispatcher.read_tick_count(&self.bus);
         let sys_evt_mask = self
@@ -3409,6 +3455,9 @@ impl FixtureRunner {
     /// amortizes tick advancement, halt detection, and trace collection across
     /// the instruction budget.
     pub fn step(&mut self) -> StepResult {
+        if self.guest_work_is_suspended() {
+            return StepResult::Blocked;
+        }
         let result = self.m68k.cpu.step(&mut self.bus);
         self.dispatcher
             .retire_returned_native_trap_call(&mut self.m68k.cpu);
@@ -3754,6 +3803,7 @@ impl FixtureRunner {
             (native, migrated_services)
         });
         assert!(self.native.reset_for_launch(app.ppc.is_some()));
+        self.debug_advance_generation();
         self.process_context.reset_cfm_for_launch();
         if let Some((ppc_app, migrated_services)) = native_launch {
             self.init_ppc_app_with_services(ppc_app, migrated_services);
@@ -4415,6 +4465,9 @@ impl FixtureRunner {
     /// Mix and queue audio samples without full frame finalization.
     /// Used to keep the audio buffer fed during long CPU frames.
     pub fn mix_audio(&mut self, num_samples: usize) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         self.mix_host_audio(num_samples);
     }
 
@@ -4534,6 +4587,32 @@ impl FixtureRunner {
         }
         debug_assert_ne!(finalization, FrameFinalization::Deferred);
         self.finish_audio_frame(audio_samples, sound_interrupt_dispatched);
+        // The logical-frame capture boundary is defined as the point after
+        // host chrome redraw and guest-audio finalization. Audio-only slices
+        // defer chrome to the frontend's outer composition pass, so they must
+        // not complete it; the frontend does so once per frame via
+        // [`Self::finish_gui_frame`].
+        if finalization == FrameFinalization::Complete {
+            self.finish_logical_frame();
+        }
+    }
+
+    fn finish_logical_frame(&mut self) {
+        if self.guest_work_is_suspended() || self.halted {
+            return;
+        }
+        self.debug_note_logical_frame_boundary();
+    }
+
+    /// Complete an outer GUI frame after audio work, compositing pending captures.
+    pub fn finish_gui_frame(&mut self) {
+        if self.guest_work_is_suspended() || self.halted {
+            return;
+        }
+        if self.debug_has_pending_logical_frame_capture() {
+            self.composite_frame();
+        }
+        self.finish_logical_frame();
     }
 
     fn finish_audio_frame(&mut self, audio_samples: usize, sound_interrupt_dispatched: bool) {
@@ -4566,6 +4645,9 @@ impl FixtureRunner {
     /// doubleback callbacks run between small audio chunks when TickCount is
     /// already caught up to the wall clock.
     pub fn mix_gui_audio_slice(&mut self, audio_samples: usize) {
+        if self.guest_work_is_suspended() {
+            return;
+        }
         self.finish_audio_frame(audio_samples, false);
     }
 
@@ -5645,12 +5727,45 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: FrameFinalization,
     ) -> (usize, bool) {
+        let result = self.run_steps_internal_impl(
+            max_steps,
+            tick_cap,
+            audio_samples,
+            yield_for_ui,
+            sound_work_only,
+            finish_frame,
+        );
+        // Returning to the embedding is a scheduler safe point. Publish any
+        // context transition that occurred during this execution chunk.
+        self.debug_note_active_context();
+        if self.halted {
+            self.debug_note_terminal();
+        } else {
+            // A step completes only after execution returns to this safe point.
+            self.debug_finish_step_if_ready();
+        }
+        result
+    }
+
+    fn run_steps_internal_impl(
+        &mut self,
+        max_steps: usize,
+        tick_cap: Option<u32>,
+        audio_samples: usize,
+        yield_for_ui: bool,
+        sound_work_only: bool,
+        finish_frame: FrameFinalization,
+    ) -> (usize, bool) {
+        if self.guest_work_is_suspended() {
+            return (0, !self.halted);
+        }
         self.dispatcher.guest_calls.resume_ready_task();
         self.m68k.apply_task_handoff();
         let route = self
             .dispatcher
             .guest_calls
             .execution_route(self.native.availability());
+        self.debug_note_active_context();
         if route == ExecutionRoute::Blocked {
             return (0, !self.halted);
         }
@@ -5680,6 +5795,9 @@ impl FixtureRunner {
                 );
                 count = count.saturating_add(steps);
                 running = still_running;
+                if self.guest_work_is_suspended() || self.debug_step_units_remaining() == Some(0) {
+                    break;
+                }
                 if steps == 0 {
                     break;
                 }
@@ -5786,6 +5904,9 @@ impl FixtureRunner {
         let mut watch_buf = Vec::with_capacity(4);
 
         while count < max_steps && !self.halted && !tick_cap_reached {
+            if self.debug_finish_step_if_ready() {
+                return (count, !self.halted);
+            }
             if sound_work_only
                 && !self.callback_suspends_guest_clock()
                 && (sound_interrupt_dispatched || !self.has_pending_sound_work())
@@ -5840,6 +5961,7 @@ impl FixtureRunner {
 
             if self.m68k.cpu.is_stopped() {
                 self.halted = true;
+                self.debug_note_terminal();
                 self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
                 self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
                 self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
@@ -6039,6 +6161,7 @@ impl FixtureRunner {
                 {
                     count += 1;
                     self.total_instructions = self.total_instructions.wrapping_add(1);
+                    self.debug_note_m68k_executed_units(1);
                     if self.dispatcher.has_ready_menu_tracking() {
                         if yield_for_ui && self.frozen_ticks.is_none() {
                             self.frozen_ticks = Some(self.guest_tick());
@@ -6078,6 +6201,7 @@ impl FixtureRunner {
                 }
                 self.dump_trace();
                 self.halted = true;
+                self.debug_note_terminal();
                 self.halted_pc = Some(0);
                 self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
                 self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
@@ -6095,6 +6219,7 @@ impl FixtureRunner {
                 );
                 self.dump_invalid_pc_state();
                 self.halted = true;
+                self.debug_note_terminal();
                 self.halted_pc = Some(pc);
                 self.halted_sp = Some(sp);
                 self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
@@ -6194,8 +6319,18 @@ impl FixtureRunner {
                 if charging && !self.callback_suspends_guest_clock() {
                     n = n.min((self.tick_budget - 1).max(1) as usize);
                 }
+                if let Some(units) = self.debug_step_units_remaining() {
+                    n = n.min(units.max(1) as usize);
+                }
+                if self.debug_breakpoint_rearming() {
+                    n = n.min(1);
+                }
                 n as u32
             };
+            let entry_pc = self.m68k.cpu.read_reg(Register::PC);
+            if self.debug_stop_at_m68k_breakpoint(entry_pc) {
+                return (count, !self.halted);
+            }
             // PC 0 is always watched: a deep RTS chain unwinding to 0 is
             // the clean-exit signal handled at the top of this loop, and it
             // must halt before low memory gets executed as code. While an
@@ -6212,6 +6347,7 @@ impl FixtureRunner {
             }
             self.dispatcher
                 .append_pending_native_trap_return_pcs(&mut watch_buf);
+            watch_buf.extend(self.debug_m68k_breakpoint_addresses());
             let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, &watch_buf);
             self.dispatcher
                 .retire_returned_native_trap_call(&mut self.m68k.cpu);
@@ -6222,6 +6358,7 @@ impl FixtureRunner {
                     batch.exit,
                     BatchExit::AlineTrap { .. } | BatchExit::FlineTrap { .. }
                 ));
+            self.debug_note_m68k_executed_units(executed);
             if executed > 0 {
                 count += executed;
                 self.total_instructions = self.total_instructions.wrapping_add(executed as u64);
@@ -6249,10 +6386,11 @@ impl FixtureRunner {
                 }
             }
             match batch.exit {
-                BatchExit::BudgetExhausted | BatchExit::WatchedPc { .. } => {
-                    // Nothing to do: the loop top re-reads PC and handles
-                    // watched addresses (interrupt-callback resume, clean
-                    // exit at PC 0) exactly like the old per-step checks.
+                BatchExit::BudgetExhausted => {}
+                BatchExit::WatchedPc { pc } => {
+                    if self.debug_stop_at_m68k_breakpoint(pc) {
+                        return (count, !self.halted);
+                    }
                 }
                 BatchExit::FlineTrap { .. } => {
                     // A writable vector 11 is the guest's architectural
@@ -6270,6 +6408,7 @@ impl FixtureRunner {
                     // old flow where the next loop iteration's is_stopped
                     // check caught it.
                     self.halted = true;
+                    self.debug_note_terminal();
                     self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
                     self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
                     self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
@@ -7097,8 +7236,12 @@ impl FixtureRunner {
         let mut running = true;
         let mut watch_buf = Vec::with_capacity(4);
         while executed < max_steps {
+            if self.debug_finish_step_if_ready() {
+                return Some((executed, true));
+            }
             if self.dispatcher.resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus).is_some() {
                 executed += 1;
+                self.debug_note_m68k_executed_units(1);
                 continue;
             }
             if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc {
@@ -7112,11 +7255,22 @@ impl FixtureRunner {
                 });
                 break;
             }
-            let batch_max = u32::try_from(max_steps - executed).unwrap_or(u32::MAX);
+            let mut batch_max = u32::try_from(max_steps - executed).unwrap_or(u32::MAX);
+            if let Some(units) = self.debug_step_units_remaining() {
+                batch_max = batch_max.min(units.max(1));
+            }
+            if self.debug_breakpoint_rearming() {
+                batch_max = batch_max.min(1);
+            }
+            let entry_pc = self.m68k.cpu.read_reg(Register::PC);
+            if self.debug_stop_at_m68k_breakpoint(entry_pc) {
+                return Some((executed, true));
+            }
             watch_buf.clear();
             watch_buf.push(pending.return_pc);
             self.dispatcher
                 .append_pending_native_trap_return_pcs(&mut watch_buf);
+            watch_buf.extend(self.debug_m68k_breakpoint_addresses());
             let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, &watch_buf);
             self.dispatcher
                 .retire_returned_native_trap_call(&mut self.m68k.cpu);
@@ -7126,18 +7280,26 @@ impl FixtureRunner {
                     BatchExit::AlineTrap { .. } | BatchExit::FlineTrap { .. }
                 ));
             executed = executed.saturating_add(retired);
+            self.debug_note_m68k_executed_units(retired);
             match batch.exit {
                 BatchExit::BudgetExhausted => break,
-                BatchExit::WatchedPc { pc } if pc == pending.return_pc => {
-                    running = self.process_context.with_memory_and_cfm(|manager, _| {
-                        self.m68k.complete_pending(
-                            &mut ppc_app.memory,
-                            &mut ppc_app.cpu,
-                            pending,
-                            manager,
-                        )
-                    });
-                    break;
+                BatchExit::WatchedPc { pc } => {
+                    // User breakpoints take precedence over an internal return
+                    // sentinel at the same address.
+                    if self.debug_stop_at_m68k_breakpoint(pc) {
+                        return Some((executed, true));
+                    }
+                    if pc == pending.return_pc {
+                        running = self.process_context.with_memory_and_cfm(|manager, _| {
+                            self.m68k.complete_pending(
+                                &mut ppc_app.memory,
+                                &mut ppc_app.cpu,
+                                pending,
+                                manager,
+                            )
+                        });
+                        break;
+                    }
                 }
                 BatchExit::AlineTrap { opcode } => {
                     if self.m68k.complete_manager_return(&self.bus)
@@ -7178,7 +7340,6 @@ impl FixtureRunner {
                         break;
                     }
                 }
-                BatchExit::WatchedPc { .. } => continue,
                 BatchExit::FlineTrap { .. } => {
                     if !self.dispatcher.fline_vector_is_default(&self.bus) {
                         self.m68k.cpu.core.take_fline_exception(&mut self.bus);
@@ -8964,6 +9125,9 @@ impl FixtureRunner {
     /// Run pending Sound Manager interrupt work without advancing TickCount
     /// or continuing into foreground guest code after the callback returns.
     pub fn run_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
+        if self.guest_work_is_suspended() {
+            return (0, !self.halted);
+        }
         self.fire_pending_ppc_sound_completions();
         self.run_steps_internal(max_steps, None, 0, true, true, FrameFinalization::Complete)
     }
@@ -8974,6 +9138,9 @@ impl FixtureRunner {
     /// the same slice boundary. This does not defer audio or enlarge the guest
     /// callback budget. Use this only when the caller owns outer presentation.
     pub fn run_gui_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
+        if self.guest_work_is_suspended() {
+            return (0, !self.halted);
+        }
         self.fire_pending_ppc_sound_completions();
         self.run_steps_internal(max_steps, None, 0, true, true, FrameFinalization::AudioOnly)
     }
@@ -9015,6 +9182,7 @@ impl FixtureRunner {
             self.bus.read_word(halted_pc)
         );
         self.halted = true;
+        self.debug_note_terminal();
         self.halted_pc = Some(halted_pc);
         self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
         self.halted_d0 = Some(self.m68k.cpu.read_reg(Register::D0));
@@ -11022,6 +11190,9 @@ impl FixtureRunner {
     /// [`halted_pc`](Self::halted_pc) / [`halted_trap`](Self::halted_trap)
     /// accessors.
     pub fn run(&mut self) -> Result<()> {
+        if self.guest_work_is_suspended() {
+            return Ok(());
+        }
         let mut count = 0;
 
         if trace_load_enabled() {
@@ -11080,6 +11251,7 @@ impl FixtureRunner {
             self.dispatcher
                 .retire_returned_native_trap_call(&mut self.m68k.cpu);
             match step_result {
+                StepResult::Blocked => return Ok(()),
                 StepResult::Ok => {}
                 StepResult::Stopped => {
                     if trace_load_enabled() {
@@ -12267,6 +12439,80 @@ mod tests {
         assert_eq!(native.cpu.gpr[3], 0);
         assert_eq!(native.memory.read_u32_be(OUTPUT + 80), Some(address));
         assert_eq!(native.import_count, initial_count + 1);
+    }
+
+    #[test]
+    #[cfg(not(feature = "debug"))]
+    fn debugger_disabled_hooks_are_inert() {
+        let mut runner = FixtureRunner::new(0x100000, FixtureRunnerConfig::default());
+        runner.bus_mut().write_word(0x2_0000, 0x4E71); // NOP
+        runner.cpu_mut().write_reg(Register::PC, 0x2_0000);
+        assert!(!runner.debug_is_paused());
+        assert_eq!(runner.debug_step_units_remaining(), None);
+        assert!(!runner.debug_stop_at_m68k_breakpoint(0x2_0000));
+        assert!(runner.debug_m68k_breakpoint_addresses().is_empty());
+        let (steps, running) = runner.run_steps(1, None);
+        assert_eq!(steps, 1);
+        assert!(running);
+        assert!(!runner.debug_is_paused());
+    }
+
+    #[test]
+    #[cfg(feature = "debug")]
+    fn debug_launch_invalidates_cached_references() {
+        use crate::debug::{handle_debug_request, DebugError, DebugRequest};
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let request = DebugRequest::InSession {
+            session: runner.debug.session(),
+            generation: runner.debug.generation(),
+            request: Box::new(DebugRequest::ListContexts),
+        };
+        runner.init_app(&app);
+        assert!(matches!(
+            handle_debug_request(&mut runner, request),
+            Err(DebugError::StaleReference { .. })
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "debug")]
+    fn debug_companion_inspection_uses_its_own_cpu() {
+        use crate::debug::{
+            handle_debug_request, ContextId, ContextSelector, DebugReply, DebugRequest,
+        };
+        let mut native = halted_ppc_app_with_sound(PpcSoundState::default())
+            .ppc
+            .take()
+            .unwrap();
+        native.cpu.gpr[3] = 0x12345678;
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_ppc_companion(native);
+        let reply = handle_debug_request(
+            &mut runner,
+            DebugRequest::ReadRegisters {
+                context: ContextSelector::explicit(ContextId(3)),
+                registers: None,
+            },
+        )
+        .unwrap();
+        let DebugReply::Registers { context, registers } = reply else {
+            panic!("registers");
+        };
+        assert_eq!(context, ContextId(3));
+        assert_eq!(
+            registers
+                .iter()
+                .find(|r| r.descriptor.name == "r3")
+                .unwrap()
+                .value
+                .as_u64(),
+            Some(0x12345678)
+        );
+        assert!(runner.debug_ppc_cpu().is_none());
+        handle_debug_request(&mut runner, DebugRequest::Pause).unwrap();
+        assert_eq!(runner.run_pending_sound_work(100), (0, true));
+        assert_eq!(runner.debug_ppc_companion_cpu().unwrap().gpr[3], 0x12345678);
     }
 
     #[test]
@@ -16982,6 +17228,137 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "debug")]
+    fn debugger_controls_a_parked_native_to_68k_callback_and_preserves_its_return() {
+        use crate::debug::{
+            handle_debug_request, BreakpointSpec, ContextSelector, DebugExecutionState,
+            DebugReply, DebugRequest, M68K_CONTEXT,
+        };
+
+        const M68K_ENTRY: u32 = 0x0301_4000;
+        const STACK_BASE: u32 = 0x0303_4000;
+        const INITIAL_SP: u32 = STACK_BASE + 0x80;
+        const RETURN_PC: u32 = 0x0304_4000;
+
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let ppc_app = runner.native.application_mut().expect("PPC app");
+        ppc_app.memory.add_region(
+            M68K_ENTRY,
+            vec![
+                0x4e, 0x71, // NOP
+                0x4e, 0x71, // NOP
+                0x4e, 0x75, // RTS
+            ],
+        );
+        ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        assert!(ppc_app.toolbox_startup.execution.calls().begin_powerpc_to_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: M68K_ENTRY,
+                rtoc: 0,
+            },
+            M68K_ENTRY,
+            INITIAL_SP,
+            RETURN_PC,
+            INITIAL_SP + 4,
+            crate::guest_call::M68kRegisterState::default(),
+            Some(crate::guest_call::M68kResultSource::Data(0)),
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+
+        handle_debug_request(&mut runner, DebugRequest::Pause).unwrap();
+        handle_debug_request(
+            &mut runner,
+            DebugRequest::Step {
+                context: ContextSelector::Active,
+            },
+        )
+        .unwrap();
+        let (stepped, running) = runner.run_steps(64, None);
+        assert_eq!(stepped, 1);
+        assert!(running);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), M68K_ENTRY + 2);
+        assert!(runner.debug.is_paused());
+        assert!(!runner.dispatcher.guest_calls.is_empty());
+
+        let DebugReply::Breakpoint(callback_breakpoint) = handle_debug_request(
+            &mut runner,
+            DebugRequest::SetBreakpoint {
+                spec: BreakpointSpec::program_counter(u64::from(M68K_ENTRY + 2)),
+            },
+        )
+        .unwrap()
+        else {
+            panic!("expected callback breakpoint");
+        };
+        handle_debug_request(&mut runner, DebugRequest::Resume).unwrap();
+        let (break_steps, _) = runner.run_steps(64, None);
+        assert_eq!(break_steps, 0);
+        assert!(matches!(
+            runner.debug.execution_state(),
+            DebugExecutionState::Paused { .. }
+        ));
+        handle_debug_request(
+            &mut runner,
+            DebugRequest::RemoveBreakpoint {
+                id: callback_breakpoint.id,
+            },
+        )
+        .unwrap();
+
+        let mut return_spec = BreakpointSpec::program_counter(u64::from(RETURN_PC));
+        return_spec.context = Some(M68K_CONTEXT);
+        let DebugReply::Breakpoint(return_breakpoint) = handle_debug_request(
+            &mut runner,
+            DebugRequest::SetBreakpoint { spec: return_spec },
+        )
+        .unwrap()
+        else {
+            panic!("expected return-sentinel breakpoint");
+        };
+        handle_debug_request(&mut runner, DebugRequest::Resume).unwrap();
+        let (return_steps, _) = runner.run_steps(64, None);
+        assert_eq!(return_steps, 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), RETURN_PC);
+        assert!(runner.debug.is_paused());
+        assert!(
+            !runner.dispatcher.guest_calls.is_empty(),
+            "the user breakpoint must win before the internal return retires"
+        );
+
+        handle_debug_request(
+            &mut runner,
+            DebugRequest::RemoveBreakpoint {
+                id: return_breakpoint.id,
+            },
+        )
+        .unwrap();
+        handle_debug_request(&mut runner, DebugRequest::Resume).unwrap();
+        let (_, running) = runner.run_steps(64, None);
+        assert!(running);
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        let DebugReply::Notifications(notifications) = handle_debug_request(
+            &mut runner,
+            DebugRequest::Notifications { after: 0 },
+        )
+        .unwrap()
+        else {
+            panic!("expected debugger notifications");
+        };
+        assert!(notifications.iter().any(|notification| matches!(
+            notification.payload,
+            crate::debug::NotificationPayload::ContextChanged {
+                active: Some(crate::debug::PPC_CONTEXT)
+            }
+        )));
+    }
+
+    #[test]
     fn parked_powerpc_to_68k_call_obeys_guest_vector_10() {
         const M68K_ENTRY: u32 = 0x0301_1000;
         const HANDLER: u32 = 0x0301_1100;
@@ -17111,6 +17488,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "debug")]
     fn parked_native_call_can_enter_powerpc_through_a_68k_routine_descriptor() {
         use crate::guest_procedure::{
             ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
@@ -17211,9 +17589,24 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
 
-        let (m68k_steps, m68k_running) = runner.run_steps(2, None);
-        assert!(m68k_steps > 0);
+        crate::debug::handle_debug_request(&mut runner, crate::debug::DebugRequest::Pause).unwrap();
+        crate::debug::handle_debug_request(
+            &mut runner,
+            crate::debug::DebugRequest::Step {
+                context: crate::debug::ContextSelector::Active,
+            },
+        )
+        .unwrap();
+        let native_pc_before_step = runner.native.application().unwrap().cpu.pc;
+        let (m68k_steps, m68k_running) = runner.run_steps(64, None);
+        assert_eq!(m68k_steps, 1);
         assert!(m68k_running);
+        assert!(runner.debug.is_paused());
+        assert_eq!(
+            runner.native.application().unwrap().cpu.pc,
+            native_pc_before_step,
+            "the step may establish a native continuation but must not execute it"
+        );
         assert!(
             runner.dispatcher.guest_calls.has_powerpc_from_m68k(),
             "steps={m68k_steps} running={m68k_running} halted={} frames={} active={:?} pending_ppc={:?} pc=${:08x} sp=${:08x}",
@@ -17228,6 +17621,7 @@ mod tests {
             runner.m68k.cpu.read_reg(Register::A7),
         );
 
+        crate::debug::handle_debug_request(&mut runner, crate::debug::DebugRequest::Resume).unwrap();
         let (powerpc_steps, running) = runner.run_steps(64, None);
         assert!(powerpc_steps > 0);
         assert!(running);
@@ -20831,6 +21225,45 @@ mod tests {
             runner.dispatcher().sound_manager.debug_samples_mixed,
             SAMPLES.len() as u64
         );
+    }
+
+    #[test]
+    #[cfg(feature = "debug")]
+    fn debugger_pause_defers_gui_ppc_sound_completion_until_resume() {
+        use crate::debug::{handle_debug_request, DebugRequest};
+
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        let mut sound = PpcSoundState::default();
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, CALLBACK);
+        let mut app = halted_ppc_app_with_sound(sound);
+        app.ppc.as_mut().unwrap().memory.add_region(
+            CALLBACK,
+            [0x3860_002au32, 0x4e80_0020] // li r3,42; blr
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        handle_debug_request(&mut runner, DebugRequest::Pause).unwrap();
+        let tick = runner.guest_tick();
+        let instructions = runner.total_instructions();
+        for _ in 0..2 {
+            assert_eq!(runner.run_gui_pending_sound_work(100), (0, true));
+        }
+        let native = runner.native.application().unwrap();
+        assert_eq!(native.sound.manager.pending_sound_callbacks.len(), 1);
+        assert!(native.sound.completion_invocations.is_empty());
+        assert_eq!(runner.guest_tick(), tick);
+        assert_eq!(runner.total_instructions(), instructions);
+
+        handle_debug_request(&mut runner, DebugRequest::Resume).unwrap();
+        runner.run_gui_pending_sound_work(100);
+        let native = runner.native.application().unwrap();
+        assert!(native.sound.manager.pending_sound_callbacks.is_empty());
+        assert_eq!(native.sound.completion_invocations.len(), 1);
+        assert_eq!(native.sound.completion_invocations[0].end_r3, 42);
+        assert!(runner.total_instructions() > instructions);
     }
 
     #[test]

@@ -70,6 +70,11 @@ jit = ["m68k/jit"]
 # Exposes `scripted_traces`, deterministic trap-replay test scaffolding.
 # Off by default so it stays out of the published public API and docs.
 test-support = []
+# Opt-in debugger and inspection API. Off by default so ordinary builds do
+# not compile the control/inspection foundation or carry its runtime state.
+debug = []
+# Debugger socket transport (Unix-domain sockets). Implies `debug`.
+debug-server = ["debug"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.5.2", optional = true }

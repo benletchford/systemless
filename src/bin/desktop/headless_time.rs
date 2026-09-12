@@ -51,6 +51,9 @@ fn service_sound(runner: &mut FixtureRunner, total: &mut usize, reserve_used: &m
 /// retained-tracking slice is a yield boundary, not an invitation to re-fire
 /// the same wait. Other short slices can be ordinary engine/task handoffs.
 pub(super) fn frame(runner: &mut FixtureRunner, audio_samples: usize) -> FrameWork {
+    if runner.debug_is_paused() {
+        return FrameWork::default();
+    }
     runner.advance_menu_presentation_clock(super::FRAME_DURATION);
     let target = runner.guest_tick().saturating_add(1);
     let batch =
@@ -102,6 +105,7 @@ pub(super) fn frame(runner: &mut FixtureRunner, audio_samples: usize) -> FrameWo
     service_sound(runner, &mut work.instructions, &mut reserve_used);
     runner.prepare_text_presentation();
     runner.composite_frame();
+    runner.finish_gui_frame();
     work
 }
 
@@ -124,6 +128,7 @@ pub(super) fn run(
     screen_depth: Option<u16>,
     script: &[ScriptedInput],
     theme: UiThemeId,
+    debug_socket: Option<std::path::PathBuf>,
 ) {
     if let Err(error) = validate_script(script, ticks) {
         eprintln!("[HEADLESS-TIME] {error}");
@@ -143,6 +148,7 @@ pub(super) fn run(
     game::init_game(&mut runner, &app);
     runner.prepare_text_presentation();
     let instructions_per_tick = configure_realtime_execution_rate(&mut runner);
+    let mut debug_server = super::bind_headless_debug_server(debug_socket, &mut runner);
     let start_tick = runner.guest_tick();
     eprintln!(
         "[HEADLESS-TIME] start frontend_ticks={ticks} guest_tick={start_tick} mac_seconds={start_time} input_clock=frontend_ticks instructions_per_tick={instructions_per_tick}"
@@ -159,6 +165,9 @@ pub(super) fn run(
     let mut audio_hash = 0xcbf2_9ce4_8422_2325u64;
     let trace = std::env::var_os("SYSTEMLESS_HEADLESS_TIME_TRACE").is_some();
     for elapsed in 0..ticks {
+        if let Some(server) = debug_server.as_mut() {
+            super::wait_for_debug_resume(server, &mut runner);
+        }
         while let Some(event) = script.get(next_event).filter(|e| e.at <= elapsed as usize) {
             deliver(&mut runner, &mut mouse, event.action);
             eprintln!("[HEADLESS-TIME] input tick={} {:?}", event.at, event.action);
@@ -205,6 +214,11 @@ pub(super) fn run(
                 elapsed + 1
             );
             save_screenshot(&runner, 9999);
+            if let Some(server) = debug_server.as_mut() {
+                saves.sync_save_files_now(&mut runner);
+                eprintln!("[HEADLESS-TIME] Debugger remains available after terminal stop (press Ctrl-C to exit)");
+                super::wait_for_debug_resume(server, &mut runner);
+            }
             std::process::exit(1);
         }
     }
@@ -304,6 +318,61 @@ mod tests {
         assert!(!work.budget_exhausted);
         assert!(!runner.is_halted());
         assert_eq!(runner.guest_tick(), start + 1);
+    }
+
+    #[test]
+    #[cfg(feature = "debug")]
+    fn debugger_controls_virtual_frames_and_completes_boundary_captures() {
+        use systemless::debug::{
+            handle_debug_request, CaptureMode, CaptureRequest, ContextSelector, DebugReply,
+            DebugRequest, OperationOutcome, OperationState,
+        };
+        let mut runner = modal_runner();
+        let start_tick = runner.guest_tick();
+        handle_debug_request(&mut runner, DebugRequest::Pause).unwrap();
+        assert_eq!(frame(&mut runner, 366).instructions, 0);
+        assert_eq!(runner.guest_tick(), start_tick);
+
+        handle_debug_request(
+            &mut runner,
+            DebugRequest::Step {
+                context: ContextSelector::Active,
+            },
+        )
+        .unwrap();
+        assert_eq!(frame(&mut runner, 366).instructions, 1);
+        assert!(runner.debug_is_paused());
+
+        let DebugReply::Accepted {
+            operation_id: Some(operation),
+            ..
+        } = handle_debug_request(
+            &mut runner,
+            DebugRequest::RequestCapture {
+                request: CaptureRequest {
+                    mode: CaptureMode::PauseAtBoundary,
+                    include_artifacts: false,
+                    ..CaptureRequest::default()
+                },
+            },
+        )
+        .unwrap()
+        else {
+            panic!("expected capture operation")
+        };
+        assert!(!runner.debug_is_paused());
+        frame(&mut runner, 366);
+        assert!(runner.debug_is_paused());
+        assert!(matches!(
+            handle_debug_request(&mut runner, DebugRequest::GetOperation { id: operation })
+                .unwrap(),
+            DebugReply::Operation(systemless::debug::OperationStatus {
+                state: OperationState::Completed {
+                    result: OperationOutcome::Captured { .. }
+                },
+                ..
+            })
+        ));
     }
 
     #[test]
