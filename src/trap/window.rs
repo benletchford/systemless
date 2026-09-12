@@ -2857,6 +2857,16 @@ impl super::TrapDispatcher {
         bus.write_byte(the_window + Self::WINDOW_HILITED_OFFSET, 0xFF);
         self.queue_window_activation_event(bus, the_window, true);
         self.activate_palette_for_window(bus, the_window);
+        // SelectWindow/MoveWindow front a window that may have been fully
+        // occluded. The Window Manager's PaintOne erases the newly exposed
+        // content before the application draws, so the dialog must not keep
+        // the pixels of the window that was in front of it. BringToFront
+        // already does this; activation is the equivalent path for
+        // SelectWindow and MoveWindow(front=TRUE).
+        // Inside Macintosh Volume I, I-284, I-286, I-296.
+        if self.dialog_items.contains_key(&the_window) {
+            self.redraw_dialog_window_contents(bus, the_window);
+        }
         if let Some(content) = self.window_content_rect(bus, the_window) {
             self.invalidate_window_rect(bus, the_window, content);
         }
