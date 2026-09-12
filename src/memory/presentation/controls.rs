@@ -1,7 +1,6 @@
 //! Retained corner coverage for standard controls. The guest CDEF still owns
 //! the logical pixels and hit rectangle (Inside Macintosh I, I-318 and I-405).
-use super::{Arc, DetailCell, IndexedColor, Ink, PresentationSlot};
-use std::collections::HashMap;
+use super::{Arc, DetailCell, IndexedColor, Ink, PixelIndexMap, PresentationSlot};
 
 pub(crate) struct RoundedControlDetail(Vec<(u32, DetailCell)>);
 
@@ -66,7 +65,7 @@ impl PresentationSlot {
                     let mut cell = DetailCell {
                         value,
                         indices: vec![value; (p.scale * p.scale) as usize],
-                        ink: HashMap::new(),
+                        ink: PixelIndexMap::default(),
                     };
                     for sy in 0..p.scale {
                         for sx in 0..p.scale {

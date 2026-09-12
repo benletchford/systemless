@@ -7,7 +7,38 @@ mod controls;
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
+
+/// These private tables contain numeric pixel/sample offsets, not names or
+/// arbitrary byte strings. Mix the entire machine-word index into both the
+/// bucket and tag bits without SipHash on every retained sample lookup.
+/// Key equality, allocation, and collision resolution still belong to HashMap.
+#[derive(Default)]
+struct PixelIndexHasher(u64);
+
+impl Hasher for PixelIndexHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn write_usize(&mut self, index: usize) {
+        let mixed = (self.0 ^ index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+}
+
+type PixelIndexMap<T> = HashMap<usize, T, BuildHasherDefault<PixelIndexHasher>>;
+type PixelIndexSet = HashSet<usize, BuildHasherDefault<PixelIndexHasher>>;
 
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
@@ -216,14 +247,14 @@ impl Ink {
 pub struct SavedPixels<T = u8> {
     values: Vec<T>,
     identity: u64,
-    detail: HashMap<usize, Arc<DetailCell>>,
+    detail: PixelIndexMap<Arc<DetailCell>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetailCell {
     value: u8,
     indices: Vec<u8>,
-    ink: HashMap<usize, Ink>,
+    ink: PixelIndexMap<Ink>,
 }
 
 fn next_snapshot_identity() -> u64 {
@@ -242,7 +273,7 @@ impl<T> From<Vec<T>> for SavedPixels<T> {
         Self {
             values,
             identity: next_snapshot_identity(),
-            detail: HashMap::new(),
+            detail: PixelIndexMap::default(),
         }
     }
 }
@@ -338,8 +369,8 @@ pub(crate) struct Presentation {
     guest_values: Vec<u16>,
     text_cells: Vec<bool>,
     detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
-    ink: HashMap<usize, Ink>,
-    run_ink: HashSet<usize>,
+    ink: PixelIndexMap<Ink>,
+    run_ink: PixelIndexSet,
     offscreen_run_ink: HashSet<(u32, usize)>,
     in_text_run: bool,
     pub erasing_text: bool,
@@ -628,7 +659,7 @@ impl Presentation {
         let mut cell = DetailCell {
             value: self.guest_values[(y * self.width + x) as usize] as u8,
             indices: Vec::new(),
-            ink: HashMap::new(),
+            ink: PixelIndexMap::default(),
         };
         for sy in 0..self.scale {
             for sx in 0..self.scale {
@@ -836,7 +867,7 @@ impl Presentation {
                 Arc::new(DetailCell {
                     value: background,
                     indices: vec![background; (self.scale * self.scale) as usize],
-                    ink: HashMap::new(),
+                    ink: PixelIndexMap::default(),
                 })
             });
             let cell = Arc::make_mut(cell);
@@ -1049,7 +1080,7 @@ impl MacMemoryBus {
         let mut cell = DetailCell {
             value,
             indices: vec![value; (scale * scale) as usize],
-            ink: HashMap::new(),
+            ink: PixelIndexMap::default(),
         };
         let color = |cell: Option<&DetailCell>, i: usize, fallback| {
             cell.map_or(IndexedColor::Solid(fallback), |cell| {
@@ -1540,8 +1571,8 @@ impl MacMemoryBus {
             guest_values: vec![256; width as usize * height as usize],
             text_cells: vec![false; width as usize * height as usize],
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
-            ink: HashMap::new(),
-            run_ink: HashSet::new(),
+            ink: PixelIndexMap::default(),
+            run_ink: PixelIndexSet::default(),
             offscreen_run_ink: HashSet::new(),
             in_text_run: false,
             erasing_text: false,
@@ -1766,6 +1797,57 @@ impl PresentationSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pixel_index_hash_preserves_full_word_keys_and_regular_offsets() {
+        use std::hash::BuildHasher;
+
+        let hasher = BuildHasherDefault::<PixelIndexHasher>::default();
+        let high_bit = 1usize << (usize::BITS - 1);
+        for index in [0usize, 1, 3, 800 * 3, 800 * 600 * 16 * 3] {
+            assert_ne!(hasher.hash_one(index), hasher.hash_one(index | high_bit));
+        }
+        let hashes: HashSet<_> = (0..4096usize)
+            .map(|index| hasher.hash_one(index * 3))
+            .collect();
+        assert_eq!(hashes.len(), 4096);
+    }
+
+    #[test]
+    fn pixel_index_tables_match_standard_tables_through_growth_and_removal() {
+        let mut actual = PixelIndexMap::default();
+        let mut expected = HashMap::new();
+        let mut actual_set = PixelIndexSet::default();
+        let mut expected_set = HashSet::new();
+        for index in 0..4096usize {
+            let key = (index / 64 * 9600 + index % 64 * 3) ^ ((index % 2) << (usize::BITS - 1));
+            assert_eq!(actual.insert(key, index), expected.insert(key, index));
+            assert_eq!(actual_set.insert(key), expected_set.insert(key));
+        }
+        for (&key, &value) in &expected {
+            assert_eq!(actual.get(&key), Some(&value));
+            assert!(actual_set.contains(&key));
+        }
+        let keys: Vec<_> = expected.keys().copied().collect();
+        for key in keys {
+            assert_eq!(actual.insert(key, 23), expected.insert(key, 23));
+            assert_eq!(actual_set.insert(key), expected_set.insert(key));
+            *actual.entry(key).or_insert(0) += 1;
+            *expected.entry(key).or_insert(0) += 1;
+            assert_eq!(actual.remove(&key), expected.remove(&key));
+            assert_eq!(actual_set.remove(&key), expected_set.remove(&key));
+            assert_eq!(actual.remove(&key), expected.remove(&key));
+            assert_eq!(actual_set.remove(&key), expected_set.remove(&key));
+        }
+        assert!(actual.is_empty());
+        assert!(actual_set.is_empty());
+        actual.insert(usize::MAX, 17);
+        actual.clear();
+        assert!(actual.is_empty());
+        actual_set.insert(usize::MAX);
+        actual_set.clear();
+        assert!(actual_set.is_empty());
+    }
 
     pub(super) fn bus() -> MacMemoryBus {
         let mut bus = MacMemoryBus::new(1024 * 1024);
