@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.9](https://github.com/benletchford/systemless/compare/v0.39.8...v0.39.9) (2026-09-12)
+
+
+### Bug Fixes
+
+* bound BlockMove memory ranges ([44a84a5](https://github.com/benletchford/systemless/commit/44a84a5c4c54f8723acb84a45a8fdbf60f7ef76c)), closes [#613](https://github.com/benletchford/systemless/issues/613)
+* correct legacy sound driver free-form playback rate ([#1676](https://github.com/benletchford/systemless/issues/1676)) ([c5b7f0b](https://github.com/benletchford/systemless/commit/c5b7f0b380ea5794bf28ab3bec05ed7825decf80))
+
 ## [0.39.8](https://github.com/benletchford/systemless/compare/v0.39.7...v0.39.8) (2026-09-11)
 
 
