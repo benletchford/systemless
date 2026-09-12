@@ -14,6 +14,29 @@ the project.
 
 Existing GPL rights remain unaffected.
 
+### Accept once
+
+Before a contribution is merged, each contributor must explicitly accept
+[CLA version 1.0](./CLA.md). That acceptance covers past, present, and future
+contributions as described in the agreement; you do not need to sign every PR.
+
+When CLA Assistant is enabled, follow its link on your first pull request and
+accept using your own GitHub account. Later PRs are checked automatically for
+the same agreement version. A PR author cannot accept on behalf of other
+contributors unless authorised to do so.
+
+If you have already agreed by email or in a previous GitHub conversation, tell
+the maintainer where that agreement was recorded. Do not post private emails
+or personal information publicly. The maintainer can recognise an existing
+agreement after checking its scope and your identity.
+
+If no CLA Assistant prompt appears, ask the maintainer to confirm your
+acceptance before merge. Opening a PR or leaving this template in place does
+not itself constitute acceptance.
+
+Maintainers: see [CLA administration](./.github/CLA_ADMIN.md) for activation,
+existing agreements, and verification.
+
 If you are not comfortable with those terms, that's completely fine. Please
 open an issue instead and we can discuss the change without accepting
 contributed code.
