@@ -34,7 +34,7 @@ const ROUTINE_ENDS: [u16; 3] = [0x4E75, 0x4ED0, 0x4E74];
 const MIN_NAME_LEN: usize = 3;
 const MAX_NAME_LEN: usize = 31;
 
-/// Default window for [`resolve_containing`]. Large enough to clear a big
+/// Default window for `resolve_containing`. Large enough to clear a big
 /// routine, small enough that a miss costs little.
 pub const DEFAULT_RESOLVE_WINDOW: u64 = 64 * 1024;
 
