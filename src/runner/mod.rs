@@ -28944,7 +28944,7 @@ mod tests {
         assert_eq!(steps, 1);
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 2);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 6);
-        assert_eq!(runner.bus.read_word(sp + 6), 0xFFFF);
+        assert_eq!(runner.bus.read_word(sp + 6), 0x0100);
         assert_eq!(runner.bus.read_word(event), 3);
         assert_eq!(
             runner.bus.read_long(event + 2),

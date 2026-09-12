@@ -5715,7 +5715,9 @@ impl super::TrapDispatcher {
                             ev.modifiers,
                         );
                     }
-                    bus.write_word(sp + 4, 0xFFFF);
+                    // Pascal BOOLEAN result: truth byte in the high half of
+                    // the word-aligned slot (Executor PascalToCCall).
+                    bus.write_word(sp + 4, 0x0100);
                 } else {
                     bus.write_word(sp + 4, 0);
                 }
@@ -11674,7 +11676,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 2);
-        assert_eq!(bus.read_word(TEST_SP - 2), 0xFFFF, "result should be TRUE");
+        assert_eq!(bus.read_word(TEST_SP - 2), 0x0100, "result should be TRUE");
         assert_eq!(
             bus.read_word(event_ptr),
             6,
@@ -11767,7 +11769,7 @@ mod tests {
 
         let result = dispatch(&mut disp, 0x111, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_word(sp + 4), 0xFFFF);
+        assert_eq!(bus.read_word(sp + 4), 0x0100);
         assert_eq!(bus.read_word(event_ptr), 6);
         assert_eq!(
             bus.read_long(event_ptr + 2),
@@ -11896,7 +11898,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 2);
-        assert_eq!(bus.read_word(TEST_SP - 2), 0xFFFF, "result should be TRUE");
+        assert_eq!(bus.read_word(TEST_SP - 2), 0x0100, "result should be TRUE");
         assert!(
             disp.event_queue.is_empty(),
             "CheckUpdate(nil) should still consume the pending update"
@@ -11951,7 +11953,7 @@ mod tests {
         let result_true = dispatch(&mut disp, 0x111, &mut cpu, &mut bus);
         assert!(result_true.is_some(), "CheckUpdate should be handled");
         assert!(result_true.unwrap().is_ok(), "CheckUpdate should return");
-        assert_eq!(bus.read_word(TEST_SP - 2), 0xFFFF, "result should be TRUE");
+        assert_eq!(bus.read_word(TEST_SP - 2), 0x0100, "result should be TRUE");
         assert_eq!(
             bus.read_word(event_ptr),
             6,
@@ -14049,7 +14051,7 @@ mod tests {
         let check = dispatch(&mut disp, 0x111, &mut cpu, &mut bus);
         assert!(check.is_some());
         assert!(check.unwrap().is_ok());
-        assert_eq!(bus.read_word(TEST_SP - 2), 0xFFFF, "result should be TRUE");
+        assert_eq!(bus.read_word(TEST_SP - 2), 0x0100, "result should be TRUE");
         assert_eq!(
             bus.read_word(event_ptr),
             6,
@@ -15205,7 +15207,7 @@ mod tests {
         let check_result = dispatch(&mut disp, 0x111, &mut cpu, &mut bus);
         assert!(check_result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 2);
-        assert_eq!(bus.read_word(TEST_SP - 2), 0xFFFF, "result should be TRUE");
+        assert_eq!(bus.read_word(TEST_SP - 2), 0x0100, "result should be TRUE");
         assert_eq!(
             bus.read_word(event_ptr),
             6,

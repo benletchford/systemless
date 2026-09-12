@@ -28009,7 +28009,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(bus.read_word(event_ptr), 6, "GetNextEvent should deliver updateEvt");
-            assert_eq!(bus.read_word(event_sp + 6), 0xFFFF);
+            assert_eq!(bus.read_word(event_sp + 6), 0x0100);
 
             let window = bus.read_long(event_ptr + 2);
             assert!(
