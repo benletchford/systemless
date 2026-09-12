@@ -1142,3 +1142,25 @@
             })
         ));
     }
+
+    #[test]
+    fn resolve_symbol_window_ending_at_a_return_instruction_does_not_panic() {
+        use super::super::symbols::SymbolResolution;
+        let mut runner = runner();
+        // A window of exactly one RTS ends where `resolve_containing` probes for
+        // a following symbol. The request must answer, not abort the runner.
+        runner.bus_mut().write_word(0x20000, 0x4E75); // RTS
+        let reply = handle_debug_request(
+            &mut runner,
+            DebugRequest::ResolveSymbol {
+                context: ContextSelector::Active,
+                address: DebugAddress::new(M68K_SPACE, 0x20000),
+                window: Some(2),
+            },
+        )
+        .unwrap();
+        match reply {
+            DebugReply::Symbol(SymbolResolution::Unsymbolised { next: None }) => {}
+            other => panic!("expected an unsymbolised result, got {other:?}"),
+        }
+    }

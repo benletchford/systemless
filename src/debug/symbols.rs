@@ -63,7 +63,10 @@ fn is_name_byte(byte: u8, first: bool) -> bool {
 /// Decode a symbol at `offset` within `data`, if one is present there.
 /// Requires a terminator instruction in the two bytes before it.
 fn symbol_at(data: &[u8], offset: usize) -> Option<String> {
-    if offset < 2 {
+    // The candidate needs the two-byte terminator before it and the length
+    // byte at `offset`; either read can fall outside the buffer, and callers
+    // legitimately probe one past the end of a truncated window.
+    if offset < 2 || offset >= data.len() {
         return None;
     }
     let previous = u16::from_be_bytes([data[offset - 2], data[offset - 1]]);
@@ -390,5 +393,43 @@ mod tests {
         let mut data = encoded(0x4E75, "GetAnEvent");
         data.truncate(data.len() - 4);
         assert_eq!(symbol_at(&data, 2), None);
+    }
+
+    #[test]
+    fn probing_one_past_the_end_of_the_buffer_is_not_a_symbol() {
+        // `resolve_containing` probes `offset + 2` after a routine end, which is
+        // exactly `data.len()` when that end sits in the final two bytes.
+        let data = 0x4E75u16.to_be_bytes();
+        assert_eq!(symbol_at(&data, data.len()), None);
+        assert_eq!(symbol_at(&data, data.len() + 1), None);
+    }
+
+    #[test]
+    fn resolve_containing_handles_a_window_ending_at_a_return_instruction() {
+        let mut runner = guest_runner();
+        runner
+            .bus_mut()
+            .write_bytes(0x20000, &0x4E75u16.to_be_bytes());
+        // The window is exactly the RTS, so the scan probes for a symbol one
+        // past the end. It must report the unnamed routine instead of panicking.
+        match resolve_containing(&runner, 0x20000, 2).unwrap() {
+            SymbolResolution::Unsymbolised { next: None } => {}
+            other => panic!("expected Unsymbolised without a next symbol, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_containing_handles_a_read_truncated_at_the_end_of_mapped_ram() {
+        let mut runner = guest_runner();
+        let ram_size = u64::from(runner.bus().ram_size());
+        // RTS as the last mapped instruction, then ask for a window that runs
+        // past the end of RAM so the read itself is truncated.
+        runner
+            .bus_mut()
+            .write_bytes(ram_size as u32 - 2, &0x4E75u16.to_be_bytes());
+        match resolve_containing(&runner, ram_size - 4, 8).unwrap() {
+            SymbolResolution::Unsymbolised { next: None } => {}
+            other => panic!("expected Unsymbolised without a next symbol, got {other:?}"),
+        }
     }
 }
