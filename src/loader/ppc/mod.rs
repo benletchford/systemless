@@ -16,7 +16,7 @@ use super::pef::{
     PefRelocContext, SECTION_KIND_CODE, SECTION_KIND_CONSTANT,
 };
 use super::ApplicationSizeResource;
-use crate::callback_manager::{CallbackTaskArchitecture, ProcessCallbackScheduling};
+use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cfm::fragment::{
     first_base_for_kind, first_data_base, section_bases, CfmSection as MappedSection,
 };
@@ -4337,10 +4337,11 @@ impl PpcLoadedApp {
         let _ = self
             .memory
             .write_u32_be(crate::memory::globals::addr::TICKS, tick_count);
-        self.callback_scheduling.current_subtick = self
-            .callback_scheduling
-            .current_subtick
-            .max(u64::from(tick_count) * 1_000_000);
+        self.callback_scheduling.with_mut(|scheduling| {
+            scheduling.current_subtick = scheduling
+                .current_subtick
+                .max(u64::from(tick_count) * 1_000_000);
+        });
     }
 
     pub(crate) fn current_tick(&mut self) -> u32 {
@@ -7190,7 +7191,9 @@ impl PpcLoadedApp {
         for tick_offset in 0..elapsed_ticks {
             let current_tick = start_tick.wrapping_add(tick_offset).wrapping_add(1);
             let current_tick = self.publish_tick(current_tick);
-            self.callback_scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
+            self.callback_scheduling.with_mut(|scheduling| {
+                scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
+            });
             loop {
                 if probes.len() >= max_callbacks {
                     return probes;
@@ -7353,7 +7356,9 @@ impl PpcLoadedApp {
             let current_tick = self.publish_tick(
                 start_tick.wrapping_add(tick_offset).wrapping_add(1),
             );
-            self.callback_scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
+            self.callback_scheduling.with_mut(|scheduling| {
+                scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
+            });
             let tasks = (*self.vbl_tasks).clone();
             for task in tasks {
                 if task.architecture != CallbackTaskArchitecture::PowerPc {
@@ -7729,7 +7734,7 @@ impl PpcLoadedApp {
         let mut sound = std::mem::take(&mut self.sound);
         let mut timer_tasks = std::mem::take(&mut self.timer_tasks);
         let mut vbl_tasks = std::mem::take(&mut self.vbl_tasks);
-        let mut callback_scheduling = std::mem::take(&mut self.callback_scheduling);
+        let callback_scheduling = self.callback_scheduling.shared_handle();
         // Keep File and Resource Manager records in their process-owned
         // managers for the whole native execution slice. The classic
         // adapter can enter through Mixed Mode while an import is running,
@@ -8416,7 +8421,7 @@ impl PpcLoadedApp {
                         &mut sound,
                         &mut timer_tasks,
                         &mut vbl_tasks,
-                        &mut callback_scheduling,
+                        &callback_scheduling,
                             &mut **files,
                             &mut **writable_refnums,
                             vfs_files,
@@ -8795,7 +8800,6 @@ impl PpcLoadedApp {
         self.sound = sound;
         self.timer_tasks = timer_tasks;
         self.vbl_tasks = vbl_tasks;
-        self.callback_scheduling = callback_scheduling;
         self.quickdraw_fore_color = quickdraw_fore_color;
         self.quickdraw_fore_indices = quickdraw_fore_indices;
         self.quickdraw_back_color = quickdraw_back_color;
@@ -15569,7 +15573,7 @@ fn dispatch_supported_import(
     sound: &mut PpcSoundState,
     timer_tasks: &mut Vec<PpcTimerTaskRecord>,
     vbl_tasks: &mut Vec<PpcVblTaskRecord>,
-    callback_scheduling: &mut ProcessCallbackScheduling,
+    callback_scheduling: &SharedProcessCallbackScheduling,
     files: &mut Vec<PpcFileRecord>,
     writable_refnums: &mut HashSet<u16>,
     vfs_files: &mut ProcessVfsFileRecords,
@@ -27097,9 +27101,11 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::RmvTime => {
-            callback_scheduling.current_subtick = callback_scheduling
-                .current_subtick
-                .max(u64::from(*tick_count) * 1_000_000);
+            callback_scheduling.with_mut(|scheduling| {
+                scheduling.current_subtick = scheduling
+                    .current_subtick
+                    .max(u64::from(*tick_count) * 1_000_000);
+            });
             ppc_remove_time_task(memory, timer_tasks, callback_scheduling, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -31395,7 +31401,7 @@ fn ppc_install_vbl_task(
 fn ppc_install_time_task(
     memory: &mut PpcSectionMem,
     timer_tasks: &mut Vec<PpcTimerTaskRecord>,
-    scheduling: &mut ProcessCallbackScheduling,
+    scheduling: &SharedProcessCallbackScheduling,
     task_ptr: u32,
     extended: bool,
 ) {
@@ -31408,7 +31414,9 @@ fn ppc_install_time_task(
     let _ = memory.write_u32_be(task_ptr, 0);
     let _ = memory.write_u16_be(task_ptr + 4, q_type);
     if !extended || memory.read_u32_be(task_ptr + 14).unwrap_or(0) == 0 {
-        scheduling.extended_wakeups.remove(&task_ptr);
+        scheduling.with_mut(|scheduling| {
+            scheduling.extended_wakeups.remove(&task_ptr);
+        });
     }
     timer_tasks.retain(|task| task.task_ptr != task_ptr);
     timer_tasks.push(PpcTimerTaskRecord {
@@ -31433,7 +31441,7 @@ fn ppc_install_time_task(
 fn ppc_prime_time_task(
     memory: &mut PpcSectionMem,
     timer_tasks: &mut [PpcTimerTaskRecord],
-    scheduling: &mut ProcessCallbackScheduling,
+    scheduling: &SharedProcessCallbackScheduling,
     task_ptr: u32,
     count: i32,
     current_tick: u32,
@@ -31454,10 +31462,13 @@ fn ppc_prime_time_task(
     } else {
         (u64::from(count.unsigned_abs()) * 60).max(1)
     };
-    let current_subtick = scheduling
-        .current_subtick
-        .max(u64::from(current_tick) * SUBTICKS_PER_TICK);
-    scheduling.current_subtick = current_subtick;
+    let current_subtick = scheduling.with_mut(|scheduling| {
+        let current_subtick = scheduling
+            .current_subtick
+            .max(u64::from(current_tick) * SUBTICKS_PER_TICK);
+        scheduling.current_subtick = current_subtick;
+        current_subtick
+    });
     if let Some(task) = timer_tasks
         .iter_mut()
         .find(|task| task.task_ptr == task_ptr)
@@ -31473,9 +31484,11 @@ fn ppc_prime_time_task(
             let intended_wakeup = prior_wakeup
                 .unwrap_or(current_subtick)
                 .saturating_add(requested_delay_subticks);
-            scheduling
-                .extended_wakeups
-                .insert(task_ptr, intended_wakeup);
+            scheduling.with_mut(|scheduling| {
+                scheduling
+                    .extended_wakeups
+                    .insert(task_ptr, intended_wakeup);
+            });
             let opaque_wakeup = ((intended_wakeup / 60) as u32).max(1);
             let _ = memory.write_u32_be(task_ptr + 14, opaque_wakeup);
             intended_wakeup.max(current_subtick)
@@ -31505,7 +31518,7 @@ fn ppc_prime_time_task(
 fn ppc_remove_time_task(
     memory: &mut PpcSectionMem,
     timer_tasks: &mut Vec<PpcTimerTaskRecord>,
-    scheduling: &mut ProcessCallbackScheduling,
+    scheduling: &SharedProcessCallbackScheduling,
     task_ptr: u32,
 ) {
     if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
@@ -110163,8 +110176,10 @@ pub(crate) mod tests {
         assert_ne!(native.memory.read_u32_be(task + 14), Some(0));
 
         let detached = classic.callback_scheduling.clone();
-        classic.callback_scheduling.primary_vbl_slot = 7;
-        classic.callback_scheduling.current_subtick = 100_150_000;
+        classic.callback_scheduling.with_mut(|scheduling| {
+            scheduling.primary_vbl_slot = 7;
+            scheduling.current_subtick = 100_150_000;
+        });
         assert_eq!(native.callback_scheduling.primary_vbl_slot, 7);
 
         native.imports[0].dispatcher_target = PpcImportDispatcherTarget::RmvTime;
@@ -110264,7 +110279,7 @@ pub(crate) mod tests {
         ppc_install_time_task(
             &mut native.memory,
             &mut native.timer_tasks,
-            &mut native.callback_scheduling,
+            &native.callback_scheduling,
             timer,
             false,
         );
@@ -110279,7 +110294,7 @@ pub(crate) mod tests {
         ppc_remove_time_task(
             &mut native.memory,
             &mut native.timer_tasks,
-            &mut native.callback_scheduling,
+            &native.callback_scheduling,
             timer,
         );
         assert_eq!(

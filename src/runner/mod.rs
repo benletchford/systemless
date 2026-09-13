@@ -9842,7 +9842,9 @@ impl FixtureRunner {
         {
             let task_ptr = task.task_ptr;
             let tm_addr = task.callback;
-            self.dispatcher.callback_scheduling.current_subtick = current_subtick;
+            self.dispatcher
+                .callback_scheduling
+                .with_mut(|scheduling| scheduling.current_subtick = current_subtick);
             // Mark only the task being delivered as fired. Other tasks that
             // expire on the same tick must remain active for a later interrupt.
             task.active = false;
@@ -9935,7 +9937,9 @@ impl FixtureRunner {
             }
             self.m68k.cpu.write_reg(Register::PC, tramp);
         } else {
-            self.dispatcher.callback_scheduling.current_subtick = current_subtick;
+            self.dispatcher
+                .callback_scheduling
+                .with_mut(|scheduling| scheduling.current_subtick = current_subtick);
         }
     }
 

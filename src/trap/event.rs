@@ -969,7 +969,8 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, (-360i32) as u32);
                     return Some(Ok(()));
                 }
-                self.callback_scheduling.primary_vbl_slot = slot;
+                self.callback_scheduling
+                    .with_mut(|scheduling| scheduling.primary_vbl_slot = slot);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
@@ -2122,7 +2123,8 @@ mod tests {
         // primary slot unchanged.
         let (mut disp, mut cpu, mut bus) = setup();
         let stack_ptr = 0x00F0_7000;
-        disp.callback_scheduling.primary_vbl_slot = 7;
+        disp.callback_scheduling
+            .with_mut(|scheduling| scheduling.primary_vbl_slot = 7);
         cpu.write_reg(Register::D0, 16);
         cpu.write_reg(Register::A7, stack_ptr);
 
