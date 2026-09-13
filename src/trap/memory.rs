@@ -672,12 +672,14 @@ impl super::TrapDispatcher {
         let vbl_phase = bus.read_word(task_ptr + 12) as i16;
         bus.write_word(task_ptr + 10, vbl_count.wrapping_add(vbl_phase) as u16);
 
-        self.vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-        self.vbl_tasks.push(super::dispatch::VblTask {
-            task_ptr,
-            architecture: CallbackTaskArchitecture::M68k,
-            slot,
-            pending: false,
+        self.vbl_tasks.with_mut(|vbl_tasks| {
+            vbl_tasks.retain(|task| task.task_ptr != task_ptr);
+            vbl_tasks.push(super::dispatch::VblTask {
+                task_ptr,
+                architecture: CallbackTaskArchitecture::M68k,
+                slot,
+                pending: false,
+            });
         });
         self.sync_vbl_links(bus);
         0
@@ -697,7 +699,8 @@ impl super::TrapDispatcher {
         if !was_in_queue {
             return -1; // qErr
         }
-        self.vbl_tasks.retain(|task| task.task_ptr != task_ptr);
+        self.vbl_tasks
+            .with_mut(|vbl_tasks| vbl_tasks.retain(|task| task.task_ptr != task_ptr));
         bus.write_long(task_ptr, 0);
         self.sync_vbl_links(bus);
         0
@@ -1959,16 +1962,18 @@ impl super::TrapDispatcher {
                         .with_mut(|scheduling| scheduling.extended_wakeups.remove(&task_ptr));
                 }
                 // Remove any existing task for the same record address
-                self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
-                self.timer_tasks.push(super::dispatch::TimerTask {
-                    task_ptr,
-                    architecture: CallbackTaskArchitecture::M68k,
-                    extended,
-                    callback: tm_addr,
-                    active: false,
-                    fire_at_tick: 0,
-                    fire_at_subtick: 0,
-                    last_fired_tick: None,
+                self.timer_tasks.with_mut(|timer_tasks| {
+                    timer_tasks.retain(|task| task.task_ptr != task_ptr);
+                    timer_tasks.push(super::dispatch::TimerTask {
+                        task_ptr,
+                        architecture: CallbackTaskArchitecture::M68k,
+                        extended,
+                        callback: tm_addr,
+                        active: false,
+                        fire_at_tick: 0,
+                        fire_at_subtick: 0,
+                        last_fired_tick: None,
+                    });
                 });
                 self.sync_time_task_links(bus);
                 // InsTime clears the qType high-order bit (task inactive until PrimeTime).
@@ -1994,7 +1999,8 @@ impl super::TrapDispatcher {
                     .find(|task| task.task_ptr == task_ptr && task.active)
                     .map(|task| task.fire_at_subtick.saturating_sub(current_subtick))
                     .unwrap_or(0);
-                self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
+                self.timer_tasks
+                    .with_mut(|timer_tasks| timer_tasks.retain(|task| task.task_ptr != task_ptr));
                 self.sync_time_task_links(bus);
 
                 // The revised and extended Time Managers return unused time
@@ -2087,13 +2093,15 @@ impl super::TrapDispatcher {
                     current_subtick.saturating_add(delay_subticks)
                 };
                 let fire_at = fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
-                if let Some(task) = self.timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
-                    task.active = true;
-                    task.fire_at_tick = fire_at;
-                    task.fire_at_subtick = fire_at_subtick;
-                    // Re-read tmAddr in case it changed between InsTime and PrimeTime
-                    task.callback = bus.read_long(task_ptr + 6);
-                }
+                self.timer_tasks.with_mut(|timer_tasks| {
+                    if let Some(task) = timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
+                        task.active = true;
+                        task.fire_at_tick = fire_at;
+                        task.fire_at_subtick = fire_at_subtick;
+                        // Re-read tmAddr in case it changed between InsTime and PrimeTime
+                        task.callback = bus.read_long(task_ptr + 6);
+                    }
+                });
                 // PrimeTime sets the qType high-order bit (task now active/primed).
                 // Processes 1994, 3-20: "PrimeTime sets the high-order bit of the qType field to 1."
                 let q = bus.read_word(task_ptr + 4);
@@ -10882,7 +10890,9 @@ mod tests {
         dispatcher
             .callback_scheduling
             .with_mut(|scheduling| scheduling.current_subtick = 102_000_000);
-        dispatcher.timer_tasks[0].active = false;
+        dispatcher
+            .timer_tasks
+            .with_mut(|timer_tasks| timer_tasks[0].active = false);
         cpu.write_reg(Register::A0, task_ptr);
         cpu.write_reg(Register::D0, 1);
         dispatcher
