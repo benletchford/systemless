@@ -7678,7 +7678,7 @@ impl PpcLoadedApp {
             &mut cfm.library_fragments,
             &mut cfm.next_connection_id,
         );
-        let mut controls = std::mem::take(&mut self.controls);
+        let controls = std::mem::take(&mut self.controls);
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
         let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
@@ -8359,112 +8359,114 @@ impl PpcLoadedApp {
                         screen_clut.with_mut(|screen_clut| {
                             color_manager_clut.with_mut(|color_manager_clut| {
                                 event_queue.with_mut(|event_queue| {
-                                    dispatch_supported_import(
-                                        binding,
-                                        cpu,
-                                        memory,
-                                        &mut *process_memory_manager,
-                                        &mut heap_cursor,
-                                        heap_limit,
-                                        native_heap_ceiling,
-                                        &mut last_mem_error,
-                                        &mut import_tick_count,
-                                        clock_cycles_per_tick,
-                                        &mut current_resource_refnum,
-                                        &mut last_resource_error,
-                                        &resource_policy,
-                                        &native_exception_handler,
-                                        &mut stdc_qsort_stack,
-                                        &mut dialog_callback_stack,
-                                        &mut apple_events,
-                                        &mut cfm_connections,
-                                        &mut cfm_library_fragments,
-                                        &mut next_cfm_connection_id,
-                                        &mut import_run_state,
-                                        &mut controls,
-                                        &mut aliases,
-                                        &mut gworlds,
-                                        &gworld_pixel_states,
-                                        &window_list,
-                                        &mut q3_objects,
-                                        &mut q3_object_refs,
-                                        &mut next_q3_object,
-                                        &mut q3_error_state,
-                                        &mut q3_lifecycle,
-                                        &mut q3_memory_storages,
-                                        &mut q3_files,
-                                        &mut q3_group_memberships,
-                                        &mut q3_file_groups,
-                                        &mut q3_views,
-                                        &mut q3_submissions,
-                                        &mut q3_view_transforms,
-                                        &mut q3_submission_transforms,
-                                        &mut q3_view_materials,
-                                        &mut q3_submission_materials,
-                                        &mut q3_submission_lights,
-                                        &mut q3_view_state_stack,
-                                        &mut q3_completed_frames,
-                                        &mut q3_retained_frames,
-                                        &mut q3_state_only_completed_frame_batches,
-                                        &mut q3_fog_styles,
-                                        &mut q3_attributes,
-                                        &mut q3_shader_uv_transforms,
-                                        &mut q3_shader_boundaries,
-                                        &mut q3_mipmap_textures,
-                                        &mut q3_texture_shaders,
-                                        &mut q3_renderer_preferences,
-                                        &mut q3_draw_contexts,
-                                        &mut q3_trimeshes,
-                                        &mut q3_styles,
-                                        &mut q3_cameras,
-                                        &mut q3_lights,
-                                        &mut input_sprocket,
-                                        &mut input_sprocket_virtual_elements,
-                                        &mut toolbox_startup,
-                                        &mut quicktime,
-                                        &mut sound,
-                                        &timer_tasks,
-                                        &vbl_tasks,
-                                        &callback_scheduling,
-                                        &mut **files,
-                                        &mut **writable_refnums,
-                                        vfs_files,
-                                        stdio_streams,
-                                        deleted_vfs_file_paths,
-                                        resource_files,
-                                        vfs_resource_files,
-                                        vfs_resources,
-                                        next_file_ref_num,
-                                        &mut current_gworld,
-                                        &mut current_gdevice,
-                                        &quickdraw_op_colors,
-                                        &quickdraw_hilite_colors,
-                                        screen_clut,
-                                        color_manager_clut,
-                                        &display_gamma,
-                                        &mut quickdraw_fore_color,
-                                        &mut quickdraw_fore_indices,
-                                        &mut quickdraw_back_color,
-                                        &mut quickdraw_pen_h,
-                                        &mut quickdraw_pen_v,
-                                        &mut quickdraw_text_mode,
-                                        &mut quickdraw_text_size,
-                                        &cursor_state,
-                                        &vfs_volumes,
-                                        &mut vfs_directories,
-                                        &mut next_vfs_dir_id,
-                                        *default_dir_id,
-                                        &mut working_directories,
-                                        &mut next_working_directory_ref_num,
-                                        &mut application_working_directory_ref_num,
-                                        launched_app_path.as_deref(),
-                                        &param_text,
-                                        &mut scrap,
-                                        &mut list_manager,
-                                        input,
-                                        event_queue,
-                                        &mut draw_sprocket,
-                                    )
+                                    controls.with_mut(|controls| {
+                                        dispatch_supported_import(
+                                            binding,
+                                            cpu,
+                                            memory,
+                                            &mut *process_memory_manager,
+                                            &mut heap_cursor,
+                                            heap_limit,
+                                            native_heap_ceiling,
+                                            &mut last_mem_error,
+                                            &mut import_tick_count,
+                                            clock_cycles_per_tick,
+                                            &mut current_resource_refnum,
+                                            &mut last_resource_error,
+                                            &resource_policy,
+                                            &native_exception_handler,
+                                            &mut stdc_qsort_stack,
+                                            &mut dialog_callback_stack,
+                                            &mut apple_events,
+                                            &mut cfm_connections,
+                                            &mut cfm_library_fragments,
+                                            &mut next_cfm_connection_id,
+                                            &mut import_run_state,
+                                            controls,
+                                            &mut aliases,
+                                            &mut gworlds,
+                                            &gworld_pixel_states,
+                                            &window_list,
+                                            &mut q3_objects,
+                                            &mut q3_object_refs,
+                                            &mut next_q3_object,
+                                            &mut q3_error_state,
+                                            &mut q3_lifecycle,
+                                            &mut q3_memory_storages,
+                                            &mut q3_files,
+                                            &mut q3_group_memberships,
+                                            &mut q3_file_groups,
+                                            &mut q3_views,
+                                            &mut q3_submissions,
+                                            &mut q3_view_transforms,
+                                            &mut q3_submission_transforms,
+                                            &mut q3_view_materials,
+                                            &mut q3_submission_materials,
+                                            &mut q3_submission_lights,
+                                            &mut q3_view_state_stack,
+                                            &mut q3_completed_frames,
+                                            &mut q3_retained_frames,
+                                            &mut q3_state_only_completed_frame_batches,
+                                            &mut q3_fog_styles,
+                                            &mut q3_attributes,
+                                            &mut q3_shader_uv_transforms,
+                                            &mut q3_shader_boundaries,
+                                            &mut q3_mipmap_textures,
+                                            &mut q3_texture_shaders,
+                                            &mut q3_renderer_preferences,
+                                            &mut q3_draw_contexts,
+                                            &mut q3_trimeshes,
+                                            &mut q3_styles,
+                                            &mut q3_cameras,
+                                            &mut q3_lights,
+                                            &mut input_sprocket,
+                                            &mut input_sprocket_virtual_elements,
+                                            &mut toolbox_startup,
+                                            &mut quicktime,
+                                            &mut sound,
+                                            &timer_tasks,
+                                            &vbl_tasks,
+                                            &callback_scheduling,
+                                            &mut **files,
+                                            &mut **writable_refnums,
+                                            vfs_files,
+                                            stdio_streams,
+                                            deleted_vfs_file_paths,
+                                            resource_files,
+                                            vfs_resource_files,
+                                            vfs_resources,
+                                            next_file_ref_num,
+                                            &mut current_gworld,
+                                            &mut current_gdevice,
+                                            &quickdraw_op_colors,
+                                            &quickdraw_hilite_colors,
+                                            screen_clut,
+                                            color_manager_clut,
+                                            &display_gamma,
+                                            &mut quickdraw_fore_color,
+                                            &mut quickdraw_fore_indices,
+                                            &mut quickdraw_back_color,
+                                            &mut quickdraw_pen_h,
+                                            &mut quickdraw_pen_v,
+                                            &mut quickdraw_text_mode,
+                                            &mut quickdraw_text_size,
+                                            &cursor_state,
+                                            &vfs_volumes,
+                                            &mut vfs_directories,
+                                            &mut next_vfs_dir_id,
+                                            *default_dir_id,
+                                            &mut working_directories,
+                                            &mut next_working_directory_ref_num,
+                                            &mut application_working_directory_ref_num,
+                                            launched_app_path.as_deref(),
+                                            &param_text,
+                                            &mut scrap,
+                                            &mut list_manager,
+                                            input,
+                                            event_queue,
+                                            &mut draw_sprocket,
+                                        )
+                                    })
                                 })
                             })
                         })
@@ -91976,6 +91978,13 @@ pub(crate) mod tests {
             })
         }};
     }
+
+    macro_rules! with_test_controls {
+        ($app:ident, |$controls:ident| $body:expr) => {{
+            let controls = $app.controls.shared_handle();
+            controls.with_mut(|$controls| $body)
+        }};
+    }
     use crate::cpu::{CpuOps, Register};
     use crate::managers::resource::serialize_resource_fork;
     use crate::memory::MemoryBus;
@@ -105342,23 +105351,26 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetControlValue"))
             .unwrap();
         let mut last_mem_error = loaded.last_mem_error();
-        let handle = ppc_new_control_record_values(
-            None,
-            &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
-            &mut last_mem_error,
-            test_handles!(loaded),
-            &mut loaded.controls,
-            PPC_MAIN_GWORLD,
-            (10, 20, 30, 180),
-            b"Loadout",
-            true,
-            1,
-            143,
-            60,
-            1008,
-            0,
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 30, 180),
+                b"Loadout",
+                true,
+                1,
+                143,
+                60,
+                1008,
+                0,
+            )
         );
         assert_ne!(handle, 0);
         let control = loaded.memory.read_u32_be(handle).unwrap();
@@ -105397,23 +105409,26 @@ pub(crate) mod tests {
     fn selected_checkbox_draws_indicator_and_checkmark_without_framing_title() {
         let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
         let mut last_mem_error = loaded.last_mem_error();
-        let handle = ppc_new_control_record_values(
-            None,
-            &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
-            &mut last_mem_error,
-            test_handles!(loaded),
-            &mut loaded.controls,
-            PPC_MAIN_GWORLD,
-            (10, 20, 30, 180),
-            b"Sound Effects",
-            true,
-            1,
-            0,
-            1,
-            1,
-            0,
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 30, 180),
+                b"Sound Effects",
+                true,
+                1,
+                0,
+                1,
+                1,
+                0,
+            )
         );
         assert_ne!(handle, 0);
         let surface =
@@ -105457,23 +105472,26 @@ pub(crate) mod tests {
     fn selected_radio_button_draws_round_indicator_and_inner_dot() {
         let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
         let mut last_mem_error = loaded.last_mem_error();
-        let handle = ppc_new_control_record_values(
-            None,
-            &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
-            &mut last_mem_error,
-            test_handles!(loaded),
-            &mut loaded.controls,
-            PPC_MAIN_GWORLD,
-            (10, 20, 30, 180),
-            b"Veteran",
-            true,
-            1,
-            0,
-            1,
-            2,
-            0,
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 30, 180),
+                b"Veteran",
+                true,
+                1,
+                0,
+                1,
+                2,
+                0,
+            )
         );
         assert_ne!(handle, 0);
         assert!(ppc_paint_rect_bounds(
@@ -105528,23 +105546,26 @@ pub(crate) mod tests {
     fn draw_controls_redraws_visible_controls_in_a_document_window() {
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawControls")).unwrap();
         let mut last_mem_error = loaded.last_mem_error();
-        let handle = ppc_new_control_record_values(
-            None,
-            &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
-            &mut last_mem_error,
-            test_handles!(loaded),
-            &mut loaded.controls,
-            PPC_MAIN_GWORLD,
-            (10, 20, 30, 100),
-            b"Redraw",
-            true,
-            0,
-            0,
-            1,
-            0,
-            0,
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 30, 100),
+                b"Redraw",
+                true,
+                0,
+                0,
+                1,
+                0,
+                0,
+            )
         );
         assert_ne!(handle, 0);
         assert!(ppc_paint_rect_bounds(
@@ -105584,23 +105605,26 @@ pub(crate) mod tests {
         );
         ppc_write_rect(&mut loaded.memory, scratch, 5, 6, 25, 86).unwrap();
         write_ppc_pstring(&mut loaded.memory, scratch + 8, b"OK");
-        let handle = ppc_new_control_values(
-            None,
-            &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
-            &mut last_mem_error,
-            test_handles!(loaded),
-            &mut loaded.controls,
-            PPC_MAIN_GWORLD,
-            scratch,
-            scratch + 8,
-            true,
-            0,
-            0,
-            1,
-            0,
-            0,
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                scratch,
+                scratch + 8,
+                true,
+                0,
+                0,
+                1,
+                0,
+                0,
+            )
         );
         assert_ne!(handle, 0);
         assert_eq!(
@@ -105614,16 +105638,19 @@ pub(crate) mod tests {
             Some((handle, 10))
         );
 
-        ppc_dispose_control(
-            None,
-            Some(&mut free_handle_blocks),
-            &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
-            &mut last_mem_error,
-            test_handles!(loaded),
-            &mut loaded.controls,
-            handle,
+        with_test_controls!(
+            loaded,
+            |controls| ppc_dispose_control(
+                None,
+                Some(&mut free_handle_blocks),
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                handle,
+            )
         );
 
         assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
@@ -105649,23 +105676,26 @@ pub(crate) mod tests {
         );
         ppc_write_rect(&mut loaded.memory, scratch, 5, 6, 25, 86).unwrap();
         write_ppc_pstring(&mut loaded.memory, scratch + 8, b"OK");
-        let handle = ppc_new_control_values(
-            None,
-            &mut loaded.memory,
-            test_heap_cursor!(loaded),
-            test_heap_limit!(loaded),
-            &mut last_mem_error,
-            test_handles!(loaded),
-            &mut loaded.controls,
-            PPC_MAIN_GWORLD,
-            scratch,
-            scratch + 8,
-            true,
-            0,
-            0,
-            1,
-            0,
-            0,
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                scratch,
+                scratch + 8,
+                true,
+                0,
+                0,
+                1,
+                0,
+                0,
+            )
         );
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = (10 << 16) | 10;
@@ -105706,23 +105736,26 @@ pub(crate) mod tests {
             );
             ppc_write_rect(&mut loaded.memory, scratch, 5, 6, 25, 86).unwrap();
             write_ppc_pstring(&mut loaded.memory, scratch + 8, b"Popup:");
-            let control_handle = ppc_new_control_values(
-                None,
-                &mut loaded.memory,
-                test_heap_cursor!(loaded),
-                test_heap_limit!(loaded),
-                &mut last_mem_error,
-                test_handles!(loaded),
-                &mut loaded.controls,
-                PPC_MAIN_GWORLD,
-                scratch,
-                scratch + 8,
-                visible,
-                1,
-                304,
-                52,
-                1008,
-                0,
+            let control_handle = with_test_controls!(
+                loaded,
+                |controls| ppc_new_control_values(
+                    None,
+                    &mut loaded.memory,
+                    test_heap_cursor!(loaded),
+                    test_heap_limit!(loaded),
+                    &mut last_mem_error,
+                    test_handles!(loaded),
+                    controls,
+                    PPC_MAIN_GWORLD,
+                    scratch,
+                    scratch + 8,
+                    visible,
+                    1,
+                    304,
+                    52,
+                    1008,
+                    0,
+                )
             );
             assert_ne!(control_handle, 0, "{label} control allocation");
             let control = ppc_control_ptr(&mut loaded.memory, control_handle).unwrap();
@@ -168764,12 +168797,12 @@ pub(crate) mod tests {
 
     #[test]
     fn cloned_native_adapter_detaches_control_manager_metadata() {
-        let mut original =
+        let original =
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         original
             .controls
             .register(0x0031_1000, 0x0031_2000, 1, 0);
-        let mut detached = original.clone();
+        let detached = original.clone();
 
         detached.controls.set_proc_id(0x0031_2000, 2);
         detached
