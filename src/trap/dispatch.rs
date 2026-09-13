@@ -5807,7 +5807,8 @@ impl TrapDispatcher {
             };
             selected = resources.current_file;
         }
-        *self.current_resource_file = selected as i16;
+        self.current_resource_file
+            .with_mut(|current_file| *current_file = selected as i16);
         bus.write_word(0x0A5A, self.current_resource_refnum());
     }
 
@@ -6049,7 +6050,9 @@ impl TrapDispatcher {
             closed = true;
         }
         if closing_current {
-            *self.current_resource_file = surviving_classic_current as i16;
+            self.current_resource_file.with_mut(|current_file| {
+                *current_file = surviving_classic_current as i16;
+            });
         }
         self.clear_resource_file_backing_data(refnum);
         self.resource_file_order.remove(&refnum);

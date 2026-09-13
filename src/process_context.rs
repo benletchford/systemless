@@ -786,7 +786,8 @@ impl ProcessResourceManagerState {
             .as_ref()
             .map_or(0, |resources| resources.current_file as i16);
         if classic_selection != 0 {
-            *self.current_resource_file = classic_selection;
+            self.current_resource_file
+                .with_mut(|current_file| *current_file = classic_selection);
         }
     }
 
@@ -10194,7 +10195,9 @@ mod tests {
         let context = ProcessContext::default();
         let mut native = SharedProcessFileSystem::default();
         let mut first = SharedProcessResourceManager::default();
-        *first.current_resource_file = 7;
+        first
+            .current_resource_file
+            .with_mut(|current_file| *current_file = 7);
         first
             .resource_backing_data
             .insert((7, *b"TEST", 128), b"before".to_vec());
@@ -10205,7 +10208,9 @@ mod tests {
         context.attach_file_system(&mut native);
         let detached = second.clone();
         assert_eq!(*second.current_resource_file, 7);
-        *second.current_resource_file = 9;
+        second
+            .current_resource_file
+            .with_mut(|current_file| *current_file = 9);
         second
             .resource_backing_data
             .get_mut(&(7, *b"TEST", 128))
