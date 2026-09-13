@@ -2152,9 +2152,8 @@ impl SharedProcessEventQueue {
         self.with_mut(|queue| queue.push_front(event));
     }
 
-    #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn pop_back(&self) -> Option<QueuedEvent> {
+    pub(crate) fn pop_back_event(&self) -> Option<QueuedEvent> {
         self.with_mut(|queue| queue.pop_back())
     }
 
