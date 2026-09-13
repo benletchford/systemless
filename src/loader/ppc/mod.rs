@@ -93817,7 +93817,9 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let window_out = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(window_out, vec![0xff; 4]);
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded
             .memory
             .write_u16_be(PPC_MBAR_HEIGHT_ADDR, 12)
@@ -93878,7 +93880,9 @@ pub(crate) mod tests {
         assert_ne!(front_window, 0);
 
         // The current graphics port is not the Window Manager's z-order.
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded.cpu.gpr[3] = (80 << 16) | 80;
         loaded.cpu.gpr[4] = window_out;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
@@ -93928,7 +93932,9 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             });
         }
-        *loaded.current_gworld = dialog;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = dialog);
         loaded.cpu.gpr[3] = dialog;
 
         run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
@@ -95208,7 +95214,9 @@ pub(crate) mod tests {
                 .write_u32_be(menu_ptr + 6, mdef_handle)
                 .unwrap();
 
-            *loaded.current_gworld = 0x1234_0000;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = 0x1234_0000);
             loaded
                 .current_gdevice
                 .with_mut(|current_gdevice| *current_gdevice = 0x1234_1000);
@@ -95304,7 +95312,9 @@ pub(crate) mod tests {
         let before =
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len).unwrap();
         let return_address = loaded.cpu.lr;
-        *loaded.current_gworld = 0x1234_0000;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = 0x1234_0000);
         loaded
             .current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = 0x1234_1000);
@@ -95510,7 +95520,9 @@ pub(crate) mod tests {
             .unwrap();
 
         let return_address = loaded.cpu.lr;
-        *loaded.current_gworld = 0x1234_0000;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = 0x1234_0000);
         loaded
             .current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = 0x1234_1000);
@@ -98020,7 +98032,9 @@ pub(crate) mod tests {
         assert_ne!(classic_main_gdevice, PPC_MAIN_GDEVICE);
         assert_eq!(*classic.current_gdevice, PPC_MAIN_GDEVICE);
 
-        *native.current_gworld = 0x0030_0000;
+        native
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = 0x0030_0000);
         native
             .current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = 0x0030_1000);
@@ -98054,7 +98068,9 @@ pub(crate) mod tests {
         context.attach_memory(0, low_memory, &mut native.memory);
         let process_port = 0x0003_0000;
         initialize_test_cgraf_port(&mut classic_bus, process_port);
-        *native.current_gworld = process_port;
+        native
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = process_port);
 
         let classic_color = 0x0002_8000;
         classic_bus.write_word(classic_color, 0x1111);
@@ -98158,7 +98174,9 @@ pub(crate) mod tests {
         initialize_test_cgraf_port(&mut classic_bus, second_port);
         classic.cport_ports.insert(main_port);
         classic.cport_ports.insert(second_port);
-        *native.current_gworld = main_port;
+        native
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = main_port);
         native.cpu.gpr[3] = second_port;
         run_test_import(&mut native, PpcImportDispatcherTarget::SetPort);
         native.cpu.gpr[3] = 71;
@@ -124287,7 +124305,9 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
         ];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded
             .q3_objects
             .push(test_q3_object(view, PPC_Q3_TYPE_VIEW));
@@ -130292,7 +130312,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -130456,7 +130478,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *replay_loaded.current_gworld = PPC_MAIN_GWORLD;
+        replay_loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         assert!(replay_loaded.q3_submissions.is_empty());
         assert!(replay_loaded.q3_submission_transforms.is_empty());
         assert!(replay_loaded.q3_submission_materials.is_empty());
@@ -130610,7 +130634,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded.q3_objects.push(PpcQ3ObjectRecord {
             object: draw_context,
             kind: PpcQ3ObjectKind::Generic,
@@ -130796,7 +130822,9 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
         ];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded.q3_objects.push(PpcQ3ObjectRecord {
             object: draw_context,
             kind: PpcQ3ObjectKind::Generic,
@@ -130954,7 +130982,9 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
         ];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded.draw_sprocket.front_buffer_gworld = PPC_MAIN_GWORLD;
         loaded.draw_sprocket.back_buffer_gworld = PPC_DSP_BACK_GWORLD;
 
@@ -131137,7 +131167,9 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            *loaded.current_gworld = PPC_MAIN_GWORLD;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
             loaded
                 .memory
@@ -131283,7 +131315,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -131516,7 +131550,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -131777,7 +131813,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -131982,7 +132020,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -132189,7 +132229,9 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            *loaded.current_gworld = PPC_MAIN_GWORLD;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
             loaded
                 .memory
@@ -132393,7 +132435,9 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            *loaded.current_gworld = PPC_MAIN_GWORLD;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
             loaded
                 .memory
@@ -132619,7 +132663,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         write_triangle_mesh(
             &mut loaded.memory,
@@ -132776,7 +132822,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         write_triangle_mesh(
             &mut loaded.memory,
@@ -132977,7 +133025,9 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            *loaded.current_gworld = PPC_MAIN_GWORLD;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
             write_trimesh(
                 &mut loaded.memory,
@@ -133138,7 +133188,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -133325,7 +133377,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -133500,7 +133554,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -133694,7 +133750,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -133845,7 +133903,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -134097,7 +134157,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -134265,7 +134327,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -134776,7 +134840,9 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x500]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![q3_software_test_front_gworld(front_base)];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -134886,7 +134952,9 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x500]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![q3_software_test_front_gworld(front_base)];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -135011,7 +135079,9 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x600]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![q3_software_test_front_gworld(front_base)];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -135600,7 +135670,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -135790,7 +135862,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -135998,7 +136072,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -136273,7 +136349,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         write_lit_triangle_mesh(
             &mut loaded.memory,
@@ -136529,7 +136607,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         write_lit_triangle_mesh(
             &mut loaded.memory,
@@ -136746,7 +136826,9 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            *loaded.current_gworld = PPC_MAIN_GWORLD;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
             write_lit_triangle_mesh(
                 &mut loaded.memory,
                 trimesh_data,
@@ -136960,7 +137042,9 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            *loaded.current_gworld = PPC_MAIN_GWORLD;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
             loaded
                 .memory
@@ -137160,7 +137244,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -137368,7 +137454,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -137531,7 +137619,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -137681,7 +137771,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -137858,7 +137950,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -138077,7 +138171,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -138275,7 +138371,9 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            *loaded.current_gworld = PPC_MAIN_GWORLD;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
             loaded
                 .memory
@@ -138466,7 +138564,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -138644,7 +138744,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         loaded
             .memory
@@ -138816,7 +138918,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
 
         write_triangle_mesh(
             &mut loaded.memory,
@@ -139204,7 +139308,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         write_triangle_mesh(&mut loaded.memory, trimesh_data, points_ptr, triangles_ptr);
 
         let mut view_state = PpcQ3ViewStateRecord::new(view);
@@ -139322,7 +139428,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded.q3_objects.push(PpcQ3ObjectRecord {
             object: draw_context,
             kind: PpcQ3ObjectKind::Generic,
@@ -143364,7 +143472,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = gworld;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = gworld);
 
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = rect_ptr;
@@ -143411,7 +143521,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = gworld;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = gworld);
 
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = rect_ptr;
@@ -143546,7 +143658,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = gworld;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = gworld);
 
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = rect_ptr;
@@ -145443,7 +145557,9 @@ pub(crate) mod tests {
             .memory
             .write_u8(window + PPC_CWINDOW_HILITED_OFFSET, 1)
             .unwrap();
-        *loaded.current_gworld = window;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = window);
         loaded.cpu.gpr[3] = window;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -146068,7 +146184,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         loaded
             .current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = PPC_MAIN_GDEVICE);
@@ -146141,7 +146259,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = window_ptr;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = window_ptr);
         loaded
             .current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = gdevice);
@@ -146305,7 +146425,9 @@ pub(crate) mod tests {
         loaded
             .memory
             .add_region(window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
-        *loaded.current_gworld = window;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = window);
         let mut palette_resource = vec![0xbb; 32];
         palette_resource[..2].copy_from_slice(&1u16.to_be_bytes());
         palette_resource[16..22].copy_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
@@ -150420,7 +150542,9 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, pixmap, PPC_PIXMAP_SIZE).unwrap();
 
         ppc_write_rect(&mut loaded.memory, bounds_ptr, 5, 6, 8, 10).unwrap();
-        *loaded.current_gworld = gworld;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = gworld);
         loaded
             .current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = PPC_MAIN_GDEVICE);
@@ -151530,7 +151654,9 @@ pub(crate) mod tests {
         );
 
         loaded.gworlds.push(record);
-        *loaded.current_gworld = port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
         loaded.quickdraw_fore_color = port_color;
         loaded.quickdraw_fore_indices.insert(port, 22);
         loaded.cpu.pc = loaded.entry_pc;
@@ -163911,7 +164037,9 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = dialog;
-        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
         let probe = loaded.run_with_hle_imports(128);
 
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
@@ -167336,7 +167464,9 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[4] = item_hit_ptr;
-        *loaded.current_gworld = dialog;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = dialog);
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (2 << 8) | u32::from(b'D'),
@@ -168068,7 +168198,9 @@ pub(crate) mod tests {
             blue: 0x369a,
         };
         ppc_write_rgb_color(&mut native.memory, color_ptr, color).unwrap();
-        *native.current_gworld = port;
+        native
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
 
         native.cpu.gpr[3] = color_ptr;
         run_test_import(&mut native, PpcImportDispatcherTarget::HiliteColor);
@@ -168118,10 +168250,14 @@ pub(crate) mod tests {
         ppc_write_rgb_color(&mut loaded.memory, second_color_ptr, second_color).unwrap();
         ppc_write_rgb_color(&mut loaded.memory, basic_color_ptr, basic_color).unwrap();
 
-        *loaded.current_gworld = first_port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = first_port);
         loaded.cpu.gpr[3] = first_color_ptr;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
-        *loaded.current_gworld = second_port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = second_port);
         loaded.cpu.gpr[3] = second_color_ptr;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
 
@@ -168142,7 +168278,9 @@ pub(crate) mod tests {
             second_color
         );
 
-        *loaded.current_gworld = basic_port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = basic_port);
         loaded.cpu.gpr[3] = basic_color_ptr;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
         assert_eq!(
@@ -168294,7 +168432,9 @@ pub(crate) mod tests {
             blue: 0x9abc,
         };
         ppc_write_rgb_color(&mut native.memory, color_ptr, color).unwrap();
-        *native.current_gworld = port;
+        native
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
 
         native.cpu.gpr[3] = color_ptr;
         run_test_import(&mut native, PpcImportDispatcherTarget::OpColor);
@@ -168334,10 +168474,14 @@ pub(crate) mod tests {
         ppc_write_rgb_color(&mut loaded.memory, first_color_ptr, first_color).unwrap();
         ppc_write_rgb_color(&mut loaded.memory, second_color_ptr, second_color).unwrap();
 
-        *loaded.current_gworld = first_port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = first_port);
         loaded.cpu.gpr[3] = first_color_ptr;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::OpColor);
-        *loaded.current_gworld = second_port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = second_port);
         loaded.cpu.gpr[3] = second_color_ptr;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::OpColor);
 
@@ -170311,7 +170455,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
         loaded.cpu.gpr[3] = rect_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -170445,7 +170591,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
         loaded.quickdraw_fore_color = PpcRgbColor {
             red: 0x1234,
             green: 0x5678,
@@ -170578,7 +170726,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
         loaded
             .memory
             .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
@@ -170712,7 +170862,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
         loaded.quickdraw_fore_indices.insert(port, 2);
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 8).unwrap();
         loaded.cpu.gpr[3] = rect;
@@ -170756,7 +170908,9 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        *loaded.current_gworld = port;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
         loaded
             .memory
             .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
@@ -176118,7 +176272,9 @@ pub(crate) mod tests {
                 green: 0,
                 blue: 0,
             };
-            *loaded.current_gworld = window;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = window);
             loaded.quickdraw_fore_color = red;
             loaded.quickdraw_fore_indices.remove(&window);
             ppc_write_rect(&mut loaded.memory, paint_rect, 1, 1, 4, 4).unwrap();
@@ -176698,7 +176854,9 @@ pub(crate) mod tests {
             if depth == 8 {
                 assert_eq!(black, 91);
                 assert_eq!(white, 92);
-                *loaded.current_gworld = PPC_MAIN_GWORLD;
+                loaded
+                    .current_gworld
+                    .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
                 loaded.quickdraw_fore_color = PPC_RGB_BLACK;
                 loaded.quickdraw_fore_indices.remove(&PPC_MAIN_GWORLD);
                 ppc_write_rect(&mut loaded.memory, paint_rect, 30, 30, 32, 32).unwrap();
@@ -178218,8 +178376,10 @@ pub(crate) mod tests {
     #[test]
     fn presented_front_buffer_uses_main_screen_without_active_draw_sprocket() {
         let pef = synthetic_pef_with_import(b"SetPort");
-        let mut loaded = load_pef_application(&pef).unwrap();
-        *loaded.current_gworld = PPC_DSP_BACK_GWORLD;
+        let loaded = load_pef_application(&pef).unwrap();
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_DSP_BACK_GWORLD);
 
         let front_buffer = loaded.presented_front_buffer().unwrap();
 
@@ -178232,7 +178392,9 @@ pub(crate) mod tests {
     fn presented_front_buffer_uses_main_screen_before_first_draw_sprocket_swap() {
         let pef = synthetic_pef_with_import(b"SetPort");
         let mut loaded = load_pef_application(&pef).unwrap();
-        *loaded.current_gworld = PPC_DSP_BACK_GWORLD;
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = PPC_DSP_BACK_GWORLD);
         loaded.draw_sprocket.started = true;
         loaded.draw_sprocket.active_context = None;
         loaded.draw_sprocket.front_buffer_gworld = PPC_MAIN_GWORLD;
