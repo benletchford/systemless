@@ -2502,7 +2502,7 @@ impl<T: Default> SharedProcessValue<T> {
             // SAFETY: attachment occurs before the adapter is exposed through
             // the runner, so no references into either value exist.
             unsafe {
-                *process_value.0.get() = std::mem::take(&mut **self);
+                *process_value.0.get() = self.with_mut(std::mem::take);
             }
         }
         self.0 = Rc::clone(&process_value.0);
