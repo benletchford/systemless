@@ -91,8 +91,7 @@ use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState,
     ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState,
-    ProcessMemoryManager, ProcessMixedModeM68kState, ProcessNewHandleBackend,
-    ProcessNewHandleRequest,
+    ProcessMemoryManager, ProcessNewHandleBackend, ProcessNewHandleRequest,
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
     ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
@@ -44715,9 +44714,7 @@ fn ppc_mixed_mode_m68k_storage(
         return None;
     };
 
-    storage.with_mut(|state| {
-        *state = ProcessMixedModeM68kState { gateway, stack_top };
-    });
+    storage.set_storage(gateway, stack_top);
     Some((gateway, stack_top))
 }
 
@@ -64409,7 +64406,7 @@ fn ppc_process_apple_event(
                 apple_events.pending_dispatches.pop();
                 toolbox_startup
                     .mixed_mode_m68k
-                    .with_mut(|state| *state = saved_mixed_mode_m68k);
+                    .restore_snapshot(saved_mixed_mode_m68k);
                 for handle in [event_handle, reply_handle] {
                     let _ = memory.write_u32_be(handle, 0);
                 }
