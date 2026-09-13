@@ -1018,7 +1018,7 @@ impl ProcessFileSystemState {
         }
         if !Rc::ptr_eq(&self.classic_locked_files.0, &source.classic_locked_files.0) {
             self.classic_locked_files
-                .extend(std::mem::take(&mut *source.classic_locked_files));
+                .extend(source.classic_locked_files.take());
         }
         *self.classic_next_vfs_file_id =
             (*self.classic_next_vfs_file_id).max(*source.classic_next_vfs_file_id);
@@ -1783,6 +1783,27 @@ impl SharedProcessValue<HashSet<u16>> {
     }
 
     pub(crate) fn take(&self) -> HashSet<u16> {
+        self.with_mut(std::mem::take)
+    }
+}
+
+impl SharedProcessValue<HashSet<String>> {
+    pub(crate) fn insert(&self, path: String) -> bool {
+        self.with_mut(|paths| paths.insert(path))
+    }
+
+    pub(crate) fn remove(&self, path: &str) -> bool {
+        self.with_mut(|paths| paths.remove(path))
+    }
+
+    pub(crate) fn extend<I>(&self, paths: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.with_mut(|current| current.extend(paths));
+    }
+
+    pub(crate) fn take(&self) -> HashSet<String> {
         self.with_mut(std::mem::take)
     }
 }
