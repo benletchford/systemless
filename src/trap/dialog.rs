@@ -37410,8 +37410,8 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         // Start from a hidden nested level to prove InitCursor reset.
-        disp.cursor_state.image = None;
-        disp.cursor_state.level = -3;
+        disp.cursor_state.clear_image_for_test();
+        disp.cursor_state.set_level_for_test(-3);
 
         let result = disp.dispatch_dialog(true, 0x050, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -37468,7 +37468,7 @@ mod tests {
         bus.write_word(crsr_ptr + 66, 4);
         bus.write_long(TEST_SP, crsr_ptr);
 
-        disp.cursor_state.level = -1;
+        disp.cursor_state.set_level_for_test(-1);
         let result = disp.dispatch_dialog(true, 0x051, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.cursor_level(), -1);
@@ -37483,7 +37483,7 @@ mod tests {
         // IM:I I-168: HideCursor decrements cursor level (from 0 to -1)
         // and removes the cursor from the screen.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_state.level = 0;
+        disp.cursor_state.set_level_for_test(0);
 
         let result = disp.dispatch_dialog(true, 0x052, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -37498,7 +37498,7 @@ mod tests {
         // IM:I I-168: ShowCursor increments toward 0 and only shows the
         // cursor when level becomes 0.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_state.level = -2;
+        disp.cursor_state.set_level_for_test(-2);
 
         let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -37516,7 +37516,7 @@ mod tests {
         // IM:I I-168: extra ShowCursor calls have no effect and do not
         // increment cursor level above 0.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_state.level = 0;
+        disp.cursor_state.set_level_for_test(0);
 
         let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -37532,7 +37532,7 @@ mod tests {
         // no arguments. Systemless's HLE compromise keeps it as a no-op because
         // synthesized mouse-move events would immediately un-obscure anyway.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_state.level = -1;
+        disp.cursor_state.set_level_for_test(-1);
         let sp_before = cpu.read_reg(Register::A7);
 
         let result = disp.dispatch_dialog(true, 0x056, &mut cpu, &mut bus);
@@ -37552,7 +37552,7 @@ mod tests {
         // ObscureCursor "has no effect on the cursor level and must
         // not be balanced by a call to ShowCursor."
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_state.level = -2;
+        disp.cursor_state.set_level_for_test(-2);
         let sp_before = cpu.read_reg(Register::A7);
 
         for i in 0..5 {

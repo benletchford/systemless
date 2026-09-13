@@ -10375,14 +10375,14 @@ mod tests {
         disp.last_screen_copybits_rect = Some(centered_playfield_rect());
 
         disp.fullscreen_locked = false;
-        disp.cursor_state.level = -1;
+        disp.cursor_state.set_level_for_test(-1);
         assert_eq!(disp.fullscreen_input_transform(), None);
 
         disp.fullscreen_locked = true;
-        disp.cursor_state.level = 0;
+        disp.cursor_state.set_level_for_test(0);
         assert_eq!(disp.fullscreen_input_transform(), None);
 
-        disp.cursor_state.level = -1;
+        disp.cursor_state.set_level_for_test(-1);
         assert_eq!(
             disp.fullscreen_input_transform(),
             Some(centered_playfield_rect())
@@ -10394,7 +10394,7 @@ mod tests {
         let mut disp = TrapDispatcher::new();
         disp.screen_mode = (0, 1000, 800, 600, 8);
         disp.fullscreen_locked = true;
-        disp.cursor_state.level = -1;
+        disp.cursor_state.set_level_for_test(-1);
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,
@@ -10414,7 +10414,7 @@ mod tests {
         let mut disp = TrapDispatcher::new();
         disp.screen_mode = (0, 1000, 800, 600, 8);
         disp.fullscreen_locked = true;
-        disp.cursor_state.level = -1;
+        disp.cursor_state.set_level_for_test(-1);
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,
