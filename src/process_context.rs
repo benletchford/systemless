@@ -1669,6 +1669,16 @@ impl SharedProcessValue<ProcessCursorState> {
     }
 }
 
+impl SharedProcessMixedModeM68kState {
+    pub(crate) fn set_storage(&self, gateway: u32, stack_top: u32) {
+        self.with_mut(|state| *state = ProcessMixedModeM68kState { gateway, stack_top });
+    }
+
+    pub(crate) fn restore_snapshot(&self, snapshot: ProcessMixedModeM68kState) {
+        self.with_mut(|state| *state = snapshot);
+    }
+}
+
 impl<T: Default> Default for SharedProcessValue<T> {
     fn default() -> Self {
         Self(Rc::new(UnsafeCell::new(T::default())))
@@ -8142,17 +8152,15 @@ mod tests {
         let mut second = SharedProcessMixedModeM68kState::default();
 
         context.attach_mixed_mode_m68k_state(&mut first);
-        first.gateway = 0x1000;
-        first.stack_top = 0x20_0000;
+        first.set_storage(0x1000, 0x20_0000);
         context.attach_mixed_mode_m68k_state(&mut second);
 
         assert!(first.ptr_eq(&second));
         assert_eq!(second.gateway, 0x1000);
         assert_eq!(second.stack_top, 0x20_0000);
 
-        let mut detached = first.clone();
-        detached.gateway = 0x3000;
-        detached.stack_top = 0x30_0000;
+        let detached = first.clone();
+        detached.set_storage(0x3000, 0x30_0000);
         assert!(!first.ptr_eq(&detached));
         assert_eq!(first.gateway, 0x1000);
         assert_eq!(first.stack_top, 0x20_0000);
