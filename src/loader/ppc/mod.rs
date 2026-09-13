@@ -220,7 +220,7 @@ pub(crate) fn ppc_initial_process_file_system() -> SharedProcessFileSystem {
     let mut state = ProcessFileSystemState::default();
     state.stdio_streams = ppc_initial_stdio_streams();
     state.next_file_ref_num = PPC_FIRST_FILE_REF_NUM;
-    *state.vfs_directories = initial_ppc_vfs_directories();
+    state.vfs_directories.replace(initial_ppc_vfs_directories());
     *state.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
     *state.default_dir_id = PPC_ROOT_DIR_ID;
     SharedProcessFileSystem::from_state(state)
@@ -7760,7 +7760,7 @@ impl PpcLoadedApp {
         let process_quickdraw_port_state_attached = self.process_quickdraw_port_state_attached;
         let cursor_state = std::mem::take(&mut self.cursor_state);
         let vfs_volumes = self.vfs_volumes.shared_handle();
-        let mut vfs_directories = self.vfs_directories.shared_handle();
+        let vfs_directories = self.vfs_directories.shared_handle();
         let mut next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
         let mut default_dir_id = self.default_dir_id.shared_handle();
         let mut working_directories = self.working_directories.shared_handle();
@@ -8362,6 +8362,7 @@ impl PpcLoadedApp {
                                     controls.with_mut(|controls| {
                                         list_manager.with_mut(|list_manager| {
                                             writable_refnums.with_mut(|writable_refnums| {
+                                            vfs_directories.with_mut(|vfs_directories| {
                                             dispatch_supported_import(
                                             binding,
                                             cpu,
@@ -8454,7 +8455,7 @@ impl PpcLoadedApp {
                                             &mut quickdraw_text_size,
                                             &cursor_state,
                                             &vfs_volumes,
-                                            &mut vfs_directories,
+                                            vfs_directories,
                                             &mut next_vfs_dir_id,
                                             *default_dir_id,
                                             &mut working_directories,
@@ -8468,6 +8469,7 @@ impl PpcLoadedApp {
                                             event_queue,
                                             &mut draw_sprocket,
                                             )
+                                            })
                                             })
                                         })
                                     })
@@ -8864,7 +8866,7 @@ impl PpcLoadedApp {
             .map(|directory| directory.dir_id)
             .max()
             .unwrap_or(PPC_ROOT_DIR_ID);
-        *self.vfs_directories = directories;
+        self.vfs_directories.replace(directories);
         *self.default_dir_id = default_dir_id;
         let _ = self
             .memory
@@ -8882,7 +8884,7 @@ impl PpcLoadedApp {
             .unwrap_or(PPC_BOOT_VOLUME_REF_NUM)
             .saturating_sub(1)
             .min(-2);
-        *self.vfs_volumes = volumes;
+        self.vfs_volumes.replace(volumes);
     }
 
     pub fn set_launched_app_path(&mut self, path: impl Into<String>) {
@@ -9046,21 +9048,22 @@ impl PpcLoadedApp {
     }
 
     pub fn take_dirty_vfs_directories(&mut self) -> Vec<PpcVfsDirectoryExport> {
-        let mut exports = Vec::new();
-        for directory in self
-            .vfs_directories
-            .iter_mut()
-            .filter(|directory| directory.dirty && !directory.path.is_empty())
-        {
-            exports.push(PpcVfsDirectoryExport {
-                path: directory.path.clone(),
-                creator: directory.creator,
-                file_type: directory.file_type,
-                finder_flags: directory.finder_flags,
-            });
-            directory.dirty = false;
-        }
-        exports
+        self.vfs_directories.with_mut(|directories| {
+            let mut exports = Vec::new();
+            for directory in directories
+                .iter_mut()
+                .filter(|directory| directory.dirty && !directory.path.is_empty())
+            {
+                exports.push(PpcVfsDirectoryExport {
+                    path: directory.path.clone(),
+                    creator: directory.creator,
+                    file_type: directory.file_type,
+                    finder_flags: directory.finder_flags,
+                });
+                directory.dirty = false;
+            }
+            exports
+        })
     }
 
     pub fn take_dirty_vfs_resource_forks(&mut self) -> Vec<PpcVfsResourceForkExport> {
@@ -98988,7 +98991,9 @@ pub(crate) mod tests {
 
         original.vfs_files[0].data.copy_from_slice(b"change");
         original.vfs_resources[0].data.copy_from_slice(b"changed!");
-        original.vfs_directories.last_mut().unwrap().path = "Changed Folder".to_string();
+        original.vfs_directories.with_mut(|directories| {
+            directories.last_mut().unwrap().path = "Changed Folder".to_string();
+        });
         *original.next_vfs_dir_id += 1;
 
         assert!(!original
