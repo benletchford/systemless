@@ -44644,9 +44644,9 @@ fn ppc_mixed_mode_m68k_storage(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
-    storage: &mut SharedProcessMixedModeM68kState,
+    storage: &SharedProcessMixedModeM68kState,
 ) -> Option<(u32, u32)> {
-    let state: &mut ProcessMixedModeM68kState = &mut **storage;
+    let state = **storage;
     match (state.gateway, state.stack_top) {
         (0, 0) => {}
         (gateway, stack_top) if gateway != 0 && stack_top != 0 => {
@@ -44733,8 +44733,9 @@ fn ppc_mixed_mode_m68k_storage(
         return None;
     };
 
-    state.gateway = gateway;
-    state.stack_top = stack_top;
+    storage.with_mut(|state| {
+        *state = ProcessMixedModeM68kState { gateway, stack_top };
+    });
     Some((gateway, stack_top))
 }
 
@@ -45020,7 +45021,7 @@ fn ppc_begin_m68k_universal_proc_inner(
         memory,
         heap_cursor,
         heap_limit,
-        &mut startup.mixed_mode_m68k,
+        &startup.mixed_mode_m68k,
     )?;
     let return_pc = gateway.checked_add(PPC_MIXED_MODE_M68K_RETURN_OFFSET)?;
     if stack_top < 4 {
@@ -64424,7 +64425,9 @@ fn ppc_process_apple_event(
                 action
             } else {
                 apple_events.pending_dispatches.pop();
-                *toolbox_startup.mixed_mode_m68k = saved_mixed_mode_m68k;
+                toolbox_startup
+                    .mixed_mode_m68k
+                    .with_mut(|state| *state = saved_mixed_mode_m68k);
                 for handle in [event_handle, reply_handle] {
                     let _ = memory.write_u32_be(handle, 0);
                 }
@@ -102846,7 +102849,7 @@ pub(crate) mod tests {
     #[test]
     fn mixed_mode_storage_does_not_publish_a_partial_pair_on_allocation_failure() {
         let mut memory = PpcSectionMem::new();
-        let mut storage = SharedProcessMixedModeM68kState::default();
+        let storage = SharedProcessMixedModeM68kState::default();
         let initial_heap_cursor = 0x1000;
         let mut heap_cursor = initial_heap_cursor;
         let gateway_size = ppc_allocation_size(PPC_MIXED_MODE_M68K_GATEWAY_SIZE).unwrap();
@@ -102858,7 +102861,7 @@ pub(crate) mod tests {
                 &mut memory,
                 &mut heap_cursor,
                 heap_limit,
-                &mut storage,
+                &storage,
             ),
             None
         );
@@ -102889,7 +102892,7 @@ pub(crate) mod tests {
             &mut first.memory,
             &mut heap_cursor,
             initial_heap.heap_limit,
-            &mut first.toolbox_startup.mixed_mode_m68k,
+            &first.toolbox_startup.mixed_mode_m68k,
         )
         .unwrap();
         drop(first_manager);
@@ -102906,7 +102909,7 @@ pub(crate) mod tests {
                 &mut second.memory,
                 &mut impossible_heap_cursor,
                 0,
-                &mut second.toolbox_startup.mixed_mode_m68k,
+                &second.toolbox_startup.mixed_mode_m68k,
             ),
             Some(pair)
         );
@@ -102939,7 +102942,7 @@ pub(crate) mod tests {
         let allocator_before = memory_manager.native_allocator_snapshot();
         let mut memory = PpcSectionMem::new();
         let mut heap_cursor = heap_base;
-        let mut storage = SharedProcessMixedModeM68kState::default();
+        let storage = SharedProcessMixedModeM68kState::default();
 
         assert_eq!(
             ppc_mixed_mode_m68k_storage(
@@ -102947,7 +102950,7 @@ pub(crate) mod tests {
                 &mut memory,
                 &mut heap_cursor,
                 heap_limit,
-                &mut storage,
+                &storage,
             ),
             None
         );
