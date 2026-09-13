@@ -989,8 +989,10 @@ impl ProcessFileSystemState {
                 self.vfs_volumes.push(volume);
             }
         }
-        *self.next_vfs_volume_ref_num =
-            (*self.next_vfs_volume_ref_num).min(*source.next_vfs_volume_ref_num);
+        let source_next_volume_ref_num = *source.next_vfs_volume_ref_num;
+        self.next_vfs_volume_ref_num.with_mut(|next_ref_num| {
+            *next_ref_num = (*next_ref_num).min(source_next_volume_ref_num);
+        });
         if !Rc::ptr_eq(&self.vfs_directories.0, &source.vfs_directories.0) {
             for directory in source.vfs_directories.take() {
                 if self.vfs_directories.iter().any(|existing| {

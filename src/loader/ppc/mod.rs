@@ -8888,13 +8888,15 @@ impl PpcLoadedApp {
     }
 
     pub fn seed_vfs_volumes(&mut self, volumes: Vec<PpcVfsVolumeRecord>) {
-        *self.next_vfs_volume_ref_num = volumes
+        let next_ref_num = volumes
             .iter()
             .map(|volume| volume.ref_num)
             .min()
             .unwrap_or(PPC_BOOT_VOLUME_REF_NUM)
             .saturating_sub(1)
             .min(-2);
+        self.next_vfs_volume_ref_num
+            .with_mut(|cursor| *cursor = next_ref_num);
         self.vfs_volumes.replace(volumes);
     }
 
