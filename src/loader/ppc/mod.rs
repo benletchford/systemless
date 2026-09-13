@@ -102,7 +102,7 @@ use crate::process_context::{
     DEFAULT_QUICKDRAW_HILITE_COLOR,
     SharedProcessMixedModeM68kState,
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
-    SharedProcessQuickDrawPixelStates, SharedProcessTickState,
+    SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy, SharedProcessTickState,
     SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
     SharedProcessWindowList,
 };
@@ -7656,7 +7656,7 @@ impl PpcLoadedApp {
             .memory
             .read_u16_be(crate::memory::globals::addr::RES_ERR)
             .unwrap_or(0) as i16;
-        let mut resource_policy = process_file_system.policy.shared_handle();
+        let resource_policy = process_file_system.policy.shared_handle();
         let native_exception_handler = Cell::new(self.native_exception_handler);
         let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
@@ -8368,7 +8368,7 @@ impl PpcLoadedApp {
                         clock_cycles_per_tick,
                         &mut current_resource_refnum,
                         &mut last_resource_error,
-                        &mut resource_policy.res_load,
+                        &resource_policy,
                         &native_exception_handler,
                         &mut stdc_qsort_stack,
                         &mut dialog_callback_stack,
@@ -15520,7 +15520,7 @@ fn dispatch_supported_import(
     cycles_per_tick: u32,
     current_resource_refnum: &mut i16,
     last_resource_error: &mut i16,
-    resource_load_enabled: &mut bool,
+    resource_policy: &SharedProcessResourcePolicy,
     native_exception_handler: &Cell<u32>,
     stdc_qsort_stack: &mut Vec<PpcQsortState>,
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
@@ -16307,7 +16307,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SetResLoad => {
             // Inside Macintosh Volume I (1985), I-118: SetResLoad controls
             // whether subsequent Resource Manager lookups load resource data.
-            *resource_load_enabled = cpu.gpr[3] != 0;
+            resource_policy.set_res_load(cpu.gpr[3] != 0);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LoadResource => {
@@ -16369,7 +16369,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 false,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             )))
         }
@@ -16393,7 +16393,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 false,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             )))
         }
@@ -16417,7 +16417,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 true,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             )))
         }
@@ -16438,7 +16438,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 current_only,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             )))
         }
@@ -16697,7 +16697,7 @@ fn dispatch_supported_import(
                 handles,
                 vfs_resources,
                 *current_resource_refnum,
-                resource_load_enabled,
+                resource_policy,
                 last_resource_error,
                 cpu.gpr[3],
                 cpu.gpr[4],
@@ -16721,7 +16721,7 @@ fn dispatch_supported_import(
                 handles,
                 vfs_resources,
                 *current_resource_refnum,
-                resource_load_enabled,
+                resource_policy,
                 last_resource_error,
                 cpu.gpr[3],
                 cpu.gpr[4],
@@ -17090,7 +17090,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 current_only,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             )))
         }
@@ -17274,7 +17274,7 @@ fn dispatch_supported_import(
                 handles,
                 vfs_resources,
                 *current_resource_refnum,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
@@ -17301,7 +17301,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 false,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             )))
         }
@@ -23566,7 +23566,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 false,
-                *resource_load_enabled,
+                resource_policy.res_load(),
                 last_resource_error,
             )))
         }
@@ -76078,7 +76078,7 @@ fn ppc_insert_resource_menu(
     handles: &mut Vec<PpcHandleRecord>,
     resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
-    resource_load_enabled: &mut bool,
+    resource_policy: &SharedProcessResourcePolicy,
     last_resource_error: &mut i16,
     menu_handle: u32,
     requested_type: u32,
@@ -76087,7 +76087,7 @@ fn ppc_insert_resource_menu(
     // AppendResMenu and InsertResMenu force SetResLoad(TRUE) and read every
     // matching resource before returning. Macintosh Toolbox Essentials
     // (1992), pp. 3-101--3-104.
-    *resource_load_enabled = true;
+    resource_policy.set_res_load(true);
     let indices = ppc_resource_menu_indices(resources, current_resource_refnum, requested_type);
     let mut names = Vec::with_capacity(indices.len());
     for index in indices {
@@ -102038,7 +102038,7 @@ pub(crate) mod tests {
             record(2, 103, b"Shadowed", 5),
             record(2, 107, b"Beta", 6),
         ]);
-        loaded.policy.res_load = false;
+        loaded.policy.set_res_load(false);
         loaded.cpu.gpr[3] = menu;
         loaded.cpu.gpr[4] = u32::from_be_bytes(*b"DRVR");
         loaded.cpu.gpr[5] = 1;
@@ -102632,7 +102632,7 @@ pub(crate) mod tests {
     fn native_getmenu_loads_and_resolves_mdefs_when_resload_is_disabled() {
         let pef = synthetic_pef_with_import(b"GetMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.policy.res_load = false;
+        loaded.policy.set_res_load(false);
         let ref_num = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.extend([
             PpcVfsResourceRecord {
@@ -163344,7 +163344,7 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let buffer = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(buffer, vec![0; 16]);
-        loaded.policy.res_load = false;
+        loaded.policy.set_res_load(false);
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.push(PpcVfsResourceRecord {
             ref_num: current_resource_refnum,
@@ -168339,13 +168339,13 @@ pub(crate) mod tests {
     fn cloned_native_adapter_detaches_resource_policy_and_error_state() {
         let mut original =
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
-        original.policy.res_load = false;
-        original.policy.res_purge = true;
+        original.policy.set_res_load(false);
+        original.policy.set_res_purge(true);
         original.set_test_resource_error(PPC_RES_NOT_FOUND_ERR);
         let mut detached = original.clone();
 
-        detached.policy.res_load = true;
-        detached.policy.res_purge = false;
+        detached.policy.set_res_load(true);
+        detached.policy.set_res_purge(false);
         detached.set_test_resource_error(PPC_RES_F_NOT_FOUND_ERR);
 
         assert!(!original.policy.res_load);

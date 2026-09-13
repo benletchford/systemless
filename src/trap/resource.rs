@@ -9734,7 +9734,7 @@ mod tests {
         // IM:More Macintosh Toolbox 1993, 1-79 to 1-80: after
         // SetResLoad(FALSE), GetResource returns an empty handle for data
         // that is not already in memory; LoadResource later fills it.
-        disp.policy.res_load = false;
+        disp.policy.set_res_load(false);
 
         let sp = TEST_SP;
         bus.write_word(sp, 501u16);
@@ -9807,7 +9807,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"LOAD", 502, &[0xBE, 0xEF]);
 
-        disp.policy.res_load = false;
+        disp.policy.set_res_load(false);
         bus.write_word(TEST_SP, 502u16);
         bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"LOAD"));
         call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
@@ -9818,7 +9818,7 @@ mod tests {
 
         // IM:More Macintosh Toolbox 1993, 1-79: SetResLoad(TRUE) returns
         // resource-returning calls to automatic loading behavior.
-        disp.policy.res_load = true;
+        disp.policy.set_res_load(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 502u16);
         bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"LOAD"));
@@ -10411,7 +10411,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"LOAD", 205, &[0x12, 0x34]);
 
-        disp.policy.res_load = false;
+        disp.policy.set_res_load(false);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"LOAD", 205, data_ptr);
         assert_eq!(bus.read_long(handle), 0);
 
@@ -10744,7 +10744,7 @@ mod tests {
             .loaded
             .insert((*b"ALRT", 90), 0);
         bus.write_long(handle, 0);
-        disp.policy.res_load = false;
+        disp.policy.set_res_load(false);
 
         bus.write_long(TEST_SP, handle);
         call(&mut disp, true, 0x1A5, &mut cpu, &mut bus).unwrap();
@@ -10773,7 +10773,7 @@ mod tests {
             .loaded
             .insert((*b"CODE", 1), 0);
         bus.write_long(handle, 0);
-        disp.policy.res_load = true;
+        disp.policy.set_res_load(true);
 
         bus.write_long(TEST_SP, handle);
         call(&mut disp, true, 0x1A5, &mut cpu, &mut bus).unwrap();
@@ -10969,9 +10969,9 @@ mod tests {
             94,
             &[0x10, 0x20, 0x30, 0x40, 0x50],
         );
-        disp.policy.res_load = false;
+        disp.policy.set_res_load(false);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"PART", 94, data_ptr);
-        disp.policy.res_load = true;
+        disp.policy.set_res_load(true);
         assert_eq!(bus.read_long(handle), 0, "handle should be empty");
         let buffer = bus.alloc(4);
         bus.write_bytes(buffer, &[0xEE; 4]);
@@ -11026,9 +11026,9 @@ mod tests {
         // the resource map entry rather than treating the handle as missing.
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"WEPT", 95, &[0xAA, 0xBB, 0xCC, 0xDD]);
-        disp.policy.res_load = false;
+        disp.policy.set_res_load(false);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"WEPT", 95, data_ptr);
-        disp.policy.res_load = true;
+        disp.policy.set_res_load(true);
         assert_eq!(bus.read_long(handle), 0, "handle should be empty");
         let src = bus.alloc(2);
         bus.write_bytes(src, &[0x11, 0x22]);

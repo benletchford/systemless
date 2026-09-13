@@ -709,7 +709,7 @@ pub struct ProcessResourceManagerState {
     /// cursor, while this is the architecture-neutral `CurResFile` value.
     pub(crate) current_resource_file: SharedProcessValue<i16>,
     /// Resource loading and purge policy shared by every CPU gateway.
-    pub(crate) policy: SharedProcessValue<ProcessResourcePolicyState>,
+    pub(crate) policy: SharedProcessResourcePolicy,
     pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
     pub(crate) resource_handles_by_key: HashMap<(u16, [u8; 4], i16), u32>,
     pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
@@ -1263,6 +1263,7 @@ pub(crate) struct SharedProcessFileSystem(Rc<UnsafeCell<ProcessFileSystemState>>
 pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
+pub(crate) type SharedProcessResourcePolicy = SharedProcessValue<ProcessResourcePolicyState>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
 /// Host pacing snapshot for the wrapping Macintosh clock.
@@ -1638,6 +1639,23 @@ impl<T> SharedProcessValue<T> {
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference from escaping this operation.
         unsafe { f(&mut *self.0.get()) }
+    }
+}
+
+impl SharedProcessResourcePolicy {
+    /// Return whether Resource Manager lookups automatically load data.
+    pub(crate) fn res_load(&self) -> bool {
+        self.res_load
+    }
+
+    /// Scope a `SetResLoad` policy update to one serialized operation.
+    pub(crate) fn set_res_load(&self, enabled: bool) {
+        self.with_mut(|policy| policy.res_load = enabled);
+    }
+
+    /// Scope a `SetResPurge` policy update to one serialized operation.
+    pub(crate) fn set_res_purge(&self, enabled: bool) {
+        self.with_mut(|policy| policy.res_purge = enabled);
     }
 }
 
