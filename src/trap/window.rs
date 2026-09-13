@@ -2817,8 +2817,10 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn track_window_front(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
-        self.window_list.retain(|&tracked| tracked != window_ptr);
-        self.window_list.insert(0, window_ptr);
+        self.window_list.with_mut(|windows| {
+            windows.retain(|&tracked| tracked != window_ptr);
+            windows.insert(0, window_ptr);
+        });
         self.sync_window_list_links(bus);
     }
 
@@ -3007,14 +3009,16 @@ impl super::TrapDispatcher {
             bus,
             bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
         );
-        self.window_list.retain(|&w| w != window_ptr);
-        if behind == 0 {
-            self.window_list.push(window_ptr);
-        } else if let Some(idx) = self.window_list.iter().position(|&w| w == behind) {
-            self.window_list.insert(idx + 1, window_ptr);
-        } else {
-            self.window_list.push(window_ptr);
-        }
+        self.window_list.with_mut(|windows| {
+            windows.retain(|&w| w != window_ptr);
+            if behind == 0 {
+                windows.push(window_ptr);
+            } else if let Some(idx) = windows.iter().position(|&w| w == behind) {
+                windows.insert(idx + 1, window_ptr);
+            } else {
+                windows.push(window_ptr);
+            }
+        });
         self.sync_window_list_links(bus);
         if self.document_should_remain_active_behind_custom_utility(bus, window_ptr, behind) {
             // Floating utility windows/palettes remain visually above document
@@ -3128,7 +3132,8 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
-        self.window_list.retain(|&tracked| tracked != window_ptr);
+        self.window_list
+            .with_mut(|windows| windows.retain(|&tracked| tracked != window_ptr));
         self.sync_window_list_links(bus);
         self.dialog_visible_snapshots.remove(&window_ptr);
         self.saved_vis_regions.remove(&window_ptr);
@@ -5813,19 +5818,22 @@ impl super::TrapDispatcher {
                     } else {
                         None
                     };
-                    self.window_list.retain(|&w| w != the_window);
-                    if behind == 0 {
-                        // Move to back
-                        self.window_list.push(the_window);
-                    } else if let Some(behind_idx) = self.window_list.iter().position(|&w| w == behind)
-                    {
-                        // Insert just after behindWindow so theWindow
-                        // is immediately behind it.
-                        self.window_list.insert(behind_idx + 1, the_window);
-                    } else {
-                        // behindWindow not tracked — treat as move-to-back.
-                        self.window_list.push(the_window);
-                    }
+                    self.window_list.with_mut(|windows| {
+                        windows.retain(|&w| w != the_window);
+                        if behind == 0 {
+                            // Move to back
+                            windows.push(the_window);
+                        } else if let Some(behind_idx) =
+                            windows.iter().position(|&w| w == behind)
+                        {
+                            // Insert just after behindWindow so theWindow
+                            // is immediately behind it.
+                            windows.insert(behind_idx + 1, the_window);
+                        } else {
+                            // behindWindow not tracked — treat as move-to-back.
+                            windows.push(the_window);
+                        }
+                    });
                     self.sync_window_list_links(bus);
                     if was_active {
                         let new_active = self.front_window_for_internal_state(bus);
