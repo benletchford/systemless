@@ -4283,7 +4283,8 @@ impl TrapDispatcher {
         let parent_path = Self::vfs_parent_path(&normalized).to_string();
         let parent_dir_id = self.ensure_vfs_directory(&parent_path);
         let dir_id = *self.next_vfs_dir_id;
-        *self.next_vfs_dir_id = self.next_vfs_dir_id.saturating_add(1);
+        self.next_vfs_dir_id
+            .with_mut(|next_dir_id| *next_dir_id = next_dir_id.saturating_add(1));
 
         self.vfs_directories.push(VfsDirectory {
             dir_id,

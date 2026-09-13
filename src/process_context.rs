@@ -1005,7 +1005,9 @@ impl ProcessFileSystemState {
                 self.vfs_directories.push(directory);
             }
         }
-        *self.next_vfs_dir_id = (*self.next_vfs_dir_id).max(*source.next_vfs_dir_id);
+        let source_next_dir_id = *source.next_vfs_dir_id;
+        self.next_vfs_dir_id
+            .with_mut(|next_dir_id| *next_dir_id = (*next_dir_id).max(source_next_dir_id));
         if *self.default_dir_id == 0
             || (target_catalogue_was_pristine && *source.default_dir_id != 0)
         {
@@ -9918,7 +9920,9 @@ mod tests {
         first
             .vfs_volumes
             .with_mut(|volumes| volumes[0].file_count = 2);
-        *first.next_vfs_dir_id = 17;
+        first
+            .next_vfs_dir_id
+            .with_mut(|next_dir_id| *next_dir_id = 17);
         *first.default_dir_id = 16;
 
         assert!(files.ptr_eq(&first));

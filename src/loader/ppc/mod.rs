@@ -221,7 +221,9 @@ pub(crate) fn ppc_initial_process_file_system() -> SharedProcessFileSystem {
     state.stdio_streams = ppc_initial_stdio_streams();
     state.next_file_ref_num = PPC_FIRST_FILE_REF_NUM;
     state.vfs_directories.replace(initial_ppc_vfs_directories());
-    *state.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+    state
+        .next_vfs_dir_id
+        .with_mut(|next_dir_id| *next_dir_id = PPC_FIRST_DYNAMIC_DIR_ID);
     *state.default_dir_id = PPC_ROOT_DIR_ID;
     SharedProcessFileSystem::from_state(state)
 }
@@ -7765,7 +7767,7 @@ impl PpcLoadedApp {
         let cursor_state = std::mem::take(&mut self.cursor_state);
         let vfs_volumes = self.vfs_volumes.shared_handle();
         let vfs_directories = self.vfs_directories.shared_handle();
-        let mut next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
+        let next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
         let mut default_dir_id = self.default_dir_id.shared_handle();
         let working_directories = self.working_directories.shared_handle();
         let next_working_directory_ref_num = self
@@ -8370,6 +8372,7 @@ impl PpcLoadedApp {
                                             working_directories.with_mut(|working_directories| {
                                             next_working_directory_ref_num.with_mut(|next_working_directory_ref_num| {
                                             application_working_directory_ref_num.with_mut(|application_working_directory_ref_num| {
+                                            next_vfs_dir_id.with_mut(|next_vfs_dir_id| {
                                             current_resource_refnum.with_mut(|current_resource_refnum| {
                                             dispatch_supported_import(
                                             binding,
@@ -8464,7 +8467,7 @@ impl PpcLoadedApp {
                                             &cursor_state,
                                             &vfs_volumes,
                                             vfs_directories,
-                                            &mut next_vfs_dir_id,
+                                            next_vfs_dir_id,
                                             *default_dir_id,
                                             working_directories,
                                             next_working_directory_ref_num,
@@ -8477,6 +8480,7 @@ impl PpcLoadedApp {
                                             event_queue,
                                             &mut draw_sprocket,
                                             )
+                                            })
                                             })
                                             })
                                             })
@@ -8883,9 +8887,11 @@ impl PpcLoadedApp {
         let _ = self
             .memory
             .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, default_dir_id);
-        *self.next_vfs_dir_id = next_dir_id
+        let next_dir_id = next_dir_id
             .max(max_seeded_dir_id.saturating_add(1))
             .max(PPC_FIRST_DYNAMIC_DIR_ID);
+        self.next_vfs_dir_id
+            .with_mut(|cursor| *cursor = next_dir_id);
     }
 
     pub fn seed_vfs_volumes(&mut self, volumes: Vec<PpcVfsVolumeRecord>) {
@@ -98372,7 +98378,9 @@ pub(crate) mod tests {
             finder_flags: 0x0400,
             dirty: true,
         });
-        *second.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
+        second
+            .next_vfs_dir_id
+            .with_mut(|next_dir_id| *next_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1);
         *second.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
 
         assert_eq!(first.vfs_files[0].data, b"first-second");
@@ -98843,7 +98851,9 @@ pub(crate) mod tests {
             created_date: 1,
             modified_date: 2,
         });
-        *native.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
+        native
+            .next_vfs_dir_id
+            .with_mut(|next_dir_id| *next_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1);
         *native.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
 
         // Directory records are canonical process state, so the classic
@@ -99099,7 +99109,9 @@ pub(crate) mod tests {
         original.vfs_directories.with_mut(|directories| {
             directories.last_mut().unwrap().path = "Changed Folder".to_string();
         });
-        *original.next_vfs_dir_id += 1;
+        original
+            .next_vfs_dir_id
+            .with_mut(|next_dir_id| *next_dir_id += 1);
 
         assert!(!original
             .process_file_system
