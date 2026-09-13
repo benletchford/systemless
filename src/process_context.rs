@@ -943,7 +943,7 @@ impl ProcessFileSystemState {
         }
         if !Rc::ptr_eq(&self.pending_completions.0, &source.pending_completions.0) {
             self.pending_completions
-                .extend(std::mem::take(&mut *source.pending_completions));
+                .extend(source.pending_completions.take());
         }
         if !Rc::ptr_eq(&self.working_directories.0, &source.working_directories.0) {
             assert!(
@@ -1804,6 +1804,27 @@ impl SharedProcessValue<HashSet<String>> {
     }
 
     pub(crate) fn take(&self) -> HashSet<String> {
+        self.with_mut(std::mem::take)
+    }
+}
+
+impl SharedProcessValue<VecDeque<PendingFileCompletion>> {
+    pub(crate) fn push_back(&self, completion: PendingFileCompletion) {
+        self.with_mut(|completions| completions.push_back(completion));
+    }
+
+    pub(crate) fn pop_front(&self) -> Option<PendingFileCompletion> {
+        self.with_mut(VecDeque::pop_front)
+    }
+
+    pub(crate) fn extend<I>(&self, completions: I)
+    where
+        I: IntoIterator<Item = PendingFileCompletion>,
+    {
+        self.with_mut(|current| current.extend(completions));
+    }
+
+    pub(crate) fn take(&self) -> VecDeque<PendingFileCompletion> {
         self.with_mut(std::mem::take)
     }
 }
@@ -9883,13 +9904,13 @@ mod tests {
             result: -51,
         };
 
-        let mut process_state = ProcessFileSystemState::default();
+        let process_state = ProcessFileSystemState::default();
         process_state.pending_completions.push_back(first_completion);
         let context = ProcessContext::with_file_system(
             SharedProcessFileSystem::from_state(process_state),
         );
 
-        let mut adapter_state = ProcessFileSystemState::default();
+        let adapter_state = ProcessFileSystemState::default();
         adapter_state
             .pending_completions
             .push_back(second_completion);
@@ -9902,7 +9923,7 @@ mod tests {
             .pending_completions
             .ptr_eq(&second.pending_completions));
         second.pending_completions.push_back(third_completion);
-        let mut detached = second.clone();
+        let detached = second.clone();
 
         assert_eq!(first.pending_completions.pop_front(), Some(first_completion));
         assert_eq!(first.pending_completions.pop_front(), Some(second_completion));
