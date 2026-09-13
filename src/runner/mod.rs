@@ -9668,46 +9668,41 @@ impl FixtureRunner {
         // would starve all later elements. Preserve tasks that became due
         // while another callback was delivered and service those first on
         // the next opportunity.
-        let pending_before: Vec<bool> = self
-            .dispatcher
-            .vbl_tasks
-            .iter()
-            .map(|task| task.pending)
-            .collect();
-        for task in self
-            .dispatcher
-            .vbl_tasks
-            .iter_mut()
-            .filter(|task| task.architecture == CallbackTaskArchitecture::M68k)
-        {
-            let count = self.bus.read_word(task.task_ptr + 10) as i16;
-            if count <= 0 {
-                continue;
+        let vbl_tasks = self.dispatcher.vbl_tasks.shared_handle();
+        let pending_before: Vec<bool> = vbl_tasks.iter().map(|task| task.pending).collect();
+        let due_task = vbl_tasks.with_mut(|vbl_tasks| {
+            for task in vbl_tasks
+                .iter_mut()
+                .filter(|task| task.architecture == CallbackTaskArchitecture::M68k)
+            {
+                let count = self.bus.read_word(task.task_ptr + 10) as i16;
+                if count <= 0 {
+                    continue;
+                }
+                let new_count = count - 1;
+                self.bus.write_word(task.task_ptr + 10, new_count as u16);
+                if new_count == 0 {
+                    task.pending = true;
+                }
             }
-            let new_count = count - 1;
-            self.bus.write_word(task.task_ptr + 10, new_count as u16);
-            if new_count == 0 {
-                task.pending = true;
-            }
-        }
 
-        let due_index = pending_before
-            .iter()
-            .enumerate()
-            .position(|(index, pending)| {
-                *pending
-                    && self.dispatcher.vbl_tasks[index].architecture
-                        == CallbackTaskArchitecture::M68k
-            })
-            .or_else(|| {
-                self.dispatcher.vbl_tasks.iter().position(|task| {
-                    task.architecture == CallbackTaskArchitecture::M68k && task.pending
+            let due_index = pending_before
+                .iter()
+                .enumerate()
+                .position(|(index, pending)| {
+                    *pending
+                        && vbl_tasks[index].architecture == CallbackTaskArchitecture::M68k
                 })
-            });
-        let due_task = due_index.map(|index| {
-            let task = &mut self.dispatcher.vbl_tasks[index];
-            task.pending = false;
-            task.task_ptr
+                .or_else(|| {
+                    vbl_tasks.iter().position(|task| {
+                        task.architecture == CallbackTaskArchitecture::M68k && task.pending
+                    })
+                });
+            due_index.map(|index| {
+                let task = &mut vbl_tasks[index];
+                task.pending = false;
+                task.task_ptr
+            })
         });
 
         let Some(task_ptr) = due_task else {
@@ -9830,26 +9825,28 @@ impl FixtureRunner {
         const SUBTICKS_PER_TICK: u64 = 1_000_000;
         let current_tick = (current_subtick / SUBTICKS_PER_TICK) as u32;
         // Fire at most one task at a time to avoid nested callbacks.
-        if let Some(task) = self
-            .dispatcher
-            .timer_tasks
-            .iter_mut()
-            .filter(|task| {
-                task.architecture == CallbackTaskArchitecture::M68k
-                    && task.active
-                    && current_subtick >= task.fire_at_subtick
-            })
-            .min_by_key(|task| task.fire_at_subtick)
-        {
-            let task_ptr = task.task_ptr;
-            let tm_addr = task.callback;
+        let timer_tasks = self.dispatcher.timer_tasks.shared_handle();
+        let due_task = timer_tasks.with_mut(|timer_tasks| {
+            timer_tasks
+                .iter_mut()
+                .filter(|task| {
+                    task.architecture == CallbackTaskArchitecture::M68k
+                        && task.active
+                        && current_subtick >= task.fire_at_subtick
+                })
+                .min_by_key(|task| task.fire_at_subtick)
+                .map(|task| {
+                    // Mark only the task being delivered as fired. Other tasks that
+                    // expire on the same tick must remain active for a later interrupt.
+                    task.active = false;
+                    task.last_fired_tick = Some(current_tick);
+                    (task.task_ptr, task.callback)
+                })
+        });
+        if let Some((task_ptr, tm_addr)) = due_task {
             self.dispatcher
                 .callback_scheduling
                 .with_mut(|scheduling| scheduling.current_subtick = current_subtick);
-            // Mark only the task being delivered as fired. Other tasks that
-            // expire on the same tick must remain active for a later interrupt.
-            task.active = false;
-            task.last_fired_tick = Some(current_tick);
             // The revised Time Manager clears the qType active bit when the
             // delay expires, before invoking tmAddr. A callback can therefore
             // observe that its task is inactive and safely PrimeTime it again.
@@ -24963,9 +24960,11 @@ mod tests {
 
         // The delivered task may re-prime itself from its callback. It must not
         // jump ahead of an older task that is still waiting for delivery.
-        runner.dispatcher.timer_tasks[0].active = true;
-        runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
-        runner.dispatcher.timer_tasks[0].fire_at_subtick = 11_000_000;
+        runner.dispatcher.timer_tasks.with_mut(|timer_tasks| {
+            timer_tasks[0].active = true;
+            timer_tasks[0].fire_at_tick = 11;
+            timer_tasks[0].fire_at_subtick = 11_000_000;
+        });
         runner.active_interrupt_callback = None;
         runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
         runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
@@ -25011,9 +25010,11 @@ mod tests {
         runner.active_interrupt_callback = None;
         runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
         runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
-        runner.dispatcher.timer_tasks[0].active = true;
-        runner.dispatcher.timer_tasks[0].fire_at_tick = 11;
-        runner.dispatcher.timer_tasks[0].fire_at_subtick = 10_300_000;
+        runner.dispatcher.timer_tasks.with_mut(|timer_tasks| {
+            timer_tasks[0].active = true;
+            timer_tasks[0].fire_at_tick = 11;
+            timer_tasks[0].fire_at_subtick = 10_300_000;
+        });
 
         runner.fire_timer_tasks_at(10_300_000);
         assert!(

@@ -1736,6 +1736,27 @@ impl SharedProcessEventQueue {
     }
 }
 
+#[cfg(test)]
+impl SharedProcessTimerTasks {
+    pub(crate) fn push(&self, task: ProcessTimerTask) {
+        self.with_mut(|tasks| tasks.push(task));
+    }
+
+    pub(crate) fn extend<I>(&self, tasks: I)
+    where
+        I: IntoIterator<Item = ProcessTimerTask>,
+    {
+        self.with_mut(|installed| installed.extend(tasks));
+    }
+}
+
+#[cfg(test)]
+impl SharedProcessVblTasks {
+    pub(crate) fn push(&self, task: ProcessVblTask) {
+        self.with_mut(|tasks| tasks.push(task));
+    }
+}
+
 impl SharedProcessDisplayGamma {
     /// Copy the current transfer table without lending a reference into the
     /// process-owned storage across an ABI or callback boundary.

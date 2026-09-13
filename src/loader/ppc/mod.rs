@@ -7210,14 +7210,15 @@ impl PpcLoadedApp {
                 else {
                     break;
                 };
-                if let Some(installed) = self
-                    .timer_tasks
-                    .iter_mut()
-                    .find(|installed| installed.task_ptr == task.task_ptr)
-                {
-                    installed.active = false;
-                    installed.last_fired_tick = Some(current_tick);
-                }
+                self.timer_tasks.with_mut(|timer_tasks| {
+                    if let Some(installed) = timer_tasks
+                        .iter_mut()
+                        .find(|installed| installed.task_ptr == task.task_ptr)
+                    {
+                        installed.active = false;
+                        installed.last_fired_tick = Some(current_tick);
+                    }
+                });
                 let q_type = self.memory.read_u16_be(task.task_ptr + 4).unwrap_or(0);
                 let _ = self.memory.write_u16_be(task.task_ptr + 4, q_type & 0x7fff);
                 if task.callback != 0 {
@@ -7393,9 +7394,10 @@ impl PpcLoadedApp {
                 // task must reset vblCount from its callback or the Vertical
                 // Retrace Manager removes the task after that execution.
                 if self.memory.read_u16_be(task.task_ptr + 10) == Some(0) {
-                    self.vbl_tasks
-                        .retain(|installed| installed.task_ptr != task.task_ptr);
-                    ppc_sync_vbl_task_links(&mut self.memory, &self.vbl_tasks);
+                    self.vbl_tasks.with_mut(|vbl_tasks| {
+                        vbl_tasks.retain(|installed| installed.task_ptr != task.task_ptr);
+                        ppc_sync_vbl_task_links(&mut self.memory, vbl_tasks);
+                    });
                 }
             }
         }
@@ -7730,8 +7732,8 @@ impl PpcLoadedApp {
         let mut toolbox_startup = std::mem::take(&mut self.toolbox_startup);
         let mut quicktime = std::mem::take(&mut self.quicktime);
         let mut sound = std::mem::take(&mut self.sound);
-        let mut timer_tasks = std::mem::take(&mut self.timer_tasks);
-        let mut vbl_tasks = std::mem::take(&mut self.vbl_tasks);
+        let timer_tasks = std::mem::take(&mut self.timer_tasks);
+        let vbl_tasks = std::mem::take(&mut self.vbl_tasks);
         let callback_scheduling = self.callback_scheduling.shared_handle();
         // Keep File and Resource Manager records in their process-owned
         // managers for the whole native execution slice. The classic
@@ -8418,8 +8420,8 @@ impl PpcLoadedApp {
                                 &mut toolbox_startup,
                                 &mut quicktime,
                                 &mut sound,
-                                &mut timer_tasks,
-                                &mut vbl_tasks,
+                                &timer_tasks,
+                                &vbl_tasks,
                                 &callback_scheduling,
                                 &mut **files,
                                 &mut **writable_refnums,
@@ -15568,8 +15570,8 @@ fn dispatch_supported_import(
     toolbox_startup: &mut PpcToolboxStartupState,
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
-    timer_tasks: &mut Vec<PpcTimerTaskRecord>,
-    vbl_tasks: &mut Vec<PpcVblTaskRecord>,
+    timer_tasks: &SharedProcessTimerTasks,
+    vbl_tasks: &SharedProcessVblTasks,
     callback_scheduling: &SharedProcessCallbackScheduling,
     files: &mut Vec<PpcFileRecord>,
     writable_refnums: &mut HashSet<u16>,
@@ -27054,24 +27056,28 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::LMGetCurrentA5 => Some(PpcImportAction::Return(PPC_DATA_BASE)),
         PpcImportDispatcherTarget::InsTime | PpcImportDispatcherTarget::InsXTime => {
-            ppc_install_time_task(
-                memory,
-                timer_tasks,
-                callback_scheduling,
-                cpu.gpr[3],
-                binding.dispatcher_target == PpcImportDispatcherTarget::InsXTime,
-            );
+            timer_tasks.with_mut(|timer_tasks| {
+                ppc_install_time_task(
+                    memory,
+                    timer_tasks,
+                    callback_scheduling,
+                    cpu.gpr[3],
+                    binding.dispatcher_target == PpcImportDispatcherTarget::InsXTime,
+                );
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PrimeTime => {
-            ppc_prime_time_task(
-                memory,
-                timer_tasks,
-                callback_scheduling,
-                cpu.gpr[3],
-                cpu.gpr[4] as i32,
-                *tick_count,
-            );
+            timer_tasks.with_mut(|timer_tasks| {
+                ppc_prime_time_task(
+                    memory,
+                    timer_tasks,
+                    callback_scheduling,
+                    cpu.gpr[3],
+                    cpu.gpr[4] as i32,
+                    *tick_count,
+                );
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::RmvTime => {
@@ -27080,7 +27086,9 @@ fn dispatch_supported_import(
                     .current_subtick
                     .max(u64::from(*tick_count) * 1_000_000);
             });
-            ppc_remove_time_task(memory, timer_tasks, callback_scheduling, cpu.gpr[3]);
+            timer_tasks.with_mut(|timer_tasks| {
+                ppc_remove_time_task(memory, timer_tasks, callback_scheduling, cpu.gpr[3]);
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::VInstall
@@ -27122,16 +27130,18 @@ fn dispatch_supported_import(
                 binding.dispatcher_target,
                 PpcImportDispatcherTarget::VInstall | PpcImportDispatcherTarget::SlotVInstall
             );
-            let result = if installing {
-                let slot = matches!(
-                    binding.dispatcher_target,
-                    PpcImportDispatcherTarget::SlotVInstall
-                )
-                .then_some(cpu.gpr[4] as i16);
-                ppc_install_vbl_task(memory, vbl_tasks, task_ptr, slot)
-            } else {
-                ppc_remove_vbl_task(memory, vbl_tasks, task_ptr)
-            };
+            let result = vbl_tasks.with_mut(|vbl_tasks| {
+                if installing {
+                    let slot = matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::SlotVInstall
+                    )
+                    .then_some(cpu.gpr[4] as i16);
+                    ppc_install_vbl_task(memory, vbl_tasks, task_ptr, slot)
+                } else {
+                    ppc_remove_vbl_task(memory, vbl_tasks, task_ptr)
+                }
+            });
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::LegacyMemoryUtility => ppc_dispatch_legacy_memory_utility(
@@ -110218,14 +110228,20 @@ pub(crate) mod tests {
         native.memory.write_u16_be(vbl + 4, 1).unwrap();
         native.memory.write_u16_be(vbl + 10, 2).unwrap();
 
-        ppc_install_time_task(
-            &mut native.memory,
-            &mut native.timer_tasks,
-            &native.callback_scheduling,
-            timer,
-            false,
-        );
-        ppc_install_vbl_task(&mut native.memory, &mut native.vbl_tasks, vbl, None);
+        let timer_tasks = native.timer_tasks.shared_handle();
+        let vbl_tasks = native.vbl_tasks.shared_handle();
+        timer_tasks.with_mut(|timer_tasks| {
+            ppc_install_time_task(
+                &mut native.memory,
+                timer_tasks,
+                &native.callback_scheduling,
+                timer,
+                false,
+            );
+        });
+        vbl_tasks.with_mut(|vbl_tasks| {
+            ppc_install_vbl_task(&mut native.memory, vbl_tasks, vbl, None);
+        });
         assert_eq!(classic.timer_tasks.len(), 1);
         assert_eq!(classic.vbl_tasks.len(), 1);
         assert_eq!(classic.timer_tasks[0].architecture, CallbackTaskArchitecture::PowerPc);
@@ -110233,14 +110249,18 @@ pub(crate) mod tests {
 
         let detached_timers = classic.timer_tasks.clone();
         let detached_vbls = classic.vbl_tasks.clone();
-        ppc_remove_time_task(
-            &mut native.memory,
-            &mut native.timer_tasks,
-            &native.callback_scheduling,
-            timer,
-        );
+        timer_tasks.with_mut(|timer_tasks| {
+            ppc_remove_time_task(
+                &mut native.memory,
+                timer_tasks,
+                &native.callback_scheduling,
+                timer,
+            );
+        });
         assert_eq!(
-            ppc_remove_vbl_task(&mut native.memory, &mut native.vbl_tasks, vbl),
+            vbl_tasks.with_mut(|vbl_tasks| {
+                ppc_remove_vbl_task(&mut native.memory, vbl_tasks, vbl)
+            }),
             PPC_NO_ERR
         );
 
