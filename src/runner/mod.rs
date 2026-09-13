@@ -3211,7 +3211,7 @@ impl FixtureRunner {
             || self.dispatcher.is_window_tracking()
             || self.dispatcher.is_grow_window_tracking()
             || self.dispatcher.is_region_tracking()
-            || self.dispatcher.textedit_states.click_tracking.is_some()
+            || self.dispatcher.textedit_states.has_click_tracking()
     }
 
     /// Advance the guest tick counter by one, firing VBL and timer tasks.

@@ -21,7 +21,7 @@ pub(crate) struct ProcessTextEditState {
 pub(crate) struct ProcessTextEditManagerState {
     records: HashMap<u32, ProcessTextEditState>,
     handles: BTreeSet<u32>,
-    pub(crate) click_tracking: Option<TextEditClickTracking>,
+    click_tracking: Option<TextEditClickTracking>,
 }
 
 impl ProcessTextEditManagerState {
@@ -74,6 +74,28 @@ impl ProcessTextEditManagerState {
         {
             self.click_tracking = None;
         }
+    }
+
+    pub(crate) fn clear_click_tracking(&mut self) {
+        self.click_tracking = None;
+    }
+
+    pub(crate) fn take_click_tracking(&mut self) -> Option<TextEditClickTracking> {
+        self.click_tracking.take()
+    }
+
+    pub(crate) fn retain_click_tracking(&mut self, tracking: TextEditClickTracking) {
+        self.click_tracking = Some(tracking);
+    }
+
+    pub(crate) fn has_click_tracking(&self) -> bool {
+        self.click_tracking.is_some()
+    }
+
+    pub(crate) fn has_classic_click_tracking(&self) -> bool {
+        self.click_tracking
+            .as_ref()
+            .is_some_and(|tracking| !tracking.native)
     }
 }
 

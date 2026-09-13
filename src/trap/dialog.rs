@@ -15535,7 +15535,7 @@ impl super::TrapDispatcher {
                 let te_handle = bus.read_long(sp);
                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                 if te_ptr == 0 {
-                    self.textedit_states.click_tracking = None;
+                    self.textedit_states.clear_click_tracking();
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
                 }
@@ -15543,7 +15543,7 @@ impl super::TrapDispatcher {
                     bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET),
                     bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET),
                 );
-                let tracking = self.textedit_states.click_tracking.take();
+                let tracking = self.textedit_states.take_click_tracking();
                 let point = if tracking.is_some() {
                     let port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
                     let (top, left) = self.port_bounds_top_left(bus, port);
@@ -15583,13 +15583,14 @@ impl super::TrapDispatcher {
                     self.draw_te_contents(cpu, bus, te_handle, true);
                 }
                 if self.window_tracking_button_down(bus) {
-                    self.textedit_states.click_tracking =
-                        Some(crate::text_edit::TextEditClickTracking {
+                    self.textedit_states.retain_click_tracking(
+                        crate::text_edit::TextEditClickTracking {
                             handle: te_handle,
                             anchor,
                             native: false,
                             last_point: point,
-                        });
+                        },
+                    );
                 } else {
                     if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
                         self.event_queue.remove(index);

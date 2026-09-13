@@ -22049,14 +22049,14 @@ fn dispatch_supported_import(
             // until release, expanding or shortening the selection as it moves.
             let te_handle = cpu.gpr[5];
             let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-                scrap.text_edit.click_tracking = None;
+                scrap.text_edit.clear_click_tracking();
                 return Some(PpcImportAction::ReturnPreserve);
             };
             let previous_selection = (
                 memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
                 memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
             );
-            let tracking = if let Some(mut tracking) = scrap.text_edit.click_tracking.take() {
+            let tracking = if let Some(mut tracking) = scrap.text_edit.take_click_tracking() {
                 let port = memory
                     .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
                     .unwrap_or(0);
@@ -22140,7 +22140,7 @@ fn dispatch_supported_import(
                 );
             }
             if input.mouse_button {
-                scrap.text_edit.click_tracking = Some(tracking);
+                scrap.text_edit.retain_click_tracking(tracking);
                 Some(PpcImportAction::Yield(u64::MAX))
             } else {
                 if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
@@ -168712,10 +168712,10 @@ pub(crate) mod tests {
 
     #[test]
     fn cloned_native_adapter_detaches_textedit_feature_state() {
-        let mut original =
+        let original =
             load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         original.scrap.text_edit.set_feature_bit(0x0033_1000, 0, true);
-        let mut detached = original.clone();
+        let detached = original.clone();
 
         detached
             .scrap
