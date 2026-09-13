@@ -1539,7 +1539,7 @@ impl ProcessScrapState {
         *self.stuff_ptr.get_or_insert_with(allocate)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn set_clipboard_writable(&mut self, writable: bool) {
         self.clipboard_writable = writable;
     }
@@ -1777,7 +1777,7 @@ impl SharedProcessScrapState {
         self.with_mut(|scrap| scrap.ensure_stuff_ptr(allocate))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_clipboard_writable(&self, writable: bool) {
         self.with_mut(|scrap| scrap.set_clipboard_writable(writable));
     }
