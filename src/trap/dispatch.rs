@@ -1907,8 +1907,7 @@ pub struct TrapDispatcher {
     /// Per-channel transfer tables installed by the video driver's
     /// `cscSetGamma` control call. These affect presentation only; the device
     /// and Color Manager CLUTs retain the guest's uncorrected 16-bit values.
-    pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
-    pub device_gamma_explicit: SharedProcessValue<bool>,
+    pub(crate) display_gamma: crate::process_context::SharedProcessDisplayGamma,
     /// Color Manager CLUT for 8bpp mode. Updated only by high-level SetEntries ($AA3F)
     /// and ActivatePalette — NOT by low-level video driver palette fades.
     /// Used by QuickDraw shape drawing (PaintRect, etc.) for RGB→index mapping,
@@ -2231,6 +2230,11 @@ impl std::ops::DerefMut for TrapDispatcher {
 }
 
 impl TrapDispatcher {
+    /// Copy the process display transfer table used for host presentation.
+    pub fn device_gamma(&self) -> crate::display::DisplayGamma {
+        self.display_gamma.table()
+    }
+
     /// Access the process-owned Sound Manager state.
     pub fn sound_manager(&self) -> &crate::sound::SoundManager {
         &self.sound_manager
@@ -2297,8 +2301,7 @@ impl TrapDispatcher {
         context.attach_display_color_state(
             &mut self.device_clut,
             &mut self.color_manager_clut,
-            &mut self.device_gamma,
-            &mut self.device_gamma_explicit,
+            &mut self.display_gamma,
         );
         context.attach_event_queue(&mut self.event_queue);
         context.attach_input_state(&mut self.input_state);
@@ -2630,7 +2633,7 @@ impl TrapDispatcher {
             bus,
             self.screen_mode,
             &self.device_clut,
-            &self.device_gamma,
+            &self.display_gamma.table(),
         );
         if let Some(cursor) = self.cursor() {
             crate::display::render_cursor(
@@ -3506,8 +3509,7 @@ impl TrapDispatcher {
                 )
             },
             device_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: crate::process_context::SharedProcessDisplayGamma::default(),
             color_manager_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
             inverse_table_cache: Vec::new(),
             clut_protected: [false; 256],

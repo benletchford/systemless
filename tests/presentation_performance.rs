@@ -81,11 +81,12 @@ fn profile_modal_presentation() {
             ));
         } else {
             let d = runner.dispatcher();
+            let device_gamma = d.device_gamma();
             systemless::display::render_screen_argb_with_gamma(
                 runner.bus(),
                 d.screen_mode,
                 &d.device_clut,
-                &d.device_gamma,
+                &device_gamma,
                 &mut output,
             );
         }

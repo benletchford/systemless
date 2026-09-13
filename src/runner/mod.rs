@@ -2709,9 +2709,10 @@ impl FixtureRunner {
     /// Prepare the same sharp text surface for either guest CPU and any frontend.
     /// Call after initialization and before presenting a frame to track mode changes.
     pub fn prepare_text_presentation(&mut self) {
+        let display_gamma = self.dispatcher.display_gamma.table();
         let palette = crate::display::rgba_palette_from_clut_with_gamma(
             &self.dispatcher.device_clut,
-            &self.dispatcher.device_gamma,
+            &display_gamma,
         )
         .map(|word| {
             let [r, g, b, _] = word.to_le_bytes();
@@ -11955,7 +11956,7 @@ mod tests {
     use crate::menu_manager::TrackedMenuPaneView;
     use crate::process_context::{
         PendingFileCompletion, ProcessFileSystemState, SharedProcessFileSystem,
-        SharedProcessTickState, SharedProcessValue,
+        SharedProcessDisplayGamma, SharedProcessTickState, SharedProcessValue,
     };
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
@@ -16432,8 +16433,7 @@ mod tests {
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
@@ -21390,8 +21390,7 @@ mod tests {
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
@@ -22250,8 +22249,7 @@ mod tests {
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
@@ -22402,8 +22400,7 @@ mod tests {
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
@@ -22783,8 +22780,7 @@ mod tests {
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
@@ -23067,8 +23063,7 @@ mod tests {
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
@@ -23498,7 +23493,9 @@ mod tests {
             color_manager_clut[0][1] = 0xfffd;
             *ppc_app.screen_clut = device_clut;
             *ppc_app.color_manager_clut = color_manager_clut;
-            *ppc_app.device_gamma = crate::display::linear_display_gamma();
+            ppc_app
+                .display_gamma
+                .install(crate::display::linear_display_gamma());
             runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
 
             let (base, host_row_bytes, width, height, host_depth) = runner.dispatcher.screen_mode;
@@ -23514,7 +23511,7 @@ mod tests {
             assert_eq!(runner.dispatcher.device_clut, device_clut);
             assert_eq!(runner.dispatcher.color_manager_clut, color_manager_clut);
             assert_eq!(
-                runner.dispatcher.device_gamma,
+                runner.dispatcher.device_gamma(),
                 crate::display::linear_display_gamma()
             );
             let gdevice = runner.bus.read_long(runner.dispatcher.main_gdevice_handle);

@@ -102,8 +102,8 @@ use crate::process_context::{
     DEFAULT_QUICKDRAW_HILITE_COLOR,
     SharedProcessMixedModeM68kState,
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
-    SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy, SharedProcessTickState,
-    SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
+    SharedProcessDisplayGamma, SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy,
+    SharedProcessTickState, SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
     SharedProcessWindowList,
 };
 use crate::quickdraw::fonts::style::{
@@ -3618,8 +3618,7 @@ pub struct PpcLoadedApp {
     pub(crate) quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
     pub screen_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
-    pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
-    pub device_gamma_explicit: SharedProcessValue<bool>,
+    pub(crate) display_gamma: SharedProcessDisplayGamma,
     /// Whether QuickDraw draw state is canonical in the attached process's
     /// current CGrafPort record and must be reloaded at each import boundary.
     pub(crate) process_quickdraw_port_state_attached: bool,
@@ -4196,8 +4195,7 @@ impl PpcLoadedApp {
         context.attach_display_color_state(
             &mut self.screen_clut,
             &mut self.color_manager_clut,
-            &mut self.device_gamma,
-            &mut self.device_gamma_explicit,
+            &mut self.display_gamma,
         );
         context.attach_event_queue(&mut self.event_queue);
         context.attach_window_list(&mut self.window_list);
@@ -7748,8 +7746,7 @@ impl PpcLoadedApp {
         let quickdraw_hilite_colors = self.quickdraw_hilite_colors.shared_handle();
         let mut screen_clut = self.screen_clut.shared_handle();
         let mut color_manager_clut = self.color_manager_clut.shared_handle();
-        let mut device_gamma = self.device_gamma.shared_handle();
-        let mut device_gamma_explicit = self.device_gamma_explicit.shared_handle();
+        let display_gamma = self.display_gamma.shared_handle();
         let mut quickdraw_fore_color = self.quickdraw_fore_color;
         let mut quickdraw_fore_indices = std::mem::take(&mut self.quickdraw_fore_indices);
         let mut quickdraw_back_color = self.quickdraw_back_color;
@@ -8437,8 +8434,7 @@ impl PpcLoadedApp {
                             &quickdraw_hilite_colors,
                             &mut screen_clut,
                             &mut color_manager_clut,
-                            &mut device_gamma,
-                            &mut device_gamma_explicit,
+                            &display_gamma,
                             &mut quickdraw_fore_color,
                             &mut quickdraw_fore_indices,
                             &mut quickdraw_back_color,
@@ -13269,8 +13265,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
         screen_clut: SharedProcessValue::from_value(screen_clut),
         color_manager_clut: SharedProcessValue::from_value(color_manager_clut),
-        device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
-        device_gamma_explicit: SharedProcessValue::from_value(false),
+        display_gamma: SharedProcessDisplayGamma::default(),
         process_quickdraw_port_state_attached: false,
         quickdraw_fore_color: PPC_RGB_BLACK,
         quickdraw_fore_indices: HashMap::new(),
@@ -15588,8 +15583,7 @@ fn dispatch_supported_import(
     quickdraw_hilite_colors: &SharedProcessQuickDrawHiliteColors,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
-    device_gamma: &mut crate::display::DisplayGamma,
-    device_gamma_explicit: &mut bool,
+    display_gamma: &SharedProcessDisplayGamma,
     quickdraw_fore_color: &mut PpcRgbColor,
     quickdraw_fore_indices: &mut HashMap<u32, u8>,
     quickdraw_back_color: &mut PpcRgbColor,
@@ -18789,8 +18783,6 @@ fn dispatch_supported_import(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        *device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -18850,8 +18842,6 @@ fn dispatch_supported_import(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        *device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -18974,8 +18964,6 @@ fn dispatch_supported_import(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        *device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -19022,8 +19010,6 @@ fn dispatch_supported_import(
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
-                    device_gamma,
-                    *device_gamma_explicit,
                     toolbox_startup,
                 );
             }
@@ -19064,8 +19050,6 @@ fn dispatch_supported_import(
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
-                    device_gamma,
-                    *device_gamma_explicit,
                     toolbox_startup,
                 );
             }
@@ -19117,8 +19101,6 @@ fn dispatch_supported_import(
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
-                    device_gamma,
-                    *device_gamma_explicit,
                     toolbox_startup,
                 );
             }
@@ -19245,8 +19227,6 @@ fn dispatch_supported_import(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        *device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -19432,8 +19412,6 @@ fn dispatch_supported_import(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        *device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -19460,8 +19438,6 @@ fn dispatch_supported_import(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        *device_gamma_explicit,
                         toolbox_startup,
                     )
                 });
@@ -19558,8 +19534,6 @@ fn dispatch_supported_import(
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
-                    device_gamma,
-                    *device_gamma_explicit,
                     toolbox_startup,
                 );
             if applied
@@ -20606,8 +20580,7 @@ fn dispatch_supported_import(
                 memory,
                 *current_gdevice,
                 screen_clut,
-                device_gamma,
-                device_gamma_explicit,
+                display_gamma,
                 toolbox_startup,
             ))))
         }
@@ -20617,8 +20590,7 @@ fn dispatch_supported_import(
                 memory,
                 *current_gdevice,
                 screen_clut,
-                device_gamma,
-                device_gamma_explicit,
+                display_gamma,
                 toolbox_startup,
             ))))
         }
@@ -27206,8 +27178,6 @@ fn dispatch_supported_import(
             quickdraw_back_color,
             screen_clut,
             color_manager_clut,
-            device_gamma,
-            *device_gamma_explicit,
             toolbox_startup,
             input,
             *tick_count,
@@ -66481,8 +66451,6 @@ fn ppc_activate_window_palette(
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
-    _device_gamma: &mut crate::display::DisplayGamma,
-    _device_gamma_explicit: bool,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> bool {
     ppc_register_gdevice(toolbox_startup, gdevice);
@@ -66568,8 +66536,6 @@ fn ppc_activate_front_window_palette(
     fallback_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
-    device_gamma: &mut crate::display::DisplayGamma,
-    device_gamma_explicit: bool,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> Option<u32> {
     let front = ppc_front_visible_window(memory, gworlds);
@@ -66599,8 +66565,6 @@ fn ppc_activate_front_window_palette(
         fallback_gdevice,
         screen_clut,
         color_manager_clut,
-        device_gamma,
-        device_gamma_explicit,
         toolbox_startup,
     )
     .then_some(window)
@@ -67450,8 +67414,7 @@ fn ppc_driver_control(
     memory: &mut PpcSectionMem,
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
-    device_gamma: &mut crate::display::DisplayGamma,
-    device_gamma_explicit: &mut bool,
+    display_gamma: &SharedProcessDisplayGamma,
     toolbox_startup: &mut PpcToolboxStartupState,
     cs_code: i16,
     cs_param: u32,
@@ -67500,9 +67463,7 @@ fn ppc_driver_control(
                     // device. Preserve a guest-installed gamma table, but do
                     // not apply the Color Manager compatibility transfer to
                     // presentation-ready driver entries.
-                    if !*device_gamma_explicit {
-                        *device_gamma = crate::display::linear_display_gamma();
-                    }
+                    display_gamma.set_implicit(crate::display::linear_display_gamma());
                     PPC_NO_ERR
                 }
                 _ => PPC_PARAM_ERR,
@@ -67511,9 +67472,10 @@ fn ppc_driver_control(
         4 => memory
             .read_u32_be(cs_param)
             .map(|vd_gamma| {
-                let result = ppc_install_device_gamma(memory, vd_gamma, device_gamma);
+                let mut installed = display_gamma.table();
+                let result = ppc_install_device_gamma(memory, vd_gamma, &mut installed);
                 if result == PPC_NO_ERR {
-                    *device_gamma_explicit = true;
+                    display_gamma.install(installed);
                 }
                 result
             })
@@ -67527,8 +67489,7 @@ fn ppc_control(
     memory: &mut PpcSectionMem,
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
-    device_gamma: &mut crate::display::DisplayGamma,
-    device_gamma_explicit: &mut bool,
+    display_gamma: &SharedProcessDisplayGamma,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> i16 {
     let ref_num = cpu.gpr[3] as u16 as i16;
@@ -67542,8 +67503,7 @@ fn ppc_control(
         memory,
         current_gdevice,
         screen_clut,
-        device_gamma,
-        device_gamma_explicit,
+        display_gamma,
         toolbox_startup,
         cpu.gpr[4] as u16 as i16,
         cpu.gpr[5],
@@ -67555,8 +67515,7 @@ fn ppc_pb_control(
     memory: &mut PpcSectionMem,
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
-    device_gamma: &mut crate::display::DisplayGamma,
-    device_gamma_explicit: &mut bool,
+    display_gamma: &SharedProcessDisplayGamma,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> i16 {
     let parameter_block = cpu.gpr[3];
@@ -67578,8 +67537,7 @@ fn ppc_pb_control(
         memory,
         current_gdevice,
         screen_clut,
-        device_gamma,
-        device_gamma_explicit,
+        display_gamma,
         toolbox_startup,
         cs_code,
         cs_param,
@@ -70646,8 +70604,6 @@ fn ppc_dispatch_legacy_window(
     quickdraw_back_color: &mut PpcRgbColor,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
-    device_gamma: &mut crate::display::DisplayGamma,
-    device_gamma_explicit: bool,
     toolbox_startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
     when: u32,
@@ -70701,8 +70657,6 @@ fn ppc_dispatch_legacy_window(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -70789,8 +70743,6 @@ fn ppc_dispatch_legacy_window(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -70942,8 +70894,6 @@ fn ppc_dispatch_legacy_window(
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
-                    device_gamma,
-                    device_gamma_explicit,
                     toolbox_startup,
                 );
             }
@@ -70982,8 +70932,6 @@ fn ppc_dispatch_legacy_window(
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
-                    device_gamma,
-                    device_gamma_explicit,
                     toolbox_startup,
                 );
             }
@@ -71008,8 +70956,6 @@ fn ppc_dispatch_legacy_window(
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
-                    device_gamma,
-                    device_gamma_explicit,
                     toolbox_startup,
                 );
             }
@@ -71123,8 +71069,6 @@ fn ppc_dispatch_legacy_window(
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
-                        device_gamma,
-                        device_gamma_explicit,
                         toolbox_startup,
                     );
                 }
@@ -97855,38 +97799,38 @@ pub(crate) mod tests {
 
         native.screen_clut[7] = [0x1111, 0x2222, 0x3333];
         native.color_manager_clut[9] = [0x4444, 0x5555, 0x6666];
-        native.device_gamma[1][42] = 0x7f;
-        *native.device_gamma_explicit = true;
+        let mut native_gamma = native.display_gamma.table();
+        native_gamma[1][42] = 0x7f;
+        native.display_gamma.install(native_gamma);
 
         assert!(classic.device_clut.ptr_eq(&native.screen_clut));
         assert!(classic
             .color_manager_clut
             .ptr_eq(&native.color_manager_clut));
-        assert!(classic.device_gamma.ptr_eq(&native.device_gamma));
-        assert!(classic
-            .device_gamma_explicit
-            .ptr_eq(&native.device_gamma_explicit));
+        assert!(classic.display_gamma.ptr_eq(&native.display_gamma));
         assert_eq!(classic.device_clut[7], [0x1111, 0x2222, 0x3333]);
         assert_eq!(classic.color_manager_clut[9], [0x4444, 0x5555, 0x6666]);
-        assert_eq!(classic.device_gamma[1][42], 0x7f);
-        assert!(*classic.device_gamma_explicit);
+        assert_eq!(classic.display_gamma.table()[1][42], 0x7f);
+        assert!(classic.display_gamma.is_explicit());
 
         classic.device_clut[3] = [0xaaaa, 0xbbbb, 0xcccc];
-        classic.device_gamma[2][99] = 0x55;
+        let mut classic_gamma = classic.display_gamma.table();
+        classic_gamma[2][99] = 0x55;
+        classic.display_gamma.install(classic_gamma);
         assert_eq!(native.screen_clut[3], [0xaaaa, 0xbbbb, 0xcccc]);
-        assert_eq!(native.device_gamma[2][99], 0x55);
+        assert_eq!(native.display_gamma.table()[2][99], 0x55);
 
         assert!(!native.screen_clut.ptr_eq(&detached.screen_clut));
-        assert!(!native.device_gamma.ptr_eq(&detached.device_gamma));
+        assert!(!native.display_gamma.ptr_eq(&detached.display_gamma));
         assert_eq!(
             detached.screen_clut,
             crate::display::standard_mac_8bpp_clut()
         );
         assert_eq!(
-            detached.device_gamma,
+            detached.display_gamma.table(),
             crate::display::default_display_gamma()
         );
-        assert!(!*detached.device_gamma_explicit);
+        assert!(!detached.display_gamma.is_explicit());
     }
 
     #[test]
@@ -103668,8 +103612,7 @@ pub(crate) mod tests {
         memory.write_u16_be(table + 4, 0x2222).unwrap();
         memory.write_u16_be(table + 6, 0x3333).unwrap();
         let mut screen_clut = [[0; 3]; 256];
-        let mut device_gamma = crate::display::default_display_gamma();
-        let mut device_gamma_explicit = false;
+        let display_gamma = SharedProcessDisplayGamma::default();
         let mut startup = PpcToolboxStartupState::default();
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = parameter_block;
@@ -103680,32 +103623,29 @@ pub(crate) mod tests {
                 &mut memory,
                 0,
                 &mut screen_clut,
-                &mut device_gamma,
-                &mut device_gamma_explicit,
+                &display_gamma,
                 &mut startup,
             ),
             PPC_NO_ERR
         );
         assert_eq!(screen_clut[7], [0x1111, 0x2222, 0x3333]);
-        assert_eq!(device_gamma, crate::display::linear_display_gamma());
+        assert_eq!(display_gamma.table(), crate::display::linear_display_gamma());
         assert_eq!(memory.read_u16_be(parameter_block + 16), Some(0));
 
         let installed_gamma = [[42; 256]; 3];
-        device_gamma = installed_gamma;
-        device_gamma_explicit = true;
+        display_gamma.install(installed_gamma);
         assert_eq!(
             ppc_pb_control(
                 &cpu,
                 &mut memory,
                 0,
                 &mut screen_clut,
-                &mut device_gamma,
-                &mut device_gamma_explicit,
+                &display_gamma,
                 &mut startup,
             ),
             PPC_NO_ERR
         );
-        assert_eq!(device_gamma, installed_gamma);
+        assert_eq!(display_gamma.table(), installed_gamma);
     }
 
     #[test]
@@ -103780,8 +103720,7 @@ pub(crate) mod tests {
             .write_bytes(table + 12, &[0, 10, 20, 30, 1, 11, 21, 31, 2, 12, 22, 32])
             .unwrap();
         let mut screen_clut = [[0; 3]; 256];
-        let mut device_gamma = crate::display::default_display_gamma();
-        let mut device_gamma_explicit = false;
+        let display_gamma = SharedProcessDisplayGamma::default();
         let mut startup = PpcToolboxStartupState::default();
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = parameter_block;
@@ -103792,18 +103731,18 @@ pub(crate) mod tests {
                 &mut memory,
                 0,
                 &mut screen_clut,
-                &mut device_gamma,
-                &mut device_gamma_explicit,
+                &display_gamma,
                 &mut startup,
             ),
             PPC_NO_ERR
         );
-        assert_eq!(device_gamma[0][0], 0);
-        assert_eq!(device_gamma[0][64], 10);
-        assert_eq!(device_gamma[0][255], 30);
-        assert_eq!(device_gamma[1][64], 11);
-        assert_eq!(device_gamma[2][255], 32);
-        assert!(device_gamma_explicit);
+        let installed = display_gamma.table();
+        assert_eq!(installed[0][0], 0);
+        assert_eq!(installed[0][64], 10);
+        assert_eq!(installed[0][255], 30);
+        assert_eq!(installed[1][64], 11);
+        assert_eq!(installed[2][255], 32);
+        assert!(display_gamma.is_explicit());
     }
 
     #[test]
@@ -103836,8 +103775,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut screen_clut = loaded.screen_clut;
-        let mut device_gamma = loaded.device_gamma;
-        let mut device_gamma_explicit = loaded.device_gamma_explicit;
+        let display_gamma = loaded.display_gamma.shared_handle();
         let mut startup = loaded.toolbox_startup;
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = parameter_block;
@@ -103848,8 +103786,7 @@ pub(crate) mod tests {
                 &mut loaded.memory,
                 *loaded.current_gdevice,
                 &mut screen_clut,
-                &mut device_gamma,
-                &mut device_gamma_explicit,
+                &display_gamma,
                 &mut startup,
             ),
             PPC_NO_ERR
@@ -146715,8 +146652,6 @@ pub(crate) mod tests {
             PPC_MAIN_GDEVICE,
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
-            &mut loaded.device_gamma,
-            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
 
@@ -146825,8 +146760,6 @@ pub(crate) mod tests {
             PPC_MAIN_GDEVICE,
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
-            &mut loaded.device_gamma,
-            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
         assert_eq!(loaded.screen_clut[1], color);
@@ -146890,7 +146823,10 @@ pub(crate) mod tests {
 
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.screen_clut[1], [0x1234, 0x5678, 0x9abc]);
-        assert_eq!(loaded.device_gamma, crate::display::default_display_gamma());
+        assert_eq!(
+            loaded.display_gamma.table(),
+            crate::display::default_display_gamma()
+        );
         assert!(loaded
             .event_queue
             .iter()
@@ -147335,7 +147271,10 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.screen_clut[1], [0x1234, 0x5678, 0x9abc]);
         assert_eq!(loaded.screen_clut[2], [0xdef0, 0x1357, 0x2468]);
-        assert_eq!(loaded.device_gamma, crate::display::default_display_gamma());
+        assert_eq!(
+            loaded.display_gamma.table(),
+            crate::display::default_display_gamma()
+        );
         let device_ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
         assert_eq!(loaded.memory.read_u16_be(device_ctable + 18), Some(0x1234));
         assert_eq!(loaded.memory.read_u16_be(device_ctable + 20), Some(0x5678));
@@ -148165,8 +148104,6 @@ pub(crate) mod tests {
             PPC_MAIN_GDEVICE,
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
-            &mut loaded.device_gamma,
-            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
 
@@ -148351,8 +148288,6 @@ pub(crate) mod tests {
             PPC_MAIN_GDEVICE,
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
-            &mut loaded.device_gamma,
-            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
 
@@ -148391,8 +148326,6 @@ pub(crate) mod tests {
             PPC_MAIN_GDEVICE,
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
-            &mut loaded.device_gamma,
-            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
         assert_eq!(

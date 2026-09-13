@@ -462,11 +462,12 @@ fn render_frame_rgba8(runner: &FixtureRunner) -> Result<Vec<u8>, FrameArtifactOm
             limit: MAX_FRAME_ARTIFACT_BYTES,
         });
     }
+    let display_gamma = runner.debug_device_gamma();
     Ok(crate::display::render_screen_with_gamma(
         runner.bus(),
         runner.debug_screen_mode(),
         runner.debug_device_clut(),
-        runner.debug_device_gamma(),
+        &display_gamma,
     ))
 }
 

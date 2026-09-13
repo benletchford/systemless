@@ -229,14 +229,15 @@ impl FixtureRunner {
         &self.dispatcher.device_clut
     }
 
-    pub(crate) fn debug_device_gamma(&self) -> &crate::display::DisplayGamma {
-        &self.dispatcher.device_gamma
+    pub(crate) fn debug_device_gamma(&self) -> crate::display::DisplayGamma {
+        self.dispatcher.display_gamma.table()
     }
 
     pub(crate) fn debug_palette_argb(&self) -> [u32; 256] {
+        let display_gamma = self.dispatcher.display_gamma.table();
         crate::display::argb_palette_from_clut_with_gamma(
             &self.dispatcher.device_clut,
-            &self.dispatcher.device_gamma,
+            &display_gamma,
         )
     }
 

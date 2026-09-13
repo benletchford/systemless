@@ -732,6 +732,24 @@ pub(crate) struct ProcessResourcePolicyState {
     pub(crate) res_purge: bool,
 }
 
+/// Process-wide display transfer state shared by QuickDraw and the video
+/// driver gateways. The table and explicit-install bit are one value so an
+/// attached CPU adapter cannot observe a partially published update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessDisplayGammaState {
+    table: DisplayGamma,
+    explicit: bool,
+}
+
+impl Default for ProcessDisplayGammaState {
+    fn default() -> Self {
+        Self {
+            table: default_display_gamma(),
+            explicit: false,
+        }
+    }
+}
+
 impl Default for ProcessResourcePolicyState {
     fn default() -> Self {
         Self {
@@ -1264,6 +1282,7 @@ pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
 pub(crate) type SharedProcessResourcePolicy = SharedProcessValue<ProcessResourcePolicyState>;
+pub(crate) type SharedProcessDisplayGamma = SharedProcessValue<ProcessDisplayGammaState>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
 /// Host pacing snapshot for the wrapping Macintosh clock.
@@ -1652,6 +1671,36 @@ impl SharedProcessDialogText {
     /// Replace one `ParamText` slot within a single serialized operation.
     pub(crate) fn set_slot(&self, index: usize, value: Vec<u8>) {
         self.with_mut(|slots| slots[index] = value);
+    }
+}
+
+impl SharedProcessDisplayGamma {
+    /// Copy the current transfer table without lending a reference into the
+    /// process-owned storage across an ABI or callback boundary.
+    pub(crate) fn table(&self) -> DisplayGamma {
+        self.table
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_explicit(&self) -> bool {
+        self.explicit
+    }
+
+    /// Publish a guest-installed table and its provenance atomically.
+    pub(crate) fn install(&self, table: DisplayGamma) {
+        self.with_mut(|state| {
+            state.table = table;
+            state.explicit = true;
+        });
+    }
+
+    /// Restore a compatibility default only while no guest table is active.
+    pub(crate) fn set_implicit(&self, table: DisplayGamma) {
+        self.with_mut(|state| {
+            if !state.explicit {
+                state.table = table;
+            }
+        });
     }
 }
 
@@ -6226,8 +6275,7 @@ pub(crate) struct ProcessContext {
     quickdraw_error: SharedProcessValue<i16>,
     device_clut: SharedProcessValue<[[u16; 3]; 256]>,
     color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
-    device_gamma: SharedProcessValue<DisplayGamma>,
-    device_gamma_explicit: SharedProcessValue<bool>,
+    display_gamma: SharedProcessDisplayGamma,
 }
 
 /// Scoped shared handles for services constructed directly from a process.
@@ -6397,8 +6445,7 @@ impl Default for ProcessContext {
             quickdraw_error: SharedProcessValue::from_value(0),
             device_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
             color_manager_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
-            device_gamma: SharedProcessValue::from_value(default_display_gamma()),
-            device_gamma_explicit: SharedProcessValue::from_value(false),
+            display_gamma: SharedProcessDisplayGamma::default(),
         }
     }
 }
@@ -6706,21 +6753,21 @@ impl ProcessContext {
         &self,
         device_clut: &mut SharedProcessValue<[[u16; 3]; 256]>,
         color_manager_clut: &mut SharedProcessValue<[[u16; 3]; 256]>,
-        device_gamma: &mut SharedProcessValue<DisplayGamma>,
-        device_gamma_explicit: &mut SharedProcessValue<bool>,
+        display_gamma: &mut SharedProcessDisplayGamma,
     ) {
         let clut_is_pristine =
             |clut: &[[u16; 3]; 256]| *clut == [[0; 3]; 256] || *clut == standard_mac_8bpp_clut();
-        let gamma_is_pristine = |gamma: &DisplayGamma| {
-            gamma
-                .iter()
-                .all(|channel| channel.iter().all(|component| *component == 0))
-                || *gamma == default_display_gamma()
+        let gamma_is_pristine = |gamma: &ProcessDisplayGammaState| {
+            !gamma.explicit
+                && (gamma
+                    .table
+                    .iter()
+                    .all(|channel| channel.iter().all(|component| *component == 0))
+                    || gamma.table == default_display_gamma())
         };
         device_clut.attach_copy_to(&self.device_clut, clut_is_pristine);
         color_manager_clut.attach_copy_to(&self.color_manager_clut, clut_is_pristine);
-        device_gamma.attach_copy_to(&self.device_gamma, gamma_is_pristine);
-        device_gamma_explicit.attach_copy_to(&self.device_gamma_explicit, |explicit| !*explicit);
+        display_gamma.attach_copy_to(&self.display_gamma, gamma_is_pristine);
     }
 
     pub(crate) fn attach_event_queue(&self, adapter: &mut SharedProcessEventQueue) {
