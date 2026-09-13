@@ -3224,7 +3224,10 @@ impl PpcToolboxStartupState {
             .or(self.execution.menu().context().definition.as_ref())
     }
 
-    fn active_menu_definition_mut(&mut self) -> Option<&mut MenuDefinitionTracking> {
+    fn with_active_menu_definition_mut<R>(
+        &self,
+        update: impl FnOnce(&mut MenuDefinitionTracking) -> R,
+    ) -> Option<R> {
         if self
             .execution
             .menu()
@@ -3234,25 +3237,24 @@ impl PpcToolboxStartupState {
         {
             return self
                 .execution
-                .menu_state_mut()
-                .as_mut()
-                .and_then(PpcMenuTracking::active_definition_mut);
+                .with_menu_state_mut(|tracking| tracking.active_definition_mut().map(update))
+                .flatten();
         }
         self.execution
-            .existing_menu_context_mut()?
-            .definition
-            .as_mut()
+            .with_existing_menu_context_mut(|context| context.definition.as_mut().map(update))
+            .flatten()
     }
 
     fn clear_active_menu_definition(&mut self) {
-        if let Some(tracking) = self.execution.menu_state_mut().as_mut() {
-            if tracking.take_active_definition().is_some() {
-                return;
-            }
+        if self
+            .execution
+            .with_menu_state_mut(|tracking| tracking.take_active_definition().is_some())
+            .unwrap_or(false)
+        {
+            return;
         }
-        if let Some(context) = self.execution.existing_menu_context_mut() {
-            context.definition = None;
-        }
+        self.execution
+            .with_existing_menu_context_mut(|context| context.definition = None);
     }
 }
 
@@ -3262,8 +3264,9 @@ fn ppc_prepare_menu_definition_port(
     current_gdevice: &mut u32,
 ) {
     if startup.execution.menu().context().native_port.is_none() {
-        startup.execution.menu_context_mut().native_port =
-            Some((*current_gworld, *current_gdevice));
+        startup.execution.with_menu_context_mut(|context| {
+            context.native_port = Some((*current_gworld, *current_gdevice));
+        });
     }
     *current_gworld = PPC_MAIN_GWORLD;
     *current_gdevice = PPC_MAIN_GDEVICE;
@@ -3275,7 +3278,9 @@ fn ppc_preserve_menu_callback_port(
     current_gdevice: u32,
 ) {
     if startup.execution.menu().context().native_port.is_none() {
-        startup.execution.menu_context_mut().native_port = Some((current_gworld, current_gdevice));
+        startup.execution.with_menu_context_mut(|context| {
+            context.native_port = Some((current_gworld, current_gdevice));
+        });
     }
 }
 
@@ -3286,8 +3291,8 @@ fn ppc_restore_menu_definition_port(
 ) {
     if let Some((gworld, gdevice)) = startup
         .execution
-        .existing_menu_context_mut()
-        .and_then(|context| context.native_port.take())
+        .with_existing_menu_context_mut(|context| context.native_port.take())
+        .flatten()
     {
         *current_gworld = gworld;
         *current_gdevice = gdevice;
@@ -59661,10 +59666,10 @@ fn ppc_set_depth(
         .menu()
         .as_ref()
         .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar);
-    if let Some(context) = toolbox_startup.execution.existing_menu_context_mut() {
+    toolbox_startup.execution.with_existing_menu_context_mut(|context| {
         context.tracking = None;
         context.clear_native_popup();
-    }
+    });
     toolbox_startup.go_away_tracking = None;
     toolbox_startup.drag_window_tracking = None;
     toolbox_startup.grow_window_tracking = None;
@@ -76907,11 +76912,11 @@ fn ppc_step_menu_tracking_body(
                         .unwrap_or(0),
                 );
                 if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
-                    *toolbox_startup.execution.menu_state_mut() = Some(state);
+                    toolbox_startup.execution.set_menu_state(Some(state));
                     return Some(PpcImportAction::Yield(u64::MAX));
                 }
                 if let MenuFlashStep::Complete(result) = step {
-                    *toolbox_startup.execution.menu_state_mut() = Some(state);
+                    toolbox_startup.execution.set_menu_state(Some(state));
                     let result = ppc_complete_menu_bar_tracking_with_colors(
                         memory,
                         gworlds,
@@ -76939,7 +76944,7 @@ fn ppc_step_menu_tracking_body(
                         step == MenuFlashStep::Highlight(true),
                     );
                 }
-                *toolbox_startup.execution.menu_state_mut() = Some(state);
+                toolbox_startup.execution.set_menu_state(Some(state));
                 Some(PpcImportAction::Yield(u64::MAX))
             } else if toolbox_startup
                 .execution
@@ -77012,11 +77017,11 @@ fn ppc_step_menu_tracking_body(
                     .active_menu_definition()
                     .and_then(MenuDefinitionTracking::pending_invocation)
                 {
-                    toolbox_startup
-                        .execution
-                        .menu_context_mut()
-                        .call
-                        .get_or_insert(ppc_menu_select_call(cpu, cpu.gpr[3]));
+                    toolbox_startup.execution.with_menu_context_mut(|context| {
+                        context
+                            .call
+                            .get_or_insert(ppc_menu_select_call(cpu, cpu.gpr[3]));
+                    });
                     ppc_prepare_menu_definition_port(
                         toolbox_startup,
                         current_gworld,
@@ -77041,8 +77046,7 @@ fn ppc_step_menu_tracking_body(
                     toolbox_startup.clear_active_menu_definition();
                     toolbox_startup
                         .execution
-                        .menu_context_mut()
-                        .clear_native_menu();
+                        .with_menu_context_mut(|context| context.clear_native_menu());
                     ppc_restore_menu_definition_port(
                         toolbox_startup,
                         current_gworld,
@@ -77112,7 +77116,7 @@ fn ppc_step_menu_tracking_body(
                             vfs_resources,
                             current_resource_refnum,
                         );
-                        *toolbox_startup.execution.menu_state_mut() = Some(state);
+                        toolbox_startup.execution.set_menu_state(Some(state));
                     }
                 }
                 if let Some(state) = toolbox_startup.execution.menu().as_ref() {
@@ -77124,18 +77128,17 @@ fn ppc_step_menu_tracking_body(
                             .unwrap_or(0);
                         let result = (u32::from(menu_id) << 16) | u32::from(item as u16);
                         if result != 0 {
-                            let state = toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
-                            state.set_flash_tick(
-                                memory
-                                    .read_u32_be(crate::memory::globals::addr::TICKS)
-                                    .unwrap_or(0),
-                            );
-                            if state.begin_flash(
-                                memory
-                                    .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
-                                    .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT),
-                                result,
-                            ) {
+                            let tick = memory
+                                .read_u32_be(crate::memory::globals::addr::TICKS)
+                                .unwrap_or(0);
+                            let flashes = memory
+                                .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+                                .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT);
+                            if toolbox_startup
+                                .execution
+                                .begin_menu_flash(tick, flashes, result)
+                                .unwrap()
+                            {
                                 return Some(PpcImportAction::Yield(u64::MAX));
                             }
                         }
@@ -77264,13 +77267,10 @@ fn ppc_begin_custom_popup_menu_tracking(
         return None;
     }
     ppc_menu_definition_target(cpu, memory, resources, menu_handle)?;
-    startup.execution.menu_context_mut().definition =
-        Some(call.popup_request().unwrap().begin_definition());
-    startup
-        .execution
-        .menu_context_mut()
-        .call
-        .get_or_insert(call);
+    startup.execution.with_menu_context_mut(|context| {
+        context.definition = Some(call.popup_request().unwrap().begin_definition());
+        context.call.get_or_insert(call);
+    });
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
         .active_menu_definition()
@@ -77288,7 +77288,9 @@ fn ppc_begin_custom_popup_menu_tracking(
     );
     if action.is_none() {
         startup.clear_active_menu_definition();
-        startup.execution.menu_context_mut().clear_native_popup();
+        startup
+            .execution
+            .with_menu_context_mut(|context| context.clear_native_popup());
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
     }
     action
@@ -77316,8 +77318,7 @@ fn ppc_continue_custom_popup_menu_tracking(
         return PpcImportAction::Return(0);
     };
     let completed = match startup
-        .active_menu_definition_mut()
-        .map(MenuDefinitionTracking::complete_callback)
+        .with_active_menu_definition_mut(MenuDefinitionTracking::complete_callback)
         .transpose()
     {
         Ok(completed) => completed.flatten(),
@@ -77331,7 +77332,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -77344,11 +77347,10 @@ fn ppc_continue_custom_popup_menu_tracking(
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup.execution.menu_state_mut().as_mut().unwrap().advance_flash_at(
-            memory
-                .read_u32_be(crate::memory::globals::addr::TICKS)
-                .unwrap_or(0),
-        );
+        let tick = memory
+            .read_u32_be(crate::memory::globals::addr::TICKS)
+            .unwrap_or(0);
+        let step = startup.execution.advance_menu_flash(tick).unwrap();
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
@@ -77362,7 +77364,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
@@ -77389,7 +77393,9 @@ fn ppc_continue_custom_popup_menu_tracking(
     if completed == Some(MenuDefinitionMessage::PopUp) {
         let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -77410,7 +77416,9 @@ fn ppc_continue_custom_popup_menu_tracking(
             Vec::new(),
         ) else {
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -77427,14 +77435,20 @@ fn ppc_continue_custom_popup_menu_tracking(
         {
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
         }
-        state.definition = startup.execution.menu_context_mut().definition.take();
-        *startup.execution.menu_state_mut() = Some(state);
-        startup.active_menu_definition_mut().unwrap().draw();
+        state.definition = startup
+            .execution
+            .with_menu_context_mut(|context| context.definition.take());
+        startup.execution.set_menu_state(Some(state));
+        startup
+            .with_active_menu_definition_mut(|definition| definition.draw())
+            .unwrap();
         let invocation = startup
             .active_menu_definition()
             .and_then(MenuDefinitionTracking::pending_invocation)
@@ -77455,8 +77469,8 @@ fn ppc_continue_custom_popup_menu_tracking(
     } else {
         let hit_point = (u32::from(input.mouse_v as u16) << 16) | u32::from(input.mouse_h as u16);
         let choose = startup
-            .active_menu_definition_mut()
-            .and_then(|definition| definition.choose(hit_point));
+            .with_active_menu_definition_mut(|definition| definition.choose(hit_point))
+            .flatten();
         if let Some(invocation) = choose {
             if let Some(action) = ppc_dispatch_native_menu_definition(
                 cpu,
@@ -77486,18 +77500,16 @@ fn ppc_continue_custom_popup_menu_tracking(
                 0
             };
             if result != 0 {
-                let state = startup.execution.menu_state_mut().as_mut().unwrap();
-                state.set_flash_tick(
-                    memory
-                        .read_u32_be(crate::memory::globals::addr::TICKS)
-                        .unwrap_or(0),
-                );
-                let flash_enabled = state.begin_flash(
-                    memory
-                        .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
-                        .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT),
-                    result,
-                );
+                let tick = memory
+                    .read_u32_be(crate::memory::globals::addr::TICKS)
+                    .unwrap_or(0);
+                let flashes = memory
+                    .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+                    .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT);
+                let flash_enabled = startup
+                    .execution
+                    .begin_menu_flash(tick, flashes, result)
+                    .unwrap();
                 if !flash_enabled {
                     if let Some(state) = startup.execution.take_menu_state() {
                         if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
@@ -77508,7 +77520,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                         }
                     }
                     startup.clear_active_menu_definition();
-                    startup.execution.menu_context_mut().clear_native_popup();
+                    startup
+                        .execution
+                        .with_menu_context_mut(|context| context.clear_native_popup());
                     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
                     cpu.lr = call.origin.return_address();
                     return PpcImportAction::Return(result);
@@ -77524,7 +77538,9 @@ fn ppc_continue_custom_popup_menu_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
@@ -77540,7 +77556,9 @@ fn ppc_continue_custom_popup_menu_tracking(
         }
     }
     startup.clear_active_menu_definition();
-    startup.execution.menu_context_mut().clear_native_popup();
+    startup
+        .execution
+        .with_menu_context_mut(|context| context.clear_native_popup());
     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
     cpu.lr = call.origin.return_address();
     PpcImportAction::Return(0)
@@ -77582,15 +77600,19 @@ fn ppc_dispatch_pop_up_menu_select(
         if live_front.map(MenuTrackingSurface::from) != state.front_buffer {
             // A changed PixMap/depth makes the saved coordinates unsafe to
             // write. Abandon the overlay without touching either buffer.
-            *startup.execution.menu_state_mut() = None;
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup.execution.set_menu_state(None);
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             return PpcImportAction::Return(0);
         }
         if !ppc_popup_menu_is_inserted(memory, current_menu_list, menu_handle) {
             let Some(state) = startup.execution.take_menu_state() else {
                 return PpcImportAction::Return(0);
             };
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
             return PpcImportAction::Return(0);
         }
@@ -77605,11 +77627,13 @@ fn ppc_dispatch_pop_up_menu_select(
                     .unwrap_or(0),
             );
             if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
-                *startup.execution.menu_state_mut() = Some(state);
+                startup.execution.set_menu_state(Some(state));
                 return PpcImportAction::Yield(u64::MAX);
             }
             if let MenuFlashStep::Complete(result) = step {
-                startup.execution.menu_context_mut().clear_native_popup();
+                startup
+                    .execution
+                    .with_menu_context_mut(|context| context.clear_native_popup());
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
@@ -77626,7 +77650,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 &state,
                 visible_item,
             );
-            *startup.execution.menu_state_mut() = Some(state);
+            startup.execution.set_menu_state(Some(state));
             return PpcImportAction::Yield(u64::MAX);
         }
 
@@ -77651,7 +77675,9 @@ fn ppc_dispatch_pop_up_menu_select(
         let highlighted_item = state.highlighted_item;
         if !input.mouse_button {
             if highlighted_item == 0 {
-                startup.execution.menu_context_mut().clear_native_popup();
+                startup
+                    .execution
+                    .with_menu_context_mut(|context| context.clear_native_popup());
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(0);
             }
@@ -77673,7 +77699,9 @@ fn ppc_dispatch_pop_up_menu_select(
                 result,
             );
             if !flash_enabled {
-                startup.execution.menu_context_mut().clear_native_popup();
+                startup
+                    .execution
+                    .with_menu_context_mut(|context| context.clear_native_popup());
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
@@ -77685,7 +77713,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 &state,
                 highlighted_item,
             );
-            *startup.execution.menu_state_mut() = Some(state);
+            startup.execution.set_menu_state(Some(state));
             return PpcImportAction::Yield(u64::MAX);
         }
 
@@ -77697,7 +77725,7 @@ fn ppc_dispatch_pop_up_menu_select(
             &state,
             highlighted_item,
         );
-        *startup.execution.menu_state_mut() = Some(state);
+        startup.execution.set_menu_state(Some(state));
         return PpcImportAction::Yield(u64::MAX);
     }
 
@@ -77751,8 +77779,12 @@ fn ppc_dispatch_pop_up_menu_select(
         &state,
         highlighted_item,
     );
-    *startup.execution.menu_state_mut() = Some(state);
-    startup.execution.menu_context_mut().call.get_or_insert(call);
+    startup.execution.set_menu_state(Some(state));
+    startup
+        .execution
+        .with_menu_context_mut(|context| {
+            context.call.get_or_insert(call);
+        });
     PpcImportAction::Yield(u64::MAX)
 }
 
@@ -79062,12 +79094,12 @@ fn ppc_begin_custom_menu_bar_tracking(
         StandardMenuPaneKind::PullDown,
         &state,
     )?;
-    *startup.execution.menu_state_mut() = Some(state);
-    startup
-        .execution
-        .menu_context_mut()
-        .call
-        .get_or_insert(ppc_menu_select_call(cpu, initial_point));
+    startup.execution.set_menu_state(Some(state));
+    startup.execution.with_menu_context_mut(|context| {
+        context
+            .call
+            .get_or_insert(ppc_menu_select_call(cpu, initial_point));
+    });
     ppc_prepare_menu_definition_port(startup, current_gworld, current_gdevice);
     let invocation = startup
         .active_menu_definition()
@@ -79088,7 +79120,9 @@ fn ppc_begin_custom_menu_bar_tracking(
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
         }
         startup.clear_active_menu_definition();
-        startup.execution.menu_context_mut().clear_native_menu();
+        startup
+            .execution
+            .with_menu_context_mut(|context| context.clear_native_menu());
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         ppc_set_menu_command_highlight_with_colors(
             memory,
@@ -79126,13 +79160,17 @@ fn ppc_continue_custom_menu_bar_tracking(
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
-    let Some(definition) = startup.active_menu_definition_mut() else {
+    let Some(completed) = startup
+        .with_active_menu_definition_mut(MenuDefinitionTracking::complete_callback)
+    else {
         cpu.lr = call.origin.return_address();
-        startup.execution.menu_context_mut().clear_native_menu();
+        startup
+            .execution
+            .with_menu_context_mut(|context| context.clear_native_menu());
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
         return PpcImportAction::Return(0);
     };
-    let completed = match definition.complete_callback() {
+    let completed = match completed {
         Ok(completed) => completed,
         Err(()) => {
             if let Some(state) = startup.execution.take_menu_state() {
@@ -79144,7 +79182,9 @@ fn ppc_continue_custom_menu_bar_tracking(
                 }
             }
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_menu();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_menu());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(0);
@@ -79180,10 +79220,12 @@ fn ppc_continue_custom_menu_bar_tracking(
                         resources,
                         current_resource_refnum,
                     );
-                    *startup.execution.menu_state_mut() = Some(state);
+                    startup.execution.set_menu_state(Some(state));
                 }
                 if startup.active_menu_definition().is_none() {
-                    startup.execution.menu_context_mut().clear_native_menu();
+                    startup
+                        .execution
+                        .with_menu_context_mut(|context| context.clear_native_menu());
                     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
                     cpu.lr = call.origin.return_address();
                     return PpcImportAction::Yield(u64::MAX);
@@ -79216,11 +79258,10 @@ fn ppc_continue_custom_menu_bar_tracking(
         .as_ref()
         .is_some_and(|state| state.is_flashing())
     {
-        let step = startup.execution.menu_state_mut().as_mut().unwrap().advance_flash_at(
-            memory
-                .read_u32_be(crate::memory::globals::addr::TICKS)
-                .unwrap_or(0),
-        );
+        let tick = memory
+            .read_u32_be(crate::memory::globals::addr::TICKS)
+            .unwrap_or(0);
+        let step = startup.execution.advance_menu_flash(tick).unwrap();
         if matches!(step, MenuFlashStep::Wait | MenuFlashStep::Inactive) {
             return PpcImportAction::Yield(u64::MAX);
         }
@@ -79245,7 +79286,9 @@ fn ppc_continue_custom_menu_bar_tracking(
                 startup.host_menu_bar_hidden,
             );
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_menu();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_menu());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
@@ -79269,12 +79312,14 @@ fn ppc_continue_custom_menu_bar_tracking(
         }
     }
 
-    let definition = startup.active_menu_definition_mut().unwrap();
     let hit_point = (u32::from(input.mouse_v as u16) << 16) | u32::from(input.mouse_h as u16);
-    if definition.choose(hit_point).is_some() {
-        let invocation = definition
-            .pending_invocation()
-            .expect("choose installed the invocation");
+    let invocation = startup
+        .with_active_menu_definition_mut(|definition| {
+            definition.choose(hit_point)?;
+            definition.pending_invocation()
+        })
+        .flatten();
+    if let Some(invocation) = invocation {
         if let Some(action) = ppc_dispatch_native_menu_definition(
             cpu,
             Some(process_memory_manager),
@@ -79298,7 +79343,9 @@ fn ppc_continue_custom_menu_bar_tracking(
             }
         }
         startup.clear_active_menu_definition();
-        startup.execution.menu_context_mut().clear_native_menu();
+        startup
+            .execution
+            .with_menu_context_mut(|context| context.clear_native_menu());
         ppc_set_menu_command_highlight_with_colors(
             memory,
             gworlds,
@@ -79331,18 +79378,16 @@ fn ppc_continue_custom_menu_bar_tracking(
         0
     };
     if result != 0 {
-        let state = startup.execution.menu_state_mut().as_mut().unwrap();
-        state.set_flash_tick(
-            memory
-                .read_u32_be(crate::memory::globals::addr::TICKS)
-                .unwrap_or(0),
-        );
-        let flash_enabled = state.begin_flash(
-            memory
-                .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
-                .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT),
-            result,
-        );
+        let tick = memory
+            .read_u32_be(crate::memory::globals::addr::TICKS)
+            .unwrap_or(0);
+        let flashes = memory
+            .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+            .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT);
+        let flash_enabled = startup
+            .execution
+            .begin_menu_flash(tick, flashes, result)
+            .unwrap();
         if !flash_enabled {
             if let Some(state) = startup.execution.take_menu_state() {
                 if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
@@ -79364,7 +79409,9 @@ fn ppc_continue_custom_menu_bar_tracking(
                 startup.host_menu_bar_hidden,
             );
             startup.clear_active_menu_definition();
-            startup.execution.menu_context_mut().clear_native_menu();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_menu());
             ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
             cpu.lr = call.origin.return_address();
             return PpcImportAction::Return(result);
@@ -79391,7 +79438,9 @@ fn ppc_continue_custom_menu_bar_tracking(
         startup.host_menu_bar_hidden,
     );
     startup.clear_active_menu_definition();
-    startup.execution.menu_context_mut().clear_native_menu();
+    startup
+        .execution
+        .with_menu_context_mut(|context| context.clear_native_menu());
     ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
     cpu.lr = call.origin.return_address();
     PpcImportAction::Return(result)
@@ -79474,17 +79523,21 @@ fn ppc_track_menu_while_held_with_resources(
             .filter(|(menu_handle, _)| *menu_handle != previous.menu_handle);
         if let Some((menu_handle, title_left)) = switched {
             ppc_restore_menu_tracking(memory, Some(front.into()), &previous);
-            *startup.execution.menu_state_mut() = ppc_begin_menu_bar_tracking_with_resources(
-                memory,
-                front,
-                menu_handle,
-                title_left,
-                resources,
-                current_resource_refnum,
+            startup.execution.set_menu_state(
+                ppc_begin_menu_bar_tracking_with_resources(
+                    memory,
+                    front,
+                    menu_handle,
+                    title_left,
+                    resources,
+                    current_resource_refnum,
+                ),
             );
-            startup.execution.menu_context_mut().clear_native_popup();
+            startup
+                .execution
+                .with_menu_context_mut(|context| context.clear_native_popup());
         } else {
-            *startup.execution.menu_state_mut() = Some(previous);
+            startup.execution.set_menu_state(Some(previous));
         }
     } else {
         let Some((menu_handle, title_left)) =
@@ -79502,8 +79555,10 @@ fn ppc_track_menu_while_held_with_resources(
         ) else {
             return;
         };
-        *startup.execution.menu_state_mut() = Some(state);
-        startup.execution.menu_context_mut().clear_native_popup();
+        startup.execution.set_menu_state(Some(state));
+        startup
+            .execution
+            .with_menu_context_mut(|context| context.clear_native_popup());
     }
     let active_menu_id = startup.execution.menu().as_ref().and_then(|state| {
         memory
@@ -79540,7 +79595,7 @@ fn ppc_track_menu_while_held_with_resources(
             resources,
             current_resource_refnum,
         );
-        *startup.execution.menu_state_mut() = Some(state);
+        startup.execution.set_menu_state(Some(state));
     }
 }
 
@@ -79646,7 +79701,7 @@ fn ppc_finish_menu_bar_tracking(
             &[],
             0,
         );
-        *startup.execution.menu_state_mut() = Some(state);
+        startup.execution.set_menu_state(Some(state));
     }
     ppc_finish_menu_bar_tracking_with_colors(
         memory,
@@ -95507,12 +95562,15 @@ pub(crate) mod tests {
         });
         let probe = loaded.run_with_hle_imports(256);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        {
-            let state = loaded.toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
-            assert_eq!(state.flash_result, (141u32 << 16) | 2);
-            state.flash_remaining = 1;
-            state.flash_deadline = state.flash_tick.unwrap_or(0);
-        }
+        loaded
+            .toolbox_startup
+            .execution
+            .with_menu_state_mut(|state| {
+                assert_eq!(state.flash_result, (141u32 << 16) | 2);
+                state.flash_remaining = 1;
+                state.flash_deadline = state.flash_tick.unwrap_or(0);
+            })
+            .unwrap();
         let probe = loaded.run_with_hle_imports(256);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (141u32 << 16) | 2);
@@ -97498,16 +97556,20 @@ pub(crate) mod tests {
         let mut tracking = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
         tracking.highlighted_item = 2;
         context.set_menu_tracking(Some(tracking));
-        classic.menu_tracking.context_mut().call = Some(MenuTrackingCall {
-            request: MenuTrackingRequest::MenuSelect { initial_point: 0 },
-            origin: MenuTrackingOrigin::M68k {
-                stack_pointer: TEST_SP,
-                return_address: 0x1234,
-            },
+        classic.menu_tracking.with_context_mut(|menu_context| {
+            menu_context.call = Some(MenuTrackingCall {
+                request: MenuTrackingRequest::MenuSelect { initial_point: 0 },
+                origin: MenuTrackingOrigin::M68k {
+                    stack_pointer: TEST_SP,
+                    return_address: 0x1234,
+                },
+            });
         });
         // A drawing surface cannot turn a classic operation into a native one.
         let native_front = native.current_front_buffer().unwrap();
-        context.menu_tracking_mut().unwrap().front_buffer = Some(native_front.into());
+        context
+            .with_menu_tracking_mut(|tracking| tracking.front_buffer = Some(native_front.into()))
+            .unwrap();
         assert_eq!(
             classic
                 .menu_tracking
@@ -97528,10 +97590,8 @@ pub(crate) mod tests {
         native
             .toolbox_startup
             .execution
-            .menu_state_mut()
-            .as_mut()
-            .unwrap()
-            .highlighted_item = 4;
+            .with_menu_state_mut(|tracking| tracking.highlighted_item = 4)
+            .unwrap();
         assert_eq!(classic.menu_tracking.as_ref().unwrap().highlighted_item, 4);
         assert_eq!(
             context
@@ -97540,10 +97600,15 @@ pub(crate) mod tests {
             Some(4)
         );
 
-        native.toolbox_startup.execution.menu_context_mut().call =
-            Some(ppc_menu_select_call(&native.cpu, 0));
+        let call = ppc_menu_select_call(&native.cpu, 0);
+        native
+            .toolbox_startup
+            .execution
+            .with_menu_context_mut(|context| context.call = Some(call));
         // Nor can an absent native surface turn its caller into a classic one.
-        context.menu_tracking_mut().unwrap().front_buffer = None;
+        context
+            .with_menu_tracking_mut(|tracking| tracking.front_buffer = None)
+            .unwrap();
         classic_cpu.write_reg(Register::A7, TEST_SP);
         classic_bus.write_long(TEST_SP, 0);
         classic_bus.write_long(TEST_SP + 4, u32::MAX);
@@ -99027,10 +99092,8 @@ pub(crate) mod tests {
         native
             .toolbox_startup
             .execution
-            .menu_state_mut()
-            .as_mut()
-            .unwrap()
-            .highlighted_item = 3;
+            .with_menu_state_mut(|tracking| tracking.highlighted_item = 3)
+            .unwrap();
 
         assert_eq!(
             context
@@ -99080,10 +99143,8 @@ pub(crate) mod tests {
             native
                 .toolbox_startup
                 .execution
-                .menu_state_mut()
-                .as_mut()
-                .unwrap()
-                .highlighted_item = 5;
+                .with_menu_state_mut(|tracking| tracking.highlighted_item = 5)
+                .unwrap();
             panic!("simulated panic inside PPC guest execution");
         }));
 
@@ -165460,18 +165521,20 @@ pub(crate) mod tests {
             mouse_h: 0,
             ..PpcInputSnapshot::default()
         });
-        {
-            let state = loaded.toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
-            state.flash_deadline = state.flash_tick.unwrap_or(0);
-        }
+        loaded
+            .toolbox_startup
+            .execution
+            .with_menu_state_mut(|state| state.flash_deadline = state.flash_tick.unwrap_or(0))
+            .unwrap();
         assert!(matches!(
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        {
-            let state = loaded.toolbox_startup.execution.menu_state_mut().as_mut().unwrap();
-            state.flash_deadline = state.flash_tick.unwrap_or(0);
-        }
+        loaded
+            .toolbox_startup
+            .execution
+            .with_menu_state_mut(|state| state.flash_deadline = state.flash_tick.unwrap_or(0))
+            .unwrap();
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (129u32 << 16) | 1);
@@ -175430,7 +175493,10 @@ pub(crate) mod tests {
             item_appearances: Vec::new(),
             submenus: Vec::new(),
         };
-        *loaded.toolbox_startup.execution.menu_state_mut() = Some(tracking.clone());
+        loaded
+            .toolbox_startup
+            .execution
+            .set_menu_state(Some(tracking.clone()));
         loaded.memory.write_u16_be(PPC_THE_MENU_ADDR, 128).unwrap();
 
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
@@ -175455,19 +175521,23 @@ pub(crate) mod tests {
 
         let mut popup_tracking = tracking;
         popup_tracking.kind = MenuTrackingKind::PopUp;
+        loaded.toolbox_startup.execution.with_menu_context_mut(|context| {
+            context.call = Some(MenuTrackingCall {
+                request: MenuTrackingRequest::PopUp(PopupMenuRequest {
+                    menu_handle: popup_tracking.menu_handle,
+                    anchor: (100, 50),
+                    requested_item: 1,
+                }),
+                origin: MenuTrackingOrigin::PowerPc {
+                    stack_pointer: loaded.cpu.gpr[1],
+                    return_address: loaded.cpu.lr,
+                },
+            });
+        });
         loaded
             .toolbox_startup
             .execution
-            .menu_context_mut()
-            .call = Some(MenuTrackingCall {
-            request: MenuTrackingRequest::PopUp(PopupMenuRequest {
-                menu_handle: popup_tracking.menu_handle,
-                anchor: (100, 50),
-                requested_item: 1,
-            }),
-            origin: MenuTrackingOrigin::PowerPc { stack_pointer: loaded.cpu.gpr[1], return_address: loaded.cpu.lr },
-        });
-        *loaded.toolbox_startup.execution.menu_state_mut() = Some(popup_tracking);
+            .set_menu_state(Some(popup_tracking));
         loaded
             .memory
             .write_u16_be(PPC_THE_MENU_ADDR, 0x2468)

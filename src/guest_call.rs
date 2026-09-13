@@ -878,11 +878,6 @@ impl std::ops::Deref for SharedMenuTracking {
         &self.context().tracking
     }
 }
-impl std::ops::DerefMut for SharedMenuTracking {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.context_mut().tracking
-    }
-}
 impl SharedMenuTracking {
     pub(crate) fn is_view_of(&self, calls: &SharedGuestCallStack) -> bool {
         let tasks = calls.0.borrow();
@@ -930,20 +925,34 @@ impl SharedMenuTracking {
             })
             .unwrap_or(&self.empty)
     }
-    pub(crate) fn existing_context_mut(&mut self) -> Option<&mut MenuTrackingContext> {
+    pub(crate) fn with_existing_context_mut<R>(
+        &self,
+        update: impl FnOnce(&mut MenuTrackingContext) -> R,
+    ) -> Option<R> {
         let index = self.active_index()?;
-        match &mut self.calls.calls[index].operation {
-            MenuOperation::Tracking(operation) => Some(operation.context.as_mut()),
+        self.calls.with_mut(|calls| match &mut calls.calls[index].operation {
+            MenuOperation::Tracking(operation) => Some(update(operation.context.as_mut())),
             _ => None,
-        }
+        })
     }
-    pub(crate) fn as_mut(&mut self) -> Option<&mut crate::menu_manager::ProcessMenuTrackingState> {
-        self.existing_context_mut()?.tracking.as_mut()
+    pub(crate) fn with_tracking_mut<R>(
+        &self,
+        update: impl FnOnce(&mut crate::menu_manager::ProcessMenuTrackingState) -> R,
+    ) -> Option<R> {
+        self.with_existing_context_mut(|context| context.tracking.as_mut().map(update))
+            .flatten()
     }
-    pub(crate) fn take(&mut self) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
-        self.existing_context_mut()?.tracking.take()
+    pub(crate) fn take(&self) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
+        self.with_existing_context_mut(|context| context.tracking.take())
+            .flatten()
     }
-    pub(crate) fn context_mut(&mut self) -> &mut MenuTrackingContext {
+    pub(crate) fn set(&self, tracking: Option<crate::menu_manager::ProcessMenuTrackingState>) {
+        self.with_context_mut(|context| context.tracking = tracking);
+    }
+    pub(crate) fn with_context_mut<R>(
+        &self,
+        update: impl FnOnce(&mut MenuTrackingContext) -> R,
+    ) -> R {
         let index = match self.active_index() {
             Some(index) => index,
             None => {
@@ -951,12 +960,12 @@ impl SharedMenuTracking {
                 self.active_index().unwrap()
             }
         };
-        match &mut self.calls.calls[index].operation {
-            MenuOperation::Tracking(operation) => operation.context.as_mut(),
+        self.calls.with_mut(|calls| match &mut calls.calls[index].operation {
+            MenuOperation::Tracking(operation) => update(operation.context.as_mut()),
             _ => unreachable!(),
-        }
+        })
     }
-    pub(crate) fn enter_new_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
+    pub(crate) fn enter_new_call(&self, call: MenuTrackingCall) -> MenuTrackingEntry {
         let task = self.execution.current_task();
         let parent = self
             .execution
@@ -966,7 +975,7 @@ impl SharedMenuTracking {
             .peek(task)
             .map(|call| call.call_id());
         let id = self.push_tracking(task, parent);
-        self.context_mut().call = Some(call);
+        self.with_context_mut(|context| context.call = Some(call));
         self.scope(id)
     }
 
@@ -1003,20 +1012,26 @@ impl SharedMenuTracking {
     }
 
     pub(crate) fn resume_call(
-        &mut self,
+        &self,
         isa: GuestIsa,
     ) -> Option<(MenuTrackingCall, MenuTrackingEntry)> {
         let call = self.ready_call(isa)?;
         let index = self.active_index()?;
         let id = self.calls.calls[index].id;
-        let MenuOperation::Tracking(operation) = &mut self.calls.calls[index].operation else {
-            return None;
-        };
-        if let Some(hook) = operation.hook.as_ref() {
-            if !hook.completion.take() {
-                return None;
+        let resumed = self.calls.with_mut(|calls| {
+            let MenuOperation::Tracking(operation) = &mut calls.calls[index].operation else {
+                return false;
+            };
+            if let Some(hook) = operation.hook.as_ref() {
+                if !hook.completion.take() {
+                    return false;
+                }
+                operation.hook = None;
             }
-            operation.hook = None;
+            true
+        });
+        if !resumed {
+            return None;
         }
         Some((call, self.scope(id)))
     }
@@ -1058,25 +1073,26 @@ impl SharedMenuTracking {
     /// Attach a receipt after synchronous callback submission changed the top
     /// execution frame. Lookup uses the copied owner key, not current parent.
     pub(crate) fn bind_menu_hook(
-        &mut self,
+        &self,
         key: MenuHookKey,
         completion: MenuHookCompletion,
     ) -> bool {
-        let Some(root) =
-            self.calls.calls.iter_mut().find(|root| {
+        self.calls.with_mut(|calls| {
+            let Some(root) = calls.calls.iter_mut().find(|root| {
                 root.task == key.task && root.id == key.menu && root.parent == key.parent
             })
-        else {
-            return false;
-        };
-        let MenuOperation::Tracking(operation) = &mut root.operation else {
-            return false;
-        };
-        if operation.hook.is_some() {
-            return false;
-        }
-        operation.hook = Some(MenuHookOperation { key, completion });
-        true
+            else {
+                return false;
+            };
+            let MenuOperation::Tracking(operation) = &mut root.operation else {
+                return false;
+            };
+            if operation.hook.is_some() {
+                return false;
+            }
+            operation.hook = Some(MenuHookOperation { key, completion });
+            true
+        })
     }
 
     fn scope(&self, id: MenuOperationId) -> MenuTrackingEntry {
@@ -1091,7 +1107,7 @@ impl SharedMenuTracking {
     }
 
     #[cfg(test)]
-    pub(crate) fn enter(&mut self) -> MenuTrackingEntry {
+    pub(crate) fn enter(&self) -> MenuTrackingEntry {
         let id = self.begin();
         self.scope(id)
     }
@@ -1109,34 +1125,35 @@ impl SharedMenuTracking {
         (call.parent == parent).then_some(call.id)
     }
     pub(crate) fn bind_completion(
-        &mut self,
+        &self,
         id: MenuOperationId,
         invocation: crate::menu_manager::MenuDefinitionInvocation,
         completion: crate::menu_manager::MenuDefinitionCompletion,
     ) {
         let task = self.execution.current_task();
-        let Some(call) = self
-            .calls
-            .calls
-            .iter_mut()
-            .find(|call| call.id == id && call.task == task)
-        else {
-            return;
-        };
-        let MenuOperation::Tracking(operation) = &mut call.operation else {
-            return;
-        };
-        let definition = operation
-            .context
-            .tracking
-            .as_mut()
-            .and_then(|tracking| tracking.active_definition_mut())
-            .or(operation.context.definition.as_mut());
-        if let Some(definition) = definition {
-            definition.bind_completion(invocation, completion);
-        }
+        self.calls.with_mut(|calls| {
+            let Some(call) = calls
+                .calls
+                .iter_mut()
+                .find(|call| call.id == id && call.task == task)
+            else {
+                return;
+            };
+            let MenuOperation::Tracking(operation) = &mut call.operation else {
+                return;
+            };
+            let definition = operation
+                .context
+                .tracking
+                .as_mut()
+                .and_then(|tracking| tracking.active_definition_mut())
+                .or(operation.context.definition.as_mut());
+            if let Some(definition) = definition {
+                definition.bind_completion(invocation, completion);
+            }
+        });
     }
-    pub(crate) fn begin(&mut self) -> MenuOperationId {
+    pub(crate) fn begin(&self) -> MenuOperationId {
         let task = self.execution.current_task();
         let parent = self
             .execution
@@ -1147,27 +1164,36 @@ impl SharedMenuTracking {
             .map(|call| call.call_id());
         // Cancellation can empty a root outside its original ABI entry.
         // A subsequent entry starts a fresh operation and cannot inherit its caller.
-        self.calls.calls.retain(|call| {
-            call.task != task || call.parent != parent
-                || !matches!(&call.operation, MenuOperation::Tracking(operation) if operation.is_idle())
-        });
-        if let Some(call) = self.calls.calls.iter().rev().find(|call| {
-            call.task == task
-                && call.parent == parent
-                && matches!(call.operation, MenuOperation::Tracking(_))
-        }) {
-            return call.id;
-        }
-        self.push_tracking(task, parent)
+        self.calls.with_mut(|calls| {
+            calls.calls.retain(|call| {
+                call.task != task || call.parent != parent
+                    || !matches!(&call.operation, MenuOperation::Tracking(operation) if operation.is_idle())
+            });
+            if let Some(call) = calls.calls.iter().rev().find(|call| {
+                call.task == task
+                    && call.parent == parent
+                    && matches!(call.operation, MenuOperation::Tracking(_))
+            }) {
+                return call.id;
+            }
+            Self::push_tracking_call(calls, task, parent)
+        })
     }
-    fn push_tracking(&mut self, task: ExecutionTaskId, parent: Option<CallId>) -> MenuOperationId {
-        let id = MenuOperationId(self.calls.next_id);
-        self.calls.next_id = self
-            .calls
+    fn push_tracking(&self, task: ExecutionTaskId, parent: Option<CallId>) -> MenuOperationId {
+        self.calls
+            .with_mut(|calls| Self::push_tracking_call(calls, task, parent))
+    }
+    fn push_tracking_call(
+        calls: &mut MenuCalls,
+        task: ExecutionTaskId,
+        parent: Option<CallId>,
+    ) -> MenuOperationId {
+        let id = MenuOperationId(calls.next_id);
+        calls.next_id = calls
             .next_id
             .checked_add(1)
             .expect("menu operation identity exhausted");
-        self.calls.calls.push(MenuCall {
+        calls.calls.push(MenuCall {
             id,
             task,
             parent,
@@ -1175,10 +1201,12 @@ impl SharedMenuTracking {
         });
         id
     }
-    pub(crate) fn finish_if_idle(&mut self, id: MenuOperationId) {
-        self.calls.calls.retain(|call| {
-            call.id != id
-                || !matches!(&call.operation, MenuOperation::Tracking(operation) if operation.is_idle())
+    pub(crate) fn finish_if_idle(&self, id: MenuOperationId) {
+        self.calls.with_mut(|calls| {
+            calls.calls.retain(|call| {
+                call.id != id
+                    || !matches!(&call.operation, MenuOperation::Tracking(operation) if operation.is_idle())
+            });
         });
     }
     #[cfg(test)]
@@ -1502,7 +1530,8 @@ impl ExecutionTaskCalls {
         self.cooperative_contexts.remove(task);
         self.native_threads.remove(task);
         self.thread_storage.remove(task);
-        self.menu_calls.calls.retain(|call| call.task != task);
+        self.menu_calls
+            .with_mut(|calls| calls.calls.retain(|call| call.task != task));
         if let Some(isa) = pooled_isa {
             self.thread_pool.push((
                 isa,
@@ -1709,46 +1738,45 @@ impl SharedGuestCallStack {
         if self.menu_bar_build().is_some() {
             return None;
         }
-        let mut tasks = self.0.borrow_mut();
+        let tasks = self.0.borrow_mut();
         let task = tasks.kernel.current_task();
         let parent = tasks.kernel.peek(task).map(|call| call.call_id());
-        let next = tasks.menu_calls.next_id.checked_add(1)?;
-        let id = MenuOperationId(tasks.menu_calls.next_id);
-        tasks.menu_calls.next_id = next;
-        tasks.menu_calls.calls.push(MenuCall {
-            id,
-            task,
-            parent,
-            operation: MenuOperation::Build { origin, build },
-        });
-        Some(id)
+        tasks.menu_calls.with_mut(|calls| {
+            let next = calls.next_id.checked_add(1)?;
+            let id = MenuOperationId(calls.next_id);
+            calls.next_id = next;
+            calls.calls.push(MenuCall {
+                id,
+                task,
+                parent,
+                operation: MenuOperation::Build { origin, build },
+            });
+            Some(id)
+        })
     }
     pub(crate) fn advance_menu_bar_build(&self, isa: GuestIsa) -> Option<MenuBarBuildResume> {
         let id = self.menu_bar_build()?;
-        let mut tasks = self.0.borrow_mut();
-        let index = tasks
-            .menu_calls
-            .calls
-            .iter()
-            .position(|call| call.id == id)?;
-        let MenuOperation::Build { origin, build } = &mut tasks.menu_calls.calls[index].operation
-        else {
-            return None;
-        };
-        if origin.isa() != isa {
-            return None;
-        }
-        match build.next_step() {
-            Some(crate::menu_manager::MenuBarBuildStep::Size(handle)) => {
-                Some(MenuBarBuildResume::Size(handle))
+        let tasks = self.0.borrow_mut();
+        tasks.menu_calls.with_mut(|calls| {
+            let index = calls.calls.iter().position(|call| call.id == id)?;
+            let MenuOperation::Build { origin, build } = &mut calls.calls[index].operation else {
+                return None;
+            };
+            if origin.isa() != isa {
+                return None;
             }
-            Some(crate::menu_manager::MenuBarBuildStep::Complete(result)) => {
-                let origin = *origin;
-                tasks.menu_calls.calls.remove(index);
-                Some(MenuBarBuildResume::Complete { result, origin })
+            match build.next_step() {
+                Some(crate::menu_manager::MenuBarBuildStep::Size(handle)) => {
+                    Some(MenuBarBuildResume::Size(handle))
+                }
+                Some(crate::menu_manager::MenuBarBuildStep::Complete(result)) => {
+                    let origin = *origin;
+                    calls.calls.remove(index);
+                    Some(MenuBarBuildResume::Complete { result, origin })
+                }
+                None => Some(MenuBarBuildResume::Waiting),
             }
-            None => Some(MenuBarBuildResume::Waiting),
-        }
+        })
     }
     pub(crate) fn bind_menu_bar_build_completion(
         &self,
@@ -1756,18 +1784,19 @@ impl SharedGuestCallStack {
         handle: u32,
         completion: crate::menu_manager::MenuDefinitionCompletion,
     ) {
-        let mut tasks = self.0.borrow_mut();
+        let tasks = self.0.borrow_mut();
         let task = tasks.kernel.current_task();
-        if let Some(call) = tasks
-            .menu_calls
-            .calls
-            .iter_mut()
-            .find(|call| call.id == id && call.task == task)
-        {
-            if let MenuOperation::Build { build, .. } = &mut call.operation {
-                build.bind_completion(handle, completion);
+        tasks.menu_calls.with_mut(|calls| {
+            if let Some(call) = calls
+                .calls
+                .iter_mut()
+                .find(|call| call.id == id && call.task == task)
+            {
+                if let MenuOperation::Build { build, .. } = &mut call.operation {
+                    build.bind_completion(handle, completion);
+                }
             }
-        }
+        });
     }
 
     pub(crate) fn current_task(&self) -> ExecutionTaskId {
@@ -1861,7 +1890,9 @@ impl SharedGuestCallStack {
         tasks.cooperative_contexts.remove(task);
         tasks.native_threads.remove(task);
         tasks.thread_storage.remove(task);
-        tasks.menu_calls.calls.retain(|call| call.task != task);
+        tasks
+            .menu_calls
+            .with_mut(|calls| calls.calls.retain(|call| call.task != task));
         true
     }
 
@@ -3671,18 +3702,46 @@ impl ExecutionMenuViews {
         &self.menu
     }
 
-    pub(crate) fn menu_state_mut(
-        &mut self,
-    ) -> &mut Option<crate::menu_manager::ProcessMenuTrackingState> {
-        &mut self.menu
+    pub(crate) fn set_menu_state(
+        &self,
+        state: Option<crate::menu_manager::ProcessMenuTrackingState>,
+    ) {
+        self.menu.set(state);
     }
 
-    pub(crate) fn existing_menu_context_mut(&mut self) -> Option<&mut MenuTrackingContext> {
-        self.menu.existing_context_mut()
+    pub(crate) fn with_menu_state_mut<R>(
+        &self,
+        update: impl FnOnce(&mut crate::menu_manager::ProcessMenuTrackingState) -> R,
+    ) -> Option<R> {
+        self.menu.with_tracking_mut(update)
     }
 
-    pub(crate) fn menu_context_mut(&mut self) -> &mut MenuTrackingContext {
-        self.menu.context_mut()
+    pub(crate) fn begin_menu_flash(&self, tick: u32, flashes: u16, result: u32) -> Option<bool> {
+        self.with_menu_state_mut(|state| {
+            state.set_flash_tick(tick);
+            state.begin_flash(flashes, result)
+        })
+    }
+
+    pub(crate) fn advance_menu_flash(
+        &self,
+        tick: u32,
+    ) -> Option<crate::menu_manager::MenuFlashStep> {
+        self.with_menu_state_mut(|state| state.advance_flash_at(tick))
+    }
+
+    pub(crate) fn with_existing_menu_context_mut<R>(
+        &self,
+        update: impl FnOnce(&mut MenuTrackingContext) -> R,
+    ) -> Option<R> {
+        self.menu.with_existing_context_mut(update)
+    }
+
+    pub(crate) fn with_menu_context_mut<R>(
+        &self,
+        update: impl FnOnce(&mut MenuTrackingContext) -> R,
+    ) -> R {
+        self.menu.with_context_mut(update)
     }
 
     pub(crate) fn enter_menu_call(&mut self, call: MenuTrackingCall) -> MenuTrackingEntry {
@@ -3804,7 +3863,7 @@ mod tests {
     fn execution_menu_views_clone_once_and_derive_each_menu_view() {
         let mut original = ExecutionMenuViews::detached();
         let root = original.enter_test_menu();
-        *original.menu_state_mut() = Some(crate::menu_manager::test_process_menu_tracking(0x1000));
+        original.set_menu_state(Some(crate::menu_manager::test_process_menu_tracking(0x1000)));
         assert!(original.is_coherent());
 
         let mut snapshot = original.clone();
@@ -3813,7 +3872,9 @@ mod tests {
         assert!(!snapshot.menu().ptr_eq(original.menu()));
         assert_eq!(snapshot, original);
 
-        snapshot.menu_state_mut().as_mut().unwrap().highlighted_item = 7;
+        snapshot
+            .with_menu_state_mut(|state| state.highlighted_item = 7)
+            .unwrap();
         assert_eq!(snapshot.menu().as_ref().unwrap().highlighted_item, 7);
         assert_eq!(original.menu().as_ref().unwrap().highlighted_item, 1);
 
@@ -3990,7 +4051,7 @@ mod tests {
     fn fresh_menu_entries_and_resumption_use_exact_call_ownership() {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let original = MenuTrackingCall {
             request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
             origin: MenuTrackingOrigin::M68k {
@@ -3999,7 +4060,7 @@ mod tests {
             },
         };
         let outer = tracking.enter_new_call(original);
-        *tracking = Some(test_process_menu_tracking(111));
+        tracking.set(Some(test_process_menu_tracking(111)));
         assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(original));
         assert_eq!(tracking.ready_call(GuestIsa::PowerPc), None);
         assert!(calls.begin_m68k(
@@ -4023,13 +4084,13 @@ mod tests {
             inner.id, outer.id,
             "a fresh public entry cannot resume the prior operation"
         );
-        *tracking = Some(test_process_menu_tracking(222));
-        *tracking = None;
+        tracking.set(Some(test_process_menu_tracking(222)));
+        tracking.set(None);
         drop(inner);
         assert_eq!(tracking.as_ref().unwrap().menu_handle, 111);
         let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
         assert_eq!(resumed.id, outer.id);
-        *tracking = None;
+        tracking.set(None);
         drop(resumed);
         drop(outer);
         assert!(calls.is_empty());
@@ -4040,7 +4101,7 @@ mod tests {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
 
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let outer_call = MenuTrackingCall {
             request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
             origin: MenuTrackingOrigin::M68k {
@@ -4049,7 +4110,7 @@ mod tests {
             },
         };
         let outer = tracking.enter_new_call(outer_call);
-        *tracking = Some(test_process_menu_tracking(111));
+        tracking.set(Some(test_process_menu_tracking(111)));
         let outer_key = tracking.request_menu_hook(true).unwrap();
         assert_eq!(outer_key.task, ExecutionTaskId::APPLICATION);
         assert_eq!(outer_key.menu, outer.id);
@@ -4072,7 +4133,7 @@ mod tests {
             },
         };
         let inner = tracking.enter_new_call(inner_call);
-        *tracking = Some(test_process_menu_tracking(222));
+        tracking.set(Some(test_process_menu_tracking(222)));
         let inner_key = tracking.request_menu_hook(true).unwrap();
         assert_ne!(inner_key.menu, outer_key.menu);
         assert_ne!(inner_key.parent, outer_key.parent);
@@ -4092,7 +4153,7 @@ mod tests {
         let (resumed_inner, inner_resume) = tracking.resume_call(GuestIsa::M68k).unwrap();
         assert_eq!(resumed_inner, inner_call);
         assert_eq!(inner_resume.id, inner.id);
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(inner_resume);
         drop(inner);
 
@@ -4108,7 +4169,7 @@ mod tests {
         let (resumed_outer, outer_resume) = tracking.resume_call(GuestIsa::M68k).unwrap();
         assert_eq!(resumed_outer, outer_call);
         assert_eq!(outer_resume.id, outer.id);
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(outer_resume);
         drop(outer);
         assert!(calls.is_empty());
@@ -4119,7 +4180,7 @@ mod tests {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
 
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let call = MenuTrackingCall {
             request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
             origin: MenuTrackingOrigin::PowerPc {
@@ -4128,7 +4189,7 @@ mod tests {
             },
         };
         let entry = tracking.enter_new_call(call);
-        *tracking = Some(test_process_menu_tracking(111));
+        tracking.set(Some(test_process_menu_tracking(111)));
         assert_eq!(tracking.request_menu_hook(false), None);
         let key = tracking.request_menu_hook(true).unwrap();
         let operation = MenuHookOperation::pending(key);
@@ -4148,7 +4209,7 @@ mod tests {
         assert_eq!(tracking.request_menu_hook(true), None);
         assert_eq!(tracking.ready_call(GuestIsa::PowerPc), None);
 
-        *tracking = None;
+        tracking.set(None);
         drop(entry);
         assert!(
             !calls.is_empty(),
@@ -4168,7 +4229,7 @@ mod tests {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
 
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let application_call = MenuTrackingCall {
             request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
             origin: MenuTrackingOrigin::M68k {
@@ -4177,7 +4238,7 @@ mod tests {
             },
         };
         let application_entry = tracking.enter_new_call(application_call);
-        *tracking = Some(test_process_menu_tracking(111));
+        tracking.set(Some(test_process_menu_tracking(111)));
         let application_operation =
             MenuHookOperation::pending(tracking.request_menu_hook(true).unwrap());
         assert!(tracking.bind_menu_hook(
@@ -4197,7 +4258,7 @@ mod tests {
             },
         };
         let worker_entry = tracking.enter_new_call(worker_call);
-        *tracking = Some(test_process_menu_tracking(222));
+        tracking.set(Some(test_process_menu_tracking(222)));
         let worker_operation =
             MenuHookOperation::pending(tracking.request_menu_hook(true).unwrap());
         assert_ne!(worker_operation.key.task, application_operation.key.task);
@@ -4209,14 +4270,14 @@ mod tests {
         assert!(worker_operation.complete());
         assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(worker_call));
         let (_, worker_resume) = tracking.resume_call(GuestIsa::M68k).unwrap();
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(worker_resume);
         drop(worker_entry);
 
         assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
         assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(application_call));
         let (_, application_resume) = tracking.resume_call(GuestIsa::M68k).unwrap();
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(application_resume);
         drop(application_entry);
         assert!(calls.remove_task(worker));
@@ -4228,7 +4289,7 @@ mod tests {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
 
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let worker = ExecutionTaskId::from_thread_id(7);
         assert!(calls.register_task(worker));
         assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
@@ -4240,7 +4301,7 @@ mod tests {
                 return_address: 0x5000,
             },
         });
-        *tracking = Some(test_process_menu_tracking(222));
+        tracking.set(Some(test_process_menu_tracking(222)));
         let key = tracking.request_menu_hook(true).unwrap();
         assert_eq!(key.task, worker);
         let operation = MenuHookOperation::pending(key);
@@ -4289,7 +4350,7 @@ mod tests {
             },
         ] {
             let calls = SharedGuestCallStack::default();
-            let mut tracking = calls.menu_tracking_view();
+            let tracking = calls.menu_tracking_view();
             let original = MenuTrackingCall {
                 request: MenuTrackingRequest::MenuSelect {
                     initial_point: 0x1234_5678,
@@ -4297,7 +4358,7 @@ mod tests {
                 origin,
             };
             let entry = tracking.enter_new_call(original);
-            *tracking = Some(test_process_menu_tracking(111));
+            tracking.set(Some(test_process_menu_tracking(111)));
             let (resumed_call, reentry) = tracking.resume_call(origin.isa()).unwrap();
             assert_eq!(resumed_call, original);
             assert_eq!(entry.id, reentry.id);
@@ -4305,13 +4366,13 @@ mod tests {
             assert_eq!(tracking.context().caller_isa(), Some(origin.isa()));
             drop(reentry);
             assert_eq!(tracking.context().call, Some(original));
-            *tracking = None;
+            tracking.set(None);
             drop(entry);
             assert!(calls.is_empty());
             assert_eq!(tracking.context().call, None);
             let cancelled = tracking.enter_new_call(original);
-            *tracking = Some(test_process_menu_tracking(222));
-            *tracking = None;
+            tracking.set(Some(test_process_menu_tracking(222)));
+            tracking.set(None);
             let replacement = MenuTrackingCall {
                 request: MenuTrackingRequest::MenuSelect { initial_point: 9 },
                 origin: MenuTrackingOrigin::PowerPc {
@@ -4341,19 +4402,23 @@ mod tests {
             MenuDefinitionOperation, MenuDefinitionResult, MenuDefinitionTracking,
         };
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let outer = tracking.enter();
         let outer_id = outer.id;
-        *tracking = Some(test_process_menu_tracking(111));
-        tracking.context_mut().call = Some(MenuTrackingCall {
-            request: crate::menu_manager::MenuTrackingRequest::MenuSelect { initial_point: 12 },
-            origin: MenuTrackingOrigin::PowerPc {
-                stack_pointer: 0x1000,
-                return_address: 0x1234,
-            },
+        tracking.set(Some(test_process_menu_tracking(111)));
+        tracking.with_context_mut(|context| {
+            context.call = Some(MenuTrackingCall {
+                request: crate::menu_manager::MenuTrackingRequest::MenuSelect {
+                    initial_point: 12,
+                },
+                origin: MenuTrackingOrigin::PowerPc {
+                    stack_pointer: 0x1000,
+                    return_address: 0x1234,
+                },
+            });
+            context.native_port = Some((0x2000, 0x3000));
+            context.definition = Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
         });
-        tracking.context_mut().native_port = Some((0x2000, 0x3000));
-        tracking.context_mut().definition = Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
         let invocation = tracking
             .context()
             .definition
@@ -4383,8 +4448,10 @@ mod tests {
         assert_ne!(inner.id, outer_id);
         assert!(tracking.is_none());
         assert_eq!(tracking.context().native_port, None);
-        *tracking = Some(test_process_menu_tracking(222));
-        tracking.context_mut().definition = Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
+        tracking.set(Some(test_process_menu_tracking(222)));
+        tracking.with_context_mut(|context| {
+            context.definition = Some(MenuDefinitionTracking::begin_draw(111, (1, 2, 3, 4)));
+        });
         MenuDefinitionOperation {
             scratch: 0,
             completion,
@@ -4394,16 +4461,13 @@ mod tests {
             which_item: 2,
         }));
         assert_eq!(
-            tracking
-                .context_mut()
-                .definition
-                .as_mut()
-                .unwrap()
-                .complete_callback(),
+            tracking.with_context_mut(|context| {
+                context.definition.as_mut().unwrap().complete_callback()
+            }),
             Ok(None),
             "identical messages do not share receipts"
         );
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(inner);
         assert_eq!(tracking.as_ref().unwrap().menu_handle, 111);
         assert_eq!(tracking.context().native_port, Some((0x2000, 0x3000)));
@@ -4419,19 +4483,16 @@ mod tests {
         assert!(calls.complete_m68k(0x4002, 0x5000));
         assert_eq!(tracking.entry_id(), Some(outer_id));
         assert_eq!(
-            tracking
-                .context_mut()
-                .definition
-                .as_mut()
-                .unwrap()
-                .complete_callback(),
+            tracking.with_context_mut(|context| {
+                context.definition.as_mut().unwrap().complete_callback()
+            }),
             Ok(Some(MenuDefinitionMessage::Draw))
         );
         assert_eq!(
             tracking.context().definition.as_ref().unwrap().which_item(),
             2
         );
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(outer);
         assert!(calls.is_empty());
         assert!(calls.0.borrow().menu_calls.calls.is_empty());
@@ -4440,19 +4501,19 @@ mod tests {
     #[test]
     fn empty_menu_queries_do_not_create_root_operations() {
         let calls = SharedGuestCallStack::default();
-        let mut view = calls.menu_tracking_view();
-        assert!(view.as_mut().is_none());
+        let view = calls.menu_tracking_view();
+        assert!(view.with_tracking_mut(|_| ()).is_none());
         assert!(view.take().is_none());
-        assert!(view.existing_context_mut().is_none());
+        assert!(view.with_existing_context_mut(|_| ()).is_none());
         assert!(calls.is_pristine());
     }
 
     #[test]
     fn menu_tracking_roots_follow_tasks_and_retire_owned_state() {
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let main = tracking.enter();
-        *tracking = Some(crate::menu_manager::test_process_menu_tracking(111));
+        tracking.set(Some(crate::menu_manager::test_process_menu_tracking(111)));
         let worker = ExecutionTaskId::from_thread_id(7);
         assert!(calls.register_task(worker));
         assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
@@ -4460,21 +4521,23 @@ mod tests {
         assert!(tracking.is_none());
         let owned = tracking.enter();
         assert_ne!(main.id, owned.id);
-        *tracking = Some(crate::menu_manager::test_process_menu_tracking(222));
-        tracking.context_mut().call = Some(MenuTrackingCall {
-            request: crate::menu_manager::MenuTrackingRequest::PopUp(
-                crate::menu_manager::PopupMenuRequest {
-                    menu_handle: 222,
-                    anchor: (20, 30),
-                    requested_item: 2,
+        tracking.set(Some(crate::menu_manager::test_process_menu_tracking(222)));
+        tracking.with_context_mut(|context| {
+            context.call = Some(MenuTrackingCall {
+                request: crate::menu_manager::MenuTrackingRequest::PopUp(
+                    crate::menu_manager::PopupMenuRequest {
+                        menu_handle: 222,
+                        anchor: (20, 30),
+                        requested_item: 2,
+                    },
+                ),
+                origin: MenuTrackingOrigin::PowerPc {
+                    stack_pointer: 0x4000,
+                    return_address: 0x5000,
                 },
-            ),
-            origin: MenuTrackingOrigin::PowerPc {
-                stack_pointer: 0x4000,
-                return_address: 0x5000,
-            },
+            });
+            context.native_port = Some((0x6000, 0x7000));
         });
-        tracking.context_mut().native_port = Some((0x6000, 0x7000));
         assert!(calls.switch_to_task(ExecutionTaskId::APPLICATION));
         assert_eq!(tracking.as_ref().unwrap().menu_handle, 111);
         assert_eq!(tracking.context().native_popup(), None);
@@ -4482,7 +4545,7 @@ mod tests {
         drop(owned);
         assert_eq!(calls.0.borrow().menu_calls.calls.len(), 1);
         assert_eq!(tracking.entry_id(), Some(main.id));
-        *tracking = None;
+        tracking.set(None);
         drop(main);
         assert!(calls.is_empty());
         assert!(calls.0.borrow().menu_calls.calls.is_empty());
@@ -6022,7 +6085,7 @@ mod tests {
     #[test]
     fn native_menu_hook_restores_r3_before_releasing_its_receipt() {
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let call = MenuTrackingCall {
             request: crate::menu_manager::MenuTrackingRequest::MenuSelect { initial_point: 12 },
             origin: MenuTrackingOrigin::PowerPc {
@@ -6031,7 +6094,7 @@ mod tests {
             },
         };
         let entry = tracking.enter_new_call(call);
-        *tracking = Some(crate::menu_manager::test_process_menu_tracking(111));
+        tracking.set(Some(crate::menu_manager::test_process_menu_tracking(111)));
         let key = tracking.request_menu_hook(true).unwrap();
         let operation = MenuHookOperation::pending(key);
         let effect = GuestCallEffect::call_guest(
@@ -6079,7 +6142,7 @@ mod tests {
         );
         assert_eq!(tracking.ready_call(GuestIsa::PowerPc), Some(call));
         let (_, resumed) = tracking.resume_call(GuestIsa::PowerPc).unwrap();
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(resumed);
         drop(entry);
         assert!(calls.is_empty());

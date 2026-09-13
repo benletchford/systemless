@@ -5867,7 +5867,7 @@ impl super::TrapDispatcher {
             // invert that title a second time and make an open menu look
             // inactive. The retained overlay below owns only menu panes.
             let hidden_item = hidden_depth.and_then(|depth| {
-                self.menu_tracking.as_mut().and_then(|tracking| {
+                self.menu_tracking.with_tracking_mut(|tracking| {
                     if depth == 0 {
                         let item = tracking.highlighted_item;
                         tracking.highlighted_item = 0;
@@ -5879,7 +5879,7 @@ impl super::TrapDispatcher {
                             (item > 0).then_some((depth, item))
                         })
                     }
-                })
+                }).flatten()
             });
             for (menu_handle, rect) in dropdowns {
                 if let Some(menu) = self.menu_index_for_handle(menu_handle) {
@@ -5887,13 +5887,13 @@ impl super::TrapDispatcher {
                 }
             }
             if let Some((depth, item)) = hidden_item {
-                if let Some(tracking) = self.menu_tracking.as_mut() {
+                self.menu_tracking.with_tracking_mut(|tracking| {
                     if depth == 0 {
                         tracking.highlighted_item = item;
                     } else if let Some(submenu) = tracking.submenus.get_mut(depth - 1) {
                         submenu.highlighted_item = item;
                     }
-                }
+                });
             }
         }
         if let Some(tracking) = self.window_tracking.as_ref() {
@@ -6034,7 +6034,7 @@ mod redraw_chrome_tests {
         tracking.submenus.push(child);
         tracking.flash_remaining = 5;
         tracking.flash_result = (701u32 << 16) | 1;
-        *disp.menu_tracking = Some(tracking);
+        disp.menu_tracking.set(Some(tracking));
 
         disp.redraw_chrome(&mut bus);
 
@@ -6054,7 +6054,9 @@ mod redraw_chrome_tests {
         assert_eq!(tracking.highlighted_item, 1);
         assert_eq!(tracking.submenus[0].highlighted_item, 1);
 
-        disp.menu_tracking.as_mut().unwrap().flash_remaining = 6;
+        disp.menu_tracking
+            .with_tracking_mut(|tracking| tracking.flash_remaining = 6)
+            .unwrap();
         disp.redraw_chrome(&mut bus);
         assert!(
             screen_pixel_is_black(&disp, &bus, 210, child_rect.0 + 8),

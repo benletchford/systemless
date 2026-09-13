@@ -7523,14 +7523,16 @@ impl ProcessContext {
     }
 
     pub(crate) fn set_menu_presentation_tick(&mut self, tick: u32) {
-        if let Some(tracking) = self.menu_tracking.as_mut() {
-            tracking.set_flash_tick(tick);
-        }
+        self.menu_tracking
+            .with_tracking_mut(|tracking| tracking.set_flash_tick(tick));
     }
 
     #[cfg(test)]
-    pub(crate) fn menu_tracking_mut(&mut self) -> Option<&mut ProcessMenuTrackingState> {
-        self.menu_tracking.as_mut()
+    pub(crate) fn with_menu_tracking_mut<R>(
+        &self,
+        update: impl FnOnce(&mut ProcessMenuTrackingState) -> R,
+    ) -> Option<R> {
+        self.menu_tracking.with_tracking_mut(update)
     }
 
     #[cfg(test)]
@@ -7540,7 +7542,7 @@ impl ProcessContext {
 
     #[cfg(test)]
     pub(crate) fn set_menu_tracking(&mut self, state: Option<ProcessMenuTrackingState>) {
-        *self.menu_tracking = state;
+        self.menu_tracking.set(state);
     }
 
     #[cfg(test)]
@@ -7644,8 +7646,9 @@ mod tests {
         let mut adapter_execution = ExecutionMenuViews::detached();
         {
             let entry = adapter_execution.enter_test_menu();
-            *adapter_execution.menu_state_mut() =
-                Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+            adapter_execution.set_menu_state(Some(
+                crate::menu_manager::test_process_menu_tracking(0x1234),
+            ));
             drop(entry);
         }
 
@@ -8322,9 +8325,7 @@ mod tests {
             Some(0x0012_3456)
         );
 
-        if let Some(t) = context.menu_tracking_mut() {
-            t.highlighted_item = 3;
-        }
+        context.with_menu_tracking_mut(|tracking| tracking.highlighted_item = 3);
         assert_eq!(
             context
                 .menu_tracking()
@@ -8422,8 +8423,9 @@ mod tests {
         let adapter_tick = SharedProcessTickState::default();
         let mut adapter_execution = ExecutionMenuViews::detached();
         let _entry = adapter_execution.enter_test_menu();
-        *adapter_execution.menu_state_mut() =
-            Some(crate::menu_manager::test_process_menu_tracking(0x2000));
+        adapter_execution.set_menu_state(Some(
+            crate::menu_manager::test_process_menu_tracking(0x2000),
+        ));
         assert!(matches!(
             context.preflight_migrated_adoption(&adapter_tick, &adapter_execution, 0),
             Err(MigratedServiceConflict::Execution)
@@ -10461,7 +10463,7 @@ mod tests {
         let mut classic_tick = SharedProcessTickState::default();
         let mut classic = ExecutionMenuViews::detached();
         let _entry = classic.enter_test_menu();
-        *classic.menu_state_mut() = Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+        classic.set_menu_state(Some(crate::menu_manager::test_process_menu_tracking(0x1234)));
         let plan = context
             .preflight_migrated_adoption(&classic_tick, &classic, 0)
             .unwrap();
@@ -10475,7 +10477,9 @@ mod tests {
         context.commit_migrated_adoption(plan, &mut native_tick, &mut native);
         let detached = native.clone();
 
-        classic.menu_state_mut().as_mut().unwrap().highlighted_item = 4;
+        classic
+            .with_menu_state_mut(|tracking| tracking.highlighted_item = 4)
+            .unwrap();
 
         assert!(classic.calls().ptr_eq(native.calls()));
         assert_eq!(native.menu().as_ref().unwrap().highlighted_item, 4);
