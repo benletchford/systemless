@@ -17766,7 +17766,9 @@ mod tests {
         // SpaceExtra sets the current GrafPort's spExtra field.
         let (mut disp, mut cpu, mut bus) = setup();
         let port = bus.alloc(128);
-        *disp.current_port = port;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         let extra = 0x0001_8000u32; // 1.5 Fixed
         bus.write_long(port + 76, 0xDEAD_BEEF);
         bus.write_long(TEST_SP, extra);
@@ -17783,7 +17785,9 @@ mod tests {
         // SpaceExtra(extra: Fixed) consumes one 4-byte Fixed argument.
         let (mut disp, mut cpu, mut bus) = setup();
         let port = bus.alloc(128);
-        *disp.current_port = port;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0xFFFF_8000); // -0.5 Fixed
 
@@ -35454,7 +35458,9 @@ mod tests {
     fn movietoolboxdispatch_new_movie_returns_empty_movie_with_current_gworld() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-        *disp.current_port = 0x0033_0000;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = 0x0033_0000);
         disp.current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = 0x0044_0000);
 

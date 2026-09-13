@@ -3191,7 +3191,9 @@ impl super::TrapDispatcher {
             self.sync_cached_front_window_render_state(bus);
         }
         if *self.current_port == window_ptr {
-            *self.current_port = self.front_window;
+            self
+                .current_port
+                .with_mut(|current_port| *current_port = self.front_window);
         }
         self.saved_draw_old_regions.remove(&window_ptr);
     }
@@ -4572,7 +4574,9 @@ impl super::TrapDispatcher {
                         self.set_window_vis_from_content(bus, the_window, false);
                         self.clear_queued_update_events(the_window);
                         if *self.current_port == the_window {
-                            *self.current_port = self.front_window;
+                            self
+                                .current_port
+                                .with_mut(|current_port| *current_port = self.front_window);
                         }
                         cpu.write_reg(Register::A7, sp + 4);
                         return Some(Ok(()));
@@ -4645,7 +4649,9 @@ impl super::TrapDispatcher {
                             self.front_window = 0;
                         }
                         if *self.current_port == the_window {
-                            *self.current_port = new_front;
+                            self
+                                .current_port
+                                .with_mut(|current_port| *current_port = new_front);
                         }
                     }
                     self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
@@ -6523,7 +6529,9 @@ mod tests {
         let window_ptr = bus.read_long(cpu.read_reg(Register::A7));
         disp.window_list.replace(vec![window_ptr]);
         disp.front_window = window_ptr;
-        *disp.current_port = window_ptr;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = window_ptr);
         disp.validate_window_rect(&mut bus, window_ptr, (0, 0, 160, 260));
 
         (disp, cpu, bus, window_ptr)
@@ -8671,7 +8679,9 @@ mod tests {
         let next = 0x200140u32;
         disp.window_list.replace(vec![front, next]);
         disp.front_window = front;
-        *disp.current_port = front;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = front);
         disp.window_bounds = (240, 450, 480, 650);
         disp.window_proc_id = 4;
         disp.window_title = "Player".to_string();
@@ -8760,7 +8770,9 @@ mod tests {
         // Floating utilities may remain above an active document without
         // becoming the Window Manager's active front window.
         disp.front_window = document;
-        *disp.current_port = document;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = document);
         disp.dialog_visible_snapshots.insert(
             utility,
             PersistentDialogSnapshot {
@@ -8815,7 +8827,9 @@ mod tests {
         let next = 0x200140u32;
         disp.window_list.replace(vec![front, next]);
         disp.front_window = front;
-        *disp.current_port = front;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = front);
         disp.window_bounds = (240, 450, 480, 650);
         disp.window_proc_id = 4;
         disp.window_title = "Player".to_string();
@@ -8895,7 +8909,9 @@ mod tests {
         );
         disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
-        *disp.current_port = window_addr;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = window_addr);
         assert_ne!(
             bus.read_byte(content_probe),
             desktop_content,
@@ -9174,7 +9190,9 @@ mod tests {
         bus.write_byte(window + 111, 0xFF);
         disp.window_list.replace(vec![window]);
         disp.front_window = window;
-        *disp.current_port = window;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = window);
 
         let sp = TEST_SP - 4;
         cpu.write_reg(Register::A7, sp);
@@ -9458,7 +9476,9 @@ mod tests {
         let win_b = 0x200140u32;
         disp.window_list.replace(vec![win_b, win_a]); // b is front, a is behind
         disp.front_window = win_b;
-        *disp.current_port = win_b;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = win_b);
         for &base in &[win_a, win_b] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -9542,7 +9562,9 @@ mod tests {
         disp.window_list.replace(vec![front, back]);
         disp.sync_window_list_links(&mut bus);
         disp.front_window = front;
-        *disp.current_port = front;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = front);
         let update_handle = bus.read_long(back + 122);
         super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
         disp.clear_queued_update_events(back);
@@ -9568,7 +9590,9 @@ mod tests {
         let win_c = 0x200240u32;
         disp.window_list.replace(vec![win_c, win_b, win_a]);
         disp.front_window = win_c;
-        *disp.current_port = win_c;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = win_c);
         for &base in &[win_a, win_b, win_c] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -9702,7 +9726,9 @@ mod tests {
         );
         disp.window_list.replace(vec![dialog]);
         disp.front_window = dialog;
-        *disp.current_port = dialog;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = dialog);
         disp.dialog_items
             .insert(dialog, vec![DialogItem::default()]);
         disp.dialog_visible_snapshots.insert(
@@ -9745,7 +9771,9 @@ mod tests {
         // List: c front, b behind (hidden), a back-most (visible).
         disp.window_list.replace(vec![win_c, win_b, win_a]);
         disp.front_window = win_c;
-        *disp.current_port = win_c;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = win_c);
         for &base in &[win_a, win_b, win_c] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -9780,7 +9808,9 @@ mod tests {
         let win_b = 0x200140u32;
         disp.window_list.replace(vec![win_b, win_a]);
         disp.front_window = win_b;
-        *disp.current_port = win_b;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = win_b);
         for &base in &[win_a, win_b] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -9810,7 +9840,9 @@ mod tests {
         let win_b = 0x200140u32;
         disp.window_list.replace(vec![win_b, win_a]);
         disp.front_window = win_b;
-        *disp.current_port = win_b;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = win_b);
         for &base in &[win_a, win_b] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -9844,7 +9876,9 @@ mod tests {
 
         disp.window_list.replace(vec![front_window, target_window]);
         disp.front_window = front_window;
-        *disp.current_port = front_window;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = front_window);
 
         let activate_before = disp.event_queue.iter().filter(|e| e.what == 8).count();
 
@@ -9990,7 +10024,9 @@ mod tests {
 
         disp.window_list.replace(vec![front_window, target_window]);
         disp.front_window = front_window;
-        *disp.current_port = front_window;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = front_window);
         disp.queue_window_update_event(target_window);
         assert!(
             disp.event_queue
@@ -10076,7 +10112,9 @@ mod tests {
         disp.window_list.replace(vec![target, back]);
         disp.sync_window_list_links(&mut bus);
         disp.front_window = back;
-        *disp.current_port = back;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = back);
         disp.dialog_visible_snapshots.insert(
             target,
             PersistentDialogSnapshot {
@@ -13188,7 +13226,9 @@ mod tests {
         cpu.write_reg(Register::A7, sp);
 
         let port = 0x210000;
-        *disp.current_port = port;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         bus.write_word(port + 8, (-100i16) as u16);
         bus.write_word(port + 10, (-200i16) as u16);
 
