@@ -21680,9 +21680,8 @@ mod tests {
         runner
             .dispatcher_mut()
             .vfs
-            .get_mut(prefs_path)
-            .unwrap()
-            .extend_from_slice(b"-classic");
+            .with_entry_mut(prefs_path, |bytes| bytes.extend_from_slice(b"-classic"))
+            .unwrap();
         let native_file = &runner.native.application().unwrap().vfs_files[0];
         let classic_file = runner.dispatcher().vfs.get_shared(prefs_path).unwrap();
         assert!(native_file.data.ptr_eq(classic_file));

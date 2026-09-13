@@ -98904,9 +98904,10 @@ pub(crate) mod tests {
         assert_eq!(classic_file.finder_flags, 0x0100);
         classic
             .vfs
-            .get_mut("Classic Folder/Classic Data")
-            .unwrap()
-            .extend_from_slice(b"-shared");
+            .with_entry_mut("Classic Folder/Classic Data", |bytes| {
+                bytes.extend_from_slice(b"-shared");
+            })
+            .unwrap();
         assert_eq!(
             native
                 .vfs_files

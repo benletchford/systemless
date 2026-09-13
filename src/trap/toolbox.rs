@@ -7063,7 +7063,7 @@ impl super::TrapDispatcher {
                     // re-seed from vfs_rsrc here, the writes are lost.
                     let refnum = self.allocate_process_file_refnum();
                     let rsrc_key = format!("__rsrc__{}", vfs_key);
-                    self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data.into());
+                    self.vfs.insert_if_absent(rsrc_key.clone(), rsrc_data);
                     self.open_files.insert(refnum, rsrc_key);
                     self.file_positions.insert(refnum, 0);
                     bus.write_word(pb + 24, refnum);
@@ -9958,8 +9958,8 @@ impl super::TrapDispatcher {
                         if self.vfs_path_is_read_only(&vfs_key) {
                             bus.write_word(0x0A60, (-44i16) as u16); // wPrErr
                         } else {
-                            self.vfs.entry(vfs_key.clone()).or_default();
-                            self.vfs_rsrc.entry(vfs_key.clone()).or_default();
+                            self.vfs.ensure_empty(vfs_key.clone());
+                            self.vfs_rsrc.ensure_empty(vfs_key.clone());
                             self.touch_vfs_entry(&vfs_key);
                             if let Some(ref dir) = self.output_dir {
                                 let host_path = dir.join(&vfs_key);

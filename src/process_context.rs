@@ -354,8 +354,8 @@ impl ProcessVfsFileRecords {
             }
             self.push(record);
         }
-        let forks = source.data_forks.drain().collect::<Vec<_>>();
-        for (path, bytes) in forks {
+        let forks = source.data_forks.take();
+        for (path, bytes) in forks.0 {
             if self
                 .data_forks
                 .keys()
@@ -631,10 +631,14 @@ impl ProcessVfsResourceFileRecords {
             .find(|candidate| candidate.eq_ignore_ascii_case(path))
             .cloned()
             .unwrap_or_else(|| path.to_string());
-        if let Some(target) = self.resource_forks.get_mut(&key) {
-            target.clear();
-            target.extend_from_slice(bytes);
-        } else {
+        if self
+            .resource_forks
+            .with_entry_mut(&key, |target| {
+                target.clear();
+                target.extend_from_slice(bytes);
+            })
+            .is_none()
+        {
             self.resource_forks.insert(key, bytes.to_vec());
         }
     }
@@ -654,8 +658,8 @@ impl ProcessVfsResourceFileRecords {
             }
             self.push(record);
         }
-        let forks = source.resource_forks.drain().collect::<Vec<_>>();
-        for (path, bytes) in forks {
+        let forks = source.resource_forks.take();
+        for (path, bytes) in forks.0 {
             if self
                 .resource_forks
                 .keys()
@@ -1852,6 +1856,84 @@ impl SharedProcessValue<HashMap<String, ProcessVfsMetadata>> {
 
     pub(crate) fn take(&self) -> HashMap<String, ProcessVfsMetadata> {
         self.with_mut(std::mem::take)
+    }
+}
+
+impl SharedProcessValue<ProcessForkMap> {
+    pub fn reserve(&self, additional: usize) {
+        self.with_mut(|forks| forks.0.reserve(additional));
+    }
+
+    pub fn insert(
+        &self,
+        path: String,
+        bytes: impl Into<ProcessForkBytes>,
+    ) -> Option<ProcessForkBytes> {
+        self.with_mut(|forks| forks.insert(path, bytes))
+    }
+
+    pub(crate) fn insert_shared(
+        &self,
+        path: String,
+        bytes: &ProcessForkBytes,
+    ) -> Option<ProcessForkBytes> {
+        self.with_mut(|forks| forks.insert_shared(path, bytes))
+    }
+
+    pub fn remove<Q>(&self, path: &Q) -> Option<ProcessForkBytes>
+    where
+        String: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.with_mut(|forks| forks.0.remove(path))
+    }
+
+    pub fn clear(&self) {
+        self.with_mut(|forks| forks.0.clear());
+    }
+
+    pub fn retain(&self, keep: impl FnMut(&String, &mut ProcessForkBytes) -> bool) {
+        self.with_mut(|forks| forks.0.retain(keep));
+    }
+
+    pub(crate) fn take(&self) -> ProcessForkMap {
+        self.with_mut(std::mem::take)
+    }
+
+    pub(crate) fn ensure_empty(&self, path: String) {
+        self.with_mut(|forks| {
+            forks.0.entry(path).or_default();
+        });
+    }
+
+    pub(crate) fn insert_if_absent(
+        &self,
+        path: String,
+        bytes: impl Into<ProcessForkBytes>,
+    ) {
+        self.with_mut(|forks| {
+            forks.0.entry(path).or_insert_with(|| bytes.into());
+        });
+    }
+
+    pub fn with_entry_mut<Q, R>(
+        &self,
+        path: &Q,
+        update: impl FnOnce(&mut Vec<u8>) -> R,
+    ) -> Option<R>
+    where
+        String: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.with_mut(|forks| forks.get_mut(path).map(update))
+    }
+
+    pub(crate) fn with_entry_or_default_mut<R>(
+        &self,
+        path: String,
+        update: impl FnOnce(&mut Vec<u8>) -> R,
+    ) -> R {
+        self.with_mut(|forks| update(forks.0.entry(path).or_default()))
     }
 }
 
@@ -9647,14 +9729,12 @@ mod tests {
             });
 
         second_data
-            .get_mut("Existing")
-            .unwrap()
-            .extend_from_slice(b"-after");
+            .with_entry_mut("Existing", |bytes| bytes.extend_from_slice(b"-after"))
+            .unwrap();
         first_resources.insert("Existing".to_string(), b"resource".to_vec());
         second_resources
-            .get_mut("Created")
-            .unwrap()
-            .extend_from_slice(b"-classic");
+            .with_entry_mut("Created", |bytes| bytes.extend_from_slice(b"-classic"))
+            .unwrap();
 
         assert!(first_data.ptr_eq(&second_data));
         assert!(first_resources.ptr_eq(&second_resources));
