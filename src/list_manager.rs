@@ -89,6 +89,22 @@ impl ProcessListManagerState {
     pub(crate) fn is_pristine(&self) -> bool {
         self.records.is_empty()
     }
+
+    pub(crate) fn insert_record(&mut self, handle: u32, record: ProcessListRecord) {
+        self.records.insert(handle, record);
+    }
+
+    pub(crate) fn remove_record(&mut self, handle: u32) -> Option<ProcessListRecord> {
+        self.records.remove(&handle)
+    }
+
+    pub(crate) fn with_record_mut<R>(
+        &mut self,
+        handle: u32,
+        f: impl FnOnce(&mut ProcessListRecord) -> R,
+    ) -> Option<R> {
+        self.records.get_mut(&handle).map(f)
+    }
 }
 
 impl std::ops::Deref for ProcessListManagerState {

@@ -51,6 +51,7 @@ use crate::guest_procedure::{
     ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE as PPC_ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE,
     ROUTINE_RECORD_SELECTOR_OFFSET as PPC_ROUTINE_RECORD_SELECTOR_OFFSET,
 };
+use crate::list_manager::ProcessListManagerState;
 use crate::machine_profile::{
     REFERENCE_MACHINE_PROFILE, REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
 };
@@ -7772,7 +7773,7 @@ impl PpcLoadedApp {
             .shared_handle();
         let param_text = self.param_text.shared_handle();
         let mut scrap = std::mem::take(&mut self.scrap);
-        let mut list_manager = std::mem::take(&mut self.list_manager);
+        let list_manager = std::mem::take(&mut self.list_manager);
         let mut draw_sprocket = self.draw_sprocket;
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
@@ -8360,7 +8361,8 @@ impl PpcLoadedApp {
                             color_manager_clut.with_mut(|color_manager_clut| {
                                 event_queue.with_mut(|event_queue| {
                                     controls.with_mut(|controls| {
-                                        dispatch_supported_import(
+                                        list_manager.with_mut(|list_manager| {
+                                            dispatch_supported_import(
                                             binding,
                                             cpu,
                                             memory,
@@ -8461,11 +8463,12 @@ impl PpcLoadedApp {
                                             launched_app_path.as_deref(),
                                             &param_text,
                                             &mut scrap,
-                                            &mut list_manager,
+                                            list_manager,
                                             input,
                                             event_queue,
                                             &mut draw_sprocket,
-                                        )
+                                            )
+                                        })
                                     })
                                 })
                             })
@@ -15614,7 +15617,7 @@ fn dispatch_supported_import(
     launched_app_path: Option<&str>,
     param_text: &SharedProcessDialogText,
     scrap: &mut PpcScrapState,
-    list_manager: &mut PpcListManagerState,
+    list_manager: &mut ProcessListManagerState,
     input: PpcInputSnapshot,
     event_queue: &mut EventQueue,
     draw_sprocket: &mut PpcDrawSprocketState,
@@ -72846,7 +72849,7 @@ fn ppc_list_new(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
-    list_manager: &mut PpcListManagerState,
+    list_manager: &mut ProcessListManagerState,
 ) -> u32 {
     let (Some(view), Some(data_bounds)) = (
         ppc_read_rect(memory, cpu.gpr[3]),
@@ -166744,8 +166747,12 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(128);
         assert_eq!(probe.unsupported_import_index, None);
         let list = loaded.cpu.gpr[3];
-        let record = loaded.list_manager.get_mut(&list).unwrap();
-        record.selected.insert((0, 0));
+        loaded
+            .list_manager
+            .with_record_mut(list, |record| {
+                record.selected.insert((0, 0));
+            })
+            .unwrap();
 
         // NewCWindow gives an on-screen window a negative PixMap origin so
         // its local port coordinates map to its global screen position.
@@ -166836,10 +166843,14 @@ pub(crate) mod tests {
             Some((20, 100))
         );
 
-        let classic_state = classic.list_states.get_mut(&first_list).unwrap();
-        classic_state.cells.insert((1, 1), b"Classic".to_vec());
-        classic_state.selected.insert((1, 1));
-        classic_state.draw_enabled = true;
+        classic
+            .list_states
+            .with_record_mut(first_list, |classic_state| {
+                classic_state.cells.insert((1, 1), b"Classic".to_vec());
+                classic_state.selected.insert((1, 1));
+                classic_state.draw_enabled = true;
+            })
+            .unwrap();
 
         native.memory.write_u16_be(length_ptr, 16).unwrap();
         native.cpu.gpr[3] = output_ptr;
@@ -166895,8 +166906,8 @@ pub(crate) mod tests {
 
     #[test]
     fn cloned_native_adapter_detaches_list_manager_state() {
-        let mut original = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
-        original.list_manager.insert(
+        let original = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        original.list_manager.insert_record(
             0x0032_1000,
             PpcListRecord {
                 handle: 0x0032_1000,
@@ -166914,11 +166925,15 @@ pub(crate) mod tests {
                 last_click_tick: 10,
             },
         );
-        let mut detached = original.clone();
-        let detached_record = detached.list_manager.get_mut(&0x0032_1000).unwrap();
-        detached_record.cells.insert((0, 0), b"Detached".to_vec());
-        detached_record.selected.clear();
-        detached.list_manager.insert(
+        let detached = original.clone();
+        detached
+            .list_manager
+            .with_record_mut(0x0032_1000, |detached_record| {
+                detached_record.cells.insert((0, 0), b"Detached".to_vec());
+                detached_record.selected.clear();
+            })
+            .unwrap();
+        detached.list_manager.insert_record(
             0x0032_3000,
             PpcListRecord {
                 handle: 0x0032_3000,
