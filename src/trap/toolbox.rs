@@ -3055,7 +3055,8 @@ impl super::TrapDispatcher {
             self.open_working_directory(vref, dir_id, 0).unwrap_or(vref)
         };
         *self.default_dir_id = dir_id;
-        *self.app_wd_refnum = wd_ref;
+        self.app_wd_refnum
+            .with_mut(|app_ref_num| *app_ref_num = wd_ref);
         bus.write_long(addr::CUR_DIR_STORE, dir_id);
         bus.write_word(addr::SF_SAVE_DISK, (-vref) as u16);
         wd_ref
@@ -29937,7 +29938,9 @@ mod tests {
         let reply_ptr = 0x320180u32;
         let default_name_ptr = 0x320300u32;
         *disp.default_dir_id = 18;
-        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
         bus.write_pstring(default_name_ptr, b"Twilight Save");
         bus.write_word(sp, 0x0005); // StandardPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -29970,7 +29973,9 @@ mod tests {
         let default_name_ptr = 0x320340u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
         disp.vfs_rsrc
             .insert("Pilots/Existing Pilot".to_string(), vec![1, 2, 3]);
         disp.set_vfs_entry_metadata("Pilots/Existing Pilot", *b"PIL ", *b"EVO!", 0);
@@ -30005,7 +30010,9 @@ mod tests {
         let default_name_ptr = 0x320340u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
         disp.yield_for_ui = true;
 
         bus.write_pstring(prompt_ptr, b"Create New Player\xC9");
@@ -30073,7 +30080,9 @@ mod tests {
         let default_name_ptr = 0x320740u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
         disp.yield_for_ui = true;
 
         bus.write_pstring(prompt_ptr, b"Pilot file:");
@@ -30163,7 +30172,8 @@ mod tests {
             .open_working_directory(locked_vref, locked_dir, 0)
             .expect("mounted-volume working directory");
         *disp.default_dir_id = locked_dir;
-        *disp.app_wd_refnum = locked_wd;
+        disp.app_wd_refnum
+            .with_mut(|app_ref_num| *app_ref_num = locked_wd);
         disp.yield_for_ui = true;
         bus.write_byte(reply_ptr, 0xFF);
         bus.write_pstring(original_name_ptr, b"Pathways Save");
@@ -30505,7 +30515,8 @@ mod tests {
             .open_working_directory(volume_ref, volume_root, 0)
             .expect("mounted-volume WDRefNum");
         *disp.default_dir_id = volume_root;
-        *disp.app_wd_refnum = mounted_wd;
+        disp.app_wd_refnum
+            .with_mut(|app_ref_num| *app_ref_num = mounted_wd);
         bus.write_pstring(original_name_ptr, b"Fallback Save");
         bus.write_word(sp, 0x0001);
         bus.write_long(sp + 2, reply_ptr);
@@ -30534,7 +30545,9 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x320380u32;
         let original_name_ptr = 0x320500u32;
-        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
         bus.write_pstring(original_name_ptr, b"Old Save");
         bus.write_word(sp, 0x0001); // SFPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -30566,7 +30579,9 @@ mod tests {
         let original_name_ptr = 0x320680u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
         bus.write_pstring(original_name_ptr, b"Old Pilot");
         bus.write_word(sp, 0x0001); // SFPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -30601,7 +30616,9 @@ mod tests {
         let prompt_ptr = 0x3208C0u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
         disp.yield_for_ui = true;
         bus.write_pstring(original_name_ptr, b"Old Pilot");
         bus.write_pstring(prompt_ptr, b"Pilot file:");

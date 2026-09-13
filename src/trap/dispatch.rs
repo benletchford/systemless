@@ -4402,7 +4402,8 @@ impl TrapDispatcher {
             if let Some(wd_ref) =
                 self.open_working_directory(app_volume_ref, metadata.parent_dir_id, 0)
             {
-                *self.app_wd_refnum = wd_ref;
+                self.app_wd_refnum
+                    .with_mut(|app_ref_num| *app_ref_num = wd_ref);
             }
         }
         self.process_file_system.launched_app_path = Some(normalized);
