@@ -1588,7 +1588,7 @@ impl App {
 
         let screen_mode = runner.dispatcher().screen_mode;
         let device_clut = *runner.dispatcher().device_clut;
-        let device_gamma = *runner.dispatcher().device_gamma;
+        let device_gamma = runner.dispatcher().device_gamma();
         #[cfg(target_os = "macos")]
         let cursor = if self.host_cursor.enabled() {
             None
@@ -3087,11 +3087,12 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
         return;
     }
 
+    let device_gamma = runner.dispatcher().device_gamma();
     let rgba = display::render_screen_with_gamma(
         runner.bus(),
         runner.dispatcher().screen_mode,
         &runner.dispatcher().device_clut,
-        &runner.dispatcher().device_gamma,
+        &device_gamma,
     );
 
     let img = image::RgbImage::from_fn(w, h, |x, y| {

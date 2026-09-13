@@ -466,8 +466,8 @@ impl super::TrapDispatcher {
 
         let gamma_ptr = bus.read_long(vd_gamma_ptr);
         if gamma_ptr == 0 {
-            *self.device_gamma = crate::display::linear_display_gamma();
-            *self.device_gamma_explicit = true;
+            self.display_gamma
+                .install(crate::display::linear_display_gamma());
             return NO_ERR;
         }
 
@@ -527,8 +527,7 @@ impl super::TrapDispatcher {
                 *value = bus.read_byte(source_base + source_index);
             }
         }
-        *self.device_gamma = installed;
-        *self.device_gamma_explicit = true;
+        self.display_gamma.install(installed);
         NO_ERR
     }
 
@@ -2389,9 +2388,8 @@ impl super::TrapDispatcher {
                         // values. Keep explicit guest gamma authoritative, but
                         // otherwise stop applying the compatibility transfer
                         // used by the emulated high-level Color Manager path.
-                        if !*self.device_gamma_explicit {
-                            *self.device_gamma = crate::display::linear_display_gamma();
-                        }
+                        self.display_gamma
+                            .set_implicit(crate::display::linear_display_gamma());
                         self.apply_set_entries(bus, cs_table, cs_start, safe_count);
                         if let Err(err) = self.record_trace_event(
                             bus,
@@ -11155,10 +11153,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(dispatcher.device_clut[7], [0x4444, 0x8888, 0xCCCC]);
-        assert_eq!(dispatcher.device_gamma[0][0x44], 0x44);
-        assert_eq!(dispatcher.device_gamma[1][0x88], 0x88);
-        assert_eq!(dispatcher.device_gamma[2][0xCC], 0xCC);
-        assert!(!*dispatcher.device_gamma_explicit);
+        let gamma = dispatcher.device_gamma();
+        assert_eq!(gamma[0][0x44], 0x44);
+        assert_eq!(gamma[1][0x88], 0x88);
+        assert_eq!(gamma[2][0xCC], 0xCC);
+        assert!(!dispatcher.display_gamma.is_explicit());
     }
 
     #[test]
@@ -11167,8 +11166,7 @@ mod tests {
         let pb = 0x300000u32;
         let record = bus.alloc(8);
         let table = bus.alloc(8);
-        *dispatcher.device_gamma = [[0x42; 256]; 3];
-        *dispatcher.device_gamma_explicit = true;
+        dispatcher.display_gamma.install([[0x42; 256]; 3]);
 
         bus.write_word(table, 7);
         bus.write_word(table + 2, 0x4444);
@@ -11186,8 +11184,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(dispatcher.device_gamma, [[0x42; 256]; 3]);
-        assert!(*dispatcher.device_gamma_explicit);
+        assert_eq!(dispatcher.device_gamma(), [[0x42; 256]; 3]);
+        assert!(dispatcher.display_gamma.is_explicit());
     }
 
     #[test]
@@ -11219,7 +11217,7 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
-        for channel in dispatcher.device_gamma.iter() {
+        for channel in dispatcher.device_gamma().iter() {
             assert_eq!(channel[0x00], 0x00);
             assert_eq!(channel[0x1F], 0x11);
             assert_eq!(channel[0xAB], 0xAA);
@@ -11255,15 +11253,14 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(dispatcher.device_gamma[0][0xA5], 0xA5);
-        assert_eq!(dispatcher.device_gamma[1][0xA5], 0x5A);
-        assert_eq!(dispatcher.device_gamma[2][0xA5], 0x42);
+        let gamma = dispatcher.device_gamma();
+        assert_eq!(gamma[0][0xA5], 0xA5);
+        assert_eq!(gamma[1][0xA5], 0x5A);
+        assert_eq!(gamma[2][0xA5], 0x42);
         dispatcher.device_clut[7] = [0xA5A5; 3];
         let raw_clut = *dispatcher.device_clut;
-        let palette = crate::display::argb_palette_from_clut_with_gamma(
-            &dispatcher.device_clut,
-            &dispatcher.device_gamma,
-        );
+        let palette =
+            crate::display::argb_palette_from_clut_with_gamma(&dispatcher.device_clut, &gamma);
         assert_eq!(palette[7], 0xFFA55A42);
         assert_eq!(dispatcher.device_clut, raw_clut);
     }
@@ -11274,7 +11271,7 @@ mod tests {
         let pb = 0x300000u32;
         let record = bus.alloc(4);
         let table = bus.alloc(12 + 16);
-        let before = *dispatcher.device_gamma;
+        let before = dispatcher.device_gamma();
 
         bus.write_word(table, 0);
         bus.write_word(table + 2, 0);
@@ -11294,7 +11291,7 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), (-50i32) as u32);
         assert_eq!(bus.read_word(pb + 16), (-50i16) as u16);
-        assert_eq!(dispatcher.device_gamma, before);
+        assert_eq!(dispatcher.device_gamma(), before);
     }
 
     #[test]
@@ -11303,7 +11300,7 @@ mod tests {
         let pb = 0x300000u32;
         let record = bus.alloc(4);
         let table = bus.alloc(12 + 8);
-        let before = *dispatcher.device_gamma;
+        let before = dispatcher.device_gamma();
 
         bus.write_word(table, 0);
         bus.write_word(table + 2, 0);
@@ -11322,7 +11319,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), (-50i32) as u32);
-        assert_eq!(dispatcher.device_gamma, before);
+        assert_eq!(dispatcher.device_gamma(), before);
     }
 
     #[test]
@@ -11330,7 +11327,7 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = 0x300000u32;
         let record = bus.alloc(4);
-        *dispatcher.device_gamma = [[0x42; 256]; 3];
+        dispatcher.display_gamma.set_implicit([[0x42; 256]; 3]);
 
         bus.write_long(record, 0);
         bus.write_word(pb + 26, 4);
@@ -11343,7 +11340,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
-        for channel in dispatcher.device_gamma.iter() {
+        for channel in dispatcher.device_gamma().iter() {
             assert_eq!(channel[0x00], 0x00);
             assert_eq!(channel[0x7F], 0x7F);
             assert_eq!(channel[0xFF], 0xFF);

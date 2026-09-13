@@ -315,12 +315,13 @@ fn screen_rgb(runner: &mut FixtureRunner, v: u16, h: u16) -> [u8; 3] {
     runner.composite_frame();
     let screen_mode = runner.dispatcher().screen_mode;
     let (_, _, width, height, _) = screen_mode;
+    let device_gamma = runner.dispatcher().device_gamma();
     assert!(h < width && v < height, "sample point must be on screen");
     let rgba = render_screen_with_gamma(
         runner.bus(),
         screen_mode,
         &runner.dispatcher().device_clut,
-        &runner.dispatcher().device_gamma,
+        &device_gamma,
     );
     let offset = (usize::from(v) * usize::from(width) + usize::from(h)) * 4;
     [rgba[offset], rgba[offset + 1], rgba[offset + 2]]
@@ -396,12 +397,15 @@ fn review_presentation_enabled() -> bool {
 fn prepare_review_presentation(runner: &mut FixtureRunner) {
     let d = runner.dispatcher();
     let mode = d.screen_mode;
-    let palette =
-        systemless::display::rgba_palette_from_clut_with_gamma(&d.device_clut, &d.device_gamma)
-            .map(|word| {
-                let [r, g, b, _] = word.to_le_bytes();
-                [r, g, b]
-            });
+    let device_gamma = d.device_gamma();
+    let palette = systemless::display::rgba_palette_from_clut_with_gamma(
+        &d.device_clut,
+        &device_gamma,
+    )
+    .map(|word| {
+        let [r, g, b, _] = word.to_le_bytes();
+        [r, g, b]
+    });
     runner.bus_mut().prepare_outline_presentation(mode, palette);
 }
 
@@ -412,11 +416,12 @@ fn rendered_rgb(runner: &mut FixtureRunner) -> (u32, u32, Vec<u8>) {
     runner.composite_frame();
     let screen_mode = runner.dispatcher().screen_mode;
     let (_, _, width, height, _) = screen_mode;
+    let device_gamma = runner.dispatcher().device_gamma();
     let rgba = render_screen_with_gamma(
         runner.bus(),
         screen_mode,
         &runner.dispatcher().device_clut,
-        &runner.dispatcher().device_gamma,
+        &device_gamma,
     );
     let rgb = rgba
         .chunks_exact(4)
@@ -3278,9 +3283,10 @@ fn capture_outline_font_showcase() {
         wait_for_page_event_loop(&mut runner, "initial graphics paint");
         if let Some(scale) = scale {
             let mode = runner.dispatcher().screen_mode;
+            let device_gamma = runner.dispatcher().device_gamma();
             let palette = systemless::display::rgba_palette_from_clut_with_gamma(
                 &runner.dispatcher().device_clut,
-                &runner.dispatcher().device_gamma,
+                &device_gamma,
             )
             .map(|word| {
                 let [r, g, b, _] = word.to_le_bytes();

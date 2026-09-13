@@ -23981,8 +23981,9 @@ impl super::TrapDispatcher {
             return;
         }
         let target_is_screen = self.set_entries_target_is_screen(bus);
-        if target_is_screen && !*self.device_gamma_explicit {
-            *self.device_gamma = crate::display::default_display_gamma();
+        if target_is_screen {
+            self.display_gamma
+                .set_implicit(crate::display::default_display_gamma());
         }
         let incoming_default_palette = start == 0
             && count == 255
