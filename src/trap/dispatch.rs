@@ -33,6 +33,7 @@ use crate::process_context::{
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
     SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
+    SharedProcessDisplayClut,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
     SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessQuickDrawHiliteColors,
@@ -1903,7 +1904,7 @@ pub struct TrapDispatcher {
     /// Runtime device CLUT for 8bpp mode. 256 entries of [R, G, B] in 16-bit Mac values.
     /// Initialized to the standard Mac 8-bit system palette. Updated by SetEntries trap
     /// and low-level video driver cscSetEntries. Used for DISPLAY rendering only.
-    pub device_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    pub device_clut: SharedProcessDisplayClut,
     /// Per-channel transfer tables installed by the video driver's
     /// `cscSetGamma` control call. These affect presentation only; the device
     /// and Color Manager CLUTs retain the guest's uncorrected 16-bit values.
@@ -1913,7 +1914,7 @@ pub struct TrapDispatcher {
     /// Used by QuickDraw shape drawing (PaintRect, etc.) for RGB→index mapping,
     /// mirroring the real Mac OS ITable which is derived from the Color Manager palette.
     /// Imaging With QuickDraw 1994, p. 4-82
-    pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    pub color_manager_clut: SharedProcessDisplayClut,
     /// Cached inverse-table payloads keyed by actual CLUT contents and
     /// resolution. Used by MakeITable and bounded to avoid retaining arbitrary
     /// game palettes indefinitely.

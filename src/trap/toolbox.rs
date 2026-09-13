@@ -25969,9 +25969,9 @@ mod tests {
             let hilite = (0x0000, 0x8000, 0x0000);
 
             disp.set_screen_mode_for_test(screen_base, row_bytes, 192, 128, 8);
-            *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-            disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
-            disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
+            disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+            disp.device_clut.set_entry(0, [0x0000, 0x0000, 0x0000]);
+            disp.device_clut.set_entry(42, [hilite.0, hilite.1, hilite.2]);
             disp.quickdraw_hilite_colors
                 .set_quickdraw_hilite_color(owner_port, hilite);
             bus.write_long(0x0824, screen_base);
@@ -26174,9 +26174,9 @@ mod tests {
         let hilite = (0x0000, 0x8000, 0x0000);
 
         disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 96, 8);
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
-        disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(0, [0x0000, 0x0000, 0x0000]);
+        disp.device_clut.set_entry(42, [hilite.0, hilite.1, hilite.2]);
         disp.quickdraw_hilite_colors
             .set_quickdraw_hilite_color(window_ptr, hilite);
         bus.write_long(0x0824, screen_base);
