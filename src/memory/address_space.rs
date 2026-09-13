@@ -576,15 +576,17 @@ fn write_routed_u32_state(
 
 impl SharedGuestAddressSpace {
     pub(crate) fn set_presentation(&self, slot: super::presentation::PresentationSlot) {
-        self.state_mut().presentation = slot;
+        self.with_state_mut(|state| state.presentation = slot);
     }
     fn new(memory: &GuestAddressSpace) -> Self {
         Self(Rc::clone(&memory.0))
     }
 
-    fn state_mut(&self) -> &mut GuestAddressSpaceState {
-        // SAFETY: the process runner serializes all CPU-adapter access.
-        unsafe { &mut *self.0.get() }
+    fn with_state_mut<R>(&self, f: impl FnOnce(&mut GuestAddressSpaceState) -> R) -> R {
+        // SAFETY: the process runner serializes all CPU-adapter access. Keeping
+        // the reference inside this operation prevents it from escaping the
+        // shared handle or remaining live across a later adapter operation.
+        unsafe { f(&mut *self.0.get()) }
     }
 
     fn adapter(&self) -> GuestAddressSpace {
@@ -601,7 +603,7 @@ impl SharedGuestAddressSpace {
         len: usize,
         flat_limit: Option<u32>,
     ) -> GuestMemoryRoute {
-        route_range_state(self.state_mut(), address, len, flat_limit)
+        self.with_state_mut(|state| route_range_state(state, address, len, flat_limit))
     }
 
     #[inline]
@@ -610,7 +612,7 @@ impl SharedGuestAddressSpace {
         address: u32,
         flat_limit: Option<u32>,
     ) -> GuestMemoryRoute {
-        route_byte_state(self.state_mut(), address, flat_limit)
+        self.with_state_mut(|state| route_byte_state(state, address, flat_limit))
     }
 
     /// Whether a complete range belongs to one runtime-owned read-only shared
@@ -633,42 +635,42 @@ impl SharedGuestAddressSpace {
         len: usize,
         local_ram: &SharedRamRegion,
     ) -> bool {
-        if len == 0 || route_range_state(self.state_mut(), address, len, None)
-            != GuestMemoryRoute::Shared
-        {
-            return false;
-        }
-        let Some(end) = range_end(address, len) else {
-            return false;
-        };
-        let mut cursor = u64::from(address);
-        while cursor < end {
-            let guest = u32::try_from(cursor).expect("guest range remains 32-bit");
-            let state = self.state_mut();
-            let Some((mapping, _)) = shared_mapping_at(state, guest) else {
-                return false;
-            };
-            if !mapping.region.same_backing(local_ram)
-                || mapping.region.backing_offset() != mapping.base as usize
+        self.with_state_mut(|state| {
+            if len == 0 || route_range_state(state, address, len, None) != GuestMemoryRoute::Shared
             {
                 return false;
             }
-            let Some(mapping_end) = mapping_end(mapping.base, mapping.region.len()) else {
+            let Some(end) = range_end(address, len) else {
                 return false;
             };
-            let mut segment_end = mapping_end.min(end);
-            for newer in &state.shared_regions {
-                let newer_start = u64::from(newer.base);
-                if newer_start > cursor && newer_start < segment_end {
-                    segment_end = newer_start;
+            let mut cursor = u64::from(address);
+            while cursor < end {
+                let guest = u32::try_from(cursor).expect("guest range remains 32-bit");
+                let Some((mapping, _)) = shared_mapping_at(state, guest) else {
+                    return false;
+                };
+                if !mapping.region.same_backing(local_ram)
+                    || mapping.region.backing_offset() != mapping.base as usize
+                {
+                    return false;
                 }
+                let Some(mapping_end) = mapping_end(mapping.base, mapping.region.len()) else {
+                    return false;
+                };
+                let mut segment_end = mapping_end.min(end);
+                for newer in &state.shared_regions {
+                    let newer_start = u64::from(newer.base);
+                    if newer_start > cursor && newer_start < segment_end {
+                        segment_end = newer_start;
+                    }
+                }
+                if segment_end <= cursor {
+                    return false;
+                }
+                cursor = segment_end;
             }
-            if segment_end <= cursor {
-                return false;
-            }
-            cursor = segment_end;
-        }
-        true
+            true
+        })
     }
 
     /// Read from a mapped non-flat backing selected by the shared router.
@@ -681,7 +683,7 @@ impl SharedGuestAddressSpace {
         address: u32,
         flat_limit: Option<u32>,
     ) -> Option<u8> {
-        read_routed_u8_state(self.state_mut(), address, flat_limit)
+        self.with_state_mut(|state| read_routed_u8_state(state, address, flat_limit))
     }
 
     #[inline]
@@ -690,7 +692,7 @@ impl SharedGuestAddressSpace {
         address: u32,
         flat_limit: Option<u32>,
     ) -> Option<u16> {
-        read_routed_u16_state(self.state_mut(), address, flat_limit)
+        self.with_state_mut(|state| read_routed_u16_state(state, address, flat_limit))
     }
 
     #[inline]
@@ -699,7 +701,7 @@ impl SharedGuestAddressSpace {
         address: u32,
         flat_limit: Option<u32>,
     ) -> Option<u32> {
-        read_routed_u32_state(self.state_mut(), address, flat_limit)
+        self.with_state_mut(|state| read_routed_u32_state(state, address, flat_limit))
     }
 
     #[inline]
@@ -709,7 +711,7 @@ impl SharedGuestAddressSpace {
         value: u8,
         flat_limit: Option<u32>,
     ) -> Option<()> {
-        write_routed_u8_state(self.state_mut(), address, value, flat_limit)
+        self.with_state_mut(|state| write_routed_u8_state(state, address, value, flat_limit))
     }
 
     #[inline]
@@ -719,7 +721,7 @@ impl SharedGuestAddressSpace {
         value: u16,
         flat_limit: Option<u32>,
     ) -> Option<()> {
-        write_routed_u16_state(self.state_mut(), address, value, flat_limit)
+        self.with_state_mut(|state| write_routed_u16_state(state, address, value, flat_limit))
     }
 
     #[inline]
@@ -729,7 +731,7 @@ impl SharedGuestAddressSpace {
         value: u32,
         flat_limit: Option<u32>,
     ) -> Option<()> {
-        write_routed_u32_state(self.state_mut(), address, value, flat_limit)
+        self.with_state_mut(|state| write_routed_u32_state(state, address, value, flat_limit))
     }
 
     #[inline]
@@ -738,7 +740,7 @@ impl SharedGuestAddressSpace {
         address: u32,
         flat_limit: Option<u32>,
     ) -> bool {
-        routed_byte_is_writable_state(self.state_mut(), address, flat_limit)
+        self.with_state_mut(|state| routed_byte_is_writable_state(state, address, flat_limit))
     }
 
     /// Whether an address belongs to an ordinary sparse native mapping rather
@@ -750,7 +752,7 @@ impl SharedGuestAddressSpace {
     }
 
     pub(crate) fn sparse_mapping_overlaps(&self, address: u32, len: u32) -> bool {
-        sparse_mapping_overlaps_state(self.state_mut(), address, len as usize)
+        self.with_state_mut(|state| sparse_mapping_overlaps_state(state, address, len as usize))
     }
 
     /// Return the end of the highest read-only runtime reservation overlapping
