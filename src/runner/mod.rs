@@ -4323,9 +4323,9 @@ impl FixtureRunner {
             .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604)
             .expect("trap table construction requires writable cells and system storage");
         self.share_ppc_process_memory(&mut ppc_app);
-        let detached_events = std::mem::take(&mut *ppc_app.event_queue);
+        let detached_events = ppc_app.event_queue.take();
         self.process_context
-            .event_queue_mut()
+            .shared_event_queue()
             .merge(detached_events);
         ppc_app.attach_unconverted_process_services(&mut self.process_context);
         assert!(self.process_context.install_cfm_seed(&mut ppc_app.cfm));
@@ -10975,7 +10975,7 @@ impl FixtureRunner {
             .event_queue()
             .iter()
             .position(|e| matches!(e.what, 1 | 2 | 3 | 4 | 6));
-        let next_event = idx.map(|i| self.process_context.event_queue_mut().remove(i).unwrap());
+        let next_event = idx.map(|i| self.process_context.shared_event_queue().remove(i).unwrap());
 
         let filter_event = if let Some(e) = next_event {
             e
@@ -13966,7 +13966,7 @@ mod tests {
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
             runner
                 .process_context
-                .event_queue_mut()
+                .shared_event_queue()
                 .push_back(QueuedEvent {
                     what: 3,
                     message: 0x1111,
@@ -13977,7 +13977,7 @@ mod tests {
                 });
             runner
                 .process_context
-                .event_queue_mut()
+                .shared_event_queue()
                 .invalidate_menu_bar();
 
             let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
@@ -14020,7 +14020,7 @@ mod tests {
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
             runner
                 .process_context
-                .event_queue_mut()
+                .shared_event_queue()
                 .push_back(QueuedEvent {
                     what: 3,
                     message: 0x3333,
@@ -20955,7 +20955,7 @@ mod tests {
         );
         runner
             .process_context
-            .event_queue_mut()
+            .shared_event_queue()
             .push_back(QueuedEvent {
                 what: 3,
                 message: 0x1122_3344,
@@ -28682,7 +28682,7 @@ mod tests {
             runner.dispatcher.modeless_dialog_draw_proc_queue.clear();
             runner
                 .process_context
-                .event_queue_mut()
+                .shared_event_queue()
                 .push_back(QueuedEvent {
                     what: 3,
                     message: 0x0000_351B, // Escape
@@ -29004,7 +29004,7 @@ mod tests {
         runner.set_guest_tick_for_test(0);
         runner
             .process_context
-            .event_queue_mut()
+            .shared_event_queue()
             .push_back(QueuedEvent {
                 what: 6,
                 message: 0,
@@ -29045,7 +29045,7 @@ mod tests {
         runner.set_guest_tick_for_test(0);
         runner
             .process_context
-            .event_queue_mut()
+            .shared_event_queue()
             .push_back(QueuedEvent {
                 what: 1,
                 message: 0,
@@ -29119,7 +29119,7 @@ mod tests {
         runner.dialog_filter_last_null_event_tick = Some((dialog_ptr, 42));
         runner
             .process_context
-            .event_queue_mut()
+            .shared_event_queue()
             .push_back(QueuedEvent {
                 what: 1,
                 message: 0,
@@ -29134,7 +29134,7 @@ mod tests {
             "mouse/key/update events must still enter the filter immediately"
         );
 
-        runner.process_context.event_queue_mut().clear();
+        runner.process_context.shared_event_queue().clear();
         let window_ptr = runner.bus.alloc(170);
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
@@ -30141,7 +30141,7 @@ mod tests {
             false,
             0,
         );
-        runner.process_context.event_queue_mut().clear();
+        runner.process_context.shared_event_queue().clear();
         runner.dispatcher.dialog_tracking =
             Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
         runner
@@ -30185,7 +30185,7 @@ mod tests {
             false,
             0,
         );
-        runner.process_context.event_queue_mut().clear();
+        runner.process_context.shared_event_queue().clear();
         runner.dispatcher.dialog_tracking =
             Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
         runner
@@ -30216,7 +30216,7 @@ mod tests {
 
         runner
             .process_context
-            .event_queue_mut()
+            .shared_event_queue()
             .push_back(QueuedEvent {
                 what: 1,
                 message: 0,
@@ -31443,7 +31443,7 @@ mod tests {
         runner.push_mouse_down(10, 20);
         assert_eq!(runner.pending_mouse_down_count(), 1);
 
-        runner.process_context.event_queue_mut().pop_front();
+        runner.process_context.shared_event_queue().pop_front();
         assert_eq!(runner.pending_mouse_down_count(), 0);
     }
 

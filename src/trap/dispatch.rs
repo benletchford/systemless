@@ -11016,7 +11016,7 @@ mod tests {
         let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         dispatcher.attach_unconverted_process_services(&mut context);
-        context.event_queue_mut().push_back(QueuedEvent {
+        context.shared_event_queue().push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
             when: 0,

@@ -6,7 +6,7 @@ use crate::display::{
     default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
     DisplayGamma,
 };
-use crate::event_queue::EventQueue;
+use crate::event_queue::{EventQueue, QueuedEvent};
 use crate::guest_call::{ExecutionMenuViews, SharedGuestCallStack};
 use crate::guest_procedure::GuestProcedure;
 use crate::list_manager::ProcessListManagerState;
@@ -1671,6 +1671,68 @@ impl SharedProcessDialogText {
     /// Replace one `ParamText` slot within a single serialized operation.
     pub(crate) fn set_slot(&self, index: usize, value: Vec<u8>) {
         self.with_mut(|slots| slots[index] = value);
+    }
+}
+
+impl SharedProcessEventQueue {
+    pub(crate) fn clear(&self) {
+        self.with_mut(|queue| queue.clear());
+    }
+
+    pub(crate) fn extend<I>(&self, events: I)
+    where
+        I: IntoIterator<Item = QueuedEvent>,
+    {
+        self.with_mut(|queue| queue.extend(events));
+    }
+
+    pub(crate) fn push_back(&self, event: QueuedEvent) {
+        self.with_mut(|queue| queue.push_back(event));
+    }
+
+    pub(crate) fn push_front(&self, event: QueuedEvent) {
+        self.with_mut(|queue| queue.push_front(event));
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn pop_back(&self) -> Option<QueuedEvent> {
+        self.with_mut(|queue| queue.pop_back())
+    }
+
+    pub(crate) fn pop_front(&self) -> Option<QueuedEvent> {
+        self.with_mut(|queue| queue.pop_front())
+    }
+
+    pub(crate) fn remove(&self, index: usize) -> Option<QueuedEvent> {
+        self.with_mut(|queue| queue.remove(index))
+    }
+
+    pub(crate) fn retain<F>(&self, predicate: F)
+    where
+        F: FnMut(&QueuedEvent) -> bool,
+    {
+        self.with_mut(|queue| queue.retain(predicate));
+    }
+
+    pub(crate) fn replace_events(&self, events: std::collections::VecDeque<QueuedEvent>) {
+        self.with_mut(|queue| **queue = events);
+    }
+
+    pub(crate) fn take(&self) -> EventQueue {
+        self.with_mut(std::mem::take)
+    }
+
+    pub(crate) fn merge(&self, other: EventQueue) {
+        self.with_mut(|queue| queue.merge(other));
+    }
+
+    pub(crate) fn invalidate_menu_bar(&self) {
+        self.with_mut(EventQueue::invalidate_menu_bar);
+    }
+
+    pub(crate) fn take_menu_bar_invalidation(&self) -> bool {
+        self.with_mut(EventQueue::take_menu_bar_invalidation)
     }
 }
 
@@ -6894,8 +6956,8 @@ impl ProcessContext {
         &self.event_queue
     }
 
-    pub(crate) fn event_queue_mut(&mut self) -> &mut SharedProcessEventQueue {
-        &mut self.event_queue
+    pub(crate) fn shared_event_queue(&self) -> &SharedProcessEventQueue {
+        &self.event_queue
     }
 
     pub(crate) fn menu_tracking(&self) -> Option<&ProcessMenuTrackingState> {
@@ -7676,9 +7738,9 @@ mod tests {
 
     #[test]
     fn process_context_owns_canonical_event_queue() {
-        let mut context = ProcessContext::default();
+        let context = ProcessContext::default();
         assert!(context.event_queue().is_empty());
-        context.event_queue_mut().push_back(QueuedEvent {
+        context.shared_event_queue().push_back(QueuedEvent {
             what: 1,
             message: 0x1234,
             when: 0,
@@ -7716,7 +7778,7 @@ mod tests {
         assert_eq!(taken.map(|t| t.menu_handle), Some(0x0012_3456));
         assert!(context.menu_tracking().is_none());
 
-        context.event_queue_mut().push_back(QueuedEvent {
+        context.shared_event_queue().push_back(QueuedEvent {
             what: 2,
             message: 0x5678,
             when: 0,
