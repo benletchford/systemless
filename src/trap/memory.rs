@@ -11267,7 +11267,7 @@ mod tests {
         assert_eq!(gamma[0][0xA5], 0xA5);
         assert_eq!(gamma[1][0xA5], 0x5A);
         assert_eq!(gamma[2][0xA5], 0x42);
-        dispatcher.device_clut[7] = [0xA5A5; 3];
+        dispatcher.device_clut.set_entry(7, [0xA5A5; 3]);
         let raw_clut = *dispatcher.device_clut;
         let palette =
             crate::display::argb_palette_from_clut_with_gamma(&dispatcher.device_clut, &gamma);

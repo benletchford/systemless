@@ -18451,7 +18451,7 @@ mod tests {
 
         let content_rgb = (0x4567, 0x5678, 0x6789);
         disp.device_clut.fill([0, 0, 0]);
-        disp.device_clut[42] = [content_rgb.0, content_rgb.1, content_rgb.2];
+        disp.device_clut.set_entry(42, [content_rgb.0, content_rgb.1, content_rgb.2]);
 
         let mut dlog = build_test_dlog((40, 50, 120, 250), 1921, 0);
         dlog[10] = 1; // visible
@@ -18545,10 +18545,10 @@ mod tests {
         bus.write_long(0x0824, screen_base);
         disp.screen_mode = (screen_base, 320, 320, 240, 8);
         disp.device_clut.fill([0, 0, 0]);
-        disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
-        disp.device_clut[20] = [0xFFFF, 0xFFFF, 0];
-        disp.device_clut[42] = [0, 0x4000, 0];
-        disp.device_clut[255] = [0, 0, 0];
+        disp.device_clut.set_entry(0, [0xFFFF, 0xFFFF, 0xFFFF]);
+        disp.device_clut.set_entry(20, [0xFFFF, 0xFFFF, 0]);
+        disp.device_clut.set_entry(42, [0, 0x4000, 0]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
 
         let mut dlog = build_test_dlog((40, 50, 120, 250), 1931, 0);
         dlog[8..10].copy_from_slice(&4i16.to_be_bytes()); // noGrowDocProc
@@ -25137,7 +25137,7 @@ mod tests {
         assert_eq!(pixel_size, 8);
 
         // Hardware CLUT is faded completely black
-        *disp.device_clut = [[0u16; 3]; 256];
+        disp.device_clut.replace([[0u16; 3]; 256]);
 
         bus.write_word(dialog_ptr + 8, 0);
         bus.write_word(dialog_ptr + 10, 0);
@@ -26339,10 +26339,10 @@ mod tests {
 
         let (mut dispatcher, _cpu, mut bus) = setup();
         dispatcher.set_screen_mode_for_test(screen_base, row_bytes, 160, 140, 8);
-        *dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
-        dispatcher.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
-        dispatcher.device_clut[42] = [0x7FFF, 0x7FFF, 0x7FFF];
-        dispatcher.device_clut[255] = [0, 0, 0];
+        dispatcher.device_clut.replace([[0x2020, 0x4040, 0x6060]; 256]);
+        dispatcher.device_clut.set_entry(0, [0xFFFF, 0xFFFF, 0xFFFF]);
+        dispatcher.device_clut.set_entry(42, [0x7FFF, 0x7FFF, 0x7FFF]);
+        dispatcher.device_clut.set_entry(255, [0, 0, 0]);
         for offset in 0..(row_bytes * 140) {
             bus.write_byte(screen_base + offset, 0);
         }
@@ -26414,9 +26414,9 @@ mod tests {
             );
         }
 
-        *dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
-        dispatcher.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
-        dispatcher.device_clut[255] = [0, 0, 0];
+        dispatcher.device_clut.replace([[0x2020, 0x4040, 0x6060]; 256]);
+        dispatcher.device_clut.set_entry(0, [0xFFFF, 0xFFFF, 0xFFFF]);
+        dispatcher.device_clut.set_entry(255, [0, 0, 0]);
         for offset in 0..(row_bytes * 140) {
             bus.write_byte(screen_base + offset, 0);
         }
@@ -29266,8 +29266,8 @@ mod tests {
         let screen_base = bus.alloc(100 * 80);
         bus.write_long(0x0824, screen_base);
         disp.screen_mode = (screen_base, 100, 100, 80, 8);
-        disp.device_clut[0x22] = [0x3333, 0x7777, 0x2222];
-        *disp.color_manager_clut = *disp.device_clut;
+        disp.device_clut.set_entry(0x22, [0x3333, 0x7777, 0x2222]);
+        disp.color_manager_clut.replace(*disp.device_clut);
 
         let offscreen_base = bus.alloc(100 * 80);
         bus.write_bytes(offscreen_base, &vec![0x22; 100 * 80]);

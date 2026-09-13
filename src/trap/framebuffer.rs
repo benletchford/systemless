@@ -6133,8 +6133,8 @@ mod redraw_chrome_tests {
         disp.window_proc_id = 2;
         disp.window_proc_ids.insert(PORT_PTR, 2);
         disp.menu_bar_hidden = true;
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[37] = [0, 0, 0];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(37, [0, 0, 0]);
 
         disp.menus = vec![overlay_test_menu(703, "Popup", "Choice", false, false)];
         let dropdown_rect = (100, 10, 118, 70);
@@ -6811,9 +6811,9 @@ mod redraw_chrome_tests {
         disp.window_proc_ids.insert(PORT_PTR, 2);
         disp.menu_bar_hidden = false;
         disp.fullscreen_locked = true;
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[43] = [0xFFFF, 0, 0];
-        disp.device_clut[255] = [0, 0, 0];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(43, [0xFFFF, 0, 0]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,
@@ -6883,8 +6883,8 @@ mod redraw_chrome_tests {
         disp.window_proc_id = 2;
         disp.window_proc_ids.insert(PORT_PTR, 2);
         disp.menu_bar_hidden = true;
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[37] = [0, 0, 0];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(37, [0, 0, 0]);
 
         disp.redraw_chrome(&mut bus);
 
@@ -6950,8 +6950,8 @@ mod redraw_chrome_tests {
             dst_right: 720,
         });
         disp.menu_bar_hidden = true;
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[255] = [0, 0, 0];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
 
         disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
 
@@ -7030,8 +7030,8 @@ mod redraw_chrome_tests {
                 dst_right: 720,
             });
             disp.menu_bar_hidden = true;
-            *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-            disp.device_clut[255] = [0, 0, 0];
+            disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+            disp.device_clut.set_entry(255, [0, 0, 0]);
 
             disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
 
@@ -7082,8 +7082,8 @@ mod redraw_chrome_tests {
             dst_right: 720,
         });
         disp.menu_bar_hidden = true;
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[255] = [0, 0, 0];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
 
         disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
 
@@ -7108,8 +7108,8 @@ mod redraw_chrome_tests {
         disp.window_proc_id = 0;
         disp.window_proc_ids.insert(PORT_PTR, 0);
         disp.menu_bar_hidden = true;
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[37] = [0, 0, 0];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(37, [0, 0, 0]);
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,
@@ -7161,8 +7161,8 @@ mod redraw_chrome_tests {
         disp.window_proc_id = 2;
         disp.window_proc_ids.remove(&PORT_PTR);
         disp.menu_bar_hidden = true;
-        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        disp.device_clut[37] = [0, 0, 0];
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(37, [0, 0, 0]);
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,
@@ -8910,8 +8910,8 @@ mod redraw_chrome_tests {
         let screen_base = bus.alloc(8);
         disp.screen_mode = (screen_base, 4, 16, 1, 1);
         let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(1).unwrap();
-        *disp.color_manager_clut = screen_clut;
-        *disp.device_clut = screen_clut;
+        disp.color_manager_clut.replace(screen_clut);
+        disp.device_clut.replace(screen_clut);
         bus.write_long(0x0824, screen_base);
         let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
         bus.write_long(0x08A4, gdevice_handle);
@@ -8946,8 +8946,8 @@ mod redraw_chrome_tests {
         let screen_base = bus.alloc(8);
         disp.screen_mode = (screen_base, 4, 12, 1, 2);
         let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).unwrap();
-        *disp.color_manager_clut = screen_clut;
-        *disp.device_clut = screen_clut;
+        disp.color_manager_clut.replace(screen_clut);
+        disp.device_clut.replace(screen_clut);
         bus.write_long(0x0824, screen_base);
         let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
         bus.write_long(0x08A4, gdevice_handle);
@@ -9008,8 +9008,8 @@ mod redraw_chrome_tests {
         let screen_base = bus.alloc(8);
         disp.screen_mode = (screen_base, 4, 16, 1, 1);
         let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(1).unwrap();
-        *disp.color_manager_clut = screen_clut;
-        *disp.device_clut = screen_clut;
+        disp.color_manager_clut.replace(screen_clut);
+        disp.device_clut.replace(screen_clut);
         bus.write_long(0x0824, screen_base);
         let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
         bus.write_long(0x08A4, gdevice_handle);
@@ -9163,8 +9163,8 @@ mod redraw_chrome_tests {
         disp.screen_mode = (screen_base, 4, 12, 1, 2);
         bus.write_long(0x0824, screen_base);
         let (clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).unwrap();
-        *disp.color_manager_clut = clut;
-        *disp.device_clut = clut;
+        disp.color_manager_clut.replace(clut);
+        disp.device_clut.replace(clut);
         let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
         bus.write_long(0x08A4, gdevice_handle);
         bus.write_long(0x0CC8, gdevice_handle);
@@ -9199,8 +9199,8 @@ mod redraw_chrome_tests {
             disp.screen_mode = (screen_base, 1, 16, 1, depth);
             bus.write_long(0x0824, screen_base);
             let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(depth).unwrap();
-            *disp.color_manager_clut = screen_clut;
-            *disp.device_clut = screen_clut;
+            disp.color_manager_clut.replace(screen_clut);
+            disp.device_clut.replace(screen_clut);
             let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
             bus.write_long(0x08A4, gdevice_handle);
             bus.write_long(0x0CC8, gdevice_handle);
@@ -9266,8 +9266,8 @@ mod redraw_chrome_tests {
         let mut dst_clut = TrapDispatcher::standard_mac_8bpp_clut();
         dst_clut[1] = [0x1234, 0x5678, 0x9abc];
         write_ctab_colors(&mut bus, screen_ctab_handle, &dst_clut, 4);
-        *disp.color_manager_clut = dst_clut;
-        *disp.device_clut = dst_clut;
+        disp.color_manager_clut.replace(dst_clut);
+        disp.device_clut.replace(dst_clut);
         let mut src_clut = dst_clut;
         src_clut[3] = dst_clut[1];
         src_clut[1] = [0xffff, 0, 0];
@@ -9318,8 +9318,8 @@ mod redraw_chrome_tests {
         }
         let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdevice_handle);
         write_ctab_colors(&mut bus, screen_ctab_handle, &dst_clut, 256);
-        *disp.color_manager_clut = dst_clut;
-        *disp.device_clut = dst_clut;
+        disp.color_manager_clut.replace(dst_clut);
+        disp.device_clut.replace(dst_clut);
 
         let mut src_clut = [[0u16; 3]; 256];
         src_clut[..4].copy_from_slice(&colors);
@@ -9370,8 +9370,8 @@ mod redraw_chrome_tests {
         dst_clut[..4].copy_from_slice(&colors);
         let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdevice_handle);
         write_ctab_colors(&mut bus, screen_ctab_handle, &dst_clut, 4);
-        *disp.color_manager_clut = dst_clut;
-        *disp.device_clut = dst_clut;
+        disp.color_manager_clut.replace(dst_clut);
+        disp.device_clut.replace(dst_clut);
 
         let mut src_clut = [[0u16; 3]; 256];
         for (index, color) in src_clut[..16].iter_mut().enumerate() {
@@ -9482,8 +9482,8 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[0] = [0, 0, 0];
-        disp.device_clut[0xAA] = [0, 0, 0];
+        disp.device_clut.set_entry(0, [0, 0, 0]);
+        disp.device_clut.set_entry(0xAA, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9557,8 +9557,8 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[0] = [0, 0, 0];
-        disp.device_clut[0xAA] = [0, 0, 0];
+        disp.device_clut.set_entry(0, [0, 0, 0]);
+        disp.device_clut.set_entry(0xAA, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9598,7 +9598,7 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[255] = [0, 0, 0];
+        disp.device_clut.set_entry(255, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0xFF);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9637,8 +9637,8 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
-        disp.device_clut[255] = [0, 0, 0];
+        disp.device_clut.set_entry(1, [0xFFFF, 0xFFFF, 0xFFFF]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0xFF);
         bus.write_byte(screen_base + 25 * 800 + 25, 1);
         bus.write_long(0x0824, screen_base);
@@ -9677,8 +9677,8 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
-        disp.device_clut[255] = [0, 0, 0];
+        disp.device_clut.set_entry(1, [0xFFFF, 0xFFFF, 0xFFFF]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0x01);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9724,7 +9724,7 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut.set_entry(1, [0xFFFF, 0xFFFF, 0xFFFF]);
         bus.fill_bytes(screen_base, 800 * 600, 0x01);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9759,7 +9759,7 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[0] = [0, 0, 0];
+        disp.device_clut.set_entry(0, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9791,7 +9791,7 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[0] = [0, 0, 0];
+        disp.device_clut.set_entry(0, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9839,7 +9839,7 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[0] = [0, 0, 0];
+        disp.device_clut.set_entry(0, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
@@ -9876,7 +9876,7 @@ mod redraw_chrome_tests {
 
         let screen_base = bus.alloc(800 * 600);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
-        disp.device_clut[0] = [0, 0, 0];
+        disp.device_clut.set_entry(0, [0, 0, 0]);
         bus.fill_bytes(screen_base, 800 * 600, 0);
         bus.write_long(0x0824, screen_base);
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);

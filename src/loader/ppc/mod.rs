@@ -97,6 +97,7 @@ use crate::process_context::{
     ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
     SharedProcessAppleEventLaunchState,
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
+    SharedProcessDisplayClut,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
     DEFAULT_QUICKDRAW_HILITE_COLOR,
@@ -3616,8 +3617,8 @@ pub struct PpcLoadedApp {
     pub current_gdevice: SharedProcessValue<u32>,
     pub(crate) quickdraw_op_colors: SharedProcessQuickDrawOpColors,
     pub(crate) quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
-    pub screen_clut: SharedProcessValue<[[u16; 3]; 256]>,
-    pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    pub screen_clut: SharedProcessDisplayClut,
+    pub color_manager_clut: SharedProcessDisplayClut,
     pub(crate) display_gamma: SharedProcessDisplayGamma,
     /// Whether QuickDraw draw state is canonical in the attached process's
     /// current CGrafPort record and must be reloaded at each import boundary.
@@ -7746,8 +7747,8 @@ impl PpcLoadedApp {
         let mut current_gdevice = self.current_gdevice.shared_handle();
         let quickdraw_op_colors = self.quickdraw_op_colors.shared_handle();
         let quickdraw_hilite_colors = self.quickdraw_hilite_colors.shared_handle();
-        let mut screen_clut = self.screen_clut.shared_handle();
-        let mut color_manager_clut = self.color_manager_clut.shared_handle();
+        let screen_clut = self.screen_clut.shared_handle();
+        let color_manager_clut = self.color_manager_clut.shared_handle();
         let display_gamma = self.display_gamma.shared_handle();
         let mut quickdraw_fore_color = self.quickdraw_fore_color;
         let mut quickdraw_fore_indices = std::mem::take(&mut self.quickdraw_fore_indices);
@@ -8355,113 +8356,117 @@ impl PpcLoadedApp {
                             vfs_resources,
                             ..
                         } = &mut **resource_manager;
-                        event_queue.with_mut(|event_queue| {
-                            dispatch_supported_import(
-                                binding,
-                                cpu,
-                                memory,
-                                &mut *process_memory_manager,
-                                &mut heap_cursor,
-                                heap_limit,
-                                native_heap_ceiling,
-                                &mut last_mem_error,
-                                &mut import_tick_count,
-                                clock_cycles_per_tick,
-                                &mut current_resource_refnum,
-                                &mut last_resource_error,
-                                &resource_policy,
-                                &native_exception_handler,
-                                &mut stdc_qsort_stack,
-                                &mut dialog_callback_stack,
-                                &mut apple_events,
-                                &mut cfm_connections,
-                                &mut cfm_library_fragments,
-                                &mut next_cfm_connection_id,
-                                &mut import_run_state,
-                                &mut controls,
-                                &mut aliases,
-                                &mut gworlds,
-                                &gworld_pixel_states,
-                                &window_list,
-                                &mut q3_objects,
-                                &mut q3_object_refs,
-                                &mut next_q3_object,
-                                &mut q3_error_state,
-                                &mut q3_lifecycle,
-                                &mut q3_memory_storages,
-                                &mut q3_files,
-                                &mut q3_group_memberships,
-                                &mut q3_file_groups,
-                                &mut q3_views,
-                                &mut q3_submissions,
-                                &mut q3_view_transforms,
-                                &mut q3_submission_transforms,
-                                &mut q3_view_materials,
-                                &mut q3_submission_materials,
-                                &mut q3_submission_lights,
-                                &mut q3_view_state_stack,
-                                &mut q3_completed_frames,
-                                &mut q3_retained_frames,
-                                &mut q3_state_only_completed_frame_batches,
-                                &mut q3_fog_styles,
-                                &mut q3_attributes,
-                                &mut q3_shader_uv_transforms,
-                                &mut q3_shader_boundaries,
-                                &mut q3_mipmap_textures,
-                                &mut q3_texture_shaders,
-                                &mut q3_renderer_preferences,
-                                &mut q3_draw_contexts,
-                                &mut q3_trimeshes,
-                                &mut q3_styles,
-                                &mut q3_cameras,
-                                &mut q3_lights,
-                                &mut input_sprocket,
-                                &mut input_sprocket_virtual_elements,
-                                &mut toolbox_startup,
-                                &mut quicktime,
-                                &mut sound,
-                                &timer_tasks,
-                                &vbl_tasks,
-                                &callback_scheduling,
-                                &mut **files,
-                                &mut **writable_refnums,
-                                vfs_files,
-                                stdio_streams,
-                                deleted_vfs_file_paths,
-                                resource_files,
-                                vfs_resource_files,
-                                vfs_resources,
-                                next_file_ref_num,
-                                &mut current_gworld,
-                                &mut current_gdevice,
-                                &quickdraw_op_colors,
-                                &quickdraw_hilite_colors,
-                                &mut screen_clut,
-                                &mut color_manager_clut,
-                                &display_gamma,
-                                &mut quickdraw_fore_color,
-                                &mut quickdraw_fore_indices,
-                                &mut quickdraw_back_color,
-                                &mut quickdraw_pen_h,
-                                &mut quickdraw_pen_v,
-                                &mut quickdraw_text_mode,
-                                &mut quickdraw_text_size,
-                                &cursor_state,
-                                &vfs_volumes,
-                                &mut vfs_directories,
-                                &mut next_vfs_dir_id,
-                                *default_dir_id,
-                                &mut working_directories,
-                                &mut next_working_directory_ref_num,
-                                &mut application_working_directory_ref_num,
-                                launched_app_path.as_deref(),
-                                &param_text,
-                                &mut scrap,
-                                &mut list_manager,
-                                input,
-                                event_queue,
-                                &mut draw_sprocket,
-                            )
+                        screen_clut.with_mut(|screen_clut| {
+                            color_manager_clut.with_mut(|color_manager_clut| {
+                                event_queue.with_mut(|event_queue| {
+                                    dispatch_supported_import(
+                                        binding,
+                                        cpu,
+                                        memory,
+                                        &mut *process_memory_manager,
+                                        &mut heap_cursor,
+                                        heap_limit,
+                                        native_heap_ceiling,
+                                        &mut last_mem_error,
+                                        &mut import_tick_count,
+                                        clock_cycles_per_tick,
+                                        &mut current_resource_refnum,
+                                        &mut last_resource_error,
+                                        &resource_policy,
+                                        &native_exception_handler,
+                                        &mut stdc_qsort_stack,
+                                        &mut dialog_callback_stack,
+                                        &mut apple_events,
+                                        &mut cfm_connections,
+                                        &mut cfm_library_fragments,
+                                        &mut next_cfm_connection_id,
+                                        &mut import_run_state,
+                                        &mut controls,
+                                        &mut aliases,
+                                        &mut gworlds,
+                                        &gworld_pixel_states,
+                                        &window_list,
+                                        &mut q3_objects,
+                                        &mut q3_object_refs,
+                                        &mut next_q3_object,
+                                        &mut q3_error_state,
+                                        &mut q3_lifecycle,
+                                        &mut q3_memory_storages,
+                                        &mut q3_files,
+                                        &mut q3_group_memberships,
+                                        &mut q3_file_groups,
+                                        &mut q3_views,
+                                        &mut q3_submissions,
+                                        &mut q3_view_transforms,
+                                        &mut q3_submission_transforms,
+                                        &mut q3_view_materials,
+                                        &mut q3_submission_materials,
+                                        &mut q3_submission_lights,
+                                        &mut q3_view_state_stack,
+                                        &mut q3_completed_frames,
+                                        &mut q3_retained_frames,
+                                        &mut q3_state_only_completed_frame_batches,
+                                        &mut q3_fog_styles,
+                                        &mut q3_attributes,
+                                        &mut q3_shader_uv_transforms,
+                                        &mut q3_shader_boundaries,
+                                        &mut q3_mipmap_textures,
+                                        &mut q3_texture_shaders,
+                                        &mut q3_renderer_preferences,
+                                        &mut q3_draw_contexts,
+                                        &mut q3_trimeshes,
+                                        &mut q3_styles,
+                                        &mut q3_cameras,
+                                        &mut q3_lights,
+                                        &mut input_sprocket,
+                                        &mut input_sprocket_virtual_elements,
+                                        &mut toolbox_startup,
+                                        &mut quicktime,
+                                        &mut sound,
+                                        &timer_tasks,
+                                        &vbl_tasks,
+                                        &callback_scheduling,
+                                        &mut **files,
+                                        &mut **writable_refnums,
+                                        vfs_files,
+                                        stdio_streams,
+                                        deleted_vfs_file_paths,
+                                        resource_files,
+                                        vfs_resource_files,
+                                        vfs_resources,
+                                        next_file_ref_num,
+                                        &mut current_gworld,
+                                        &mut current_gdevice,
+                                        &quickdraw_op_colors,
+                                        &quickdraw_hilite_colors,
+                                        screen_clut,
+                                        color_manager_clut,
+                                        &display_gamma,
+                                        &mut quickdraw_fore_color,
+                                        &mut quickdraw_fore_indices,
+                                        &mut quickdraw_back_color,
+                                        &mut quickdraw_pen_h,
+                                        &mut quickdraw_pen_v,
+                                        &mut quickdraw_text_mode,
+                                        &mut quickdraw_text_size,
+                                        &cursor_state,
+                                        &vfs_volumes,
+                                        &mut vfs_directories,
+                                        &mut next_vfs_dir_id,
+                                        *default_dir_id,
+                                        &mut working_directories,
+                                        &mut next_working_directory_ref_num,
+                                        &mut application_working_directory_ref_num,
+                                        launched_app_path.as_deref(),
+                                        &param_text,
+                                        &mut scrap,
+                                        &mut list_manager,
+                                        input,
+                                        event_queue,
+                                        &mut draw_sprocket,
+                                    )
+                                })
+                            })
                         })
                     };
                     action
@@ -91947,6 +91952,30 @@ pub(crate) mod tests {
             $app.process_memory_manager.heap_limit($app.stack_base)
         };
     }
+
+    macro_rules! with_test_screen_clut {
+        ($app:ident, |$screen:ident| $body:expr) => {{
+            let screen_clut = $app.screen_clut.shared_handle();
+            screen_clut.with_mut(|$screen| $body)
+        }};
+    }
+
+    macro_rules! with_test_color_manager_clut {
+        ($app:ident, |$logical:ident| $body:expr) => {{
+            let color_manager_clut = $app.color_manager_clut.shared_handle();
+            color_manager_clut.with_mut(|$logical| $body)
+        }};
+    }
+
+    macro_rules! with_test_display_cluts {
+        ($app:ident, |$screen:ident, $logical:ident| $body:expr) => {{
+            let screen_clut = $app.screen_clut.shared_handle();
+            let color_manager_clut = $app.color_manager_clut.shared_handle();
+            screen_clut.with_mut(|$screen| {
+                color_manager_clut.with_mut(|$logical| $body)
+            })
+        }};
+    }
     use crate::cpu::{CpuOps, Register};
     use crate::managers::resource::serialize_resource_fork;
     use crate::memory::MemoryBus;
@@ -97810,8 +97839,8 @@ pub(crate) mod tests {
         native.attach_unconverted_process_services(&mut context);
         let detached = native.clone();
 
-        native.screen_clut[7] = [0x1111, 0x2222, 0x3333];
-        native.color_manager_clut[9] = [0x4444, 0x5555, 0x6666];
+        native.screen_clut.set_entry(7, [0x1111, 0x2222, 0x3333]);
+        native.color_manager_clut.set_entry(9, [0x4444, 0x5555, 0x6666]);
         let mut native_gamma = native.display_gamma.table();
         native_gamma[1][42] = 0x7f;
         native.display_gamma.install(native_gamma);
@@ -97826,7 +97855,7 @@ pub(crate) mod tests {
         assert_eq!(classic.display_gamma.table()[1][42], 0x7f);
         assert!(classic.display_gamma.is_explicit());
 
-        classic.device_clut[3] = [0xaaaa, 0xbbbb, 0xcccc];
+        classic.device_clut.set_entry(3, [0xaaaa, 0xbbbb, 0xcccc]);
         let mut classic_gamma = classic.display_gamma.table();
         classic_gamma[2][99] = 0x55;
         classic.display_gamma.install(classic_gamma);
@@ -103787,21 +103816,21 @@ pub(crate) mod tests {
             &loaded.color_manager_clut,
         )
         .unwrap();
-        let mut screen_clut = loaded.screen_clut;
+        let screen_clut = loaded.screen_clut;
         let display_gamma = loaded.display_gamma.shared_handle();
         let mut startup = loaded.toolbox_startup;
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = parameter_block;
 
         assert_eq!(
-            ppc_pb_control(
+            screen_clut.with_mut(|screen_clut| ppc_pb_control(
                 &cpu,
                 &mut loaded.memory,
                 *loaded.current_gdevice,
-                &mut screen_clut,
+                screen_clut,
                 &display_gamma,
                 &mut startup,
-            ),
+            )),
             PPC_NO_ERR
         );
         assert_eq!(screen_clut[7], [0x1111, 0x2222, 0x3333]);
@@ -145289,7 +145318,7 @@ pub(crate) mod tests {
         depth_cpu.gpr[4] = 8;
         let mut last_mem_error = PPC_NO_ERR;
         assert_eq!(
-            ppc_set_depth(
+            with_test_display_cluts!(loaded, |screen_clut, color_manager_clut| ppc_set_depth(
                 &depth_cpu,
                 None,
                 &mut loaded.memory,
@@ -145299,9 +145328,9 @@ pub(crate) mod tests {
                 test_handles!(loaded),
                 &mut loaded.gworlds,
                 &mut loaded.toolbox_startup,
-                &mut loaded.screen_clut,
-                &mut loaded.color_manager_clut,
-            ),
+                screen_clut,
+                color_manager_clut,
+            )),
             PPC_NO_ERR
         );
 
@@ -146191,8 +146220,8 @@ pub(crate) mod tests {
         loaded.cpu.gpr[5] = 0x0002;
         loaded.cpu.gpr[6] = 0x4567;
         let defaults = TrapDispatcher::standard_mac_8bpp_clut();
-        loaded.screen_clut[42] = [0x1111, 0x2222, 0x3333];
-        loaded.color_manager_clut[42] = [0x1111, 0x2222, 0x3333];
+        loaded.screen_clut.set_entry(42, [0x1111, 0x2222, 0x3333]);
+        loaded.color_manager_clut.set_entry(42, [0x1111, 0x2222, 0x3333]);
         loaded
             .toolbox_startup
             .palette_allocations
@@ -146561,8 +146590,8 @@ pub(crate) mod tests {
                 component.rotate_left(7),
             ]
         });
-        *loaded.screen_clut = direct_clut;
-        *loaded.color_manager_clut = direct_clut;
+        loaded.screen_clut.replace(direct_clut);
+        loaded.color_manager_clut.replace(direct_clut);
         ppc_write_device_color_table(
             &mut loaded.memory,
             PPC_MAIN_GDEVICE,
@@ -146668,14 +146697,17 @@ pub(crate) mod tests {
                 color,
             );
         }
-        assert!(ppc_activate_window_palette(
-            &mut loaded.memory,
-            windows[2],
-            PPC_MAIN_GDEVICE,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_display_cluts!(
+            loaded,
+            |screen_clut, color_manager_clut| ppc_activate_window_palette(
+                &mut loaded.memory,
+                windows[2],
+                PPC_MAIN_GDEVICE,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         loaded.imports[0].symbol_name = "SendBehind".to_string();
@@ -146776,14 +146808,17 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        assert!(ppc_activate_window_palette(
-            &mut loaded.memory,
-            window,
-            PPC_MAIN_GDEVICE,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_display_cluts!(
+            loaded,
+            |screen_clut, color_manager_clut| ppc_activate_window_palette(
+                &mut loaded.memory,
+                window,
+                PPC_MAIN_GDEVICE,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         assert_eq!(loaded.screen_clut[1], color);
 
@@ -147161,10 +147196,10 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"RGBForeColor");
         let mut loaded = load_pef_application(&pef).unwrap();
         let gray = [0x9F9F; 3];
-        loaded.color_manager_clut[86] = [0, 0, 0x9B9B];
-        loaded.color_manager_clut[144] = gray;
-        loaded.screen_clut[86] = gray;
-        loaded.screen_clut[144] = [0, 0, 0x9B9B];
+        loaded.color_manager_clut.set_entry(86, [0, 0, 0x9B9B]);
+        loaded.color_manager_clut.set_entry(144, gray);
+        loaded.screen_clut.set_entry(86, gray);
+        loaded.screen_clut.set_entry(144, [0, 0, 0x9B9B]);
 
         let color_ptr = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(color_ptr, vec![0; 6]);
@@ -147405,12 +147440,15 @@ pub(crate) mod tests {
             loaded.memory.write_u16_be(info + 8, tolerance).unwrap();
         }
         loaded.toolbox_startup.clut_protected[0] = true;
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         let allocation = loaded
             .toolbox_startup
@@ -147458,8 +147496,8 @@ pub(crate) mod tests {
         )
         .unwrap();
         loaded.screen_clut.fill([0xffff; 3]);
-        loaded.screen_clut[42] = [0x8000; 3];
-        loaded.screen_clut[43] = [0x8001; 3];
+        loaded.screen_clut.set_entry(42, [0x8000; 3]);
+        loaded.screen_clut.set_entry(43, [0x8001; 3]);
         loaded
             .toolbox_startup
             .palette_allocations
@@ -147471,12 +147509,15 @@ pub(crate) mod tests {
                 reserved_indices: vec![42],
             });
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         let allocation = loaded
             .toolbox_startup
@@ -147545,8 +147586,8 @@ pub(crate) mod tests {
         );
         let other_gdevice = PPC_DATA_BASE + 0x9000;
         loaded.screen_clut.fill([0; 3]);
-        loaded.screen_clut[42] = [0xffff; 3];
-        loaded.screen_clut[43] = [0, 0x8000, 0];
+        loaded.screen_clut.set_entry(42, [0xffff; 3]);
+        loaded.screen_clut.set_entry(43, [0, 0x8000, 0]);
         loaded.toolbox_startup.clut_protected.fill(true);
         loaded.toolbox_startup.clut_protected[42] = false;
         loaded.toolbox_startup.clut_protected[43] = false;
@@ -147574,12 +147615,15 @@ pub(crate) mod tests {
             },
         ]);
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            current,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                current,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         let current_allocation = loaded
@@ -147655,7 +147699,7 @@ pub(crate) mod tests {
             loaded.memory.write_u16_be(palette + 22, usage).unwrap();
         }
         loaded.screen_clut.fill([0; 3]);
-        loaded.screen_clut[42] = [0x8000, 0, 0];
+        loaded.screen_clut.set_entry(42, [0x8000, 0, 0]);
         loaded.toolbox_startup.clut_protected.fill(true);
         loaded.toolbox_startup.clut_protected[41] = false;
         loaded.toolbox_startup.clut_protected[42] = false;
@@ -147670,12 +147714,15 @@ pub(crate) mod tests {
                 reserved_indices: vec![42],
             });
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            current,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                current,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         let current_allocation = loaded
@@ -147724,7 +147771,7 @@ pub(crate) mod tests {
         loaded.memory.write_u16_be(palette + 22, 0x0002).unwrap();
         loaded.memory.write_u16_be(palette + 24, 0xffff).unwrap();
         let other = current + 4;
-        loaded.screen_clut[42] = [0x1111, 0x2222, 0x3333];
+        loaded.screen_clut.set_entry(42, [0x1111, 0x2222, 0x3333]);
         loaded.toolbox_startup.palette_allocations.extend([
             PpcPaletteAllocation {
                 palette: current,
@@ -147742,12 +147789,15 @@ pub(crate) mod tests {
             },
         ]);
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            current,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                current,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         assert_eq!(loaded.screen_clut[42], [0x1111, 0x2222, 0x3333]);
@@ -147766,8 +147816,8 @@ pub(crate) mod tests {
         let inactive = PPC_DATA_BASE + 0x8c00;
         let active = PPC_DATA_BASE + 0x8d00;
         let color = [0x1234, 0x5678, 0x9abc];
-        loaded.screen_clut[42] = color;
-        loaded.color_manager_clut[42] = color;
+        loaded.screen_clut.set_entry(42, color);
+        loaded.color_manager_clut.set_entry(42, color);
         loaded.toolbox_startup.palette_allocations.extend([
             PpcPaletteAllocation {
                 palette: inactive,
@@ -147789,14 +147839,16 @@ pub(crate) mod tests {
             .active_device_palettes
             .insert(PPC_MAIN_GDEVICE, active);
 
-        ppc_release_palette_allocations_and_restore(
-            &mut loaded.memory,
-            &mut loaded.toolbox_startup,
-            inactive,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-        );
+        with_test_display_cluts!(loaded, |screen_clut, color_manager_clut| {
+            ppc_release_palette_allocations_and_restore(
+                &mut loaded.memory,
+                &mut loaded.toolbox_startup,
+                inactive,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+            )
+        });
 
         assert_eq!(loaded.screen_clut[42], color);
         assert_eq!(loaded.color_manager_clut[42], color);
@@ -147816,14 +147868,16 @@ pub(crate) mod tests {
             .toolbox_startup
             .active_device_palettes
             .insert(PPC_MAIN_GDEVICE, active);
-        ppc_release_palette_allocations_and_restore(
-            &mut loaded.memory,
-            &mut loaded.toolbox_startup,
-            active,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-        );
+        with_test_display_cluts!(loaded, |screen_clut, color_manager_clut| {
+            ppc_release_palette_allocations_and_restore(
+                &mut loaded.memory,
+                &mut loaded.toolbox_startup,
+                active,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+            )
+        });
         assert_eq!(loaded.screen_clut[42], color);
         assert!(loaded
             .toolbox_startup
@@ -147873,12 +147927,15 @@ pub(crate) mod tests {
                 });
         }
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            current,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                current,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         let current_allocation = loaded
@@ -147934,12 +147991,15 @@ pub(crate) mod tests {
                 reserved_indices: vec![42],
             });
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            current,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                current,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         let allocation = loaded
@@ -148010,12 +148070,15 @@ pub(crate) mod tests {
             },
         ]);
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            current,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                current,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         assert_eq!(loaded.screen_clut[42], [0xffff; 3]);
@@ -148114,20 +148177,23 @@ pub(crate) mod tests {
                 entry_mappings: mappings,
                 reserved_indices: (1..=254).collect(),
             });
-        loaded.screen_clut[1] = [0xaaaa, 0xbbbb, 0xcccc];
-        loaded.color_manager_clut[1] = [0xaaaa, 0xbbbb, 0xcccc];
+        loaded.screen_clut.set_entry(1, [0xaaaa, 0xbbbb, 0xcccc]);
+        loaded.color_manager_clut.set_entry(1, [0xaaaa, 0xbbbb, 0xcccc]);
         loaded.toolbox_startup.clut_protected.fill(true);
         let expected_screen = *loaded.screen_clut;
         let expected_manager = *loaded.color_manager_clut;
 
-        assert!(ppc_activate_window_palette(
-            &mut loaded.memory,
-            window,
-            other_gdevice,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_display_cluts!(
+            loaded,
+            |screen_clut, color_manager_clut| ppc_activate_window_palette(
+                &mut loaded.memory,
+                window,
+                other_gdevice,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         assert_eq!(loaded.screen_clut, expected_screen);
@@ -148186,19 +148252,21 @@ pub(crate) mod tests {
             &other_clut,
             &mut loaded.toolbox_startup,
         );
-        loaded.screen_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
-        loaded.color_manager_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
+        loaded.screen_clut.set_entry(42, [0xaaaa, 0xbbbb, 0xcccc]);
+        loaded.color_manager_clut.set_entry(42, [0xaaaa, 0xbbbb, 0xcccc]);
         let expected_screen = *loaded.screen_clut;
         let expected_manager = *loaded.color_manager_clut;
 
-        ppc_restore_device_clut(
-            &mut loaded.memory,
-            other_gdevice,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-            &mut loaded.toolbox_startup,
-        );
+        with_test_display_cluts!(loaded, |screen_clut, color_manager_clut| {
+            ppc_restore_device_clut(
+                &mut loaded.memory,
+                other_gdevice,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+                &mut loaded.toolbox_startup,
+            )
+        });
 
         assert_eq!(loaded.screen_clut, expected_screen);
         assert_eq!(loaded.color_manager_clut, expected_manager);
@@ -148212,7 +148280,7 @@ pub(crate) mod tests {
         );
 
         let second_custom = [0x4444, 0x5555, 0x6666];
-        loaded.screen_clut[43] = second_custom;
+        loaded.screen_clut.set_entry(43, second_custom);
         other_clut[43] = second_custom;
         ppc_write_device_color_table(
             &mut loaded.memory,
@@ -148238,14 +148306,16 @@ pub(crate) mod tests {
             .toolbox_startup
             .clut_reserved_by_device
             .contains_key(&other_gdevice));
-        ppc_restore_device_clut(
-            &mut loaded.memory,
-            0,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-            &mut loaded.toolbox_startup,
-        );
+        with_test_display_cluts!(loaded, |screen_clut, color_manager_clut| {
+            ppc_restore_device_clut(
+                &mut loaded.memory,
+                0,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+                &mut loaded.toolbox_startup,
+            )
+        });
 
         assert_eq!(loaded.screen_clut, canonical);
         assert_eq!(loaded.color_manager_clut, canonical);
@@ -148304,14 +148374,17 @@ pub(crate) mod tests {
         ppc_device_clut_reserved_mut(&mut loaded.toolbox_startup, other_gdevice)[43] = true;
         let expected_screen = *loaded.screen_clut;
 
-        assert!(ppc_activate_window_palette(
-            &mut loaded.memory,
-            window,
-            other_gdevice,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_display_cluts!(
+            loaded,
+            |screen_clut, color_manager_clut| ppc_activate_window_palette(
+                &mut loaded.memory,
+                window,
+                other_gdevice,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         assert_eq!(loaded.screen_clut, expected_screen);
@@ -148342,14 +148415,17 @@ pub(crate) mod tests {
 
         ppc_device_clut_protected_mut(&mut loaded.toolbox_startup, other_gdevice)[42] = false;
         ppc_device_clut_reserved_mut(&mut loaded.toolbox_startup, other_gdevice)[43] = false;
-        assert!(ppc_activate_window_palette(
-            &mut loaded.memory,
-            window,
-            other_gdevice,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_display_cluts!(
+            loaded,
+            |screen_clut, color_manager_clut| ppc_activate_window_palette(
+                &mut loaded.memory,
+                window,
+                other_gdevice,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         assert_eq!(
             ppc_read_rgb_color(&mut loaded.memory, ctable + 10 + 42 * 8),
@@ -148395,12 +148471,15 @@ pub(crate) mod tests {
         }
         loaded.toolbox_startup.clut_protected[1] = true;
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         let allocation = loaded
             .toolbox_startup
@@ -148462,12 +148541,15 @@ pub(crate) mod tests {
             )
             .unwrap();
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         let allocation = loaded
@@ -148514,7 +148596,7 @@ pub(crate) mod tests {
         loaded.memory.write_u32_be(handle, palette).unwrap();
         loaded.memory.write_u16_be(palette, 2).unwrap();
         let original_clut = *loaded.screen_clut;
-        loaded.screen_clut[42] = [0x1234, 0x5678, 0x9abc];
+        loaded.screen_clut.set_entry(42, [0x1234, 0x5678, 0x9abc]);
         loaded
             .toolbox_startup
             .palette_allocations
@@ -148528,12 +148610,15 @@ pub(crate) mod tests {
         let expected_clut = *loaded.screen_clut;
         let expected_allocations = loaded.toolbox_startup.palette_allocations.clone();
 
-        assert!(!ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(!with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         assert_ne!(expected_clut, original_clut);
@@ -148555,8 +148640,8 @@ pub(crate) mod tests {
         loaded.memory.write_u32_be(handle, palette).unwrap();
         loaded.memory.write_u16_be(palette, 43).unwrap();
         loaded.screen_clut.fill([0xffff; 3]);
-        loaded.screen_clut[42] = [0x8000; 3];
-        loaded.screen_clut[43] = [0x8001; 3];
+        loaded.screen_clut.set_entry(42, [0x8000; 3]);
+        loaded.screen_clut.set_entry(43, [0x8001; 3]);
         for entry in [0u32, 42] {
             ppc_write_rgb_color(
                 &mut loaded.memory,
@@ -148574,12 +148659,15 @@ pub(crate) mod tests {
             .write_u16_be(palette + 16 + 42 * 16 + 6, 0x000c)
             .unwrap();
 
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         let allocation = loaded
@@ -148613,12 +148701,15 @@ pub(crate) mod tests {
             ppc_write_rgb_color(&mut loaded.memory, info, PPC_RGB_WHITE).unwrap();
             loaded.memory.write_u16_be(info + 6, 0x0004).unwrap();
         }
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         let before = loaded
             .toolbox_startup
@@ -148681,12 +148772,15 @@ pub(crate) mod tests {
             };
             ppc_write_rgb_color(&mut loaded.memory, info, color).unwrap();
         }
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         let after = &loaded
             .toolbox_startup
@@ -148741,22 +148835,28 @@ pub(crate) mod tests {
             loaded.memory.write_u16_be(info + 6, 0x0004).unwrap();
         }
         let defaults = TrapDispatcher::standard_mac_8bpp_clut();
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         assert_ne!(loaded.screen_clut[1], defaults[1]);
 
         loaded.memory.write_u16_be(palette + 32 + 6, 0).unwrap();
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
 
         assert_eq!(loaded.screen_clut[1], defaults[1]);
@@ -148791,12 +148891,15 @@ pub(crate) mod tests {
         .unwrap();
         loaded.memory.write_u16_be(palette + 22, 0x0004).unwrap();
         loaded.toolbox_startup.clut_protected[0] = true;
-        assert!(ppc_apply_palette(
-            &mut loaded.memory,
-            handle,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.toolbox_startup,
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
         ));
         loaded
             .memory
@@ -148997,8 +149100,8 @@ pub(crate) mod tests {
             });
         }
         let defaults = TrapDispatcher::standard_mac_8bpp_clut();
-        loaded.screen_clut[42] = [0x1111, 0x2222, 0x3333];
-        loaded.color_manager_clut[42] = [0x1111, 0x2222, 0x3333];
+        loaded.screen_clut.set_entry(42, [0x1111, 0x2222, 0x3333]);
+        loaded.color_manager_clut.set_entry(42, [0x1111, 0x2222, 0x3333]);
         loaded
             .toolbox_startup
             .palette_allocations
@@ -149068,8 +149171,8 @@ pub(crate) mod tests {
             &other_clut,
             &mut loaded.toolbox_startup,
         );
-        loaded.screen_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
-        loaded.color_manager_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
+        loaded.screen_clut.set_entry(42, [0xaaaa, 0xbbbb, 0xcccc]);
+        loaded.color_manager_clut.set_entry(42, [0xaaaa, 0xbbbb, 0xcccc]);
         let expected_screen = *loaded.screen_clut;
         let expected_manager = *loaded.color_manager_clut;
         loaded
@@ -149083,14 +149186,16 @@ pub(crate) mod tests {
                 reserved_indices: vec![42],
             });
 
-        ppc_release_palette_allocations_and_restore(
-            &mut loaded.memory,
-            &mut loaded.toolbox_startup,
-            palette,
-            PPC_MAIN_GDEVICE,
-            &mut loaded.screen_clut,
-            &mut loaded.color_manager_clut,
-        );
+        with_test_display_cluts!(loaded, |screen_clut, color_manager_clut| {
+            ppc_release_palette_allocations_and_restore(
+                &mut loaded.memory,
+                &mut loaded.toolbox_startup,
+                palette,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                color_manager_clut,
+            )
+        });
 
         assert_eq!(loaded.screen_clut, expected_screen);
         assert_eq!(loaded.color_manager_clut, expected_manager);
@@ -149175,8 +149280,8 @@ pub(crate) mod tests {
             loaded.memory.write_u16_be(spec + 2, old[0]).unwrap();
             loaded.memory.write_u16_be(spec + 4, old[1]).unwrap();
             loaded.memory.write_u16_be(spec + 6, old[2]).unwrap();
-            loaded.screen_clut[index as usize] = old;
-            loaded.color_manager_clut[index as usize] = old;
+            loaded.screen_clut.set_entry(index as usize, old);
+            loaded.color_manager_clut.set_entry(index as usize, old);
             assert_eq!(entry as u32, index - 42);
         }
         let untouched =
@@ -169374,15 +169479,18 @@ pub(crate) mod tests {
         }
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = destination;
-        assert!(ppc_draw_picture(
-            &mut loaded.cpu,
-            &mut loaded.memory,
-            &test_handle_records!(loaded),
-            &loaded.process_file_system.vfs_resources,
-            &loaded.gworlds,
-            *loaded.current_gworld,
-            &loaded.screen_clut,
-            &mut loaded.color_manager_clut,
+        assert!(with_test_color_manager_clut!(
+            loaded,
+            |color_manager_clut| ppc_draw_picture(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                &loaded.process_file_system.vfs_resources,
+                &loaded.gworlds,
+                *loaded.current_gworld,
+                &loaded.screen_clut,
+                color_manager_clut,
+            )
         ));
         assert_ne!(
             ppc_quickdraw_read_pixel(
@@ -176311,10 +176419,10 @@ pub(crate) mod tests {
 
                 // A hardware-only CLUT change must affect Menu Manager pixel
                 // selection without replacing QuickDraw's logical CTable.
-                loaded.screen_clut[logical_black] = [0x8000; 3];
-                loaded.screen_clut[logical_white] = [0x8000; 3];
-                loaded.screen_clut[91] = [0; 3];
-                loaded.screen_clut[92] = [0xffff; 3];
+                loaded.screen_clut.set_entry(logical_black, [0x8000; 3]);
+                loaded.screen_clut.set_entry(logical_white, [0x8000; 3]);
+                loaded.screen_clut.set_entry(91, [0; 3]);
+                loaded.screen_clut.set_entry(92, [0xffff; 3]);
             }
             run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawMenuBar);
 

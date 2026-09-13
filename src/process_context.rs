@@ -1283,6 +1283,8 @@ pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
 pub(crate) type SharedProcessResourcePolicy = SharedProcessValue<ProcessResourcePolicyState>;
 pub(crate) type SharedProcessDisplayGamma = SharedProcessValue<ProcessDisplayGammaState>;
+/// Process-wide 256-entry display color table shared by attached CPU adapters.
+pub(crate) type SharedProcessDisplayClut = SharedProcessValue<[[u16; 3]; 256]>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
 /// Host pacing snapshot for the wrapping Macintosh clock.
@@ -1658,6 +1660,27 @@ impl<T> SharedProcessValue<T> {
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference from escaping this operation.
         unsafe { f(&mut *self.0.get()) }
+    }
+}
+
+impl SharedProcessDisplayClut {
+    /// Replace one logical or physical display palette as a single serialized
+    /// operation. The copied table cannot retain a reference into shared state.
+    pub(crate) fn replace(&self, clut: [[u16; 3]; 256]) {
+        self.with_mut(|current| *current = clut);
+    }
+
+    /// Update one palette entry without exposing a mutable reference beyond
+    /// the serialized operation.
+    pub(crate) fn set_entry(&self, index: usize, rgb: [u16; 3]) {
+        self.with_mut(|clut| clut[index] = rgb);
+    }
+
+    /// Fill every entry with one color for deterministic test setup without
+    /// exposing the backing array.
+    #[cfg(test)]
+    pub(crate) fn fill(&self, rgb: [u16; 3]) {
+        self.with_mut(|clut| clut.fill(rgb));
     }
 }
 
@@ -6356,8 +6379,8 @@ pub(crate) struct ProcessContext {
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
     quickdraw_error: SharedProcessValue<i16>,
-    device_clut: SharedProcessValue<[[u16; 3]; 256]>,
-    color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    device_clut: SharedProcessDisplayClut,
+    color_manager_clut: SharedProcessDisplayClut,
     display_gamma: SharedProcessDisplayGamma,
 }
 
@@ -6834,8 +6857,8 @@ impl ProcessContext {
 
     pub(crate) fn attach_display_color_state(
         &self,
-        device_clut: &mut SharedProcessValue<[[u16; 3]; 256]>,
-        color_manager_clut: &mut SharedProcessValue<[[u16; 3]; 256]>,
+        device_clut: &mut SharedProcessDisplayClut,
+        color_manager_clut: &mut SharedProcessDisplayClut,
         display_gamma: &mut SharedProcessDisplayGamma,
     ) {
         let clut_is_pristine =

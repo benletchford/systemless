@@ -144,7 +144,7 @@ mod tests {
         dispatcher.set_trace_sink(Box::new(MemSink(cap.clone())));
         dispatcher.set_screen_mode_for_test(0x2000, 800, 800, 600, 8);
         dispatcher.instruction_count = 1234;
-        dispatcher.device_clut[7] = [0xFFFF, 0x0000, 0x0000];
+        dispatcher.device_clut.set_entry(7, [0xFFFF, 0x0000, 0x0000]);
 
         let mut bus = MacMemoryBus::new(0x2000 + 800 * 600 + 1024);
         bus.write_byte(0x2000, 7);

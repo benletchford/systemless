@@ -8671,8 +8671,8 @@ impl super::TrapDispatcher {
                                         &self.color_manager_clut,
                                     ) && !pict_seed_clut_disabled()
                                     {
-                                        *self.device_clut = pict_clut_array;
-                                        *self.color_manager_clut = pict_clut_array;
+                                        self.device_clut.replace(pict_clut_array);
+                                        self.color_manager_clut.replace(pict_clut_array);
                                         self.seeded_picture_palette = pict_clut_array;
                                         self.seeded_picture_palette_until_tick =
                                             self.current_tick().saturating_add(48);
@@ -8859,8 +8859,8 @@ impl super::TrapDispatcher {
                                             self.current_tick(), cm_before[0], cm_before[1], cm_before[2], pict0[0], pict0[1], pict0[2]
                                         );
                                         }
-                                        *self.device_clut = pict_clut_array;
-                                        *self.color_manager_clut = pict_clut_array;
+                                        self.device_clut.replace(pict_clut_array);
+                                        self.color_manager_clut.replace(pict_clut_array);
                                         self.seeded_picture_palette = pict_clut_array;
                                         self.seeded_picture_palette_until_tick =
                                             self.current_tick().saturating_add(48);
@@ -12816,7 +12816,7 @@ impl super::TrapDispatcher {
                         // NIL dstTable → write directly into device_clut.
                         // Per IM, no ctSeed bump (i.e. don't invalidate
                         // anything that depends on the inverse table).
-                        self.device_clut[dst_idx as usize] = [r, g, b];
+                        self.device_clut.set_entry(dst_idx as usize, [r, g, b]);
                     }
                 }
                 Ok(())
@@ -17418,8 +17418,8 @@ impl super::TrapDispatcher {
             }
         }
         let color_environment_changed = updated_clut != current_clut;
-        *self.device_clut = updated_clut;
-        *self.color_manager_clut = updated_clut;
+        self.device_clut.replace(updated_clut);
+        self.color_manager_clut.replace(updated_clut);
         if color_environment_changed {
             let active_window = if window == DEFAULT_PALETTE_WINDOW {
                 self.front_window
@@ -17503,8 +17503,8 @@ impl super::TrapDispatcher {
         }
 
         let device_index = (entry as usize) & 0xFF;
-        self.device_clut[device_index] = rgb;
-        self.color_manager_clut[device_index] = rgb;
+        self.device_clut.set_entry(device_index, rgb);
+        self.color_manager_clut.set_entry(device_index, rgb);
     }
 
     pub(crate) fn set_window_palette_association(
@@ -18101,12 +18101,12 @@ impl super::TrapDispatcher {
             return;
         }
         let scale = Self::screen_palette_brightness_scale(&self.device_clut);
-        *self.device_clut = if palette_as_game_wrote_enabled() {
+        self.device_clut.replace(if palette_as_game_wrote_enabled() {
             *clut
         } else {
             Self::scale_clut(clut, scale)
-        };
-        *self.color_manager_clut = *clut;
+        });
+        self.color_manager_clut.replace(*clut);
         self.seeded_picture_palette = *clut;
         self.seeded_picture_palette_until_tick =
             self.seeded_picture_palette_until_tick_for_seed(48, true);
@@ -18502,8 +18502,8 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         clut: [[u16; 3]; 256],
     ) {
-        *self.device_clut = clut;
-        *self.color_manager_clut = clut;
+        self.device_clut.replace(clut);
+        self.color_manager_clut.replace(clut);
 
         let gdh = self.ensure_main_gdevice(bus);
         let ctab_handle = Self::gdevice_ctab_handle(bus, gdh);
@@ -19810,8 +19810,8 @@ impl super::TrapDispatcher {
         let Some((clut, entry_count)) = Self::standard_screen_depth_clut(depth, is_color) else {
             return;
         };
-        *self.device_clut = clut;
-        *self.color_manager_clut = clut;
+        self.device_clut.replace(clut);
+        self.color_manager_clut.replace(clut);
 
         let gdh = self.ensure_main_gdevice(bus);
         let ctab_handle = Self::gdevice_ctab_handle(bus, gdh);
@@ -23877,7 +23877,7 @@ impl super::TrapDispatcher {
                 // for Systemless's single-client model, treat them as
                 // protected to preserve palette-animation slots.
                 if !self.clut_protected[idx] && !self.clut_reserved[idx] {
-                    self.device_clut[idx] = [r, g, b];
+                    self.device_clut.set_entry(idx, [r, g, b]);
                 }
             }
         }
@@ -24003,7 +24003,7 @@ impl super::TrapDispatcher {
         if preserve_seeded_picture_palette && !strict_palette && !palette_as_game_wrote_enabled() {
             self.screen_palette_fade_active = true;
             if let Some(scale) = Self::canonical_table_brightness_scale(bus, table_ptr) {
-                *self.device_clut = Self::scale_clut(&self.seeded_picture_palette, scale);
+                self.device_clut.replace(Self::scale_clut(&self.seeded_picture_palette, scale));
             }
             // Extend the window so consecutive fade-up/-down SetEntries
             // (which may run 60+ ticks for a single scene transition)
@@ -24054,7 +24054,7 @@ impl super::TrapDispatcher {
                     self.current_tick(), cm_before[0], cm_before[1], cm_before[2], seed[0], seed[1], seed[2]
                 );
             }
-            *self.color_manager_clut = self.seeded_picture_palette;
+            self.color_manager_clut.replace(self.seeded_picture_palette);
             return;
         }
 
@@ -24121,7 +24121,7 @@ impl super::TrapDispatcher {
                     self.current_tick(), cm_before[0], cm_before[1], cm_before[2], dev0[0], dev0[1], dev0[2]
                 );
             }
-            *self.color_manager_clut = *self.device_clut;
+            self.color_manager_clut.replace(*self.device_clut);
             if trace_palette_enabled() {
                 eprintln!(
                     "[PALETTE] PublishCm tick={} — fresh full palette install cm[0]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
@@ -25696,8 +25696,8 @@ mod tests {
         let (screen_base, row_bytes, width, height, _) = d.screen_mode;
         bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x7F);
         d.menu_bar_hidden = true;
-        *d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        d.device_clut[37] = [0, 0, 0];
+        d.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        d.device_clut.set_entry(37, [0, 0, 0]);
 
         d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
 
@@ -25734,8 +25734,8 @@ mod tests {
         }
         let before = bus.read_bytes(screen_base, framebuffer_len as usize);
         d.menu_bar_hidden = true;
-        *d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        d.device_clut[37] = [0, 0, 0];
+        d.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        d.device_clut.set_entry(37, [0, 0, 0]);
 
         d.fill_kiosk_letterbox_for_copybits(
             &mut bus,
@@ -25922,8 +25922,8 @@ mod tests {
             let (screen_base, row_bytes, _, height, _) = d.screen_mode;
             bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x7F);
             d.menu_bar_hidden = menu_bar_hidden;
-            *d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-            d.device_clut[37] = [0, 0, 0];
+            d.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+            d.device_clut.set_entry(37, [0, 0, 0]);
 
             d.fill_kiosk_letterbox_for_copybits(&mut bus, rect);
 
@@ -27558,7 +27558,7 @@ mod tests {
         bus.write_word(entry + 2, 0x1111);
         bus.write_word(entry + 4, 0x7777);
         bus.write_word(entry + 6, 0xDDDD);
-        *d.color_manager_clut = [[0xFFFE; 3]; 256];
+        d.color_manager_clut.replace([[0xFFFE; 3]; 256]);
 
         let clut = d
             .read_indexed_destination_clut(&bus, 0, 8, true)
@@ -27695,12 +27695,12 @@ mod tests {
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
 
         let gray = [0x9F9F; 3];
-        *d.color_manager_clut = TrapDispatcher::standard_mac_8bpp_clut();
-        d.color_manager_clut[86] = [0, 0, 0x9B9B];
-        d.color_manager_clut[144] = gray;
-        *d.device_clut = *d.color_manager_clut;
-        d.device_clut[86] = gray;
-        d.device_clut[144] = [0, 0, 0x9B9B];
+        d.color_manager_clut.replace(TrapDispatcher::standard_mac_8bpp_clut());
+        d.color_manager_clut.set_entry(86, [0, 0, 0x9B9B]);
+        d.color_manager_clut.set_entry(144, gray);
+        d.device_clut.replace(*d.color_manager_clut);
+        d.device_clut.set_entry(86, gray);
+        d.device_clut.set_entry(144, [0, 0, 0x9B9B]);
 
         let color = bus.alloc(6);
         bus.write_word(color, gray[0]);
@@ -27750,8 +27750,8 @@ mod tests {
         let stale_index_7 = stale_ctab_ptr + 8 + 7 * 8;
         let stale_index_9 = stale_ctab_ptr + 8 + 9 * 8;
 
-        d.device_clut[7] = [0x1234, 0x5678, 0x9ABC];
-        d.device_clut[9] = [0xEEEE, 0xDDDD, 0xCCCC];
+        d.device_clut.set_entry(7, [0x1234, 0x5678, 0x9ABC]);
+        d.device_clut.set_entry(9, [0xEEEE, 0xDDDD, 0xCCCC]);
         bus.write_word(stale_index_7 + 2, 0xEEEE);
         bus.write_word(stale_index_7 + 4, 0xDDDD);
         bus.write_word(stale_index_7 + 6, 0xCCCC);
@@ -27799,9 +27799,9 @@ mod tests {
         let screen_row_bytes = (bus.read_word(pixmap_ptr + 4) & 0x3FFF) as u32;
         d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
 
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[1] = [0xFFFF, 0xFFFF, 0xFFFF];
-        d.device_clut[255] = [0, 0, 0];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(1, [0xFFFF, 0xFFFF, 0xFFFF]);
+        d.device_clut.set_entry(255, [0, 0, 0]);
 
         let port = bus.alloc(64);
         bus.write_long(port + 2, pixmap_handle);
@@ -27846,9 +27846,9 @@ mod tests {
         let screen_row_bytes = (bus.read_word(pixmap_ptr + 4) & 0x3FFF) as u32;
         d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
 
-        *d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        d.device_clut[71] = [0, 0, 0];
-        d.device_clut[255] = [0, 0, 0];
+        d.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        d.device_clut.set_entry(71, [0, 0, 0]);
+        d.device_clut.set_entry(255, [0, 0, 0]);
 
         let port = bus.alloc(64);
         bus.write_long(port + 2, pixmap_handle);
@@ -27889,9 +27889,9 @@ mod tests {
         let screen_row_bytes = (bus.read_word(pixmap_ptr + 4) & 0x3FFF) as u32;
         d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
 
-        *d.device_clut = TrapDispatcher::standard_mac_8bpp_clut();
-        d.device_clut[1] = [0, 0, 0];
-        d.device_clut[255] = [0xFFFF, 0xFFFF, 0xCCCC];
+        d.device_clut.replace(TrapDispatcher::standard_mac_8bpp_clut());
+        d.device_clut.set_entry(1, [0, 0, 0]);
+        d.device_clut.set_entry(255, [0xFFFF, 0xFFFF, 0xCCCC]);
 
         let port = bus.alloc(64);
         bus.write_long(port + 2, pixmap_handle);
@@ -34639,11 +34639,11 @@ mod tests {
         let screen_base = bus.alloc(row_bytes * 64);
         bus.fill_zeros(screen_base, row_bytes * 64);
         d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
-        *d.color_manager_clut = *d.device_clut;
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0x1111, 0x0000, 0x0000]);
+        d.device_clut.set_entry(8, [0x0000, 0x2222, 0x0000]);
+        d.device_clut.set_entry(9, [0x0000, 0x0000, 0x3333]);
+        d.color_manager_clut.replace(*d.device_clut);
 
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
@@ -34702,8 +34702,8 @@ mod tests {
     fn fillcrect_raw_pixpat_uses_logical_screen_table_during_hardware_fade() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
-        *d.device_clut = [[0, 0, 0]; 256];
-        *d.color_manager_clut = [[0, 0, 0]; 256];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.color_manager_clut.replace([[0, 0, 0]; 256]);
 
         let logical_colors = [
             [0x1111, 0x0000, 0x0000],
@@ -34763,10 +34763,10 @@ mod tests {
     fn installed_raw_color_pixpats_drive_paint_and_erase_rect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0x1111, 0x0000, 0x0000]);
+        d.device_clut.set_entry(8, [0x0000, 0x2222, 0x0000]);
+        d.device_clut.set_entry(9, [0x0000, 0x0000, 0x3333]);
         d.pn_mode = 2; // srcXor is ignored for multicolor pixel patterns.
 
         let pp_handle = make_raw_color_pixpat_handle(&mut bus);
@@ -34829,11 +34829,11 @@ mod tests {
         let screen_base = bus.alloc(row_bytes * 64);
         bus.fill_zeros(screen_base, row_bytes * 64);
         d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
-        *d.color_manager_clut = *d.device_clut;
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0x1111, 0x0000, 0x0000]);
+        d.device_clut.set_entry(8, [0x0000, 0x2222, 0x0000]);
+        d.device_clut.set_entry(9, [0x0000, 0x0000, 0x3333]);
+        d.color_manager_clut.replace(*d.device_clut);
 
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
@@ -34906,11 +34906,11 @@ mod tests {
         let screen_base = bus.alloc(row_bytes * 64);
         bus.fill_zeros(screen_base, row_bytes * 64);
         d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[8] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[9] = [0x0000, 0x0000, 0x3333];
-        *d.color_manager_clut = *d.device_clut;
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0x1111, 0x0000, 0x0000]);
+        d.device_clut.set_entry(8, [0x0000, 0x2222, 0x0000]);
+        d.device_clut.set_entry(9, [0x0000, 0x0000, 0x3333]);
+        d.color_manager_clut.replace(*d.device_clut);
 
         let port = bus.alloc(128);
         let pixmap_handle = bus.alloc(4);
@@ -39320,8 +39320,8 @@ mod tests {
         let src_rect = 0x31D000u32;
         let dst_rect = 0x31D010u32;
         let target = d.color_manager_clut[7];
-        d.device_clut[7] = [0x0100, 0x0200, 0x0300];
-        d.device_clut[1] = [0x0200, 0x0100, 0x0300];
+        d.device_clut.set_entry(7, [0x0100, 0x0200, 0x0300]);
+        d.device_clut.set_entry(1, [0x0200, 0x0100, 0x0300]);
 
         write_color_table(
             &mut bus,
@@ -39366,8 +39366,8 @@ mod tests {
         let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
         let screen_seed = TrapDispatcher::ctab_seed(&bus, screen_ctab_handle).unwrap();
         let target = d.color_manager_clut[7];
-        d.device_clut[7] = [0x0100, 0x0200, 0x0300];
-        d.device_clut[1] = [0x0200, 0x0100, 0x0300];
+        d.device_clut.set_entry(7, [0x0100, 0x0200, 0x0300]);
+        d.device_clut.set_entry(1, [0x0200, 0x0100, 0x0300]);
 
         write_color_table(
             &mut bus,
@@ -39453,8 +39453,8 @@ mod tests {
         d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
 
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.color_manager_clut = baseline;
-        *d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        d.color_manager_clut.replace(baseline);
+        d.device_clut.replace(TrapDispatcher::scale_clut(&baseline, 0.02));
         d.screen_palette_fade_active = true;
 
         let src_pixmap = 0x31A400u32;
@@ -39499,8 +39499,8 @@ mod tests {
         d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
 
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.color_manager_clut = baseline;
-        *d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        d.color_manager_clut.replace(baseline);
+        d.device_clut.replace(TrapDispatcher::scale_clut(&baseline, 0.02));
         d.screen_palette_fade_active = true;
 
         let src_pixmap = 0x31A600u32;
@@ -39990,8 +39990,8 @@ mod tests {
         let port = 0x181000u32;
         bus.write_word(port + 6, 0xC000);
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[42] = [0xF2D7, 0x0856, 0x84EC];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(42, [0xF2D7, 0x0856, 0x84EC]);
         bus.write_long(TEST_SP, 139);
 
         let result = d.dispatch_quickdraw(true, 0x062, &mut cpu, &mut bus);
@@ -40034,8 +40034,8 @@ mod tests {
         bus.write_long(port + 2, pixmap_handle);
         bus.write_word(port + 6, 0xC000);
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[0] = green;
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(0, green);
 
         let color = bus.alloc(6);
         bus.write_word(color, green[0]);
@@ -40563,10 +40563,10 @@ mod tests {
         // (1986), p. V-76: PlotCIcon stretches the iconPMap and remaps its
         // pixels to the current depth and color table.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[9] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[42] = [0x0000, 0x0000, 0x3333];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0x1111, 0x0000, 0x0000]);
+        d.device_clut.set_entry(9, [0x0000, 0x2222, 0x0000]);
+        d.device_clut.set_entry(42, [0x0000, 0x0000, 0x3333]);
         assert_eq!(
             crate::trap::pict::closest_clut_index(0x1111, 0x0000, 0x0000, &d.device_clut),
             7
@@ -40638,10 +40638,10 @@ mod tests {
         // (1986), p. V-76: PlotCIcon stretches the iconPMap and remaps its
         // pixels to the current depth and color table.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [0x1111, 0x0000, 0x0000];
-        d.device_clut[9] = [0x0000, 0x2222, 0x0000];
-        d.device_clut[42] = [0x0000, 0x0000, 0x3333];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0x1111, 0x0000, 0x0000]);
+        d.device_clut.set_entry(9, [0x0000, 0x2222, 0x0000]);
+        d.device_clut.set_entry(42, [0x0000, 0x0000, 0x3333]);
         assert_eq!(
             crate::trap::pict::closest_clut_index(0x1111, 0x0000, 0x0000, &d.device_clut),
             7
@@ -40744,10 +40744,10 @@ mod tests {
         // control inverse mapping, just as it does for other screen drawing.
         // Imaging With QuickDraw (1994), pp. 4-55 to 4-59 and 5-28.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
-        d.device_clut[1] = [0x1010, 0x1010, 0x1010];
-        d.device_clut[7] = [0x4040, 0x4545, 0x4545];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(0, [0xFFFF, 0xFFFF, 0xFFFF]);
+        d.device_clut.set_entry(1, [0x1010, 0x1010, 0x1010]);
+        d.device_clut.set_entry(7, [0x4040, 0x4545, 0x4545]);
 
         let (screen_base, screen_row_bytes, screen_w, screen_h, _) = d.screen_mode;
         let stale_ctab = make_test_ctab_handle(&mut bus, &[[0x4444, 0x4444, 0x4444]], 1, 0);
@@ -40796,8 +40796,8 @@ mod tests {
         // mapping them to the destination device. Macintosh Human Interface
         // Guidelines (1992), p. 241; More Macintosh Toolbox (1993), p. 5-37.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[8] = [0x2222, 0x2222, 0x2222];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(8, [0x2222, 0x2222, 0x2222]);
 
         let dst_base = bus.alloc(8);
         let pm_handle = bus.alloc(4);
@@ -41475,8 +41475,8 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let (screen_base, row_bytes) = setup_polygon_surface(&mut d, &mut bus);
         let requested = (0x1234, 0x5678, 0x9ABC);
-        *d.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
-        d.device_clut[7] = [requested.0, requested.1, requested.2];
+        d.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        d.device_clut.set_entry(7, [requested.0, requested.1, requested.2]);
 
         let pp_handle =
             make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
@@ -41571,8 +41571,8 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
         let requested = (0, 0, 0xFFFF);
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[7] = [requested.0, requested.1, requested.2];
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [requested.0, requested.1, requested.2]);
 
         let pp_handle =
             make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
@@ -41698,11 +41698,11 @@ mod tests {
         d.set_screen_mode_for_test(base, width, width as u16, height as u16, 8);
         bus.write_long(0x08A4, 0); // MainDevice: none, colours resolve through device_clut
         let screen = |bus: &MacMemoryBus| bus.read_bytes(base, (width * height) as usize);
-        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, true).unwrap().0;
+        d.device_clut.replace(TrapDispatcher::standard_screen_depth_clut(8, true).unwrap().0);
         assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
         let colour = screen(&bus);
 
-        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, false).unwrap().0;
+        d.device_clut.replace(TrapDispatcher::standard_screen_depth_clut(8, false).unwrap().0);
         bus.fill_bytes(base, width * height, 0);
         assert!(d.draw_theme_menu_bar_chrome(&mut bus, 20));
         let cached_path = screen(&bus);
@@ -41749,11 +41749,11 @@ mod tests {
         let base = bus.alloc(64 * 16);
         d.set_screen_mode_for_test(base, 64, 64, 16, 8);
         bus.write_long(0x08A4, 0); // MainDevice: none, the lookup falls back to device_clut
-        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, true).unwrap().0;
+        d.device_clut.replace(TrapDispatcher::standard_screen_depth_clut(8, true).unwrap().0);
         let colour = d.menu_mark_palette_indices(&bus);
         assert!(d.menu_mark_indices.get().is_some(), "fallback resolutions are cached too");
 
-        *d.device_clut = TrapDispatcher::standard_screen_depth_clut(8, false).unwrap().0;
+        d.device_clut.replace(TrapDispatcher::standard_screen_depth_clut(8, false).unwrap().0);
         let cached_path = d.menu_mark_palette_indices(&bus);
         d.menu_mark_indices.set(None);
         let fresh = d.menu_mark_palette_indices(&bus);
@@ -41841,7 +41841,7 @@ mod tests {
             0,
         );
         d.set_window_palette_association(port, palette, 0);
-        d.device_clut[73] = [0x1234, 0x5678, 0x9ABC];
+        d.device_clut.set_entry(73, [0x1234, 0x5678, 0x9ABC]);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 1);
@@ -41874,8 +41874,8 @@ mod tests {
 
         let palette = d.create_palette_from_ctab(&mut bus, 2, 0, super::PM_EXPLICIT, 0);
         d.set_window_palette_association(port, palette, 0);
-        d.device_clut[0] = [0x1111, 0x2222, 0x3333];
-        d.device_clut[1] = [0x1111, 0x2222, 0x3333];
+        d.device_clut.set_entry(0, [0x1111, 0x2222, 0x3333]);
+        d.device_clut.set_entry(1, [0x1111, 0x2222, 0x3333]);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 1);
@@ -42021,8 +42021,8 @@ mod tests {
         let window = 0x0020_4080u32;
         d.front_window = window;
         *d.current_port = window;
-        d.device_clut[42] = [0x1234, 0x5678, 0x9ABC];
-        d.color_manager_clut[42] = [0x1234, 0x5678, 0x9ABC];
+        d.device_clut.set_entry(42, [0x1234, 0x5678, 0x9ABC]);
+        d.color_manager_clut.set_entry(42, [0x1234, 0x5678, 0x9ABC]);
         bus.write_long(TEST_SP, window);
 
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
@@ -42164,8 +42164,8 @@ mod tests {
         d.front_window = window;
         *d.current_port = window;
         let background_color = [0x0BAD, 0xC0DE, 0xCAFE];
-        d.device_clut[200] = background_color;
-        d.color_manager_clut[200] = background_color;
+        d.device_clut.set_entry(200, background_color);
+        d.color_manager_clut.set_entry(200, background_color);
         bus.write_long(TEST_SP, window);
 
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
@@ -44002,8 +44002,8 @@ mod tests {
 
         *d.current_port = window;
         d.front_window = window;
-        *d.device_clut = [[0, 0, 0]; 256];
-        d.device_clut[42] = target_rgb;
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(42, target_rgb);
 
         let palette = d.create_palette_from_ctab(&mut bus, 8, 0, super::PM_TOLERANT, 0);
         let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
@@ -44033,8 +44033,8 @@ mod tests {
         // IM:VI table C-3 routes _PaletteDispatch selector $0002 to
         // RestoreDeviceClut(gdh). NIL means "restore all screens".
         let (mut d, mut cpu, mut bus) = setup();
-        d.device_clut[42] = [0x1234, 0x5678, 0x9ABC];
-        d.color_manager_clut[42] = [0x1234, 0x5678, 0x9ABC];
+        d.device_clut.set_entry(42, [0x1234, 0x5678, 0x9ABC]);
+        d.color_manager_clut.set_entry(42, [0x1234, 0x5678, 0x9ABC]);
 
         cpu.write_reg(Register::D0, 0x0002);
         bus.write_long(TEST_SP, 0);
@@ -44053,8 +44053,8 @@ mod tests {
         // RestoreDeviceClut must still consume one GDHandle argument
         // even when the handle does not resolve to our modeled device.
         let (mut d, mut cpu, mut bus) = setup();
-        d.device_clut[42] = [0xAAAA, 0xBBBB, 0xCCCC];
-        d.color_manager_clut[42] = [0xAAAA, 0xBBBB, 0xCCCC];
+        d.device_clut.set_entry(42, [0xAAAA, 0xBBBB, 0xCCCC]);
+        d.color_manager_clut.set_entry(42, [0xAAAA, 0xBBBB, 0xCCCC]);
 
         cpu.write_reg(Register::D0, 0x0002);
         bus.write_long(TEST_SP, 0x00DE_ADBE);
@@ -45505,7 +45505,7 @@ mod tests {
         let screen_ctab_ptr = bus.read_long(screen_ctab);
         let screen_entry = screen_ctab_ptr + 8 + 17 * 8;
 
-        d.color_manager_clut[17] = [0xAAAA, 0xBBBB, 0xCCCC];
+        d.color_manager_clut.set_entry(17, [0xAAAA, 0xBBBB, 0xCCCC]);
         bus.write_word(screen_entry + 2, 0x1111);
         bus.write_word(screen_entry + 4, 0x2222);
         bus.write_word(screen_entry + 6, 0x3333);
@@ -47866,10 +47866,10 @@ mod tests {
             bus.write_word(entry + 4, rgb[1]);
             bus.write_word(entry + 6, rgb[2]);
         }
-        d.device_clut[7] = [0, 0, 0];
-        d.device_clut[42] = target_rgb;
-        d.color_manager_clut[7] = [0xEEEE; 3];
-        d.color_manager_clut[42] = [0xEEEE; 3];
+        d.device_clut.set_entry(7, [0, 0, 0]);
+        d.device_clut.set_entry(42, target_rgb);
+        d.color_manager_clut.set_entry(7, [0xEEEE; 3]);
+        d.color_manager_clut.set_entry(42, [0xEEEE; 3]);
 
         let port = bus.alloc(64);
         bus.write_long(port + 2, pixmap_handle);
@@ -48179,7 +48179,7 @@ mod tests {
         seeded[128] = [0x2222, 0x1111, 0x7777];
         seeded[255] = [0, 0, 0];
 
-        *d.color_manager_clut = seeded;
+        d.color_manager_clut.replace(seeded);
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 99;
         d.set_tick_count_for_test(&mut bus, 50);
@@ -48214,7 +48214,7 @@ mod tests {
         seeded[128] = [0x2222, 0x1111, 0x7777];
         seeded[255] = [0, 0, 0];
 
-        *d.color_manager_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut.replace(TrapDispatcher::standard_mac_8bpp_clut());
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 99;
         d.set_tick_count_for_test(&mut bus, 50);
@@ -48247,7 +48247,7 @@ mod tests {
         seeded[128] = [0x2222, 0x1111, 0x7777];
         seeded[255] = [0, 0, 0];
 
-        *d.color_manager_clut = seeded;
+        d.color_manager_clut.replace(seeded);
         d.seeded_picture_palette = seeded;
         d.seeded_picture_palette_until_tick = 99;
         d.set_tick_count_for_test(&mut bus, 50);
@@ -48287,7 +48287,7 @@ mod tests {
             bus.write_word(entry + 6, rgb[2] / 2);
         }
 
-        *d.color_manager_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut.replace(TrapDispatcher::standard_mac_8bpp_clut());
 
         d.apply_set_entries_with_gdevice_mode(&mut bus, table_ptr, 0, 255, true);
 
@@ -48313,8 +48313,8 @@ mod tests {
         d.ensure_main_gdevice(&mut bus);
         let table_ptr = 0x336800u32;
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.device_clut = baseline;
-        *d.color_manager_clut = baseline;
+        d.device_clut.replace(baseline);
+        d.color_manager_clut.replace(baseline);
         d.seeded_picture_palette_until_tick = 0;
 
         for (index, rgb) in baseline.iter().enumerate() {
@@ -48352,8 +48352,8 @@ mod tests {
         d.ensure_main_gdevice(&mut bus);
         let table_ptr = 0x336C00u32;
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.device_clut = baseline;
-        *d.color_manager_clut = baseline;
+        d.device_clut.replace(baseline);
+        d.color_manager_clut.replace(baseline);
         d.seeded_picture_palette_until_tick = 0;
 
         for (index, rgb) in baseline.iter().enumerate() {
@@ -48381,8 +48381,8 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.color_manager_clut = baseline;
-        *d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        d.color_manager_clut.replace(baseline);
+        d.device_clut.replace(TrapDispatcher::scale_clut(&baseline, 0.02));
         let table_ptr = 0x336E00u32;
         for index in 0..256u32 {
             let entry = table_ptr + index * 8;
@@ -48413,8 +48413,8 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.color_manager_clut = baseline;
-        *d.device_clut = baseline;
+        d.color_manager_clut.replace(baseline);
+        d.device_clut.replace(baseline);
         let table_ptr = 0x336E00u32;
 
         // Perform a 4-step fade down to 0%
@@ -48474,8 +48474,8 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let physical = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.device_clut = physical;
-        *d.color_manager_clut = physical;
+        d.device_clut.replace(physical);
+        d.color_manager_clut.replace(physical);
         let table_ptr = 0x336E00u32;
 
         for pass in 0..2u16 {
@@ -48531,8 +48531,8 @@ mod tests {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
-        *d.color_manager_clut = baseline;
-        *d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        d.color_manager_clut.replace(baseline);
+        d.device_clut.replace(TrapDispatcher::scale_clut(&baseline, 0.02));
         let table_ptr = 0x337E00u32;
         for index in 0..256u32 {
             let entry = table_ptr + index * 8;
@@ -49422,8 +49422,8 @@ mod tests {
         // IM:V 1986 p. V-141: with iTabRes=4, RealColor is TRUE when
         // some table entry matches the top 4 bits of each RGB component.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0x0000, 0x0000, 0x0000]; 256];
-        d.device_clut[42] = [0xA111, 0xB222, 0xC333];
+        d.device_clut.replace([[0x0000, 0x0000, 0x0000]; 256]);
+        d.device_clut.set_entry(42, [0xA111, 0xB222, 0xC333]);
 
         let rgb_ptr = 0x300300u32;
         bus.write_word(rgb_ptr, 0xAFFF);
@@ -49443,7 +49443,7 @@ mod tests {
         // device table has no entry matching the requested RGB at the
         // active inverse-table resolution.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0x1000, 0x2000, 0x3000]; 256];
+        d.device_clut.replace([[0x1000, 0x2000, 0x3000]; 256]);
 
         let rgb_ptr = 0x300340u32;
         bus.write_word(rgb_ptr, 0xA000);
@@ -49462,7 +49462,7 @@ mod tests {
         // IM:V 1986 p. V-143: ProtectEntry(TRUE) protects a CLUT entry
         // so SetEntries cannot change that entry.
         let (mut d, mut cpu, mut bus) = setup();
-        d.device_clut[7] = [0x1111, 0x2222, 0x3333];
+        d.device_clut.set_entry(7, [0x1111, 0x2222, 0x3333]);
 
         bus.write_word(TEST_SP, 0x0100); // protect=TRUE
         bus.write_word(TEST_SP + 2, 7u16); // index
@@ -49491,7 +49491,7 @@ mod tests {
     fn protectentry_false_clears_protection_and_allows_setentries_overwrite() {
         // IM:V 1986 p. V-143: ProtectEntry(FALSE) removes protection.
         let (mut d, mut cpu, mut bus) = setup();
-        d.device_clut[7] = [0x1111, 0x2222, 0x3333];
+        d.device_clut.set_entry(7, [0x1111, 0x2222, 0x3333]);
         d.clut_protected[7] = true;
 
         bus.write_word(TEST_SP, 0x0000); // protect=FALSE
@@ -49522,9 +49522,9 @@ mod tests {
         // IM:V 1986 p. V-143: a reserved entry is not returned by
         // Color2Index or other search procedures.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0x0000, 0x0000, 0x0000]; 256];
-        d.device_clut[3] = [0x4444, 0x5555, 0x6666];
-        d.device_clut[9] = [0x4444, 0x5555, 0x6666];
+        d.device_clut.replace([[0x0000, 0x0000, 0x0000]; 256]);
+        d.device_clut.set_entry(3, [0x4444, 0x5555, 0x6666]);
+        d.device_clut.set_entry(9, [0x4444, 0x5555, 0x6666]);
 
         bus.write_word(TEST_SP, 0x0100); // reserve=TRUE
         bus.write_word(TEST_SP + 2, 3u16); // index
@@ -49551,9 +49551,9 @@ mod tests {
         // IM:V 1986 p. V-143: ReserveEntry(FALSE) removes reservation so
         // the entry is again eligible for Color2Index matching.
         let (mut d, mut cpu, mut bus) = setup();
-        *d.device_clut = [[0x0000, 0x0000, 0x0000]; 256];
-        d.device_clut[3] = [0x4444, 0x5555, 0x6666];
-        d.device_clut[9] = [0x4444, 0x5555, 0x6650];
+        d.device_clut.replace([[0x0000, 0x0000, 0x0000]; 256]);
+        d.device_clut.set_entry(3, [0x4444, 0x5555, 0x6666]);
+        d.device_clut.set_entry(9, [0x4444, 0x5555, 0x6650]);
         d.clut_reserved[3] = true;
 
         bus.write_word(TEST_SP, 0x0000); // reserve=FALSE
