@@ -957,14 +957,20 @@ impl ProcessFileSystemState {
                 "cannot attach two different working-directory registries"
             );
             if self.working_directories.is_empty() {
-                *self.working_directories = std::mem::take(&mut *source.working_directories);
+                let working_directories = source.working_directories.with_mut(std::mem::take);
+                self.working_directories
+                    .with_mut(|target| *target = working_directories);
             }
         }
-        *self.next_working_directory_ref_num = (*self.next_working_directory_ref_num)
+        let next_working_directory_ref_num = (*self.next_working_directory_ref_num)
             .max(*source.next_working_directory_ref_num);
+        self.next_working_directory_ref_num
+            .with_mut(|current| *current = next_working_directory_ref_num);
         if *self.application_working_directory_ref_num == -1 {
-            *self.application_working_directory_ref_num =
+            let application_working_directory_ref_num =
                 *source.application_working_directory_ref_num;
+            self.application_working_directory_ref_num
+                .with_mut(|current| *current = application_working_directory_ref_num);
         }
         for (stream, record) in std::mem::take(&mut source.stdio_streams) {
             self.stdio_streams.entry(stream).or_insert(record);

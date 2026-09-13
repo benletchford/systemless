@@ -5992,12 +5992,14 @@ impl super::TrapDispatcher {
                 }
 
                 *self.default_dir_id = target_dir_id;
-                *self.app_wd_refnum = if target_dir_id == 2 {
+                let app_wd_refnum = if target_dir_id == 2 {
                     target_volume_ref_num
                 } else {
                     self.open_working_directory(target_volume_ref_num, target_dir_id, 0)
                         .unwrap_or(target_volume_ref_num)
                 };
+                self.app_wd_refnum
+                    .with_mut(|current| *current = app_wd_refnum);
 
                 // Keep the Standard File globals aligned with the current
                 // default directory and volume. Files 1992, 3-65.
