@@ -3364,7 +3364,7 @@ impl super::TrapDispatcher {
                         // If a data fork already exists, add or initialise its
                         // zero-length resource fork map. Otherwise create both
                         // forks.
-                        self.vfs.entry(vfs_key.clone()).or_default();
+                        self.vfs.ensure_empty(vfs_key.clone());
                         self.vfs_rsrc
                             .insert(vfs_key.clone(), Self::empty_resource_fork_bytes());
                         self.touch_vfs_entry(&vfs_key);
@@ -4246,37 +4246,38 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                let (new_pos, host_sync_bytes) = {
-                    let file_buf = self.vfs.entry(filename.clone()).or_default();
-                    let file_len = file_buf.len();
-                    let cur_pos = usize::try_from(*self.file_positions.get(&ref_num).unwrap_or(&0))
-                        .unwrap_or(usize::MAX);
-                    let Ok(start) =
-                        Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
-                    else {
-                        bus.write_long(pb + 40, 0);
-                        bus.write_long(pb + 46, cur_pos as u32);
-                        bus.write_word(pb + 16, (-40i16) as u16); // posErr
-                        cpu.write_reg(Register::D0, (-40i32) as u32);
-                        return Some(Ok(()));
-                    };
-
-                    if start > file_buf.len() {
-                        file_buf.resize(start, 0);
-                    }
-                    let end = start.saturating_add(request_count);
-                    if end > file_buf.len() {
-                        file_buf.resize(end, 0);
-                    }
-                    bus.read_bytes_into(buffer, &mut file_buf[start..start + request_count]);
-
-                    let sync = if self.output_dir.is_some() {
-                        Some(file_buf.clone())
-                    } else {
-                        None
-                    };
-                    (end, sync)
+                let file_len = self.vfs.get(&filename).map_or(0, Vec::len);
+                let cur_pos = usize::try_from(*self.file_positions.get(&ref_num).unwrap_or(&0))
+                    .unwrap_or(usize::MAX);
+                let Ok(start) =
+                    Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
+                else {
+                    bus.write_long(pb + 40, 0);
+                    bus.write_long(pb + 46, cur_pos as u32);
+                    bus.write_word(pb + 16, (-40i16) as u16); // posErr
+                    cpu.write_reg(Register::D0, (-40i32) as u32);
+                    return Some(Ok(()));
                 };
+                let (new_pos, host_sync_bytes) = self.vfs.with_entry_or_default_mut(
+                    filename.clone(),
+                    |file_buf| {
+                        if start > file_buf.len() {
+                            file_buf.resize(start, 0);
+                        }
+                        let end = start.saturating_add(request_count);
+                        if end > file_buf.len() {
+                            file_buf.resize(end, 0);
+                        }
+                        bus.read_bytes_into(buffer, &mut file_buf[start..start + request_count]);
+
+                        let sync = if self.output_dir.is_some() {
+                            Some(file_buf.clone())
+                        } else {
+                            None
+                        };
+                        (end, sync)
+                    },
+                );
 
                 self.file_positions.insert(ref_num, new_pos);
                 bus.write_long(pb + 40, request_count as u32);
@@ -5626,7 +5627,7 @@ impl super::TrapDispatcher {
                         existing, rsrc_len
                     );
                     self.vfs.insert(existing.clone(), Vec::new());
-                    self.vfs_rsrc.entry(existing.clone()).or_default();
+                    self.vfs_rsrc.ensure_empty(existing.clone());
                     self.touch_vfs_entry(&existing);
                     if let Some(ref dir) = self.output_dir {
                         let host_path = dir.join(&existing);
@@ -6089,15 +6090,17 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                let host_sync_bytes = {
-                    let file_buf = self.vfs.entry(filename.clone()).or_default();
-                    file_buf.resize(new_eof, 0);
-                    if self.output_dir.is_some() {
-                        Some(file_buf.clone())
-                    } else {
-                        None
-                    }
-                };
+                let host_sync_bytes = self.vfs.with_entry_or_default_mut(
+                    filename.clone(),
+                    |file_buf| {
+                        file_buf.resize(new_eof, 0);
+                        if self.output_dir.is_some() {
+                            Some(file_buf.clone())
+                        } else {
+                            None
+                        }
+                    },
+                );
 
                 if let Some(pos) = self.file_positions.get_mut(&ref_num) {
                     let new_eof = u32::try_from(new_eof).unwrap_or(u32::MAX);
@@ -6757,7 +6760,7 @@ impl super::TrapDispatcher {
 
                         let rsrc_data = self.vfs_rsrc.get(&vfs_key).cloned().unwrap_or_default();
                         let rsrc_key = format!("__rsrc__{vfs_key}");
-                        self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data.into());
+                        self.vfs.insert_if_absent(rsrc_key.clone(), rsrc_data);
                         let refnum = self.allocate_process_file_refnum();
                         self.open_files.insert(refnum, rsrc_key.clone());
                         if wants_write {
@@ -6842,7 +6845,7 @@ impl super::TrapDispatcher {
                             bus.write_word(sp + 14, (-48i16) as u16); // dupFNErr
                         } else {
                             self.vfs.insert(vfs_key.clone(), Vec::new());
-                            self.vfs_rsrc.entry(vfs_key.clone()).or_default();
+                            self.vfs_rsrc.ensure_empty(vfs_key.clone());
                             self.set_vfs_entry_finfo(&vfs_key, file_type, creator, 0);
                             self.touch_vfs_entry(&vfs_key);
 
@@ -7267,8 +7270,8 @@ impl super::TrapDispatcher {
                                 cpu.write_reg(Register::A7, sp + 14);
                                 return Some(Ok(()));
                             }
-                            self.vfs.entry(vfs_key.clone()).or_default();
-                            self.vfs_rsrc.entry(vfs_key.clone()).or_default();
+                            self.vfs.ensure_empty(vfs_key.clone());
+                            self.vfs_rsrc.ensure_empty(vfs_key.clone());
                             self.set_vfs_entry_finfo(&vfs_key, file_type, creator, 0);
                             self.touch_vfs_entry(&vfs_key);
                             if let Some(ref dir) = self.output_dir {

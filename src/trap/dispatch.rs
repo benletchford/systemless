@@ -4412,11 +4412,11 @@ impl TrapDispatcher {
     }
 
     pub fn materialize_quilt_resources(&mut self) -> usize {
-        let (materialized_count, synthesized_files) =
+        let (materialized_count, synthesized_files) = self.vfs_rsrc.with_mut(|vfs_rsrc| {
             crate::managers::resource::quilt::materialize_quilt_resources_for_vfs(
-                &self.vfs,
-                &mut self.vfs_rsrc,
-            );
+                &self.vfs, vfs_rsrc,
+            )
+        });
         for (synth_path, file_type, creator, finder_flags) in synthesized_files {
             self.set_vfs_entry_metadata(&synth_path, file_type, creator, finder_flags);
         }
