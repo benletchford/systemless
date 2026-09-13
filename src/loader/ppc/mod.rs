@@ -88,7 +88,7 @@ use crate::menu_manager::{
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
-    ProcessAppleEventHandler, ProcessContext, ProcessCursorState, ProcessFileSystemState,
+    ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState,
     ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState,
     ProcessMemoryManager, ProcessMixedModeM68kState, ProcessNewHandleBackend,
     ProcessNewHandleRequest,
@@ -7748,7 +7748,7 @@ impl PpcLoadedApp {
         let mut quickdraw_text_mode = self.quickdraw_text_mode;
         let mut quickdraw_text_size = self.quickdraw_text_size;
         let process_quickdraw_port_state_attached = self.process_quickdraw_port_state_attached;
-        let mut cursor_state = std::mem::take(&mut self.cursor_state);
+        let cursor_state = std::mem::take(&mut self.cursor_state);
         let vfs_volumes = self.vfs_volumes.shared_handle();
         let mut vfs_directories = self.vfs_directories.shared_handle();
         let mut next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
@@ -8436,7 +8436,7 @@ impl PpcLoadedApp {
                             &mut quickdraw_pen_v,
                             &mut quickdraw_text_mode,
                             &mut quickdraw_text_size,
-                            &mut cursor_state,
+                            &cursor_state,
                             &vfs_volumes,
                             &mut vfs_directories,
                             &mut next_vfs_dir_id,
@@ -15589,7 +15589,7 @@ fn dispatch_supported_import(
     quickdraw_pen_v: &mut i16,
     quickdraw_text_mode: &mut i16,
     quickdraw_text_size: &mut i16,
-    cursor_state: &mut ProcessCursorState,
+    cursor_state: &SharedProcessCursorState,
     vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &mut Vec<PpcVfsDirectory>,
     next_vfs_dir_id: &mut u32,
@@ -63491,7 +63491,7 @@ fn ppc_dispose_cicon(
 fn ppc_set_cursor(
     memory: &mut PpcSectionMem,
     cursor_ptr: u32,
-    cursor_state: &mut ProcessCursorState,
+    cursor_state: &SharedProcessCursorState,
 ) -> Option<()> {
     // SetCursor(crsr: Cursor) installs the 16-by-16 data and mask bitmaps plus
     // the Point hotspot stored at byte offset 64 in the 68-byte Cursor record.
@@ -168339,7 +168339,7 @@ pub(crate) mod tests {
     #[test]
     fn cloned_native_adapter_detaches_process_cursor_state() {
         let loaded = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
-        let mut detached = loaded.clone();
+        let detached = loaded.clone();
         let mut data = [0; 32];
         data[0] = 0x80;
         let mut mask = [0; 32];
