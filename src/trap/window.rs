@@ -6286,7 +6286,7 @@ mod tests {
         disp.process_window_list_attached = true;
         let active = bus.alloc(256);
         let raised = bus.alloc(256);
-        *disp.window_list = vec![active, raised];
+        disp.window_list.replace(vec![active, raised]);
         disp.front_window = active;
         bus.write_byte(active + 110, 255);
         bus.write_byte(active + 111, 255);
@@ -6371,7 +6371,7 @@ mod tests {
         let front = make_window(&mut bus, true, false);
         let middle = make_window(&mut bus, true, true);
         let back = make_window(&mut bus, true, true);
-        *disp.window_list = vec![front, middle, back];
+        disp.window_list.replace(vec![front, middle, back]);
         disp.front_window = front;
         let event = disp
             .pending_update_event(&bus, 0xFFFF)
@@ -6381,7 +6381,7 @@ mod tests {
 
         // An invisible dirty window ahead of a visible dirty one is skipped.
         let hidden = make_window(&mut bus, false, true);
-        *disp.window_list = vec![hidden, back];
+        disp.window_list.replace(vec![hidden, back]);
         let event = disp
             .pending_update_event(&bus, 0xFFFF)
             .expect("update event");
@@ -6389,7 +6389,7 @@ mod tests {
 
         // Empty list: the front window serves as the fallback...
         let lone = make_window(&mut bus, true, true);
-        *disp.window_list = Vec::new();
+        disp.window_list.replace(Vec::new());
         disp.front_window = lone;
         let event = disp
             .pending_update_event(&bus, 0xFFFF)
@@ -6521,7 +6521,7 @@ mod tests {
         assert!(result.unwrap().is_ok(), "NewWindow should return");
 
         let window_ptr = bus.read_long(cpu.read_reg(Register::A7));
-        *disp.window_list = vec![window_ptr];
+        disp.window_list.replace(vec![window_ptr]);
         disp.front_window = window_ptr;
         *disp.current_port = window_ptr;
         disp.validate_window_rect(&mut bus, window_ptr, (0, 0, 160, 260));
@@ -7691,7 +7691,7 @@ mod tests {
         // Pre-seed an existing window so `behind` has a meaningful
         // target for the middle-insert case.
         let existing = 0x200040u32;
-        *disp.window_list = vec![existing];
+        disp.window_list.replace(vec![existing]);
         disp.front_window = existing;
         bus.write_byte(existing + 110u32, 0xFF); // visible
 
@@ -7850,7 +7850,7 @@ mod tests {
         // closing the final tracked window must publish NIL.
         let (mut disp, mut cpu, mut bus) = setup();
         let window_ptr = 0x200040u32;
-        *disp.window_list = vec![window_ptr];
+        disp.window_list.replace(vec![window_ptr]);
         disp.front_window = window_ptr;
         bus.write_byte(window_ptr + 110u32, 0xFF);
         bus.write_long(0x09D6, window_ptr);
@@ -7988,7 +7988,7 @@ mod tests {
     fn new_cwindow_behind_nil_places_new_window_at_back() {
         let (mut disp, mut cpu, mut bus) = setup();
         let existing = 0x200040u32;
-        *disp.window_list = vec![existing];
+        disp.window_list.replace(vec![existing]);
         disp.front_window = existing;
         bus.write_byte(existing + 110u32, 0xFF);
 
@@ -8035,7 +8035,7 @@ mod tests {
             b"Doc",
         );
         let existing = 0x200040u32;
-        *disp.window_list = vec![existing];
+        disp.window_list.replace(vec![existing]);
         disp.front_window = existing;
         bus.write_byte(existing + 110u32, 0xFF);
 
@@ -8073,7 +8073,7 @@ mod tests {
             b"CWin",
         );
         let existing = 0x200040u32;
-        *disp.window_list = vec![existing];
+        disp.window_list.replace(vec![existing]);
         disp.front_window = existing;
         bus.write_byte(existing + 110u32, 0xFF);
 
@@ -8115,7 +8115,7 @@ mod tests {
             bus.write_word(window + 22, rect.3 as u16);
         }
 
-        *disp.window_list = vec![front, back];
+        disp.window_list.replace(vec![front, back]);
         disp.front_window = back;
         disp.window_bounds = (0, 0, 600, 800);
 
@@ -8207,7 +8207,7 @@ mod tests {
             b"CWin",
         );
         let existing = 0x200040u32;
-        *disp.window_list = vec![existing];
+        disp.window_list.replace(vec![existing]);
         disp.front_window = existing;
         bus.write_byte(
             existing + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
@@ -8669,7 +8669,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let front = 0x200040u32;
         let next = 0x200140u32;
-        *disp.window_list = vec![front, next];
+        disp.window_list.replace(vec![front, next]);
         disp.front_window = front;
         *disp.current_port = front;
         disp.window_bounds = (240, 450, 480, 650);
@@ -8755,7 +8755,7 @@ mod tests {
             false,
             0,
         );
-        *disp.window_list = vec![utility, document];
+        disp.window_list.replace(vec![utility, document]);
         disp.sync_window_list_links(&mut bus);
         // Floating utilities may remain above an active document without
         // becoming the Window Manager's active front window.
@@ -8813,7 +8813,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let front = 0x200040u32;
         let next = 0x200140u32;
-        *disp.window_list = vec![front, next];
+        disp.window_list.replace(vec![front, next]);
         disp.front_window = front;
         *disp.current_port = front;
         disp.window_bounds = (240, 450, 480, 650);
@@ -8893,7 +8893,7 @@ mod tests {
             true,
             0,
         );
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
         *disp.current_port = window_addr;
         assert_ne!(
@@ -8955,7 +8955,7 @@ mod tests {
         // event-generating path.
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_a, win_b];
+        disp.window_list.replace(vec![win_a, win_b]);
         disp.front_window = win_a;
         bus.write_byte(win_a + 110u32, 0xFF);
         bus.write_byte(win_b + 110u32, 0xFF);
@@ -8977,7 +8977,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_a, win_b];
+        disp.window_list.replace(vec![win_a, win_b]);
         disp.front_window = win_a;
         bus.write_byte(win_a + 110u32, 0xFF);
         bus.write_byte(win_b + 110u32, 0xFF);
@@ -9082,7 +9082,7 @@ mod tests {
         let (mut disp, _cpu, mut bus) = setup();
         let old_front = 0x200040u32;
         let new_front = 0x200140u32;
-        *disp.window_list = vec![new_front, old_front];
+        disp.window_list.replace(vec![new_front, old_front]);
         disp.front_window = old_front;
         bus.write_byte(old_front + 110, 0xFF);
         bus.write_byte(old_front + 111, 0xFF);
@@ -9117,7 +9117,7 @@ mod tests {
     fn select_window_already_front_is_idempotent() {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
-        *disp.window_list = vec![win_a];
+        disp.window_list.replace(vec![win_a]);
         disp.front_window = win_a;
         bus.write_byte(win_a + 110u32, 0xFF);
         bus.write_byte(win_a + 111u32, 0xFF);
@@ -9172,7 +9172,7 @@ mod tests {
             setup_full_window_with_regions(&mut bus, window, 20, 0, 424, 627);
         bus.write_byte(window + 110, 0xFF);
         bus.write_byte(window + 111, 0xFF);
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
         disp.front_window = window;
         *disp.current_port = window;
 
@@ -9456,7 +9456,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a]; // b is front, a is behind
+        disp.window_list.replace(vec![win_b, win_a]); // b is front, a is behind
         disp.front_window = win_b;
         *disp.current_port = win_b;
         for &base in &[win_a, win_b] {
@@ -9539,7 +9539,7 @@ mod tests {
             false,
             0,
         );
-        *disp.window_list = vec![front, back];
+        disp.window_list.replace(vec![front, back]);
         disp.sync_window_list_links(&mut bus);
         disp.front_window = front;
         *disp.current_port = front;
@@ -9566,7 +9566,7 @@ mod tests {
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
         let win_c = 0x200240u32;
-        *disp.window_list = vec![win_c, win_b, win_a];
+        disp.window_list.replace(vec![win_c, win_b, win_a]);
         disp.front_window = win_c;
         *disp.current_port = win_c;
         for &base in &[win_a, win_b, win_c] {
@@ -9700,7 +9700,7 @@ mod tests {
             dialog + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
             0xFF,
         );
-        *disp.window_list = vec![dialog];
+        disp.window_list.replace(vec![dialog]);
         disp.front_window = dialog;
         *disp.current_port = dialog;
         disp.dialog_items
@@ -9743,7 +9743,7 @@ mod tests {
         let win_b = 0x200140u32;
         let win_c = 0x200240u32;
         // List: c front, b behind (hidden), a back-most (visible).
-        *disp.window_list = vec![win_c, win_b, win_a];
+        disp.window_list.replace(vec![win_c, win_b, win_a]);
         disp.front_window = win_c;
         *disp.current_port = win_c;
         for &base in &[win_a, win_b, win_c] {
@@ -9778,7 +9778,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a];
+        disp.window_list.replace(vec![win_b, win_a]);
         disp.front_window = win_b;
         *disp.current_port = win_b;
         for &base in &[win_a, win_b] {
@@ -9808,7 +9808,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a];
+        disp.window_list.replace(vec![win_b, win_a]);
         disp.front_window = win_b;
         *disp.current_port = win_b;
         for &base in &[win_a, win_b] {
@@ -9842,7 +9842,7 @@ mod tests {
         bus.write_byte(target_window + 110, 0x00);
         bus.write_byte(target_window + 111, 0x00);
 
-        *disp.window_list = vec![front_window, target_window];
+        disp.window_list.replace(vec![front_window, target_window]);
         disp.front_window = front_window;
         *disp.current_port = front_window;
 
@@ -9988,7 +9988,7 @@ mod tests {
         bus.write_byte(target_window + 110, 0xFF);
         bus.write_byte(target_window + 111, 0x00);
 
-        *disp.window_list = vec![front_window, target_window];
+        disp.window_list.replace(vec![front_window, target_window]);
         disp.front_window = front_window;
         *disp.current_port = front_window;
         disp.queue_window_update_event(target_window);
@@ -10073,7 +10073,7 @@ mod tests {
             false,
             0,
         );
-        *disp.window_list = vec![target, back];
+        disp.window_list.replace(vec![target, back]);
         disp.sync_window_list_links(&mut bus);
         disp.front_window = back;
         *disp.current_port = back;
@@ -10458,7 +10458,7 @@ mod tests {
         // frontmost VISIBLE window. Seed a window_list entry with its
         // visible byte set so the visible-only walk finds it.
         let win = 0x200040u32;
-        *disp.window_list = vec![win];
+        disp.window_list.replace(vec![win]);
         disp.front_window = win;
         bus.write_byte(win + 110u32, 0xFF);
 
@@ -10481,7 +10481,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a]; // b first, a behind
+        disp.window_list.replace(vec![win_b, win_a]); // b first, a behind
         disp.front_window = win_b;
         // b hidden, a visible.
         bus.write_byte(win_a + 110u32, 0xFF);
@@ -10498,7 +10498,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let ghost = 0x200040u32;
         let doc = 0x200140u32;
-        *disp.window_list = vec![ghost, doc];
+        disp.window_list.replace(vec![ghost, doc]);
         disp.front_window = ghost;
         bus.write_byte(ghost + 110u32, 0xFF);
         bus.write_byte(doc + 110u32, 0xFF);
@@ -10518,7 +10518,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a];
+        disp.window_list.replace(vec![win_b, win_a]);
         disp.front_window = win_b;
         // Both hidden.
         bus.write_byte(win_a + 110u32, 0x00);
@@ -10799,7 +10799,7 @@ mod tests {
         let window_addr: u32 = 0x310000;
         setup_full_window_with_regions(&mut bus, window_addr, 40, 0, 342, 512);
         bus.write_byte(window_addr + 110, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let wnd_ptr_ptr: u32 = 0x300000;
@@ -10852,7 +10852,7 @@ mod tests {
             0,
         );
         disp.front_window = window;
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
         bus.write_byte(
             window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
             0xFF,
@@ -11024,7 +11024,7 @@ mod tests {
         let window_addr: u32 = 0x310000;
         setup_full_window_with_regions(&mut bus, window_addr, 40, 0, 342, 512);
         bus.write_byte(window_addr + 110, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let wnd_ptr_ptr: u32 = 0x300000;
@@ -11397,7 +11397,7 @@ mod tests {
         let (back_vis, back_clip, back_struc, back_cont) =
             setup_window_regions(&mut bus, back, 10, 20, 110, 210, 0x330000);
 
-        *disp.window_list = vec![front, middle, back];
+        disp.window_list.replace(vec![front, middle, back]);
         disp.sync_window_list_links(&mut bus);
         disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 18);
@@ -11651,7 +11651,7 @@ mod tests {
             false,
             0,
         );
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.sync_window_list_links(&mut bus);
 
         let clobbered_rgn = super::super::TrapDispatcher::alloc_rect_region_handle(
@@ -12812,7 +12812,7 @@ mod tests {
         bus.write_word(window_addr + 12, 560);
         bus.write_word(window_addr + 14, 780);
         bus.write_byte(window_addr + 110, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
         disp.window_bounds = (40, 20, 140, 220);
 
@@ -12886,7 +12886,7 @@ mod tests {
             bus.write_word(window + 14, (800 - left) as u16);
             bus.write_byte(window + 110, 0xFF);
         }
-        *disp.window_list = vec![front, target];
+        disp.window_list.replace(vec![front, target]);
         disp.front_window = front;
         disp.window_bounds = (80, 100, 180, 300);
 
@@ -13341,7 +13341,7 @@ mod tests {
             0,
         );
         disp.front_window = window;
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
         bus.write_byte(
             window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
             0xFF,
@@ -13395,7 +13395,7 @@ mod tests {
             0,
         );
         disp.front_window = window;
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
         bus.write_byte(
             window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
             0xFF,
@@ -13460,7 +13460,7 @@ mod tests {
         bus.write_word(window + 12, 560);
         bus.write_word(window + 14, 780);
         bus.write_byte(window + 110, 0xFF);
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
         disp.front_window = window;
         disp.window_bounds = (40, 20, 140, 220);
 
@@ -13571,7 +13571,7 @@ mod tests {
             bus.write_word(window + 12, 200);
             bus.write_word(window + 14, 300);
             bus.write_byte(window + 110, 0xFF);
-            *disp.window_list = vec![window];
+            disp.window_list.replace(vec![window]);
             disp.front_window = window;
 
             let size_rect = 0x280000;
@@ -13620,7 +13620,7 @@ mod tests {
         bus.write_word(window + 12, 560);
         bus.write_word(window + 14, 780);
         bus.write_byte(window + 110, 0xFF);
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
 
         let size_rect = 0x280000;
         bus.write_word(size_rect, 50);
@@ -13655,7 +13655,7 @@ mod tests {
         setup_window_with_regions(&mut bus, window, 0, 0, 100, 200);
         bus.write_word(window + 6, 0);
         bus.write_byte(window + 110, 0xFF);
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
 
         let size_rect = 0x280000;
         bus.write_word(size_rect, 50);
@@ -13812,7 +13812,7 @@ mod tests {
         install_wstate_data(&mut bus, window, (30, 40, 130, 190), (10, 12, 50, 70));
         bus.write_byte(window + 110, 0xFF);
         bus.write_byte(front_window + 110, 0xFF);
-        *disp.window_list = vec![front_window, window];
+        disp.window_list.replace(vec![front_window, window]);
         disp.front_window = front_window;
 
         let sp = TEST_SP - 8;
@@ -13849,7 +13849,7 @@ mod tests {
         setup_full_window_with_regions(&mut bus, window, 0, 0, 20, 20);
         install_wstate_data(&mut bus, window, (12, 18, 52, 90), (50, 60, 170, 250));
         bus.write_byte(window + 110, 0xFF);
-        *disp.window_list = vec![window];
+        disp.window_list.replace(vec![window]);
         disp.front_window = window;
 
         let sp = TEST_SP - 8;
@@ -13892,7 +13892,7 @@ mod tests {
         bus.write_byte(old_front + 111, 0xFF);
         bus.write_byte(zoom_target + 111, 0x00);
 
-        *disp.window_list = vec![old_front, zoom_target];
+        disp.window_list.replace(vec![old_front, zoom_target]);
         disp.front_window = old_front;
 
         let sp = TEST_SP - 8;
@@ -13985,7 +13985,7 @@ mod tests {
         let win = 0x200040u32;
         let (_cont_rgn, update_rgn) =
             setup_full_window_with_regions(&mut bus, win, 10, 20, 50, 100);
-        *disp.window_list = vec![win];
+        disp.window_list.replace(vec![win]);
 
         let sp = TEST_SP - 8;
         cpu.write_reg(Register::A7, sp);
@@ -14022,7 +14022,7 @@ mod tests {
         let (_cont_rgn, update_rgn) =
             setup_full_window_with_regions(&mut bus, win, 10, 20, 50, 100);
         bus.write_byte(win + 110u32, 0xFF);
-        *disp.window_list = vec![win];
+        disp.window_list.replace(vec![win]);
         disp.front_window = win;
 
         let probe = screen_base + 30 * 800 + 50;
@@ -14066,7 +14066,7 @@ mod tests {
         let win = 0x200040u32;
         let (_cont_rgn, _update_rgn) =
             setup_full_window_with_regions(&mut bus, win, 10, 20, 50, 100);
-        *disp.window_list = vec![win];
+        disp.window_list.replace(vec![win]);
 
         let empty_rgn = bus.alloc(10);
         let empty_handle = bus.alloc(4);
@@ -14171,7 +14171,7 @@ mod tests {
             setup_paintbehind_window(&mut bus, window, (0, 0, 200, 200));
         }
         bus.write_byte(back + 110u32, 0x00);
-        *disp.window_list = vec![front, middle, back];
+        disp.window_list.replace(vec![front, middle, back]);
         disp.front_window = front;
 
         let clobbered_ptr = bus.alloc(10);
@@ -14288,7 +14288,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a];
+        disp.window_list.replace(vec![win_b, win_a]);
         // Minimum: a 10-byte rect region at 0x300020.
         let rgn_ptr = 0x300020u32;
         bus.write_word(rgn_ptr, 10);
@@ -14395,7 +14395,7 @@ mod tests {
                 true, 0,
             );
         }
-        *disp.window_list = vec![front, target];
+        disp.window_list.replace(vec![front, target]);
         disp.front_window = front;
         disp.recalculate_window_vis_regions(&mut bus);
         disp.set_current_port_state(&mut bus, &mut cpu, front, None);
@@ -14445,7 +14445,7 @@ mod tests {
             );
             disp.validate_window_rect(&mut bus, window, (0, 0, 600, 800));
         }
-        *disp.window_list = vec![palette, front, target];
+        disp.window_list.replace(vec![palette, front, target]);
         disp.front_window = front;
         disp.recalculate_window_vis_regions(&mut bus);
         // An application's temporary viewport is not the old stacking geometry.
@@ -14481,7 +14481,7 @@ mod tests {
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
         let win_c = 0x200240u32;
-        *disp.window_list = vec![win_a, win_b, win_c];
+        disp.window_list.replace(vec![win_a, win_b, win_c]);
         disp.front_window = win_a;
         bus.write_byte(
             win_a + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
@@ -14615,7 +14615,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a];
+        disp.window_list.replace(vec![win_b, win_a]);
         for base in [win_a, win_b] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -14642,7 +14642,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a];
+        disp.window_list.replace(vec![win_b, win_a]);
         disp.front_window = win_b;
         bus.write_byte(win_a + 110u32, 0xFF);
         bus.write_byte(win_b + 110u32, 0xFF);
@@ -14685,7 +14685,7 @@ mod tests {
         let visual_front = 0x200040u32;
         let active = 0x200140u32;
         let target = 0x200240u32;
-        *disp.window_list = vec![visual_front, active, target];
+        disp.window_list.replace(vec![visual_front, active, target]);
         disp.front_window = active;
         for base in [visual_front, active, target] {
             bus.write_byte(base + 110u32, 0xFF);
@@ -14719,7 +14719,7 @@ mod tests {
         // Two fake windows already in the list, newest at front.
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_b, win_a];
+        disp.window_list.replace(vec![win_b, win_a]);
         disp.front_window = win_b;
         // Minimum portRect to satisfy the bounds read.
         for base in [win_a, win_b] {
@@ -14755,7 +14755,7 @@ mod tests {
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
         let win_c = 0x200240u32;
-        *disp.window_list = vec![win_c, win_b, win_a];
+        disp.window_list.replace(vec![win_c, win_b, win_a]);
         disp.front_window = win_c;
         for base in [win_a, win_b, win_c] {
             bus.write_word(base + 16, 10);
@@ -14785,7 +14785,7 @@ mod tests {
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
         let win_c = 0x200240u32;
-        *disp.window_list = vec![win_c, win_b, win_a]; // c front
+        disp.window_list.replace(vec![win_c, win_b, win_a]); // c front
         disp.front_window = win_c;
         for &base in &[win_a, win_b, win_c] {
             bus.write_word(base + 16, 10);
@@ -14979,7 +14979,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_a, win_b];
+        disp.window_list.replace(vec![win_a, win_b]);
         disp.front_window = win_a;
         bus.write_byte(win_a + 110u32, 0xFF); // visible
         bus.write_byte(win_b + 110u32, 0xFF);
@@ -15019,7 +15019,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let win_a = 0x200040u32;
         let win_b = 0x200140u32;
-        *disp.window_list = vec![win_a, win_b];
+        disp.window_list.replace(vec![win_a, win_b]);
         disp.front_window = win_a;
         bus.write_byte(win_a + 110u32, 0xFF);
         bus.write_byte(win_b + 110u32, 0xFF);
@@ -15065,7 +15065,7 @@ mod tests {
         // Mark window visible so invalidate_window_rect's clip
         // intersection picks up the content rect.
         bus.write_byte(window_addr + 110u32, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let sp = TEST_SP - 10;
@@ -15106,7 +15106,7 @@ mod tests {
         let (_cont_rgn, update_rgn) =
             setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 100, 100);
         bus.write_byte(window_addr + 110u32, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let sp = TEST_SP - 10;
@@ -15150,7 +15150,7 @@ mod tests {
         let window_addr: u32 = 0x300000;
         let _ = setup_full_window_with_regions(&mut bus, window_addr, 10, 20, 60, 120);
         bus.write_byte(window_addr + 110u32, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let sp = TEST_SP - 6;
@@ -15176,7 +15176,7 @@ mod tests {
         let (cont_rgn, update_rgn) =
             setup_full_window_with_regions(&mut bus, window_addr, 10, 20, 60, 120);
         bus.write_byte(window_addr + 110u32, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let sp = TEST_SP - 4;
@@ -15223,7 +15223,7 @@ mod tests {
         bus.write_word(update_rgn + 6, 90);
         bus.write_word(update_rgn + 8, 140);
         bus.write_byte(window_addr + 110u32, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let sp = TEST_SP - 6;
@@ -15286,7 +15286,7 @@ mod tests {
         let (_cont_rgn, update_rgn) =
             setup_full_window_with_regions(&mut bus, window_addr, 0, 0, 200, 200);
         bus.write_byte(window_addr + 110u32, 0xFF);
-        *disp.window_list = vec![window_addr];
+        disp.window_list.replace(vec![window_addr]);
         disp.front_window = window_addr;
 
         let sp = TEST_SP - 10;

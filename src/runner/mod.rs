@@ -14134,7 +14134,7 @@ mod tests {
             assert_ne!(handle, 0, "window operation must install region handle");
             write_snapshot_region_bounds(&mut runner.bus, handle, bounds);
         }
-        *runner.dispatcher.window_list = vec![window];
+        runner.dispatcher.window_list.replace(vec![window]);
         runner
             .bus
             .write_long(crate::memory::globals::addr::GHOST_WINDOW, 0);
@@ -14348,7 +14348,7 @@ mod tests {
             SPARSE + 0x300,
             b"Sparse",
         );
-        *runner.dispatcher.window_list = vec![FLAT, SPARSE];
+        runner.dispatcher.window_list.replace(vec![FLAT, SPARSE]);
 
         assert_eq!(
             runner
@@ -14402,7 +14402,7 @@ mod tests {
             .memory
             .write_u8(window + 110, 0x7F)
             .unwrap();
-        *context.adapter_mut().window_list = vec![window];
+        context.adapter_mut().window_list.replace(vec![window]);
         assert!(runner.native.restore(context).is_ok());
         assert_eq!(runner.bus.read_byte(window + 110), 0x7F);
         assert_eq!(&*runner.dispatcher.window_list, &[window]);
