@@ -4220,7 +4220,8 @@ impl TrapDispatcher {
 
     fn allocate_vfs_timestamp(&mut self) -> u32 {
         let timestamp = *self.next_vfs_timestamp;
-        *self.next_vfs_timestamp = self.next_vfs_timestamp.saturating_add(1);
+        self.next_vfs_timestamp
+            .with_mut(|next_timestamp| *next_timestamp = next_timestamp.saturating_add(1));
         timestamp
     }
 
@@ -4310,10 +4311,11 @@ impl TrapDispatcher {
         let parent_path = Self::vfs_parent_path(&normalized).to_string();
         let parent_dir_id = self.ensure_vfs_directory(&parent_path);
         let timestamp = self.allocate_vfs_timestamp();
+        let file_id = *self.next_vfs_file_id;
         self.vfs_metadata.insert(
             normalized.clone(),
             VfsMetadata {
-                file_id: *self.next_vfs_file_id,
+                file_id,
                 parent_dir_id,
                 file_type: u32::from_be_bytes(*b"????"),
                 creator: u32::from_be_bytes(*b"????"),
@@ -4322,7 +4324,8 @@ impl TrapDispatcher {
                 modified_date: timestamp,
             },
         );
-        *self.next_vfs_file_id = self.next_vfs_file_id.saturating_add(1);
+        self.next_vfs_file_id
+            .with_mut(|next_file_id| *next_file_id = next_file_id.saturating_add(1));
         self.process_file_system
             .publish_classic_vfs_metadata(&normalized);
     }
