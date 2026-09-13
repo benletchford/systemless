@@ -1653,7 +1653,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         requested_type: [u8; 4],
     ) -> Vec<Vec<u8>> {
-        self.policy.res_load = true;
+        self.policy.set_res_load(true);
         let resource_types = if requested_type == *b"FONT" {
             [Some(*b"FOND"), Some(*b"FONT")]
         } else {
@@ -6973,7 +6973,7 @@ mod tests {
             search_order: vec![0],
             current_file: 0,
         });
-        disp.policy.res_load = false;
+        disp.policy.set_res_load(false);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, u32::from_be_bytes(*b"FONT"));
