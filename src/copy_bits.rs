@@ -85,6 +85,7 @@ impl Indexed8HorizontalShrink {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn groups(&self) -> &[Range<usize>] {
         &self.groups
     }

@@ -9168,7 +9168,7 @@ mod tests {
 
     #[test]
     fn find_vfs_file_prefers_relative_path_components_before_basename() {
-        let mut disp = super::super::TrapDispatcher::new();
+        let disp = super::super::TrapDispatcher::new();
         disp.vfs
             .insert("MacPopulous/BigColourData/LOAD.PIC".to_string(), vec![1]);
         disp.vfs
@@ -9182,7 +9182,7 @@ mod tests {
 
     #[test]
     fn find_vfs_rsrc_file_prefers_relative_path_components_before_basename() {
-        let mut disp = super::super::TrapDispatcher::new();
+        let disp = super::super::TrapDispatcher::new();
         disp.vfs_rsrc
             .insert("MacPopulous/BigColourData/LOAD.PIC".to_string(), vec![1]);
         disp.vfs_rsrc
