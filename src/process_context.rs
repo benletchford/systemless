@@ -14,7 +14,7 @@ use crate::memory::bus::SharedRamRegion;
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::sound::SoundManager;
-use crate::text_edit::ProcessTextEditManagerState;
+use crate::text_edit::{ProcessTextEditManagerState, TextEditClickTracking};
 use ppc::PpcMemory;
 use std::cell::{Cell, RefCell, RefMut, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1708,6 +1708,43 @@ impl SharedProcessControlManager {
     #[cfg(test)]
     pub(crate) fn remove_handle(&self, handle: u32) {
         self.with_mut(|manager| manager.remove_handle(handle));
+    }
+}
+
+impl SharedProcessTextEditManager {
+    pub(crate) fn register(&self, handle: u32) {
+        self.with_mut(|manager| manager.register(handle));
+    }
+
+    pub(crate) fn set_feature_bit(&self, handle: u32, feature: u16, enabled: bool) {
+        self.with_mut(|manager| manager.set_feature_bit(handle, feature, enabled));
+    }
+
+    pub(crate) fn remove(&self, handle: &u32) {
+        self.with_mut(|manager| manager.remove(handle));
+    }
+
+    pub(crate) fn clear_click_tracking(&self) {
+        self.with_mut(ProcessTextEditManagerState::clear_click_tracking);
+    }
+
+    pub(crate) fn take_click_tracking(&self) -> Option<TextEditClickTracking> {
+        self.with_mut(ProcessTextEditManagerState::take_click_tracking)
+    }
+
+    pub(crate) fn retain_click_tracking(
+        &self,
+        tracking: TextEditClickTracking,
+    ) {
+        self.with_mut(|manager| manager.retain_click_tracking(tracking));
+    }
+
+    pub(crate) fn has_click_tracking(&self) -> bool {
+        ProcessTextEditManagerState::has_click_tracking(self)
+    }
+
+    pub(crate) fn has_classic_click_tracking(&self) -> bool {
+        ProcessTextEditManagerState::has_classic_click_tracking(self)
     }
 }
 

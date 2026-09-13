@@ -3700,11 +3700,7 @@ impl TrapDispatcher {
             || (is_grow_window_refire && self.is_grow_window_tracking())
             || (is_region_refire && self.is_region_tracking())
             || (trap_no_autopop == 0xA9D4
-                && self
-                    .textedit_states
-                    .click_tracking
-                    .as_ref()
-                    .is_some_and(|tracking| !tracking.native))
+                && self.textedit_states.has_classic_click_tracking())
     }
 
     /// Generate the standard Mac 8-bit system palette as 16-bit RGB values.
