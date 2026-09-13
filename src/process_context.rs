@@ -1981,6 +1981,31 @@ impl SharedProcessWindowList {
     }
 }
 
+impl SharedProcessListManager {
+    pub(crate) fn insert_record(
+        &self,
+        handle: u32,
+        record: crate::list_manager::ProcessListRecord,
+    ) {
+        self.with_mut(|manager| manager.insert_record(handle, record));
+    }
+
+    pub(crate) fn remove_record(
+        &self,
+        handle: u32,
+    ) -> Option<crate::list_manager::ProcessListRecord> {
+        self.with_mut(|manager| manager.remove_record(handle))
+    }
+
+    pub(crate) fn with_record_mut<R>(
+        &self,
+        handle: u32,
+        f: impl FnOnce(&mut crate::list_manager::ProcessListRecord) -> R,
+    ) -> Option<R> {
+        self.with_mut(|manager| manager.with_record_mut(handle, f))
+    }
+}
+
 #[cfg(test)]
 impl SharedProcessTimerTasks {
     pub(crate) fn push(&self, task: ProcessTimerTask) {

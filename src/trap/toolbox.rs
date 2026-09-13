@@ -11491,7 +11491,7 @@ impl super::TrapDispatcher {
                         }
 
                         if list_handle != 0 {
-                            self.list_states.insert(list_handle, state);
+                            self.list_states.insert_record(list_handle, state);
                         }
                         if draw_it {
                             if v_scroll_ptr != 0 {
@@ -11537,9 +11537,9 @@ impl super::TrapDispatcher {
                     0x2C => {
                         let list_handle = bus.read_long(sp + 2);
                         let draw_it = Self::stack_bool_slot(bus, sp + 6);
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             state.draw_enabled = draw_it;
-                        }
+                        });
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
                         if list_ptr != 0 {
                             for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
@@ -11569,7 +11569,7 @@ impl super::TrapDispatcher {
                     0x14 => {
                         let list_handle = bus.read_long(sp + 2);
                         let cell_size = Self::read_stack_point(bus, sp + 6);
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             state.cell_size = (cell_size.0.max(1), cell_size.1.max(1));
                             state.visible = Self::compute_list_visible_rect(
                                 state.view_rect,
@@ -11577,7 +11577,7 @@ impl super::TrapDispatcher {
                                 state.cell_size,
                             );
                             Self::sync_list_state_to_guest(bus, list_handle, state);
-                        }
+                        });
                         cpu.write_reg(Register::A7, sp + 10);
                         Ok(())
                     }
@@ -11597,7 +11597,7 @@ impl super::TrapDispatcher {
                         let result_addr = sp + 10;
 
                         let mut result_row = row;
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             row = row.clamp(state.data_bounds.0, state.data_bounds.2);
                             result_row = row;
 
@@ -11634,7 +11634,7 @@ impl super::TrapDispatcher {
                                 );
                                 Self::sync_list_state_to_guest(bus, list_handle, state);
                             }
-                        }
+                        });
 
                         bus.write_word(result_addr, result_row as u16);
                         cpu.write_reg(Register::A7, result_addr);
@@ -11652,7 +11652,7 @@ impl super::TrapDispatcher {
                         let row = bus.read_word(sp + 6) as i16;
                         let count = bus.read_word(sp + 8) as i16;
 
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             if count > 0 && row < state.data_bounds.2 {
                                 state.cells.retain(|&(cell_row, _), _| {
                                     cell_row < row || cell_row >= row + count
@@ -11695,7 +11695,7 @@ impl super::TrapDispatcher {
                                 );
                                 Self::sync_list_state_to_guest(bus, list_handle, state);
                             }
-                        }
+                        });
 
                         cpu.write_reg(Register::A7, sp + 10);
                         Ok(())
@@ -11715,7 +11715,7 @@ impl super::TrapDispatcher {
                         } else {
                             Vec::new()
                         };
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             let key = (cell.0, cell.1);
                             let valid = Self::list_cell_is_valid(state, key.0, key.1);
                             if trace_list_manager_enabled() {
@@ -11736,7 +11736,7 @@ impl super::TrapDispatcher {
                                     state.cells.remove(&key);
                                 }
                             }
-                        }
+                        });
                         cpu.write_reg(Register::A7, sp + 16);
                         Ok(())
                     }
@@ -11751,12 +11751,12 @@ impl super::TrapDispatcher {
                         let data_ptr = bus.read_long(sp + 12);
                         if data_len > 0 && data_ptr != 0 {
                             let data = bus.read_bytes(data_ptr, data_len as usize);
-                            if let Some(state) = self.list_states.get_mut(&list_handle) {
+                            self.list_states.with_record_mut(list_handle, |state| {
                                 let key = (cell.0, cell.1);
                                 if Self::list_cell_is_valid(state, key.0, key.1) {
                                     state.cells.entry(key).or_default().extend_from_slice(&data);
                                 }
-                            }
+                            });
                         }
                         cpu.write_reg(Register::A7, sp + 16);
                         Ok(())
@@ -11797,9 +11797,9 @@ impl super::TrapDispatcher {
                     0x1C => {
                         let list_handle = bus.read_long(sp + 2);
                         let cell = Self::read_stack_point(bus, sp + 6);
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             state.cells.remove(&(cell.0, cell.1));
-                        }
+                        });
                         cpu.write_reg(Register::A7, sp + 10);
                         Ok(())
                     }
@@ -11815,7 +11815,7 @@ impl super::TrapDispatcher {
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
                         let mut draw_state = None;
                         let mut draw_cells = Vec::new();
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             let valid = Self::list_cell_is_valid(state, cell.0, cell.1);
                             if trace_list_manager_enabled() {
                                 eprintln!(
@@ -11847,7 +11847,7 @@ impl super::TrapDispatcher {
                                     }
                                 }
                             }
-                        }
+                        });
                         if let Some(state) = draw_state {
                             if self.draw_list_cells_with_ldef_message(
                                 cpu,
@@ -11950,7 +11950,7 @@ impl super::TrapDispatcher {
                         let mut draw_cells = Vec::new();
                         let tick = self.current_tick();
 
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             let previous_selected = state.selected.clone();
                             let point_in_view = point.0 >= state.view_rect.0
                                 && point.0 < state.view_rect.2
@@ -11993,7 +11993,7 @@ impl super::TrapDispatcher {
                                 }
                             }
                             Self::sync_list_state_to_guest(bus, list_handle, state);
-                        }
+                        });
 
                         bus.write_word(result_addr, if double_click { 0x0100 } else { 0 });
                         if let Some(state) = draw_state {
@@ -12068,8 +12068,9 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let d_rows = bus.read_word(sp + 6) as i16;
                         let d_cols = bus.read_word(sp + 8) as i16;
-                        let should_draw =
-                            if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        let should_draw = self
+                            .list_states
+                            .with_record_mut(list_handle, |state| {
                                 Self::set_list_visible_origin(
                                     state,
                                     state.visible.0.saturating_add(d_rows),
@@ -12077,9 +12078,8 @@ impl super::TrapDispatcher {
                                 );
                                 Self::sync_list_state_to_guest(bus, list_handle, state);
                                 state.draw_enabled
-                            } else {
-                                false
-                            };
+                            })
+                            .unwrap_or(false);
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get(&list_handle).cloned() {
@@ -12099,8 +12099,9 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let height = bus.read_word(sp + 6) as i16;
                         let width = bus.read_word(sp + 8) as i16;
-                        let should_draw =
-                            if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        let should_draw = self
+                            .list_states
+                            .with_record_mut(list_handle, |state| {
                                 let old_origin = (state.visible.0, state.visible.1);
                                 state.view_rect.2 = state.view_rect.0.saturating_add(height.max(0));
                                 state.view_rect.3 = state.view_rect.1.saturating_add(width.max(0));
@@ -12112,9 +12113,8 @@ impl super::TrapDispatcher {
                                 Self::set_list_visible_origin(state, old_origin.0, old_origin.1);
                                 Self::sync_list_state_to_guest(bus, list_handle, state);
                                 state.draw_enabled
-                            } else {
-                                false
-                            };
+                            })
+                            .unwrap_or(false);
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get(&list_handle).cloned() {
@@ -12137,9 +12137,9 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let act = Self::stack_bool_slot(bus, sp + 6);
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
-                        let should_draw = if let Some(state) =
-                            self.list_states.get_mut(&list_handle)
-                        {
+                        let should_draw = self
+                            .list_states
+                            .with_record_mut(list_handle, |state| {
                             state.active = act;
                             if list_ptr != 0 {
                                 bus.write_byte(
@@ -12162,10 +12162,9 @@ impl super::TrapDispatcher {
                                     }
                                 }
                             }
-                            state.draw_enabled
-                        } else {
-                            false
-                        };
+                                state.draw_enabled
+                            })
+                            .unwrap_or(false);
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
                             if let Some(state) = self.list_states.get(&list_handle).cloned() {
@@ -12204,7 +12203,7 @@ impl super::TrapDispatcher {
                         } else {
                             (0, 0)
                         };
-                        self.list_states.remove(&list_handle);
+                        self.list_states.remove_record(list_handle);
                         self.dispose_control_handle(bus, v_scroll);
                         self.dispose_control_handle(bus, h_scroll);
                         if list_ptr != 0 {
@@ -12387,7 +12386,7 @@ impl super::TrapDispatcher {
                         } else {
                             (0, 0)
                         };
-                        self.list_states.remove(&list_handle);
+                        self.list_states.remove_record(list_handle);
                         self.dispose_control_handle(bus, v_scroll);
                         self.dispose_control_handle(bus, h_scroll);
                         if list_ptr != 0 {
@@ -12408,9 +12407,9 @@ impl super::TrapDispatcher {
                     0x002C => {
                         let list_handle = bus.read_long(sp + 2);
                         let draw_it = Self::stack_bool_slot(bus, sp + 6);
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             state.draw_enabled = draw_it;
-                        }
+                        });
                         let list_ptr = Self::list_record_ptr(bus, list_handle);
                         if list_ptr != 0 {
                             for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET] {
@@ -12641,7 +12640,7 @@ impl super::TrapDispatcher {
                         }
 
                         if list_handle != 0 {
-                            self.list_states.insert(list_handle, state);
+                            self.list_states.insert_record(list_handle, state);
                         }
                         if draw_it {
                             if v_scroll_ptr != 0 {
@@ -12713,14 +12712,14 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let d_rows = bus.read_word(sp + 6) as i16;
                         let d_cols = bus.read_word(sp + 8) as i16;
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             Self::set_list_visible_origin(
                                 state,
                                 state.visible.0.saturating_add(d_rows),
                                 state.visible.1.saturating_add(d_cols),
                             );
                             Self::sync_list_state_to_guest(bus, list_handle, state);
-                        }
+                        });
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     // FUNCTION LSearch(dataPtr: Ptr; dataLen: INTEGER;
@@ -12761,7 +12760,7 @@ impl super::TrapDispatcher {
                         let list_handle = bus.read_long(sp + 2);
                         let height = bus.read_word(sp + 6) as i16;
                         let width = bus.read_word(sp + 8) as i16;
-                        if let Some(state) = self.list_states.get_mut(&list_handle) {
+                        self.list_states.with_record_mut(list_handle, |state| {
                             let old_origin = (state.visible.0, state.visible.1);
                             state.view_rect.2 = state.view_rect.0.saturating_add(height.max(0));
                             state.view_rect.3 = state.view_rect.1.saturating_add(width.max(0));
@@ -12772,7 +12771,7 @@ impl super::TrapDispatcher {
                             );
                             Self::set_list_visible_origin(state, old_origin.0, old_origin.1);
                             Self::sync_list_state_to_guest(bus, list_handle, state);
-                        }
+                        });
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     // PROCEDURE LUpdate(theRgn: RgnHandle;
@@ -26393,10 +26392,10 @@ mod tests {
             0x80,
         );
         disp.list_states
-            .get_mut(&list_handle)
-            .unwrap()
-            .selected
-            .insert((0, 0));
+            .with_record_mut(list_handle, |state| {
+                state.selected.insert((0, 0));
+            })
+            .unwrap();
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::PC, return_pc);
@@ -26491,10 +26490,10 @@ mod tests {
             0x80,
         );
         disp.list_states
-            .get_mut(&list_handle)
-            .unwrap()
-            .selected
-            .insert((0, 0));
+            .with_record_mut(list_handle, |state| {
+                state.selected.insert((0, 0));
+            })
+            .unwrap();
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::PC, return_pc);
