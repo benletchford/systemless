@@ -1008,10 +1008,12 @@ impl ProcessFileSystemState {
         let source_next_dir_id = *source.next_vfs_dir_id;
         self.next_vfs_dir_id
             .with_mut(|next_dir_id| *next_dir_id = (*next_dir_id).max(source_next_dir_id));
+        let source_default_dir_id = *source.default_dir_id;
         if *self.default_dir_id == 0
-            || (target_catalogue_was_pristine && *source.default_dir_id != 0)
+            || (target_catalogue_was_pristine && source_default_dir_id != 0)
         {
-            *self.default_dir_id = *source.default_dir_id;
+            self.default_dir_id
+                .with_mut(|default_dir_id| *default_dir_id = source_default_dir_id);
         }
 
         self.vfs_files.merge_from(&mut source.vfs_files);
@@ -9838,7 +9840,7 @@ mod tests {
             dirty: true,
         });
         *first_next_dir_id = 17;
-        *first_default_dir_id = 16;
+        first_default_dir_id.with_mut(|default_dir_id| *default_dir_id = 16);
 
         assert!(second_directories
             .iter()
@@ -9923,7 +9925,9 @@ mod tests {
         first
             .next_vfs_dir_id
             .with_mut(|next_dir_id| *next_dir_id = 17);
-        *first.default_dir_id = 16;
+        first
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = 16);
 
         assert!(files.ptr_eq(&first));
         assert!(first.ptr_eq(&second));

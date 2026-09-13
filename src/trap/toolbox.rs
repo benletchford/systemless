@@ -3054,7 +3054,8 @@ impl super::TrapDispatcher {
         } else {
             self.open_working_directory(vref, dir_id, 0).unwrap_or(vref)
         };
-        *self.default_dir_id = dir_id;
+        self.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = dir_id);
         self.app_wd_refnum
             .with_mut(|app_ref_num| *app_ref_num = wd_ref);
         bus.write_long(addr::CUR_DIR_STORE, dir_id);
@@ -21584,7 +21585,8 @@ mod tests {
         let cmd_line = bus.alloc(8);
         let app_name = bus.alloc(32);
         let target_dir_id = disp.ensure_vfs_directory("LaunchTargets");
-        *disp.default_dir_id = target_dir_id;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = target_dir_id);
         disp.vfs
             .insert("LaunchTargets/Legacy Helper".to_string(), Vec::new());
 
@@ -21625,7 +21627,8 @@ mod tests {
         let cmd_line = bus.alloc(8);
         let app_name = bus.alloc(32);
         let target_dir_id = disp.ensure_vfs_directory("LaunchTargets");
-        *disp.default_dir_id = target_dir_id;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = target_dir_id);
 
         cpu.write_reg(Register::A0, cmd_line);
         cpu.write_reg(Register::D0, 0x89AB_CDEF);
@@ -21905,7 +21908,8 @@ mod tests {
         let app_name = bus.alloc(32);
         let target_dir_id = disp.ensure_vfs_directory("ChainTargets");
 
-        *disp.default_dir_id = target_dir_id;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = target_dir_id);
         cpu.write_reg(Register::A0, cmd_line);
         cpu.write_reg(Register::D0, 0x1234_5678);
 
@@ -29416,7 +29420,8 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x320080u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
-        *disp.default_dir_id = pilots_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = pilots_dir);
         disp.vfs_rsrc
             .insert("Pilots/Tom Fighter Paris".to_string(), vec![1, 2, 3]);
         disp.set_vfs_entry_metadata("Pilots/Tom Fighter Paris", *b"PIL ", *b"EVO!", 0x4000);
@@ -29455,7 +29460,8 @@ mod tests {
         let reply_ptr = 0x320500u32;
         let type_list_ptr = 0x320600u32;
         let app_dir = disp.ensure_vfs_directory("Data Folder");
-        *disp.default_dir_id = app_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = app_dir);
         disp.vfs
             .insert("Data Folder/Selected".to_string(), vec![1, 2, 3]);
         disp.set_vfs_entry_metadata("Data Folder/Selected", *b"DATA", *b"TEST", 0x4000);
@@ -29495,7 +29501,8 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x320900u32;
         let app_dir = disp.ensure_vfs_directory("Data Folder");
-        *disp.default_dir_id = app_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = app_dir);
         disp.vfs
             .insert("Data Folder/Only Choice".to_string(), vec![1, 2, 3]);
         disp.set_vfs_entry_metadata("Data Folder/Only Choice", *b"Flux", *b"Geek", 0x2000);
@@ -29535,7 +29542,8 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x320A00u32;
         let app_dir = disp.ensure_vfs_directory("Data Folder");
-        *disp.default_dir_id = app_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = app_dir);
         disp.vfs
             .insert("Data Folder/First".to_string(), vec![1, 2, 3]);
         disp.set_vfs_entry_metadata("Data Folder/First", *b"Flux", *b"Geek", 0);
@@ -29568,7 +29576,8 @@ mod tests {
         let reply_ptr = 0x320700u32;
         let type_list_ptr = 0x320800u32;
         let app_dir = disp.ensure_vfs_directory("Data Folder");
-        *disp.default_dir_id = app_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = app_dir);
         disp.vfs
             .insert("Data Folder/Selected".to_string(), vec![1, 2, 3]);
         disp.set_vfs_entry_metadata("Data Folder/Selected", *b"Flux", *b"Geek", 0);
@@ -29603,7 +29612,8 @@ mod tests {
         let type_list_ptr = 0x320C00u32;
         let app_dir = disp.ensure_vfs_directory("EV Override 1.0.1");
         let pilots_dir = disp.ensure_vfs_directory("EV Override 1.0.1/Pilots");
-        *disp.default_dir_id = app_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = app_dir);
         disp.yield_for_ui = true;
         disp.vfs_rsrc
             .insert("EV Override 1.0.1/Pilots/Last Pilot".to_string(), vec![1]);
@@ -29688,7 +29698,8 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x321000u32;
         let empty_dir = disp.ensure_vfs_directory("Empty Saves");
-        *disp.default_dir_id = empty_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = empty_dir);
         disp.yield_for_ui = true;
         bus.write_word(sp, 0x0006);
         bus.write_long(sp + 2, reply_ptr);
@@ -29749,7 +29760,8 @@ mod tests {
         let reply_ptr = 0x321100u32;
         let app_dir = disp.ensure_vfs_directory("Game");
         let saves_dir = disp.ensure_vfs_directory("Game/Saves");
-        *disp.default_dir_id = app_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = app_dir);
         disp.yield_for_ui = true;
         bus.write_byte(reply_ptr, 0xFF);
         bus.write_word(sp, 0x0006);
@@ -29868,7 +29880,8 @@ mod tests {
         let type_list_ptr = 0x320E00u32;
         let app_dir = disp.ensure_vfs_directory("Escape Velocity 1.0.5 ƒ");
         let pilots_dir = disp.ensure_vfs_directory("Escape Velocity 1.0.5 ƒ/Pilots");
-        *disp.default_dir_id = app_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = app_dir);
         disp.yield_for_ui = true;
         disp.vfs_rsrc.insert(
             "Escape Velocity 1.0.5 ƒ/Pilots/Ace".to_string(),
@@ -29937,7 +29950,8 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x320180u32;
         let default_name_ptr = 0x320300u32;
-        *disp.default_dir_id = 18;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = 18);
         disp.app_wd_refnum.with_mut(|app_ref_num| {
             *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         });
@@ -29972,7 +29986,8 @@ mod tests {
         let reply_ptr = 0x3201C0u32;
         let default_name_ptr = 0x320340u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
-        *disp.default_dir_id = pilots_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = pilots_dir);
         disp.app_wd_refnum.with_mut(|app_ref_num| {
             *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         });
@@ -30009,7 +30024,8 @@ mod tests {
         let prompt_ptr = 0x320300u32;
         let default_name_ptr = 0x320340u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
-        *disp.default_dir_id = pilots_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = pilots_dir);
         disp.app_wd_refnum.with_mut(|app_ref_num| {
             *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         });
@@ -30079,7 +30095,8 @@ mod tests {
         let prompt_ptr = 0x320700u32;
         let default_name_ptr = 0x320740u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
-        *disp.default_dir_id = pilots_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = pilots_dir);
         disp.app_wd_refnum.with_mut(|app_ref_num| {
             *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         });
@@ -30171,7 +30188,8 @@ mod tests {
         let locked_wd = disp
             .open_working_directory(locked_vref, locked_dir, 0)
             .expect("mounted-volume working directory");
-        *disp.default_dir_id = locked_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = locked_dir);
         disp.app_wd_refnum
             .with_mut(|app_ref_num| *app_ref_num = locked_wd);
         disp.yield_for_ui = true;
@@ -30324,7 +30342,8 @@ mod tests {
         let original_name_ptr = 0x321500u32;
         let game_dir = disp.ensure_vfs_directory("Game");
         let saves_dir = disp.ensure_vfs_directory("Game/Saves");
-        *disp.default_dir_id = game_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = game_dir);
         disp.yield_for_ui = true;
         bus.write_pstring(original_name_ptr, b"New Save");
         bus.write_word(sp, 0x0001);
@@ -30427,7 +30446,8 @@ mod tests {
         disp.vfs
             .insert("Modern Game/Saves/Modern Save".to_string(), vec![1]);
         disp.set_vfs_entry_metadata("Modern Game/Saves/Modern Save", *b"SAVE", *b"TEST", 0);
-        *disp.default_dir_id = game_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = game_dir);
         disp.yield_for_ui = true;
         bus.write_pstring(default_name_ptr, b"Modern Save");
         bus.write_word(sp, 0x0005);
@@ -30514,7 +30534,8 @@ mod tests {
         let mounted_wd = disp
             .open_working_directory(volume_ref, volume_root, 0)
             .expect("mounted-volume WDRefNum");
-        *disp.default_dir_id = volume_root;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = volume_root);
         disp.app_wd_refnum
             .with_mut(|app_ref_num| *app_ref_num = mounted_wd);
         bus.write_pstring(original_name_ptr, b"Fallback Save");
@@ -30578,7 +30599,8 @@ mod tests {
         let reply_ptr = 0x320580u32;
         let original_name_ptr = 0x320680u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
-        *disp.default_dir_id = pilots_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = pilots_dir);
         disp.app_wd_refnum.with_mut(|app_ref_num| {
             *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         });
@@ -30615,7 +30637,8 @@ mod tests {
         let original_name_ptr = 0x320880u32;
         let prompt_ptr = 0x3208C0u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
-        *disp.default_dir_id = pilots_dir;
+        disp.default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = pilots_dir);
         disp.app_wd_refnum.with_mut(|app_ref_num| {
             *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         });

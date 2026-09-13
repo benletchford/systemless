@@ -5991,7 +5991,8 @@ impl super::TrapDispatcher {
                     }
                 }
 
-                *self.default_dir_id = target_dir_id;
+                self.default_dir_id
+                    .with_mut(|default_dir_id| *default_dir_id = target_dir_id);
                 let app_wd_refnum = if target_dir_id == 2 {
                     target_volume_ref_num
                 } else {
