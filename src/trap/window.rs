@@ -2209,8 +2209,27 @@ impl super::TrapDispatcher {
         }
 
         if moved_dialog_background.is_none() {
-            if let Some((top, left, bottom, right)) = old_structure {
-                self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+            if let Some(old_structure) = old_structure {
+                // PaintBehind clips the desktop to windows' structure regions
+                // and clears PaintWhite, preserving exposed application pixels
+                // until their update events are handled. Painting the entire
+                // old structure would overwrite a background window with the
+                // desktop pattern. Inside Macintosh Volume I (1985), I-296--I-297.
+                let mut desktop = vec![old_structure];
+                for &window in self.window_list.iter() {
+                    if !self.window_visible(bus, window) {
+                        continue;
+                    }
+                    if let Some(structure) = self.window_structure_rect(bus, window) {
+                        desktop = desktop
+                            .into_iter()
+                            .flat_map(|rect| Self::rect_difference_parts(rect, structure))
+                            .collect();
+                    }
+                }
+                for (top, left, bottom, right) in desktop {
+                    self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+                }
             }
         }
         if moved_dialog_background.is_some() {
@@ -12615,11 +12634,21 @@ mod tests {
         disp.validate_window_rect(&mut bus, back, (0, 0, 200, 280));
         disp.validate_window_rect(&mut bus, front, (0, 0, 80, 120));
 
+        // PaintBehind clears PaintWhite: newly exposed application pixels
+        // stay untouched until its update event is handled (IM:I I-297).
+        let exposed_pixel = screen_base + 80 * 320 + 100;
+        bus.write_byte(exposed_pixel, 173);
+
         disp.move_window_to_global(&mut bus, front, 190, 140, true);
 
         assert!(
             super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
             "the back visRgn must expose the front window's former location"
+        );
+        assert_eq!(
+            bus.read_byte(exposed_pixel),
+            173,
+            "moving a window must not paint desktop over another window's content"
         );
         let back_update =
             bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
