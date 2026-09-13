@@ -226,15 +226,20 @@ impl super::TrapDispatcher {
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
         let (event, recovered) = self.preferred_marked_update_event(bus, event_mask)?;
-        let queue = if recovered {
-            &mut self.flushed_update_events
+        let index = if recovered {
+            self.flushed_update_events
+                .iter()
+                .position(|candidate| candidate.what == 6 && candidate.message == event.message)?
         } else {
-            &mut self.event_queue
+            self.event_queue
+                .iter()
+                .position(|candidate| candidate.what == 6 && candidate.message == event.message)?
         };
-        let index = queue
-            .iter()
-            .position(|candidate| candidate.what == 6 && candidate.message == event.message)?;
-        queue.remove(index)
+        if recovered {
+            self.flushed_update_events.remove(index)
+        } else {
+            self.event_queue.remove(index)
+        }
     }
 
     pub(crate) fn mouse_moved_event_for_region(
@@ -359,7 +364,7 @@ impl super::TrapDispatcher {
             remaining.push_back(event);
         }
 
-        **self.event_queue = remaining;
+        self.event_queue.replace_events(remaining);
         result
     }
 
