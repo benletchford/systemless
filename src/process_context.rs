@@ -1559,6 +1559,24 @@ impl ProcessCursorState {
     }
 }
 
+impl SharedProcessValue<ProcessCursorState> {
+    pub(crate) fn init(&self) {
+        self.with_mut(ProcessCursorState::init);
+    }
+
+    pub(crate) fn install(&self, image: CursorImage) {
+        self.with_mut(|state| state.install(image));
+    }
+
+    pub(crate) fn hide(&self) {
+        self.with_mut(ProcessCursorState::hide);
+    }
+
+    pub(crate) fn show(&self) {
+        self.with_mut(ProcessCursorState::show);
+    }
+}
+
 impl<T: Default> Default for SharedProcessValue<T> {
     fn default() -> Self {
         Self(Rc::new(UnsafeCell::new(T::default())))
@@ -1613,6 +1631,13 @@ impl<T> SharedProcessValue<T> {
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Mutate this process value for the duration of one serialized operation.
+    pub(crate) fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        // SAFETY: the process runner serializes attached adapter access. The
+        // closure keeps the mutable reference from escaping this operation.
+        unsafe { f(&mut *self.0.get()) }
     }
 }
 
