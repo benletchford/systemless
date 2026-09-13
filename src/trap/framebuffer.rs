@@ -6806,7 +6806,9 @@ mod redraw_chrome_tests {
         set_window_structure_rect(&mut bus, PORT_PTR, (59, 79, 661, 881));
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
         disp.front_window = PORT_PTR;
-        *disp.current_port = PORT_PTR;
+        disp
+            .current_port
+            .with_mut(|current_port| *current_port = PORT_PTR);
         disp.window_list.replace(vec![PORT_PTR]);
         disp.window_bounds = (0, 0, screen_h as i16, screen_w as i16);
         disp.window_proc_id = 2;

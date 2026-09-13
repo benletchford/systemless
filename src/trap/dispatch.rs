@@ -2714,7 +2714,9 @@ impl TrapDispatcher {
     /// Test-only: set the current port without going through SetPort.
     /// Used by integration test helpers like setup_with_cgraf_port().
     pub fn set_current_port_for_test(&mut self, port: u32) {
-        *self.current_port = port;
+        self
+            .current_port
+            .with_mut(|current_port| *current_port = port);
     }
 
     /// Test-only: invoke save_dialog_pixels for the byte-isomorphism gate.

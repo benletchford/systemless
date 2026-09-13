@@ -98041,7 +98041,9 @@ pub(crate) mod tests {
         assert_eq!(*classic.current_port, 0x0030_0000);
         assert_eq!(*classic.current_gdevice, 0x0030_1000);
 
-        *classic.current_port = 0x0040_0000;
+        classic
+            .current_port
+            .with_mut(|current_port| *current_port = 0x0040_0000);
         classic
             .current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = 0x0040_1000);

@@ -19207,7 +19207,9 @@ impl super::TrapDispatcher {
     ) {
         self.save_current_port_draw_state();
         let resolved_gdh = gdh.unwrap_or_else(|| self.gdevice_for_port(bus, port));
-        *self.current_port = port;
+        self
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         self.current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = resolved_gdh);
         // Re-selecting a port re-arms QDDone for that port.
@@ -25795,7 +25797,9 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let (screen_base, screen_row_bytes, screen_width, screen_height, _) = d.screen_mode;
         let port = 0x181000;
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         let src_pixmap = bus.alloc(50);
         let src_base = bus.alloc(512 * 342);
         let dst_pixmap = bus.alloc(50);
@@ -26003,7 +26007,9 @@ mod tests {
         // equivalent to CopyRgn + InsetRgn + DiffRgn.  A complex region's
         // interior must therefore remain untouched.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        *d.current_port = 0x181000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x181000);
         d.pn_size = (1, 1);
         d.pn_pat = [0xFF; 8];
         d.pn_mode = 8; // patCopy
@@ -26125,7 +26131,9 @@ mod tests {
         bus.write_long(port + 2, pixmap_handle);
         bus.write_word(port + 6, 0xC000);
         d.init_cgraf_port_defaults(port, bus);
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         (screen_base, row_bytes)
     }
 
@@ -27086,7 +27094,9 @@ mod tests {
         // GrafDevice writes the device field of the current grafPort.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
-        *d.current_port = port_ptr;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port_ptr);
         bus.write_word(port_ptr, 0x0000);
         bus.write_word(TEST_SP, 0x1234);
 
@@ -27100,7 +27110,9 @@ mod tests {
         // Inside Macintosh Volume I (1985), p. I-165:
         // GrafDevice(device: INTEGER) consumes one INTEGER argument.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        *d.current_port = 0x181000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x181000);
         bus.write_word(TEST_SP, 0xABCD);
 
         let result = d.dispatch_quickdraw(true, 0x072, &mut cpu, &mut bus);
@@ -29464,7 +29476,9 @@ mod tests {
         let pattern = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         let port = bus.alloc(108);
         bus.write_word(port + 6, 0); // classic GrafPort rowBytes/version word
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         bus.write_bytes(pat_ptr, &pattern);
         bus.write_long(TEST_SP, pat_ptr);
         let result = d.dispatch_quickdraw(true, 0x07C, &mut cpu, &mut bus);
@@ -32184,7 +32198,9 @@ mod tests {
         // Inside Macintosh Volume I (1985), p. I-199:
         // StdBits consumes maskRgn/mode/dstRect/srcRect/srcBits stack frame.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        *d.current_port = 0x181000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x181000);
         let src_base = 0x300300u32;
         bus.write_byte(src_base, 0x80);
         let src_bits_ptr = 0x300320u32;
@@ -32210,7 +32226,9 @@ mod tests {
         // Inside Macintosh Volume I (1985), pp. I-176 and I-199:
         // StdBits transfers bits as CopyBits to the current port bitmap.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        *d.current_port = 0x181000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x181000);
         const PORT_PTR: u32 = 0x181000;
 
         let dst_base = 0x300380u32;
@@ -32306,7 +32324,9 @@ mod tests {
         bus.write_long(port + 28, clip_rgn_handle);
         let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(global_ptr, port);
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         dst_pixmap
     }
 
@@ -32706,7 +32726,9 @@ mod tests {
 
         let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(global_ptr, dialog_ptr);
-        *d.current_port = dialog_ptr;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = dialog_ptr);
         d.front_window = dialog_ptr;
         d.dialog_items.insert(
             dialog_ptr,
@@ -32799,7 +32821,9 @@ mod tests {
         // HyperTint XCMD colourises HyperCard's black-and-white card blit this
         // way.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        *d.current_port = 0x181000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x181000);
         const BITS_PROC: u32 = 0x0006_F123;
         const RETURN_PC: u32 = 0x0004_5678;
         let (src_bits_ptr, src_rect_ptr, dst_rect_ptr) =
@@ -32834,7 +32858,9 @@ mod tests {
         const PORT_PTR: u32 = 0x181000;
         const BITS_PROC: u32 = 0x0006_F123;
         const RETURN_PC: u32 = 0x0004_5678;
-        *d.current_port = PORT_PTR;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = PORT_PTR);
         let _ = setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
 
         let vis_rgn_ptr = bus.alloc(10);
@@ -32859,7 +32885,9 @@ mod tests {
         // visRgn suppresses live pixels, but it must not erase the recording.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         const PORT_PTR: u32 = 0x181000;
-        *d.current_port = PORT_PTR;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = PORT_PTR);
         let _ = setup_copybits_through_port_bottleneck(&mut bus, 0);
 
         let vis_rgn_ptr = bus.alloc(10);
@@ -32901,7 +32929,9 @@ mod tests {
         // clipRgn remains effective while drawing is recorded offscreen.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         const PORT_PTR: u32 = 0x181000;
-        *d.current_port = PORT_PTR;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = PORT_PTR);
         setup_copybits_through_port_bottleneck(&mut bus, 0);
 
         let clip_rgn_ptr = bus.alloc(10);
@@ -32934,7 +32964,9 @@ mod tests {
         // (IM:I I-197). CopyBits is already executing that standard operation,
         // so it must draw directly rather than recursively tail-call itself.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        *d.current_port = 0x181000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x181000);
         let std_bits = d.get_or_create_tool_trap_trampoline(&mut bus, 0xA8EB);
         let _ = setup_copybits_through_port_bottleneck(&mut bus, std_bits);
         cpu.write_reg(Register::PC, 0x0004_5678);
@@ -32952,7 +32984,9 @@ mod tests {
         // Handing that nested call back to the same proc would never terminate,
         // so while the stack is still inside the tail call CopyBits blits.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        *d.current_port = 0x181000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x181000);
         const BITS_PROC: u32 = 0x0006_F123;
         let _ = setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
         cpu.write_reg(Register::PC, 0x0004_5678);
@@ -34683,7 +34717,9 @@ mod tests {
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
 
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(globals_ptr, port);
 
@@ -34877,7 +34913,9 @@ mod tests {
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
 
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(globals_ptr, port);
 
@@ -34954,7 +34992,9 @@ mod tests {
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
 
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         d.front_window = port;
         d.menu_bar_hidden = true;
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
@@ -36080,7 +36120,9 @@ mod tests {
         bus.write_long(destination_handle, destination_pixmap);
         bus.write_long(PORT + 2, destination_handle);
         bus.write_word(PORT + 6, 0xc000);
-        *d.current_port = PORT;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = PORT);
         if std_bits {
             bus.write_long(TEST_SP + 14, source_pixmap);
             assert!(d
@@ -36272,7 +36314,9 @@ mod tests {
         bus.write_long(destination_handle, destination_pixmap);
         bus.write_long(PORT + 2, destination_handle);
         bus.write_word(PORT + 6, 0xc000);
-        *d.current_port = PORT;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = PORT);
         if std_bits {
             bus.write_long(TEST_SP + 14, source_pixmap);
         } else {
@@ -36446,7 +36490,9 @@ mod tests {
             bus.write_long(destination_handle, destination_pixmap);
             bus.write_long(PORT + 2, destination_handle);
             bus.write_word(PORT + 6, 0xc000);
-            *d.current_port = PORT;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = PORT);
             bus.write_long(TEST_SP + 14, source_pixmap);
         } else {
             bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -36552,7 +36598,9 @@ mod tests {
             bus.write_long(destination_handle, destination_pixmap);
             bus.write_long(PORT + 2, destination_handle);
             bus.write_word(PORT + 6, 0xc000);
-            *d.current_port = PORT;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = PORT);
             bus.write_long(TEST_SP + 14, source_pixmap);
         } else {
             bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -36653,7 +36701,9 @@ mod tests {
             bus.write_long(destination_handle, destination_pixmap);
             bus.write_long(PORT + 2, destination_handle);
             bus.write_word(PORT + 6, 0xc000);
-            *d.current_port = PORT;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = PORT);
             bus.write_long(TEST_SP + 14, source_pixmap);
         } else {
             bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -36720,7 +36770,9 @@ mod tests {
             bus.write_long(destination_handle, destination_pixmap);
             bus.write_long(PORT + 2, destination_handle);
             bus.write_word(PORT + 6, 0xc000);
-            *d.current_port = PORT;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = PORT);
             bus.write_long(TEST_SP + 14, source_pixmap);
         } else {
             bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -36819,7 +36871,9 @@ mod tests {
             bus.write_long(destination_handle, destination_pixmap);
             bus.write_long(PORT + 2, destination_handle);
             bus.write_word(PORT + 6, 0xc000);
-            *d.current_port = PORT;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = PORT);
             bus.write_long(TEST_SP + 14, source_pixmap);
         } else {
             bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -36974,7 +37028,9 @@ mod tests {
                     bus.write_long(destination_handle, destination_pixmap);
                     bus.write_long(PORT + 2, destination_handle);
                     bus.write_word(PORT + 6, 0xc000);
-                    *d.current_port = PORT;
+                    d
+                        .current_port
+                        .with_mut(|current_port| *current_port = PORT);
                     bus.write_long(TEST_SP + 14, source_pixmap);
                 } else {
                     bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -37030,7 +37086,9 @@ mod tests {
                 bus.write_long(destination_handle, destination_pixmap);
                 bus.write_long(PORT + 2, destination_handle);
                 bus.write_word(PORT + 6, 0xc000);
-                *d.current_port = PORT;
+                d
+                    .current_port
+                    .with_mut(|current_port| *current_port = PORT);
                 bus.write_long(TEST_SP + 14, source_pixmap);
             } else {
                 bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -37090,7 +37148,9 @@ mod tests {
                     bus.write_long(destination_handle, destination_pixmap);
                     bus.write_long(PORT + 2, destination_handle);
                     bus.write_word(PORT + 6, 0xc000);
-                    *d.current_port = PORT;
+                    d
+                        .current_port
+                        .with_mut(|current_port| *current_port = PORT);
                     bus.write_long(TEST_SP + 14, source_pixmap);
                 } else {
                     bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -37154,7 +37214,9 @@ mod tests {
                     bus.write_long(destination_handle, destination_pixmap);
                     bus.write_long(PORT + 2, destination_handle);
                     bus.write_word(PORT + 6, 0xc000);
-                    *d.current_port = PORT;
+                    d
+                        .current_port
+                        .with_mut(|current_port| *current_port = PORT);
                     bus.write_long(TEST_SP + 14, source_pixmap);
                 } else {
                     bus.write_long(TEST_SP + 14, destination_pixmap);
@@ -37230,7 +37292,9 @@ mod tests {
 
         let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(global_ptr, dialog_ptr);
-        *d.current_port = dialog_ptr;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = dialog_ptr);
         d.front_window = dialog_ptr;
         d.dialog_items.insert(
             dialog_ptr,
@@ -37316,7 +37380,9 @@ mod tests {
                 bus.write_long(dialog + 28, clip_handle);
                 let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
                 bus.write_long(global_ptr, dialog);
-                *d.current_port = dialog;
+                d
+                    .current_port
+                    .with_mut(|current_port| *current_port = dialog);
                 d.front_window = dialog;
                 d.dialog_items.insert(
                     dialog,
@@ -38078,7 +38144,9 @@ mod tests {
             bus.write_long(port + 28, 0);
             let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
             bus.write_long(global_ptr, port);
-            *d.current_port = port;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = port);
             write_rect(&mut bus, rect, 0, 0, 3, 3);
 
             cpu.write_reg(Register::A7, TEST_SP);
@@ -38140,7 +38208,9 @@ mod tests {
             bus.write_word(port + 6, 0xC000);
             bus.write_long(port + 24, 0);
             bus.write_long(port + 28, 0);
-            *d.current_port = port;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = port);
             write_rect(&mut bus, rect, 0, 0, 2, 8);
 
             cpu.write_reg(Register::A7, TEST_SP);
@@ -38208,7 +38278,9 @@ mod tests {
                 bus.write_word(port + 6, 0xC000);
                 bus.write_long(port + 24, 0);
                 bus.write_long(port + 28, 0);
-                *d.current_port = port;
+                d
+                    .current_port
+                    .with_mut(|current_port| *current_port = port);
                 write_rect(&mut bus, rect, 0, 1, 2, 7);
 
                 cpu.write_reg(Register::A7, TEST_SP);
@@ -38273,7 +38345,9 @@ mod tests {
             bus.write_long(port + 28, 0);
             let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
             bus.write_long(global_ptr, port);
-            *d.current_port = port;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = port);
             write_rect(&mut bus, rect, 0, 0, 2, 4);
 
             cpu.write_reg(Register::A7, TEST_SP);
@@ -38330,7 +38404,9 @@ mod tests {
             bus.write_long(port + 28, 0);
             let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
             bus.write_long(global_ptr, port);
-            *d.current_port = port;
+            d
+                .current_port
+                .with_mut(|current_port| *current_port = port);
             write_rect(&mut bus, rect, 0, 0, 2, 4);
 
             cpu.write_reg(Register::A7, TEST_SP);
@@ -42014,7 +42090,9 @@ mod tests {
         bus.write_word(palette_ptr + 4, 0x9ABC);
         d.window_palettes.insert(u32::MAX, (palette_handle, 0));
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
@@ -42030,7 +42108,9 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4080u32;
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
         d.device_clut.set_entry(42, [0x1234, 0x5678, 0x9ABC]);
         d.color_manager_clut.set_entry(42, [0x1234, 0x5678, 0x9ABC]);
         bus.write_long(TEST_SP, window);
@@ -42072,7 +42152,9 @@ mod tests {
 
         d.set_window_palette_association(window, palette_handle, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
@@ -42102,7 +42184,9 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
         d.remember_recent_resource_ctable_fetch(250, 0x0020_4500);
         bus.write_long(TEST_SP, window);
         d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus)
@@ -42136,7 +42220,9 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
 
@@ -42172,7 +42258,9 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, super::PM_ALL_UPDATES);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
         let background_color = [0x0BAD, 0xC0DE, 0xCAFE];
         d.device_clut.set_entry(200, background_color);
         d.color_manager_clut.set_entry(200, background_color);
@@ -42238,7 +42326,9 @@ mod tests {
         d.set_window_palette_association(always, always_palette, super::PM_ALL_UPDATES);
         d.set_window_palette_association(quiet, quiet_palette, super::PM_NO_UPDATES);
         d.front_window = front;
-        *d.current_port = front;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = front);
         bus.write_long(TEST_SP, front);
 
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
@@ -42266,7 +42356,9 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
 
@@ -42302,7 +42394,9 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
 
@@ -42350,7 +42444,9 @@ mod tests {
         bus.write_word(src_rgb + 4, 0x9999);
         d.window_palettes.insert(u32::MAX, (palette_handle, 0));
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, src_rgb);
@@ -42376,7 +42472,9 @@ mod tests {
         bus.write_word(src_rgb + 4, animated_rgb[2]);
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, src_rgb);
@@ -44010,7 +44108,9 @@ mod tests {
         let window = 0x181000u32;
         let target_rgb = [0x1111, 0x2222, 0x3333];
 
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
         d.front_window = window;
         d.device_clut.replace([[0, 0, 0]; 256]);
         d.device_clut.set_entry(42, target_rgb);
@@ -44297,7 +44397,9 @@ mod tests {
         let src_ctab = make_test_ctab_handle(bus, &[[0x7777, 0x1111, 0x4444]], 0x3333_4444, 0);
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
 
         let before = TrapDispatcher::read_palette_color_info(bus, palette, 0);
         (window, palette, src_ctab, before)
@@ -44313,7 +44415,9 @@ mod tests {
         let src_ctab = make_test_ctab_handle(&mut bus, &[animated_rgb], 0x3333_4444, 0);
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        *d.current_port = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
 
         let before = *d.device_clut;
         bus.write_word(TEST_SP, 1);
@@ -45717,7 +45821,9 @@ mod tests {
             bus.read_word(gw_entry + 6),
         ];
 
-        *d.current_port = gworld;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = gworld);
         let current_gdevice = d.gdevice_for_port(&mut bus, gworld);
         d.current_gdevice
             .with_mut(|selected_gdevice| *selected_gdevice = current_gdevice);
@@ -46234,7 +46340,9 @@ mod tests {
     #[test]
     fn test_get_gworld() {
         let (mut d, mut cpu, mut bus) = setup();
-        *d.current_port = 0x400000;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x400000);
         d.current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = 0x500000);
         let gd_ptr = 0x300000u32;
@@ -46434,7 +46542,9 @@ mod tests {
         assert_ne!(offscreen_gdh, 0);
         assert_ne!(offscreen_gdh, main_gdh);
 
-        *d.current_port = gworld;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = gworld);
         d.current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = offscreen_gdh);
 
@@ -48658,7 +48768,9 @@ mod tests {
     fn test_recent_resource_ctable_fetch_consumed_for_immediate_screen_drawpicture() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        *d.current_port = 0x00284CFC;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x00284CFC);
         d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
@@ -48694,7 +48806,9 @@ mod tests {
     fn test_recent_resource_ctable_fetch_consumed_for_immediate_offscreen_drawpicture() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        *d.current_port = 0x00284CFC;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x00284CFC);
         d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
@@ -48723,7 +48837,9 @@ mod tests {
     fn test_recent_resource_ctable_fetch_ignored_for_different_drawpicture_port() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        *d.current_port = 0x00284CFC;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x00284CFC);
         d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
@@ -48772,7 +48888,9 @@ mod tests {
         bus.write_long(port + 2, pixmap_handle);
         let gdh = d.create_offscreen_gdevice(&mut bus, pixmap_handle, 0, 0, 64, 64);
         d.gworld_devices.insert(port, gdh);
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
         d.current_gdevice
             .with_mut(|current_gdevice| *current_gdevice = gdh);
 
@@ -48811,7 +48929,9 @@ mod tests {
     fn test_recent_resource_ctable_fetch_survives_intervening_traps_in_same_tick() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        *d.current_port = 0x00284CFC;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x00284CFC);
         d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
@@ -48845,7 +48965,9 @@ mod tests {
     fn test_recent_resource_ctable_fetch_expires_after_tick_advances() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        *d.current_port = 0x00284CFC;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = 0x00284CFC);
         d.set_tick_count_for_test(&mut bus, 33);
         d.trap_count = 400;
 
@@ -49145,7 +49267,9 @@ mod tests {
         bus.write_long(port + 2, pixmap_handle);
         bus.write_word(port + 6, 0xC000);
         write_rect(&mut bus, port + 16, 0, 0, 2, 8);
-        *d.current_port = port;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
 
         let pic_frame = 0x3002C0u32;
         write_rect(&mut bus, pic_frame, 0, 0, 2, 8);
