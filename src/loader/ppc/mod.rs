@@ -97796,9 +97796,9 @@ pub(crate) mod tests {
         native.attach_unconverted_process_services(&mut context);
         let detached = native.clone();
 
-        classic.input_state.mouse_pos = (123, 456);
-        classic.input_state.mouse_button = true;
-        classic.input_state.key_map[6] = 0x20;
+        classic.input_state.set_mouse_position_for_test((123, 456));
+        classic.input_state.set_mouse_button_for_test(true);
+        classic.input_state.set_key_map_byte_for_test(6, 0x20);
 
         assert_eq!(
             native.current_input_snapshot(),
@@ -97817,9 +97817,9 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(native.cpu.gpr[3], 1);
 
-        native.process_input.mouse_pos = (-20, 99);
-        native.process_input.mouse_button = false;
-        native.process_input.key_map[1] = 0x08;
+        native.process_input.set_mouse_position_for_test((-20, 99));
+        native.process_input.set_mouse_button_for_test(false);
+        native.process_input.set_key_map_byte_for_test(1, 0x08);
 
         assert!(classic.input_state.ptr_eq(&native.process_input));
         assert_eq!(classic.input_state.mouse_pos, (-20, 99));

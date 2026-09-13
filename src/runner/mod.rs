@@ -28614,8 +28614,8 @@ mod tests {
         runner.bus.write_word(ctrl_ptr + 20, 0);
         runner.bus.write_word(ctrl_ptr + 22, 100);
         runner.dispatcher.control_manager.set_proc_id(ctrl_ptr, 16);
-        runner.dispatcher.input_state.mouse_button = true;
-        runner.dispatcher.input_state.mouse_pos = (210, 248);
+        runner.dispatcher.input_state.set_mouse_button_for_test(true);
+        runner.dispatcher.input_state.set_mouse_position_for_test((210, 248));
 
         runner.bus.write_long(sp, action_proc);
         runner.bus.write_word(sp + 4, 210);

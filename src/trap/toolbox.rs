@@ -18983,7 +18983,7 @@ mod tests {
     fn wait_next_event_mouse_rgn_outside_returns_mouse_moved_os_event() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_sent_open_app_event_for_test(true);
-        disp.input_state.mouse_pos = (50, 25);
+        disp.input_state.set_mouse_position_for_test((50, 25));
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
@@ -19011,7 +19011,7 @@ mod tests {
     fn wait_next_event_mouse_rgn_inside_takes_null_sleep_path() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_sent_open_app_event_for_test(true);
-        disp.input_state.mouse_pos = (20, 25);
+        disp.input_state.set_mouse_position_for_test((20, 25));
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
@@ -19035,7 +19035,7 @@ mod tests {
     fn wait_next_event_empty_mouse_rgn_suppresses_mouse_moved_event() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_sent_open_app_event_for_test(true);
-        disp.input_state.mouse_pos = (50, 25);
+        disp.input_state.set_mouse_position_for_test((50, 25));
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let empty_mouse_rgn = test_region_handle(&mut bus, 0, 0, 0, 0);
@@ -19059,7 +19059,7 @@ mod tests {
     fn wait_next_event_mouse_rgn_respects_event_mask() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_sent_open_app_event_for_test(true);
-        disp.input_state.mouse_pos = (50, 25);
+        disp.input_state.set_mouse_position_for_test((50, 25));
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
@@ -19392,7 +19392,7 @@ mod tests {
         let pt_ptr = 0x200000u32;
         bus.write_long(sp, pt_ptr);
 
-        disp.input_state.mouse_pos = (50, 100);
+        disp.input_state.set_mouse_position_for_test((50, 100));
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 50);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 100);
 
@@ -19420,7 +19420,7 @@ mod tests {
         bus.write_word(port + 10, (-120i16) as u16);
         bus.write_word(port + 16, 0);
         bus.write_word(port + 18, 0);
-        disp.input_state.mouse_pos = (95, 145);
+        disp.input_state.set_mouse_position_for_test((95, 145));
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 95);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 145);
 
@@ -19444,7 +19444,7 @@ mod tests {
         bus.write_word(port + 10, (-10i16) as u16);
         bus.write_word(port + 16, 80);
         bus.write_word(port + 18, 90);
-        disp.input_state.mouse_pos = (100, 100);
+        disp.input_state.set_mouse_position_for_test((100, 100));
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 100);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 100);
 
@@ -19476,7 +19476,7 @@ mod tests {
         // BasiliskII's ROM GetMouse reads Mouse ($0830) and converts that
         // global point through the current GrafPort. Inside Macintosh
         // Volume I, I-259; Volume II, Appendix A, p. A-10.
-        disp.input_state.mouse_pos = (404, 526);
+        disp.input_state.set_mouse_position_for_test((404, 526));
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 300);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 400);
         bus.write_word(port + 8, (-80i16) as u16);
@@ -19509,7 +19509,7 @@ mod tests {
         let sp = TEST_SP;
         bus.write_word(sp, 0x0000);
 
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_button_for_test(true);
 
         let result = disp.dispatch_toolbox(true, 0x173, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -19564,7 +19564,7 @@ mod tests {
         let sp = TEST_SP;
         bus.write_word(sp, 0xFFFF);
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
 
         let result = disp.dispatch_toolbox(true, 0x173, &mut cpu, &mut bus);
         assert!(result.is_some());
