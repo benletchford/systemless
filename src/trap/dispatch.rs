@@ -4358,11 +4358,11 @@ impl TrapDispatcher {
     ) {
         let normalized = Self::normalize_vfs_path(name);
         self.ensure_vfs_file_metadata(&normalized);
-        if let Some(metadata) = self.vfs_metadata.get_mut(&normalized) {
+        self.vfs_metadata.update(&normalized, |metadata| {
             metadata.file_type = u32::from_be_bytes(file_type);
             metadata.creator = u32::from_be_bytes(creator);
             metadata.finder_flags = finder_flags;
-        }
+        });
         self.process_file_system
             .publish_classic_vfs_metadata(&normalized);
     }
@@ -4376,11 +4376,11 @@ impl TrapDispatcher {
     ) {
         let normalized = Self::normalize_vfs_path(name);
         self.ensure_vfs_file_metadata(&normalized);
-        if let Some(metadata) = self.vfs_metadata.get_mut(&normalized) {
+        self.vfs_metadata.update(&normalized, |metadata| {
             metadata.file_type = file_type;
             metadata.creator = creator;
             metadata.finder_flags = finder_flags;
-        }
+        });
         self.process_file_system
             .publish_classic_vfs_metadata(&normalized);
     }
@@ -4508,12 +4508,12 @@ impl TrapDispatcher {
         let normalized = Self::normalize_vfs_path(name);
         self.ensure_vfs_file_metadata(&normalized);
         let timestamp = self.allocate_vfs_timestamp();
-        if let Some(metadata) = self.vfs_metadata.get_mut(&normalized) {
+        self.vfs_metadata.update(&normalized, |metadata| {
             metadata.modified_date = timestamp;
             if metadata.created_date == 0 {
                 metadata.created_date = timestamp;
             }
-        }
+        });
         self.process_file_system
             .publish_classic_vfs_metadata(&normalized);
     }
