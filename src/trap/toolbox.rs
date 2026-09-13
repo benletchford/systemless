@@ -5700,7 +5700,8 @@ impl super::TrapDispatcher {
                 // the host dispatcher's last injected position.
                 let global_v = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2) as i16;
                 let global_h = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2 + 2) as i16;
-                self.input_state.mouse_pos = (global_v, global_h);
+                self.input_state
+                    .with_mut(|state| state.mouse_pos = (global_v, global_h));
 
                 let a5 = cpu.read_reg(Register::A5);
                 let global_ptr = bus.read_long(a5);
@@ -10626,7 +10627,7 @@ impl super::TrapDispatcher {
                     // Remove the first mouseUp event from the queue (if any)
                     if let Some(idx) = self.event_queue.iter().position(|e| e.what == 2) {
                         self.event_queue.remove(idx);
-                        self.input_state.mouse_button = false;
+                        self.input_state.with_mut(|state| state.mouse_button = false);
                     }
                 }
                 if super::dispatch::trace_input_enabled() {

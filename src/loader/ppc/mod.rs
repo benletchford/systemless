@@ -4096,9 +4096,11 @@ impl PpcLoadedApp {
                 .write_u16_be(point_addr + 2, input.mouse_h as u16);
         }
         self.input = input;
-        self.process_input.key_map = input.key_map;
-        self.process_input.mouse_button = input.mouse_button;
-        self.process_input.mouse_pos = (input.mouse_v, input.mouse_h);
+        self.process_input.with_mut(|state| {
+            state.key_map = input.key_map;
+            state.mouse_button = input.mouse_button;
+            state.mouse_pos = (input.mouse_v, input.mouse_h);
+        });
     }
 
     fn current_input_snapshot(&self) -> PpcInputSnapshot {

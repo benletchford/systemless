@@ -9738,7 +9738,7 @@ impl super::TrapDispatcher {
                     self.event_queue.remove(idx);
                 }
             }
-            self.input_state.mouse_button = false;
+            self.input_state.with_mut(|state| state.mouse_button = false);
             self.adb.note_mouse_state(self.input_state.mouse_pos, false);
             bus.write_byte(0x0172, 0x80);
         }

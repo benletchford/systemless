@@ -5152,7 +5152,7 @@ impl TrapDispatcher {
     /// Update the current mouse position (called from GUI layer).
     /// Coordinates are in Mac screen space (0,0 = top-left of screen).
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
-        self.input_state.mouse_pos = (v, h);
+        self.input_state.with_mut(|state| state.mouse_pos = (v, h));
         self.adb
             .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
     }
@@ -5171,8 +5171,10 @@ impl TrapDispatcher {
 
     /// Push a mouse-down event into the event queue.
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
-        self.input_state.mouse_button = true;
-        self.input_state.mouse_pos = (v, h);
+        self.input_state.with_mut(|state| {
+            state.mouse_button = true;
+            state.mouse_pos = (v, h);
+        });
         self.adb
             .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
         let modifiers = self.current_event_modifiers();
@@ -5193,8 +5195,10 @@ impl TrapDispatcher {
     /// combine that state with pending mouse events to decide whether the
     /// original click is still in progress.
     pub fn push_mouse_up(&mut self, v: i16, h: i16) {
-        self.input_state.mouse_pos = (v, h);
-        self.input_state.mouse_button = false;
+        self.input_state.with_mut(|state| {
+            state.mouse_pos = (v, h);
+            state.mouse_button = false;
+        });
         self.adb
             .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
         // The classic mouse has one button, so the first physical release
@@ -5229,16 +5233,19 @@ impl TrapDispatcher {
             if self.input_state.caps_lock_physically_pressed {
                 return;
             }
-            self.input_state.caps_lock_physically_pressed = true;
+            self.input_state
+                .with_mut(|state| state.caps_lock_physically_pressed = true);
             // Caps Lock latches on one physical press and releases on the
             // next. Inside Macintosh Volume I (1985), p. I-34.
             let latched = !self.key_is_down(key_code);
-            set_key_map_key(&mut self.input_state.key_map, key_code, latched);
+            self.input_state
+                .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, latched));
         } else {
             if self.key_is_down(key_code) {
                 return;
             }
-            set_key_map_key(&mut self.input_state.key_map, key_code, true);
+            self.input_state
+                .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, true));
         }
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
@@ -5266,12 +5273,15 @@ impl TrapDispatcher {
         if Self::key_generates_auto_key(key_code) {
             // Auto-key timing defaults are 16 ticks for the first repeat and
             // 4 ticks thereafter. Inside Macintosh Volume I, I-246.
-            self.input_state.key_repeat = Some(ProcessKeyRepeatState {
-                key_code,
-                char_code,
-                next_tick: self
-                    .current_tick()
-                    .wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS),
+            let next_tick = self
+                .current_tick()
+                .wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS);
+            self.input_state.with_mut(|state| {
+                state.key_repeat = Some(ProcessKeyRepeatState {
+                    key_code,
+                    char_code,
+                    next_tick,
+                });
             });
         }
     }
@@ -5292,16 +5302,18 @@ impl TrapDispatcher {
         char_code: u8,
     ) {
         if key_code == Self::CAPS_LOCK_KEY_CODE {
-            self.input_state.caps_lock_physically_pressed = false;
+            self.input_state
+                .with_mut(|state| state.caps_lock_physically_pressed = false);
         } else {
-            set_key_map_key(&mut self.input_state.key_map, key_code, false);
+            self.input_state
+                .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, false));
         }
         if self
             .input_state
             .key_repeat
             .is_some_and(|repeat| repeat.key_code == key_code)
         {
-            self.input_state.key_repeat = None;
+            self.input_state.with_mut(|state| state.key_repeat = None);
         }
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {

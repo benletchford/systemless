@@ -421,7 +421,7 @@ impl super::TrapDispatcher {
             return;
         };
         if !Self::key_generates_auto_key(repeat.key_code) || !self.key_is_down(repeat.key_code) {
-            self.input_state.key_repeat = None;
+            self.input_state.with_mut(|state| state.key_repeat = None);
             return;
         }
         if !Self::tick_has_reached(self.current_tick(), repeat.next_tick) {
@@ -429,9 +429,11 @@ impl super::TrapDispatcher {
         }
 
         let tick = self.current_tick();
-        if let Some(state) = self.input_state.key_repeat.as_mut() {
-            state.next_tick = tick.wrapping_add(Self::AUTO_KEY_RATE_TICKS);
-        }
+        self.input_state.with_mut(|input| {
+            if let Some(state) = input.key_repeat.as_mut() {
+                state.next_tick = tick.wrapping_add(Self::AUTO_KEY_RATE_TICKS);
+            }
+        });
 
         let message = ((repeat.key_code as u32) << 8) | (repeat.char_code as u32);
         let modifiers = self.current_event_modifiers();
@@ -668,7 +670,7 @@ impl super::TrapDispatcher {
                 );
             }
             if event.what == 2 {
-                self.input_state.mouse_button = false;
+                self.input_state.with_mut(|state| state.mouse_button = false);
             }
             self.begin_app_owned_modal_dialog_button_tracking(bus, &event);
             if matches!(event.what, 3 | 4 | 5) {
@@ -838,7 +840,7 @@ impl super::TrapDispatcher {
             // push_mouse_up() already updates the physical state immediately,
             // but keeping this assignment is harmless and mirrors event delivery.
             if ev.what == 2 {
-                self.input_state.mouse_button = false;
+                self.input_state.with_mut(|state| state.mouse_button = false);
             }
 
             (
