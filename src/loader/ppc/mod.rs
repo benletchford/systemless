@@ -19781,7 +19781,9 @@ fn dispatch_supported_import(
             // Imaging With QuickDraw (1994), pp. 6-20 and 6-24: QDError
             // reports NewGWorld and UpdateGWorld failures, and a successful
             // call clears the previous QuickDraw error.
-            *toolbox_startup.last_quickdraw_error = result;
+            toolbox_startup
+                .last_quickdraw_error
+                .with_mut(|error| *error = result);
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::UpdateGWorld => {
@@ -19809,11 +19811,14 @@ fn dispatch_supported_import(
             );
             // Imaging With QuickDraw (1994), p. 6-24: after gwFlagErr the
             // caller uses QDError to obtain the reason UpdateGWorld failed.
-            *toolbox_startup.last_quickdraw_error = if result & (1 << 31) != 0 {
+            let quickdraw_error = if result & (1 << 31) != 0 {
                 *last_mem_error
             } else {
                 PPC_NO_ERR
             };
+            toolbox_startup
+                .last_quickdraw_error
+                .with_mut(|error| *error = quickdraw_error);
             if result & (1 << 31) == 0 {
                 ppc_register_gdevice(toolbox_startup, *current_gdevice);
             }
@@ -66994,7 +66999,9 @@ fn ppc_make_itable(
         requested_resolution
     };
     if !(3..=5).contains(&resolution) {
-        *toolbox_startup.last_quickdraw_error = PPC_C_RES_ERR;
+        toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = PPC_C_RES_ERR);
         return;
     }
 
@@ -67010,7 +67017,9 @@ fn ppc_make_itable(
         screen_clut,
         &ppc_device_clut_reserved(toolbox_startup, current_gdevice),
     ) else {
-        *toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = PPC_PARAM_ERR);
         return;
     };
     let table = ppc_inverse_table_bytes(&colors, resolution);
@@ -67018,7 +67027,9 @@ fn ppc_make_itable(
         .ok()
         .and_then(|size| size.checked_add(6))
     else {
-        *toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
+        toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = PPC_MEM_FULL_ERR);
         return;
     };
 
@@ -67026,7 +67037,9 @@ fn ppc_make_itable(
     let mut itable_handle = explicit_itable_handle;
     if itable_handle == 0 {
         let Some(gdevice) = gdevice else {
-            *toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+            toolbox_startup
+                .last_quickdraw_error
+                .with_mut(|error| *error = PPC_PARAM_ERR);
             return;
         };
         itable_handle = memory.read_u32_be(gdevice + 6).unwrap_or(0);
@@ -67042,7 +67055,9 @@ fn ppc_make_itable(
                 true,
             );
             if itable_handle == 0 || memory.write_u32_be(gdevice + 6, itable_handle).is_none() {
-                *toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
+                toolbox_startup
+                    .last_quickdraw_error
+                    .with_mut(|error| *error = PPC_MEM_FULL_ERR);
                 return;
             }
         }
@@ -67059,24 +67074,31 @@ fn ppc_make_itable(
         record_size,
     );
     if resize_result != PPC_NO_ERR {
-        *toolbox_startup.last_quickdraw_error = resize_result;
+        toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = resize_result);
         return;
     }
     let Some(itable) = memory
         .read_u32_be(itable_handle)
         .filter(|itable| *itable != 0)
     else {
-        *toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = PPC_PARAM_ERR);
         return;
     };
     let wrote_record = memory.write_u32_be(itable, seed).is_some()
         && memory.write_u16_be(itable + 4, resolution).is_some()
         && memory.write_bytes(itable + 6, &table).is_some();
-    *toolbox_startup.last_quickdraw_error = if wrote_record {
+    let quickdraw_error = if wrote_record {
         PPC_NO_ERR
     } else {
         PPC_PARAM_ERR
     };
+    toolbox_startup
+        .last_quickdraw_error
+        .with_mut(|error| *error = quickdraw_error);
 }
 
 fn ppc_set_entries(
@@ -98236,7 +98258,10 @@ pub(crate) mod tests {
             .quickdraw_error
             .ptr_eq(&detached.toolbox_startup.last_quickdraw_error));
 
-        *native.toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        native
+            .toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = PPC_PARAM_ERR);
         classic_bus.write_word(TEST_SP, 0);
         classic_cpu.write_reg(Register::A7, TEST_SP);
         assert!(classic
@@ -98245,13 +98270,18 @@ pub(crate) mod tests {
             .is_ok());
         assert_eq!(classic_bus.read_word(TEST_SP) as i16, PPC_PARAM_ERR);
 
-        *classic.quickdraw_error = PPC_C_RES_ERR;
+        classic
+            .quickdraw_error
+            .with_mut(|error| *error = PPC_C_RES_ERR);
         run_test_import(&mut native, PpcImportDispatcherTarget::QDError);
         assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_C_RES_ERR));
 
         run_test_import(&mut detached, PpcImportDispatcherTarget::QDError);
         assert_eq!(detached.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        *detached.toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
+        detached
+            .toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = PPC_MEM_FULL_ERR);
         assert_eq!(*classic.quickdraw_error, PPC_C_RES_ERR);
         assert_eq!(*native.toolbox_startup.last_quickdraw_error, PPC_C_RES_ERR);
     }
@@ -150347,7 +150377,10 @@ pub(crate) mod tests {
         ppc_write_rect(&mut loaded.memory, bounds_ptr, 5, 6, 8, 10).unwrap();
         *loaded.current_gworld = gworld;
         *loaded.current_gdevice = PPC_MAIN_GDEVICE;
-        *loaded.toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        loaded
+            .toolbox_startup
+            .last_quickdraw_error
+            .with_mut(|error| *error = PPC_PARAM_ERR);
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = u32::from(u16::MAX); // ignored when aGDevice is non-NIL
         loaded.cpu.gpr[5] = bounds_ptr;
