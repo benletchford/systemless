@@ -5962,8 +5962,8 @@ mod tests {
         // Returning from the initial action callback retains TrackControl.
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, sp);
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (210, 248);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((210, 248));
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -5999,7 +5999,7 @@ mod tests {
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         cpu.write_reg(Register::PC, trap_pc + 2);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
@@ -6025,8 +6025,8 @@ mod tests {
         let probe_x = 30;
         let probe_y = 30;
 
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (probe_y, probe_x);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((probe_y, probe_x));
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, 0);
         bus.write_word(sp + 4, probe_y as u16);
@@ -6050,7 +6050,7 @@ mod tests {
             "held simple TrackControl should route pressed button chrome through the provider"
         );
 
-        disp.input_state.mouse_pos = (10, 10);
+        disp.input_state.set_mouse_position_for_test((10, 10));
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -6060,7 +6060,7 @@ mod tests {
             "dragging outside should redraw unpressed provider chrome"
         );
 
-        disp.input_state.mouse_pos = (probe_y, probe_x);
+        disp.input_state.set_mouse_position_for_test((probe_y, probe_x));
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -6070,7 +6070,7 @@ mod tests {
             "dragging back inside should restore provider pressed chrome"
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -6104,8 +6104,8 @@ mod tests {
         let (ctrl_handle, ctrl_ptr) =
             alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
 
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (30, 30);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((30, 30));
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, 0);
         bus.write_word(sp + 4, 30);
@@ -6117,12 +6117,12 @@ mod tests {
             .unwrap();
 
         if !release_inside {
-            disp.input_state.mouse_pos = (10, 10);
+            disp.input_state.set_mouse_position_for_test((10, 10));
             disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
                 .unwrap()
                 .unwrap();
         }
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -6210,8 +6210,8 @@ mod tests {
             hierarchical: false,
         });
 
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (15, 25);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((15, 25));
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, 0xFFFF_FFFF);
         bus.write_word(sp + 4, 15);
@@ -6229,15 +6229,16 @@ mod tests {
             .map(|tracking| tracking.dropdown_rect)
             .expect("popup tracking should open a dropdown");
         if select_second_item {
-            disp.input_state.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
+            disp.input_state
+                .set_mouse_position_for_test((dropdown_top + 1 + 16 + 1, dropdown_left + 5));
         } else {
-            disp.input_state.mouse_pos = (dropdown_bottom + 8, dropdown_left + 5);
+            disp.input_state.set_mouse_position_for_test((dropdown_bottom + 8, dropdown_left + 5));
         }
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -6313,8 +6314,8 @@ mod tests {
                 hierarchical: false,
             });
             bus.write_long(control + 32, stored);
-            disp.input_state.mouse_button = true;
-            disp.input_state.mouse_pos = (15, 25);
+            disp.input_state.set_mouse_button_for_test(true);
+            disp.input_state.set_mouse_position_for_test((15, 25));
             cpu.write_reg(Register::A7, sp);
             bus.write_long(sp, requested);
             bus.write_word(sp + 4, 15);
@@ -6328,7 +6329,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|state| !state.popup_tracking));
             assert_eq!(bus.read_word(control + 18), 1);
-            disp.input_state.mouse_button = false;
+            disp.input_state.set_mouse_button_for_test(false);
             disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
                 .unwrap()
                 .unwrap();
@@ -6379,8 +6380,8 @@ mod tests {
             visible_in_menu_bar: false,
         });
 
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (15, 25);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((15, 25));
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, u32::MAX);
         bus.write_word(sp + 4, 15);
@@ -6410,8 +6411,8 @@ mod tests {
         );
         assert_eq!(bus.read_word(sp + 12), 0xBEEF);
 
-        disp.input_state.mouse_pos = (dropdown_top + 16 + 1, dropdown_left + 5);
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_position_for_test((dropdown_top + 16 + 1, dropdown_left + 5));
+        disp.input_state.set_mouse_button_for_test(false);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -6475,8 +6476,8 @@ mod tests {
             hierarchical: false,
         });
 
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (15, 25);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((15, 25));
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, u32::MAX);
         bus.write_word(sp + 4, 15);
@@ -6506,7 +6507,7 @@ mod tests {
             "unhighlighted popup item row should leave blank row space clear"
         );
 
-        disp.input_state.mouse_pos = (item_two_top + 1, dropdown_left + 5);
+        disp.input_state.set_mouse_position_for_test((item_two_top + 1, dropdown_left + 5));
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -6541,7 +6542,7 @@ mod tests {
             "systemless-default popup tracking should fill the complete highlighted row"
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();

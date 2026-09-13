@@ -1679,6 +1679,29 @@ impl SharedProcessMixedModeM68kState {
     }
 }
 
+#[cfg(test)]
+impl SharedProcessInputState {
+    pub(crate) fn set_mouse_position_for_test(&self, position: (i16, i16)) {
+        self.with_mut(|state| state.mouse_pos = position);
+    }
+
+    pub(crate) fn set_mouse_button_for_test(&self, pressed: bool) {
+        self.with_mut(|state| state.mouse_button = pressed);
+    }
+
+    pub(crate) fn set_key_map_byte_for_test(&self, index: usize, value: u8) {
+        self.with_mut(|state| state.key_map[index] = value);
+    }
+
+    pub(crate) fn set_caps_lock_pressed_for_test(&self, pressed: bool) {
+        self.with_mut(|state| state.caps_lock_physically_pressed = pressed);
+    }
+
+    pub(crate) fn set_key_repeat_for_test(&self, repeat: Option<ProcessKeyRepeatState>) {
+        self.with_mut(|state| state.key_repeat = repeat);
+    }
+}
+
 impl<T: Default> Default for SharedProcessValue<T> {
     fn default() -> Self {
         Self(Rc::new(UnsafeCell::new(T::default())))
@@ -10179,22 +10202,22 @@ mod tests {
     fn attached_input_states_share_immediately_while_clones_detach() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessInputState::default();
-        classic.mouse_pos = (12, 34);
-        classic.key_map[2] = 0x40;
+        classic.set_mouse_position_for_test((12, 34));
+        classic.set_key_map_byte_for_test(2, 0x40);
         let mut native = SharedProcessInputState::default();
 
         context.attach_input_state(&mut classic);
         context.attach_input_state(&mut native);
         let detached = native.clone();
 
-        native.mouse_button = true;
-        native.mouse_pos = (56, 78);
-        native.caps_lock_physically_pressed = true;
-        native.key_repeat = Some(ProcessKeyRepeatState {
+        native.set_mouse_button_for_test(true);
+        native.set_mouse_position_for_test((56, 78));
+        native.set_caps_lock_pressed_for_test(true);
+        native.set_key_repeat_for_test(Some(ProcessKeyRepeatState {
             key_code: 0x24,
             char_code: b'\r',
             next_tick: 90,
-        });
+        }));
 
         assert!(classic.ptr_eq(&native));
         assert_eq!(classic.mouse_pos, (56, 78));

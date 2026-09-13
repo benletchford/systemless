@@ -14295,7 +14295,7 @@ mod tests {
         // no selection without disturbing the caller stack.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.menu_bar_hidden = false;
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
 
         let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 128, 0x302000, "Pop");
@@ -14335,7 +14335,7 @@ mod tests {
         // PopUpMenuSelect returns 0."
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.menu_bar_hidden = false;
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80); // button up
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
 
@@ -15496,7 +15496,7 @@ mod tests {
     fn menuselect_no_menu_hit_returns_zero_and_pops_startpt() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.enable_input_trace_capture();
-        disp.input_state.mouse_pos = (40, 120);
+        disp.input_state.set_mouse_position_for_test((40, 120));
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 40);
         bus.write_word(TEST_SP + 2, 120);
@@ -15550,8 +15550,8 @@ mod tests {
             "menu title regions should be available"
         );
         let title_mid_h = (regions[0].0 + regions[0].1) / 2;
-        disp.input_state.mouse_pos = (10, title_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
@@ -15613,8 +15613,8 @@ mod tests {
         let regions = disp.menu_title_regions();
         let title_mid_h = (regions[0].0 + regions[0].1) / 2;
 
-        disp.input_state.mouse_pos = (10, title_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
@@ -15626,7 +15626,7 @@ mod tests {
 
         let (dropdown_top, dropdown_left, _, _) =
             disp.menu_tracking.as_ref().unwrap().dropdown_rect();
-        disp.input_state.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
+        disp.input_state.set_mouse_position_for_test((dropdown_top + 17, dropdown_left + 8));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15637,7 +15637,7 @@ mod tests {
             Some(2)
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15710,8 +15710,8 @@ mod tests {
             .unwrap();
         let title = disp.menu_title_regions()[0];
         let title_mid_h = (title.0 + title.1) / 2;
-        disp.input_state.mouse_pos = (10, title_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
@@ -15722,7 +15722,7 @@ mod tests {
 
         let (dropdown_top, dropdown_left, _, _) =
             disp.menu_tracking.as_ref().unwrap().dropdown_rect();
-        disp.input_state.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
+        disp.input_state.set_mouse_position_for_test((dropdown_top + 17, dropdown_left + 8));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15739,7 +15739,7 @@ mod tests {
             "a disabled row must not become the MenuSelect highlight",
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15774,8 +15774,8 @@ mod tests {
             .unwrap();
         let title = disp.menu_title_regions()[0];
         let title_mid_h = (title.0 + title.1) / 2;
-        disp.input_state.mouse_pos = (10, title_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
@@ -15790,7 +15790,7 @@ mod tests {
         bus.write_long(menu_ptr + 10, enable_flags & !(1 << 1));
 
         let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
-        disp.input_state.mouse_pos = (top + 8, left + 8);
+        disp.input_state.set_mouse_position_for_test((top + 8, left + 8));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15806,7 +15806,7 @@ mod tests {
             "the live-disabled item became highlighted",
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15845,8 +15845,8 @@ mod tests {
         let screen_before = bus.read_bytes(screen_base, screen_len);
         let title = disp.menu_title_regions()[0];
         let title_mid_h = (title.0 + title.1) / 2;
-        disp.input_state.mouse_pos = (10, title_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
@@ -15860,7 +15860,7 @@ mod tests {
             .expect("disabled title should still open")
             .dropdown_rect();
 
-        disp.input_state.mouse_pos = (top + 8, left + 8);
+        disp.input_state.set_mouse_position_for_test((top + 8, left + 8));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15876,7 +15876,7 @@ mod tests {
             Some(0),
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -15923,8 +15923,8 @@ mod tests {
         let title = disp.menu_title_regions()[0];
         let title_mid_h = (title.0 + title.1) / 2;
 
-        disp.input_state.mouse_pos = (10, title_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
@@ -15934,13 +15934,13 @@ mod tests {
             .unwrap();
 
         let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
-        disp.input_state.mouse_pos = (top + 17, left + 8);
+        disp.input_state.set_mouse_position_for_test((top + 17, left + 8));
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 0);
         disp.dispatch_menu(true, 0x14A, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         cpu.write_reg(Register::A7, TEST_SP);
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
@@ -16223,7 +16223,7 @@ mod tests {
         disp.set_screen_mode_for_test(base, row_bytes, 512, 160, 1);
         clear_1bpp_screen(&mut bus, base, row_bytes, 160);
         disp.menu_bar_hidden = false;
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_button_for_test(true);
 
         let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 733, 0x30BE00, "Crops");
         append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x30BE40, "Corn;Wheat");
@@ -16274,7 +16274,7 @@ mod tests {
         clear_1bpp_screen(&mut bus, base, row_bytes, 600);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         disp.menu_bar_hidden = false;
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_button_for_test(true);
 
         let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 734, 0x30BF00, "Long");
         let description = (0..40).map(|_| "A").collect::<Vec<_>>().join(";");
@@ -16340,7 +16340,7 @@ mod tests {
         cpu: &mut MockCpu,
         bus: &mut crate::memory::MacMemoryBus,
     ) -> (u32, u32, bool) {
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
         for _ in 0..80 {
             if disp.menu_tracking.is_none() {
@@ -16363,7 +16363,7 @@ mod tests {
         disp.set_screen_mode_for_test(base, row_bytes, 240, 160, 1);
         clear_1bpp_screen(&mut bus, base, row_bytes, 160);
         disp.menu_bar_hidden = false;
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_button_for_test(true);
 
         let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 730, 0x30BB00, "Pop");
         append_menu_data(
@@ -16385,7 +16385,7 @@ mod tests {
         // PopUpMenuSelect re-evaluates the live mouse position on release.
         // Keep the synthetic release over the requested third item rather
         // than inheriting setup_with_port's default position at (0, 0).
-        disp.input_state.mouse_pos = (58, 35);
+        disp.input_state.set_mouse_position_for_test((58, 35));
         let (result, final_stack_after, tracking_finished) =
             finish_popupmenuselect(&mut disp, &mut cpu, &mut bus);
 
@@ -16395,7 +16395,7 @@ mod tests {
         clamp_disp.set_screen_mode_for_test(clamp_base, row_bytes, 240, 160, 1);
         clear_1bpp_screen(&mut clamp_bus, clamp_base, row_bytes, 160);
         clamp_disp.menu_bar_hidden = false;
-        clamp_disp.input_state.mouse_button = true;
+        clamp_disp.input_state.set_mouse_button_for_test(true);
         let clamp_menu = new_menu_with_title(
             &mut clamp_disp,
             &mut clamp_cpu,
@@ -16438,7 +16438,7 @@ mod tests {
         let (mut miss_disp, mut miss_cpu, mut miss_bus) = setup_with_port();
         miss_disp.set_ui_theme_id(theme_id);
         miss_disp.menu_bar_hidden = false;
-        miss_disp.input_state.mouse_button = false;
+        miss_disp.input_state.set_mouse_button_for_test(false);
         let miss_menu = new_menu_with_title(
             &mut miss_disp,
             &mut miss_cpu,
@@ -16557,8 +16557,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        disp.input_state.mouse_pos = (10, 15);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, 15));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, 15);
@@ -16569,12 +16569,12 @@ mod tests {
 
         let dropdown_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         let (dropdown_top, dropdown_left, _, _) = dropdown_rect;
-        disp.input_state.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
+        disp.input_state.set_mouse_position_for_test((dropdown_top + 17, dropdown_left + 8));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16653,8 +16653,8 @@ mod tests {
 
         let regions = disp.menu_title_regions();
         let file_mid_h = (regions[0].0 + regions[0].1) / 2;
-        disp.input_state.mouse_pos = (10, file_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, file_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, file_mid_h as u16);
@@ -16674,7 +16674,7 @@ mod tests {
         let parent_item_y =
             parent_rect.0 + disp.menu_rows(&bus, &disp.menus[0].items).offset(4) + 8;
 
-        disp.input_state.mouse_pos = (parent_item_y, parent_rect.1 + 24);
+        disp.input_state.set_mouse_position_for_test((parent_item_y, parent_rect.1 + 24));
         assert!(
             disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
@@ -16682,7 +16682,7 @@ mod tests {
             "MenuSelect should track the hierarchical parent item"
         );
 
-        disp.input_state.mouse_pos = (parent_item_y, parent_rect.3 + 20);
+        disp.input_state.set_mouse_position_for_test((parent_item_y, parent_rect.3 + 20));
         assert!(
             disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
@@ -16690,7 +16690,7 @@ mod tests {
             "MenuSelect should track into the submenu"
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         for _ in 0..40 {
             assert!(
                 disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
@@ -16772,14 +16772,14 @@ mod tests {
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, title_mid_h as u16);
-        disp.input_state.mouse_pos = (10, title_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
         let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
-        disp.input_state.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
+        disp.input_state.set_mouse_position_for_test((root_rect.0 + 8, root_rect.1 + 16));
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
@@ -16800,7 +16800,7 @@ mod tests {
             Some(super::SharedMenuDefinitionPane::Submenu(0))
         );
 
-        disp.input_state.mouse_pos = (10, title_mid_h);
+        disp.input_state.set_mouse_position_for_test((10, title_mid_h));
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
@@ -16816,7 +16816,7 @@ mod tests {
         assert!(disp.menu_tracking.as_ref().unwrap().submenus.is_empty());
         assert_eq!(*disp.current_port, original_port);
 
-        disp.input_state.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
+        disp.input_state.set_mouse_position_for_test((root_rect.0 + 8, root_rect.1 + 16));
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
@@ -16824,7 +16824,7 @@ mod tests {
             .unwrap();
         assert_eq!(bus.read_word(trampoline + 6), 0);
 
-        disp.input_state.mouse_pos = (child_rect.0 + 8, child_rect.1 + 8);
+        disp.input_state.set_mouse_position_for_test((child_rect.0 + 8, child_rect.1 + 8));
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
@@ -16834,7 +16834,7 @@ mod tests {
         assert_eq!(bus.read_long(trampoline + 10), child);
 
         bus.write_word(trampoline + 68, 2);
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, if disp.guest_calls.depth() == 0 { TEST_SP } else { TEST_SP - crate::execution_m68k::M68kMenuDefinitionFrame::RESERVATION });
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
@@ -16896,8 +16896,8 @@ mod tests {
 
         let regions = disp.menu_title_regions();
         let game_mid_h = (regions[0].0 + regions[0].1) / 2;
-        disp.input_state.mouse_pos = (10, game_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, game_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, game_mid_h as u16);
@@ -16907,17 +16907,17 @@ mod tests {
             .unwrap();
 
         let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
-        disp.input_state.mouse_pos = (root_rect.0 + 9, root_rect.1 + 24);
+        disp.input_state.set_mouse_position_for_test((root_rect.0 + 9, root_rect.1 + 24));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         let options_rect = disp.menu_tracking.as_ref().unwrap().submenus[0].dropdown_rect();
-        disp.input_state.mouse_pos = (options_rect.0 + 9, options_rect.1 + 24);
+        disp.input_state.set_mouse_position_for_test((options_rect.0 + 9, options_rect.1 + 24));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
         let speed_rect = disp.menu_tracking.as_ref().unwrap().submenus[1].dropdown_rect();
-        disp.input_state.mouse_pos = (speed_rect.0 + 9, speed_rect.1 + 24);
+        disp.input_state.set_mouse_position_for_test((speed_rect.0 + 9, speed_rect.1 + 24));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -16926,12 +16926,13 @@ mod tests {
             2,
             "a circular submenu must not grow the retained hierarchy"
         );
-        disp.input_state.mouse_pos = (speed_rect.0 + 1 + 16 + 8, speed_rect.1 + 24);
+        disp.input_state
+            .set_mouse_position_for_test((speed_rect.0 + 1 + 16 + 8, speed_rect.1 + 24));
         disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         for _ in 0..40 {
             disp.step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
                 .unwrap()
@@ -16988,8 +16989,8 @@ mod tests {
             "hierarchical menu must not create a menu-bar title"
         );
         let edit_mid_h = (regions[1].0 + regions[1].1) / 2;
-        disp.input_state.mouse_pos = (10, edit_mid_h);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_position_for_test((10, edit_mid_h));
+        disp.input_state.set_mouse_button_for_test(true);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 10);
         bus.write_word(TEST_SP + 2, edit_mid_h as u16);

@@ -21893,8 +21893,8 @@ mod tests {
         });
         bus.write_word(item_hit_ptr, 0xCAFE);
         cpu.write_reg(Register::A7, TEST_SP);
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (150, 240);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((150, 240));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -28736,8 +28736,8 @@ mod tests {
             ..Default::default()
         });
 
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (probe_y, probe_x);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((probe_y, probe_x));
         disp.handle_dialog_button_tracking(&mut bus);
 
         assert!(
@@ -28752,7 +28752,7 @@ mod tests {
             Some(true)
         );
 
-        disp.input_state.mouse_pos = (40, 50);
+        disp.input_state.set_mouse_position_for_test((40, 50));
         disp.handle_dialog_button_tracking(&mut bus);
 
         assert!(
@@ -31390,8 +31390,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (115, 125);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((115, 125));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -31422,7 +31422,8 @@ mod tests {
             .and_then(|tracking| tracking.active_popup.as_ref())
             .map(|popup| popup.dropdown_rect)
             .expect("popup tracking should expose the live dropdown rect");
-        disp.input_state.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
+        disp.input_state
+            .set_mouse_position_for_test((dropdown_top + 1 + 16 + 1, dropdown_left + 5));
         disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -31434,7 +31435,7 @@ mod tests {
             Some(2)
         );
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
@@ -32404,8 +32405,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (130, 240);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((130, 240));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -32472,8 +32473,8 @@ mod tests {
         disp.dialog_popup_original_rects
             .insert((dialog_ptr, 1), (20, 30, 40, 150));
         disp.dialog_popup_candidate_items.insert((dialog_ptr, 1));
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (130, 260);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((130, 260));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -32542,8 +32543,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (130, 240);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((130, 240));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -32564,7 +32565,7 @@ mod tests {
             .and_then(|tracking| tracking.active_button.as_ref())
             .is_some());
 
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
@@ -32783,7 +32784,7 @@ mod tests {
         bus.write_word(item_hit_ptr, 1);
         disp.dialog_filter_result_addr = result_addr;
         disp.front_window = dialog_ptr;
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_button_for_test(true);
         disp.dialog_tracking = Some(DialogTrackingState {
             dialog_ptr,
             bounds,
@@ -33139,8 +33140,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.input_state.mouse_button = true;
-        disp.input_state.mouse_pos = (130, 240);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((130, 240));
 
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -34414,7 +34415,7 @@ mod tests {
         bus.write_word(TEST_SP + 4, 0);
         bus.write_word(TEST_SP + 6, initial.0 as u16);
         bus.write_word(TEST_SP + 8, initial.1 as u16);
-        disp.input_state.mouse_button = true;
+        disp.input_state.set_mouse_button_for_test(true);
         disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -34442,7 +34443,7 @@ mod tests {
                 expected
             );
         }
-        disp.input_state.mouse_button = false;
+        disp.input_state.set_mouse_button_for_test(false);
         disp.dispatch_dialog(true, 0x1D4, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
