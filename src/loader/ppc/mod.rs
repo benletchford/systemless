@@ -8361,6 +8361,7 @@ impl PpcLoadedApp {
                                 event_queue.with_mut(|event_queue| {
                                     controls.with_mut(|controls| {
                                         list_manager.with_mut(|list_manager| {
+                                            writable_refnums.with_mut(|writable_refnums| {
                                             dispatch_supported_import(
                                             binding,
                                             cpu,
@@ -8429,7 +8430,7 @@ impl PpcLoadedApp {
                                             &vbl_tasks,
                                             &callback_scheduling,
                                             &mut **files,
-                                            &mut **writable_refnums,
+                                            writable_refnums,
                                             vfs_files,
                                             stdio_streams,
                                             deleted_vfs_file_paths,
@@ -8467,6 +8468,7 @@ impl PpcLoadedApp {
                                             event_queue,
                                             &mut draw_sprocket,
                                             )
+                                            })
                                         })
                                     })
                                 })

@@ -939,7 +939,7 @@ impl ProcessFileSystemState {
         }
         if !Rc::ptr_eq(&self.writable_refnums.0, &source.writable_refnums.0) {
             self.writable_refnums
-                .extend(std::mem::take(&mut *source.writable_refnums));
+                .extend(source.writable_refnums.take());
         }
         if !Rc::ptr_eq(&self.pending_completions.0, &source.pending_completions.0) {
             self.pending_completions
@@ -1763,6 +1763,27 @@ impl<T> SharedProcessValue<T> {
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference from escaping this operation.
         unsafe { f(&mut *self.0.get()) }
+    }
+}
+
+impl SharedProcessValue<HashSet<u16>> {
+    pub(crate) fn insert(&self, refnum: u16) -> bool {
+        self.with_mut(|refnums| refnums.insert(refnum))
+    }
+
+    pub(crate) fn remove(&self, refnum: &u16) -> bool {
+        self.with_mut(|refnums| refnums.remove(refnum))
+    }
+
+    pub(crate) fn extend<I>(&self, refnums: I)
+    where
+        I: IntoIterator<Item = u16>,
+    {
+        self.with_mut(|current| current.extend(refnums));
+    }
+
+    pub(crate) fn take(&self) -> HashSet<u16> {
+        self.with_mut(std::mem::take)
     }
 }
 
