@@ -3334,14 +3334,14 @@ impl FixtureRunner {
             file.creator,
             file.finder_flags,
         );
-        if let Some(metadata) = self.dispatcher.vfs_metadata.get_mut(&normalized) {
+        self.dispatcher.vfs_metadata.update(&normalized, |metadata| {
             if file.created_date != 0 {
                 metadata.created_date = file.created_date;
             }
             if file.modified_date != 0 {
                 metadata.modified_date = file.modified_date;
             }
-        }
+        });
     }
 
     pub fn import_vfs_file_relative_to_launched_app(

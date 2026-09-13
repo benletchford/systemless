@@ -1012,9 +1012,8 @@ impl ProcessFileSystemState {
         self.next_file_ref_num = self.next_file_ref_num.max(source.next_file_ref_num);
 
         if !Rc::ptr_eq(&self.classic_vfs_metadata.0, &source.classic_vfs_metadata.0) {
-            for (path, metadata) in std::mem::take(&mut *source.classic_vfs_metadata) {
-                self.classic_vfs_metadata.entry(path).or_insert(metadata);
-            }
+            self.classic_vfs_metadata
+                .merge_missing(source.classic_vfs_metadata.take());
         }
         if !Rc::ptr_eq(&self.classic_locked_files.0, &source.classic_locked_files.0) {
             self.classic_locked_files
@@ -1075,34 +1074,38 @@ impl ProcessFileSystemState {
                 continue;
             }
             let parent_dir_id = process_vfs_parent_dir_id(&directories, &file.path);
-            publish_native_vfs_metadata(
-                &mut self.classic_vfs_metadata,
-                &mut self.classic_next_vfs_file_id,
-                &mut self.classic_next_vfs_timestamp,
-                &file.path,
-                parent_dir_id,
-                file.file_type,
-                file.creator,
-                file.finder_flags,
-                file.dirty,
-            );
+            self.classic_vfs_metadata.with_mut(|metadata| {
+                publish_native_vfs_metadata(
+                    metadata,
+                    &mut self.classic_next_vfs_file_id,
+                    &mut self.classic_next_vfs_timestamp,
+                    &file.path,
+                    parent_dir_id,
+                    file.file_type,
+                    file.creator,
+                    file.finder_flags,
+                    file.dirty,
+                );
+            });
         }
         for file in resource_files {
             if file.path.is_empty() {
                 continue;
             }
             let parent_dir_id = process_vfs_parent_dir_id(&directories, &file.path);
-            publish_native_vfs_metadata(
-                &mut self.classic_vfs_metadata,
-                &mut self.classic_next_vfs_file_id,
-                &mut self.classic_next_vfs_timestamp,
-                &file.path,
-                parent_dir_id,
-                file.file_type,
-                file.creator,
-                file.finder_flags,
-                file.dirty,
-            );
+            self.classic_vfs_metadata.with_mut(|metadata| {
+                publish_native_vfs_metadata(
+                    metadata,
+                    &mut self.classic_next_vfs_file_id,
+                    &mut self.classic_next_vfs_timestamp,
+                    &file.path,
+                    parent_dir_id,
+                    file.file_type,
+                    file.creator,
+                    file.finder_flags,
+                    file.dirty,
+                );
+            });
         }
         for path in deleted_paths {
             self.vfs_files.data_forks.remove(&path);
@@ -1804,6 +1807,50 @@ impl SharedProcessValue<HashSet<String>> {
     }
 
     pub(crate) fn take(&self) -> HashSet<String> {
+        self.with_mut(std::mem::take)
+    }
+}
+
+impl SharedProcessValue<HashMap<String, ProcessVfsMetadata>> {
+    pub(crate) fn reserve(&self, additional: usize) {
+        self.with_mut(|metadata| metadata.reserve(additional));
+    }
+
+    pub(crate) fn insert(
+        &self,
+        path: String,
+        metadata: ProcessVfsMetadata,
+    ) -> Option<ProcessVfsMetadata> {
+        self.with_mut(|entries| entries.insert(path, metadata))
+    }
+
+    pub(crate) fn remove(&self, path: &str) -> Option<ProcessVfsMetadata> {
+        self.with_mut(|metadata| metadata.remove(path))
+    }
+
+    pub(crate) fn update(
+        &self,
+        path: &str,
+        update: impl FnOnce(&mut ProcessVfsMetadata),
+    ) -> bool {
+        self.with_mut(|metadata| {
+            let Some(entry) = metadata.get_mut(path) else {
+                return false;
+            };
+            update(entry);
+            true
+        })
+    }
+
+    pub(crate) fn merge_missing(&self, source: HashMap<String, ProcessVfsMetadata>) {
+        self.with_mut(|metadata| {
+            for (path, entry) in source {
+                metadata.entry(path).or_insert(entry);
+            }
+        });
+    }
+
+    pub(crate) fn take(&self) -> HashMap<String, ProcessVfsMetadata> {
         self.with_mut(std::mem::take)
     }
 }
