@@ -7768,11 +7768,11 @@ impl PpcLoadedApp {
         let vfs_directories = self.vfs_directories.shared_handle();
         let mut next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
         let mut default_dir_id = self.default_dir_id.shared_handle();
-        let mut working_directories = self.working_directories.shared_handle();
-        let mut next_working_directory_ref_num = self
+        let working_directories = self.working_directories.shared_handle();
+        let next_working_directory_ref_num = self
             .next_working_directory_ref_num
             .shared_handle();
-        let mut application_working_directory_ref_num = self
+        let application_working_directory_ref_num = self
             .application_working_directory_ref_num
             .shared_handle();
         let param_text = self.param_text.shared_handle();
@@ -8368,6 +8368,9 @@ impl PpcLoadedApp {
                                         list_manager.with_mut(|list_manager| {
                                             writable_refnums.with_mut(|writable_refnums| {
                                             vfs_directories.with_mut(|vfs_directories| {
+                                            working_directories.with_mut(|working_directories| {
+                                            next_working_directory_ref_num.with_mut(|next_working_directory_ref_num| {
+                                            application_working_directory_ref_num.with_mut(|application_working_directory_ref_num| {
                                             dispatch_supported_import(
                                             binding,
                                             cpu,
@@ -8463,9 +8466,9 @@ impl PpcLoadedApp {
                                             vfs_directories,
                                             &mut next_vfs_dir_id,
                                             *default_dir_id,
-                                            &mut working_directories,
-                                            &mut next_working_directory_ref_num,
-                                            &mut application_working_directory_ref_num,
+                                            working_directories,
+                                            next_working_directory_ref_num,
+                                            application_working_directory_ref_num,
                                             launched_app_path.as_deref(),
                                             &param_text,
                                             &mut scrap,
@@ -8474,6 +8477,9 @@ impl PpcLoadedApp {
                                             event_queue,
                                             &mut draw_sprocket,
                                             )
+                                            })
+                                            })
+                                            })
                                             })
                                             })
                                         })

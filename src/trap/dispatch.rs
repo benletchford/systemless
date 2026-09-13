@@ -4733,25 +4733,32 @@ impl TrapDispatcher {
         while self.working_directories.contains_key(&ref_num) {
             ref_num = ref_num.saturating_add(1);
         }
-        *self.next_working_dir_refnum = ref_num.saturating_add(1);
-        self.working_directories.insert(
-            ref_num,
-            WorkingDirectory {
+        self.next_working_dir_refnum
+            .with_mut(|next| *next = ref_num.saturating_add(1));
+        self.working_directories.with_mut(|directories| {
+            directories.insert(
                 ref_num,
-                volume_ref_num,
-                dir_id: effective_dir_id,
-                proc_id,
-            },
-        );
+                WorkingDirectory {
+                    ref_num,
+                    volume_ref_num,
+                    dir_id: effective_dir_id,
+                    proc_id,
+                },
+            );
+        });
         Some(ref_num)
     }
 
     pub(crate) fn close_working_directory(&mut self, wd_ref_num: i16) -> bool {
-        let Some(record) = self.working_directories.remove(&wd_ref_num) else {
+        let Some(record) = self
+            .working_directories
+            .with_mut(|directories| directories.remove(&wd_ref_num))
+        else {
             return false;
         };
         if *self.app_wd_refnum == wd_ref_num {
-            *self.app_wd_refnum = record.volume_ref_num;
+            self.app_wd_refnum
+                .with_mut(|app_ref_num| *app_ref_num = record.volume_ref_num);
         }
         true
     }
