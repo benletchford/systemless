@@ -24378,7 +24378,7 @@ mod tests {
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
         runner.m68k.cpu.write_reg(Register::PC, call_site);
         runner.m68k.cpu.write_reg(Register::A7, initial_sp);
-        runner.dispatcher.cursor_state.level = -1;
+        runner.dispatcher.cursor_state.set_level_for_test(-1);
 
         let (steps, running) = runner.run_steps(4, None);
 
@@ -24428,7 +24428,7 @@ mod tests {
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
         runner.m68k.cpu.write_reg(Register::PC, call_site);
         runner.m68k.cpu.write_reg(Register::A7, initial_sp);
-        runner.dispatcher.cursor_state.level = -1;
+        runner.dispatcher.cursor_state.set_level_for_test(-1);
 
         let (steps, running) = runner.run_steps(4, None);
 

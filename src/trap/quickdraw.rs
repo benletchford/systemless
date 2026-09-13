@@ -26726,7 +26726,7 @@ mod tests {
         bus.write_word(crsr_ptr + 84, 13);
         bus.write_word(crsr_ptr + 86, -9i16 as u16);
 
-        d.cursor_state.level = -1;
+        d.cursor_state.set_level_for_test(-1);
         bus.write_long(TEST_SP, crsr_handle);
 
         let result = d.dispatch_quickdraw(true, 0x21C, &mut cpu, &mut bus);
@@ -27391,7 +27391,7 @@ mod tests {
         bus.write_long(TEST_SP + 4, shield_rect_ptr);
 
         d.set_mouse_position(150, 180);
-        d.cursor_state.level = 0;
+        d.cursor_state.set_level_for_test(0);
 
         let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -27413,7 +27413,7 @@ mod tests {
         bus.write_long(TEST_SP + 4, shield_rect_ptr);
 
         d.set_mouse_position(20, 30);
-        d.cursor_state.level = 0;
+        d.cursor_state.set_level_for_test(0);
 
         let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());

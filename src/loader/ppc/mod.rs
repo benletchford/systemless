@@ -168272,7 +168272,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cursor_level(), 0);
 
-        loaded.cursor_state.level = -3;
+        loaded.cursor_state.set_level_for_test(-3);
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::InitCursor;
@@ -168287,7 +168287,7 @@ pub(crate) mod tests {
     fn hle_import_runner_obscure_cursor_preserves_cursor_level() {
         let pef = synthetic_pef_with_import(b"ObscureCursor");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.cursor_state.level = -2;
+        loaded.cursor_state.set_level_for_test(-2);
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -168303,7 +168303,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = 12;
         loaded.cpu.gpr[4] = 34;
         loaded.cpu.gpr[5] = PPC_HEAP_BASE + 0x40;
-        loaded.cursor_state.level = -2;
+        loaded.cursor_state.set_level_for_test(-2);
 
         let probe = loaded.run_with_hle_imports(64);
 

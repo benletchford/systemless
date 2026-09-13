@@ -1657,6 +1657,16 @@ impl SharedProcessValue<ProcessCursorState> {
     pub(crate) fn show(&self) {
         self.with_mut(ProcessCursorState::show);
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_level_for_test(&self, level: i16) {
+        self.with_mut(|state| state.level = level);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_image_for_test(&self) {
+        self.with_mut(|state| state.image = None);
+    }
 }
 
 impl<T: Default> Default for SharedProcessValue<T> {
