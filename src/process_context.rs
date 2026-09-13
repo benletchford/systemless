@@ -1684,6 +1684,33 @@ impl SharedProcessDisplayClut {
     }
 }
 
+impl SharedProcessControlManager {
+    pub(crate) fn register(&self, handle: u32, pointer: u32, proc_id: i16, popup_menu_id: i16) {
+        self.with_mut(|manager| manager.register(handle, pointer, proc_id, popup_menu_id));
+    }
+
+    pub(crate) fn set_proc_id(&self, pointer: u32, proc_id: i16) {
+        self.with_mut(|manager| manager.set_proc_id(pointer, proc_id));
+    }
+
+    pub(crate) fn associate_handle(&self, handle: u32, pointer: u32) {
+        self.with_mut(|manager| manager.associate_handle(handle, pointer));
+    }
+
+    pub(crate) fn set_popup_title_width(&self, pointer: u32, width: i16) {
+        self.with_mut(|manager| manager.set_popup_title_width(pointer, width));
+    }
+
+    pub(crate) fn remove_pointer(&self, pointer: u32) {
+        self.with_mut(|manager| manager.remove_pointer(pointer));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_handle(&self, handle: u32) {
+        self.with_mut(|manager| manager.remove_handle(handle));
+    }
+}
+
 impl SharedProcessDialogText {
     /// Replace all four `ParamText` slots within one serialized operation.
     #[cfg(test)]
