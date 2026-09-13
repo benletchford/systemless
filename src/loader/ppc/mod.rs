@@ -224,7 +224,9 @@ pub(crate) fn ppc_initial_process_file_system() -> SharedProcessFileSystem {
     state
         .next_vfs_dir_id
         .with_mut(|next_dir_id| *next_dir_id = PPC_FIRST_DYNAMIC_DIR_ID);
-    *state.default_dir_id = PPC_ROOT_DIR_ID;
+    state
+        .default_dir_id
+        .with_mut(|default_dir_id| *default_dir_id = PPC_ROOT_DIR_ID);
     SharedProcessFileSystem::from_state(state)
 }
 
@@ -7768,7 +7770,7 @@ impl PpcLoadedApp {
         let vfs_volumes = self.vfs_volumes.shared_handle();
         let vfs_directories = self.vfs_directories.shared_handle();
         let next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
-        let mut default_dir_id = self.default_dir_id.shared_handle();
+        let default_dir_id = self.default_dir_id.shared_handle();
         let working_directories = self.working_directories.shared_handle();
         let next_working_directory_ref_num = self
             .next_working_directory_ref_num
@@ -8522,9 +8524,13 @@ impl PpcLoadedApp {
                     );
                 }
 
-                *default_dir_id = memory
+                let current_default_dir_id = *default_dir_id;
+                let updated_default_dir_id = memory
                     .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
-                    .unwrap_or(*default_dir_id);
+                    .unwrap_or(current_default_dir_id);
+                default_dir_id.with_mut(|default_dir_id| {
+                    *default_dir_id = updated_default_dir_id;
+                });
 
                 match action {
                     Some(action) => {
@@ -8883,7 +8889,8 @@ impl PpcLoadedApp {
             .max()
             .unwrap_or(PPC_ROOT_DIR_ID);
         self.vfs_directories.replace(directories);
-        *self.default_dir_id = default_dir_id;
+        self.default_dir_id
+            .with_mut(|current_dir_id| *current_dir_id = default_dir_id);
         let _ = self
             .memory
             .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, default_dir_id);
@@ -98381,7 +98388,9 @@ pub(crate) mod tests {
         second
             .next_vfs_dir_id
             .with_mut(|next_dir_id| *next_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1);
-        *second.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        second
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID);
 
         assert_eq!(first.vfs_files[0].data, b"first-second");
         assert_eq!(first.deleted_vfs_file_paths, ["Obsolete Data"]);
@@ -98854,7 +98863,9 @@ pub(crate) mod tests {
         native
             .next_vfs_dir_id
             .with_mut(|next_dir_id| *next_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1);
-        *native.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        native
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID);
 
         // Directory records are canonical process state, so the classic
         // adapter observes native mutations before any file compatibility
@@ -108228,7 +108239,9 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(parameter_block + 18, volume_name)
             .unwrap();
-        *loaded.default_dir_id = 0x1234_5678;
+        loaded
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = 0x1234_5678);
         loaded.cpu.gpr[3] = parameter_block;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -157883,7 +157896,9 @@ pub(crate) mod tests {
     fn hle_import_runner_pb_get_finfo_uses_default_directory() {
         let pef = synthetic_pef_with_import(b"PBGetFInfoSync");
         let mut loaded = load_pef_application(&pef).unwrap();
-        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        loaded
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = PPC_PREFERENCES_DIR_ID);
         let pb = PPC_DATA_BASE + 0x1000;
         let name_ptr = pb + 128;
         loaded.memory.add_region(pb, vec![0; 256]);
@@ -158583,7 +158598,9 @@ pub(crate) mod tests {
     fn hle_import_runner_pb_set_finfo_missing_target_returns_fnf() {
         let pef = synthetic_pef_with_import(b"PBSetFInfo");
         let mut loaded = load_pef_application(&pef).unwrap();
-        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        loaded
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = PPC_PREFERENCES_DIR_ID);
         let pb = PPC_DATA_BASE + 0x1000;
         let name_ptr = pb + 128;
         loaded.memory.add_region(pb, vec![0; 256]);
@@ -158787,7 +158804,9 @@ pub(crate) mod tests {
         loaded.memory.add_region(vref_ptr, vec![0xcc; 2]);
         loaded.memory.add_region(dir_id_ptr, vec![0xcc; 4]);
         loaded.memory.add_region(proc_id_ptr, vec![0xcc; 4]);
-        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        loaded
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = PPC_PREFERENCES_DIR_ID);
         loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
         loaded.cpu.gpr[4] = vref_ptr;
         loaded.cpu.gpr[5] = dir_id_ptr;
@@ -158819,7 +158838,9 @@ pub(crate) mod tests {
         loaded.memory.add_region(name_ptr, vec![0xcc; 32]);
         loaded.memory.add_region(vref_ptr, vec![0xcc; 2]);
         loaded.memory.add_region(dir_id_ptr, vec![0xcc; 4]);
-        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        loaded
+            .default_dir_id
+            .with_mut(|default_dir_id| *default_dir_id = PPC_PREFERENCES_DIR_ID);
         loaded.cpu.gpr[3] = name_ptr;
         loaded.cpu.gpr[4] = vref_ptr;
         loaded.cpu.gpr[5] = dir_id_ptr;

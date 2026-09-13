@@ -4394,8 +4394,11 @@ impl TrapDispatcher {
         let normalized = Self::normalize_vfs_path(name);
         self.ensure_vfs_file_metadata(&normalized);
         if let Some(metadata) = self.vfs_metadata.get(&normalized).copied() {
-            *self.default_dir_id = metadata.parent_dir_id;
-            *self.process_file_system.default_dir_id = metadata.parent_dir_id;
+            self.default_dir_id
+                .with_mut(|default_dir_id| *default_dir_id = metadata.parent_dir_id);
+            self.process_file_system
+                .default_dir_id
+                .with_mut(|default_dir_id| *default_dir_id = metadata.parent_dir_id);
             let app_volume_ref = self
                 .vfs_volume_for_path(&normalized)
                 .map(|volume| volume.ref_num)
