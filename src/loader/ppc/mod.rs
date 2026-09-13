@@ -8358,12 +8358,6 @@ impl PpcLoadedApp {
                             next_file_ref_num,
                             ..
                         } = &mut *process_file_system;
-                        let ProcessResourceManagerState {
-                            resource_files,
-                            vfs_resource_files,
-                            vfs_resources,
-                            ..
-                        } = &mut **resource_manager;
                         screen_clut.with_mut(|screen_clut| {
                             color_manager_clut.with_mut(|color_manager_clut| {
                                 event_queue.with_mut(|event_queue| {
@@ -8376,6 +8370,13 @@ impl PpcLoadedApp {
                                             application_working_directory_ref_num.with_mut(|application_working_directory_ref_num| {
                                             next_vfs_dir_id.with_mut(|next_vfs_dir_id| {
                                             current_resource_refnum.with_mut(|current_resource_refnum| {
+                                            resource_manager.with_mut(|resource_manager| {
+                                            let ProcessResourceManagerState {
+                                                resource_files,
+                                                vfs_resource_files,
+                                                vfs_resources,
+                                                ..
+                                            } = resource_manager;
                                             dispatch_supported_import(
                                             binding,
                                             cpu,
@@ -8489,6 +8490,7 @@ impl PpcLoadedApp {
                                             })
                                             })
                                             })
+                                            })
                                         })
                                     })
                                 })
@@ -8515,14 +8517,13 @@ impl PpcLoadedApp {
                 // through its byte map. Publish every dirty parsed mutation at
                 // the import boundary so a following 68K callback observes it
                 // without waiting for runner teardown or host persistence.
-                {
-                    let resource_manager = &mut *process_file_system.resource_manager;
+                process_file_system.resource_manager.with_mut(|resource_manager| {
                     ppc_publish_resource_fork_bytes(
                         &mut resource_manager.vfs_resource_files,
                         &resource_manager.vfs_resources,
                         true,
                     );
-                }
+                });
 
                 let current_default_dir_id = *default_dir_id;
                 let updated_default_dir_id = memory
@@ -8941,13 +8942,15 @@ impl PpcLoadedApp {
         self.deleted_vfs_file_paths.clear();
         self.vfs_resource_files.replace(resource_files);
         self.vfs_resources = resources;
-        let file_system = &mut *self.process_file_system;
-        let resource_manager: &mut ProcessResourceManagerState = &mut file_system.resource_manager;
-        ppc_publish_resource_fork_bytes(
-            &mut resource_manager.vfs_resource_files,
-            &resource_manager.vfs_resources,
-            false,
-        );
+        self.process_file_system
+            .resource_manager
+            .with_mut(|resource_manager| {
+                ppc_publish_resource_fork_bytes(
+                    &mut resource_manager.vfs_resource_files,
+                    &resource_manager.vfs_resources,
+                    false,
+                );
+            });
         self.refresh_apple_event_launch_capability();
     }
 
@@ -8995,59 +8998,57 @@ impl PpcLoadedApp {
             resource_manager,
             ..
         } = file_system;
-        let resource_manager: &mut ProcessResourceManagerState = resource_manager;
-        let ProcessResourceManagerState {
-            vfs_resource_files,
-            vfs_resources,
-            ..
-        } = resource_manager;
-        let paths = vfs_resource_files
-            .iter()
-            .map(|file| file.path.clone())
-            .collect::<Vec<_>>();
-        for path in &paths {
-            ppc_materialize_resource_records_for_path(
+        resource_manager.with_mut(|resource_manager| {
+            let ProcessResourceManagerState {
                 vfs_resource_files,
                 vfs_resources,
-                path,
-            );
-        }
-        for path in &paths {
-            ppc_materialize_quilt_resources_for_existing_path(
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                path,
-            );
-        }
-
-        let mut prepared_count = 0usize;
-        for path in paths {
-            let has_parseable_fork = vfs_resource_files
+                ..
+            } = resource_manager;
+            let paths = vfs_resource_files
                 .iter()
-                .find(|file| file.path.eq_ignore_ascii_case(&path))
-                .and_then(|file| file.raw_data.as_deref())
-                .and_then(|bytes| ResourceFork::parse(bytes))
-                .is_some();
-            let mut path_resource_count = 0usize;
-            for resource in vfs_resources
-                .iter_mut()
-                .filter(|resource| resource.path.eq_ignore_ascii_case(&path))
-            {
-                resource.raw_data = None;
-                resource.raw_attrs = None;
-                path_resource_count += 1;
+                .map(|file| file.path.clone())
+                .collect::<Vec<_>>();
+            for path in &paths {
+                ppc_materialize_resource_records_for_path(
+                    vfs_resource_files,
+                    vfs_resources,
+                    path,
+                );
             }
-            if !has_parseable_fork && path_resource_count == 0 {
-                continue;
+            for path in &paths {
+                ppc_materialize_quilt_resources_for_existing_path(
+                    vfs_files,
+                    vfs_resource_files,
+                    vfs_resources,
+                    path,
+                );
             }
-            ppc_mark_resource_file_contents_dirty(
-                vfs_resource_files,
-                &path,
-            );
-            prepared_count += 1;
-        }
-        prepared_count
+
+            let mut prepared_count = 0usize;
+            for path in paths {
+                let has_parseable_fork = vfs_resource_files
+                    .iter()
+                    .find(|file| file.path.eq_ignore_ascii_case(&path))
+                    .and_then(|file| file.raw_data.as_deref())
+                    .and_then(|bytes| ResourceFork::parse(bytes))
+                    .is_some();
+                let mut path_resource_count = 0usize;
+                for resource in vfs_resources
+                    .iter_mut()
+                    .filter(|resource| resource.path.eq_ignore_ascii_case(&path))
+                {
+                    resource.raw_data = None;
+                    resource.raw_attrs = None;
+                    path_resource_count += 1;
+                }
+                if !has_parseable_fork && path_resource_count == 0 {
+                    continue;
+                }
+                ppc_mark_resource_file_contents_dirty(vfs_resource_files, &path);
+                prepared_count += 1;
+            }
+            prepared_count
+        })
     }
 
     pub fn take_deleted_vfs_file_paths(&mut self) -> Vec<String> {
@@ -162929,16 +162930,16 @@ pub(crate) mod tests {
             handle: 0,
         });
 
-        {
-            let file_system = &mut *loaded.process_file_system;
-            let resource_manager: &mut ProcessResourceManagerState =
-                &mut file_system.resource_manager;
-            ppc_publish_resource_fork_bytes(
-                &mut resource_manager.vfs_resource_files,
-                &resource_manager.vfs_resources,
-                true,
-            );
-        }
+        loaded
+            .process_file_system
+            .resource_manager
+            .with_mut(|resource_manager| {
+                ppc_publish_resource_fork_bytes(
+                    &mut resource_manager.vfs_resource_files,
+                    &resource_manager.vfs_resources,
+                    true,
+                );
+            });
         let published = loaded
             .vfs_resource_files
             .fork("System Folder/Preferences/Test App HighScores")

@@ -1061,7 +1061,10 @@ impl ProcessFileSystemState {
         snapshot.classic_next_vfs_timestamp = self.classic_next_vfs_timestamp.clone();
         snapshot.vfs_files = self.vfs_files.clone();
         snapshot.launched_app_path = self.launched_app_path.clone();
-        snapshot.resource_manager.vfs_resource_files = self.vfs_resource_files.clone();
+        let vfs_resource_files = self.vfs_resource_files.clone();
+        snapshot.resource_manager.with_mut(|resource_manager| {
+            resource_manager.vfs_resource_files = vfs_resource_files;
+        });
         snapshot
     }
 
@@ -10217,9 +10220,11 @@ mod tests {
         first
             .current_resource_file
             .with_mut(|current_file| *current_file = 7);
-        first
-            .resource_backing_data
-            .insert((7, *b"TEST", 128), b"before".to_vec());
+        first.with_mut(|resource_manager| {
+            resource_manager
+                .resource_backing_data
+                .insert((7, *b"TEST", 128), b"before".to_vec());
+        });
         let mut second = SharedProcessResourceManager::default();
 
         context.attach_resource_manager(&mut first);
@@ -10230,12 +10235,16 @@ mod tests {
         second
             .current_resource_file
             .with_mut(|current_file| *current_file = 9);
-        second
-            .resource_backing_data
-            .get_mut(&(7, *b"TEST", 128))
-            .unwrap()
-            .extend_from_slice(b"-after");
-        second.resident_resources.insert((7, *b"TEST", 128));
+        second.with_mut(|resource_manager| {
+            resource_manager
+                .resource_backing_data
+                .get_mut(&(7, *b"TEST", 128))
+                .unwrap()
+                .extend_from_slice(b"-after");
+            resource_manager
+                .resident_resources
+                .insert((7, *b"TEST", 128));
+        });
         native.vfs_resources.push(ProcessVfsResourceRecord {
             ref_num: 7,
             path: "Shared".to_string(),
