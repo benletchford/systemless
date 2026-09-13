@@ -4142,7 +4142,8 @@ impl TrapDispatcher {
         {
             ref_num = ref_num.saturating_sub(1);
         }
-        *self.next_vfs_volume_ref_num = ref_num.saturating_sub(1);
+        self.next_vfs_volume_ref_num
+            .with_mut(|next_ref_num| *next_ref_num = ref_num.saturating_sub(1));
         self.vfs_volumes.push(VfsVolume {
             ref_num,
             name: normalized,
