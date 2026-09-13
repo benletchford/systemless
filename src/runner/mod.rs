@@ -3610,8 +3610,10 @@ impl FixtureRunner {
         replacement.bus.write_long(addr::TIME, launch_time);
         replacement.bus.write_long(addr::RND_SEED, launch_rnd_seed);
         replacement.dispatcher.read_tick_count(&replacement.bus);
-        replacement.dispatcher.input_state.mouse_pos = mouse_pos;
-        replacement.dispatcher.input_state.mouse_button = mouse_button;
+        replacement.dispatcher.input_state.with_mut(|state| {
+            state.mouse_pos = mouse_pos;
+            state.mouse_button = mouse_button;
+        });
         replacement
             .bus
             .write_byte(addr::MB_STATE, if mouse_button { 0x00 } else { 0x80 });
