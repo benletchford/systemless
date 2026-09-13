@@ -1032,10 +1032,13 @@ impl ProcessFileSystemState {
             self.classic_locked_files
                 .extend(source.classic_locked_files.take());
         }
-        *self.classic_next_vfs_file_id =
-            (*self.classic_next_vfs_file_id).max(*source.classic_next_vfs_file_id);
-        *self.classic_next_vfs_timestamp =
-            (*self.classic_next_vfs_timestamp).max(*source.classic_next_vfs_timestamp);
+        let source_next_file_id = *source.classic_next_vfs_file_id;
+        self.classic_next_vfs_file_id
+            .with_mut(|next_file_id| *next_file_id = (*next_file_id).max(source_next_file_id));
+        let source_next_timestamp = *source.classic_next_vfs_timestamp;
+        self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
+            *next_timestamp = (*next_timestamp).max(source_next_timestamp);
+        });
         source
             .resource_manager
             .attach_resource_manager_to(&self.resource_manager);
@@ -1087,18 +1090,22 @@ impl ProcessFileSystemState {
                 continue;
             }
             let parent_dir_id = process_vfs_parent_dir_id(&directories, &file.path);
-            self.classic_vfs_metadata.with_mut(|metadata| {
-                publish_native_vfs_metadata(
-                    metadata,
-                    &mut self.classic_next_vfs_file_id,
-                    &mut self.classic_next_vfs_timestamp,
-                    &file.path,
-                    parent_dir_id,
-                    file.file_type,
-                    file.creator,
-                    file.finder_flags,
-                    file.dirty,
-                );
+            self.classic_next_vfs_file_id.with_mut(|next_file_id| {
+                self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
+                    self.classic_vfs_metadata.with_mut(|metadata| {
+                        publish_native_vfs_metadata(
+                            metadata,
+                            next_file_id,
+                            next_timestamp,
+                            &file.path,
+                            parent_dir_id,
+                            file.file_type,
+                            file.creator,
+                            file.finder_flags,
+                            file.dirty,
+                        );
+                    });
+                });
             });
         }
         for file in resource_files {
@@ -1106,18 +1113,22 @@ impl ProcessFileSystemState {
                 continue;
             }
             let parent_dir_id = process_vfs_parent_dir_id(&directories, &file.path);
-            self.classic_vfs_metadata.with_mut(|metadata| {
-                publish_native_vfs_metadata(
-                    metadata,
-                    &mut self.classic_next_vfs_file_id,
-                    &mut self.classic_next_vfs_timestamp,
-                    &file.path,
-                    parent_dir_id,
-                    file.file_type,
-                    file.creator,
-                    file.finder_flags,
-                    file.dirty,
-                );
+            self.classic_next_vfs_file_id.with_mut(|next_file_id| {
+                self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
+                    self.classic_vfs_metadata.with_mut(|metadata| {
+                        publish_native_vfs_metadata(
+                            metadata,
+                            next_file_id,
+                            next_timestamp,
+                            &file.path,
+                            parent_dir_id,
+                            file.file_type,
+                            file.creator,
+                            file.finder_flags,
+                            file.dirty,
+                        );
+                    });
+                });
             });
         }
         for path in deleted_paths {
