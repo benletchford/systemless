@@ -3774,11 +3774,10 @@ impl PpcLoadedApp {
 
     /// Select the process Resource Manager's current resource file.
     pub fn set_current_resource_refnum(&mut self, refnum: i16) {
-        ppc_set_current_resource_refnum(
-            &mut self.memory,
-            &mut self.process_file_system.current_resource_file,
-            refnum,
-        );
+        let memory = &mut self.memory;
+        self.process_file_system
+            .current_resource_file
+            .with_mut(|current_file| ppc_set_current_resource_refnum(memory, current_file, refnum));
     }
 
     /// Return the fixed base of the process-owned native heap.
@@ -7655,7 +7654,7 @@ impl PpcLoadedApp {
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
         let mut process_file_system = self.process_file_system.shared_handle();
-        let mut current_resource_refnum = process_file_system
+        let current_resource_refnum = process_file_system
             .current_resource_file
             .shared_handle();
         let mut last_resource_error = self
@@ -8371,6 +8370,7 @@ impl PpcLoadedApp {
                                             working_directories.with_mut(|working_directories| {
                                             next_working_directory_ref_num.with_mut(|next_working_directory_ref_num| {
                                             application_working_directory_ref_num.with_mut(|application_working_directory_ref_num| {
+                                            current_resource_refnum.with_mut(|current_resource_refnum| {
                                             dispatch_supported_import(
                                             binding,
                                             cpu,
@@ -8382,7 +8382,7 @@ impl PpcLoadedApp {
                                             &mut last_mem_error,
                                             &mut import_tick_count,
                                             clock_cycles_per_tick,
-                                            &mut current_resource_refnum,
+                                            current_resource_refnum,
                                             &mut last_resource_error,
                                             &resource_policy,
                                             &native_exception_handler,
@@ -8477,6 +8477,7 @@ impl PpcLoadedApp {
                                             event_queue,
                                             &mut draw_sprocket,
                                             )
+                                            })
                                             })
                                             })
                                             })
