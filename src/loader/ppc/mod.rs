@@ -20922,8 +20922,9 @@ fn dispatch_supported_import(
             } else if (cpu.gpr[3] as i32) < 0 {
                 PPC_PARAM_ERR
             } else if let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[5], cpu.gpr[3]) {
-                scrap.desktop.entries.push((cpu.gpr[4].to_be_bytes(), bytes));
-                scrap.desktop.handle_dirty = true;
+                scrap
+                    .desktop
+                    .append_entry(cpu.gpr[4].to_be_bytes(), bytes);
                 PPC_NO_ERR
             } else {
                 PPC_PARAM_ERR
@@ -20931,21 +20932,13 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return((i32::from(result)) as u32))
         }
         PpcImportDispatcherTarget::ZeroScrap => {
-            scrap.desktop.initialized = true;
-            scrap.desktop.entries.clear();
-            scrap.desktop.count = scrap.desktop.count.wrapping_add(1);
-            scrap.desktop.in_memory = true;
-            scrap.desktop.handle_dirty = true;
+            scrap.desktop.zero();
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::LoadScrap => {
             // The process-owned desktop scrap remains resident in HLE, so an
             // explicit disk-to-memory synchronization is already satisfied.
-            scrap.desktop.initialized = true;
-            if !scrap.desktop.in_memory {
-                scrap.desktop.in_memory = true;
-                scrap.desktop.handle_dirty = true;
-            }
+            scrap.desktop.load();
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::FSpOpenDF => {
@@ -22368,12 +22361,9 @@ fn dispatch_supported_import(
                 }
             } else {
                 let bytes = ppc_te_scrap_bytes(memory);
-                scrap.desktop.initialized = true;
                 scrap
                     .desktop
-                    .entries
-                    .push((*b"TEXT", bytes));
-                scrap.desktop.handle_dirty = true;
+                    .initialize_and_append_entry(*b"TEXT", bytes);
                 PPC_NO_ERR
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
@@ -97487,7 +97477,9 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
         let mut classic = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
-        classic.scrap.clipboard_writable = prepared.scrap.clipboard_writable;
+        classic
+            .scrap
+            .set_clipboard_writable(prepared.scrap.clipboard_writable);
         let (base, row_bytes, width, height, depth) = prepared.screen_mode;
         classic.set_screen_mode_for_test(base, row_bytes, width, height, depth);
         classic.read_tick_count(&classic_bus);
@@ -168677,7 +168669,10 @@ pub(crate) mod tests {
             0
         );
 
-        native.scrap.desktop.entries = vec![(*b"TEXT", b"Native".to_vec())];
+        native
+            .scrap
+            .desktop
+            .replace_entries(vec![(*b"TEXT", b"Native".to_vec())]);
         run_test_import(
             &mut native,
             PpcImportDispatcherTarget::TETransferScrap { from_desktop: true },

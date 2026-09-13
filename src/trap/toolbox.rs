@@ -3937,7 +3937,7 @@ impl super::TrapDispatcher {
     }
 
     fn sync_scrap_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
-        let handle = *self.scrap.handle.get_or_insert_with(|| {
+        let handle = self.scrap.ensure_handle(|| {
             let handle = bus.alloc(4);
             if handle != 0 {
                 bus.write_long(handle, 0);
@@ -3959,7 +3959,7 @@ impl super::TrapDispatcher {
             self.write_bytes_to_handle(bus, handle, &bytes) != 0
         };
         if wrote {
-            self.scrap.handle_dirty = false;
+            self.scrap.mark_handle_clean();
         }
         handle
     }
@@ -9247,8 +9247,7 @@ impl super::TrapDispatcher {
             (true, 0x1F9) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Allocate ScrapStuff at a fixed location if not yet done
-                let scrap_stuff_ptr = self.scrap.stuff_ptr.get_or_insert_with(|| bus.alloc(16));
-                let ptr = *scrap_stuff_ptr;
+                let ptr = self.scrap.ensure_stuff_ptr(|| bus.alloc(16));
                 let total_size = self.serialized_scrap_size();
                 let scrap_handle = if self.scrap.in_memory {
                     self.sync_scrap_handle(bus)
@@ -9296,18 +9295,14 @@ impl super::TrapDispatcher {
             //   src/trap/toolbox.rs::tests::unloadscrap_and_loadscrap_return_noerr
             (true, 0x1FA) => {
                 let sp = cpu.read_reg(Register::A7);
-                if self.scrap.in_memory && !self.scrap.clipboard_writable {
-                    bus.write_long(sp, (-1i32) as u32); // generic non-zero OSErr
-                } else if self.scrap.in_memory {
-                    self.scrap.in_memory = false;
-                    self.scrap.handle_dirty = true;
-                    if let Some(handle) = self.scrap.handle.take() {
+                match self.scrap.unload() {
+                    Err(()) => bus.write_long(sp, (-1i32) as u32), // generic non-zero OSErr
+                    Ok(Some(handle)) => {
                         let _ = self.write_bytes_to_handle(bus, handle, &[]);
                         bus.free(handle);
+                        bus.write_long(sp, 0); // noErr (Systemless HLE: no scrap-file IO)
                     }
-                    bus.write_long(sp, 0); // noErr (Systemless HLE: no scrap-file IO)
-                } else {
-                    bus.write_long(sp, 0); // already on disk; noErr
+                    Ok(None) => bus.write_long(sp, 0), // already on disk; noErr
                 }
                 Ok(())
             }
@@ -9342,11 +9337,7 @@ impl super::TrapDispatcher {
             //   src/trap/toolbox.rs::tests::loadscrap_writes_noerr_to_pascal_function_result_slot_and_preserves_stack_pointer
             (true, 0x1FB) => {
                 let sp = cpu.read_reg(Register::A7);
-                if !self.scrap.in_memory {
-                    self.scrap.in_memory = true;
-                    self.scrap.handle_dirty = true;
-                }
-                self.scrap.initialized = true;
+                self.scrap.load();
                 bus.write_long(sp, 0); // noErr
                 Ok(())
             }
@@ -9362,11 +9353,7 @@ impl super::TrapDispatcher {
             // ZeroScrap ($A9FC): Clears scrap entries and increments scrap_count per IM:I I-458
             (true, 0x1FC) => {
                 let sp = cpu.read_reg(Register::A7);
-                self.scrap.entries.clear();
-                self.scrap.count = self.scrap.count.wrapping_add(1);
-                self.scrap.initialized = true;
-                self.scrap.in_memory = true;
-                self.scrap.handle_dirty = true;
+                self.scrap.zero();
                 bus.write_long(sp, 0); // noErr
                 Ok(())
             }
@@ -9460,8 +9447,7 @@ impl super::TrapDispatcher {
                     for (i, byte) in data.iter_mut().enumerate() {
                         *byte = bus.read_byte(source + i as u32);
                     }
-                    self.scrap.entries.push((the_type, data));
-                    self.scrap.handle_dirty = true;
+                    self.scrap.append_entry(the_type, data);
                 }
 
                 bus.write_long(sp + 12, 0); // noErr
@@ -20256,7 +20242,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        disp.scrap.clipboard_writable = false;
+        disp.scrap.set_clipboard_writable(false);
 
         bus.write_long(sp, 0);
         let zero = disp.dispatch_toolbox(true, 0x1FC, &mut cpu, &mut bus);
