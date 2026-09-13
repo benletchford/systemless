@@ -104,6 +104,7 @@ use crate::process_context::{
     SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessQuickDrawPixelStates, SharedProcessTickState,
     SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
+    SharedProcessWindowList,
 };
 use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -7675,15 +7676,17 @@ impl PpcLoadedApp {
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
         let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
-        let mut window_list = self.window_list.shared_handle();
+        let window_list = self.window_list.shared_handle();
         if window_list.is_empty() {
-            window_list.extend(
-                gworlds
-                    .iter()
-                    .rev()
-                    .map(|record| record.port)
-                    .filter(|port| !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)),
-            );
+            window_list.with_mut(|windows| {
+                windows.extend(
+                    gworlds
+                        .iter()
+                        .rev()
+                        .map(|record| record.port)
+                        .filter(|port| !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)),
+                );
+            });
         }
         let mut q3_objects = std::mem::take(&mut self.q3_objects);
         let mut q3_object_refs = std::mem::take(&mut self.q3_object_refs);
@@ -8373,7 +8376,7 @@ impl PpcLoadedApp {
                         &mut aliases,
                         &mut gworlds,
                         &gworld_pixel_states,
-                        &mut window_list,
+                        &window_list,
                         &mut q3_objects,
                         &mut q3_object_refs,
                         &mut next_q3_object,
@@ -15526,7 +15529,7 @@ fn dispatch_supported_import(
     aliases: &mut Vec<PpcAliasRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     gworld_pixel_states: &SharedProcessQuickDrawPixelStates,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
     next_q3_object: &mut u32,
@@ -19160,7 +19163,8 @@ fn dispatch_supported_import(
                         || gworld.port == PPC_DSP_BACK_GWORLD
                         || gworld.port != window
                 });
-                window_list.retain(|candidate| *candidate != window);
+                window_list
+                    .with_mut(|windows| windows.retain(|candidate| *candidate != window));
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
@@ -51802,7 +51806,7 @@ fn ppc_new_cwindow(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gdevice: u32,
 ) -> u32 {
     let storage_ptr = cpu.gpr[3];
@@ -52851,7 +52855,7 @@ fn ppc_get_new_cwindow(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gdevice: u32,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -64912,7 +64916,7 @@ fn ppc_new_alert_dialog(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gdevice: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -65056,7 +65060,7 @@ fn ppc_get_new_dialog(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gdevice: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -65192,7 +65196,7 @@ fn ppc_new_dialog(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gdevice: u32,
 ) -> u32 {
     let requested_storage = cpu.gpr[3];
@@ -70619,7 +70623,7 @@ fn ppc_dispatch_legacy_window(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     quickdraw_fore_color: &mut PpcRgbColor,
@@ -71151,7 +71155,7 @@ fn ppc_new_window_from_cpu(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gdevice: u32,
     host_menu_bar_hidden: bool,
 ) -> u32 {
@@ -71350,7 +71354,7 @@ fn ppc_dispose_window(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     window: u32,
@@ -71392,7 +71396,7 @@ fn ppc_dispose_window(
     gworlds.retain(|record| {
         record.port != window || matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
     });
-    window_list.retain(|candidate| *candidate != window);
+    window_list.with_mut(|windows| windows.retain(|candidate| *candidate != window));
     if *current_gworld == window {
         *current_gworld = ppc_front_visible_process_window(memory, window_list)
             .unwrap_or(PPC_MAIN_GWORLD);
@@ -71402,24 +71406,23 @@ fn ppc_dispose_window(
 
 fn ppc_reorder_window(
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     window: u32,
     behind: u32,
     front: bool,
 ) {
-    window_list.retain(|candidate| *candidate != window);
-    if front || behind == u32::MAX {
-        window_list.insert(0, window);
-    } else if behind == 0 {
-        window_list.push(window);
-    } else if let Some(index) = window_list
-        .iter()
-        .position(|candidate| *candidate == behind)
-    {
-        window_list.insert(index + 1, window);
-    } else {
-        window_list.push(window);
-    }
+    window_list.with_mut(|windows| {
+        windows.retain(|candidate| *candidate != window);
+        if front || behind == u32::MAX {
+            windows.insert(0, window);
+        } else if behind == 0 {
+            windows.push(window);
+        } else if let Some(index) = windows.iter().position(|candidate| *candidate == behind) {
+            windows.insert(index + 1, window);
+        } else {
+            windows.push(window);
+        }
+    });
 
     let Some(index) = gworlds.iter().position(|record| {
         record.port == window && !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
@@ -71598,7 +71601,7 @@ fn ppc_dispatch_drag_window(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &mut Vec<u32>,
+    window_list: &SharedProcessWindowList,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
