@@ -95209,7 +95209,9 @@ pub(crate) mod tests {
                 .unwrap();
 
             *loaded.current_gworld = 0x1234_0000;
-            *loaded.current_gdevice = 0x1234_1000;
+            loaded
+                .current_gdevice
+                .with_mut(|current_gdevice| *current_gdevice = 0x1234_1000);
             let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
             let restored_start = front.base_addr + 20 * front.row_bytes;
             let restored_len = front.row_bytes * (front.height - 20);
@@ -95303,7 +95305,9 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len).unwrap();
         let return_address = loaded.cpu.lr;
         *loaded.current_gworld = 0x1234_0000;
-        *loaded.current_gdevice = 0x1234_1000;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = 0x1234_1000);
         loaded.cpu.gpr[3] = (10u32 << 16) | 12;
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: true,
@@ -95507,7 +95511,9 @@ pub(crate) mod tests {
 
         let return_address = loaded.cpu.lr;
         *loaded.current_gworld = 0x1234_0000;
-        *loaded.current_gdevice = 0x1234_1000;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = 0x1234_1000);
         loaded.cpu.gpr[3] = (10u32 << 16) | 12;
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: true,
@@ -98015,12 +98021,16 @@ pub(crate) mod tests {
         assert_eq!(*classic.current_gdevice, PPC_MAIN_GDEVICE);
 
         *native.current_gworld = 0x0030_0000;
-        *native.current_gdevice = 0x0030_1000;
+        native
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = 0x0030_1000);
         assert_eq!(*classic.current_port, 0x0030_0000);
         assert_eq!(*classic.current_gdevice, 0x0030_1000);
 
         *classic.current_port = 0x0040_0000;
-        *classic.current_gdevice = 0x0040_1000;
+        classic
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = 0x0040_1000);
         assert_eq!(*native.current_gworld, 0x0040_0000);
         assert_eq!(*native.current_gdevice, 0x0040_1000);
 
@@ -146059,7 +146069,9 @@ pub(crate) mod tests {
             pixels_no_purge: false,
         });
         *loaded.current_gworld = PPC_MAIN_GWORLD;
-        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = PPC_MAIN_GDEVICE);
         loaded.cpu.gpr[3] = window_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -146130,7 +146142,9 @@ pub(crate) mod tests {
             pixels_no_purge: false,
         });
         *loaded.current_gworld = window_ptr;
-        *loaded.current_gdevice = gdevice;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = gdevice);
         loaded.cpu.gpr[3] = window_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -149850,7 +149864,9 @@ pub(crate) mod tests {
             .expect("main device ColorTable");
         // Depth zero rescans physical screen devices, not an arbitrary
         // offscreen/custom device that happens to be current.
-        *loaded.current_gdevice = 0x0bad_cafe;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = 0x0bad_cafe);
         let handle_count = test_handle_records!(loaded).len();
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = 0;
@@ -150405,7 +150421,9 @@ pub(crate) mod tests {
 
         ppc_write_rect(&mut loaded.memory, bounds_ptr, 5, 6, 8, 10).unwrap();
         *loaded.current_gworld = gworld;
-        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = PPC_MAIN_GDEVICE);
         loaded
             .toolbox_startup
             .last_quickdraw_error
@@ -153483,7 +153501,9 @@ pub(crate) mod tests {
         loaded.memory.write_u8(src_pixels, 0xe0).unwrap();
         loaded.memory.write_u8(dst_pixels, 0x0a).unwrap();
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
-        *loaded.current_gdevice = gdevice_handle;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = gdevice_handle);
         loaded.cpu.gpr[3] = src_pixmap;
         loaded.cpu.gpr[4] = dst_pixmap;
         loaded.cpu.gpr[5] = rect;
@@ -154448,7 +154468,9 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(gdevice + 22, 0x0bad_2000)
             .unwrap();
-        *loaded.current_gdevice = gdevice_handle;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = gdevice_handle);
         loaded
             .memory
             .write_bytes(source_allocation, &[240, 241, 10, 20, 30, 40, 50, 0, 0, 0])
@@ -155161,7 +155183,9 @@ pub(crate) mod tests {
             .unwrap();
         loaded.memory.write_u8(src_pixels, 1).unwrap();
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
-        *loaded.current_gdevice = gdevice_handle;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = gdevice_handle);
         loaded.cpu.gpr[3] = src_pixmap;
         loaded.cpu.gpr[4] = dst_pixmap;
         loaded.cpu.gpr[5] = rect;
@@ -174599,7 +174623,9 @@ pub(crate) mod tests {
     fn hle_import_runner_handles_get_gdevice() {
         let pef = synthetic_pef_with_import(b"GetGDevice");
         let mut loaded = load_pef_application(&pef).unwrap();
-        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = PPC_MAIN_GDEVICE);
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -174613,7 +174639,9 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetGDevice");
         let mut loaded = load_pef_application(&pef).unwrap();
         let gdevice = PPC_HEAP_BASE + 0x100;
-        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        loaded
+            .current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = PPC_MAIN_GDEVICE);
         loaded.cpu.gpr[3] = gdevice;
 
         let probe = loaded.run_with_hle_imports(64);

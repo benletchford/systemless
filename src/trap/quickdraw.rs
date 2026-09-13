@@ -6289,7 +6289,8 @@ impl super::TrapDispatcher {
             (true, 0x231) => {
                 let sp = cpu.read_reg(Register::A7);
                 let gdh = bus.read_long(sp);
-                *self.current_gdevice = gdh;
+                self.current_gdevice
+                    .with_mut(|current_gdevice| *current_gdevice = gdh);
                 bus.write_long(0x0CC8, gdh);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -7784,7 +7785,10 @@ impl super::TrapDispatcher {
                             }
                         }
                         if *self.current_port == port {
-                            *self.current_gdevice = self.gdevice_for_port(bus, port);
+                            let current_gdevice = self.gdevice_for_port(bus, port);
+                            self.current_gdevice.with_mut(|selected_gdevice| {
+                                *selected_gdevice = current_gdevice;
+                            });
                         }
 
                         bus.write_long(sp + 22, result_flags);
@@ -15419,7 +15423,8 @@ impl super::TrapDispatcher {
                         let new_main = bus.read_long(sp + 4);
                         if new_main != 0 {
                             self.main_gdevice_handle = new_main;
-                            *self.current_gdevice = new_main;
+                            self.current_gdevice
+                                .with_mut(|current_gdevice| *current_gdevice = new_main);
                             bus.write_long(0x08A4, new_main); // MainDevice
                             bus.write_long(0x0CC8, new_main);
                         }
@@ -16490,7 +16495,8 @@ impl super::TrapDispatcher {
 
         self.main_gdevice_handle = gd_handle;
         if *self.current_gdevice == 0 {
-            *self.current_gdevice = gd_handle;
+            self.current_gdevice
+                .with_mut(|current_gdevice| *current_gdevice = gd_handle);
         }
 
         gd_handle
@@ -19083,7 +19089,8 @@ impl super::TrapDispatcher {
             if *self.current_port != 0 {
                 self.set_current_port_state(bus, cpu, *self.current_port, Some(main_gdevice));
             } else {
-                *self.current_gdevice = main_gdevice;
+                self.current_gdevice
+                    .with_mut(|current_gdevice| *current_gdevice = main_gdevice);
             }
         }
 
@@ -19201,7 +19208,8 @@ impl super::TrapDispatcher {
         self.save_current_port_draw_state();
         let resolved_gdh = gdh.unwrap_or_else(|| self.gdevice_for_port(bus, port));
         *self.current_port = port;
-        *self.current_gdevice = resolved_gdh;
+        self.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = resolved_gdh);
         // Re-selecting a port re-arms QDDone for that port.
         self.qddone_seen_ports.remove(&port);
         bus.write_long(crate::memory::globals::addr::THE_PORT, port);
@@ -39622,7 +39630,8 @@ mod tests {
         bus.write_long(current_pm_handle, current_pixmap);
         bus.write_long(current_gd + 22, current_pm_handle);
         bus.write_long(current_gdh, current_gd);
-        *d.current_gdevice = current_gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = current_gdh);
 
         bus.write_byte(src_base, 1);
         bus.write_byte(dst_base, 0);
@@ -40954,7 +40963,8 @@ mod tests {
         bus.write_word(offscreen_gd + 38, 47);
         bus.write_word(offscreen_gd + 40, 73);
 
-        *d.current_gdevice = offscreen_gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = offscreen_gdh);
         bus.write_long(0x0CC8, offscreen_gdh);
 
         let port_ptr = 0x300000u32;
@@ -45708,7 +45718,9 @@ mod tests {
         ];
 
         *d.current_port = gworld;
-        *d.current_gdevice = d.gdevice_for_port(&mut bus, gworld);
+        let current_gdevice = d.gdevice_for_port(&mut bus, gworld);
+        d.current_gdevice
+            .with_mut(|selected_gdevice| *selected_gdevice = current_gdevice);
 
         let table_ptr = bus.alloc(8);
         bus.write_word(table_ptr, 17);
@@ -46223,7 +46235,8 @@ mod tests {
     fn test_get_gworld() {
         let (mut d, mut cpu, mut bus) = setup();
         *d.current_port = 0x400000;
-        *d.current_gdevice = 0x500000;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = 0x500000);
         let gd_ptr = 0x300000u32;
         let port_ptr = 0x300100u32;
         bus.write_long(TEST_SP, gd_ptr);
@@ -46400,7 +46413,8 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let regular_port = *d.current_port;
         let main_gdh = d.ensure_main_gdevice(&mut bus);
-        *d.current_gdevice = main_gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = main_gdh);
 
         let bounds_ptr = 0x300000u32;
         let gworld_ptr_ptr = 0x300100u32;
@@ -46421,7 +46435,8 @@ mod tests {
         assert_ne!(offscreen_gdh, main_gdh);
 
         *d.current_port = gworld;
-        *d.current_gdevice = offscreen_gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = offscreen_gdh);
 
         cpu.write_reg(Register::A7, TEST_SP);
         cpu.write_reg(Register::D0, 0x0004_0012);
@@ -46452,7 +46467,8 @@ mod tests {
         bus.write_word(linked_gd_ptr + 20, 0x2468);
         write_rect(&mut bus, linked_gd_ptr + 34, 900, 20, 940, 52);
         bus.write_long(main_gd + 30, linked_gdh);
-        *d.current_gdevice = main_gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = main_gdh);
 
         let rgn_addr = bus.alloc(10);
         let rgn_handle = bus.alloc(4);
@@ -48583,7 +48599,8 @@ mod tests {
         bus.write_word(offscreen_gd + 2, 0x007A);
         bus.write_long(offscreen_gd + 22, offscreen_pm_handle);
         bus.write_long(offscreen_gdh, offscreen_gd);
-        *d.current_gdevice = offscreen_gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = offscreen_gdh);
         bus.write_long(0x0CC8, offscreen_gdh);
         let before_offscreen_seed = bus.read_long(offscreen_ctab);
 
@@ -48756,7 +48773,8 @@ mod tests {
         let gdh = d.create_offscreen_gdevice(&mut bus, pixmap_handle, 0, 0, 64, 64);
         d.gworld_devices.insert(port, gdh);
         *d.current_port = port;
-        *d.current_gdevice = gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = gdh);
 
         let fetch = RecentColorTableFetch {
             ct_id: 131,
@@ -50339,7 +50357,8 @@ mod tests {
         let main_ctab = TrapDispatcher::gdevice_ctab_handle(&bus, main_gdh);
         let stale_gdh = bus.alloc(4);
         bus.write_long(stale_gdh, 0xFFFF_FFF0);
-        *d.current_gdevice = stale_gdh;
+        d.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = stale_gdh);
 
         assert_eq!(d.current_gdevice_ctab_handle(&bus), main_ctab);
     }

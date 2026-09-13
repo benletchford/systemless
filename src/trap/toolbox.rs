@@ -35455,7 +35455,8 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         *disp.current_port = 0x0033_0000;
-        *disp.current_gdevice = 0x0044_0000;
+        disp.current_gdevice
+            .with_mut(|current_gdevice| *current_gdevice = 0x0044_0000);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0187); // NewMovie
