@@ -3237,8 +3237,8 @@ impl TrapDispatcher {
             execution: guest_calls,
         } = handles;
         let menu_tracking = guest_calls.menu_tracking_view();
-        let mut process_file_system = SharedProcessFileSystem::default();
-        *process_file_system.vfs_directories = vec![ProcessVfsDirectory {
+        let process_file_system = SharedProcessFileSystem::default();
+        process_file_system.vfs_directories.replace(vec![ProcessVfsDirectory {
             dir_id: 2,
             parent_dir_id: 1,
             // The root directory's catalog name is the volume name.
@@ -3248,7 +3248,7 @@ impl TrapDispatcher {
             file_type: u32::from_be_bytes(*b"fold"),
             finder_flags: 0,
             dirty: false,
-        }];
+        }]);
         let open_files = process_file_system.files.shared_handle();
         let write_refnums = process_file_system.writable_refnums.shared_handle();
         let pending_file_completions = process_file_system.pending_completions.shared_handle();

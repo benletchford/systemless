@@ -969,7 +969,7 @@ impl ProcessFileSystemState {
         let target_catalogue_was_pristine =
             process_native_vfs_catalogue_is_pristine(&self.vfs_volumes, &self.vfs_directories);
         if !Rc::ptr_eq(&self.vfs_volumes.0, &source.vfs_volumes.0) {
-            for volume in source.vfs_volumes.drain(..) {
+            for volume in source.vfs_volumes.take() {
                 if self.vfs_volumes.iter().any(|existing| {
                     existing.ref_num == volume.ref_num
                         || existing.name.eq_ignore_ascii_case(&volume.name)
@@ -982,7 +982,7 @@ impl ProcessFileSystemState {
         *self.next_vfs_volume_ref_num =
             (*self.next_vfs_volume_ref_num).min(*source.next_vfs_volume_ref_num);
         if !Rc::ptr_eq(&self.vfs_directories.0, &source.vfs_directories.0) {
-            for directory in source.vfs_directories.drain(..) {
+            for directory in source.vfs_directories.take() {
                 if self.vfs_directories.iter().any(|existing| {
                     existing.dir_id == directory.dir_id
                         || existing.path.eq_ignore_ascii_case(&directory.path)
@@ -1825,6 +1825,38 @@ impl SharedProcessValue<VecDeque<PendingFileCompletion>> {
     }
 
     pub(crate) fn take(&self) -> VecDeque<PendingFileCompletion> {
+        self.with_mut(std::mem::take)
+    }
+}
+
+impl SharedProcessValue<Vec<ProcessVfsVolumeRecord>> {
+    pub(crate) fn replace(&self, volumes: Vec<ProcessVfsVolumeRecord>) {
+        self.with_mut(|current| *current = volumes);
+    }
+
+    pub(crate) fn push(&self, volume: ProcessVfsVolumeRecord) {
+        self.with_mut(|volumes| volumes.push(volume));
+    }
+
+    pub(crate) fn take(&self) -> Vec<ProcessVfsVolumeRecord> {
+        self.with_mut(std::mem::take)
+    }
+}
+
+impl SharedProcessValue<Vec<ProcessVfsDirectory>> {
+    pub(crate) fn replace(&self, directories: Vec<ProcessVfsDirectory>) {
+        self.with_mut(|current| *current = directories);
+    }
+
+    pub(crate) fn push(&self, directory: ProcessVfsDirectory) {
+        self.with_mut(|directories| directories.push(directory));
+    }
+
+    pub(crate) fn retain(&self, keep: impl FnMut(&ProcessVfsDirectory) -> bool) {
+        self.with_mut(|directories| directories.retain(keep));
+    }
+
+    pub(crate) fn take(&self) -> Vec<ProcessVfsDirectory> {
         self.with_mut(std::mem::take)
     }
 }
@@ -9735,7 +9767,9 @@ mod tests {
             finder_flags: 0x0400,
             dirty: true,
         });
-        first.vfs_volumes[0].file_count = 2;
+        first
+            .vfs_volumes
+            .with_mut(|volumes| volumes[0].file_count = 2);
         *first.next_vfs_dir_id = 17;
         *first.default_dir_id = 16;
 

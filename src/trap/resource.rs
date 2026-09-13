@@ -16562,13 +16562,14 @@ mod tests {
 
         let app_dir_id = disp.ensure_vfs_directory("EV Override 1.0.1");
         let pilots_dir_id = disp.ensure_vfs_directory("EV Override 1.0.1/Pilots");
-        let pilots_directory = disp
-            .vfs_directories
-            .iter_mut()
-            .find(|directory| directory.dir_id == pilots_dir_id)
-            .expect("created directory should be canonical");
-        pilots_directory.creator = u32::from_be_bytes(*b"TEST");
-        pilots_directory.finder_flags = 0x0400;
+        disp.vfs_directories.with_mut(|directories| {
+            let pilots_directory = directories
+                .iter_mut()
+                .find(|directory| directory.dir_id == pilots_dir_id)
+                .expect("created directory should be canonical");
+            pilots_directory.creator = u32::from_be_bytes(*b"TEST");
+            pilots_directory.finder_flags = 0x0400;
+        });
         disp.vfs
             .insert("EV Override 1.0.1/Pilots/Ben".to_string(), vec![0x42]);
 
