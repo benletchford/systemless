@@ -1928,6 +1928,60 @@ impl SharedProcessEventQueue {
 }
 
 #[cfg(test)]
+impl SharedProcessWindowList {
+    /// Replace the process-owned front-to-back window order atomically.
+    pub(crate) fn replace(&self, windows: Vec<u32>) {
+        self.with_mut(|current| *current = windows);
+    }
+
+    /// Append one window at the back of the process-owned order.
+    pub(crate) fn push(&self, window: u32) {
+        self.with_mut(|windows| windows.push(window));
+    }
+
+    /// Insert one window at a specific front-to-back position.
+    pub(crate) fn insert(&self, index: usize, window: u32) {
+        self.with_mut(|windows| windows.insert(index, window));
+    }
+
+    /// Append windows in their supplied front-to-back order.
+    pub(crate) fn extend<I>(&self, windows: I)
+    where
+        I: IntoIterator<Item = u32>,
+    {
+        self.with_mut(|current| current.extend(windows));
+    }
+
+    /// Remove every tracked window from the process-owned order.
+    pub(crate) fn clear(&self) {
+        self.with_mut(Vec::clear);
+    }
+
+    /// Remove one tracked window by position for deterministic fixture setup.
+    pub(crate) fn remove(&self, index: usize) -> u32 {
+        self.with_mut(|windows| windows.remove(index))
+    }
+
+    /// Retain matching windows without exposing the shared backing vector.
+    pub(crate) fn retain<F>(&self, predicate: F)
+    where
+        F: FnMut(&u32) -> bool,
+    {
+        self.with_mut(|windows| windows.retain(predicate));
+    }
+
+    /// Remove the backmost tracked window for deterministic fixture setup.
+    pub(crate) fn pop(&self) -> Option<u32> {
+        self.with_mut(Vec::pop)
+    }
+
+    /// Exchange two positions without exposing the shared backing vector.
+    pub(crate) fn swap(&self, a: usize, b: usize) {
+        self.with_mut(|windows| windows.swap(a, b));
+    }
+}
+
+#[cfg(test)]
 impl SharedProcessTimerTasks {
     pub(crate) fn push(&self, task: ProcessTimerTask) {
         self.with_mut(|tasks| tasks.push(task));
