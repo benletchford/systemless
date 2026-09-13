@@ -618,7 +618,7 @@ mod tests {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
 
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let call = MenuTrackingCall {
             request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
             origin: MenuTrackingOrigin::M68k {
@@ -627,7 +627,7 @@ mod tests {
             },
         };
         let entry = tracking.enter_new_call(call);
-        *tracking = Some(test_process_menu_tracking(111));
+        tracking.set(Some(test_process_menu_tracking(111)));
         let key = tracking.request_menu_hook(true).unwrap();
         let operation = MenuHookOperation::pending(key);
         assert!(calls.begin_m68k_with_operation(
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(call));
         let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
         assert_eq!(tracking.menu_hook_key(), None);
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(resumed);
         drop(entry);
         assert!(calls.remove_task(worker));
@@ -674,7 +674,7 @@ mod tests {
         use crate::menu_manager::{test_process_menu_tracking, MenuTrackingRequest};
 
         let calls = SharedGuestCallStack::default();
-        let mut tracking = calls.menu_tracking_view();
+        let tracking = calls.menu_tracking_view();
         let call = MenuTrackingCall {
             request: MenuTrackingRequest::MenuSelect { initial_point: 12 },
             origin: MenuTrackingOrigin::M68k {
@@ -683,7 +683,7 @@ mod tests {
             },
         };
         let entry = tracking.enter_new_call(call);
-        *tracking = Some(test_process_menu_tracking(111));
+        tracking.set(Some(test_process_menu_tracking(111)));
         let key = tracking.request_menu_hook(true).unwrap();
         let operation = MenuHookOperation::pending(key);
         assert!(calls.begin_m68k_to_powerpc_with_operation(
@@ -725,7 +725,7 @@ mod tests {
         );
         assert_eq!(tracking.ready_call(GuestIsa::M68k), Some(call));
         let (_, resumed) = tracking.resume_call(GuestIsa::M68k).unwrap();
-        *tracking.context_mut() = MenuTrackingContext::default();
+        tracking.with_context_mut(|context| *context = MenuTrackingContext::default());
         drop(resumed);
         drop(entry);
         assert_eq!(calls.current_task(), ExecutionTaskId::APPLICATION);

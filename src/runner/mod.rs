@@ -12105,8 +12105,9 @@ mod tests {
         native.tick_state = SharedProcessTickState::from_value(41);
         native.cpu.gpr[3] = 0xfeed_face;
         let _menu = native.toolbox_startup.execution.enter_test_menu();
-        *native.toolbox_startup.execution.menu_state_mut() =
-            Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+        native.toolbox_startup.execution.set_menu_state(Some(
+            crate::menu_manager::test_process_menu_tracking(0x1234),
+        ));
         let app = LoadedApp::from_ppc(native);
 
         runner.init_app(&app);
@@ -12247,8 +12248,9 @@ mod tests {
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
         let conflict = app.ppc.as_mut().unwrap();
         let _menu = conflict.toolbox_startup.execution.enter_test_menu();
-        *conflict.toolbox_startup.execution.menu_state_mut() =
-            Some(crate::menu_manager::test_process_menu_tracking(0x5678));
+        conflict.toolbox_startup.execution.set_menu_state(Some(
+            crate::menu_manager::test_process_menu_tracking(0x5678),
+        ));
 
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             runner.init_app(&app);
@@ -12317,8 +12319,9 @@ mod tests {
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
         let conflict = app.ppc.as_mut().unwrap();
         let _menu = conflict.toolbox_startup.execution.enter_test_menu();
-        *conflict.toolbox_startup.execution.menu_state_mut() =
-            Some(crate::menu_manager::test_process_menu_tracking(0x5678));
+        conflict.toolbox_startup.execution.set_menu_state(Some(
+            crate::menu_manager::test_process_menu_tracking(0x5678),
+        ));
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             runner.init_app(&app);
         }));
@@ -28550,9 +28553,8 @@ mod tests {
         assert_eq!(
             runner
                 .process_context
-                .menu_tracking_mut()
-                .unwrap()
-                .advance_flash(),
+                .with_menu_tracking_mut(|tracking| tracking.advance_flash())
+                .unwrap(),
             crate::menu_manager::MenuFlashStep::Complete(0x0080_0002)
         );
     }

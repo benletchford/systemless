@@ -10256,7 +10256,8 @@ mod tests {
     }
 
     fn install_menu_tracking(disp: &mut TrapDispatcher) {
-        *disp.menu_tracking = Some(test_tracked_menu_state(0, (0, 0, 0, 0), 0));
+        disp.menu_tracking
+            .set(Some(test_tracked_menu_state(0, (0, 0, 0, 0), 0)));
     }
 
     fn install_dialog_tracking(disp: &mut TrapDispatcher) {
@@ -11195,7 +11196,10 @@ mod tests {
             dispatcher.menu_tracking.as_ref().map(|t| t.menu_handle),
             Some(0x1234)
         );
-        dispatcher.menu_tracking.as_mut().unwrap().highlighted_item = 5;
+        dispatcher
+            .menu_tracking
+            .with_tracking_mut(|tracking| tracking.highlighted_item = 5)
+            .unwrap();
 
         assert_eq!(
             context
@@ -11219,7 +11223,10 @@ mod tests {
         dispatcher.attach_unconverted_process_services(&mut context);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dispatcher.menu_tracking.as_mut().unwrap().highlighted_item = 9;
+            dispatcher
+                .menu_tracking
+                .with_tracking_mut(|tracking| tracking.highlighted_item = 9)
+                .unwrap();
             panic!("simulated panic inside menu trap execution");
         }));
 
@@ -11256,7 +11263,9 @@ mod tests {
                     where_h: 2,
                     modifiers: 0,
                 });
-                disp.menu_tracking.as_mut().unwrap().highlighted_item = 7;
+                disp.menu_tracking
+                    .with_tracking_mut(|tracking| tracking.highlighted_item = 7)
+                    .unwrap();
                 disp.track_handle_ptr(0x4444, 0x5555);
                 disp.set_handle_state_bits(0x5555, 0xc0);
                 panic!("simulated panic inside a complete guest execution slice");
