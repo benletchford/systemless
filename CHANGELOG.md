@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.40.1](https://github.com/benletchford/systemless/compare/v0.40.0...v0.40.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **memory:** scope shared address-space mutation ([#1689](https://github.com/benletchford/systemless/issues/1689)) ([dbae8cb](https://github.com/benletchford/systemless/commit/dbae8cb6aebcf86cffa8d6e98803260e8256eac6))
+* restore GetFrontProcess stack and increase default RAM ([c8d38f1](https://github.com/benletchford/systemless/commit/c8d38f189a0d8a4f2f3371b5d49f3928c154519f))
+* **window:** preserve background content when moving windows ([e0341ec](https://github.com/benletchford/systemless/commit/e0341ec293c038e5d0faa4d6e26cf05075b7144b))
+
+
+### Code Refactoring
+
+* **callbacks:** scope shared scheduling mutations ([#1697](https://github.com/benletchford/systemless/issues/1697)) ([1269f0f](https://github.com/benletchford/systemless/commit/1269f0f20b5c76d9981ec9be129eb5e17a03f614))
+* **cursor:** scope shared process mutations ([#1691](https://github.com/benletchford/systemless/issues/1691)) ([64cc2c8](https://github.com/benletchford/systemless/commit/64cc2c8da6bfaae1cffcb5e8c8151271b29f2e39))
+* **dialogs:** scope shared ParamText mutations ([#1704](https://github.com/benletchford/systemless/issues/1704)) ([7705c79](https://github.com/benletchford/systemless/commit/7705c7909c4833759e97b2a2484d310b89c99905))
+* **input:** scope shared process mutations ([#1693](https://github.com/benletchford/systemless/issues/1693)) ([adbf51e](https://github.com/benletchford/systemless/commit/adbf51e4e143a6224d615a747e6cb8004d26f1e1))
+* **mixed-mode:** scope shared storage mutations ([#1699](https://github.com/benletchford/systemless/issues/1699)) ([785162d](https://github.com/benletchford/systemless/commit/785162d0db2f33a34677635d2fc8ef39fa80e181))
+* **resources:** scope shared policy mutations ([#1701](https://github.com/benletchford/systemless/issues/1701)) ([25c0fe4](https://github.com/benletchford/systemless/commit/25c0fe440d55922febff8e4d1b4af4a4a5205b1a))
+* **window:** scope shared process mutations ([#1695](https://github.com/benletchford/systemless/issues/1695)) ([f628135](https://github.com/benletchford/systemless/commit/f628135a0840495e63c7c49bf3a05551f223ce7c))
+
 ## [0.40.0](https://github.com/benletchford/systemless/compare/v0.39.9...v0.40.0) (2026-09-12)
 
 
