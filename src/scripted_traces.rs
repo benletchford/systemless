@@ -527,7 +527,7 @@ pub fn scripted_modaldialog_filter_retained_input_trace() -> Result<String, Stri
     dispatcher.push_key_down(0x0C, b'Q');
     let key_event = dispatcher
         .event_queue
-        .pop_back()
+        .pop_back_event()
         .ok_or_else(|| "scripted ModalDialog filter replay did not queue keyDown".to_string())?;
     scripted_set_modal_filter_event(&mut dispatcher, key_event)?;
     bus.write_word(result_addr, 0xFFFF);
@@ -565,7 +565,7 @@ pub fn scripted_modaldialog_filter_retained_input_trace() -> Result<String, Stri
     }
 
     dispatcher.push_key_up(0x0C, b'Q');
-    dispatcher.event_queue.pop_back();
+    dispatcher.event_queue.pop_back_event();
 
     bus.write_word(item_hit_ptr, 0xBEEF);
     bus.write_word(result_addr, 0);
@@ -586,7 +586,7 @@ pub fn scripted_modaldialog_filter_retained_input_trace() -> Result<String, Stri
     dispatcher.push_mouse_down(142, 200);
     let mouse_down_event = dispatcher
         .event_queue
-        .pop_back()
+        .pop_back_event()
         .ok_or_else(|| "scripted ModalDialog filter replay did not queue mouseDown".to_string())?;
     scripted_set_modal_filter_event(&mut dispatcher, mouse_down_event)?;
     bus.write_word(result_addr, 0);
@@ -729,7 +729,7 @@ pub fn scripted_modaldialog_preferences_checkbox_input_trace() -> Result<String,
     }
 
     dispatcher.push_mouse_up(174, 180);
-    dispatcher.event_queue.pop_back();
+    dispatcher.event_queue.pop_back_event();
     scripted_set_control_value(
         &mut dispatcher,
         &mut cpu,
