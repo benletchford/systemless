@@ -1642,6 +1642,19 @@ impl<T> SharedProcessValue<T> {
     }
 }
 
+impl SharedProcessDialogText {
+    /// Replace all four `ParamText` slots within one serialized operation.
+    #[cfg(test)]
+    pub(crate) fn set_slots(&self, values: [Vec<u8>; 4]) {
+        self.with_mut(|slots| *slots = values);
+    }
+
+    /// Replace one `ParamText` slot within a single serialized operation.
+    pub(crate) fn set_slot(&self, index: usize, value: Vec<u8>) {
+        self.with_mut(|slots| slots[index] = value);
+    }
+}
+
 impl SharedProcessResourcePolicy {
     /// Return whether Resource Manager lookups automatically load data.
     pub(crate) fn res_load(&self) -> bool {

@@ -11530,7 +11530,7 @@ impl super::TrapDispatcher {
                         continue;
                     }
                     let s = bus.read_pstring(ptr);
-                    self.param_text[i] = s.clone();
+                    self.param_text.set_slot(i, s.clone());
                     // Write to DAStrings low-memory global ($0AA0 + i*4).
                     // The ROM stores each param string as a StringHandle at
                     // *(StringHandle*)($0AA0 + i*4).
@@ -29483,10 +29483,7 @@ mod tests {
         // gets replaced by nothing. This is the explicit "clear this
         // slot" idiom. Distinguishes from NIL (preserves prior).
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.param_text[0] = b"stale".to_vec();
-        disp.param_text[1] = b"stale".to_vec();
-        disp.param_text[2] = b"stale".to_vec();
-        disp.param_text[3] = b"stale".to_vec();
+        disp.param_text.set_slots(std::array::from_fn(|_| b"stale".to_vec()));
 
         let empty_ptr = 0x300000u32;
         write_pascal_str(&mut bus, empty_ptr, b"");
@@ -29511,9 +29508,9 @@ mod tests {
 
     #[test]
     fn apply_param_text_substitutes_caret_placeholders() {
-        let (mut disp, _cpu, _bus) = setup();
-        disp.param_text[0] = b"MS UserKey".to_vec();
-        disp.param_text[1] = b"42".to_vec();
+        let (disp, _cpu, _bus) = setup();
+        disp.param_text.set_slot(0, b"MS UserKey".to_vec());
+        disp.param_text.set_slot(1, b"42".to_vec());
 
         assert_eq!(
             disp.apply_param_text("Unable to open the \"^0\" file."),
@@ -29540,13 +29537,13 @@ mod tests {
 
     #[test]
     fn static_text_encodes_unicode_and_paramtext_once_as_mac_roman() {
-        let (mut disp, _cpu, _bus) = setup();
+        let (disp, _cpu, _bus) = setup();
         let classic = b"\x80\xA5\xAA\xC9\xD0\xD2\xDB\xDE";
         let unicode = decode_mac_roman(classic);
 
         assert_eq!(disp.static_text_bytes(&unicode), classic);
 
-        disp.param_text[0] = classic.to_vec();
+        disp.param_text.set_slot(0, classic.to_vec());
         assert_eq!(disp.apply_param_text("Prompt: ^0"), format!("Prompt: {unicode}"));
         assert_eq!(
             disp.static_text_bytes("Prompt: ^0"),
@@ -29564,10 +29561,12 @@ mod tests {
         // alert, expecting the others to retain whatever they were
         // last set to.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.param_text[0] = b"old0".to_vec();
-        disp.param_text[1] = b"old1".to_vec();
-        disp.param_text[2] = b"old2".to_vec();
-        disp.param_text[3] = b"old3".to_vec();
+        disp.param_text.set_slots([
+            b"old0".to_vec(),
+            b"old1".to_vec(),
+            b"old2".to_vec(),
+            b"old3".to_vec(),
+        ]);
 
         let new0 = 0x300000u32;
         write_pascal_str(&mut bus, new0, b"new0");
@@ -29593,8 +29592,8 @@ mod tests {
         // without any `^N` placeholders) must return Cow::Borrowed so
         // draw_static_text doesn't allocate per item.
         use std::borrow::Cow;
-        let (mut disp, _cpu, _bus) = setup();
-        disp.param_text[0] = b"value".to_vec();
+        let (disp, _cpu, _bus) = setup();
+        disp.param_text.set_slot(0, b"value".to_vec());
 
         let plain = disp.apply_param_text("hello world");
         assert!(

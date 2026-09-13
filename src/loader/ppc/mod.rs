@@ -7770,7 +7770,7 @@ impl PpcLoadedApp {
         let mut application_working_directory_ref_num = self
             .application_working_directory_ref_num
             .shared_handle();
-        let mut param_text = std::mem::take(&mut self.param_text);
+        let param_text = self.param_text.shared_handle();
         let mut scrap = std::mem::take(&mut self.scrap);
         let mut list_manager = std::mem::take(&mut self.list_manager);
         let mut draw_sprocket = self.draw_sprocket;
@@ -8455,7 +8455,7 @@ impl PpcLoadedApp {
                             &mut next_working_directory_ref_num,
                             &mut application_working_directory_ref_num,
                             launched_app_path.as_deref(),
-                            &mut param_text,
+                            &param_text,
                             &mut scrap,
                             &mut list_manager,
                             input,
@@ -8809,7 +8809,6 @@ impl PpcLoadedApp {
         self.quickdraw_text_size = quickdraw_text_size;
         self.cursor_state = cursor_state;
         process_file_system.publish_native_vfs_catalogue();
-        self.param_text = param_text;
         self.scrap = scrap;
         self.list_manager = list_manager;
         self.event_queue = event_queue;
@@ -15607,7 +15606,7 @@ fn dispatch_supported_import(
     next_working_directory_ref_num: &mut i16,
     application_working_directory_ref_num: &mut i16,
     launched_app_path: Option<&str>,
-    param_text: &mut [Vec<u8>; 4],
+    param_text: &SharedProcessDialogText,
     scrap: &mut PpcScrapState,
     list_manager: &mut PpcListManagerState,
     input: PpcInputSnapshot,
@@ -24581,7 +24580,7 @@ fn dispatch_supported_import(
             ppc_i16_result(ppc_get_sound_header_offset(cpu, memory)),
         )),
         PpcImportDispatcherTarget::ParamText => {
-            ppc_param_text(cpu, memory, param_text);
+            param_text.with_mut(|slots| ppc_param_text(cpu, memory, slots));
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::AlertReturnDefault => {
@@ -181387,12 +181386,12 @@ pub(crate) mod tests {
     fn hle_import_runner_param_text_nil_preserves_previous_slots() {
         let pef = synthetic_pef_with_import(b"ParamText");
         let mut loaded = load_pef_application(&pef).unwrap();
-        *loaded.param_text = [
+        loaded.param_text.set_slots([
             b"old0".to_vec(),
             b"old1".to_vec(),
             b"old2".to_vec(),
             b"old3".to_vec(),
-        ];
+        ]);
         let scratch = PPC_HEAP_BASE;
         loaded.memory.add_region(scratch, vec![0; 32]);
         write_ppc_pstring(&mut loaded.memory, scratch, b"new0");
@@ -181447,9 +181446,9 @@ pub(crate) mod tests {
 
     #[test]
     fn cloned_native_adapter_detaches_dialog_parameter_text() {
-        let mut original =
+        let original =
             load_pef_application(&synthetic_pef_with_import(b"ParamText")).unwrap();
-        original.param_text[0] = b"Original".to_vec();
+        original.param_text.set_slot(0, b"Original".to_vec());
         let mut detached = original.clone();
         let text = PPC_DATA_BASE + 0x2900;
         detached.memory.add_region(text, vec![0; 32]);
@@ -181520,7 +181519,9 @@ pub(crate) mod tests {
                 handle: 0,
             });
         }
-        loaded.param_text[0] = b"Configured for this display".to_vec();
+        loaded
+            .param_text
+            .set_slot(0, b"Configured for this display".to_vec());
         loaded.cpu.gpr[3] = alert_id as u16 as u32;
         loaded.cpu.gpr[4] = 0;
 
@@ -181543,7 +181544,7 @@ pub(crate) mod tests {
             Some(b"Configured for this display".to_vec())
         );
 
-        loaded.param_text[0] = b"later value".to_vec();
+        loaded.param_text.set_slot(0, b"later value".to_vec());
         assert_eq!(
             ppc_handle_bytes(
                 &mut loaded.memory,
