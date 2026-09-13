@@ -537,7 +537,8 @@ impl super::TrapDispatcher {
             let anchor = bus.alloc_synthetic(14);
             if anchor != 0 {
                 bus.write_word(anchor + 4, 1); // vType
-                self.callback_scheduling.system_vbl_queue_anchor = anchor;
+                self.callback_scheduling
+                    .with_mut(|scheduling| scheduling.system_vbl_queue_anchor = anchor);
             }
         }
 
@@ -1955,7 +1956,8 @@ impl super::TrapDispatcher {
                     OsRoutineVariant::TimeTaskExtended
                 );
                 if !extended || bus.read_long(task_ptr + 14) == 0 {
-                    self.callback_scheduling.extended_wakeups.remove(&task_ptr);
+                    self.callback_scheduling
+                        .with_mut(|scheduling| scheduling.extended_wakeups.remove(&task_ptr));
                 }
                 // Remove any existing task for the same record address
                 self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
@@ -2065,8 +2067,9 @@ impl super::TrapDispatcher {
                     let intended_wakeup = prior_wakeup
                         .unwrap_or(current_subtick)
                         .saturating_add(requested_delay_subticks);
-                    self.callback_scheduling.extended_wakeups
-                        .insert(task_ptr, intended_wakeup);
+                    self.callback_scheduling.with_mut(|scheduling| {
+                        scheduling.extended_wakeups.insert(task_ptr, intended_wakeup);
+                    });
                     // tmWakeUp is explicitly an opaque internal format. Keep
                     // it nonzero so guest code can preserve or reset it, while
                     // the exact deadline remains in manager-owned state.
@@ -10846,7 +10849,9 @@ mod tests {
         assert_eq!(dispatcher.timer_tasks[0].fire_at_subtick, 100_600_000);
         assert_ne!(bus.read_long(task_ptr + 14), 0);
 
-        dispatcher.callback_scheduling.current_subtick = 100_750_000;
+        dispatcher
+            .callback_scheduling
+            .with_mut(|scheduling| scheduling.current_subtick = 100_750_000);
         cpu.write_reg(Register::A0, task_ptr);
         dispatcher
             .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
@@ -10876,7 +10881,9 @@ mod tests {
             Some(&101_200_000)
         );
 
-        dispatcher.callback_scheduling.current_subtick = 102_000_000;
+        dispatcher
+            .callback_scheduling
+            .with_mut(|scheduling| scheduling.current_subtick = 102_000_000);
         dispatcher.timer_tasks[0].active = false;
         cpu.write_reg(Register::A0, task_ptr);
         cpu.write_reg(Register::D0, 1);
@@ -10995,7 +11002,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        dispatcher.callback_scheduling.current_subtick = 100_150_000; // 2,500 us elapsed
+        dispatcher
+            .callback_scheduling
+            .with_mut(|scheduling| scheduling.current_subtick = 100_150_000); // 2,500 us elapsed
         cpu.write_reg(Register::A0, task_ptr);
         dispatcher
             .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
