@@ -1488,6 +1488,66 @@ impl ProcessScrapState {
     fn is_pristine(&self) -> bool {
         self == &Self::default()
     }
+
+    fn append_entry(&mut self, flavor: [u8; 4], data: Vec<u8>) {
+        self.entries.push((flavor, data));
+        self.handle_dirty = true;
+    }
+
+    fn initialize_and_append_entry(&mut self, flavor: [u8; 4], data: Vec<u8>) {
+        self.initialized = true;
+        self.append_entry(flavor, data);
+    }
+
+    fn zero(&mut self) {
+        self.initialized = true;
+        self.entries.clear();
+        self.count = self.count.wrapping_add(1);
+        self.in_memory = true;
+        self.handle_dirty = true;
+    }
+
+    fn load(&mut self) {
+        self.initialized = true;
+        if !self.in_memory {
+            self.in_memory = true;
+            self.handle_dirty = true;
+        }
+    }
+
+    fn unload(&mut self) -> Result<Option<u32>, ()> {
+        if self.in_memory && !self.clipboard_writable {
+            return Err(());
+        }
+        if !self.in_memory {
+            return Ok(None);
+        }
+        self.in_memory = false;
+        self.handle_dirty = true;
+        Ok(self.handle.take())
+    }
+
+    fn ensure_handle(&mut self, allocate: impl FnOnce() -> u32) -> u32 {
+        *self.handle.get_or_insert_with(allocate)
+    }
+
+    fn mark_handle_clean(&mut self) {
+        self.handle_dirty = false;
+    }
+
+    fn ensure_stuff_ptr(&mut self, allocate: impl FnOnce() -> u32) -> u32 {
+        *self.stuff_ptr.get_or_insert_with(allocate)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn set_clipboard_writable(&mut self, writable: bool) {
+        self.clipboard_writable = writable;
+    }
+
+    #[cfg(test)]
+    fn replace_entries(&mut self, entries: Vec<([u8; 4], Vec<u8>)>) {
+        self.entries = entries;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1681,6 +1741,50 @@ impl SharedProcessDisplayClut {
     #[cfg(test)]
     pub(crate) fn fill(&self, rgb: [u16; 3]) {
         self.with_mut(|clut| clut.fill(rgb));
+    }
+}
+
+impl SharedProcessScrapState {
+    pub(crate) fn append_entry(&self, flavor: [u8; 4], data: Vec<u8>) {
+        self.with_mut(|scrap| scrap.append_entry(flavor, data));
+    }
+
+    pub(crate) fn initialize_and_append_entry(&self, flavor: [u8; 4], data: Vec<u8>) {
+        self.with_mut(|scrap| scrap.initialize_and_append_entry(flavor, data));
+    }
+
+    pub(crate) fn zero(&self) {
+        self.with_mut(ProcessScrapState::zero);
+    }
+
+    pub(crate) fn load(&self) {
+        self.with_mut(ProcessScrapState::load);
+    }
+
+    pub(crate) fn unload(&self) -> Result<Option<u32>, ()> {
+        self.with_mut(ProcessScrapState::unload)
+    }
+
+    pub(crate) fn ensure_handle(&self, allocate: impl FnOnce() -> u32) -> u32 {
+        self.with_mut(|scrap| scrap.ensure_handle(allocate))
+    }
+
+    pub(crate) fn mark_handle_clean(&self) {
+        self.with_mut(ProcessScrapState::mark_handle_clean);
+    }
+
+    pub(crate) fn ensure_stuff_ptr(&self, allocate: impl FnOnce() -> u32) -> u32 {
+        self.with_mut(|scrap| scrap.ensure_stuff_ptr(allocate))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_clipboard_writable(&self, writable: bool) {
+        self.with_mut(|scrap| scrap.set_clipboard_writable(writable));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_entries(&self, entries: Vec<([u8; 4], Vec<u8>)>) {
+        self.with_mut(|scrap| scrap.replace_entries(entries));
     }
 }
 
