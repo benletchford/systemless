@@ -161,10 +161,10 @@ pub const BASILISK_II_PLAY_PROFILE: MachineProfile = MachineProfile {
     // Bonkheads_Deluxe peaks above 30 MB during resource-fork merge (it
     // bundles ~669 resources, several individual chunks > 250 KB), which
     // exhausts the 32 MB-default heap before the title even renders.
-    // 64 MB matches what real-world Power Macintosh users would have
-    // configured for that era of game and clears the OOM without
-    // cascading failures elsewhere.
-    ram_size_bytes: 64 * 1024 * 1024,
+    // Late-classic PowerPC software (e.g. EV Nova, Mac OS 8.5–9 era games)
+    // loads thousands of resources into the heap and requires at least 64–128 MB.
+    // 128 MB matches standard Power Macintosh G3/G4 configurations of that era.
+    ram_size_bytes: 128 * 1024 * 1024,
     screen_width: 800,
     screen_height: 600,
     screen_depth: 8,
@@ -180,7 +180,8 @@ pub(crate) const REFERENCE_POWERPC_EXECUTION_CAPABILITIES: GuestExecutionCapabil
     REFERENCE_MACHINE_PROFILE.powerpc_execution_capabilities();
 
 /// Returns the reference machine profile, optionally overridden by
-/// `SYSTEMLESS_SCREEN_WIDTH` and `SYSTEMLESS_SCREEN_HEIGHT` environment variables.
+/// `SYSTEMLESS_SCREEN_WIDTH`, `SYSTEMLESS_SCREEN_HEIGHT`, and
+/// `SYSTEMLESS_RAM_SIZE` environment variables.
 pub fn reference_machine_profile() -> MachineProfile {
     let mut p = REFERENCE_MACHINE_PROFILE;
     if let Ok(w) = std::env::var("SYSTEMLESS_SCREEN_WIDTH") {
@@ -191,6 +192,11 @@ pub fn reference_machine_profile() -> MachineProfile {
     if let Ok(h) = std::env::var("SYSTEMLESS_SCREEN_HEIGHT") {
         if let Ok(h) = h.parse::<u16>() {
             p.screen_height = h;
+        }
+    }
+    if let Ok(ram) = std::env::var("SYSTEMLESS_RAM_SIZE") {
+        if let Ok(ram) = ram.parse::<u32>() {
+            p.ram_size_bytes = ram;
         }
     }
     p

@@ -927,9 +927,7 @@ impl super::TrapDispatcher {
         self.loaded_handles.insert(handle, (ptr, res_type, res_id));
         self.resource_handle_files.insert(handle, refnum);
         self.remember_resource_handle_index(handle, key.0, key.1, key.2);
-        self.update_handle_state_bits(handle, |state| {
-            Some(state.unwrap_or(0x40) | 0x20)
-        });
+        self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) | 0x20));
         if materialize && ptr != 0 {
             self.resident_resources.insert(key);
             self.track_handle_ptr(ptr, handle);
@@ -1147,9 +1145,7 @@ impl super::TrapDispatcher {
 
     fn restore_loaded_resource_handle(&mut self, handle: u32, ptr: u32) {
         self.track_handle_ptr(ptr, handle);
-        self.update_handle_state_bits(handle, |state| {
-            Some(state.unwrap_or(0x40) | 0x20)
-        });
+        self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) | 0x20));
         if let (Some((_, res_type, res_id)), Some(refnum)) = (
             self.loaded_handles.get(&handle).copied(),
             self.resource_handle_files.get(&handle).copied(),
@@ -1316,9 +1312,7 @@ impl super::TrapDispatcher {
                 self.forget_resource_handle_index_for_handle(handle);
                 self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
-                self.update_handle_state_bits(handle, |state| {
-                    Some(state.unwrap_or(0x40) & !0x20)
-                });
+                self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) & !0x20));
                 bus.write_word(0x0A60, 0);
                 true
             }
@@ -1523,7 +1517,8 @@ impl super::TrapDispatcher {
         res_id: i16,
         ptr: u32,
     ) -> Option<Vec<u8>> {
-        let live_ptr = self.handle_for_ptr(ptr)
+        let live_ptr = self
+            .handle_for_ptr(ptr)
             .map(|handle| bus.read_long(handle))
             .filter(|handle_ptr| *handle_ptr != 0)
             .unwrap_or(ptr);
@@ -4100,10 +4095,9 @@ impl super::TrapDispatcher {
                 if let Some(filename) = self.open_files.get(&ref_num).cloned() {
                     if let Some(file_buf) = self.vfs.get(&filename) {
                         let file_len = file_buf.len();
-                        let cur_pos = usize::try_from(
-                            *self.file_positions.get(&ref_num).unwrap_or(&0),
-                        )
-                        .unwrap_or(usize::MAX);
+                        let cur_pos =
+                            usize::try_from(*self.file_positions.get(&ref_num).unwrap_or(&0))
+                                .unwrap_or(usize::MAX);
                         match Self::resolve_file_mark_position(
                             pos_mode, pos_offset, cur_pos, file_len,
                         ) {
@@ -4255,10 +4249,8 @@ impl super::TrapDispatcher {
                 let (new_pos, host_sync_bytes) = {
                     let file_buf = self.vfs.entry(filename.clone()).or_default();
                     let file_len = file_buf.len();
-                    let cur_pos = usize::try_from(
-                        *self.file_positions.get(&ref_num).unwrap_or(&0),
-                    )
-                    .unwrap_or(usize::MAX);
+                    let cur_pos = usize::try_from(*self.file_positions.get(&ref_num).unwrap_or(&0))
+                        .unwrap_or(usize::MAX);
                     let Ok(start) =
                         Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
                     else {
@@ -4566,9 +4558,9 @@ impl super::TrapDispatcher {
                 bus.write_word(pb + 56, allocation_start); // ioAlBlSt
                 bus.write_long(pb + 58, next_catalog_id); // ioVNxtCNID
                 bus.write_word(pb + 62, free_blocks); // ioVFrBlk
-                // VolumeParam ends after ioVFrBlk at byte 64. Only the HFS
-                // HVolumeParam supplied to PBHGetVInfo has the fields that
-                // follow it. Files 1992, pp. 2-91--2-92 and 2-96--2-97.
+                                                      // VolumeParam ends after ioVFrBlk at byte 64. Only the HFS
+                                                      // HVolumeParam supplied to PBHGetVInfo has the fields that
+                                                      // follow it. Files 1992, pp. 2-91--2-92 and 2-96--2-97.
                 if is_hfs_variant {
                     bus.write_word(pb + 64, 0x4244); // ioVSigWord (HFS)
 
@@ -4618,10 +4610,8 @@ impl super::TrapDispatcher {
 
                 if let Some(filename) = self.open_files.get(&ref_num).cloned() {
                     let file_len = self.vfs.get(&filename).map(|f| f.len()).unwrap_or(0);
-                    let cur_pos = usize::try_from(
-                        *self.file_positions.get(&ref_num).unwrap_or(&0),
-                    )
-                    .unwrap_or(usize::MAX);
+                    let cur_pos = usize::try_from(*self.file_positions.get(&ref_num).unwrap_or(&0))
+                        .unwrap_or(usize::MAX);
                     let Ok(requested_pos) =
                         Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
                     else {
@@ -4727,10 +4717,7 @@ impl super::TrapDispatcher {
                 let vref = bus.read_word(pb + 22) as i16;
                 let known_by_vref = vref == 0
                     || vref == Self::boot_volume_ref_num()
-                    || self
-                        .vfs_volumes
-                        .iter()
-                        .any(|volume| volume.ref_num == vref)
+                    || self.vfs_volumes.iter().any(|volume| volume.ref_num == vref)
                     || self.working_directories.contains_key(&vref);
                 let known_by_name = !name.is_empty()
                     && (name.eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name())
@@ -6365,13 +6352,15 @@ impl super::TrapDispatcher {
                         //   PEA <psn>                          ; psn_ptr (4 bytes)
                         //   MOVE.W #$0039, -(SP)               ; selector
                         //   DC.W $A88F / MOVE.W (SP)+, D0      ; trap → result in D0
-                        // After selector pop: sp+0=init(4B), sp+4=psn_ptr(4B).
-                        // Result word at sp+6; A7 = sp+6 so MOVE.W (SP)+ restores stack.
+                        // After selector pop: sp+0=init(4B), sp+4=psn_ptr(4B), sp+8=result(2B).
+                        // Inside Macintosh: Processes 1994, pp. 2-25 to 2-26.
+                        // Write result word at sp+8; A7 = sp+8 so caller's MOVE.W (SP)+, D0
+                        // consumes the result and restores the pre-call stack pointer.
                         let psn_ptr = bus.read_long(sp + 4);
                         bus.write_long(psn_ptr, CURRENT_PROCESS_PSN_HIGH);
                         bus.write_long(psn_ptr.wrapping_add(4), CURRENT_PROCESS_PSN_LOW);
-                        bus.write_word(sp + 6, 0);
-                        cpu.write_reg(Register::A7, sp + 6);
+                        bus.write_word(sp + 8, 0);
+                        cpu.write_reg(Register::A7, sp + 8);
                         Ok(())
                     }
                     0x003A => {
@@ -6768,9 +6757,7 @@ impl super::TrapDispatcher {
 
                         let rsrc_data = self.vfs_rsrc.get(&vfs_key).cloned().unwrap_or_default();
                         let rsrc_key = format!("__rsrc__{vfs_key}");
-                        self.vfs
-                            .entry(rsrc_key.clone())
-                            .or_insert(rsrc_data.into());
+                        self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data.into());
                         let refnum = self.allocate_process_file_refnum();
                         self.open_files.insert(refnum, rsrc_key.clone());
                         if wants_write {
@@ -6909,16 +6896,12 @@ impl super::TrapDispatcher {
                                 } else {
                                     format!("{parent_path}/{child_name}")
                                 };
-                                let duplicate = self
-                                    .vfs_directories
-                                    .iter()
-                                    .any(|directory| {
-                                        directory.path.eq_ignore_ascii_case(&child_path)
-                                    })
-                                    || self
-                                        .vfs
-                                        .keys()
-                                        .any(|path| path.eq_ignore_ascii_case(&child_path))
+                                let duplicate = self.vfs_directories.iter().any(|directory| {
+                                    directory.path.eq_ignore_ascii_case(&child_path)
+                                }) || self
+                                    .vfs
+                                    .keys()
+                                    .any(|path| path.eq_ignore_ascii_case(&child_path))
                                     || self
                                         .vfs_rsrc
                                         .keys()
@@ -7535,18 +7518,17 @@ impl super::TrapDispatcher {
                             } else {
                                 format!("{parent_path}/{child_name}")
                             };
-                            let duplicate = self
-                                .vfs_directories
-                                .iter()
-                                .any(|directory| directory.path.eq_ignore_ascii_case(&child_path))
-                                || self
+                            let duplicate =
+                                self.vfs_directories.iter().any(|directory| {
+                                    directory.path.eq_ignore_ascii_case(&child_path)
+                                }) || self
                                     .vfs
                                     .keys()
                                     .any(|path| path.eq_ignore_ascii_case(&child_path))
-                                || self
-                                    .vfs_rsrc
-                                    .keys()
-                                    .any(|path| path.eq_ignore_ascii_case(&child_path));
+                                    || self
+                                        .vfs_rsrc
+                                        .keys()
+                                        .any(|path| path.eq_ignore_ascii_case(&child_path));
                             if duplicate {
                                 -48i16 // dupFNErr
                             } else {
@@ -7697,9 +7679,7 @@ impl super::TrapDispatcher {
                             if let Some(directory) = self
                                 .vfs_directories
                                 .iter()
-                                .find(|directory| {
-                                    directory.path.eq_ignore_ascii_case(&entry.path)
-                                })
+                                .find(|directory| directory.path.eq_ignore_ascii_case(&entry.path))
                             {
                                 self.fill_directory_catalog_info(bus, pb, directory);
                                 eprintln!(
@@ -7859,16 +7839,11 @@ impl super::TrapDispatcher {
         }
 
         let size: i32 = match identity {
-            Some((_, _, _)) if ptr != 0 => {
-                bus.get_alloc_size(ptr).map(|s| s as i32).unwrap_or(-1)
-            }
+            Some((_, _, _)) if ptr != 0 => bus.get_alloc_size(ptr).map(|s| s as i32).unwrap_or(-1),
             Some((0, res_type, res_id)) => self
                 .resource_handle_files
                 .get(&handle)
-                .and_then(|refnum| {
-                    self.resource_backing_data
-                        .get(&(*refnum, res_type, res_id))
-                })
+                .and_then(|refnum| self.resource_backing_data.get(&(*refnum, res_type, res_id)))
                 .map(|data| data.len() as i32)
                 .unwrap_or(-1),
             _ => -1,
@@ -8727,7 +8702,8 @@ impl super::TrapDispatcher {
             return Some(2);
         }
 
-        let mut sorted_directories: Vec<&ProcessVfsDirectory> = self.vfs_directories.iter().collect();
+        let mut sorted_directories: Vec<&ProcessVfsDirectory> =
+            self.vfs_directories.iter().collect();
         sorted_directories.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         sorted_directories
             .into_iter()
@@ -9682,8 +9658,8 @@ mod tests {
                 &[],
                 &[],
             );
-            let handle = memory_manager
-                .new_native_resource_handle(&mut native, Some(&[1, 2, 3, 4]));
+            let handle =
+                memory_manager.new_native_resource_handle(&mut native, Some(&[1, 2, 3, 4]));
             assert_ne!(handle, 0);
             assert_ne!(memory_manager.new_native_ptr(&mut native, 32, true), 0);
             handle
@@ -9710,7 +9686,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
         );
-        assert_eq!(memory_manager.borrow().recover_handle(resized.ptr), Some(handle));
+        assert_eq!(
+            memory_manager.borrow().recover_handle(resized.ptr),
+            Some(handle)
+        );
         assert_eq!(memory_manager.borrow().recover_handle(original.ptr), None);
         assert_eq!(
             disp.loaded_handles.get(&handle).map(|entry| entry.0),
@@ -9728,7 +9707,10 @@ mod tests {
         cpu.write_reg(Register::A0, handle);
         cpu.write_reg(Register::D0, 16);
         let refill = disp.dispatch_memory(false, 0x24, &mut cpu, &mut bus);
-        assert!(refill.is_some(), "SetHandleSize should refill an empty handle");
+        assert!(
+            refill.is_some(),
+            "SetHandleSize should refill an empty handle"
+        );
         assert!(refill.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::D0), 0);
         let refilled = memory_manager.borrow().native_allocation(handle).unwrap();
@@ -9853,10 +9835,7 @@ mod tests {
         assert!(recovered.is_some(), "RecoverHandle should be handled");
         assert!(recovered.unwrap().is_ok(), "RecoverHandle should succeed");
         assert_eq!(cpu.read_reg(Register::A0), loaded_handle);
-        assert_eq!(
-            disp.handle_for_ptr(data_ptr),
-            Some(loaded_handle)
-        );
+        assert_eq!(disp.handle_for_ptr(data_ptr), Some(loaded_handle));
     }
 
     // ================================================================
@@ -19086,7 +19065,7 @@ mod tests {
     fn osdispatch_getfrontprocess_selector_0039_returns_foreground_psn() {
         // MPW GetFrontProcess glue pushes a 4-byte init slot ($FFFFFFFF) before
         // psn_ptr. After selector pop: sp+0=init(4B), sp+4=psn_ptr(4B),
-        // sp+6=result(2B). A7 advances to sp+6 so MOVE.W (SP)+,D0 restores stack.
+        // sp+8=result(2B). A7 advances to sp+8 so MOVE.W (SP)+,D0 restores stack.
         let (mut disp, mut cpu, mut bus) = setup();
 
         let psn_ptr = 0x2A0300u32;
@@ -19098,8 +19077,8 @@ mod tests {
 
         assert_eq!(bus.read_long(psn_ptr), 0);
         assert_eq!(bus.read_long(psn_ptr + 4), 2, "foreground process PSN");
-        assert_eq!(bus.read_word(TEST_SP + 8), 0, "noErr result");
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0, "noErr result");
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
     }
 
     #[test]

@@ -62,7 +62,10 @@ pub fn new_runner_with_addressing(addressing_32_bit: bool) -> FixtureRunner {
         addressing_32_bit,
         ..FixtureRunnerConfig::default()
     };
-    FixtureRunner::new(RAM_SIZE as usize, config)
+    FixtureRunner::new(
+        crate::machine_profile::reference_machine_profile().ram_size_bytes as usize,
+        config,
+    )
 }
 
 /// Create a standard runner with one explicit indexed depth for both 68K and
@@ -82,7 +85,10 @@ pub fn new_runner_with_configuration(addressing_32_bit: bool, screen_depth: u16)
     }
     .with_screen_depth(screen_depth)
     .expect("frontend selected an unsupported screen depth");
-    let mut runner = FixtureRunner::new(RAM_SIZE as usize, config);
+    let mut runner = FixtureRunner::new(
+        crate::machine_profile::reference_machine_profile().ram_size_bytes as usize,
+        config,
+    );
     runner
         .set_powerpc_screen_depth(screen_depth)
         .expect("frontend selected an unsupported PowerPC screen depth");
@@ -3040,7 +3046,11 @@ fn ppc_diagnostic_vfs(
     let dispatcher = runner.dispatcher();
     let app_resource_path =
         app_resource_path.map(crate::trap::dispatch::TrapDispatcher::normalize_vfs_path);
-    let mut directories = dispatcher.vfs_directories.iter().cloned().collect::<Vec<_>>();
+    let mut directories = dispatcher
+        .vfs_directories
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     directories.sort_by_key(|directory| directory.dir_id);
 
     let mut volumes = dispatcher
