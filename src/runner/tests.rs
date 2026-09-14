@@ -9200,8 +9200,8 @@
     }
 
     #[test]
-    fn ppc_sound_doubleback_can_refill_for_more_than_fifty_thousand_cycles() {
-        const CALLBACK_CYCLES: usize = 60_000;
+    fn ppc_sound_doubleback_can_complete_a_large_refill() {
+        const CALLBACK_CYCLES: usize = 600_000;
         const CHANNEL: u32 = 0x0300_1000;
         const HEADER: u32 = 0x0300_2000;
         const BUFFER: u32 = 0x0300_3000;
@@ -9238,7 +9238,7 @@
             .completion_invocations
             .last()
             .expect("doubleback invocation");
-        assert!(invocation.cycles > 50_000);
+        assert!(invocation.cycles > 250_000);
         assert_eq!(
             invocation.result,
             PpcRunResult::Halted {
@@ -9246,6 +9246,44 @@
                 cycles: (CALLBACK_CYCLES + 1) as u64,
             }
         );
+    }
+
+    #[test]
+    fn ppc_sound_doubleback_runaway_still_stops_at_the_watchdog() {
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        let sound = PpcSoundState::default();
+        sound
+            .manager
+            .replace_pending_process_doublebacks(vec![PpcSoundDoubleBackRecord {
+                architecture: CallbackTaskArchitecture::PowerPc,
+                channel: 0x0300_1000,
+                header: 0x0300_2000,
+                exhausted_buffer: 0x0300_3000,
+                exhausted_buffer_index: 0,
+                callback: CALLBACK,
+                tick: 1,
+                instruction_count: 1,
+            }]);
+        let mut app = halted_ppc_app_with_sound(sound);
+        app.ppc.as_mut().unwrap().memory.add_region(
+            CALLBACK,
+            0x4800_0000u32.to_be_bytes().to_vec(), // b .
+        );
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.fire_pending_ppc_sound_doublebacks();
+
+        assert!(runner.is_halted());
+        assert_eq!(runner.halted_pc(), Some(CALLBACK));
+        let invocation = runner
+            .native
+            .application()
+            .unwrap()
+            .sound
+            .completion_invocations
+            .last()
+            .unwrap();
+        assert!(matches!(invocation.result, PpcRunResult::CycleLimit { cycles } if cycles > 0));
     }
 
     #[test]

@@ -263,10 +263,12 @@ const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
 const HFS_VCB_SIZE: u32 = 178;
-// Sound 1994, pp. 2-146–2-148: a doubleback routine refills an exhausted
-// buffer before returning. Keep a bounded safety limit, but allow callbacks
-// that do substantially more work than a normal foreground interpreter batch.
 const PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES: u64 = 250_000;
+// Doubleback routines may transform and refill a whole buffer, unlike a
+// completion notification. Keep a bounded watchdog with room for software
+// mixers to finish their sample loops. Inside Macintosh: Sound (1994),
+// pp. 2-68–2-73, 2-146–2-148.
+const PPC_SOUND_DOUBLEBACK_CALLBACK_MAX_CYCLES: u64 = 5_000_000;
 
 /// Result of charging one native execution slice against the runner's host
 /// cycle clock.
@@ -8164,7 +8166,7 @@ impl FixtureRunner {
                 .with_memory_and_cfm(|memory_manager, cfm| {
                     ppc_app.run_sound_doubleback_callback_with_process_services(
                         doubleback,
-                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                        PPC_SOUND_DOUBLEBACK_CALLBACK_MAX_CYCLES,
                         trace_ppc_imports,
                         trace_ppc_fetches,
                         memory_manager,
