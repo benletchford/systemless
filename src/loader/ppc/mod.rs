@@ -4101,6 +4101,48 @@ impl PpcLoadedApp {
             .is_some()
     }
 
+    /// Grow the native allocation budget for a Finder-style preferred partition.
+    /// The sparse native address space keeps its fixed stack and Toolbox mappings;
+    /// those addresses must never become available to the expanding allocator.
+    /// Inside Macintosh: Processes (1994), pp. 1-3 and 2-18.
+    pub(crate) fn grow_application_partition(&mut self, partition_size: u32) {
+        let requested_heap = partition_size.saturating_sub(self.stack_size);
+        let heap_base = self.heap_base();
+        if requested_heap <= ppc_heap_free_capacity(&self.memory, heap_base, self.heap_limit()).0 {
+            return;
+        }
+        let fixed_end = PPC_DSP_BACK_SCREEN_BASE + ppc_main_screen_buffer_size();
+        let fixed_len = fixed_end - self.stack_base;
+        self.memory
+            .add_readonly_allocation_exclusion(self.stack_base, fixed_len)
+            .expect("native fixed mappings have a valid address range");
+        let mut limit = heap_base.saturating_add(requested_heap);
+        // Include each reserved gap in the address ceiling without counting its
+        // bytes as application memory (including the shared system reservation).
+        loop {
+            let available = ppc_heap_free_capacity(&self.memory, heap_base, limit).0;
+            if available >= requested_heap {
+                break;
+            }
+            let Some(next) = limit.checked_add(requested_heap - available) else {
+                return;
+            };
+            limit = next;
+        }
+        {
+            let mut manager = self.process_memory_manager.0.borrow_mut();
+            manager.native_mut().grow_native_heap_limit(limit);
+            manager.set_application_heap_limit(limit);
+        }
+        let _ = self
+            .memory
+            .write_u32_be(crate::memory::globals::addr::APPL_LIMIT, limit);
+        let _ = self.memory.write_u32_be(PPC_APPLICATION_ZONE, limit);
+        let _ = self.memory.write_u32_be(PPC_SYSTEM_ZONE, limit);
+        let cursor = self.heap_cursor();
+        ppc_update_zone_free_bytes(&mut self.memory, cursor, limit);
+    }
+
     pub fn run_import_trace(&mut self, max_cycles: u64) -> (PpcRunResult, Vec<u32>) {
         let mut trace = Vec::new();
         let result = self.cpu.run_with_import_trace(
@@ -9029,8 +9071,8 @@ impl PpcLoadedApp {
         self.refresh_apple_event_launch_capability();
     }
 
-    fn refresh_apple_event_launch_capability(&mut self) {
-        let size_resource = self.launched_app_path().and_then(|path| {
+    pub(crate) fn launch_size_resource(&self) -> Option<ApplicationSizeResource> {
+        self.launched_app_path().and_then(|path| {
             [0, -1].into_iter().find_map(|id| {
                 self.vfs_resources
                     .iter()
@@ -9042,7 +9084,11 @@ impl PpcLoadedApp {
                     .and_then(|resource| ApplicationSizeResource::parse(&resource.data))
                     .filter(|size| size.preferred_partition_size().is_some())
             })
-        });
+        })
+    }
+
+    fn refresh_apple_event_launch_capability(&mut self) {
+        let size_resource = self.launch_size_resource();
         let high_level_event_aware =
             size_resource.is_some_and(ApplicationSizeResource::is_high_level_event_aware);
         self.apple_events
@@ -84147,7 +84193,10 @@ fn ppc_pb_get_cat_info(
         return PPC_PARAM_ERR;
     };
     let effective_dir_id = ppc_resolve_directory_id(vref, requested_dir_id, default_dir_id);
-    let name_bytes = if name_ptr == 0 {
+    // A negative index selects the directory by ID. ioNamePtr is output-only,
+    // including when its buffer does not yet contain a valid Pascal string.
+    // Inside Macintosh: Files (1992), pp. 2-191 and 3-36.
+    let name_bytes = if fdir_index < 0 || name_ptr == 0 {
         Vec::new()
     } else {
         match ppc_read_pstring_bytes(memory, name_ptr) {
@@ -84222,7 +84271,7 @@ fn ppc_pb_get_cat_info(
     if filled.is_none() {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
-    if fdir_index >= 0 && name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &entry.name) {
+    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &entry.name) {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
     if memory.write_u16_be(pb + 22, resolved_vref as u16).is_none() {

@@ -4328,6 +4328,13 @@ impl FixtureRunner {
             .shared_event_queue()
             .merge(detached_events);
         ppc_app.attach_unconverted_process_services(&mut self.process_context);
+        if let Some(partition_size) = self.application_partition_size.or_else(|| {
+            ppc_app
+                .launch_size_resource()
+                .and_then(|size| size.preferred_partition_size())
+        }) {
+            ppc_app.grow_application_partition(partition_size.min(ram_size));
+        }
         assert!(self.process_context.install_cfm_seed(&mut ppc_app.cfm));
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
@@ -13935,6 +13942,41 @@ mod tests {
             Some(0x7654_3210)
         );
         assert_eq!(ppc_app.cpu.time_base(), 0x1122_3344_5566_7788);
+    }
+
+    #[test]
+    fn native_launch_honors_a_larger_application_partition() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = crate::game::new_runner();
+        runner.set_application_partition_size(Some(96 * 1024 * 1024));
+        runner.init_app(&app);
+        let limit = runner
+            .native
+            .application()
+            .unwrap()
+            .application_heap_limit();
+        assert!(limit > PPC_STACK_TOP);
+        assert_eq!(
+            runner
+                .bus
+                .read_long(crate::memory::globals::addr::APPL_LIMIT),
+            limit
+        );
+        // Sparse native mappings can live above the classic RAM backing.
+        let address = limit - 16;
+        assert!(address > runner.bus.ram_size());
+        runner
+            .native
+            .application_mut()
+            .unwrap()
+            .memory
+            .add_region(address, vec![0x73; 16]);
+        assert_eq!(runner.bus.read_byte(address), 0x73);
+        runner.bus.write_byte(address, 0x41);
+        assert_eq!(
+            runner.native.application_mut().unwrap().memory.read_u8(address),
+            Some(0x41)
+        );
     }
 
     #[test]
