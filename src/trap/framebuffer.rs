@@ -4707,7 +4707,17 @@ impl super::TrapDispatcher {
         let (base, row_bytes, _, height, _) = self.get_screen_params();
         let menu_height = (bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16)
             .clamp(0, height.max(0));
-        let saved = (menu_height > 0 && self.window_bounds.0.saturating_sub(23) < menu_height)
+        // Standard document frames extend 19 pixels above their content.
+        // Using the movable-dialog allowance (23) for them snapshots the
+        // whole menu bar even when the complete frame is below it.
+        // Macintosh Toolbox Essentials (1992), Figure 4-2, pp. 4-5--4-6.
+        let top_inset = if Self::window_is_document_proc(self.window_proc_id) {
+            19
+        } else {
+            23
+        };
+        let saved = (menu_height > 0
+            && self.window_bounds.0.saturating_sub(top_inset) < menu_height)
             .then(|| bus.save_pixel_bytes(base, row_bytes as usize * menu_height as usize));
         draw(self, bus);
         if let Some(saved) = saved {
@@ -6272,6 +6282,49 @@ mod redraw_chrome_tests {
                         .any(|&b| b != 0),
                     "the visible part of the frame must still draw"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn window_frames_at_menu_boundary_preserve_pixels_and_outline_detail() {
+        use crate::ui_theme::UiThemeId;
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            for proc_id in [0, 4, 8, 12, 16, 5] {
+                let (mut disp, _cpu, mut bus) = setup_with_port();
+                let base = bus.alloc(128 * 96);
+                disp.screen_mode = (base, 128, 128, 96, 8);
+                bus.write_long(crate::memory::globals::addr::SCRN_BASE, base);
+                bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+                disp.set_ui_theme_id(theme);
+                disp.front_window = PORT_PTR;
+                disp.window_proc_id = proc_id;
+                disp.window_title = "Boundary".into();
+                disp.go_away_flag = true;
+                bus.prepare_outline_presentation(
+                    disp.screen_mode,
+                    std::array::from_fn(|i| [255 - i as u8; 3]),
+                );
+                TrapDispatcher::fb_draw_string(
+                    &mut bus, base, 128, 8, 128, 96, 12, 14, "Menu", 3, 9,
+                );
+                assert!(bus.has_visible_outline_detail());
+                let menu = bus.save_pixel_bytes(base, 128 * 20);
+                for top in [38, 39, 40, 42, 43] {
+                    disp.window_bounds = (top, 8, 80, 120);
+                    disp.draw_window_frame(&mut bus);
+                    assert_eq!(
+                        bus.save_pixel_bytes(base, menu.len()), menu,
+                        "frame {proc_id}, top {top}, {theme:?}"
+                    );
+                    if TrapDispatcher::window_is_document_proc(proc_id) {
+                        disp.draw_window_chrome(&mut bus, false);
+                        assert_eq!(
+                            bus.save_pixel_bytes(base, menu.len()), menu,
+                            "inactive frame {proc_id}, top {top}, {theme:?}"
+                        );
+                    }
+                }
             }
         }
     }
