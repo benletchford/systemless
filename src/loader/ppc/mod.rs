@@ -22489,6 +22489,22 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             } else {
                 ppc_memory_read_bytes(memory, cpu.gpr[3], cpu.gpr[4]).unwrap_or_default()
             };
+            // TextBox clears its box before drawing, including empty text.
+            // Imaging With QuickDraw (1994), Printing Hints, explicitly
+            // describes TextBox calling EraseRect; Text (1993), pp. 2-88--2-89.
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[5]) {
+                let _ = ppc_paint_rect_bounds(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    rect,
+                    *quickdraw_back_color,
+                    toolbox_startup
+                        .quickdraw_back_indices
+                        .get(current_gworld)
+                        .copied(),
+                );
+            }
             ppc_te_draw_text_box(
                 memory,
                 gworlds,
@@ -149743,6 +149759,74 @@ pub(crate) mod tests {
                 .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + 2),
             Some(8)
         );
+    }
+
+    #[test]
+    fn te_text_box_replaces_contents_and_erases_empty_text() {
+        let pef = synthetic_pef_with_import(b"TETextBox");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let rect = scratch + 0x20;
+        loaded.memory.add_region(scratch, vec![0; 0x40]);
+        loaded.memory.write_u8(scratch, b'0').unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 10, 10, 40, 100).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        for y in 9..41 {
+            for x in 9..101 {
+                assert!(ppc_quickdraw_write_raw_pixel(
+                    &mut loaded.memory,
+                    front,
+                    (x, y),
+                    103
+                ));
+            }
+        }
+        let clip = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        ppc_set_rect_rgn(&mut loaded.memory, clip, 0, 0, 80, 100).unwrap();
+        loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 99);
+        loaded
+            .toolbox_startup
+            .quickdraw_back_indices
+            .insert(PPC_MAIN_GWORLD, 17);
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TETextBox);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (70, 35)),
+            Some(17)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (90, 35)),
+            Some(103)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (9, 9)),
+            Some(103)
+        );
+        assert!((10..40).any(|y| (10..80)
+            .any(|x| { ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) == Some(99) })));
+
+        // An empty replacement still removes every previous glyph inside
+        // the box, while the portion outside clipRgn stays untouched.
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TETextBox);
+        for y in 10..40 {
+            for x in 10..100 {
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                    Some(if x < 80 { 17 } else { 103 }),
+                    "replacement pixel ({x}, {y})",
+                );
+            }
+        }
     }
 
     #[test]
