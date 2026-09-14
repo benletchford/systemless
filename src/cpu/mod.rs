@@ -199,7 +199,13 @@ impl M68kCpu {
         max_instructions: u32,
         watch_pcs: &[u32],
     ) -> m68k::BatchResult {
-        self.core.run_batch(bus, max_instructions, watch_pcs)
+        bus.begin_cpu_drawing();
+        let result = self.core.run_batch(bus, max_instructions, watch_pcs);
+        bus.end_cpu_drawing(!matches!(
+            result.exit,
+            m68k::BatchExit::BudgetExhausted | m68k::BatchExit::WatchedPc { .. }
+        ));
+        result
     }
 
     /// Execute one instruction through m68k's precise stepping path.
@@ -209,7 +215,10 @@ impl M68kCpu {
     /// and converted to [`StepResult::Stopped`].
     #[inline]
     pub fn step(&mut self, bus: &mut MacMemoryBus) -> StepResult {
-        match self.core.step(bus) {
+        bus.begin_cpu_drawing();
+        let result = self.core.step(bus);
+        bus.end_cpu_drawing(!matches!(result, m68k::StepResult::Ok { .. }));
+        match result {
             m68k::StepResult::Ok { .. } => StepResult::Ok,
             m68k::StepResult::AlineTrap { opcode } => StepResult::Aline(opcode),
             m68k::StepResult::FlineTrap { opcode } => StepResult::Fline(opcode),
