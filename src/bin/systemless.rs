@@ -18,7 +18,7 @@
 mod desktop_save_store;
 #[path = "desktop/headless_time.rs"]
 mod headless_time;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[path = "desktop/host_cursor.rs"]
 mod host_cursor;
 #[cfg(target_os = "macos")]
@@ -879,7 +879,7 @@ struct App {
     start_fullscreen: bool,
     /// Show the Systemless debug overlay on top of the game framebuffer.
     debug_overlay_visible: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     host_cursor: host_cursor::HostCursor,
     debug_last_frame_at: Option<std::time::Instant>,
     debug_host_fps: Option<f64>,
@@ -1021,7 +1021,7 @@ impl App {
             force_gpu_present: true,
             start_fullscreen,
             debug_overlay_visible: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             host_cursor: host_cursor::HostCursor::new(),
             debug_last_frame_at: None,
             debug_host_fps: None,
@@ -1589,13 +1589,13 @@ impl App {
         let screen_mode = runner.dispatcher().screen_mode;
         let device_clut = *runner.dispatcher().device_clut;
         let device_gamma = runner.dispatcher().device_gamma();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let cursor = if self.host_cursor.enabled() {
             None
         } else {
             runner.dispatcher().cursor().cloned()
         };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let cursor = runner.dispatcher().cursor().cloned();
         let mouse_pos = runner.dispatcher().mouse_position();
 
@@ -2592,11 +2592,11 @@ fn content_rect_from_copybits(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl App {
     /// Keep the host pointer in step with the guest cursor image, visibility,
     /// and the window's guest-to-screen scale.
-    fn sync_host_cursor(&mut self) {
+    fn sync_host_cursor(&mut self, _event_loop: &ActiveEventLoop) {
         let (Some(window), Some(runner)) = (self.window.as_ref(), self.runner.as_ref()) else {
             return;
         };
@@ -2606,6 +2606,7 @@ impl App {
         // dialog expansion all change it (issue #1049).
         let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
         let (sw, sh) = (u32::from(sw), u32::from(sh));
+        #[cfg(target_os = "macos")]
         let content = if self.debug_overlay_visible {
             ContentRect {
                 left: 0,
@@ -2629,11 +2630,22 @@ impl App {
                 native_menu_bar_height(Some(runner), self.native_integrations),
             )
         };
+        #[cfg(target_os = "windows")]
+        let content = ContentRect {
+            left: 0,
+            top: 0,
+            width: sw,
+            height: sh,
+        };
         let size = window.inner_size();
         let scale =
             host_cursor::presentation_scale(content.width, content.height, size.width, size.height);
+        #[cfg(target_os = "macos")]
         self.host_cursor
             .sync(window, runner.dispatcher().cursor(), scale);
+        #[cfg(target_os = "windows")]
+        self.host_cursor
+            .sync(_event_loop, window, runner.dispatcher().cursor(), scale);
     }
 }
 
@@ -2781,6 +2793,8 @@ impl ApplicationHandler for App {
                     runner.set_mouse_position(v, h);
                     runner.dispatcher_mut().show_cursor();
                 }
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                self.sync_host_cursor(event_loop);
             }
 
             WindowEvent::MouseInput {
@@ -2922,8 +2936,8 @@ impl ApplicationHandler for App {
         }
         self.sync_save_files(false);
 
-        #[cfg(target_os = "macos")]
-        self.sync_host_cursor();
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.sync_host_cursor(event_loop);
 
         #[cfg(target_os = "macos")]
         self.sync_native_application_identity();
