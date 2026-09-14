@@ -137,6 +137,7 @@ use std::sync::OnceLock;
 mod dispatch_event;
 mod dispatch_files;
 mod dispatch_math;
+mod dispatch_qd3d;
 mod dispatch_quickdraw;
 mod dispatch_sound;
 mod pef_dump;
@@ -8501,19 +8502,25 @@ impl PpcLoadedApp {
                         Some(&mut idle_poll_counts),
                     ))
                 } else if let Some(action) =
-                    dispatch_q3_matrix_import_fast(&binding.dispatcher_target, cpu, memory)
+                    dispatch_qd3d::dispatch_q3_matrix_import_fast(
+                        &binding.dispatcher_target,
+                        cpu,
+                        memory,
+                    )
                 {
                     Some(action)
-                } else if let Some(action) = dispatch_q3_object_group_import_fast(
-                    &binding.dispatcher_target,
-                    cpu,
-                    memory,
-                    &q3_objects,
-                    &mut q3_object_refs,
-                    &q3_group_memberships,
-                    &q3_file_groups,
-                    &q3_lights,
-                    &mut q3_error_state,
+                } else if let Some(action) = dispatch_qd3d::dispatch_q3_object_group_import_fast(
+                    dispatch_qd3d::PpcQ3ObjectGroupDispatchContext {
+                        target: &binding.dispatcher_target,
+                        cpu,
+                        memory,
+                        q3_objects: &q3_objects,
+                        q3_object_refs: &mut q3_object_refs,
+                        q3_group_memberships: &q3_group_memberships,
+                        q3_file_groups: &q3_file_groups,
+                        q3_lights: &q3_lights,
+                        q3_error_state: &mut q3_error_state,
+                    },
                 ) {
                     Some(action)
                 } else if let Some(action) = dispatch_simple_hot_import_fast(
@@ -8528,30 +8535,32 @@ impl PpcLoadedApp {
                     ),
                 ) {
                     Some(action)
-                } else if let Some(action) = dispatch_q3_submit_import_fast(
-                    &binding.dispatcher_target,
-                    cpu,
-                    memory,
-                    &q3_objects,
-                    &q3_group_memberships,
-                    &mut q3_views,
-                    &mut q3_view_transforms,
-                    &mut q3_submissions,
-                    &mut q3_submission_transforms,
-                    &mut q3_view_materials,
-                    &mut q3_submission_materials,
-                    &mut q3_submission_lights,
-                    &mut q3_view_state_stack,
-                    &q3_attributes,
-                    &q3_styles,
-                    &q3_shader_boundaries,
-                    &q3_shader_uv_transforms,
-                    &q3_texture_shaders,
-                    &q3_mipmap_textures,
-                    &q3_trimeshes,
-                    &mut q3_fog_styles,
-                    &q3_lights,
-                    &mut q3_error_state,
+                } else if let Some(action) = dispatch_qd3d::dispatch_q3_submit_import_fast(
+                    dispatch_qd3d::PpcQ3SubmitDispatchContext {
+                        target: &binding.dispatcher_target,
+                        cpu,
+                        memory,
+                        q3_objects: &q3_objects,
+                        q3_group_memberships: &q3_group_memberships,
+                        q3_views: &mut q3_views,
+                        q3_view_transforms: &mut q3_view_transforms,
+                        q3_submissions: &mut q3_submissions,
+                        q3_submission_transforms: &mut q3_submission_transforms,
+                        q3_view_materials: &mut q3_view_materials,
+                        q3_submission_materials: &mut q3_submission_materials,
+                        q3_submission_lights: &mut q3_submission_lights,
+                        q3_view_state_stack: &mut q3_view_state_stack,
+                        q3_attributes: &q3_attributes,
+                        q3_styles: &q3_styles,
+                        q3_shader_boundaries: &q3_shader_boundaries,
+                        q3_shader_uv_transforms: &q3_shader_uv_transforms,
+                        q3_texture_shaders: &q3_texture_shaders,
+                        q3_mipmap_textures: &q3_mipmap_textures,
+                        q3_trimeshes: &q3_trimeshes,
+                        q3_fog_styles: &mut q3_fog_styles,
+                        q3_lights: &q3_lights,
+                        q3_error_state: &mut q3_error_state,
+                    },
                 ) {
                     Some(action)
                 } else {
@@ -42325,214 +42334,6 @@ fn dispatch_simple_hot_import_fast(
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => dispatch_math::dispatch_math_import(target, cpu, memory),
-    }
-}
-
-fn dispatch_q3_submit_import_fast(
-    target: &PpcImportDispatcherTarget,
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    q3_objects: &[PpcQ3ObjectRecord],
-    q3_group_memberships: &[PpcQ3GroupMembershipRecord],
-    q3_views: &mut Vec<PpcQ3ViewStateRecord>,
-    q3_view_transforms: &mut Vec<PpcQ3ViewTransformRecord>,
-    q3_submissions: &mut Vec<PpcQ3SubmissionRecord>,
-    q3_submission_transforms: &mut Vec<PpcQ3SubmissionTransformRecord>,
-    q3_view_materials: &mut Vec<PpcQ3ViewMaterialRecord>,
-    q3_submission_materials: &mut Vec<PpcQ3SubmissionMaterialRecord>,
-    q3_submission_lights: &mut Vec<PpcQ3SubmissionLightRecord>,
-    q3_view_state_stack: &mut Vec<PpcQ3ViewStateSnapshotRecord>,
-    q3_attributes: &[PpcQ3AttributeRecord],
-    q3_styles: &[PpcQ3StyleRecord],
-    q3_shader_boundaries: &[PpcQ3ShaderBoundaryRecord],
-    q3_shader_uv_transforms: &[PpcQ3ShaderUvTransformRecord],
-    q3_texture_shaders: &[PpcQ3TextureShaderRecord],
-    q3_mipmap_textures: &[PpcQ3MipmapTextureRecord],
-    q3_trimeshes: &[PpcQ3TriMeshRecord],
-    q3_fog_styles: &mut Vec<PpcQ3FogStyleRecord>,
-    q3_lights: &[PpcQ3LightRecord],
-    q3_error_state: &mut PpcQ3ErrorState,
-) -> Option<PpcImportAction> {
-    let kind = match target {
-        PpcImportDispatcherTarget::Q3ShaderSubmit => PpcQ3SubmissionKind::Shader,
-        PpcImportDispatcherTarget::Q3StyleSubmit => PpcQ3SubmissionKind::Style,
-        PpcImportDispatcherTarget::Q3TriMeshSubmit => PpcQ3SubmissionKind::TriMesh,
-        PpcImportDispatcherTarget::Q3ObjectSubmit => PpcQ3SubmissionKind::Object,
-        PpcImportDispatcherTarget::Q3FogStyleSubmit => {
-            return Some(PpcImportAction::Return(u32::from(ppc_q3_fog_style_submit(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_views,
-                q3_view_transforms,
-                q3_submissions,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_fog_styles,
-                q3_submission_lights,
-                q3_shader_boundaries,
-                q3_shader_uv_transforms,
-                q3_texture_shaders,
-                q3_mipmap_textures,
-                q3_lights,
-                q3_objects,
-                q3_error_state,
-            ))));
-        }
-        _ => return None,
-    };
-    Some(PpcImportAction::Return(u32::from(ppc_q3_submit(
-        cpu,
-        memory,
-        q3_objects,
-        q3_group_memberships,
-        q3_views,
-        q3_view_transforms,
-        q3_submissions,
-        q3_submission_transforms,
-        q3_view_materials,
-        q3_submission_materials,
-        q3_submission_lights,
-        q3_view_state_stack,
-        q3_attributes,
-        q3_styles,
-        q3_shader_boundaries,
-        q3_shader_uv_transforms,
-        q3_texture_shaders,
-        q3_mipmap_textures,
-        q3_trimeshes,
-        q3_lights,
-        q3_error_state,
-        kind,
-    ))))
-}
-
-fn dispatch_q3_matrix_import_fast(
-    target: &PpcImportDispatcherTarget,
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-) -> Option<PpcImportAction> {
-    match target {
-        PpcImportDispatcherTarget::Q3Matrix3x3SetTranslate => {
-            Some(PpcImportAction::Return(ppc_q3_matrix3x3_set_translate(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4SetIdentity => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_identity(memory, cpu.gpr[3]),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetTranslate => {
-            Some(PpcImportAction::Return(ppc_q3_matrix4x4_set_translate(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-                ppc_fpr_as_f32(cpu, 3),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4SetScale => {
-            Some(PpcImportAction::Return(ppc_q3_matrix4x4_set_scale(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-                ppc_fpr_as_f32(cpu, 3),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateX => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_rotate_x(memory, cpu.gpr[3], ppc_fpr_as_f32(cpu, 1)),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateY => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_rotate_y(memory, cpu.gpr[3], ppc_fpr_as_f32(cpu, 1)),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateZ => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_rotate_z(memory, cpu.gpr[3], ppc_fpr_as_f32(cpu, 1)),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateXyz => {
-            Some(PpcImportAction::Return(ppc_q3_matrix4x4_set_rotate_xyz(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-                ppc_fpr_as_f32(cpu, 3),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4Multiply => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_multiply(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4Transpose => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_transpose(memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4Invert => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_invert(memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        _ => None,
-    }
-}
-
-fn dispatch_q3_object_group_import_fast(
-    target: &PpcImportDispatcherTarget,
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    q3_objects: &[PpcQ3ObjectRecord],
-    q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
-    q3_group_memberships: &[PpcQ3GroupMembershipRecord],
-    q3_file_groups: &[PpcQ3FileGroupRecord],
-    q3_lights: &[PpcQ3LightRecord],
-    q3_error_state: &mut PpcQ3ErrorState,
-) -> Option<PpcImportAction> {
-    match target {
-        PpcImportDispatcherTarget::Q3ObjectIsType => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_object_is_type(cpu, q3_objects, q3_error_state),
-        ))),
-        PpcImportDispatcherTarget::Q3GroupGetFirstPosition => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_first_position(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3GroupGetNextPosition => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_next_position(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3GroupGetFirstPositionOfType => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_first_position_of_type(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3GroupGetPositionObject => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_position_object(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_object_refs,
-                q3_lights,
-                &[],
-                q3_error_state,
-            )),
-        )),
-        _ => None,
     }
 }
 
