@@ -637,7 +637,7 @@ impl SoundManager {
         self.channels.push(channel);
     }
 
-    fn ensure_channel_mut(&mut self, guest_ptr: u32) -> &mut SndChannel {
+    pub(crate) fn ensure_channel_mut(&mut self, guest_ptr: u32) -> &mut SndChannel {
         if let Some(index) = self
             .channels
             .iter()
@@ -921,6 +921,11 @@ impl SoundManager {
 
     pub fn set_default_output_volume(&mut self, volume: u32) {
         self.default_output_volume = volume;
+    }
+
+    /// Find a channel by its guest pointer without requesting mutation.
+    pub fn find_channel(&self, guest_ptr: u32) -> Option<&SndChannel> {
+        self.channels.iter().find(|channel| channel.guest_ptr == guest_ptr)
     }
 
     /// Find a channel by its guest pointer.
@@ -2074,18 +2079,21 @@ mod tests {
         assert_eq!(chan.queue.len(), STD_Q_LENGTH);
     }
 
-    /// Locks in `SoundManager::find_channel_mut`'s contract: returns
-    /// `Some(&mut SndChannel)` iff the `guest_ptr` matches an existing
-    /// channel, `None` otherwise. Returning the wrong channel (or
-    /// `None` when the ptr matches) would silently break
-    /// `execute_sound_command` on per-channel cmds (QUIET, FLUSH,
-    /// VOLUME, RATE) which rely on `find_channel_mut` to locate the
-    /// target.
+    /// Locks in both Sound Manager channel lookup contracts: immutable and
+    /// mutable lookup select the channel whose `guest_ptr` matches and reject
+    /// unknown or NIL pointers.
     #[test]
-    fn find_channel_mut_matches_on_guest_ptr() {
+    fn find_channel_lookups_match_on_guest_ptr() {
         let mut sm = SoundManager::new();
         sm.channels.push(SndChannel::new(0xAAAA_0000, true));
         sm.channels.push(SndChannel::new(0xBBBB_0000, true));
+
+        assert_eq!(
+            sm.find_channel(0xBBBB_0000).map(|channel| channel.guest_ptr),
+            Some(0xBBBB_0000)
+        );
+        assert!(sm.find_channel(0xCCCC_0000).is_none());
+        assert!(sm.find_channel(0).is_none());
 
         // Hit: returns Some and matches the requested ptr.
         let found = sm.find_channel_mut(0xBBBB_0000);

@@ -1803,6 +1803,40 @@ impl<T> SharedProcessValue<T> {
 }
 
 impl SharedProcessValue<SoundManager> {
+    /// Mutate one process-owned sound channel for the duration of a serialized
+    /// operation without allowing the channel borrow to escape.
+    pub(crate) fn with_channel_mut<R>(
+        &self,
+        guest_ptr: u32,
+        f: impl FnOnce(&mut SndChannel) -> R,
+    ) -> Option<R> {
+        self.with_mut(|manager| manager.find_channel_mut(guest_ptr).map(f))
+    }
+
+    /// Mutate one process-owned sound channel, creating its canonical state
+    /// first when the guest has not registered it explicitly.
+    pub(crate) fn with_ensured_channel_mut<R>(
+        &self,
+        guest_ptr: u32,
+        f: impl FnOnce(&mut SndChannel) -> R,
+    ) -> R {
+        self.with_mut(|manager| f(manager.ensure_channel_mut(guest_ptr)))
+    }
+
+    /// Mutate the most recently created channel used by channel-less classic
+    /// buffer commands, creating the allocated default channel when needed.
+    pub(crate) fn with_default_channel_mut<R>(
+        &self,
+        f: impl FnOnce(&mut SndChannel) -> R,
+    ) -> R {
+        self.with_mut(|manager| {
+            if manager.channels.is_empty() {
+                manager.channels.push(SndChannel::new(0, true));
+            }
+            f(manager.channels.last_mut().unwrap())
+        })
+    }
+
     pub(crate) fn register_channel(
         &self,
         guest_ptr: u32,
