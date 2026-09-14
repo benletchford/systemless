@@ -501,7 +501,7 @@ impl super::TrapDispatcher {
                 active,
             },
         );
-        self.blit_theme_bitmap_mono_masked(bus, top, left, &bitmap);
+        self.blit_theme_bitmap_mono_masked(bus, top, left, &bitmap, None);
         true
     }
 
@@ -554,10 +554,20 @@ impl super::TrapDispatcher {
         bottom: i16,
         right: i16,
     ) -> bool {
+        self.draw_theme_caret_clipped(bus, (top, left, bottom, right), None)
+    }
+
+    pub(crate) fn draw_theme_caret_clipped(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        clip: Option<(i16, i16, i16, i16)>,
+    ) -> bool {
         if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
             return false;
         }
 
+        let (top, left, bottom, right) = rect;
         let width = right.saturating_sub(left);
         let height = bottom.saturating_sub(top);
         if width <= 0 || height <= 0 {
@@ -585,7 +595,7 @@ impl super::TrapDispatcher {
                 active: true,
             },
         );
-        self.blit_theme_bitmap_mono_masked(bus, top, left.saturating_sub(pad), &bitmap);
+        self.blit_theme_bitmap_mono_masked(bus, top, left.saturating_sub(pad), &bitmap, clip);
         true
     }
 
@@ -815,6 +825,7 @@ impl super::TrapDispatcher {
         top: i16,
         left: i16,
         bitmap: &ThemeBitmap,
+        clip: Option<(i16, i16, i16, i16)>,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -823,6 +834,13 @@ impl super::TrapDispatcher {
         let mut pixels = HashMap::new();
         for y in 0..bitmap.height() {
             for x in 0..bitmap.width() {
+                let dst_x = left.saturating_add(x as i16);
+                let dst_y = top.saturating_add(y as i16);
+                if clip
+                    .is_some_and(|(t, l, b, r)| dst_y < t || dst_y >= b || dst_x < l || dst_x >= r)
+                {
+                    continue;
+                }
                 let offset = ((y * bitmap.width() + x) * 4) as usize;
                 let color = Rgb8 {
                     r: rgba[offset],
@@ -842,8 +860,8 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    left.saturating_add(x as i16),
-                    top.saturating_add(y as i16),
+                    dst_x,
+                    dst_y,
                     pixel,
                 );
             }
