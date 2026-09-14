@@ -99248,6 +99248,10 @@ pub(crate) mod tests {
         classic
             .locked_files
             .insert("Shared Folder/Native Data".to_string());
+        // Native Delete removes the canonical record before queueing its notice.
+        native.process_file_system.with_mut(|file_system| {
+            file_system.vfs_files.retain(|file| file.path != "Shared Folder/Native Data");
+        });
         native.push_test_deleted_vfs_file_path("Shared Folder/Native Data".to_string());
         native.publish_test_native_vfs_catalogue();
         assert!(!classic

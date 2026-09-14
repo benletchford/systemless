@@ -1224,6 +1224,21 @@ impl ProcessFileSystemState {
             });
         }
         for path in deleted_paths {
+            // Delete removes the native records immediately. A queued host
+            // notification must not delete a replacement created at that path.
+            // Inside Macintosh: Files (1992), "FSpDelete": both forks are deleted.
+            if self
+                .vfs_files
+                .iter()
+                .any(|file| file.path.eq_ignore_ascii_case(&path))
+                || self
+                    .vfs_resource_files
+                    .iter()
+                    .any(|file| file.path.eq_ignore_ascii_case(&path))
+            {
+                continue;
+            }
+
             self.vfs_files.data_forks.remove(&path);
             self.vfs_files
                 .records
@@ -10543,6 +10558,51 @@ mod tests {
             native.vfs_resource_files.fork("Shared").unwrap(),
             b"classic-resource"
         );
+    }
+
+    #[test]
+    fn native_catalogue_preserves_recreated_file_after_pending_delete() {
+        let mut state = ProcessFileSystemState::default();
+        let path = "Pilots/Test Pilot";
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: path.into(),
+            data: b"old".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: true,
+        });
+        state.publish_native_vfs_catalogue();
+        // Native deletion already removes the canonical forks. Its notification
+        // remains queued until the frontend persists filesystem changes.
+        state.vfs_files.retain(|file| file.path != path);
+        state.deleted_vfs_file_paths.push(path.into());
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: path.into(),
+            data: b"replacement".to_vec().into(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"DATA"),
+            finder_flags: 0,
+            dirty: true,
+        });
+        state.with_resource_manager_mut(|resources| {
+            resources.vfs_resource_files.push(ProcessVfsResourceFileRecord {
+                path: path.into(),
+                creator: u32::from_be_bytes(*b"TEST"),
+                file_type: u32::from_be_bytes(*b"DATA"),
+                finder_flags: 0,
+                resource_len: 8,
+                raw_data: Some(b"resource".to_vec().into()),
+                map_attrs: 0,
+                dirty: true,
+            });
+        });
+        state.publish_native_vfs_catalogue();
+        assert_eq!(state.vfs_resource_files.fork(path).unwrap(), b"resource");
+        assert_eq!(state.vfs_files.len(), 1);
+        assert_eq!(state.vfs_files[0].data, b"replacement");
+        assert!(state.classic_vfs_metadata.contains_key(path));
+        assert_eq!(state.deleted_vfs_file_paths, [path]);
     }
 
     #[test]
