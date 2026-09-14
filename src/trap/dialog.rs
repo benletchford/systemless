@@ -15394,112 +15394,15 @@ impl super::TrapDispatcher {
             }
 
             // TEUpdate ($A9D3)
-            // PROCEDURE TEUpdate(rUpdate: Rect; hTE: TEHandle);
-            // Inside Macintosh Volume I (1985), p. I-387.
-            // Inside Macintosh: Text (1993), p. 2-88.
-            // MPW Universal Headers TextEdit.h:
-            //   EXTERN_API(void) TEUpdate(const Rect *rUpdate, TEHandle hTE)
-            //     ONEWORDINLINE(0xA9D3);
-            //
-            // IM:I I-387 quote: "TEUpdate draws the text specified by hTE
-            //   within the rectangle rUpdate of the destination rectangle
-            //   for the edit record specified by hTE. You normally call
-            //   this procedure in response to an update event for the
-            //   window."
-            // IM:Text 1993 p. 2-88 quote: "TEUpdate redraws the text
-            //   specified by the edit record within the update rectangle."
-            //
-            // TEUpdate has two stack layouts that real Mac ROMs (System
-            // 6.0+ onward) auto-tolerate:
-            //
-            //   * Pascal canonical (per IM:I I-387 PROCEDURE signature):
-            //       sp+0   hTE       (4 bytes — last pushed, Pascal LR
-            //                         order: last arg = shallowest)
-            //       sp+4   rUpdate   (8 bytes — inlined Rect, deepest)
-            //       Net pop = 12 bytes; no result slot (PROCEDURE).
-            //
-            //   * MPW C canonical (Universal Headers TextEdit.h
-            //     declaration with `const Rect *`):
-            //       sp+0   hTE          (4 bytes)
-            //       sp+4   rUpdatePtr   (4 bytes — pointer to Rect)
-            //       Net pop = 8 bytes; no result slot.
-            //
-            // The two forms agree on the contract: TEUpdate is a redraw
-            // operation that does NOT mutate the underlying edit-record
-            // state (hText, teLength, selStart, selEnd) — it only paints
-            // pixels into the TE's inPort within the rUpdate region.
-            //
-            // Both the C-form and Pascal-form stack disciplines are
-            // exercised, and TE record state is preserved across the two
-            // calls (BasiliskII System 7.5.3 ROM agrees). The heuristic
-            // below correctly identifies both call shapes.
-            //
-            // Contract coverage:
-            //   dialog::tests::teupdate_pascal_form_redraws_text_and_pops_inline_rect_and_tehandle
-            //   dialog::tests::teupdate_c_rect_pointer_form_is_accepted_and_pops_eight_bytes
-            //   dialog::tests::teupdate_preserves_te_record_state_across_redraw
+            // Redraws text within the update rectangle.
+            // PROCEDURE TEUpdate (rUpdate: Rect; hTE: TEHandle);
+            // Inside Macintosh: Text (1993), p. 2-90; MPW TextEdit.h:
+            // pascal void TEUpdate(const Rect *rUpdate, TEHandle hTE).
+            // The rectangle is passed by address, followed by hTE. Always
+            // consume two pointers, including for stack-local or empty Rects.
             (true, 0x1D3) => {
                 let sp = cpu.read_reg(Register::A7);
-                // Both Pascal and C forms put hTE at SP+0 (last argument
-                // pushed in Pascal left-to-right convention). The forms
-                // differ at SP+4:
-                //   * C form (8-byte total push): SP+4..7 is `rUpdatePtr`,
-                //     a 4-byte pointer to a Rect on the heap or A5 globals.
-                //   * Pascal form (12-byte total push): SP+4..11 is the
-                //     8-byte Rect inlined directly on the stack.
-                //
-                // The earlier heuristic (`te_record_ptr(first_long) != 0`)
-                // ALWAYS picked Pascal because first_long is the same handle
-                // in both forms. POD MARS Master uses the C form; the wrong
-                // pop-size leaked 4 bytes per TEUpdate call, which compounded
-                // into 8 bytes per update event (two TEUpdates) and within
-                // ~50 update cycles drifted A6/A7 enough to corrupt the
-                // EventRecord pointer the next WaitNextEvent passed in,
-                // starving the click hit-test. Per d4a8444b / 172f262a.
-                //
-                // The reliable test is: does the longword at SP+4 deref to
-                // a plausible Rect (top<=bottom, left<=right, both in
-                // -32000..32000)? If yes, C form. If not, fall back to
-                // Pascal form. Fallback covers the rare case where SP+4..11
-                // genuinely contains an inlined rect.
-                //
-                // Two extra guards beyond the bounds check:
-                //   * `ptr_candidate` must be word-aligned. A Pascal-form
-                //     small-coord rect like `(top=1, left=1, …)` produces
-                //     `(top<<16)|left = 0x0001_0001`, which is odd and
-                //     therefore NOT a valid 68k pointer (heap and globals
-                //     are always even-aligned).
-                //   * The dereffed Rect must have at least one non-zero
-                //     word. A Pascal form with small even coords like
-                //     `(top=10, left=10, bottom=40, right=200)` produces
-                //     ptr_candidate `0x000A_000A`, which derefs into
-                //     typically-zero low-memory or uninitialized heap —
-                //     an all-zero "rect" passes the bounds test but isn't
-                //     a meaningful update region a real C-form caller
-                //     would pass.
-                let hte_at_sp = bus.read_long(sp);
-                let ptr_candidate = bus.read_long(sp + 4);
-                let looks_like_c_form = ptr_candidate != 0
-                    && (ptr_candidate & 1) == 0
-                    && (0x0000_0010..0x0400_0000).contains(&ptr_candidate)
-                    && {
-                        let top = bus.read_word(ptr_candidate) as i16;
-                        let left = bus.read_word(ptr_candidate + 2) as i16;
-                        let bottom = bus.read_word(ptr_candidate + 4) as i16;
-                        let right = bus.read_word(ptr_candidate + 6) as i16;
-                        top <= bottom
-                            && left <= right
-                            && (-32000..=32000).contains(&top)
-                            && (-32000..=32000).contains(&left)
-                            && (-32000..=32000).contains(&bottom)
-                            && (-32000..=32000).contains(&right)
-                            && !(top == 0 && left == 0 && bottom == 0 && right == 0)
-                    };
-                let (te_handle, stack_pop) = if looks_like_c_form {
-                    (hte_at_sp, 8)
-                } else {
-                    (hte_at_sp, 12)
-                };
+                let te_handle = bus.read_long(sp);
                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                 if te_ptr != 0 {
                     if trace_textedit_enabled() {
@@ -15522,7 +15425,7 @@ impl super::TrapDispatcher {
                     let te_port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
                     self.refresh_visible_dialog_snapshot_for_port(bus, te_port);
                 }
-                cpu.write_reg(Register::A7, sp + stack_pop);
+                cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
 
@@ -33743,8 +33646,8 @@ mod tests {
     }
 
     #[test]
-    fn teupdate_pascal_form_redraws_text_and_pops_inline_rect_and_tehandle() {
-        // IM:I I-387; Inside Macintosh: Text 1993, 2-88.
+    fn teupdate_redraws_text_and_pops_rect_pointer_and_tehandle() {
+        // IM:I I-387; Inside Macintosh: Text 1993, 2-90.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
         let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
@@ -33753,14 +33656,16 @@ mod tests {
         }
 
         bus.write_long(TEST_SP, te_handle);
-        bus.write_word(TEST_SP + 4, 0); // rUpdate.top
-        bus.write_word(TEST_SP + 6, 0); // rUpdate.left
-        bus.write_word(TEST_SP + 8, 40); // rUpdate.bottom
-        bus.write_word(TEST_SP + 10, 120); // rUpdate.right
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 0);
+        bus.write_word(rect_ptr + 2, 0);
+        bus.write_word(rect_ptr + 4, 40);
+        bus.write_word(rect_ptr + 6, 120);
+        bus.write_long(TEST_SP + 4, rect_ptr);
 
         let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(
             TrapDispatcher::te_text_bytes(&bus, te_handle),
             b"HELLO".to_vec()
@@ -33786,10 +33691,12 @@ mod tests {
             classic_bus.write_byte(screen_base + i, 0);
         }
         classic_bus.write_long(TEST_SP, classic_te_handle);
-        classic_bus.write_word(TEST_SP + 4, 0);
-        classic_bus.write_word(TEST_SP + 6, 0);
-        classic_bus.write_word(TEST_SP + 8, 40);
-        classic_bus.write_word(TEST_SP + 10, 120);
+        let rect_ptr = classic_bus.alloc(8);
+        classic_bus.write_word(rect_ptr, 0);
+        classic_bus.write_word(rect_ptr + 2, 0);
+        classic_bus.write_word(rect_ptr + 4, 40);
+        classic_bus.write_word(rect_ptr + 6, 120);
+        classic_bus.write_long(TEST_SP + 4, rect_ptr);
         let result = classic.dispatch_dialog(true, 0x1D3, &mut classic_cpu, &mut classic_bus);
         assert!(result.unwrap().is_ok());
 
@@ -33804,10 +33711,12 @@ mod tests {
             themed_bus.write_byte(screen_base + i, 0);
         }
         themed_bus.write_long(TEST_SP, themed_te_handle);
-        themed_bus.write_word(TEST_SP + 4, 0);
-        themed_bus.write_word(TEST_SP + 6, 0);
-        themed_bus.write_word(TEST_SP + 8, 40);
-        themed_bus.write_word(TEST_SP + 10, 120);
+        let rect_ptr = themed_bus.alloc(8);
+        themed_bus.write_word(rect_ptr, 0);
+        themed_bus.write_word(rect_ptr + 2, 0);
+        themed_bus.write_word(rect_ptr + 4, 40);
+        themed_bus.write_word(rect_ptr + 6, 120);
+        themed_bus.write_long(TEST_SP + 4, rect_ptr);
         let result = themed.dispatch_dialog(true, 0x1D3, &mut themed_cpu, &mut themed_bus);
         assert!(result.unwrap().is_ok());
 
@@ -33890,10 +33799,12 @@ mod tests {
                 bus.write_byte(base + i, 0);
             }
             bus.write_long(TEST_SP, te_handle);
-            bus.write_word(TEST_SP + 4, 0);
-            bus.write_word(TEST_SP + 6, 0);
-            bus.write_word(TEST_SP + 8, 40);
-            bus.write_word(TEST_SP + 10, 120);
+            let rect_ptr = bus.alloc(8);
+            bus.write_word(rect_ptr, 0);
+            bus.write_word(rect_ptr + 2, 0);
+            bus.write_word(rect_ptr + 4, 40);
+            bus.write_word(rect_ptr + 6, 120);
+            bus.write_long(TEST_SP + 4, rect_ptr);
             let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
             sum_screen_bytes(&bus, base, row_bytes, 0, 0, line_height, 32)
@@ -33930,10 +33841,12 @@ mod tests {
                 bus.write_byte(base + i, 0);
             }
             bus.write_long(TEST_SP, te_handle);
-            bus.write_word(TEST_SP + 4, 0);
-            bus.write_word(TEST_SP + 6, 0);
-            bus.write_word(TEST_SP + 8, 40);
-            bus.write_word(TEST_SP + 10, 120);
+            let rect_ptr = bus.alloc(8);
+            bus.write_word(rect_ptr, 0);
+            bus.write_word(rect_ptr + 2, 0);
+            bus.write_word(rect_ptr + 4, 40);
+            bus.write_word(rect_ptr + 6, 120);
+            bus.write_long(TEST_SP + 4, rect_ptr);
             let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
 
@@ -33981,13 +33894,15 @@ mod tests {
             }
 
             bus.write_long(TEST_SP, te_handle);
-            bus.write_word(TEST_SP + 4, 0);
-            bus.write_word(TEST_SP + 6, 0);
-            bus.write_word(TEST_SP + 8, 40);
-            bus.write_word(TEST_SP + 10, 120);
+            let rect_ptr = bus.alloc(8);
+            bus.write_word(rect_ptr, 0);
+            bus.write_word(rect_ptr + 2, 0);
+            bus.write_word(rect_ptr + 4, 40);
+            bus.write_word(rect_ptr + 6, 120);
+            bus.write_long(TEST_SP + 4, rect_ptr);
             let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
-            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
 
             let first_line_bottom_band =
                 count_set_pixels(&bus, base, row_bytes, line_height - 2, 0, line_height, 24);
@@ -34015,7 +33930,7 @@ mod tests {
         let reversed = render_themed_selection(3, 0);
 
         // IM:I I-385 says TESetSelect owns selection-range changes, while
-        // IM:I I-387 / Text 1993 p. 2-88 define TEUpdate as redraw. The theme
+        // IM:I I-387 / Text 1993 p. 2-90 define TEUpdate as redraw. The theme
         // path can normalize reversed endpoints for drawing but must not
         // rewrite the guest TERec.
         assert_eq!(forward.0, 3);
@@ -34051,10 +33966,12 @@ mod tests {
             inactive_plain_bus.write_byte(plain_base + i, 0);
         }
         inactive_plain_bus.write_long(TEST_SP, inactive_plain_te_handle);
-        inactive_plain_bus.write_word(TEST_SP + 4, 0);
-        inactive_plain_bus.write_word(TEST_SP + 6, 0);
-        inactive_plain_bus.write_word(TEST_SP + 8, 40);
-        inactive_plain_bus.write_word(TEST_SP + 10, 120);
+        let rect_ptr = inactive_plain_bus.alloc(8);
+        inactive_plain_bus.write_word(rect_ptr, 0);
+        inactive_plain_bus.write_word(rect_ptr + 2, 0);
+        inactive_plain_bus.write_word(rect_ptr + 4, 40);
+        inactive_plain_bus.write_word(rect_ptr + 6, 120);
+        inactive_plain_bus.write_long(TEST_SP + 4, rect_ptr);
         let result = inactive_plain.dispatch_dialog(
             true,
             0x1D3,
@@ -34107,10 +34024,12 @@ mod tests {
 
         inactive_outline_cpu.write_reg(Register::A7, TEST_SP);
         inactive_outline_bus.write_long(TEST_SP, inactive_outline_te_handle);
-        inactive_outline_bus.write_word(TEST_SP + 4, 0);
-        inactive_outline_bus.write_word(TEST_SP + 6, 0);
-        inactive_outline_bus.write_word(TEST_SP + 8, 40);
-        inactive_outline_bus.write_word(TEST_SP + 10, 120);
+        let rect_ptr = inactive_outline_bus.alloc(8);
+        inactive_outline_bus.write_word(rect_ptr, 0);
+        inactive_outline_bus.write_word(rect_ptr + 2, 0);
+        inactive_outline_bus.write_word(rect_ptr + 4, 40);
+        inactive_outline_bus.write_word(rect_ptr + 6, 120);
+        inactive_outline_bus.write_long(TEST_SP + 4, rect_ptr);
         let result = inactive_outline.dispatch_dialog(
             true,
             0x1D3,
@@ -34133,10 +34052,12 @@ mod tests {
             active_bus.write_byte(active_base + i, 0);
         }
         active_bus.write_long(TEST_SP, active_te_handle);
-        active_bus.write_word(TEST_SP + 4, 0);
-        active_bus.write_word(TEST_SP + 6, 0);
-        active_bus.write_word(TEST_SP + 8, 40);
-        active_bus.write_word(TEST_SP + 10, 120);
+        let rect_ptr = active_bus.alloc(8);
+        active_bus.write_word(rect_ptr, 0);
+        active_bus.write_word(rect_ptr + 2, 0);
+        active_bus.write_word(rect_ptr + 4, 40);
+        active_bus.write_word(rect_ptr + 6, 120);
+        active_bus.write_long(TEST_SP + 4, rect_ptr);
         let result = active.dispatch_dialog(true, 0x1D3, &mut active_cpu, &mut active_bus);
         assert!(result.unwrap().is_ok());
 
@@ -34205,9 +34126,9 @@ mod tests {
     }
 
     #[test]
-    fn teupdate_c_rect_pointer_form_is_accepted_and_pops_eight_bytes() {
-        // Inside Macintosh: Text 1993, 2-88 update semantics plus
-        // MPW C call-shape compatibility (Rect* + TEHandle).
+    fn teupdate_rect_pointer_pops_eight_bytes() {
+        // Inside Macintosh: Text 1993, 2-90 update semantics plus
+        // MPW TextEdit.h (Rect* + TEHandle).
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
         let rect_ptr = bus.alloc(8);
@@ -34229,11 +34150,43 @@ mod tests {
     }
 
     #[test]
+    fn teupdate_high_stack_rect_preserves_caller_saved_registers() {
+        // A stack-local Rect is still passed by pointer, even above 64 MiB
+        // or when empty. Popping its contents instead shifts the caller's
+        // saved registers when it returns from its drawing callback.
+        let mut disp = TrapDispatcher::new();
+        let mut cpu = MockCpu::new();
+        let mut bus = MacMemoryBus::new(128 * 1024 * 1024);
+        let sp = 0x07F6_FAD4;
+        let rect_ptr = sp + 64;
+        for bottom in [40, 0] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, 0); // NIL TEHandle needs no drawing.
+            bus.write_long(sp + 4, rect_ptr);
+            bus.write_long(sp + 8, 0x00E4_F700); // saved dialog pointer
+            bus.write_long(sp + 12, 0x019F_4158); // saved drawing callback
+            bus.write_word(rect_ptr, 0);
+            bus.write_word(rect_ptr + 2, 0);
+            bus.write_word(rect_ptr + 4, bottom);
+            bus.write_word(rect_ptr + 6, 120);
+
+            assert!(disp
+                .dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+            let restored_sp = cpu.read_reg(Register::A7);
+            assert_eq!(restored_sp, sp + 8);
+            assert_eq!(bus.read_long(restored_sp), 0x00E4_F700);
+            assert_eq!(bus.read_long(restored_sp + 4), 0x019F_4158);
+        }
+    }
+
+    #[test]
     fn teupdate_preserves_te_record_state_across_redraw() {
         // TEUpdate is a redraw operation and MUST NOT mutate hText,
         // teLength, selStart, or selEnd. Per IM:I I-387 + IM:Text 1993
-        // p. 2-88: text bytes "HELLO" preserved, teLength==5,
-        // selStart==1, selEnd==4 after both C-form and Pascal-form
+        // p. 2-90: text bytes "HELLO" preserved, teLength==5,
+        // selStart==1, selEnd==4 after repeated
         // TEUpdate calls.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
@@ -34241,7 +34194,7 @@ mod tests {
         bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 1);
         bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
 
-        // C-form dispatch (8-byte pop).
+        // Redraw using the update rectangle pointer.
         let rect_ptr = bus.alloc(8);
         bus.write_word(rect_ptr, 10);
         bus.write_word(rect_ptr + 2, 10);
@@ -34253,17 +34206,18 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
 
-        // Pascal-form dispatch on the same TE record (12-byte pop):
-        // hTE at sp+0, inlined rect at sp+4..sp+11.
+        // Redraw the same TE record again.
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, te_handle);
-        bus.write_word(TEST_SP + 4, 10);
-        bus.write_word(TEST_SP + 6, 10);
-        bus.write_word(TEST_SP + 8, 40);
-        bus.write_word(TEST_SP + 10, 120);
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 10);
+        bus.write_word(rect_ptr + 2, 10);
+        bus.write_word(rect_ptr + 4, 40);
+        bus.write_word(rect_ptr + 6, 120);
+        bus.write_long(TEST_SP + 4, rect_ptr);
         let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
 
         // State preservation contract.
         assert_eq!(
@@ -34487,13 +34441,15 @@ mod tests {
         bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
 
         bus.write_long(TEST_SP, te_handle);
-        bus.write_word(TEST_SP + 4, 0);
-        bus.write_word(TEST_SP + 6, 0);
-        bus.write_word(TEST_SP + 8, 40);
-        bus.write_word(TEST_SP + 10, 120);
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 0);
+        bus.write_word(rect_ptr + 2, 0);
+        bus.write_word(rect_ptr + 4, 40);
+        bus.write_word(rect_ptr + 6, 120);
+        bus.write_long(TEST_SP + 4, rect_ptr);
         let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, te_handle);
