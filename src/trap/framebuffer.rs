@@ -2807,7 +2807,8 @@ impl super::TrapDispatcher {
         clip: (i16, i16, i16, i16),
         text_index: Option<u8>,
     ) -> i16 {
-        let Some((glyph, data)) = get_glyph(font_id, font_size, ch) else {
+        let Some((glyph, data)) = crate::quickdraw::text::get_unicode_glyph(font_id, font_size, ch)
+        else {
             return 6;
         };
         let gx = x + glyph.origin_x as i16;
@@ -4743,7 +4744,7 @@ impl super::TrapDispatcher {
         let metrics = get_font_metrics(font_id, font_size);
         let title_width = self.window_title.chars().fold(0i16, |width, ch| {
             width.saturating_add(
-                get_glyph(font_id, font_size, ch)
+                crate::quickdraw::text::get_unicode_glyph(font_id, font_size, ch)
                     .map(|(glyph, _)| glyph.advance as i16)
                     .unwrap_or(6),
             )
@@ -4870,7 +4871,7 @@ impl super::TrapDispatcher {
             // Just draw the title text centered
             if !self.window_title.is_empty() {
                 let text_x = title_clear_left + 8;
-                Self::fb_draw_string(
+                Self::fb_draw_string_clipped(
                     bus,
                     screen_base,
                     row_bytes,
@@ -4882,6 +4883,7 @@ impl super::TrapDispatcher {
                     &self.window_title,
                     font_id,
                     font_size,
+                    (tb_top, tb_left, tb_bottom - 2, tb_right),
                 );
             }
         } else {
@@ -5358,7 +5360,7 @@ impl super::TrapDispatcher {
         self.window_title = if title_h != 0 {
             let title_p = bus.read_long(title_h);
             if title_p != 0 {
-                String::from_utf8_lossy(&bus.read_pstring(title_p)).into_owned()
+                crate::mac_roman::decode_mac_roman(&bus.read_pstring(title_p))
             } else {
                 String::new()
             }
@@ -6209,6 +6211,41 @@ mod redraw_chrome_tests {
             !screen_pixel_is_black(&disp, &bus, 628, 89),
             "movable dialog must omit the zoom box"
         );
+    }
+
+    #[test]
+    fn window_record_redraw_preserves_mac_roman_title_glyphs() {
+        // Inside Macintosh: Text, Appendix A, Table A-3: Roman byte A8 is ®.
+        // The window's Pascal title and the host's decoded title must produce
+        // the same frame, both when active and after another window is selected.
+        for proc_id in [5, 8] {
+            for active in [false, true] {
+                let (mut disp, _cpu, mut bus) = setup_with_port();
+                let base = bus.alloc(800 * 600);
+                disp.screen_mode = (base, 800, 800, 600, 8);
+                bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+                bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+                let title = bus.alloc(32);
+                bus.write_pstring(title, b"SimCity 2000\xA8 Install");
+                let title_handle = bus.alloc(4);
+                bus.write_long(title_handle, title);
+                bus.write_long(PORT_PTR + 134, title_handle);
+                disp.window_proc_ids.insert(PORT_PTR, proc_id);
+                disp.window_proc_id = proc_id;
+                disp.window_bounds = disp.window_content_global_rect(&bus, PORT_PTR)
+                    .unwrap_or_else(|| disp.window_global_port_rect(&bus, PORT_PTR));
+                disp.window_title = "SimCity 2000® Install".into();
+                disp.go_away_flag = bus.read_byte(PORT_PTR + 112) != 0;
+                let white = TrapDispatcher::logical_white_pixel_index(&bus);
+                bus.fill_bytes(base, 800 * 600, white);
+                disp.draw_window_chrome(&mut bus, active);
+                let expected = bus.read_bytes(base, 800 * 600);
+                bus.fill_bytes(base, 800 * 600, white);
+                disp.draw_single_window_chrome_inline(&mut bus, PORT_PTR, active);
+                assert!(bus.read_bytes(base, 800 * 600) == expected,
+                    "proc_id={proc_id}, active={active}");
+            }
+        }
     }
 
     #[test]
