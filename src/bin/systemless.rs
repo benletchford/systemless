@@ -2809,6 +2809,20 @@ impl ApplicationHandler for App {
 
             WindowEvent::KeyboardInput { event, .. } => {
                 self.force_next_render = true;
+                let translated = host_keyboard_event_to_mac(
+                    &event.logical_key,
+                    &event.physical_key,
+                    event.text.as_ref().map(|t| t.as_str()),
+                );
+                if std::env::var_os("SYSTEMLESS_TRACE_GUI_KEY").is_some() {
+                    eprintln!(
+                        "[GUI-KEY] state={:?} logical_key={:?} physical_key={:?} mac={:?} text={:?}",
+                        event.state, event.logical_key, event.physical_key, translated, event.text,
+                    );
+                }
+                let Some((mac_key, char_code)) = translated else {
+                    return;
+                };
                 if matches!(event.physical_key, PhysicalKey::Code(KeyCode::F3)) {
                     if event.state == ElementState::Pressed && !event.repeat {
                         self.debug_overlay_visible = !self.debug_overlay_visible;
@@ -2821,23 +2835,6 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let Some(runner) = self.runner.as_mut() {
-                    let (mac_key, char_code) = host_key_to_mac(
-                        &event.logical_key,
-                        &event.physical_key,
-                        event.text.as_ref().map(|t| t.as_str()),
-                    );
-                    // GUI key logging env-gated on `SYSTEMLESS_TRACE_GUI_KEY=1`
-                    // — leaving it on would spam stderr for every keystroke.
-                    if std::env::var_os("SYSTEMLESS_TRACE_GUI_KEY").is_some() {
-                        eprintln!(
-                            "[GUI-KEY] state={:?} physical_key={:?} mac_key=${:02X} char=${:02X} text={:?}",
-                            event.state,
-                            event.physical_key,
-                            mac_key,
-                            char_code,
-                            event.text,
-                        );
-                    }
                     match event.state {
                         ElementState::Pressed => {
                             runner.push_key_down(mac_key, char_code);
@@ -3375,6 +3372,22 @@ fn physical_numpad_to_mac(key: &PhysicalKey) -> Option<(u8, u8)> {
     }
 }
 
+fn host_keyboard_event_to_mac(
+    logical_key: &Key,
+    physical_key: &PhysicalKey,
+    text: Option<&str>,
+) -> Option<(u8, u8)> {
+    // Laptop media actions can share a physical function-key position. The
+    // logical volume action belongs to the host and has no classic key event.
+    if matches!(
+        logical_key,
+        Key::Named(NamedKey::AudioVolumeDown | NamedKey::AudioVolumeUp | NamedKey::AudioVolumeMute)
+    ) {
+        return None;
+    }
+    Some(host_key_to_mac(logical_key, physical_key, text))
+}
+
 fn host_key_to_mac(logical_key: &Key, physical_key: &PhysicalKey, text: Option<&str>) -> (u8, u8) {
     let (mac_key, mac_char_fallback) = physical_numpad_to_mac(physical_key)
         .or_else(|| logical_arrow_to_mac(logical_key))
@@ -3493,6 +3506,16 @@ fn keycode_to_mac(key: &PhysicalKey) -> u8 {
             KeyCode::F3 => 0x63,
             KeyCode::F4 => 0x76,
             KeyCode::F5 => 0x60,
+            KeyCode::F6 => 0x61,
+            KeyCode::F7 => 0x62,
+            KeyCode::F8 => 0x64,
+            KeyCode::F9 => 0x65,
+            KeyCode::F10 => 0x6D,
+            KeyCode::F11 => 0x67,
+            KeyCode::F12 => 0x6F,
+            KeyCode::F13 => 0x69,
+            KeyCode::F14 => 0x6B,
+            KeyCode::F15 => 0x71,
             _ => 0xFF,
         },
         _ => 0xFF,
@@ -3513,6 +3536,24 @@ fn keycode_to_mac_char(key: &PhysicalKey) -> u8 {
             KeyCode::ArrowRight => 29,
             KeyCode::ArrowUp => 30,
             KeyCode::ArrowDown => 31,
+            // Apple Events.h: kFunctionKeyCharCode = 16. Preserve the
+            // virtual key separately, as described by Inside Macintosh:
+            // Macintosh Toolbox Essentials, "Handling Low-Level Events".
+            KeyCode::F1
+            | KeyCode::F2
+            | KeyCode::F3
+            | KeyCode::F4
+            | KeyCode::F5
+            | KeyCode::F6
+            | KeyCode::F7
+            | KeyCode::F8
+            | KeyCode::F9
+            | KeyCode::F10
+            | KeyCode::F11
+            | KeyCode::F12
+            | KeyCode::F13
+            | KeyCode::F14
+            | KeyCode::F15 => 0x10,
             _ => 0,
         },
         _ => 0,
@@ -4077,6 +4118,61 @@ mod tests {
             ),
             (0x4C, 0x03)
         );
+    }
+
+    #[test]
+    fn host_volume_actions_do_not_generate_guest_text_or_function_keys() {
+        for key in [
+            NamedKey::AudioVolumeDown,
+            NamedKey::AudioVolumeUp,
+            NamedKey::AudioVolumeMute,
+        ] {
+            for physical in [
+                PhysicalKey::Code(KeyCode::F2),
+                PhysicalKey::Code(KeyCode::AudioVolumeDown),
+            ] {
+                assert_eq!(
+                    host_keyboard_event_to_mac(&Key::Named(key.clone()), &physical, None),
+                    None
+                );
+            }
+        }
+        assert_eq!(
+            host_keyboard_event_to_mac(
+                &Key::Named(NamedKey::F2),
+                &PhysicalKey::Code(KeyCode::F2),
+                None
+            ),
+            Some((0x78, 0x10)),
+        );
+    }
+
+    #[test]
+    fn function_key_events_preserve_mac_virtual_keys_and_function_character() {
+        for (key, mac_key) in [
+            (KeyCode::F1, 0x7A),
+            (KeyCode::F2, 0x78),
+            (KeyCode::F3, 0x63),
+            (KeyCode::F4, 0x76),
+            (KeyCode::F5, 0x60),
+            (KeyCode::F6, 0x61),
+            (KeyCode::F7, 0x62),
+            (KeyCode::F8, 0x64),
+            (KeyCode::F9, 0x65),
+            (KeyCode::F10, 0x6D),
+            (KeyCode::F11, 0x67),
+            (KeyCode::F12, 0x6F),
+            (KeyCode::F13, 0x69),
+            (KeyCode::F14, 0x6B),
+            (KeyCode::F15, 0x71),
+        ] {
+            for text in [None, Some("\0")] {
+                assert_eq!(
+                    host_key_to_mac(&Key::Named(NamedKey::F2), &PhysicalKey::Code(key), text),
+                    (mac_key, 0x10)
+                );
+            }
+        }
     }
 
     #[test]
