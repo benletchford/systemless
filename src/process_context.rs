@@ -5154,6 +5154,15 @@ impl ProcessNativeMemoryManager {
         }
     }
 
+    /// Increase the native address ceiling after the caller has excluded fixed
+    /// stack, device, and system mappings from application allocations.
+    pub(crate) fn grow_native_heap_limit(&mut self, heap_limit: u32) {
+        if let Some(allocator) = &mut self.native_allocator {
+            allocator.heap.heap_limit = allocator.heap.heap_limit.max(heap_limit);
+            self.native_allocator_dirty = true;
+        }
+    }
+
     /// Set the expandable application-heap boundary for subsequent native
     /// allocations. The caller has already enforced the guest stack ceiling.
     #[cfg(test)]

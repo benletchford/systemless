@@ -2656,13 +2656,45 @@ use super::*;
     }
 
     #[test]
-    fn hle_import_runner_pb_get_cat_info_negative_index_ignores_name() {
+    fn native_partition_growth_skips_stack_display_and_system_reservations() {
+        let pef = synthetic_pef_with_import(b"NewPtrClear");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let old_limit = loaded.heap_limit();
+        let sp = loaded.cpu.gpr[1];
+        loaded.memory.write_u32_be(sp, 0xdecafbad).unwrap();
+        loaded
+            .memory
+            .write_u8(PPC_DSP_BACK_SCREEN_BASE, 0x7b)
+            .unwrap();
+        loaded
+            .memory
+            .add_readonly_allocation_exclusion(PPC_STACK_TOP + 8 * 1024 * 1024, 4096)
+            .unwrap();
+        let partition = 96 * 1024 * 1024;
+        loaded.grow_application_partition(partition);
+        assert_eq!(
+            ppc_heap_free_capacity(&loaded.memory, loaded.heap_base(), loaded.heap_limit()).0,
+            partition - loaded.stack_size
+        );
+        loaded.set_heap_cursor(old_limit - 16);
+        loaded.cpu.gpr[3] = 128;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert!(loaded.cpu.gpr[3] >= PPC_DSP_BACK_SCREEN_BASE + ppc_main_screen_buffer_size());
+        assert_eq!(loaded.memory.read_u32_be(sp), Some(0xdecafbad));
+        assert_eq!(loaded.memory.read_u8(PPC_DSP_BACK_SCREEN_BASE), Some(0x7b));
+        assert_eq!(loaded.memory.read_u32_be(loaded.cpu.gpr[3]), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_pb_get_cat_info_negative_index_returns_directory_name_without_reading_buffer() {
         let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
         let mut loaded = load_pef_application(&pef).unwrap();
         let pb = PPC_DATA_BASE + 0x1000;
         let name_ptr = pb + 128;
         loaded.memory.add_region(pb, vec![0; 256]);
-        write_ppc_pstring(&mut loaded.memory, name_ptr, b"Stale Name");
+        // The output buffer need not contain a readable input Pascal string.
+        loaded.memory.write_u8(name_ptr, 255).unwrap();
         loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
         loaded
             .memory
@@ -2692,7 +2724,7 @@ use super::*;
         assert_eq!(loaded.memory.read_u16_be(pb + 52), Some(1));
         assert_eq!(
             ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).as_deref(),
-            Some(b"Stale Name".as_slice())
+            Some(b"Preferences".as_slice())
         );
         assert_eq!(
             loaded.memory.read_u32_be(pb + 100),
