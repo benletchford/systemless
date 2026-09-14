@@ -1138,6 +1138,20 @@ pub enum PpcMathCompatibilityOperation {
     Str2Dec,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcAppleEventCompatibilityOperation {
+    CountItems,
+    CreateAppleEvent,
+    CreateDesc,
+    DisposeDesc,
+    GetAttributePtr,
+    GetNthPtr,
+    GetParamDesc,
+    PutParamDesc,
+    PutParamPtr,
+    Send,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
     InstallExceptionHandler,
@@ -2087,7 +2101,7 @@ pub enum PpcImportDispatcherTarget {
     LegacyMemoryUtility,
     LegacyControl,
     LegacyWindow,
-    AppleEventCompatibility,
+    AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
     DialogCompatibility,
     QuickDrawCompatibility,
     SystemCompatibility,
@@ -15483,12 +15497,46 @@ fn dispatcher_target_for_import(
             | "GetWTitle" | "GrowWindow" | "HiliteWindow" | "NewWindow" | "SendBehind"
             | "SetWTitle" | "TrackBox" | "TrackGoAway" | "ZoomWindow",
         ) => PpcImportDispatcherTarget::LegacyWindow,
-        (
-            "InterfaceLib",
-            "AECountItems" | "AECreateAppleEvent" | "AECreateDesc" | "AEDisposeDesc"
-            | "AEGetAttributePtr" | "AEGetNthPtr" | "AEGetParamDesc" | "AEPutParamDesc"
-            | "AEPutParamPtr" | "AESend",
-        ) => PpcImportDispatcherTarget::AppleEventCompatibility,
+        ("InterfaceLib", "AECountItems") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CountItems,
+        ),
+        ("InterfaceLib", "AECreateAppleEvent") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::CreateAppleEvent,
+            )
+        }
+        ("InterfaceLib", "AECreateDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateDesc,
+        ),
+        ("InterfaceLib", "AEDisposeDesc") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::DisposeDesc,
+            )
+        }
+        ("InterfaceLib", "AEGetAttributePtr") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::GetAttributePtr,
+            )
+        }
+        ("InterfaceLib", "AEGetNthPtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetNthPtr,
+        ),
+        ("InterfaceLib", "AEGetParamDesc") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::GetParamDesc,
+            )
+        }
+        ("InterfaceLib", "AEPutParamDesc") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::PutParamDesc,
+            )
+        }
+        ("InterfaceLib", "AEPutParamPtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutParamPtr,
+        ),
+        ("InterfaceLib", "AESend") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
         (
             "InterfaceLib",
             "AppendDITL" | "CountDITL" | "DialogSelect" | "FindDialogItem" | "HideDialogItem"
@@ -27576,9 +27624,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             *current_resource_refnum,
             last_resource_error,
         ),
-        PpcImportDispatcherTarget::AppleEventCompatibility => {
+        PpcImportDispatcherTarget::AppleEventCompatibility(operation) => {
             Some(ppc_dispatch_apple_event_compatibility(
-                binding,
+                operation,
                 cpu,
                 process_memory_manager,
                 memory,
@@ -27852,7 +27900,7 @@ fn ppc_create_process_owned_ae_desc(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_apple_event_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcAppleEventCompatibilityOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -27861,8 +27909,8 @@ fn ppc_dispatch_apple_event_compatibility(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
 ) -> PpcImportAction {
-    let result = match binding.symbol_name.as_str() {
-        "AECreateDesc" => {
+    let result = match operation {
+        PpcAppleEventCompatibilityOperation::CreateDesc => {
             let data_size = cpu.gpr[5];
             let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[4], data_size)
                 .or_else(|| (data_size == 0).then(Vec::new))
@@ -27885,7 +27933,7 @@ fn ppc_dispatch_apple_event_compatibility(
                 )
             }
         }
-        "AECreateAppleEvent" => {
+        PpcAppleEventCompatibilityOperation::CreateAppleEvent => {
             let result_ptr = cpu.gpr[8];
             if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
                 PPC_PARAM_ERR
@@ -27903,7 +27951,7 @@ fn ppc_dispatch_apple_event_compatibility(
                 )
             }
         }
-        "AEDisposeDesc" => {
+        PpcAppleEventCompatibilityOperation::DisposeDesc => {
             let desc = cpu.gpr[3];
             if desc == 0 || !ppc_memory_can_write_bytes(memory, desc, 8) {
                 PPC_PARAM_ERR
@@ -27925,20 +27973,20 @@ fn ppc_dispatch_apple_event_compatibility(
                 PPC_NO_ERR
             }
         }
-        "AECountItems" => {
+        PpcAppleEventCompatibilityOperation::CountItems => {
             if memory.write_u32_be(cpu.gpr[4], 0).is_some() {
                 PPC_NO_ERR
             } else {
                 PPC_PARAM_ERR
             }
         }
-        "AEGetParamDesc" => {
+        PpcAppleEventCompatibilityOperation::GetParamDesc => {
             if cpu.gpr[6] != 0 {
                 let _ = ppc_write_ae_desc(memory, cpu.gpr[6], 0, 0);
             }
             PPC_ERR_AE_DESC_NOT_FOUND
         }
-        "AEGetAttributePtr" => {
+        PpcAppleEventCompatibilityOperation::GetAttributePtr => {
             if cpu.gpr[6] != 0 {
                 let _ = memory.write_u32_be(cpu.gpr[6], 0);
             }
@@ -27947,7 +27995,7 @@ fn ppc_dispatch_apple_event_compatibility(
             }
             PPC_ERR_AE_DESC_NOT_FOUND
         }
-        "AEGetNthPtr" => {
+        PpcAppleEventCompatibilityOperation::GetNthPtr => {
             if cpu.gpr[6] != 0 {
                 let _ = memory.write_u32_be(cpu.gpr[6], 0);
             }
@@ -27959,14 +28007,14 @@ fn ppc_dispatch_apple_event_compatibility(
             }
             PPC_ERR_AE_DESC_NOT_FOUND
         }
-        "AESend" => {
+        PpcAppleEventCompatibilityOperation::Send => {
             if cpu.gpr[4] != 0 {
                 let _ = ppc_write_ae_desc(memory, cpu.gpr[4], 0, 0);
             }
             PPC_ERR_AE_EVENT_NOT_HANDLED
         }
-        "AEPutParamDesc" | "AEPutParamPtr" => PPC_NO_ERR,
-        _ => PPC_PARAM_ERR,
+        PpcAppleEventCompatibilityOperation::PutParamDesc
+        | PpcAppleEventCompatibilityOperation::PutParamPtr => PPC_NO_ERR,
     };
     PpcImportAction::Return(ppc_i16_result(result))
 }
