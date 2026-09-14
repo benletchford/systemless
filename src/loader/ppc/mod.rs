@@ -13235,7 +13235,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         }
     }
 
-    let mut sound = PpcSoundState::default();
+    let sound = PpcSoundState::default();
     sound
         .manager
         .set_default_output_volume(PPC_DEFAULT_OUTPUT_VOLUME);

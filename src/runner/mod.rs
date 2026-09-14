@@ -21774,7 +21774,7 @@ mod tests {
     fn ppc_decoded_buffer_command_feeds_host_audio_buffer() {
         let channel = 0x0500_1000;
         let samples = vec![0x80, 0x90, 0x70, 0xa0];
-        let mut sound = PpcSoundState::default();
+        let sound = PpcSoundState::default();
         sound.manager.play_buffer_command_for_architecture(
             channel,
             samples.clone(),

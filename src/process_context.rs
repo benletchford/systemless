@@ -1,6 +1,8 @@
 //! Process-scoped state shared by classic and native CPU adapters.
 
-use crate::callback_manager::{ProcessCallbackScheduling, ProcessTimerTask, ProcessVblTask};
+use crate::callback_manager::{
+    CallbackTaskArchitecture, ProcessCallbackScheduling, ProcessTimerTask, ProcessVblTask,
+};
 use crate::control_manager::ProcessControlManagerState;
 use crate::display::{
     default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
@@ -13,7 +15,7 @@ use crate::list_manager::ProcessListManagerState;
 use crate::memory::bus::SharedRamRegion;
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
-use crate::sound::SoundManager;
+use crate::sound::{SndChannel, SndCommand, SoundManager, StereoSample};
 use crate::text_edit::{ProcessTextEditManagerState, TextEditClickTracking};
 use ppc::PpcMemory;
 use std::cell::{Cell, RefCell, RefMut, UnsafeCell};
@@ -1797,6 +1799,143 @@ impl<T> SharedProcessValue<T> {
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference from escaping this operation.
         unsafe { f(&mut *self.0.get()) }
+    }
+}
+
+impl SharedProcessValue<SoundManager> {
+    pub(crate) fn register_channel(
+        &self,
+        guest_ptr: u32,
+        allocated: bool,
+        callback_addr: u32,
+        callback_architecture: CallbackTaskArchitecture,
+    ) {
+        self.with_mut(|manager| {
+            manager.register_channel(
+                guest_ptr,
+                allocated,
+                callback_addr,
+                callback_architecture,
+            );
+        });
+    }
+
+    pub(crate) fn play_buffer_command_for_architecture(
+        &self,
+        guest_ptr: u32,
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+        architecture: CallbackTaskArchitecture,
+    ) {
+        self.with_mut(|manager| {
+            manager.play_buffer_command_for_architecture(
+                guest_ptr,
+                samples,
+                sample_rate_fixed,
+                architecture,
+            );
+        });
+    }
+
+    pub(crate) fn enqueue_buffer_command_for_architecture(
+        &self,
+        guest_ptr: u32,
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+        architecture: CallbackTaskArchitecture,
+    ) -> bool {
+        self.with_mut(|manager| {
+            manager.enqueue_buffer_command_for_architecture(
+                guest_ptr,
+                samples,
+                sample_rate_fixed,
+                architecture,
+            )
+        })
+    }
+
+    pub(crate) fn play_sys_beep(&self, volume: u32) {
+        self.with_mut(|manager| manager.play_sys_beep(volume));
+    }
+
+    pub(crate) fn play_file_buffer(
+        &self,
+        guest_ptr: u32,
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+        completion: Option<(CallbackTaskArchitecture, u32)>,
+    ) {
+        self.with_mut(|manager| {
+            manager.play_file_buffer(guest_ptr, samples, sample_rate_fixed, completion);
+        });
+    }
+
+    pub(crate) fn note_double_buffer_submission(&self) {
+        self.with_mut(SoundManager::note_double_buffer_submission);
+    }
+
+    pub(crate) fn play_double_buffer_samples(
+        &self,
+        guest_ptr: u32,
+        samples: Vec<StereoSample>,
+        sample_rate_fixed: u32,
+    ) {
+        self.with_mut(|manager| {
+            manager.play_double_buffer_samples(guest_ptr, samples, sample_rate_fixed);
+        });
+    }
+
+    pub(crate) fn create_internal_channel(&self) -> u32 {
+        self.with_mut(SoundManager::create_internal_channel)
+    }
+
+    pub(crate) fn toggle_file_paused(&self, guest_ptr: u32) -> Option<bool> {
+        self.with_mut(|manager| manager.toggle_file_paused(guest_ptr))
+    }
+
+    pub(crate) fn quiet_channel(&self, guest_ptr: u32) {
+        self.with_mut(|manager| manager.quiet_channel(guest_ptr));
+    }
+
+    pub(crate) fn flush_channel(&self, guest_ptr: u32) {
+        self.with_mut(|manager| manager.flush_channel(guest_ptr));
+    }
+
+    pub(crate) fn stop_double_buffer_playbacks(&self, guest_ptr: u32) {
+        self.with_mut(|manager| manager.stop_double_buffer_playbacks(guest_ptr));
+    }
+
+    pub(crate) fn execute_immediate_command(&self, guest_ptr: u32, command: SndCommand) {
+        self.with_mut(|manager| manager.execute_immediate_command(guest_ptr, command));
+    }
+
+    pub(crate) fn enqueue_command(&self, guest_ptr: u32, command: SndCommand) -> bool {
+        self.with_mut(|manager| manager.enqueue_command(guest_ptr, command))
+    }
+
+    pub(crate) fn set_sys_beep_volume(&self, volume: u32) {
+        self.with_mut(|manager| manager.set_sys_beep_volume(volume));
+    }
+
+    pub(crate) fn set_default_output_volume(&self, volume: u32) {
+        self.with_mut(|manager| manager.set_default_output_volume(volume));
+    }
+
+    pub(crate) fn take_channel(&self, guest_ptr: u32) -> Option<SndChannel> {
+        self.with_mut(|manager| manager.take_channel(guest_ptr))
+    }
+
+    pub(crate) fn remove_channel(&self, guest_ptr: u32) -> bool {
+        self.with_mut(|manager| manager.remove_channel(guest_ptr))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mix_frame(&self, num_samples: usize) -> Vec<u8> {
+        self.with_mut(|manager| manager.mix_frame(num_samples))
+    }
+
+    pub(crate) fn mix_frame_stereo(&self, num_samples: usize) -> Vec<u8> {
+        self.with_mut(|manager| manager.mix_frame_stereo(num_samples))
     }
 }
 
