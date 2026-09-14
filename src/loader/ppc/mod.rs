@@ -30335,7 +30335,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             }
             if mode_kind == b'w' {
                 if let Some(file) = ppc_vfs_file_mut(vfs_files, &path) {
-                    file.data.clear();
+                    file.data.with_mut(Vec::clear);
                     file.dirty = true;
                 }
             }
@@ -30495,14 +30495,16 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
                     position
                 };
                 let start = usize::try_from(position).unwrap_or(usize::MAX);
-                if start > file.data.len() {
-                    file.data.resize(start, 0);
-                }
                 let end = start.saturating_add(bytes.len());
-                if end > file.data.len() {
-                    file.data.resize(end, 0);
-                }
-                file.data[start..end].copy_from_slice(&bytes);
+                file.data.with_mut(|data| {
+                    if start > data.len() {
+                        data.resize(start, 0);
+                    }
+                    if end > data.len() {
+                        data.resize(end, 0);
+                    }
+                    data[start..end].copy_from_slice(&bytes);
+                });
                 file.dirty = true;
                 let new_position = u32::try_from(end).unwrap_or(u32::MAX);
                 ppc_stdio_set_position(stream, new_position, stdio_streams, files);
@@ -30635,14 +30637,16 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
                 position
             };
             let start = usize::try_from(position).unwrap_or(usize::MAX);
-            if start > file.data.len() {
-                file.data.resize(start, 0);
-            }
             let end = start.saturating_add(bytes.len());
-            if end > file.data.len() {
-                file.data.resize(end, 0);
-            }
-            file.data[start..end].copy_from_slice(&bytes);
+            file.data.with_mut(|data| {
+                if start > data.len() {
+                    data.resize(start, 0);
+                }
+                if end > data.len() {
+                    data.resize(end, 0);
+                }
+                data[start..end].copy_from_slice(&bytes);
+            });
             file.dirty = true;
             let new_position = u32::try_from(end).unwrap_or(u32::MAX);
             ppc_stdio_set_position(stream, new_position, stdio_streams, files);
@@ -88477,12 +88481,18 @@ fn ppc_pb_write(
     let Some(end) = start.checked_add(write_len) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
-    vfs_files[vfs_file_index].data.resize(end, 0);
-    for offset in 0..write_len {
-        let Some(byte) = memory.read_u8(buffer_ptr + offset as u32) else {
-            return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
-        };
-        vfs_files[vfs_file_index].data[start + offset] = byte;
+    let write_result = vfs_files[vfs_file_index].data.with_mut(|data| {
+        data.resize(end, 0);
+        for offset in 0..write_len {
+            let Some(byte) = memory.read_u8(buffer_ptr + offset as u32) else {
+                return Err(());
+            };
+            data[start + offset] = byte;
+        }
+        Ok(())
+    });
+    if write_result.is_err() {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
     vfs_files[vfs_file_index].dirty = true;
     let new_position = end.min(u32::MAX as usize) as u32;
@@ -88547,7 +88557,7 @@ fn ppc_pb_set_eof(
     let Ok(new_len) = usize::try_from(new_eof) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
-    vfs_file.data.resize(new_len, 0);
+    vfs_file.data.with_mut(|data| data.resize(new_len, 0));
     vfs_file.dirty = true;
     files[file_index].position = files[file_index].position.min(new_eof);
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
@@ -89175,7 +89185,7 @@ fn ppc_set_eof(
     let Ok(new_len) = usize::try_from(new_eof) else {
         return PPC_PARAM_ERR;
     };
-    vfs_file.data.resize(new_len, 0);
+    vfs_file.data.with_mut(|data| data.resize(new_len, 0));
     vfs_file.dirty = true;
     for file in files
         .iter_mut()
@@ -89338,15 +89348,17 @@ fn ppc_fs_write(
     let Some(end) = start.checked_add(requested_len) else {
         return PPC_PARAM_ERR;
     };
-    if start > vfs_file.data.len() {
-        vfs_file.data.resize(start, 0);
-    }
-    if end > vfs_file.data.len() {
-        vfs_file.data.resize(end, 0);
-    }
     let bytes = ppc_memory_read_bytes(memory, buffer_ptr, requested_count).unwrap_or_default();
+    vfs_file.data.with_mut(|data| {
+        if start > data.len() {
+            data.resize(start, 0);
+        }
+        if end > data.len() {
+            data.resize(end, 0);
+        }
+        data[start..end].copy_from_slice(&bytes);
+    });
     vfs_file.dirty = true;
-    vfs_file.data[start..end].copy_from_slice(&bytes);
     file.position = file.position.saturating_add(requested_count);
     let _ = memory.write_u32_be(count_ptr, requested_count);
     PPC_NO_ERR
@@ -98410,7 +98422,9 @@ pub(crate) mod tests {
             .process_file_system
             .ptr_eq(&second.process_file_system));
 
-        second.vfs_files[0].data.extend_from_slice(b"-second");
+        second.vfs_files[0]
+            .data
+            .with_mut(|data| data.extend_from_slice(b"-second"));
         second
             .deleted_vfs_file_paths
             .push("Obsolete Data".to_string());
@@ -99163,7 +99177,9 @@ pub(crate) mod tests {
         });
         let detached = original.clone();
 
-        original.vfs_files[0].data.copy_from_slice(b"change");
+        original.vfs_files[0]
+            .data
+            .with_mut(|data| data.copy_from_slice(b"change"));
         original.with_resource_manager_mut(|resource_manager| {
             resource_manager.vfs_resources[0]
                 .data
