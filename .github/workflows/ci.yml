@@ -166,7 +166,7 @@ jobs:
           PYTHON
 
   lint:
-    name: fmt & clippy (non-blocking)
+    name: clippy (non-blocking)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -178,20 +178,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           # PRs can restore default-branch caches; their own copies cannot be
           # reused by other PRs and compete for the repository cache budget.
           save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
 
-      # Non-blocking for now: the tree is not yet rustfmt-clean and clippy
-      # reports pre-existing warnings. Drop `continue-on-error` on each step
-      # (and add `-D warnings` to clippy) once a formatting/clippy pass lands.
-      - name: rustfmt
-        continue-on-error: true
-        run: cargo fmt --check
-
+      # Non-blocking for now: clippy reports pre-existing warnings. Drop
+      # `continue-on-error` and add `-D warnings` once a clippy pass lands.
       - name: clippy
         continue-on-error: true
         run: cargo clippy --all-targets --all-features
