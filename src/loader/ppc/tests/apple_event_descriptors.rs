@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("AECountItems", PpcAppleEventCompatibilityOperation::CountItems),
+        (
+            "AECreateAppleEvent",
+            PpcAppleEventCompatibilityOperation::CreateAppleEvent,
+        ),
+        ("AECreateDesc", PpcAppleEventCompatibilityOperation::CreateDesc),
+        ("AEDisposeDesc", PpcAppleEventCompatibilityOperation::DisposeDesc),
+        (
+            "AEGetAttributePtr",
+            PpcAppleEventCompatibilityOperation::GetAttributePtr,
+        ),
+        ("AEGetNthPtr", PpcAppleEventCompatibilityOperation::GetNthPtr),
+        (
+            "AEGetParamDesc",
+            PpcAppleEventCompatibilityOperation::GetParamDesc,
+        ),
+        ("AEPutParamDesc", PpcAppleEventCompatibilityOperation::PutParamDesc),
+        ("AEPutParamPtr", PpcAppleEventCompatibilityOperation::PutParamPtr),
+        ("AESend", PpcAppleEventCompatibilityOperation::Send),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::AppleEventCompatibility(operation),
+            "unexpected Apple Event dispatch target for {symbol}",
+        );
+    }
+}
+
+#[test]
 fn native_ppc_apple_event_descriptors_own_and_dispose_guest_data() {
     let mut memory = PpcSectionMem::new();
     memory.add_region(0x1000, b"payload".to_vec());
@@ -27,14 +58,9 @@ fn native_ppc_apple_event_descriptors_own_and_dispose_guest_data() {
         &[],
     );
     let mut handles = Vec::new();
-    let create = compatibility_binding(
-        "InterfaceLib",
-        "AECreateDesc",
-        PpcImportDispatcherTarget::AppleEventCompatibility,
-    );
     assert_eq!(
         ppc_dispatch_apple_event_compatibility(
-            &create,
+            PpcAppleEventCompatibilityOperation::CreateDesc,
             &mut cpu,
             &mut memory_manager,
             &mut memory,
@@ -56,14 +82,9 @@ fn native_ppc_apple_event_descriptors_own_and_dispose_guest_data() {
     );
 
     cpu.gpr[3] = 0x1100;
-    let dispose = compatibility_binding(
-        "InterfaceLib",
-        "AEDisposeDesc",
-        PpcImportDispatcherTarget::AppleEventCompatibility,
-    );
     assert_eq!(
         ppc_dispatch_apple_event_compatibility(
-            &dispose,
+            PpcAppleEventCompatibilityOperation::DisposeDesc,
             &mut cpu,
             &mut memory_manager,
             &mut memory,
@@ -98,7 +119,9 @@ fn apple_event_descriptor_handles_are_immediately_process_owned_and_cross_isa_vi
 
     run_test_import(
         &mut native,
-        PpcImportDispatcherTarget::AppleEventCompatibility,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateDesc,
+        ),
     );
 
     assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
@@ -124,11 +147,12 @@ fn apple_event_descriptor_handles_are_immediately_process_owned_and_cross_isa_vi
     native.memory.write_u8(allocation.ptr + 6, b'!').unwrap();
     assert_eq!(classic_bus.read_byte(allocation.ptr + 6), b'!');
 
-    native.imports[0].symbol_name = "AEDisposeDesc".to_string();
     native.cpu.gpr[3] = descriptor;
     run_test_import(
         &mut native,
-        PpcImportDispatcherTarget::AppleEventCompatibility,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::DisposeDesc,
+        ),
     );
 
     assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
@@ -172,7 +196,9 @@ fn apple_event_descriptor_allocation_failure_is_atomic() {
 
     run_test_import(
         &mut native,
-        PpcImportDispatcherTarget::AppleEventCompatibility,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateDesc,
+        ),
     );
 
     assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_MEM_FULL_ERR);
@@ -259,7 +285,9 @@ fn apple_event_records_use_process_owned_empty_handles() {
 
     run_test_import(
         &mut native,
-        PpcImportDispatcherTarget::AppleEventCompatibility,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateAppleEvent,
+        ),
     );
 
     assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
