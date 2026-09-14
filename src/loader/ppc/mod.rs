@@ -1151,6 +1151,15 @@ pub enum PpcMathCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcStdCCompatibilityOperation {
+    Qsort,
+    Signal,
+    Sscanf,
+    Strftime,
+    Vsprintf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcAppleEventCompatibilityOperation {
     CountItems,
     CreateAppleEvent,
@@ -2147,7 +2156,7 @@ pub enum PpcImportDispatcherTarget {
     QuickTimeCompatibility,
     InputSprocketCompatibility,
     MathCompatibility(PpcMathCompatibilityOperation),
-    StdCCompatibility,
+    StdCCompatibility(PpcStdCCompatibilityOperation),
     ObjectSupportCompatibility,
     ReturnError(i16),
     ReturnNoErr,
@@ -15775,9 +15784,21 @@ fn dispatcher_target_for_import(
         ("MathLib", "str2dec") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::Str2Dec,
         ),
-        ("StdCLib", "qsort" | "signal" | "sscanf" | "strftime" | "vsprintf") => {
-            PpcImportDispatcherTarget::StdCCompatibility
-        }
+        ("StdCLib", "qsort") => PpcImportDispatcherTarget::StdCCompatibility(
+            PpcStdCCompatibilityOperation::Qsort,
+        ),
+        ("StdCLib", "signal") => PpcImportDispatcherTarget::StdCCompatibility(
+            PpcStdCCompatibilityOperation::Signal,
+        ),
+        ("StdCLib", "sscanf") => PpcImportDispatcherTarget::StdCCompatibility(
+            PpcStdCCompatibilityOperation::Sscanf,
+        ),
+        ("StdCLib", "strftime") => PpcImportDispatcherTarget::StdCCompatibility(
+            PpcStdCCompatibilityOperation::Strftime,
+        ),
+        ("StdCLib", "vsprintf") => PpcImportDispatcherTarget::StdCCompatibility(
+            PpcStdCCompatibilityOperation::Vsprintf,
+        ),
         ("ObjectSupportLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
         }
@@ -27079,8 +27100,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::Math64(operation) => {
             Some(ppc_dispatch_math64(operation, cpu, memory))
         }
-        PpcImportDispatcherTarget::StdCCompatibility => Some(ppc_dispatch_stdc_compatibility(
-            binding,
+        PpcImportDispatcherTarget::StdCCompatibility(operation) => Some(ppc_dispatch_stdc_compatibility(
+            operation,
             cpu,
             memory,
             stdc_qsort_stack,
@@ -29519,19 +29540,24 @@ fn ppc_dispatch_stdc_signal(cpu: &PpcCpu, signal_state: &mut PpcStdSignalState) 
 }
 
 fn ppc_dispatch_stdc_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcStdCCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     qsort_stack: &mut Vec<PpcQsortState>,
     signal_state: &mut PpcStdSignalState,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "signal" => ppc_dispatch_stdc_signal(cpu, signal_state),
-        "sscanf" => PpcImportAction::Return(ppc_dispatch_stdc_sscanf(cpu, memory)),
-        "strftime" => PpcImportAction::Return(ppc_dispatch_stdc_strftime(cpu, memory)),
-        "qsort" => ppc_dispatch_stdc_qsort(cpu, memory, qsort_stack),
-        "vsprintf" => PpcImportAction::Return(ppc_std_vsprintf(cpu, memory)),
-        _ => PpcImportAction::Return(0),
+    match operation {
+        PpcStdCCompatibilityOperation::Signal => ppc_dispatch_stdc_signal(cpu, signal_state),
+        PpcStdCCompatibilityOperation::Sscanf => {
+            PpcImportAction::Return(ppc_dispatch_stdc_sscanf(cpu, memory))
+        }
+        PpcStdCCompatibilityOperation::Strftime => {
+            PpcImportAction::Return(ppc_dispatch_stdc_strftime(cpu, memory))
+        }
+        PpcStdCCompatibilityOperation::Qsort => ppc_dispatch_stdc_qsort(cpu, memory, qsort_stack),
+        PpcStdCCompatibilityOperation::Vsprintf => {
+            PpcImportAction::Return(ppc_std_vsprintf(cpu, memory))
+        }
     }
 }
 

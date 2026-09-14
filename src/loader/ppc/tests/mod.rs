@@ -16491,8 +16491,19 @@ fn import_bindings_classify_dialog_and_utility_imports() {
     );
     assert_eq!(
         dispatcher_target_for_import("StdCLib", "signal"),
-        PpcImportDispatcherTarget::StdCCompatibility
+        PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Signal)
     );
+    for (symbol, operation) in [
+        ("qsort", PpcStdCCompatibilityOperation::Qsort),
+        ("sscanf", PpcStdCCompatibilityOperation::Sscanf),
+        ("strftime", PpcStdCCompatibilityOperation::Strftime),
+        ("vsprintf", PpcStdCCompatibilityOperation::Vsprintf),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("StdCLib", symbol),
+            PpcImportDispatcherTarget::StdCCompatibility(operation),
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "SecondsToDate"),
         PpcImportDispatcherTarget::SecondsToDate
