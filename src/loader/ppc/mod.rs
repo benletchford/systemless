@@ -18967,6 +18967,18 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     let _ = ppc_record_copy_bits(cpu, memory, gworlds, commands);
                 }
             }
+            // Screen blits must not paint through windows above the current
+            // port. Preserve their structure pixels, including presentation
+            // detail, just as the Window Manager clips rear-window chrome.
+            let saved_front = if window_list.contains(current_gworld)
+                && ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, cpu.gpr[4])
+                    .zip(ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD))
+                    .is_some_and(|(destination, front)| destination.bits.base_addr == front.base_addr)
+            {
+                ppc_front_window_occlusion_pixels(memory, gworlds, window_list, *current_gworld)
+            } else {
+                None
+            };
             let op_color = ppc_current_op_color(memory, *current_gworld, quickdraw_op_colors);
             let _ = ppc_copy_bits(
                 cpu,
@@ -18985,6 +18997,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     .copied(),
                 op_color,
             );
+            if let Some(saved) = saved_front {
+                for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
+                    let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
+                    ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::BitMapToRegion => {
@@ -19853,16 +19871,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     last_mem_error,
                     handles,
                 );
-                if previous_front == Some(cpu.gpr[3]) {
-                    let _ = ppc_set_window_hilited(memory, cpu.gpr[3], true);
-                    ppc_redraw_visible_window_frame(
-                        memory,
-                        gworlds,
-                        window_list,
-                        cpu.gpr[3],
-                        toolbox_startup.host_menu_bar_hidden,
-                    );
-                } else {
+                // Macintosh Toolbox Essentials (1992), p. 4-87:
+                // selecting an already-active window has no effect. In
+                // particular, do not repaint a dialog over its contents.
+                if previous_front != Some(cpu.gpr[3]) {
                     ppc_transition_front_window_chrome(
                         memory,
                         gworlds,
@@ -68090,23 +68102,6 @@ fn ppc_dialog_rect_to_global(
     )
 }
 
-fn ppc_dialog_is_game_managed(bounds: (i16, i16, i16, i16), items: &[PpcDialogItemView]) -> bool {
-    let mut has_visible_item = false;
-    for item in items {
-        let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        let intersects =
-            rect.0 < bounds.2 && rect.2 > bounds.0 && rect.1 < bounds.3 && rect.3 > bounds.1;
-        if !intersects {
-            continue;
-        }
-        has_visible_item = true;
-        if item.item_type & !PPC_DIALOG_ITEM_DISABLED != PPC_DIALOG_ITEM_USER_ITEM {
-            return false;
-        }
-    }
-    has_visible_item
-}
-
 fn ppc_dialog_draw_callbacks(
     memory: &mut PpcSectionMem,
     items: &[PpcDialogItemView],
@@ -68495,25 +68490,11 @@ fn ppc_draw_dialog(
     let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
         return false;
     };
-    // Applications commonly use all-userItem dialogs as a convenient window
-    // shell and paint every pixel themselves before DrawDialog. Dialog Manager
-    // must not erase that application-owned surface with standard white
-    // chrome. This mirrors the mature 68K path's classification and preserves
-    // Escape Velocity's landing interface beneath its custom item callbacks.
+    // Macintosh Toolbox Essentials (1992), p. 6-142: DrawDialog redraws
+    // items, controls, text, and user-item callbacks. It does not erase the
+    // dialog surface: applications may have already drawn custom contents
+    // outside those items. Window creation supplies the initial background.
     let palette = ppc_ui_theme(gworlds).provider().palette();
-    let game_managed = ppc_dialog_is_game_managed(bounds, &items);
-    if !game_managed {
-        let _ = ppc_fill_front_rect(
-            memory,
-            front,
-            bounds,
-            ppc_theme_rgb(palette.window_background),
-        );
-        if ppc_window_proc_id(memory, dialog) != 1 {
-            let _ =
-                ppc_frame_front_rect(memory, front, bounds, ppc_theme_rgb(palette.frame_dark), 2);
-        }
-    }
     let default_item = memory
         .read_u16_be(dialog.wrapping_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
@@ -144243,6 +144224,67 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn copy_bits_does_not_overwrite_a_front_window() {
+        // ClipAbove removes every front structure region before the Window
+        // Manager asks a rear WDEF to draw. Macintosh Toolbox Essentials
+        // (1992), pp. 4-106 and 4-118--4-119.
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let back = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let _front = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (120, 250, 280, 450),
+            0,
+            true,
+            u32::MAX,
+        );
+        let front_buffer =
+            ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let bitmap = PPC_DATA_BASE + 0x2000;
+        let pixels = bitmap + 64;
+        loaded.memory.add_region(bitmap, vec![0; 128]);
+        loaded.memory.write_u32_be(bitmap, pixels).unwrap();
+        loaded.memory.write_u16_be(bitmap + 4, 8).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 6, 0, 0, 8, 64).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 20, 0, 0, 8, 64).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 28, 50, 100, 58, 183).unwrap();
+        loaded.cpu.gpr[3] = back;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+        for point in [(275, 150), (210, 150)] {
+            assert!(ppc_quickdraw_write_raw_pixel(
+                &mut loaded.memory, front_buffer, point, 0x7b,
+            ));
+        }
+        loaded.cpu.gpr[3] = bitmap;
+        loaded.cpu.gpr[4] = back + 2;
+        loaded.cpu.gpr[5] = bitmap + 20;
+        loaded.cpu.gpr[6] = bitmap + 28;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, (275, 150)),
+            Some(0x7b),
+            "CopyBits painted a back window through the front window"
+        );
+        assert_ne!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, (210, 150)),
+            Some(0x7b),
+            "CopyBits must still update the unobscured back window"
+        );
+    }
+
+    #[test]
     fn ppc_direct_chrome_redraw_does_not_paint_back_window_through_front_content() {
         // ClipAbove removes every front structure region before the Window
         // Manager asks a rear WDEF to draw. Macintosh Toolbox Essentials
@@ -146893,32 +146935,6 @@ pub(crate) mod tests {
     mod file_manager;
 
     #[test]
-    fn game_managed_dialogs_require_visible_user_items_only() {
-        let bounds = (100, 100, 300, 500);
-        let user_item = |item_type, rect| PpcDialogItemView {
-            item_offset: 0,
-            item_type,
-            rect,
-            handle: 0,
-            payload: Vec::new(),
-        };
-        let user_items = [
-            user_item(PPC_DIALOG_ITEM_USER_ITEM, (0, 0, 20, 20)),
-            user_item(
-                PPC_DIALOG_ITEM_USER_ITEM | PPC_DIALOG_ITEM_DISABLED,
-                (30, 30, 50, 50),
-            ),
-            user_item(PPC_DIALOG_ITEM_BUTTON, (0, 0x4000, 20, 0x4010)),
-        ];
-
-        assert!(ppc_dialog_is_game_managed(bounds, &user_items));
-
-        let mut standard_items = user_items.to_vec();
-        standard_items.push(user_item(PPC_DIALOG_ITEM_BUTTON, (60, 60, 80, 140)));
-        assert!(!ppc_dialog_is_game_managed(bounds, &standard_items));
-    }
-
-    #[test]
     fn dialog_static_text_preserves_resource_line_breaks_before_wrapping() {
         let text = b"Toolbox Showcase 2.0\rClassic Macintosh Fat-App Fixture\rRunning 68K and PowerPC slices";
 
@@ -147362,6 +147378,65 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn selecting_active_dialog_preserves_its_contents() {
+        let pef = synthetic_pef_with_import(b"GetNewDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[0..2].copy_from_slice(&40i16.to_be_bytes());
+        dlog[2..4].copy_from_slice(&60i16.to_be_bytes());
+        dlog[4..6].copy_from_slice(&140i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+        dlog[8..10].copy_from_slice(&1i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 32];
+        ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&190i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_CHECKBOX;
+        ditl[15] = 13;
+        ditl[16..29].copy_from_slice(b"Sound Effects");
+        for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+            let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+            loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.run_with_hle_imports(128);
+        let dialog = loaded.cpu.gpr[3];
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let marker =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            surface.front_buffer,
+            (200, 110),
+            marker,
+        ));
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (200, 110)),
+            Some(marker),
+            "selecting an already-active dialog erased its contents"
+        );
+    }
+
+    #[test]
     fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
         let pef = synthetic_pef_with_import(b"GetNewDialog");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -147410,6 +147485,27 @@ pub(crate) mod tests {
             .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, 1)
             .unwrap();
 
+        // Supply an existing surface; this test exercises item redraw, not
+        // window-background initialization.
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        assert!(ppc_fill_front_rect(
+            &mut loaded.memory,
+            front,
+            (40, 60, 140, 260),
+            PPC_RGB_WHITE,
+        ));
+        // Application drawing outside standard items survives DrawDialog.
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let marker =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            surface.front_buffer,
+            (200, 110),
+            marker,
+        ));
+
         assert!(ppc_draw_dialog(
             &mut loaded.memory,
             &test_handle_records!(loaded),
@@ -147423,6 +147519,11 @@ pub(crate) mod tests {
 
         let surface =
             ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (200, 110)),
+            Some(marker),
+            "DrawDialog erased application drawing outside its items"
+        );
         let black =
             ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
         let white =
