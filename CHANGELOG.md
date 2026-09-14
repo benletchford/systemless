@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.41.1](https://github.com/benletchford/systemless/compare/v0.41.0...v0.41.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* allow larger PowerPC sound buffer refills ([a47a9dc](https://github.com/benletchford/systemless/commit/a47a9dcf160c831b3eca6adeb1bf5b089f54843d))
+
+
+### Code Refactoring
+
+* **ppc:** consolidate event dispatch ([#1924](https://github.com/benletchford/systemless/issues/1924)) ([f3153aa](https://github.com/benletchford/systemless/commit/f3153aaf8e1a30bf1033342535301be09e7fde33))
+* **ppc:** extract low-memory dispatch ([#1921](https://github.com/benletchford/systemless/issues/1921)) ([610b6a7](https://github.com/benletchford/systemless/commit/610b6a76573465594ffb26e6b2b655bdbe7168b5))
+* **ppc:** extract time utility dispatch ([#1918](https://github.com/benletchford/systemless/issues/1918)) ([39e8051](https://github.com/benletchford/systemless/commit/39e80515b94add6c6dd25284a33858034879b3d3))
+* **ppc:** type speech compatibility dispatch ([#1929](https://github.com/benletchford/systemless/issues/1929)) ([456a96d](https://github.com/benletchford/systemless/commit/456a96daec58370927f440b1553aadcc1aa9c289))
+* **ppc:** type stdc compatibility dispatch ([#1927](https://github.com/benletchford/systemless/issues/1927)) ([ca50f4c](https://github.com/benletchford/systemless/commit/ca50f4c0cfdd029b524486cd59f12e2b7e6d89fd))
+
 ## [0.41.0](https://github.com/benletchford/systemless/compare/v0.40.2...v0.41.0) (2026-09-14)
 
 
