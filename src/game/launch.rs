@@ -1754,7 +1754,7 @@ fn payload_from_forks(
 
     if let Some(parsed) = crate::game::vise::parse_vise(&data) {
         match parsed {
-            Ok(_) => match expand_vise_payload(name, &data, executable_priority) {
+            Ok(_) => match expand_vise_payload(name, &data, executable_priority, &[]) {
                 Ok(Some(payload)) => return Ok(payload),
                 Ok(None) => {}
                 Err(error) => {
@@ -1956,6 +1956,7 @@ fn expand_vise_payload(
     name: &str,
     data: &[u8],
     executable_priority: u8,
+    source_files: &[PayloadFile],
 ) -> Result<Option<Payload>, String> {
     let Some(parsed) = crate::game::vise::parse_vise(data) else {
         return Ok(None);
@@ -1973,6 +1974,9 @@ fn expand_vise_payload(
     let mut required_by_stream = std::collections::HashMap::<(usize, usize), usize>::new();
     let mut packed_by_stream = std::collections::HashMap::<(usize, usize), &[u8]>::new();
     for entry in &archive.entries {
+        if entry.external {
+            continue;
+        }
         for (packed_offset, packed, unpacked_len) in [
             (
                 entry.data_packed_offset,
@@ -2067,18 +2071,24 @@ fn expand_vise_payload(
                     )
                 })
         };
-        let data = extract_fork(
-            entry.data_packed_offset,
-            entry.data_packed.len(),
-            entry.data_unpacked_len,
-            "data",
-        )?;
-        let rsrc = extract_fork(
-            entry.rsrc_packed_offset,
-            entry.rsrc_packed.len(),
-            entry.rsrc_unpacked_len,
-            "resource",
-        )?;
+        let (data, rsrc) = if entry.external {
+            let source = find_external_vise_file(name, &entry, source_files)?;
+            (source.data.clone(), source.rsrc.clone())
+        } else {
+            let data = extract_fork(
+                entry.data_packed_offset,
+                entry.data_packed.len(),
+                entry.data_unpacked_len,
+                "data",
+            )?;
+            let rsrc = extract_fork(
+                entry.rsrc_packed_offset,
+                entry.rsrc_packed.len(),
+                entry.rsrc_unpacked_len,
+                "resource",
+            )?;
+            (data, rsrc)
+        };
         let embedded_name = format!("{name}/{}", entry.path);
         if crate::runner::trace_load_enabled() {
             eprintln!(
@@ -2108,6 +2118,43 @@ fn expand_vise_payload(
     Ok(Some(payload))
 }
 
+fn find_external_vise_file<'a>(
+    installer_name: &str,
+    entry: &crate::game::vise::ViseEntry<'_>,
+    source_files: &'a [PayloadFile],
+) -> Result<&'a PayloadFile, String> {
+    let parent = installer_name
+        .rsplit_once('/')
+        .map_or("", |(parent, _)| parent);
+    let leaf = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+    let expected = if parent.is_empty() {
+        leaf.to_string()
+    } else {
+        format!("{parent}/{leaf}")
+    };
+    let mut matching = source_files
+        .iter()
+        .filter(|file| file.name.eq_ignore_ascii_case(&expected));
+    let Some(file) = matching.next() else {
+        return Err(format!(
+            "Installer VISE {installer_name}: missing external file {expected}"
+        ));
+    };
+    if matching.next().is_some() {
+        return Err(format!(
+            "Installer VISE {installer_name}: ambiguous external file {expected}"
+        ));
+    }
+    if file.data.len() != entry.data_unpacked_len
+        || file.rsrc.len() != entry.rsrc_unpacked_len
+        || file.file_type != entry.file_type
+        || file.creator != entry.creator
+    {
+        return Err(format!("Installer VISE {installer_name}: external file {expected} does not match catalog metadata"));
+    }
+    Ok(file)
+}
+
 fn expand_split_vise_payloads(mut payload: Payload) -> Result<Payload, String> {
     loop {
         let mut resolved = None;
@@ -2122,9 +2169,12 @@ fn expand_split_vise_payloads(mut payload: Payload) -> Result<Payload, String> {
 
             let source_name = source.name.clone();
             let executable_priority = source.executable_priority;
-            if let Ok(Some(expanded)) =
-                expand_vise_payload(&source_name, &source.data, executable_priority)
-            {
+            if let Ok(Some(expanded)) = expand_vise_payload(
+                &source_name,
+                &source.data,
+                executable_priority,
+                &payload.files,
+            ) {
                 resolved = Some((source_index, Vec::new(), expanded, source_name));
                 break;
             }
@@ -2152,7 +2202,7 @@ fn expand_split_vise_payloads(mut payload: Payload) -> Result<Payload, String> {
                     continue;
                 };
                 let Ok(Some(expanded)) =
-                    expand_vise_payload(&source_name, &joined, executable_priority)
+                    expand_vise_payload(&source_name, &joined, executable_priority, &payload.files)
                 else {
                     continue;
                 };
@@ -3287,6 +3337,96 @@ fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn external_vise_test_archive() -> Vec<u8> {
+        let mut data = vec![0; 44];
+        data[..4].copy_from_slice(b"SVCT");
+        data[16..20].copy_from_slice(&0x8001_0201u32.to_be_bytes());
+        data[36..40].copy_from_slice(&44u32.to_be_bytes());
+        let mut catalog = [0; 20];
+        catalog[..4].copy_from_slice(b"CVCT");
+        catalog[16..18].copy_from_slice(&1u16.to_be_bytes());
+        data.extend(catalog);
+        data.extend(b"FVCT");
+        let mut record = [0; 120];
+        record[40..44].copy_from_slice(b"TEXT");
+        record[44..48].copy_from_slice(b"ttxt");
+        record[64..68].copy_from_slice(&100u32.to_be_bytes());
+        record[68..72].copy_from_slice(&5u32.to_be_bytes());
+        record[72..76].copy_from_slice(&40u32.to_be_bytes());
+        record[76..80].copy_from_slice(&4u32.to_be_bytes());
+        // Segment zero + external-copy flag. The remembered packed location
+        // deliberately lies outside this distributed archive.
+        record[96..100].copy_from_slice(&0x0020_4234u32.to_be_bytes());
+        record[112] = 1;
+        record[118] = 6;
+        data.extend(record);
+        data.extend(b"Readme");
+        data
+    }
+
+    fn external_vise_test_file() -> PayloadFile {
+        PayloadFile {
+            name: "Disk 1/Readme".into(),
+            data: b"hello".to_vec(),
+            rsrc: b"rsrc".to_vec(),
+            file_type: *b"TEXT",
+            creator: *b"ttxt",
+            finder_flags: 0,
+            executable_priority: 0,
+        }
+    }
+
+    #[test]
+    fn vise_external_file_copies_both_sibling_forks_without_decoding_stale_ranges() {
+        let archive = external_vise_test_archive();
+        let files = [external_vise_test_file()];
+        let result = expand_vise_payload("Disk 1/Install", &archive, 0, &files)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].name, "Disk 1/Install/Readme");
+        assert_eq!(result.files[0].data, b"hello");
+        assert_eq!(result.files[0].rsrc, b"rsrc");
+        assert_eq!(result.files[0].file_type, *b"TEXT");
+        assert_eq!(result.files[0].creator, *b"ttxt");
+    }
+
+    #[test]
+    fn vise_external_file_rejects_missing_mismatched_and_ambiguous_siblings() {
+        let archive = external_vise_test_archive();
+        assert!(expand_vise_payload("Disk 1/Install", &archive, 0, &[])
+            .unwrap_err()
+            .contains("missing external"));
+        let mut wrong = external_vise_test_file();
+        wrong.name = "Disk 2/Readme".into();
+        assert!(expand_vise_payload("Disk 1/Install", &archive, 0, &[wrong])
+            .unwrap_err()
+            .contains("missing external"));
+        let mut wrong = external_vise_test_file();
+        wrong.data.push(0);
+        assert!(expand_vise_payload("Disk 1/Install", &archive, 0, &[wrong])
+            .unwrap_err()
+            .contains("metadata"));
+        assert!(expand_vise_payload(
+            "Disk 1/Install",
+            &archive,
+            0,
+            &[external_vise_test_file(), external_vise_test_file()]
+        )
+        .unwrap_err()
+        .contains("ambiguous"));
+    }
+
+    #[test]
+    fn vise_embedded_file_with_missing_payload_does_not_use_external_fallback() {
+        let mut archive = external_vise_test_archive();
+        archive[68 + 112..68 + 114].fill(0);
+        assert!(crate::game::vise::parse_vise(&archive).unwrap().is_err());
+        archive[68 + 112] = 1;
+        archive[68 + 94..68 + 96].copy_from_slice(&1u16.to_be_bytes());
+        assert!(crate::game::vise::parse_vise(&archive).unwrap().is_err());
+    }
 
     #[test]
     fn frontend_runner_constructors_preserve_defaults_and_explicit_depths() {

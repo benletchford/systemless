@@ -60,6 +60,7 @@ pub struct ViseEntry<'a> {
     pub path: String,
     pub file_type: [u8; 4],
     pub creator: [u8; 4],
+    pub external: bool,
     pub data_packed: &'a [u8],
     pub rsrc_packed: &'a [u8],
     pub data_packed_offset: usize,
@@ -314,6 +315,13 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 )?;
                 cursor += VISE_FILE_RECORD_LEN;
                 let parent = read_u16(record, 92, "file parent")? as usize;
+                // Full VISE 3.5 can distribute a file beside the installer
+                // instead of embedding it. Such records have segment zero and
+                // the external-copy flag at +112; their old packed offsets and
+                // sizes are not ranges in the distributed archive.
+                let external = version == VISE_VERSION_35
+                    && read_u16(record, 94, "file segment number")? == 0
+                    && record[112] == 1;
                 let packed_offset = read_u32(record, 96, "file payload offset")? as usize;
                 let declared_data_packed_len = read_u32(record, 64, "packed data length")? as usize;
                 let data_unpacked_len = read_u32(record, 68, "data length")? as usize;
@@ -358,25 +366,34 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 } else {
                     extended_unpacked_offset
                 };
-                let data_packed = range(
-                    data,
-                    packed_offset,
-                    data_packed_len,
-                    &format!("{path} data stream"),
-                )?;
+                let data_packed = if external {
+                    &[][..]
+                } else {
+                    range(
+                        data,
+                        packed_offset,
+                        data_packed_len,
+                        &format!("{path} data stream"),
+                    )?
+                };
                 let rsrc_offset = packed_offset
                     .checked_add(data_packed_len)
                     .ok_or_else(|| format!("{path} resource offset overflow"))?;
-                let rsrc_packed = range(
-                    data,
-                    rsrc_offset,
-                    rsrc_packed_len,
-                    &format!("{path} resource stream"),
-                )?;
+                let rsrc_packed = if external {
+                    &[][..]
+                } else {
+                    range(
+                        data,
+                        rsrc_offset,
+                        rsrc_packed_len,
+                        &format!("{path} resource stream"),
+                    )?
+                };
                 entries.push(ViseEntry {
                     path,
                     file_type,
                     creator,
+                    external,
                     data_packed,
                     rsrc_packed,
                     data_packed_offset: packed_offset,
