@@ -12859,7 +12859,7 @@ mod tests {
         disp.window_bounds = (40, 20, 140, 220);
 
         let bounds_rect_ptr = 0x320000;
-        bus.write_word(bounds_rect_ptr + 0, 0);
+        bus.write_word(bounds_rect_ptr, 0);
         bus.write_word(bounds_rect_ptr + 2, 0);
         bus.write_word(bounds_rect_ptr + 4, 400);
         bus.write_word(bounds_rect_ptr + 6, 600);
@@ -12974,7 +12974,7 @@ mod tests {
         let before: Vec<u8> = (0..32u32).map(|i| bus.read_byte(window_addr + i)).collect();
 
         let bounds_rect_ptr = 0x320000;
-        bus.write_word(bounds_rect_ptr + 0, 0);
+        bus.write_word(bounds_rect_ptr, 0);
         bus.write_word(bounds_rect_ptr + 2, 0);
         bus.write_word(bounds_rect_ptr + 4, 400);
         bus.write_word(bounds_rect_ptr + 6, 500);

@@ -5065,7 +5065,7 @@ mod tests {
         let decoded = MenuItems::decode(&rebuilt).expect("decode rebuilt menu");
         assert_eq!(decoded.first_item, items.first_item);
         assert_eq!(decoded.items, items.items);
-        assert_eq!(decoded.enable_flags, u32::MAX & !(1 << 3));
+        assert_eq!(decoded.enable_flags, !(1 << 3));
         assert_eq!(decoded.items.len(), 3);
         assert_eq!(decoded.items[0].text, b"Open...");
         assert_eq!(decoded.items[1].text, b"Copy");

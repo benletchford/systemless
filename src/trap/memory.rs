@@ -11494,7 +11494,7 @@ mod tests {
             ((1u32 << 16) | 0x0014, dest),     // count=1 offset=20 (start of XPRAM)
             ((4u32 << 16) | 0x0080, dest + 8), // count=4 offset=128
             ((8u32 << 16) | 0x00FF, dest + 16), // count=8 offset=255 (last byte)
-            ((2u32 << 16) | 0x0000, dest + 32), // count=2 offset=0 (SysParam start)
+            (2u32 << 16, dest + 32), // count=2 offset=0 (SysParam start)
             ((16u32 << 16) | 0x004B, dest + 48), // count=16 offset=75
         ];
 
@@ -11587,7 +11587,7 @@ mod tests {
             (1u32 << 16) | 0x0014,  // count=1 offset=20
             (4u32 << 16) | 0x0080,  // count=4 offset=128
             (8u32 << 16) | 0x00FF,  // count=8 offset=255
-            (2u32 << 16) | 0x0000,  // count=2 offset=0
+            2u32 << 16,             // count=2 offset=0
             (16u32 << 16) | 0x004B, // count=16 offset=75
         ];
 
