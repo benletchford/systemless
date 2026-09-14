@@ -1,4 +1,4 @@
-//! Guest cursor as the host's hardware pointer.
+//! Guest cursor as the host pointer on macOS and Windows.
 //!
 //! The composited cursor overlay rides the same present queue as the guest
 //! frame, so it is shown exactly as late as the frame is: several vsyncs behind
@@ -9,13 +9,27 @@
 //! presented without a cursor overlay. A hidden guest cursor hides the host
 //! pointer while it is over the window.
 //!
-//! `SYSTEMLESS_SOFTWARE_CURSOR=1` restores the composited overlay.
+//! Windows installs the image through winit as a native cursor, independently
+//! of framebuffer presentation. Destination-dependent images retain the
+//! software overlay. `SYSTEMLESS_SOFTWARE_CURSOR=1` restores the overlay on
+//! either host.
 
+#[cfg(target_os = "macos")]
 use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
 use objc2::ClassType;
+#[cfg(target_os = "macos")]
 use objc2_app_kit::{NSBitmapImageRep, NSCursor, NSDeviceRGBColorSpace, NSImage};
+#[cfg(target_os = "macos")]
 use objc2_foundation::{NSPoint, NSSize};
 use systemless::display::CursorImage;
+
+#[cfg(target_os = "windows")]
+#[path = "windows_cursor.rs"]
+mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::HostCursor;
+#[cfg(target_os = "macos")]
 use winit::window::Window;
 
 /// RGBA pixels for a guest cursor, straight alpha, plus the hotspot in pixels.
@@ -28,6 +42,7 @@ pub struct CursorRgba {
     pub hot_v: usize,
 }
 
+#[cfg(target_os = "macos")]
 pub struct HostCursor {
     enabled: bool,
     pointer_inside: bool,
@@ -37,6 +52,7 @@ pub struct HostCursor {
     key: Option<(Option<CursorImage>, u64, u64)>,
 }
 
+#[cfg(target_os = "macos")]
 impl HostCursor {
     pub fn new() -> Self {
         Self {
@@ -214,6 +230,7 @@ pub fn cursor_rgba(image: &CursorImage) -> CursorRgba {
 }
 
 /// Nearest-neighbour integer upscale of an RGBA bitmap.
+#[cfg(any(target_os = "macos", test))]
 pub fn upscale_rgba(rgba: &[u8], width: usize, height: usize, n: usize) -> Vec<u8> {
     if n <= 1 {
         return rgba.to_vec();
@@ -232,6 +249,7 @@ pub fn upscale_rgba(rgba: &[u8], width: usize, height: usize, n: usize) -> Vec<u
 
 /// Build an `NSCursor` from `width`×`height` straight-alpha RGBA pixels shown at
 /// `size` points with the hotspot at `hotspot` points.
+#[cfg(target_os = "macos")]
 fn make_ns_cursor(
     rgba: &[u8],
     width: usize,
