@@ -858,6 +858,7 @@ pub(crate) struct PortStateSnapshot {
     pub gdevice: u32,
     pub draw_state: PortDrawState,
     pub port_state_bytes: [u8; 56],
+    pub resolved_color_fields: Option<u8>,
     pub vis_region: Option<PortRegionSnapshot>,
     pub clip_region: Option<PortRegionSnapshot>,
 }
