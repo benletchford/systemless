@@ -16294,6 +16294,24 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_event::dispatch_event_import(
+        dispatch_event::PpcEventDispatchContext {
+            binding,
+            cpu,
+            memory,
+            handles,
+            gworlds,
+            current_menu_list,
+            screen_clut,
+            toolbox_startup,
+            apple_events,
+            event_queue,
+            input,
+            tick_count: *tick_count,
+        },
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_low_memory::dispatch_low_memory_import(
         dispatch_low_memory::PpcLowMemoryDispatchContext {
             target: &binding.dispatcher_target,
@@ -23338,211 +23356,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 Some(PpcImportAction::Return(0))
             }
         }
-        PpcImportDispatcherTarget::FlushEvents => {
-            toolbox_startup.flush_events_count =
-                toolbox_startup.flush_events_count.saturating_add(1);
-            toolbox_startup.last_flush_event_mask = cpu.gpr[3] as u16;
-            toolbox_startup.last_flush_stop_mask = cpu.gpr[4] as u16;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetEventMask => {
-            // Macintosh Toolbox Essentials (1992), pp. 2-99--2-100: this is
-            // the current process's OS Event Manager posting state. Universal
-            // Interfaces 3.4 LowMem.h exposes the same word directly at
-            // SysEvtMask ($0144), so the guest-visible bytes are authoritative.
-            let _ = memory.write_u16_be(
-                crate::memory::globals::addr::SYS_EVT_MASK,
-                cpu.gpr[3] as u16,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetNextEvent | PpcImportDispatcherTarget::GetOSEvent => {
-            let event_mask = cpu.gpr[3] as u16;
-            let event_ptr = cpu.gpr[4];
-            let sleep_ticks = cpu.gpr[5] as u32;
-            let os_only = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::GetOSEvent
-            );
-            if !os_only {
-                ppc_service_invalid_menu_bar(
-                    event_queue,
-                    memory,
-                    handles,
-                    gworlds,
-                    current_menu_list,
-                    screen_clut,
-                    toolbox_startup,
-                );
-                ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask, *tick_count);
-            }
-            let (what, message, when, where_v, where_h, modifiers, has_event) =
-                ppc_dequeue_event(event_queue, event_mask, input, os_only, *tick_count);
-            if has_event && what == 8 {
-                let pending = if (modifiers & 1) != 0 { 0x0A64 } else { 0x0A68 };
-                if memory.read_u32_be(pending) == Some(message) {
-                    let _ = memory.write_u32_be(pending, 0);
-                }
-            }
-            if crate::trap::dispatch::trace_input_enabled() {
-                eprintln!(
-                    "[INPUT] PPC {} mask=${event_mask:04X} event_ptr=${event_ptr:08X} sleep={} -> has_event={} what={} message=${message:08X} where=({}, {}) modifiers=${modifiers:04X}",
-                    binding.symbol_name,
-                    sleep_ticks,
-                    has_event,
-                    what,
-                    where_v,
-                    where_h,
-                );
-            }
-            if event_ptr != 0 {
-                if ppc_write_event_record(
-                    memory,
-                    event_ptr,
-                    what,
-                    message,
-                    when,
-                    where_v,
-                    where_h,
-                    modifiers,
-                ) {
-                    ppc_record_event_snapshot(
-                        toolbox_startup,
-                        what,
-                        message,
-                        when,
-                        where_v,
-                        where_h,
-                        modifiers,
-                    );
-                }
-            }
-            if os_only {
-                toolbox_startup.event_queue_probe.get_os_event = Some(ppc_event_probe_result(
-                    has_event,
-                    what,
-                    message,
-                    when,
-                    where_v,
-                    where_h,
-                    modifiers,
-                ));
-            }
-            let action = PpcImportAction::Return(u32::from(has_event));
-            if binding.symbol_name == "WaitNextEvent" && !has_event && sleep_ticks > 0 {
-                Some(ppc_import_action_with_extra_cycles(
-                    action,
-                    u64::from(sleep_ticks)
-                        .saturating_mul(PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES),
-                ))
-            } else {
-                Some(action)
-            }
-        }
-        PpcImportDispatcherTarget::EventAvail | PpcImportDispatcherTarget::OSEventAvail => {
-            let event_mask = cpu.gpr[3] as u16;
-            let event_ptr = cpu.gpr[4];
-            let os_only = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::OSEventAvail
-            );
-            if !os_only {
-                ppc_service_invalid_menu_bar(
-                    event_queue,
-                    memory,
-                    handles,
-                    gworlds,
-                    current_menu_list,
-                    screen_clut,
-                    toolbox_startup,
-                );
-                ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask, *tick_count);
-            }
-            let (what, message, when, where_v, where_h, modifiers, has_event) =
-                ppc_peek_event(event_queue, event_mask, input, os_only, *tick_count);
-            if event_ptr != 0 {
-                if ppc_write_event_record(
-                    memory,
-                    event_ptr,
-                    what,
-                    message,
-                    when,
-                    where_v,
-                    where_h,
-                    modifiers,
-                ) {
-                    ppc_record_event_snapshot(
-                        toolbox_startup,
-                        what,
-                        message,
-                        when,
-                        where_v,
-                        where_h,
-                        modifiers,
-                    );
-                }
-            }
-            if os_only {
-                toolbox_startup.event_queue_probe.os_event_avail = Some(ppc_event_probe_result(
-                    has_event,
-                    what,
-                    message,
-                    when,
-                    where_v,
-                    where_h,
-                    modifiers,
-                ));
-            } else {
-                toolbox_startup.event_queue_probe.event_avail = Some(ppc_event_probe_result(
-                    has_event,
-                    what,
-                    message,
-                    when,
-                    where_v,
-                    where_h,
-                    modifiers,
-                ));
-            }
-            Some(PpcImportAction::Return(u32::from(has_event)))
-        }
-        PpcImportDispatcherTarget::PostEvent => {
-            let what = cpu.gpr[3] as u16;
-            let system_event_mask = memory
-                .read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK)
-                .unwrap_or(crate::memory::globals::DEFAULT_SYS_EVT_MASK);
-            let result =
-                if crate::trap::TrapDispatcher::posted_event_is_enabled(system_event_mask, what) {
-                    event_queue.push_back(PpcQueuedEvent {
-                        what,
-                        message: cpu.gpr[4],
-                        when: *tick_count,
-                        where_v: input.mouse_v,
-                        where_h: input.mouse_h,
-                        modifiers: ppc_current_event_modifiers(input),
-                    });
-                    PPC_NO_ERR
-                } else {
-                    PPC_EVT_NOT_ENB
-                };
-            toolbox_startup.event_queue_probe.post_result = Some(result);
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::Button => {
-            toolbox_startup.last_button_result = Some(input.mouse_button);
-            Some(PpcImportAction::Return(u32::from(input.mouse_button)))
-        }
-        PpcImportDispatcherTarget::StillDown => {
-            toolbox_startup.last_still_down_result = Some(ppc_still_down_result(input, event_queue));
-            Some(dispatch_still_down_import(cpu, input, event_queue, None))
-        }
-        PpcImportDispatcherTarget::WaitMouseUp => {
-            let result = ppc_wait_mouse_up_result(input, event_queue);
-            toolbox_startup.last_wait_mouse_up_result = Some(result);
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::GetKeys => {
-            Some(dispatch_getkeys_import(cpu, memory, input, None))
-        }
         PpcImportDispatcherTarget::SysEnvirons => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_sys_environs(memory, cpu.gpr[4]),
         ))),
@@ -27290,6 +27103,19 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             // Systemless exposes the generic QuickDraw 3D Accelerator path,
             // not a fabricated 3Dfx board, so leave hwConfig untouched.
             Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::FlushEvents
+        | PpcImportDispatcherTarget::SetEventMask
+        | PpcImportDispatcherTarget::GetNextEvent
+        | PpcImportDispatcherTarget::GetOSEvent
+        | PpcImportDispatcherTarget::EventAvail
+        | PpcImportDispatcherTarget::OSEventAvail
+        | PpcImportDispatcherTarget::PostEvent
+        | PpcImportDispatcherTarget::Button
+        | PpcImportDispatcherTarget::StillDown
+        | PpcImportDispatcherTarget::WaitMouseUp
+        | PpcImportDispatcherTarget::GetKeys => {
+            unreachable!("event imports return through dispatch_event_import")
         }
         PpcImportDispatcherTarget::LMGetMenuList
         | PpcImportDispatcherTarget::LMGetMenuFlash
