@@ -226,6 +226,34 @@ struct DetailCell {
     ink: HashMap<usize, Ink>,
 }
 
+/// Evidence for an indexed recoloring performed by guest CPU stores between
+/// Toolbox calls. Only a consistent, one-to-one color map can preserve detail;
+/// fills, conflicting writes, and unobserved colors retain ordinary invalidation.
+struct CpuRecolor {
+    map: [u16; 256],
+    reverse: [u16; 256],
+    last_address: u32,
+    valid: bool,
+    detail: Vec<(u32, Arc<DetailCell>)>,
+}
+
+impl CpuRecolor {
+    fn new(address: u32) -> Self {
+        Self {
+            map: [256; 256],
+            reverse: [256; 256],
+            last_address: address,
+            valid: true,
+            detail: Vec::new(),
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.valid = false;
+        self.detail.clear();
+    }
+}
+
 fn next_snapshot_identity() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -321,6 +349,8 @@ impl<T> SavedPixels<T> {
 
 pub(crate) struct Presentation {
     revision: u64,
+    cpu_drawing: bool,
+    cpu_recolor: Option<CpuRecolor>,
     cpu_copy: [Option<Arc<DetailCell>>; 4],
     restored_dialog: Option<(u64, (i16, i16, i16, i16), bool, u64)>,
     output_cache: std::cell::RefCell<Option<(u64, u32, Vec<u32>)>>,
@@ -348,6 +378,79 @@ pub(crate) struct Presentation {
 }
 
 impl Presentation {
+    fn observe_cpu_recolor(&mut self, address: u32, old: u8, value: u8) {
+        if self.depth != 8 {
+            return;
+        }
+        if let Some(recolor) = self.cpu_recolor.as_mut() {
+            if address <= recolor.last_address {
+                recolor.invalidate();
+            }
+        }
+        let recolor = self
+            .cpu_recolor
+            .get_or_insert_with(|| CpuRecolor::new(address));
+        if !recolor.valid {
+            return;
+        }
+        recolor.last_address = address;
+        let mapped = recolor.map[old as usize];
+        let source = recolor.reverse[value as usize];
+        if (mapped != 256 && mapped != u16::from(value))
+            || (source != 256 && source != u16::from(old))
+        {
+            recolor.invalidate();
+            return;
+        }
+        recolor.map[old as usize] = value.into();
+        recolor.reverse[value as usize] = old.into();
+        if let Some(detail) = self.detail(address) {
+            let recolor = self.cpu_recolor.as_mut().unwrap();
+            // Bound temporary metadata even for a guest that rewrites a whole
+            // text-filled screen without returning to the Toolbox.
+            if recolor.detail.len() == 4096 {
+                recolor.invalidate();
+            } else {
+                recolor.detail.push((address, detail));
+            }
+        }
+    }
+
+    fn finish_cpu_recolor(&mut self) {
+        let Some(recolor) = self.cpu_recolor.take() else {
+            return;
+        };
+        if !recolor.valid
+            || !recolor
+                .map
+                .iter()
+                .enumerate()
+                .any(|(old, &new)| new < 256 && old != new as usize)
+        {
+            return;
+        }
+        for (address, mut detail) in recolor.detail {
+            let cell = Arc::make_mut(&mut detail);
+            let mut complete = true;
+            let mut map = |index: u8| {
+                let mapped = recolor.map[index as usize];
+                complete &= mapped < 256;
+                mapped as u8
+            };
+            cell.value = map(cell.value);
+            for index in &mut cell.indices {
+                *index = map(*index);
+            }
+            for ink in cell.ink.values_mut() {
+                ink.foreground = map(ink.foreground);
+                ink.background.map(&mut map);
+            }
+            if complete {
+                self.put_detail(address, &detail);
+            }
+        }
+    }
+
     fn bytes_per_pixel(&self) -> u32 {
         u32::from(self.depth.max(8) / 8)
     }
@@ -684,6 +787,15 @@ impl Presentation {
     }
 
     fn put_detail(&mut self, address: u32, cell: &Arc<DetailCell>) {
+        if self.cpu_drawing {
+            // A CPU memory copy supplies its own source coverage. It is not
+            // evidence for a recoloring of the destination's previous text.
+            if let Some(recolor) = self.cpu_recolor.as_mut() {
+                recolor.invalidate();
+            }
+        } else {
+            self.finish_cpu_recolor();
+        }
         if self.matches_detail(address, Some(cell)) {
             return;
         }
@@ -783,6 +895,11 @@ impl Presentation {
             return;
         };
         let cell = (y * self.width + x) as usize;
+        if self.cpu_drawing && self.glyph.is_none() && !self.erasing_text {
+            self.observe_cpu_recolor(address, self.guest_values[cell] as u8, value);
+        } else {
+            self.finish_cpu_recolor();
+        }
         self.detail_cache.get_mut()[cell] = None;
         if self.glyph.is_some() {
             self.revision = self.revision.wrapping_add(1);
@@ -948,6 +1065,21 @@ impl Presentation {
 }
 
 impl MacMemoryBus {
+    pub(crate) fn begin_cpu_drawing(&mut self) {
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.cpu_drawing = true;
+        }
+    }
+
+    pub(crate) fn end_cpu_drawing(&mut self, finished: bool) {
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.cpu_drawing = false;
+            if finished {
+                p.finish_cpu_recolor();
+            }
+        }
+    }
+
     pub(crate) fn dialog_snapshot_is_current(
         &self,
         saved: &SavedPixels,
@@ -1513,6 +1645,8 @@ impl MacMemoryBus {
         });
         let mut presentation = Presentation {
             revision: 0,
+            cpu_drawing: false,
+            cpu_recolor: None,
             cpu_copy: Default::default(),
             restored_dialog: None,
             output_cache: std::cell::RefCell::new(None),
@@ -1796,6 +1930,104 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn guest_cpu_recolor_preserves_coverage_across_execution_budgets() {
+        use crate::cpu::{M68kCpu, Register, StepResult};
+
+        for budget in [0, 1, 7, 1000] {
+            let mut bus = bus();
+            paint_detail(&mut bus, 0x1001);
+            let mut expected = bus.presentation.as_ref().unwrap().detail(0x1001).unwrap();
+            let map = |index| if index == 0 { 0 } else { index ^ 1 };
+            let cell = Arc::make_mut(&mut expected);
+            for index in &mut cell.indices {
+                *index = map(*index);
+            }
+            for ink in cell.ink.values_mut() {
+                ink.foreground = map(ink.foreground);
+                ink.background.map(&mut |index| map(index));
+            }
+            // MOVE.B (A0),D0; TST.B D0; BEQ store; EORI.B #1,D0;
+            // store: MOVE.B D0,(A0)+; DBRA D1,loop; SwapMMUMode.
+            // Like a direct indexed highlight, this rewrites unchanged black
+            // letters as well as changing their background color.
+            for (i, word) in [
+                0x1010, 0x4a00, 0x6704, 0x0a00, 1, 0x10c0, 0x51c9, 0xfff2, 0xa05d,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                bus.write_word(0x200 + i as u32 * 2, word);
+            }
+            let mut cpu = M68kCpu::new();
+            cpu.write_reg(Register::PC, 0x200);
+            cpu.write_reg(Register::A0, 0x1000);
+            cpu.write_reg(Register::D1, 15);
+            for _ in 0..200 {
+                let finished = if budget == 0 {
+                    matches!(cpu.step(&mut bus), StepResult::Aline(0xa05d))
+                } else {
+                    matches!(
+                        cpu.run_batch(&mut bus, budget, &[]).exit,
+                        m68k::BatchExit::AlineTrap { opcode: 0xa05d }
+                    )
+                };
+                if finished {
+                    break;
+                }
+            }
+            assert_eq!(cpu.read_reg(Register::PC), 0x212);
+            assert_eq!(
+                bus.read_bytes(0x1000, 16),
+                [vec![254], vec![0], vec![254; 14]].concat()
+            );
+            assert_eq!(
+                bus.presentation.as_ref().unwrap().detail(0x1001),
+                Some(expected)
+            );
+            // A subsequent native erase must remove all retained coverage.
+            bus.write_byte(0x1001, 0);
+            assert!(bus.presentation.as_ref().unwrap().detail(0x1001).is_none());
+        }
+    }
+
+    #[test]
+    fn cpu_recolor_rejects_erases_conflicts_missing_colors_and_repeated_stores() {
+        for writes in [
+            vec![(0x1000, 0), (0x1001, 0)], // fill collapses background and ink
+            vec![(0x1000, 254), (0x1001, 0), (0x1002, 253)], // conflicting background map
+            vec![(0x1001, 1)],              // no evidence for the antialiased background color
+            vec![(0x1000, 255), (0x1001, 0)], // ordinary same-value rewrite
+            vec![(0x1000, 254), (0x1001, 0), (0x1001, 0)], // overlapping passes
+        ] {
+            let mut bus = bus();
+            paint_detail(&mut bus, 0x1001);
+            bus.begin_cpu_drawing();
+            for (address, value) in writes {
+                bus.write_byte(address, value);
+            }
+            bus.end_cpu_drawing(true);
+            assert!(bus.presentation.as_ref().unwrap().detail(0x1001).is_none());
+        }
+    }
+
+    #[test]
+    fn native_drawing_finishes_pending_cpu_recolor_before_overwriting_it() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1001);
+        bus.begin_cpu_drawing();
+        bus.write_byte(0x1000, 254);
+        bus.write_byte(0x1001, 0);
+        bus.end_cpu_drawing(false);
+        // The frontend can draw between CPU slices. Its later pixel wins.
+        bus.write_byte(0x1001, 42);
+        bus.end_cpu_drawing(true);
+        assert_eq!(bus.read_byte(0x1001), 42);
+        let p = bus.presentation.as_ref().unwrap();
+        assert_eq!(p.guest_values[1], 42);
+        assert!(p.detail(0x1001).is_none());
     }
 
     #[test]
