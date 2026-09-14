@@ -3244,24 +3244,36 @@ impl super::TrapDispatcher {
                         caret_x = caret_x.saturating_sub(1);
                     }
                     let caret_width = self.ui_theme().text_theme().caret_width.max(1);
-                    if !self.draw_theme_caret(
-                        bus,
-                        line_top.wrapping_sub(port_top),
-                        caret_x.wrapping_sub(port_left),
-                        line_bottom.wrapping_sub(port_top),
-                        caret_x.saturating_add(caret_width).wrapping_sub(port_left),
+                    // Text (1993), pp. 2-16 and 2-29: viewRect bounds the
+                    // visible portion of a TextEdit record. A partial last
+                    // line can be shorter than lineHeight. Painting its full
+                    // caret leaves pixels outside the area erased next time.
+                    if let Some((top, left, bottom, right)) = Self::rect_intersection(
+                        (line_top, caret_x, line_bottom, caret_x.saturating_add(caret_width)),
+                        view_rect,
                     ) {
-                        self.draw_rect(
-                            cpu,
+                        if !self.draw_theme_caret_clipped(
                             bus,
-                            &Rect {
-                                top: line_top,
-                                left: caret_x,
-                                bottom: line_bottom,
-                                right: caret_x.saturating_add(1),
-                            },
-                            ShapeOp::Paint,
-                        );
+                            (
+                                top.wrapping_sub(port_top),
+                                left.wrapping_sub(port_left),
+                                bottom.wrapping_sub(port_top),
+                                right.wrapping_sub(port_left),
+                            ),
+                            Some((
+                                view_rect.0.wrapping_sub(port_top),
+                                view_rect.1.wrapping_sub(port_left),
+                                view_rect.2.wrapping_sub(port_top),
+                                view_rect.3.wrapping_sub(port_left),
+                            )),
+                        ) {
+                            self.draw_rect(
+                                cpu,
+                                bus,
+                                &Rect { top, left, bottom, right },
+                                ShapeOp::Paint,
+                            );
+                        }
                     }
                 }
             }
@@ -33780,6 +33792,75 @@ mod tests {
             screen_pixel_is_set(&themed_bus, screen_base, row_bytes, 0, 0),
             "systemless-default TEUpdate should draw provider-owned caret chrome"
         );
+    }
+
+    #[test]
+    fn textedit_caret_movement_and_blinking_stay_inside_short_view_rectangle() {
+        // Text (1993), pp. 2-16/2-29: only the view rectangle is visible.
+        // SC2K uses a 15-pixel field with a taller line. Moving or blinking
+        // the caret must not leave its bottom pixels below that field.
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            // setup_with_port creates a 512-pixel monochrome BitMap; make
+            // the display and pixel assertions use that same layout.
+            disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+            disp.set_ui_theme_id(theme);
+            let te_handle = make_te_with_text(&mut disp, &mut bus, b"    ");
+            let te_ptr = bus.read_long(te_handle);
+            let view = (20, 20, 35, 100);
+            TrapDispatcher::te_write_rect_words(
+                &mut bus,
+                te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET,
+                (20, 19, 35, 120),
+            );
+            TrapDispatcher::te_write_rect_words(
+                &mut bus,
+                te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET,
+                view,
+            );
+            bus.write_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET, 18);
+            let (base, row_bytes, _, _, _) = disp.screen_mode;
+            for offset in 0..row_bytes * 80 {
+                bus.write_byte(base + offset, 0);
+            }
+            bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+            for selection in [0, 1, 2, 3, 4, 0] {
+                bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, selection);
+                bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, selection);
+                for caret_state in [0, 1] {
+                    bus.write_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET, caret_state);
+                    disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+                    let mut visible_pixels = 0;
+                    for y in 0..60 {
+                        for x in 0..140 {
+                            let set = screen_pixel_is_set(&bus, base, row_bytes, x, y);
+                            if y >= view.0 && y < view.2 && x >= view.1 && x < view.3 {
+                                visible_pixels += usize::from(set);
+                            } else {
+                                assert!(
+                                    !set,
+                                    "{theme:?}: caret trail at ({x},{y}), selection={selection}"
+                                );
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        visible_pixels > 0,
+                        caret_state == 0,
+                        "{theme:?}: caret must blink cleanly"
+                    );
+                }
+            }
+            // A caret horizontally outside the view is also invisible.
+            TrapDispatcher::te_write_rect_words(
+                &mut bus,
+                te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET,
+                (20, 80, 35, 100),
+            );
+            bus.write_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET, 0);
+            disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+            assert!((0..row_bytes * 60).all(|offset| bus.read_byte(base + offset) == 0));
+        }
     }
 
     #[test]
