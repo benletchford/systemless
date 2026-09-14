@@ -21672,9 +21672,15 @@ mod tests {
         assert!(!runner.native.application().unwrap().vfs_resource_files[0].dirty);
 
         let prefs_path = "System Folder/Preferences/Test App Prefs";
-        runner.native.application_mut().unwrap().vfs_files[0]
-            .data
-            .with_mut(|data| data.extend_from_slice(b"-native"));
+        runner
+            .native
+            .application_mut()
+            .unwrap()
+            .with_test_vfs_file_mut(0, |file| {
+                file.data
+                    .with_mut(|data| data.extend_from_slice(b"-native"));
+            })
+            .expect("seeded native preferences file");
         assert_eq!(
             runner.dispatcher().vfs.get(prefs_path).unwrap(),
             b"prefs-native",

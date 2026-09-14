@@ -4466,8 +4466,9 @@ impl TrapDispatcher {
             return;
         }
         if self.vfs_metadata.contains_key(&normalized) {
-            self.process_file_system
-                .publish_classic_vfs_metadata(&normalized);
+            self.process_file_system.with_mut(|file_system| {
+                file_system.publish_classic_vfs_metadata(&normalized);
+            });
             return;
         }
 
@@ -4489,8 +4490,9 @@ impl TrapDispatcher {
         );
         self.next_vfs_file_id
             .with_mut(|next_file_id| *next_file_id = next_file_id.saturating_add(1));
-        self.process_file_system
-            .publish_classic_vfs_metadata(&normalized);
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_classic_vfs_metadata(&normalized);
+        });
     }
 
     pub(crate) fn ensure_vfs_catalog(&mut self) {
@@ -4530,8 +4532,9 @@ impl TrapDispatcher {
             metadata.creator = u32::from_be_bytes(creator);
             metadata.finder_flags = finder_flags;
         });
-        self.process_file_system
-            .publish_classic_vfs_metadata(&normalized);
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_classic_vfs_metadata(&normalized);
+        });
     }
 
     pub(crate) fn set_vfs_entry_finfo(
@@ -4548,8 +4551,9 @@ impl TrapDispatcher {
             metadata.creator = creator;
             metadata.finder_flags = finder_flags;
         });
-        self.process_file_system
-            .publish_classic_vfs_metadata(&normalized);
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_classic_vfs_metadata(&normalized);
+        });
     }
 
     pub(crate) fn set_launched_app_path(&mut self, name: &str) {
@@ -4575,7 +4579,8 @@ impl TrapDispatcher {
                     .with_mut(|app_ref_num| *app_ref_num = wd_ref);
             }
         }
-        self.process_file_system.launched_app_path = Some(normalized);
+        self.process_file_system
+            .with_mut(|file_system| file_system.launched_app_path = Some(normalized));
     }
 
     pub fn launched_app_path(&self) -> Option<&str> {
@@ -4685,8 +4690,9 @@ impl TrapDispatcher {
                 metadata.created_date = timestamp;
             }
         });
-        self.process_file_system
-            .publish_classic_vfs_metadata(&normalized);
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_classic_vfs_metadata(&normalized);
+        });
     }
 
     pub(crate) fn remove_vfs_entry_metadata(&mut self, name: &str) {
@@ -4696,14 +4702,15 @@ impl TrapDispatcher {
 
     pub(crate) fn publish_vfs_entry_to_process(&mut self, name: &str) {
         let normalized = Self::normalize_vfs_path(name);
-        self.process_file_system
-            .publish_classic_vfs_metadata(&normalized);
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_classic_vfs_metadata(&normalized);
+        });
     }
 
     pub(crate) fn remove_vfs_entry_from_process(&mut self, name: &str) {
         let normalized = Self::normalize_vfs_path(name);
         self.process_file_system
-            .remove_classic_vfs_path(&normalized);
+            .with_mut(|file_system| file_system.remove_classic_vfs_path(&normalized));
     }
 
     pub fn remove_vfs_path(&mut self, name: &str) -> bool {
@@ -4751,7 +4758,7 @@ impl TrapDispatcher {
         }
 
         self.process_file_system
-            .remove_classic_vfs_path(&normalized);
+            .with_mut(|file_system| file_system.remove_classic_vfs_path(&normalized));
 
         removed
     }
@@ -6034,9 +6041,12 @@ impl TrapDispatcher {
                 && !self.synthetic_drivers.contains_key(&refnum)
                 && !resource_refnum_in_use
             {
-                self.process_file_system.next_file_ref_num = candidate
+                let next_file_ref_num = candidate
                     .checked_add(1)
                     .expect("File Manager reference numbers exhausted");
+                self.process_file_system.with_mut(|file_system| {
+                    file_system.next_file_ref_num = next_file_ref_num;
+                });
                 return refnum;
             }
             candidate = candidate
