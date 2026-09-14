@@ -131484,7 +131484,7 @@ pub(crate) mod tests {
         assert_eq!(
             edge_loaded
                 .memory
-                .read_u16_be(edge_front_base + 3 * 16 + 1 * 2),
+                .read_u16_be(edge_front_base + 3 * 16 + 2),
             Some(0x03e0)
         );
         assert_eq!(
@@ -131502,13 +131502,13 @@ pub(crate) mod tests {
         assert_eq!(
             point_loaded
                 .memory
-                .read_u16_be(point_front_base + 6 * 16 + 1 * 2),
+                .read_u16_be(point_front_base + 6 * 16 + 2),
             Some(0x03e0)
         );
         assert_eq!(
             point_loaded
                 .memory
-                .read_u16_be(point_front_base + 3 * 16 + 1 * 2),
+                .read_u16_be(point_front_base + 3 * 16 + 2),
             Some(0)
         );
     }
@@ -131715,7 +131715,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 3 * 16 + 1 * 2),
+            loaded.memory.read_u16_be(front_base + 3 * 16 + 2),
             Some(0x7c00)
         );
         assert_eq!(
@@ -131993,7 +131993,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 3 * 16 + 1 * 2),
+            loaded.memory.read_u16_be(front_base + 3 * 16 + 2),
             Some(0x001f)
         );
     }
@@ -132196,7 +132196,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 3 * 16 + 1 * 2),
+            loaded.memory.read_u16_be(front_base + 3 * 16 + 2),
             Some(0x03e0)
         );
         assert_eq!(
@@ -132405,7 +132405,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 3 * 16 + 1 * 2),
+            loaded.memory.read_u16_be(front_base + 3 * 16 + 2),
             Some(0x2000)
         );
         assert_eq!(
@@ -132572,7 +132572,7 @@ pub(crate) mod tests {
         assert_eq!(
             both_loaded
                 .memory
-                .read_u16_be(both_front_base + 5 * 16 + 1 * 2),
+                .read_u16_be(both_front_base + 5 * 16 + 2),
             Some(0x03e0)
         );
         assert_eq!(
@@ -132588,7 +132588,7 @@ pub(crate) mod tests {
         assert_eq!(
             remove_loaded
                 .memory
-                .read_u16_be(remove_front_base + 5 * 16 + 1 * 2),
+                .read_u16_be(remove_front_base + 5 * 16 + 2),
             Some(0)
         );
         assert_eq!(
@@ -132607,7 +132607,7 @@ pub(crate) mod tests {
         assert_eq!(
             clockwise_loaded
                 .memory
-                .read_u16_be(clockwise_front_base + 5 * 16 + 1 * 2),
+                .read_u16_be(clockwise_front_base + 5 * 16 + 2),
             Some(0x03e0)
         );
         assert_eq!(
@@ -135469,7 +135469,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 3 * 16 + 1 * 2),
+            loaded.memory.read_u16_be(front_base + 3 * 16 + 2),
             Some(0)
         );
         assert_eq!(
@@ -136691,7 +136691,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 2);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 4 * 16 + 1 * 2),
+            loaded.memory.read_u16_be(front_base + 4 * 16 + 2),
             Some(0x22e0)
         );
         assert_eq!(
@@ -136936,7 +136936,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 2);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 4 * 16 + 1 * 2),
+            loaded.memory.read_u16_be(front_base + 4 * 16 + 2),
             Some(0x03e0)
         );
         assert_eq!(
@@ -139804,7 +139804,7 @@ pub(crate) mod tests {
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels > 0);
         assert_eq!(
-            loaded.memory.read_u16_be(front_base + 1 * 16 + 5 * 2),
+            loaded.memory.read_u16_be(front_base + 16 + 5 * 2),
             Some(0x7c00),
             "draw-context clear color must fill uncovered pane pixels"
         );
@@ -143712,7 +143712,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u8(pix_base + 5 * 8 + 6), Some(255));
         assert_eq!(loaded.memory.read_u8(pix_base + 5 * 8 + 7), Some(0));
-        assert_eq!(loaded.memory.read_u8(pix_base + 5 * 8 + 0), Some(42));
+        assert_eq!(loaded.memory.read_u8(pix_base + 5 * 8), Some(42));
     }
 
     #[test]
