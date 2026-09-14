@@ -141,6 +141,7 @@ pub fn pack_game_sources_for_web(
         dirs: Vec::new(),
         files: Vec::new(),
         volumes: Vec::new(),
+        installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
     for source in sources {
@@ -201,7 +202,8 @@ fn pack_payload_files_for_web(file_entries: Vec<PayloadFile>) -> Result<Vec<u8>,
     Ok(out)
 }
 
-fn pack_payload_for_web(payload: Payload) -> Result<Vec<u8>, String> {
+fn pack_payload_for_web(mut payload: Payload) -> Result<Vec<u8>, String> {
+    place_installer_outputs_on_boot_volume(&mut payload);
     if payload.volumes.is_empty() {
         return pack_payload_files_for_web(payload.files);
     }
@@ -395,6 +397,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
         dirs: Vec::new(),
         files: Vec::new(),
         volumes: Vec::new(),
+        installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
 
@@ -418,6 +421,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             entry.finder_flags,
             1,
         )?;
+        payload.installer_roots.extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -504,6 +508,7 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
             dirs: Vec::new(),
             files: vec![payload],
             volumes: Vec::new(),
+            installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
         },
         &mut executable,
@@ -1035,6 +1040,7 @@ fn payload_from_exported_host_tree(
         dirs,
         files,
         volumes: Vec::new(),
+        installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     })
 }
@@ -1160,10 +1166,13 @@ struct Payload {
     dirs: Vec<String>,
     files: Vec<PayloadFile>,
     volumes: Vec<(String, crate::disk_image::DiskImageVolumeInfo)>,
+    /// Directories produced by expanding installers, rather than source media.
+    installer_roots: Vec<String>,
     skipped_disk_image_errors: Vec<String>,
 }
 
 fn merge_payload(target: &mut Payload, source: Payload) {
+    target.installer_roots.extend(source.installer_roots);
     target.dirs.extend(source.dirs);
     target.files.extend(source.files);
     for (name, info) in source.volumes {
@@ -1205,6 +1214,7 @@ fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
         dirs: Vec::new(),
         files: Vec::new(),
         volumes: Vec::new(),
+        installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
     let mut total_uncompressed_bytes = 0u64;
@@ -1270,6 +1280,7 @@ fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
         }
 
         let nested = payload_from_forks(&path, data, Vec::new(), *b"????", *b"????", 0, 1)?;
+        payload.installer_roots.extend(nested.installer_roots);
         payload.dirs.extend(nested.dirs);
         payload.files.extend(nested.files);
         payload.volumes.extend(nested.volumes);
@@ -1385,6 +1396,7 @@ fn payload_from_stuffit_archive(
         dirs: Vec::new(),
         files: Vec::new(),
         volumes: Vec::new(),
+        installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
     for entry in archive.entries.iter().filter(|entry| !entry.is_folder) {
@@ -1400,6 +1412,7 @@ fn payload_from_stuffit_archive(
             entry.finder_flags,
             executable_priority,
         )?;
+        payload.installer_roots.extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -1789,6 +1802,7 @@ fn payload_from_forks(
             dirs: Vec::new(),
             files: vec![file],
             volumes: Vec::new(),
+            installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
         });
     }
@@ -1850,6 +1864,7 @@ fn payload_from_forks(
             executable_priority,
         }],
         volumes: Vec::new(),
+        installer_roots: Vec::new(),
         skipped_disk_image_errors,
     })
 }
@@ -1875,6 +1890,7 @@ fn expand_installer_maker_payload(
         dirs: vec![name.to_string()],
         files: Vec::new(),
         volumes: Vec::new(),
+        installer_roots: vec![name.to_string()],
         skipped_disk_image_errors: Vec::new(),
     };
     for entry in container.entries {
@@ -1936,11 +1952,13 @@ fn expand_installer_maker_payload(
                         executable_priority,
                     }],
                     volumes: Vec::new(),
+                    installer_roots: Vec::new(),
                     skipped_disk_image_errors: Vec::new(),
                 }
             }
             Err(error) => return Err(error),
         };
+        payload.installer_roots.extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -2031,6 +2049,7 @@ fn expand_vise_payload(
             .collect(),
         files: Vec::new(),
         volumes: Vec::new(),
+        installer_roots: vec![name.to_string()],
         skipped_disk_image_errors: Vec::new(),
     };
     for entry in archive.entries {
@@ -2107,6 +2126,7 @@ fn expand_vise_payload(
             0,
             executable_priority,
         )?;
+        payload.installer_roots.extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -2233,6 +2253,7 @@ fn expand_split_vise_payloads(mut payload: Payload) -> Result<Payload, String> {
             .enumerate()
             .filter_map(|(index, file)| (!remove[index]).then_some(file))
             .collect();
+        payload.installer_roots.extend(expanded.installer_roots);
         payload.dirs.extend(expanded.dirs);
         payload.files.extend(expanded.files);
         payload.volumes.extend(expanded.volumes);
@@ -2289,6 +2310,7 @@ fn payload_from_disk_image(
         dirs,
         files: Vec::new(),
         volumes: vec![(volume_name, volume_info)],
+        installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
     for file in files {
@@ -2301,6 +2323,7 @@ fn payload_from_disk_image(
             file.finder_flags,
             executable_priority,
         )?;
+        payload.installer_roots.extend(file_payload.installer_roots);
         payload.dirs.extend(file_payload.dirs);
         payload.files.extend(file_payload.files);
         payload.volumes.extend(file_payload.volumes);
@@ -2311,11 +2334,66 @@ fn payload_from_disk_image(
     Ok(payload)
 }
 
+/// Automatic installer expansion models an installation onto the boot volume,
+/// not files written back onto its source disk. Keep source images immutable:
+/// File Manager mutations there must still return wPrErr (Inside Macintosh:
+/// Files, pp. 2-127 and 2-144). Ordinary archives already on the boot volume
+/// retain their paths, including paths used by existing saved games.
+fn place_installer_outputs_on_boot_volume(payload: &mut Payload) {
+    use crate::trap::dispatch::TrapDispatcher;
+
+    let roots: Vec<_> = std::mem::take(&mut payload.installer_roots)
+        .into_iter()
+        .map(|root| TrapDispatcher::normalize_vfs_path(&root))
+        .filter(|root| {
+            payload.volumes.iter().any(|(volume, _)| {
+                vfs_path_matches_remove(root, &TrapDispatcher::normalize_vfs_path(volume))
+            })
+        })
+        .collect();
+    if roots.is_empty() {
+        return;
+    }
+
+    // Choose an unused top-level boot directory deterministically, so loading
+    // the same archive restores the same paths and never merges with its media.
+    let occupied: Vec<_> = payload
+        .dirs
+        .iter()
+        .chain(payload.files.iter().map(|file| &file.name))
+        .chain(payload.volumes.iter().map(|(name, _)| name))
+        .map(|path| TrapDispatcher::normalize_vfs_path(path))
+        .collect();
+    let mut destination = "Installed Applications".to_string();
+    let mut suffix = 2;
+    while occupied
+        .iter()
+        .any(|path| vfs_path_matches_remove(path, &destination))
+    {
+        destination = format!("Installed Applications ({suffix})");
+        suffix += 1;
+    }
+    for path in payload
+        .dirs
+        .iter_mut()
+        .chain(payload.files.iter_mut().map(|file| &mut file.name))
+    {
+        let normalized = TrapDispatcher::normalize_vfs_path(path);
+        if roots
+            .iter()
+            .any(|root| vfs_path_matches_remove(&normalized, root))
+        {
+            *path = format!("{destination}/{normalized}");
+        }
+    }
+}
+
 fn insert_payload_into_vfs(
     runner: &mut FixtureRunner,
-    payload: Payload,
+    mut payload: Payload,
     executable_entry: &mut Option<ExecutableCandidate>,
 ) {
+    place_installer_outputs_on_boot_volume(&mut payload);
     for dir in payload.dirs {
         let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&dir);
         runner.dispatcher_mut().ensure_vfs_directory(&normalized);
@@ -3428,6 +3506,113 @@ mod tests {
         assert!(crate::game::vise::parse_vise(&archive).unwrap().is_err());
     }
 
+    fn installer_on_source_volume() -> Payload {
+        let file = |name: &str| PayloadFile {
+            name: name.into(),
+            data: b"hello".to_vec(),
+            rsrc: b"rsrc".to_vec(),
+            file_type: *b"TEXT",
+            creator: *b"ttxt",
+            finder_flags: 0,
+            executable_priority: 0,
+        };
+        // Model the loader's expanded output and its immutable source sibling.
+        // Archive decoding is independent of the File Manager policy tested here.
+        Payload {
+            dirs: vec!["Disk 1".into(), "Disk 1/Install".into()],
+            files: vec![file("Disk 1/Readme"), file("Disk 1/Install/Readme")],
+            volumes: vec![("Disk 1".into(), Default::default())],
+            installer_roots: vec!["Disk 1/Install".into()],
+            skipped_disk_image_errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn installed_files_use_writable_boot_volume_without_unlocking_source_media() {
+        let mut runner = new_runner();
+        insert_payload_into_vfs(&mut runner, installer_on_source_volume(), &mut None);
+        let installed = "Installed Applications/Disk 1/Install/Readme";
+        let dispatcher = runner.dispatcher();
+        assert_eq!(dispatcher.vfs_data_fork_bytes(installed).unwrap(), b"hello");
+        assert!(!dispatcher.vfs_path_is_read_only(installed));
+        assert!(dispatcher.vfs_path_is_read_only("Disk 1/Readme"));
+        assert_eq!(
+            dispatcher.vfs_data_fork_bytes("Disk 1/Readme").unwrap(),
+            b"hello"
+        );
+
+        // Match a game's direct PBCreate using its launch working directory;
+        // do not rely on a Standard File dialog redirecting to a writable disk.
+        runner.dispatcher_mut().set_launched_app_path(installed);
+        let wd = *runner.dispatcher().app_wd_refnum;
+        let mut cpu = crate::cpu::M68kCpu::new();
+        let mut bus = crate::memory::MacMemoryBus::new(4 * 1024 * 1024);
+        use crate::memory::MemoryBus;
+        let pb = 0x10000;
+        bus.write_pstring(0x11000, b"New City");
+        bus.write_long(pb + 18, 0x11000);
+        bus.write_word(pb + 22, wd as u16);
+        cpu.write_reg(crate::cpu::Register::A0, pb);
+        runner
+            .dispatcher_mut()
+            .with_process_state(|dispatcher| {
+                dispatcher.current_trap_word = 0xA008;
+                dispatcher.dispatch_resource(false, 0x08, &mut cpu, &mut bus)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert!(runner
+            .dispatcher()
+            .vfs_data_fork_bytes("Installed Applications/Disk 1/Install/New City")
+            .is_some());
+
+        runner
+            .dispatcher_mut()
+            .set_launched_app_path("Disk 1/Readme");
+        bus.write_word(pb + 22, *runner.dispatcher().app_wd_refnum as u16);
+        cpu.write_reg(crate::cpu::Register::A0, pb);
+        runner
+            .dispatcher_mut()
+            .with_process_state(|dispatcher| {
+                dispatcher.current_trap_word = 0xA008;
+                dispatcher.dispatch_resource(false, 0x08, &mut cpu, &mut bus)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_word(pb + 16) as i16,
+            -44,
+            "source disk stays locked"
+        );
+    }
+
+    #[test]
+    fn installed_web_pack_preserves_forks_and_avoids_destination_name_collisions() {
+        let mut payload = installer_on_source_volume();
+        payload
+            .volumes
+            .push(("installed applications".into(), Default::default()));
+        let pack = pack_payload_for_web(payload).unwrap();
+        let mut runner = new_runner();
+        let mut loader = WebPackLoader::new(&mut runner, &pack).unwrap().unwrap();
+        while !loader.load_next_chunk(&mut runner, 2).unwrap() {}
+        let path = "Installed Applications (2)/Disk 1/Install/Readme";
+        let file = runner.vfs_file_snapshot(path).unwrap();
+        assert_eq!(file.data_fork, b"hello");
+        assert_eq!(file.resource_fork, b"rsrc");
+        assert!(!runner.dispatcher().vfs_path_is_read_only(path));
+        assert!(runner.dispatcher().vfs_path_is_read_only("Disk 1/Readme"));
+
+        let mut writable = installer_on_source_volume();
+        writable.volumes.clear();
+        place_installer_outputs_on_boot_volume(&mut writable);
+        assert_eq!(
+            writable.files[1].name, "Disk 1/Install/Readme",
+            "an installer already on the boot volume keeps existing save paths"
+        );
+    }
+
     #[test]
     fn frontend_runner_constructors_preserve_defaults_and_explicit_depths() {
         let default_runner = new_runner();
@@ -3880,6 +4065,7 @@ mod tests {
                 executable_priority: 1,
             }],
             volumes: vec![("Bolo™ CD".to_string(), info)],
+            installer_roots: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
         })
         .unwrap();
