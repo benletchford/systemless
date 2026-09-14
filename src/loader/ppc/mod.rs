@@ -1634,6 +1634,7 @@ pub enum PpcImportDispatcherTarget {
     SysEnvirons,
     TextWidth,
     StringWidth,
+    TruncString,
     CharWidth,
     RealFont,
     GetFontInfo,
@@ -15117,6 +15118,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SysEnvirons") => PpcImportDispatcherTarget::SysEnvirons,
         ("InterfaceLib", "TextWidth") => PpcImportDispatcherTarget::TextWidth,
         ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
+        ("InterfaceLib", "TruncString") => PpcImportDispatcherTarget::TruncString,
         ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,
         ("InterfaceLib", "MeasureText") => PpcImportDispatcherTarget::MeasureText,
         ("InterfaceLib", "RealFont") => PpcImportDispatcherTarget::RealFont,
@@ -23773,6 +23775,19 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 *quickdraw_text_size,
                 text_face,
             )))
+        }
+        PpcImportDispatcherTarget::TruncString => {
+            let font = ppc_current_text_font(memory, *current_gworld);
+            let style = ppc_current_text_style(memory, *current_gworld);
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_trunc_string(
+                memory,
+                cpu.gpr[4],
+                cpu.gpr[3] as u16 as i16,
+                cpu.gpr[5] as u16,
+                font,
+                *quickdraw_text_size,
+                style,
+            ))))
         }
         PpcImportDispatcherTarget::StringWidth => {
             let text_font = ppc_current_text_font(memory, *current_gworld);
@@ -56139,6 +56154,51 @@ fn ppc_text_bytes_advance_for_font(bytes: &[u8], text_font: i16, text_size: i16)
         )
     });
     ppc_scale_font_value(base_advance, numerator, denominator)
+}
+
+// Inside Macintosh: Text (1993), Text Utilities, TruncString. Use the
+// current QuickDraw font and Roman ellipsis, retaining Pascal byte lengths.
+fn ppc_trunc_string(
+    memory: &mut PpcSectionMem,
+    string: u32,
+    width: i16,
+    where_: u16,
+    font: i16,
+    size: i16,
+    style: u8,
+) -> i16 {
+    let Some(bytes) = ppc_read_pstring_bytes(memory, string) else {
+        return -1;
+    };
+    let measure = |text: &[u8]| ppc_text_width_bytes(font, size, style, text);
+    if measure(&bytes) <= width {
+        return 0;
+    }
+    const ELLIPSIS: u8 = 0xc9;
+    if !matches!(where_, 0 | 0x4000) || measure(&[ELLIPSIS]) > width {
+        return -1;
+    }
+    // A Pascal string has at most 255 bytes. Measure complete candidates so
+    // style advances and font scaling agree with StringWidth at the boundary.
+    for retained in (0..bytes.len()).rev() {
+        let left = if where_ == 0x4000 {
+            retained.div_ceil(2)
+        } else {
+            retained
+        };
+        let right = retained - left;
+        let mut candidate = bytes[..left].to_vec();
+        candidate.push(ELLIPSIS);
+        candidate.extend_from_slice(&bytes[bytes.len() - right..]);
+        if measure(&candidate) <= width {
+            return if ppc_write_pstring_bytes(memory, string, &candidate) {
+                1
+            } else {
+                -1
+            };
+        }
+    }
+    -1
 }
 
 fn ppc_text_width_bytes(text_font: i16, text_size: i16, style: u8, bytes: &[u8]) -> i16 {
@@ -151081,6 +151141,64 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+    }
+
+    #[test]
+    fn trunc_string_uses_current_font_and_preserves_pascal_storage() {
+        for (size, style) in [(12, 0), (18, 1)] {
+            for middle in [false, true] {
+                let mut loaded =
+                    load_pef_application(&synthetic_pef_with_import(b"TruncString")).unwrap();
+                let text = PPC_DATA_BASE + 0x1000;
+                let original = b"Wide letters and a pathname";
+                loaded.memory.add_region(text, vec![0xa5; 258]);
+                assert!(ppc_write_pstring_bytes(&mut loaded.memory, text, original));
+                loaded.quickdraw_text_size = size;
+                loaded
+                    .memory
+                    .write_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET, style)
+                    .unwrap();
+                let font = ppc_current_text_font(&mut loaded.memory, PPC_MAIN_GWORLD);
+                let width = ppc_text_width_bytes(font, size, style, b"Wide letters");
+                loaded.cpu.gpr[3] = width as u32;
+                loaded.cpu.gpr[4] = text;
+                loaded.cpu.gpr[5] = if middle { 0x4000 } else { 0 };
+                let probe = loaded.run_with_hle_imports(64);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3], 1);
+                let result = ppc_read_pstring_bytes(&mut loaded.memory, text).unwrap();
+                assert!(ppc_text_width_bytes(font, size, style, &result) <= width);
+                assert!(result.contains(&0xc9));
+                assert_eq!(result[0], original[0]);
+                if middle {
+                    assert_eq!(result.last(), original.last());
+                } else {
+                    assert_eq!(result.last(), Some(&0xc9));
+                }
+                assert_eq!(loaded.memory.read_u8(text + 257), Some(0xa5));
+            }
+        }
+        for (width, original, expected) in [
+            (32767i16, b"Fits".as_slice(), 0i16),
+            (0, b"", 0),
+            (0, b"Too wide", -1),
+            (-1, b"Negative", -1),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TruncString")).unwrap();
+            let text = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(text, vec![0xa5; 258]);
+            assert!(ppc_write_pstring_bytes(&mut loaded.memory, text, original));
+            loaded.cpu.gpr[3] = width as i32 as u32;
+            loaded.cpu.gpr[4] = text;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+            assert_eq!(
+                ppc_read_pstring_bytes(&mut loaded.memory, text).unwrap(),
+                original
+            );
+        }
     }
 
     #[test]
