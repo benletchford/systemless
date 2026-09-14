@@ -151,9 +151,7 @@ impl super::TrapDispatcher {
                 return Err(MEM_FULL_ERR);
             }
             self.clear_guest_sound_channel_state(bus, ptr);
-            self.sound_manager
-                .channels
-                .push(SndChannel::new(ptr, false));
+            self.sound_manager.add_channel(SndChannel::new(ptr, false));
             self.legacy_sound_driver_channel = Some(ptr);
             ptr
         };
@@ -378,22 +376,6 @@ impl super::TrapDispatcher {
         if self.legacy_sound_driver_channel == Some(chan_ptr) {
             self.legacy_sound_driver_channel = None;
         }
-        self.sound_manager
-            .pending_callbacks
-            .retain(|pending| pending.chan_ptr != chan_ptr);
-        self.sound_manager
-            .pending_sound_callbacks
-            .retain(|pending| match pending {
-                crate::sound::PendingSoundCallback::Command {
-                    chan_ptr: pending_chan,
-                    ..
-                }
-                | crate::sound::PendingSoundCallback::FileCompletion {
-                    chan_ptr: pending_chan,
-                    ..
-                } => *pending_chan != chan_ptr,
-            });
-
         if let Some(chan) = self.sound_manager.take_channel(chan_ptr) {
             if chan.guest_visible() {
                 self.clear_guest_sound_channel_state(bus, chan.guest_ptr);
@@ -427,7 +409,7 @@ impl super::TrapDispatcher {
             sound::PlaybackKind::Buffer,
             0,
         );
-        self.sound_manager.channels.push(chan);
+        self.sound_manager.add_channel(chan);
     }
 
     pub(crate) fn dispatch_sound<C: CpuOps>(
@@ -1009,7 +991,7 @@ impl super::TrapDispatcher {
                     self.sound_manager.remove_channel(guest_ptr);
                     let mut chan = SndChannel::new(guest_ptr, allocated);
                     chan.callback_addr = user_routine;
-                    self.sound_manager.channels.push(chan);
+                    self.sound_manager.add_channel(chan);
                     if trace_sound_enabled() {
                         // Log caller PC + surrounding bytes for back-referencing
                         // sound-init call sites.
@@ -1317,9 +1299,7 @@ impl super::TrapDispatcher {
         // Record accepted commands at submission time as well as when the
         // guest queue is later serviced. This keeps diagnostics truthful when
         // an immediate flush intentionally removes a not-yet-executed entry.
-        if !self.sound_manager.debug_cmd_codes_seen.contains(&cmd.cmd) {
-            self.sound_manager.debug_cmd_codes_seen.push(cmd.cmd);
-        }
+        self.sound_manager.record_command_code(cmd.cmd);
         let cmd_addr = chan_ptr + GUEST_SND_CHANNEL_QUEUE_OFFSET + (q_tail as u32) * 8;
         self.write_guest_snd_command(bus, cmd_addr, Some(cmd));
         bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, next_tail as u16);
@@ -1449,12 +1429,7 @@ impl super::TrapDispatcher {
 
     /// Execute a sound command on a channel, handling bufferCmd to load samples.
     fn execute_sound_command(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32, cmd: SndCommand) {
-        self.sound_manager.debug_cmd_count += 1;
-        // Dedup-record this cmd code so runtime diagnostics can surface
-        // the cmd-mix distribution per-game.
-        if !self.sound_manager.debug_cmd_codes_seen.contains(&cmd.cmd) {
-            self.sound_manager.debug_cmd_codes_seen.push(cmd.cmd);
-        }
+        self.sound_manager.record_command(cmd.cmd);
         match cmd.cmd {
             sound::cmd::NULL => {}
             sound::cmd::QUIET => {
@@ -1482,7 +1457,7 @@ impl super::TrapDispatcher {
                     }
                 });
                 if let Some(Some((callback_addr, chan_ptr))) = pending_callback {
-                    self.sound_manager.pending_sound_callbacks.push(
+                    self.sound_manager.queue_sound_callback(
                         crate::sound::PendingSoundCallback::Command {
                             architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
                             callback_addr,
@@ -1516,9 +1491,7 @@ impl super::TrapDispatcher {
                 }
             }
             _ => {
-                if !self.sound_manager.debug_unhandled_cmds.contains(&cmd.cmd) {
-                    self.sound_manager.debug_unhandled_cmds.push(cmd.cmd);
-                }
+                self.sound_manager.note_unhandled_command(cmd.cmd);
                 if trace_sound_enabled() {
                     eprintln!(
                         "[SOUND] unhandled cmd={} param1={} param2=${:08X} chan=${:08X}",
@@ -1550,7 +1523,7 @@ impl super::TrapDispatcher {
     ///   +22: numFrames, +40: format, +56: compressionID, +58: packetSize,
     ///   +62: sampleSize, +64: compressed sampleArea.
     fn execute_buffer_cmd(&mut self, bus: &mut MacMemoryBus, chan_ptr: u32, cmd: &SndCommand) {
-        self.sound_manager.debug_buffer_cmd_count += 1;
+        self.sound_manager.note_buffer_command();
         let header_addr = cmd.param2;
         if header_addr == 0 {
             if trace_sound_enabled() {
@@ -1841,7 +1814,7 @@ impl super::TrapDispatcher {
             bus.write_word(guest_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, 0);
             let mut chan = SndChannel::new(guest_ptr, true);
             chan.mark_auto_dispose_when_idle();
-            self.sound_manager.channels.push(chan);
+            self.sound_manager.add_channel(chan);
             (guest_ptr, true)
         };
 
@@ -2239,7 +2212,7 @@ impl super::TrapDispatcher {
                 }
                 let err = self.snd_play_resource(bus, chan_ptr, async_flag != 0, snd_ptr);
                 if err == 0 {
-                    self.sound_manager.debug_file_play_count += 1;
+                    self.sound_manager.note_file_playback();
                 }
                 return err;
             }
@@ -2298,7 +2271,7 @@ impl super::TrapDispatcher {
             });
         // Bump the SndStartFilePlay submission counter AFTER play_buffer
         // succeeds (i.e. AIFF parsed + playback installed).
-        self.sound_manager.debug_file_play_count += 1;
+        self.sound_manager.note_file_playback();
         0
     }
 }
@@ -3462,8 +3435,7 @@ mod tests {
 
         let chan_ptr = 0x250000;
         disp.sound_manager
-            .channels
-            .push(SndChannel::new(chan_ptr, false));
+            .add_channel(SndChannel::new(chan_ptr, false));
 
         assert_eq!(
             disp.snd_start_file_play(&mut bus, chan_ptr, 0, 30_000, 0, 0, 1),
@@ -3543,8 +3515,7 @@ mod tests {
         let sp = TEST_SP;
         let chan_ptr = 0x250000;
         disp.sound_manager
-            .channels
-            .push(SndChannel::new(chan_ptr, false));
+            .add_channel(SndChannel::new(chan_ptr, false));
 
         let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
         let header_offset = 16u32;
@@ -3593,8 +3564,7 @@ mod tests {
         let sp = TEST_SP;
         let chan_ptr = 0x250200;
         disp.sound_manager
-            .channels
-            .push(SndChannel::new(chan_ptr, false));
+            .add_channel(SndChannel::new(chan_ptr, false));
 
         let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
         let compact = snd_ptr + 14;
@@ -3636,8 +3606,7 @@ mod tests {
         let sp = TEST_SP;
         let chan_ptr = 0x250400;
         disp.sound_manager
-            .channels
-            .push(SndChannel::new(chan_ptr, false));
+            .add_channel(SndChannel::new(chan_ptr, false));
         bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_LENGTH_OFFSET, 128);
         bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET, 0);
         bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, 0);
@@ -4064,8 +4033,7 @@ mod tests {
         let sp = TEST_SP + 0x80;
         let status_ptr = 0x230A00;
         disp.sound_manager
-            .channels
-            .push(SndChannel::new(0x0039_38C8, false));
+            .add_channel(SndChannel::new(0x0039_38C8, false));
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0314_0008); // SndManagerStatus
@@ -4533,8 +4501,7 @@ mod tests {
         let chan_ptr = bus.read_long(chan_ptr_ptr);
 
         disp.sound_manager
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::Command {
+            .queue_sound_callback(PendingSoundCallback::Command {
                 architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr: 0x00AB_CDEF,
                 chan_ptr,
@@ -4545,30 +4512,26 @@ mod tests {
                 },
             });
         disp.sound_manager
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::FileCompletion {
+            .queue_sound_callback(PendingSoundCallback::FileCompletion {
                 architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr: 0x00FE_DCBA,
                 chan_ptr,
             });
         disp.sound_manager
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::FileCompletion {
+            .queue_sound_callback(PendingSoundCallback::FileCompletion {
                 architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr: 0x0000_2222,
                 chan_ptr: other_chan_ptr,
             });
         disp.sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr: 0x00CA_FE00,
                 chan_ptr,
                 header_ptr: 0x0022_4400,
                 exhausted_buffer_index: 1,
             });
         disp.sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr: 0x0000_3333,
                 chan_ptr: other_chan_ptr,
                 header_ptr: 0x0022_5500,
@@ -4872,7 +4835,8 @@ mod tests {
             .unwrap()
             .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
-        disp.sound_manager.pending_sound_callbacks.clear();
+        disp.sound_manager
+            .with_mut(|manager| manager.pending_sound_callbacks.clear());
 
         let cmd_ptr = 0x230100;
         bus.write_word(cmd_ptr, cmd::CALLBACK);
@@ -5121,8 +5085,7 @@ mod tests {
         let (mut disp, _cpu, mut bus) = setup();
         let chan_ptr = 0x250000;
         disp.sound_manager
-            .channels
-            .push(SndChannel::new(chan_ptr, false));
+            .add_channel(SndChannel::new(chan_ptr, false));
 
         let header = 0x260000;
         bus.write_long(header, 0); // samplePtr = NIL, data follows header

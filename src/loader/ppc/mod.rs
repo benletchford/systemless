@@ -45982,7 +45982,9 @@ fn ppc_snd_play_double_buffer(
             .play_double_buffer_samples(channel, samples, sample_rate_fixed);
         playback.host_buffer_loaded = true;
     }
-    sound.manager.double_buffer_playbacks.push(playback);
+    sound
+        .manager
+        .with_mut(|manager| manager.double_buffer_playbacks.push(playback));
     sound.double_buffer_play_count = sound.double_buffer_play_count.saturating_add(1);
     sound.last_double_buffer_channel = channel;
     sound.last_double_buffer_header = header;
@@ -180570,7 +180572,7 @@ pub(crate) mod tests {
             sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
             samples: vec![0xa0],
         });
-        loaded.sound.manager.pending_sound_callbacks.push(
+        loaded.sound.manager.queue_sound_callback(
             PendingSoundCallback::FileCompletion {
                 architecture: CallbackTaskArchitecture::PowerPc,
                 callback_addr: PPC_CODE_BASE + 0x220,

@@ -4153,9 +4153,7 @@ mod tests {
 
         runner
             .dispatcher_mut()
-            .sound_manager_mut()
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::Command {
+            .queue_sound_callback(PendingSoundCallback::Command {
                 architecture: systemless::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0001_2340,
@@ -4204,9 +4202,7 @@ mod tests {
 
         runner
             .dispatcher_mut()
-            .sound_manager_mut()
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::Command {
+            .queue_sound_callback(PendingSoundCallback::Command {
                 architecture: systemless::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0001_2340,
@@ -4523,14 +4519,10 @@ mod tests {
         });
         runner
             .dispatcher_mut()
-            .sound_manager_mut()
-            .channels
-            .push(chan);
+            .add_sound_channel(chan);
         runner
             .dispatcher_mut()
-            .sound_manager_mut()
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_sound_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr,
                 chan_ptr,
                 header_ptr,
@@ -4654,9 +4646,7 @@ mod tests {
         );
         runner
             .dispatcher_mut()
-            .sound_manager_mut()
-            .channels
-            .push(chan);
+            .add_sound_channel(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);
