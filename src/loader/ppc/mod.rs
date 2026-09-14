@@ -3664,9 +3664,59 @@ impl std::ops::Deref for PpcLoadedApp {
     }
 }
 
-impl std::ops::DerefMut for PpcLoadedApp {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.process_file_system
+#[cfg(test)]
+impl PpcLoadedApp {
+    fn push_test_vfs_file(&mut self, file: PpcVfsFileRecord) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.vfs_files.push(file));
+    }
+
+    fn push_test_open_file(&mut self, file: PpcFileRecord) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.files.push(file));
+    }
+
+    fn push_test_deleted_vfs_file_path(&mut self, path: String) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.deleted_vfs_file_paths.push(path));
+    }
+
+    fn set_test_next_file_ref_num(&mut self, next_file_ref_num: i16) {
+        self.process_file_system.with_mut(|file_system| {
+            file_system.next_file_ref_num = next_file_ref_num;
+        });
+    }
+
+    pub(crate) fn with_test_vfs_file_mut<R>(
+        &mut self,
+        index: usize,
+        operation: impl FnOnce(&mut PpcVfsFileRecord) -> R,
+    ) -> Option<R> {
+        self.process_file_system
+            .with_mut(|file_system| file_system.vfs_files.get_mut(index).map(operation))
+    }
+
+    fn with_test_open_file_mut<R>(
+        &mut self,
+        index: usize,
+        operation: impl FnOnce(&mut PpcFileRecord) -> R,
+    ) -> Option<R> {
+        self.process_file_system
+            .with_mut(|file_system| file_system.files.with_record_mut(index, operation))
+    }
+
+    fn insert_test_stdio_stream(
+        &mut self,
+        address: u32,
+        stream: crate::process_context::ProcessStdioStreamRecord,
+    ) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.stdio_streams.insert(address, stream));
+    }
+
+    fn publish_test_native_vfs_catalogue(&mut self) {
+        self.process_file_system
+            .with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
     }
 }
 
@@ -4182,7 +4232,8 @@ impl PpcLoadedApp {
             memory_manager.assert_can_adopt_process_memory_manager(&standalone_memory_manager);
         }
         context.attach_file_system(&mut self.process_file_system);
-        self.process_file_system.publish_native_vfs_catalogue();
+        self.process_file_system
+            .with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
         context.attach_sound_manager(&mut self.sound.manager);
         context.attach_callback_tasks(
             &mut self.timer_tasks,
@@ -8359,8 +8410,8 @@ impl PpcLoadedApp {
                     // reference into an UnsafeCell-backed process collection
                     // may outlive this dispatch call or be retained in its
                     // returned action.
-                    let action = {
-                        let launched_app_path = process_file_system.launched_app_path.clone();
+                    let action = process_file_system.with_mut(|file_system| {
+                        let launched_app_path = file_system.launched_app_path.clone();
                         let ProcessFileSystemState {
                             files,
                             writable_refnums,
@@ -8370,7 +8421,7 @@ impl PpcLoadedApp {
                             resource_manager,
                             next_file_ref_num,
                             ..
-                        } = &mut *process_file_system;
+                        } = file_system;
                         screen_clut.with_mut(|screen_clut| {
                             color_manager_clut.with_mut(|color_manager_clut| {
                                 event_queue.with_mut(|event_queue| {
@@ -8515,7 +8566,7 @@ impl PpcLoadedApp {
                                 })
                             })
                         })
-                    };
+                    });
                     action
                 };
 
@@ -8864,7 +8915,7 @@ impl PpcLoadedApp {
         self.quickdraw_text_mode = quickdraw_text_mode;
         self.quickdraw_text_size = quickdraw_text_size;
         self.cursor_state = cursor_state;
-        process_file_system.publish_native_vfs_catalogue();
+        process_file_system.with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
         self.scrap = scrap;
         self.list_manager = list_manager;
         self.event_queue = event_queue;
@@ -8935,7 +8986,9 @@ impl PpcLoadedApp {
     }
 
     pub fn set_launched_app_path(&mut self, path: impl Into<String>) {
-        self.process_file_system.launched_app_path = Some(ppc_normalize_vfs_path(&path.into()));
+        let path = ppc_normalize_vfs_path(&path.into());
+        self.process_file_system
+            .with_mut(|file_system| file_system.launched_app_path = Some(path));
         self.refresh_apple_event_launch_capability();
     }
 
@@ -8957,10 +9010,10 @@ impl PpcLoadedApp {
         resources: Vec<PpcVfsResourceRecord>,
     ) {
         ppc_register_vfs_resource_fonts(&resources);
-        self.vfs_files.replace(files);
-        self.deleted_vfs_file_paths.clear();
-        self.process_file_system
-            .with_resource_manager_mut(|resource_manager| {
+        self.process_file_system.with_mut(|file_system| {
+            file_system.vfs_files.replace(files);
+            file_system.deleted_vfs_file_paths.clear();
+            file_system.with_resource_manager_mut(|resource_manager| {
                 resource_manager.vfs_resource_files.replace(resource_files);
                 resource_manager.vfs_resources = resources;
                 ppc_publish_resource_fork_bytes(
@@ -8969,6 +9022,7 @@ impl PpcLoadedApp {
                     false,
                 );
             });
+        });
         self.refresh_apple_event_launch_capability();
     }
 
@@ -9010,87 +9064,92 @@ impl PpcLoadedApp {
     /// handles both cases lazily; native launchers need complete, decoded
     /// forks before handing the tree to a real Mac environment.
     pub fn prepare_vfs_resource_forks_for_native_export(&mut self) -> usize {
-        let file_system = &mut *self.process_file_system;
-        let ProcessFileSystemState {
-            vfs_files,
-            resource_manager,
-            ..
-        } = file_system;
-        resource_manager.with_mut(|resource_manager| {
-            let ProcessResourceManagerState {
-                vfs_resource_files,
-                vfs_resources,
+        self.process_file_system.with_mut(|file_system| {
+            let ProcessFileSystemState {
+                vfs_files,
+                resource_manager,
                 ..
-            } = resource_manager;
-            let paths = vfs_resource_files
-                .iter()
-                .map(|file| file.path.clone())
-                .collect::<Vec<_>>();
-            for path in &paths {
-                ppc_materialize_resource_records_for_path(
+            } = file_system;
+            resource_manager.with_mut(|resource_manager| {
+                let ProcessResourceManagerState {
                     vfs_resource_files,
                     vfs_resources,
-                    path,
-                );
-            }
-            for path in &paths {
-                ppc_materialize_quilt_resources_for_existing_path(
-                    vfs_files,
-                    vfs_resource_files,
-                    vfs_resources,
-                    path,
-                );
-            }
-
-            let mut prepared_count = 0usize;
-            for path in paths {
-                let has_parseable_fork = vfs_resource_files
+                    ..
+                } = resource_manager;
+                let paths = vfs_resource_files
                     .iter()
-                    .find(|file| file.path.eq_ignore_ascii_case(&path))
-                    .and_then(|file| file.raw_data.as_deref())
-                    .and_then(|bytes| ResourceFork::parse(bytes))
-                    .is_some();
-                let mut path_resource_count = 0usize;
-                for resource in vfs_resources
-                    .iter_mut()
-                    .filter(|resource| resource.path.eq_ignore_ascii_case(&path))
-                {
-                    resource.raw_data = None;
-                    resource.raw_attrs = None;
-                    path_resource_count += 1;
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>();
+                for path in &paths {
+                    ppc_materialize_resource_records_for_path(
+                        vfs_resource_files,
+                        vfs_resources,
+                        path,
+                    );
                 }
-                if !has_parseable_fork && path_resource_count == 0 {
-                    continue;
+                for path in &paths {
+                    ppc_materialize_quilt_resources_for_existing_path(
+                        vfs_files,
+                        vfs_resource_files,
+                        vfs_resources,
+                        path,
+                    );
                 }
-                ppc_mark_resource_file_contents_dirty(vfs_resource_files, &path);
-                prepared_count += 1;
-            }
-            prepared_count
+
+                let mut prepared_count = 0usize;
+                for path in paths {
+                    let has_parseable_fork = vfs_resource_files
+                        .iter()
+                        .find(|file| file.path.eq_ignore_ascii_case(&path))
+                        .and_then(|file| file.raw_data.as_deref())
+                        .and_then(|bytes| ResourceFork::parse(bytes))
+                        .is_some();
+                    let mut path_resource_count = 0usize;
+                    for resource in vfs_resources
+                        .iter_mut()
+                        .filter(|resource| resource.path.eq_ignore_ascii_case(&path))
+                    {
+                        resource.raw_data = None;
+                        resource.raw_attrs = None;
+                        path_resource_count += 1;
+                    }
+                    if !has_parseable_fork && path_resource_count == 0 {
+                        continue;
+                    }
+                    ppc_mark_resource_file_contents_dirty(vfs_resource_files, &path);
+                    prepared_count += 1;
+                }
+                prepared_count
+            })
         })
     }
 
     pub fn take_deleted_vfs_file_paths(&mut self) -> Vec<String> {
-        self.process_file_system.publish_native_vfs_catalogue();
-        std::mem::take(&mut self.deleted_vfs_file_paths)
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_native_vfs_catalogue();
+            std::mem::take(&mut file_system.deleted_vfs_file_paths)
+        })
     }
 
     pub fn take_dirty_vfs_files(&mut self) -> Vec<PpcVfsFileExport> {
-        let mut exports = Vec::new();
-        for file in self
-            .vfs_files
-            .iter_mut()
-            .filter(|file| file.dirty && !file.path.is_empty())
-        {
-            exports.push(PpcVfsFileExport {
-                path: file.path.clone(),
-                data: file.data.shared_handle(),
-                creator: file.creator,
-                file_type: file.file_type,
-                finder_flags: file.finder_flags,
-            });
-            file.dirty = false;
-        }
-        exports
+        self.process_file_system.with_mut(|file_system| {
+            let mut exports = Vec::new();
+            for file in file_system
+                .vfs_files
+                .iter_mut()
+                .filter(|file| file.dirty && !file.path.is_empty())
+            {
+                exports.push(PpcVfsFileExport {
+                    path: file.path.clone(),
+                    data: file.data.shared_handle(),
+                    creator: file.creator,
+                    file_type: file.file_type,
+                    finder_flags: file.finder_flags,
+                });
+                file.dirty = false;
+            }
+            exports
+        })
     }
 
     pub fn take_dirty_vfs_directories(&mut self) -> Vec<PpcVfsDirectoryExport> {
@@ -98407,7 +98466,7 @@ pub(crate) mod tests {
     fn attached_native_adapters_share_process_file_mutations_immediately() {
         let pef = synthetic_pef_with_import(b"GetEOF");
         let mut first = load_pef_application(&pef).unwrap();
-        first.vfs_files.push(PpcVfsFileRecord {
+        first.push_test_vfs_file(PpcVfsFileRecord {
             path: "Shared Data".to_string(),
             data: (b"first".to_vec()).into(),
             creator: 0,
@@ -98424,12 +98483,13 @@ pub(crate) mod tests {
             .process_file_system
             .ptr_eq(&second.process_file_system));
 
-        second.vfs_files[0]
-            .data
-            .with_mut(|data| data.extend_from_slice(b"-second"));
         second
-            .deleted_vfs_file_paths
-            .push("Obsolete Data".to_string());
+            .with_test_vfs_file_mut(0, |file| {
+                file.data
+                    .with_mut(|data| data.extend_from_slice(b"-second"));
+            })
+            .expect("seeded shared file");
+        second.push_test_deleted_vfs_file_path("Obsolete Data".to_string());
         second.push_vfs_resource(PpcVfsResourceRecord {
             ref_num: 128,
             path: "Shared Data".to_string(),
@@ -98475,14 +98535,12 @@ pub(crate) mod tests {
         let mut classic = TrapDispatcher::new();
         classic.attach_unconverted_process_services(&mut context);
 
-        native
-            .files
-            .push(crate::process_context::ProcessOpenFileRecord {
-                ref_num: PPC_FIRST_FILE_REF_NUM,
-                path: "Shared/Native.bin".to_string(),
-                position: 4,
-            });
-        native.process_file_system.stdio_streams.insert(
+        native.push_test_open_file(crate::process_context::ProcessOpenFileRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Shared/Native.bin".to_string(),
+            position: 4,
+        });
+        native.insert_test_stdio_stream(
             0x2200,
             crate::process_context::ProcessStdioStreamRecord {
                 ref_num: Some(PPC_FIRST_FILE_REF_NUM),
@@ -98497,7 +98555,7 @@ pub(crate) mod tests {
                 error: false,
             },
         );
-        native.vfs_files.push(PpcVfsFileRecord {
+        native.push_test_vfs_file(PpcVfsFileRecord {
             path: "Shared/Native.bin".to_string(),
             data: b"native".to_vec().into(),
             creator: 0,
@@ -98505,9 +98563,7 @@ pub(crate) mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        native
-            .deleted_vfs_file_paths
-            .push("Shared/Deleted.bin".to_string());
+        native.push_test_deleted_vfs_file_path("Shared/Deleted.bin".to_string());
 
         assert_eq!(
             classic
@@ -98612,7 +98668,7 @@ pub(crate) mod tests {
             attrs: 0,
             handle: 0x2200,
         });
-        native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
+        native.set_test_next_file_ref_num(PPC_FIRST_FILE_REF_NUM + 1);
 
         assert_eq!(classic.resource_files[0].path, "Shared/Native.rsrc");
         assert_eq!(classic.vfs_resource_files[0].finder_flags, 0x0200);
@@ -98704,7 +98760,7 @@ pub(crate) mod tests {
             attrs: 0,
             handle: 0,
         });
-        native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
+        native.set_test_next_file_ref_num(PPC_FIRST_FILE_REF_NUM + 1);
 
         assert_eq!(classic.resource_files.len(), 1);
         assert_eq!(classic.vfs_resource_files.len(), 1);
@@ -98788,18 +98844,16 @@ pub(crate) mod tests {
     fn open_file_sessions_cross_cpu_adapters_and_detach_with_clone() {
         let pef = synthetic_pef_with_import(b"GetEOF");
         let mut native = load_pef_application(&pef).unwrap();
-        native
-            .files
-            .push(crate::process_context::ProcessOpenFileRecord {
-                ref_num: PPC_FIRST_FILE_REF_NUM,
-                path: "Shared Data".to_string(),
-                position: 4,
-            });
+        native.push_test_open_file(crate::process_context::ProcessOpenFileRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Shared Data".to_string(),
+            position: 4,
+        });
         native
             .process_file_system
             .writable_refnums
             .insert(PPC_FIRST_FILE_REF_NUM as u16);
-        native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
+        native.set_test_next_file_ref_num(PPC_FIRST_FILE_REF_NUM + 1);
 
         let mut context = ProcessContext::default();
         native.attach_unconverted_process_services(&mut context);
@@ -98833,8 +98887,7 @@ pub(crate) mod tests {
             .contains(&(PPC_FIRST_FILE_REF_NUM as u16)));
 
         native
-            .files
-            .with_record_mut(0, |file| file.position = 12)
+            .with_test_open_file_mut(0, |file| file.position = 12)
             .expect("seeded native open file");
         assert_eq!(
             classic
@@ -98902,7 +98955,7 @@ pub(crate) mod tests {
             finder_flags: 0x0400,
             dirty: true,
         });
-        native.vfs_files.push(PpcVfsFileRecord {
+        native.push_test_vfs_file(PpcVfsFileRecord {
             path: "Shared Folder/Native Data".to_string(),
             data: b"native".to_vec().into(),
             creator: u32::from_be_bytes(*b"TEST"),
@@ -98954,7 +99007,7 @@ pub(crate) mod tests {
             classic.vfs_volume_for_ref_num(-2).map(|volume| volume.name.as_str()),
             Some("Read Only")
         );
-        native.process_file_system.publish_native_vfs_catalogue();
+        native.publish_test_native_vfs_catalogue();
 
         assert_eq!(
             classic.directory_path_for_id(PPC_FIRST_DYNAMIC_DIR_ID),
@@ -99129,10 +99182,8 @@ pub(crate) mod tests {
         classic
             .locked_files
             .insert("Shared Folder/Native Data".to_string());
-        native
-            .deleted_vfs_file_paths
-            .push("Shared Folder/Native Data".to_string());
-        native.process_file_system.publish_native_vfs_catalogue();
+        native.push_test_deleted_vfs_file_path("Shared Folder/Native Data".to_string());
+        native.publish_test_native_vfs_catalogue();
         assert!(!classic
             .vfs_metadata
             .contains_key("Shared Folder/Native Data"));
@@ -99151,7 +99202,7 @@ pub(crate) mod tests {
     fn detached_native_app_clones_keep_independent_file_systems() {
         let pef = synthetic_pef_with_import(b"GetEOF");
         let mut original = load_pef_application(&pef).unwrap();
-        original.vfs_files.push(PpcVfsFileRecord {
+        original.push_test_vfs_file(PpcVfsFileRecord {
             path: "Detached Data".to_string(),
             data: (b"before".to_vec()).into(),
             creator: 0,
@@ -99182,9 +99233,11 @@ pub(crate) mod tests {
         });
         let detached = original.clone();
 
-        original.vfs_files[0]
-            .data
-            .with_mut(|data| data.copy_from_slice(b"change"));
+        original
+            .with_test_vfs_file_mut(0, |file| {
+                file.data.with_mut(|data| data.copy_from_slice(b"change"));
+            })
+            .expect("seeded detached file");
         original.with_resource_manager_mut(|resource_manager| {
             resource_manager.vfs_resources[0]
                 .data
@@ -116134,7 +116187,7 @@ pub(crate) mod tests {
             PPC_ROOT_DIR_ID,
             b"model.3dmf",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "model.3dmf".to_string(),
             data: (storage_bytes.clone()).into(),
             creator: 0,
@@ -116260,7 +116313,7 @@ pub(crate) mod tests {
             13720,
             b"New T-REX_Finished.3df",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Data/Skeletons/New T-REX_Finished.3df".to_string(),
             data: (storage_bytes.clone()).into(),
             creator: 0,
@@ -140767,7 +140820,7 @@ pub(crate) mod tests {
             sample_rate_fixed: 22_050u32 << 16,
         };
         loaded.memory.add_region(scratch, vec![0xaa; 80]);
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Intro.mov".to_string(),
             data: (movie_data.clone()).into(),
             creator: 0,
@@ -141018,7 +141071,7 @@ pub(crate) mod tests {
             .to_vec();
         let data_fork_len = complete_movie.len() - movie_resource.len();
         let data_fork = complete_movie[..data_fork_len].to_vec();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Music/Theme".to_string(),
             data: (data_fork).into(),
             creator: 0,
@@ -142793,7 +142846,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Splash Pict".to_string(),
             data: (test_v1_one_bit_packbits_pict()).into(),
             creator: 0,
@@ -142893,7 +142946,7 @@ pub(crate) mod tests {
         });
         loaded.seed_vfs_directories(directories, PPC_ROOT_DIR_ID, images_dir_id + 1);
         loaded.memory.add_region(scratch, vec![0; 128]);
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Data/Images/Boot1.PICT".to_string(),
             data: (test_v1_one_bit_packbits_pict()).into(),
             creator: 0,
@@ -157337,7 +157390,7 @@ pub(crate) mod tests {
             PPC_PREFERENCES_DIR_ID,
             b"Test App Prefs",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (Vec::new()).into(),
             creator: 0,
@@ -157381,7 +157434,7 @@ pub(crate) mod tests {
             PPC_ROOT_DIR_ID,
             b"Prefs Alias",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Prefs Alias".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"MACS"),
@@ -157416,7 +157469,7 @@ pub(crate) mod tests {
             attrs: 0,
             handle: 0,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
@@ -157489,7 +157542,7 @@ pub(crate) mod tests {
             PPC_ROOT_DIR_ID,
             b"Level Alias",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Level Alias".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"MACS"),
@@ -157519,7 +157572,7 @@ pub(crate) mod tests {
             attrs: 0,
             handle: 0,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Folder/Data/Level 1".to_string(),
             data: (b"level".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
@@ -157567,7 +157620,7 @@ pub(crate) mod tests {
             PPC_ROOT_DIR_ID,
             b"Prefs Alias",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Prefs Alias".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"MACS"),
@@ -157602,7 +157655,7 @@ pub(crate) mod tests {
             attrs: 0,
             handle: 0,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
@@ -157998,7 +158051,7 @@ pub(crate) mod tests {
             dirty: false,
         });
         loaded.seed_vfs_directories(directories, PPC_ROOT_DIR_ID, audio_dir_id + 1);
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Data/Audio/Song_Pangea".to_string(),
             data: (b"aiff".to_vec()).into(),
             creator: 0,
@@ -158103,7 +158156,7 @@ pub(crate) mod tests {
         loaded.memory.write_u16_be(pb + 22, 0).unwrap();
         loaded.memory.write_u16_be(pb + 28, 0).unwrap();
         loaded.memory.write_u32_be(pb + 100, 0xdead_beef).unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
@@ -158147,7 +158200,7 @@ pub(crate) mod tests {
         let finfo_ptr = scratch + 0x100;
         loaded.memory.add_region(scratch, vec![0; 0x200]);
         write_ppc_pstring(&mut loaded.memory, name_ptr, b"Escape Velocity Prefs");
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Escape Velocity Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"EvlT"),
@@ -158293,7 +158346,7 @@ pub(crate) mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Standard File Fixtures/Text Document".to_string(),
             data: (b"text".to_vec()).into(),
             creator: u32::from_be_bytes(*b"SHWC"),
@@ -158301,7 +158354,7 @@ pub(crate) mod tests {
             finder_flags: 0x4000,
             dirty: false,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Standard File Fixtures/Binary Data".to_string(),
             data: (b"data".to_vec()).into(),
             creator: u32::from_be_bytes(*b"SHWC"),
@@ -158382,7 +158435,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(type_list, u32::from_be_bytes(*b"TEXT"))
             .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Text Document".to_string(),
             data: (b"text".to_vec()).into(),
             creator: u32::from_be_bytes(*b"SHWC"),
@@ -158435,7 +158488,7 @@ pub(crate) mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Standard File Fixtures/Text Document".to_string(),
             data: (b"text".to_vec()).into(),
             creator: u32::from_be_bytes(*b"SHWC"),
@@ -158747,7 +158800,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
             .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App HighScores".to_string(),
             data: (Vec::new()).into(),
             creator: 0,
@@ -158842,7 +158895,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
             .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
@@ -158929,7 +158982,7 @@ pub(crate) mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Gridz™ CD/ToolBot Power Supply".to_string(),
             data: (b"license".to_vec()).into(),
             creator: 0,
@@ -159192,7 +159245,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
             .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
@@ -159239,7 +159292,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
             .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Settings".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"TEST"),
@@ -159323,7 +159376,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
             .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
@@ -159495,7 +159548,7 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let pb = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(pb, vec![0; 17]);
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
@@ -159530,7 +159583,7 @@ pub(crate) mod tests {
             PPC_PREFERENCES_DIR_ID,
             b"Test App Prefs",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
@@ -159624,7 +159677,7 @@ pub(crate) mod tests {
             PPC_ROOT_DIR_ID,
             b":audio:song_pangea",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Data/Audio/Song_Pangea".to_string(),
             data: (b"aiff".to_vec()).into(),
             creator: 0,
@@ -159671,7 +159724,7 @@ pub(crate) mod tests {
             dirty: false,
         });
         loaded.seed_vfs_directories(directories, app_dir_id, data_dir_id + 1);
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Gridz Demo/Gridz Demo Bits".to_string(),
             data: (Vec::new()).into(),
             creator: 0,
@@ -159679,7 +159732,7 @@ pub(crate) mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Gridz Demo/Gridz Data/Gridz Demo Bits".to_string(),
             data: (b"packed-bits".to_vec()).into(),
             creator: 0,
@@ -159776,12 +159829,12 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let out_ptr = PPC_DATA_BASE + 0x1200;
         loaded.memory.add_region(out_ptr, vec![0xab; 2]);
-        loaded.files.push(PpcFileRecord {
+        loaded.push_test_open_file(PpcFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             position: 3,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: 0,
@@ -159827,7 +159880,7 @@ pub(crate) mod tests {
             PPC_PREFERENCES_DIR_ID,
             b"Test App Prefs",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"old".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
@@ -159990,7 +160043,7 @@ pub(crate) mod tests {
             PPC_PREFERENCES_DIR_ID,
             b"Test App HighScores",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App HighScores".to_string(),
             data: (Vec::new()).into(),
             creator: 0,
@@ -160098,7 +160151,7 @@ pub(crate) mod tests {
             PPC_PREFERENCES_DIR_ID,
             b"Test App Prefs",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
@@ -160143,7 +160196,7 @@ pub(crate) mod tests {
         let name_ptr = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(name_ptr, vec![0; 64]);
         write_ppc_pstring(&mut loaded.memory, name_ptr, b"Test App Prefs");
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
@@ -160343,7 +160396,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -160419,7 +160472,7 @@ pub(crate) mod tests {
         }])
         .unwrap();
 
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Gridz Data/Gridz Demo Bits".to_string(),
             data: (bits).into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -160525,7 +160578,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -160641,7 +160694,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -160751,7 +160804,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -160829,7 +160882,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -160960,7 +161013,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -161069,7 +161122,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -161243,7 +161296,7 @@ pub(crate) mod tests {
             attrs: 0,
         }])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
             data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
@@ -161488,7 +161541,7 @@ pub(crate) mod tests {
             },
         ])
         .unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "rex.skeleton".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"BIOp"),
@@ -161803,7 +161856,7 @@ pub(crate) mod tests {
             PPC_PREFERENCES_DIR_ID,
             b"Gridz Preferences",
         );
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Gridz Preferences".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Grid"),
@@ -161832,12 +161885,12 @@ pub(crate) mod tests {
         let count_ptr = scratch;
         let buffer_ptr = scratch + 4;
         loaded.memory.add_region(scratch, vec![0xaa; 16]);
-        loaded.files.push(PpcFileRecord {
+        loaded.push_test_open_file(PpcFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             position: 0,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (vec![0, 1, 2, 3]).into(),
             creator: 0,
@@ -161873,12 +161926,12 @@ pub(crate) mod tests {
         let buffer_ptr = PPC_DATA_BASE + 0x1100;
         loaded.memory.add_region(count_ptr, vec![0; 4]);
         loaded.memory.add_region(buffer_ptr, vec![0xbb; 2]);
-        loaded.files.push(PpcFileRecord {
+        loaded.push_test_open_file(PpcFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             position: 0,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"data".to_vec()).into(),
             creator: 0,
@@ -161908,7 +161961,7 @@ pub(crate) mod tests {
         let scratch = PPC_DATA_BASE + 0x1000;
         let pos_out_ptr = scratch;
         loaded.memory.add_region(scratch, vec![0xaa; 16]);
-        loaded.files.push(PpcFileRecord {
+        loaded.push_test_open_file(PpcFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             position: 0,
@@ -161917,7 +161970,7 @@ pub(crate) mod tests {
             .process_file_system
             .writable_refnums
             .insert(PPC_FIRST_FILE_REF_NUM as u16);
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"abcdef".to_vec()).into(),
             creator: 0,
@@ -162052,12 +162105,12 @@ pub(crate) mod tests {
         let buffer_ptr = PPC_DATA_BASE + 0x1100;
         loaded.memory.add_region(count_ptr, vec![0; 4]);
         loaded.memory.add_region(buffer_ptr, vec![b'x', b'y']);
-        loaded.files.push(PpcFileRecord {
+        loaded.push_test_open_file(PpcFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             position: 1,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"old".to_vec()).into(),
             creator: 0,
@@ -163403,7 +163456,7 @@ pub(crate) mod tests {
     fn ppc_dirty_data_fork_export_and_deleted_paths_are_taken() {
         let pef = synthetic_pef();
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
             data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
@@ -163411,7 +163464,7 @@ pub(crate) mod tests {
             finder_flags: 0x4000,
             dirty: true,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "System Folder/Preferences/Clean Prefs".to_string(),
             data: (b"clean".to_vec()).into(),
             creator: 0,
@@ -163419,9 +163472,7 @@ pub(crate) mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        loaded
-            .deleted_vfs_file_paths
-            .push("System Folder/Preferences/Old Prefs".to_string());
+        loaded.push_test_deleted_vfs_file_path("System Folder/Preferences/Old Prefs".to_string());
 
         let exports = loaded.take_dirty_vfs_files();
 
@@ -174619,7 +174670,7 @@ pub(crate) mod tests {
             file_type: PPC_DIRECTORY_FILE_TYPE,
             dirty: false,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Source Folder/Installer".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"SRC!"),
@@ -174627,7 +174678,7 @@ pub(crate) mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: "Gridz Demo ƒ/Gridz™ Demo".to_string(),
             data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Grid"),
@@ -181614,12 +181665,12 @@ pub(crate) mod tests {
         write_u32(&mut aiff, 46, 0);
         write_u32(&mut aiff, 50, 0);
         aiff[54..60].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
-        loaded.files.push(PpcFileRecord {
+        loaded.push_test_open_file(PpcFileRecord {
             ref_num,
             path: path.to_string(),
             position: 0,
         });
-        loaded.vfs_files.push(PpcVfsFileRecord {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
             path: path.to_string(),
             data: (aiff).into(),
             creator: u32::from_be_bytes(*b"ttxt"),
@@ -182944,7 +182995,7 @@ pub(crate) mod tests {
         native.memory.add_region(path, vec![0; 0x100]);
         native.memory.write_bytes(path, b"test.bin\0").unwrap();
         native.memory.write_bytes(mode, b"rb\0").unwrap();
-        native.vfs_files.push(PpcVfsFileRecord {
+        native.push_test_vfs_file(PpcVfsFileRecord {
             path: "Volume/test.bin".to_string(),
             data: (b"payload".to_vec()).into(),
             creator: 0,
@@ -183167,6 +183218,9 @@ pub(crate) mod tests {
             ),
             Some(vec![0; (3 * PPC_STDIO_FILE_SIZE) as usize])
         );
+        let mut stdio_streams = loaded
+            .process_file_system
+            .with_mut(|file_system| std::mem::take(&mut file_system.stdio_streams));
 
         let mut cpu = PpcCpu::new();
         let mut files = Vec::new();
@@ -183203,7 +183257,7 @@ pub(crate) mod tests {
             &mut files,
             &mut vfs_files,
             &mut next_file_ref_num,
-            &mut loaded.process_file_system.stdio_streams,
+            &mut stdio_streams,
         ) else {
             panic!("fopen did not return a stream");
         };
@@ -183228,7 +183282,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(2)
         );
@@ -183257,7 +183311,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(0)
         );
@@ -183275,7 +183329,7 @@ pub(crate) mod tests {
             &mut files,
             &mut vfs_files,
             &mut next_file_ref_num,
-            &mut loaded.process_file_system.stdio_streams,
+            &mut stdio_streams,
         ) else {
             panic!("fopen did not return the read/write stream");
         };
@@ -183294,7 +183348,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(2)
         );
@@ -183320,7 +183374,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(u32::MAX)
         );
@@ -183339,7 +183393,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(0)
         );
@@ -183360,7 +183414,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(0)
         );
@@ -183382,7 +183436,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(0)
         );
@@ -183404,7 +183458,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(1)
         );
@@ -183419,12 +183473,11 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(0)
         );
-        assert!(loaded
-            .stdio_streams
+        assert!(stdio_streams
             .get(&(PPC_STDIO_IOB_ADDR + PPC_STDIO_FILE_SIZE))
             .is_some_and(|record| record.error));
 
@@ -183444,7 +183497,7 @@ pub(crate) mod tests {
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
-                &mut loaded.process_file_system.stdio_streams,
+                &mut stdio_streams,
             ),
             PpcImportAction::Return(4)
         );
@@ -183471,7 +183524,7 @@ pub(crate) mod tests {
                     &mut files,
                     &mut vfs_files,
                     &mut next_file_ref_num,
-                    &mut loaded.process_file_system.stdio_streams,
+                    &mut stdio_streams,
                 ),
                 PpcImportAction::Return(0)
             );

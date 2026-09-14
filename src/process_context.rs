@@ -2920,14 +2920,22 @@ impl std::ops::Deref for SharedProcessFileSystem {
     }
 }
 
-impl std::ops::DerefMut for SharedProcessFileSystem {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: see `Deref`; mutable access is serialized by the runner.
-        unsafe { &mut *self.0.get() }
-    }
-}
-
 impl SharedProcessFileSystem {
+    /// Mutate this process file system for the duration of one operation.
+    ///
+    /// The runner serializes attached adapter execution, while the exclusive
+    /// handle borrow prevents one adapter from opening overlapping mutable
+    /// views through the same handle.
+    pub(crate) fn with_mut<R>(
+        &mut self,
+        operation: impl FnOnce(&mut ProcessFileSystemState) -> R,
+    ) -> R {
+        // SAFETY: attached CPU adapters are private children of one runner,
+        // and execution is serialized through an exclusive runner borrow.
+        // The returned type cannot borrow from this scoped mutable view.
+        operation(unsafe { &mut *self.0.get() })
+    }
+
     /// Return another handle to this process file system without detaching
     /// its records. Execution adapters use this when a long-running call
     /// needs scoped mutable access to process-owned state while retaining
@@ -10050,13 +10058,15 @@ mod tests {
         let detached_data = second_data.clone();
         let detached_resources = second_resources.clone();
 
-        native.vfs_files.push(ProcessVfsFileRecord {
-            path: "Created".to_string(),
-            data: b"native".to_vec().into(),
-            creator: 0,
-            file_type: 0,
-            finder_flags: 0,
-            dirty: true,
+        native.with_mut(|file_system| {
+            file_system.vfs_files.push(ProcessVfsFileRecord {
+                path: "Created".to_string(),
+                data: b"native".to_vec().into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: true,
+            });
         });
         native.push_vfs_resource_file(ProcessVfsResourceFileRecord {
             path: "Created".to_string(),
@@ -10180,13 +10190,15 @@ mod tests {
     fn attached_file_systems_share_catalogue_state_while_clones_detach() {
         let context = ProcessContext::default();
         let mut files = SharedProcessFileSystem::default();
-        files.vfs_files.push(ProcessVfsFileRecord {
-            path: "Existing".to_string(),
-            data: b"data".to_vec().into(),
-            creator: 0,
-            file_type: 0,
-            finder_flags: 0,
-            dirty: false,
+        files.with_mut(|file_system| {
+            file_system.vfs_files.push(ProcessVfsFileRecord {
+                path: "Existing".to_string(),
+                data: b"data".to_vec().into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            });
         });
         let mut first = SharedProcessFileSystem::from_state(ProcessFileSystemState {
             vfs_volumes: SharedProcessValue::from_value(vec![ProcessVfsVolumeRecord {
@@ -10274,7 +10286,9 @@ mod tests {
 
         let detached_clone = native.clone();
         let detached_snapshot = native.detached_vfs_snapshot();
-        native.launched_app_path = Some("Apps/Other App".to_string());
+        native.with_mut(|file_system| {
+            file_system.launched_app_path = Some("Apps/Other App".to_string());
+        });
 
         assert_eq!(source.launched_app_path.as_deref(), Some("Apps/Other App"));
         assert_eq!(
@@ -10308,37 +10322,39 @@ mod tests {
     fn attached_file_systems_share_open_stdio_vfs_and_deletion_records_while_clones_detach() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessFileSystem::default();
-        classic.files.push(ProcessOpenFileRecord {
-            ref_num: 7,
-            path: "Classic/first.bin".to_string(),
-            position: 3,
-        });
-        classic.stdio_streams.insert(
-            0x1000,
-            ProcessStdioStreamRecord {
-                ref_num: Some(7),
-                path: Some("Classic/first.bin".to_string()),
+        classic.with_mut(|file_system| {
+            file_system.files.push(ProcessOpenFileRecord {
+                ref_num: 7,
+                path: "Classic/first.bin".to_string(),
                 position: 3,
-                standard: false,
-                readable: true,
-                writable: false,
-                append: false,
-                closed: false,
-                eof: false,
-                error: false,
-            },
-        );
-        classic.vfs_files.push(ProcessVfsFileRecord {
-            path: "Classic/first.bin".to_string(),
-            data: b"classic".to_vec().into(),
-            creator: 0,
-            file_type: 0,
-            finder_flags: 0,
-            dirty: false,
+            });
+            file_system.stdio_streams.insert(
+                0x1000,
+                ProcessStdioStreamRecord {
+                    ref_num: Some(7),
+                    path: Some("Classic/first.bin".to_string()),
+                    position: 3,
+                    standard: false,
+                    readable: true,
+                    writable: false,
+                    append: false,
+                    closed: false,
+                    eof: false,
+                    error: false,
+                },
+            );
+            file_system.vfs_files.push(ProcessVfsFileRecord {
+                path: "Classic/first.bin".to_string(),
+                data: b"classic".to_vec().into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            });
+            file_system
+                .deleted_vfs_file_paths
+                .push("Classic/removed.bin".to_string());
         });
-        classic
-            .deleted_vfs_file_paths
-            .push("Classic/removed.bin".to_string());
 
         let mut native = SharedProcessFileSystem::default();
         context.attach_file_system(&mut classic);
@@ -10346,37 +10362,39 @@ mod tests {
         assert!(classic.ptr_eq(&native));
         let detached = native.clone();
 
-        native.files.push(ProcessOpenFileRecord {
-            ref_num: 8,
-            path: "Native/second.bin".to_string(),
-            position: 11,
-        });
-        native.stdio_streams.insert(
-            0x2000,
-            ProcessStdioStreamRecord {
-                ref_num: Some(8),
-                path: Some("Native/second.bin".to_string()),
+        native.with_mut(|file_system| {
+            file_system.files.push(ProcessOpenFileRecord {
+                ref_num: 8,
+                path: "Native/second.bin".to_string(),
                 position: 11,
-                standard: false,
-                readable: true,
-                writable: true,
-                append: true,
-                closed: false,
-                eof: false,
-                error: false,
-            },
-        );
-        native.vfs_files.push(ProcessVfsFileRecord {
-            path: "Native/second.bin".to_string(),
-            data: b"native".to_vec().into(),
-            creator: 0,
-            file_type: 0,
-            finder_flags: 0,
-            dirty: true,
+            });
+            file_system.stdio_streams.insert(
+                0x2000,
+                ProcessStdioStreamRecord {
+                    ref_num: Some(8),
+                    path: Some("Native/second.bin".to_string()),
+                    position: 11,
+                    standard: false,
+                    readable: true,
+                    writable: true,
+                    append: true,
+                    closed: false,
+                    eof: false,
+                    error: false,
+                },
+            );
+            file_system.vfs_files.push(ProcessVfsFileRecord {
+                path: "Native/second.bin".to_string(),
+                data: b"native".to_vec().into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: true,
+            });
+            file_system
+                .deleted_vfs_file_paths
+                .push("Native/removed.bin".to_string());
         });
-        native
-            .deleted_vfs_file_paths
-            .push("Native/removed.bin".to_string());
 
         assert_eq!(classic.files[1].path, "Native/second.bin");
         assert_eq!(classic.stdio_streams[&0x2000].position, 11);
