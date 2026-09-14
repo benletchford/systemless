@@ -208,3 +208,176 @@ pub(super) fn dispatch_microseconds_import(
         PpcImportAction::ReturnPreserve
     }
 }
+
+fn ppc_write_microseconds(cpu: &PpcCpu, memory: &mut PpcSectionMem, tick_count: u32) {
+    ppc_write_microseconds_value(
+        cpu,
+        memory,
+        u64::from(tick_count).saturating_mul(PPC_MICROSECONDS_PER_TICK),
+    );
+}
+
+fn ppc_write_microseconds_value(cpu: &PpcCpu, memory: &mut PpcSectionMem, usecs: u64) {
+    let microseconds_ptr = cpu.gpr[3];
+    if microseconds_ptr == 0 || !ppc_memory_can_write_bytes(memory, microseconds_ptr, 8) {
+        return;
+    }
+    let _ = memory.write_u32_be(microseconds_ptr, (usecs >> 32) as u32);
+    let _ = memory.write_u32_be(microseconds_ptr + 4, usecs as u32);
+}
+
+fn ppc_seconds_to_date(memory: &mut PpcSectionMem, seconds: u32, date_ptr: u32) {
+    if date_ptr == 0 || !ppc_memory_can_write_bytes(memory, date_ptr, 14) {
+        return;
+    }
+
+    let mut remaining_days = seconds / 86_400;
+    let seconds_today = seconds % 86_400;
+    let mut year = 1904u16;
+    loop {
+        let days_this_year = if ppc_is_gregorian_leap_year(year) {
+            366
+        } else {
+            365
+        };
+        if remaining_days < days_this_year {
+            break;
+        }
+        remaining_days -= days_this_year;
+        year += 1;
+    }
+
+    let mut month = 1u16;
+    loop {
+        let days_this_month = ppc_days_in_gregorian_month(year, month);
+        if remaining_days < days_this_month {
+            break;
+        }
+        remaining_days -= days_this_month;
+        month += 1;
+    }
+
+    let days_since_epoch = seconds / 86_400;
+    let fields = [
+        year,
+        month,
+        remaining_days as u16 + 1,
+        (seconds_today / 3_600) as u16,
+        ((seconds_today % 3_600) / 60) as u16,
+        (seconds_today % 60) as u16,
+        ((days_since_epoch + 5) % 7) as u16 + 1,
+    ];
+
+    // Inside Macintosh: Operating System Utilities (1994), pp. 4-23–4-25 and 4-38:
+    // SecondsToDate converts seconds since 1904-01-01 into the seven signed,
+    // big-endian DateTimeRec fields, with Sunday numbered 1 through Saturday 7.
+    for (index, field) in fields.into_iter().enumerate() {
+        let _ = memory.write_u16_be(date_ptr + index as u32 * 2, field);
+    }
+}
+
+fn ppc_is_gregorian_leap_year(year: u16) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+fn ppc_days_in_gregorian_month(year: u16, month: u16) -> u32 {
+    match month {
+        2 if ppc_is_gregorian_leap_year(year) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+pub(super) struct PpcTimeDispatchContext<'a> {
+    pub(super) target: &'a PpcImportDispatcherTarget,
+    pub(super) cpu: &'a PpcCpu,
+    pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) tick_count: u32,
+    pub(super) cycles_per_tick: u32,
+    pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
+}
+
+pub(super) fn dispatch_time_import(
+    context: PpcTimeDispatchContext<'_>,
+) -> Option<PpcImportAction> {
+    let PpcTimeDispatchContext {
+        target,
+        cpu,
+        memory,
+        tick_count,
+        cycles_per_tick,
+        toolbox_startup,
+    } = context;
+    match target {
+        PpcImportDispatcherTarget::TickCount => Some(PpcImportAction::Return(tick_count)),
+        PpcImportDispatcherTarget::GetDateTime => {
+            let secs_ptr = cpu.gpr[3];
+            if secs_ptr != 0 && ppc_memory_can_write_bytes(memory, secs_ptr, 4) {
+                let _ = memory.write_u32_be(secs_ptr, PPC_FIXED_MAC_TIME);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::ReadDateTime => {
+            let secs_ptr = cpu.gpr[3];
+            let result = if secs_ptr != 0 && ppc_memory_can_write_bytes(memory, secs_ptr, 4) {
+                let _ = memory.write_u32_be(secs_ptr, PPC_FIXED_MAC_TIME);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ReadLocation => {
+            // Operating System Utilities (1994), pp. 4-29 and 4-46: an
+            // unset 12-byte MachineLocation record reads as all zeroes.
+            let location = cpu.gpr[3];
+            if location != 0 && ppc_memory_can_write_bytes(memory, location, 12) {
+                let _ = memory.write_bytes(location, &[0; 12]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetTime => {
+            ppc_seconds_to_date(memory, PPC_FIXED_MAC_TIME, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::Delay => {
+            // Inside Macintosh Volume II (1985), p. II-384: Delay blocks for
+            // numTicks vertical-retrace ticks and returns the ending system
+            // tick in finalTicks. Yielding keeps the native call parked while
+            // the frontend advances the emulated VBL clock.
+            let deadline = toolbox_startup
+                .delay_deadline
+                .get_or_insert_with(|| tick_count.wrapping_add(cpu.gpr[3]));
+            let reached = tick_count.wrapping_sub(*deadline) < 0x8000_0000;
+            if cpu.gpr[3] == 0 || reached {
+                if cpu.gpr[4] != 0 {
+                    let _ = memory.write_u32_be(cpu.gpr[4], tick_count);
+                }
+                toolbox_startup.delay_deadline = None;
+                Some(PpcImportAction::ReturnPreserve)
+            } else {
+                Some(PpcImportAction::Yield(u64::from(cycles_per_tick.max(1))))
+            }
+        }
+        PpcImportDispatcherTarget::GetDblTime => Some(PpcImportAction::Return(
+            memory
+                .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
+                .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS),
+        )),
+        PpcImportDispatcherTarget::LMGetTime => {
+            // Universal Interfaces 3.4 LowMem.h declares LMGetTime as the
+            // accessor for the UInt32 Time low-memory global at $020C.
+            Some(PpcImportAction::Return(PPC_FIXED_MAC_TIME))
+        }
+        PpcImportDispatcherTarget::SecondsToDate => {
+            ppc_seconds_to_date(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::Microseconds => {
+            ppc_write_microseconds(cpu, memory, tick_count);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        _ => None,
+    }
+}
