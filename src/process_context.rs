@@ -1178,15 +1178,33 @@ impl ProcessFileSystemState {
     /// pp. 2-27--2-29 and 2-85.
     pub(crate) fn publish_native_vfs_catalogue(&mut self) {
         let directories = (*self.vfs_directories).clone();
-        let files = self.vfs_files.iter().cloned().collect::<Vec<_>>();
-        let resource_files = self.vfs_resource_files.iter().cloned().collect::<Vec<_>>();
+        // Publication needs metadata only; cloning records copies their fork bytes.
+        let files = self.vfs_files.iter().map(|file| {
+            (
+                file.path.clone(),
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                file.dirty,
+            )
+        });
+        let resource_files = self.vfs_resource_files.iter().map(|file| {
+            (
+                file.path.clone(),
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                file.dirty,
+            )
+        });
+        let records = files.chain(resource_files).collect::<Vec<_>>();
         let deleted_paths = self.deleted_vfs_file_paths.clone();
 
-        for file in files {
-            if file.path.is_empty() {
+        for (path, file_type, creator, finder_flags, dirty) in records {
+            if path.is_empty() {
                 continue;
             }
-            let parent_dir_id = process_vfs_parent_dir_id(&directories, &file.path);
+            let parent_dir_id = process_vfs_parent_dir_id(&directories, &path);
             self.classic_next_vfs_file_id.with_mut(|next_file_id| {
                 self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
                     self.classic_vfs_metadata.with_mut(|metadata| {
@@ -1194,35 +1212,12 @@ impl ProcessFileSystemState {
                             metadata,
                             next_file_id,
                             next_timestamp,
-                            &file.path,
+                            &path,
                             parent_dir_id,
-                            file.file_type,
-                            file.creator,
-                            file.finder_flags,
-                            file.dirty,
-                        );
-                    });
-                });
-            });
-        }
-        for file in resource_files {
-            if file.path.is_empty() {
-                continue;
-            }
-            let parent_dir_id = process_vfs_parent_dir_id(&directories, &file.path);
-            self.classic_next_vfs_file_id.with_mut(|next_file_id| {
-                self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
-                    self.classic_vfs_metadata.with_mut(|metadata| {
-                        publish_native_vfs_metadata(
-                            metadata,
-                            next_file_id,
-                            next_timestamp,
-                            &file.path,
-                            parent_dir_id,
-                            file.file_type,
-                            file.creator,
-                            file.finder_flags,
-                            file.dirty,
+                            file_type,
+                            creator,
+                            finder_flags,
+                            dirty,
                         );
                     });
                 });
