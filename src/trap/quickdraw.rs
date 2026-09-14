@@ -10009,8 +10009,10 @@ impl super::TrapDispatcher {
                         Self::free_handle_and_target(bus, icon_data_handle);
                         self.untrack_handle_ptr(icon_ptr);
                         self.forget_resource_handle_index_for_handle(icon_handle);
-                        self.loaded_handles.remove(&icon_handle);
-                        self.resource_handle_files.remove(&icon_handle);
+                        self.with_resource_manager_mut(|resource_manager| {
+                            resource_manager.loaded_handles.remove(&icon_handle);
+                            resource_manager.resource_handle_files.remove(&icon_handle);
+                        });
                         bus.free(icon_ptr);
                         bus.write_long(icon_handle, 0);
                         bus.free(icon_handle);
@@ -16999,23 +17001,25 @@ impl super::TrapDispatcher {
         if tracked_handle {
             self.track_handle_ptr(new_ptr, handle);
         }
-        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-            entry.0 = new_ptr;
-        }
-        if let Some(resources) = self.resources.as_mut() {
-            for file in resources.files.values_mut() {
-                for ptr in file.loaded.values_mut() {
-                    if *ptr == old_ptr {
-                        *ptr = new_ptr;
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                entry.0 = new_ptr;
+            }
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                for file in resources.files.values_mut() {
+                    for ptr in file.loaded.values_mut() {
+                        if *ptr == old_ptr {
+                            *ptr = new_ptr;
+                        }
                     }
-                }
-                for (_id, ptr) in file.named.values_mut() {
-                    if *ptr == old_ptr {
-                        *ptr = new_ptr;
+                    for (_id, ptr) in file.named.values_mut() {
+                        if *ptr == old_ptr {
+                            *ptr = new_ptr;
+                        }
                     }
                 }
             }
-        }
+        });
 
         new_ptr
     }
@@ -30178,7 +30182,7 @@ mod tests {
         let mut file = ResourceFileMap::default();
         file.named
             .insert((*b"FOND", "twiwindy".to_string()), (700, 0x1234));
-        d.resources = Some(LoadedResources {
+        d.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(0, file)]),
             names: HashMap::from([(0, "Application".to_string())]),
             search_order: vec![0],
@@ -30261,7 +30265,7 @@ mod tests {
         let mut file = ResourceFileMap::default();
         file.named
             .insert((*b"FOND", "twiapple".to_string()), (701, 0x1234));
-        d.resources = Some(LoadedResources {
+        d.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(0, file)]),
             names: HashMap::from([(0, "Application".to_string())]),
             search_order: vec![0],
@@ -50673,14 +50677,10 @@ mod tests {
         resource[12..14].copy_from_slice(&0x5678u16.to_be_bytes());
         resource[14..16].copy_from_slice(&0x9ABCu16.to_be_bytes());
         let original = d.install_test_resource(&mut bus, *b"clut", 1000, &resource);
-        d.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .loaded
-            .insert((*b"clut", 1000), 0);
+        d.with_resource_file_mut_for_test(0, |file| {
+            file.loaded.insert((*b"clut", 1000), 0);
+        })
+        .unwrap();
         bus.free(original);
         bus.write_word(TEST_SP, 1000);
 
@@ -50715,14 +50715,10 @@ mod tests {
         resource[18..20].copy_from_slice(&0x5678u16.to_be_bytes());
         resource[20..22].copy_from_slice(&0x9ABCu16.to_be_bytes());
         let original = d.install_test_resource(&mut bus, *b"pltt", 700, &resource);
-        d.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .loaded
-            .insert((*b"pltt", 700), 0);
+        d.with_resource_file_mut_for_test(0, |file| {
+            file.loaded.insert((*b"pltt", 700), 0);
+        })
+        .unwrap();
         bus.free(original);
         bus.write_word(TEST_SP, 700);
 

@@ -2224,13 +2224,157 @@ impl std::ops::Deref for TrapDispatcher {
     }
 }
 
-impl std::ops::DerefMut for TrapDispatcher {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.process_file_system.resource_manager
-    }
-}
-
 impl TrapDispatcher {
+    /// Mutate process-owned Resource Manager state for one serialized trap
+    /// operation without exposing a mutable reference through `DerefMut`.
+    pub(crate) fn with_resource_manager_mut<R>(
+        &mut self,
+        operation: impl FnOnce(&mut ProcessResourceManagerState) -> R,
+    ) -> R {
+        let resource_manager = self.process_file_system.resource_manager.shared_handle();
+        resource_manager.with_mut(operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_loaded_resources_for_test(&mut self, resources: LoadedResources) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resources = Some(resources);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_loaded_resource_handle_for_test(
+        &mut self,
+        handle: u32,
+        resource: (u32, [u8; 4], i16),
+    ) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.loaded_handles.insert(handle, resource);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_resource_handle_file_for_test(&mut self, handle: u32, refnum: u16) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resource_handle_files.insert(handle, refnum);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_detached_resource_handle_for_test(
+        &mut self,
+        handle: u32,
+        resource: ([u8; 4], i16),
+    ) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.detached_handles.insert(handle, resource);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_detached_resource_handle_file_for_test(
+        &mut self,
+        handle: u32,
+        refnum: u16,
+    ) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.detached_handle_files.insert(handle, refnum);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_resource_backing_data_for_test(
+        &mut self,
+        key: (u16, [u8; 4], i16),
+        data: Vec<u8>,
+    ) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resource_backing_data.insert(key, data);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_resource_file_mut_for_test<R>(
+        &mut self,
+        refnum: u16,
+        operation: impl FnOnce(&mut ResourceFileMap) -> R,
+    ) -> Option<R> {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resources
+                .as_mut()
+                .and_then(|resources| resources.files.get_mut(&refnum))
+                .map(operation)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_resource_handle_file_for_test(&mut self, handle: u32) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resource_handle_files.remove(&handle);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_resource_pointer_for_test(
+        &mut self,
+        refnum: u16,
+        resource: ([u8; 4], i16),
+        ptr: u32,
+    ) {
+        self.with_resource_file_mut_for_test(refnum, |file| {
+            file.loaded.insert(resource, ptr);
+        })
+        .expect("test resource file");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_named_resource_for_test(
+        &mut self,
+        refnum: u16,
+        key: ([u8; 4], String),
+        resource: (i16, u32),
+    ) {
+        self.with_resource_file_mut_for_test(refnum, |file| {
+            file.named.insert(key, resource);
+        })
+        .expect("test resource file");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_resource_name_for_test(
+        &mut self,
+        refnum: u16,
+        resource: ([u8; 4], i16),
+        name: String,
+    ) {
+        self.with_resource_file_mut_for_test(refnum, |file| {
+            file.names_by_id.insert(resource, name);
+        })
+        .expect("test resource file");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_resource_attrs_for_test(
+        &mut self,
+        refnum: u16,
+        resource: ([u8; 4], i16),
+        attrs: u8,
+    ) {
+        self.with_resource_file_mut_for_test(refnum, |file| {
+            file.attrs.insert(resource, attrs);
+        })
+        .expect("test resource file");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_resource_map_attrs_for_test(&mut self, refnum: u16, attrs: u16) {
+        self.with_resource_file_mut_for_test(refnum, |file| {
+            file.map_attrs = attrs;
+        })
+        .expect("test resource file");
+    }
+
     /// Copy the process display transfer table used for host presentation.
     pub fn device_gamma(&self) -> crate::display::DisplayGamma {
         self.display_gamma.table()
@@ -2848,8 +2992,8 @@ impl TrapDispatcher {
         let data_ptr = bus.alloc(data.len().max(1) as u32);
         bus.write_bytes(data_ptr, data);
 
-        {
-            let resources = self.resources.get_or_insert_with(|| LoadedResources {
+        self.with_resource_manager_mut(|resource_manager| {
+            let resources = resource_manager.resources.get_or_insert_with(|| LoadedResources {
                 files: HashMap::from([(0u16, ResourceFileMap::default())]),
                 names: HashMap::new(),
                 search_order: vec![0],
@@ -2860,7 +3004,7 @@ impl TrapDispatcher {
             if !resources.search_order.contains(&refnum) {
                 resources.search_order.push(refnum);
             }
-        }
+        });
         self.remember_resource_backing_data(refnum, res_type, id, data.to_vec());
         data_ptr
     }
@@ -2880,12 +3024,14 @@ impl TrapDispatcher {
         data: &[u8],
     ) -> u32 {
         let data_ptr = self.install_test_resource_in_file(bus, refnum, res_type, id, data);
-        if let Some(resources) = self.resources.as_mut() {
-            let file = resources.files.entry(refnum).or_default();
-            file.named
-                .insert((res_type, name.to_string()), (id, data_ptr));
-            file.names_by_id.insert((res_type, id), name.to_string());
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                let file = resources.files.entry(refnum).or_default();
+                file.named
+                    .insert((res_type, name.to_string()), (id, data_ptr));
+                file.names_by_id.insert((res_type, id), name.to_string());
+            }
+        });
         data_ptr
     }
 
@@ -5570,12 +5716,14 @@ impl TrapDispatcher {
     }
 
     fn remember_preloaded_resource_residency(&mut self, refnum: u16, file: &ResourceFileMap) {
-        self.resident_resources.extend(
-            file.loaded
-                .iter()
-                .filter(|(_, ptr)| **ptr != 0)
-                .map(|(&(res_type, res_id), _)| (refnum, res_type, res_id)),
-        );
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resident_resources.extend(
+                file.loaded
+                    .iter()
+                    .filter(|(_, ptr)| **ptr != 0)
+                    .map(|(&(res_type, res_id), _)| (refnum, res_type, res_id)),
+            );
+        });
     }
 
     fn resource_reference_order(fork: &ResourceFork) -> Vec<([u8; 4], i16)> {
@@ -5594,8 +5742,11 @@ impl TrapDispatcher {
         res_id: i16,
         data: Vec<u8>,
     ) {
-        self.resource_backing_data
-            .insert((refnum, res_type, res_id), data);
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_backing_data
+                .insert((refnum, res_type, res_id), data);
+        });
         if res_type == *b"FONT" || res_type == *b"NFNT" {
             self.register_resource_font_backing(refnum, res_id);
         } else if res_type == *b"FOND" {
@@ -5620,16 +5771,22 @@ impl TrapDispatcher {
         res_type: [u8; 4],
         res_id: i16,
     ) {
-        self.resource_backing_data
-            .remove(&(refnum, res_type, res_id));
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_backing_data
+                .remove(&(refnum, res_type, res_id));
+        });
     }
 
     pub(crate) fn remember_resource_fork_backing_data(&mut self, refnum: u16, fork: &ResourceFork) {
-        for ((res_type, res_id), resource) in fork.resources() {
-            self.resource_backing_data
-                .entry((refnum, *res_type, *res_id))
-                .or_insert_with(|| resource.data.clone());
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            for ((res_type, res_id), resource) in fork.resources() {
+                resource_manager
+                    .resource_backing_data
+                    .entry((refnum, *res_type, *res_id))
+                    .or_insert_with(|| resource.data.clone());
+            }
+        });
         // Parse every FOND only after the complete resource fork is present.
         // HashMap iteration order is intentionally unspecified, while an
         // NFNT's arbitrary resource ID is meaningful only through its FOND
@@ -5725,8 +5882,11 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn clear_resource_file_backing_data(&mut self, refnum: u16) {
-        self.resource_backing_data
-            .retain(|(entry_refnum, _, _), _| *entry_refnum != refnum);
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_backing_data
+                .retain(|(entry_refnum, _, _), _| *entry_refnum != refnum);
+        });
     }
 
     pub(crate) fn remember_resource_handle_index(
@@ -5736,49 +5896,64 @@ impl TrapDispatcher {
         res_type: [u8; 4],
         res_id: i16,
     ) {
-        self.resource_handles_by_key
-            .insert((refnum, res_type, res_id), handle);
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_handles_by_key
+                .insert((refnum, res_type, res_id), handle);
+        });
     }
 
     pub(crate) fn forget_resource_handle_index_for_handle(&mut self, handle: u32) {
-        let Some((_, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
-            return;
-        };
-        let Some(refnum) = self.resource_handle_files.get(&handle).copied() else {
-            return;
-        };
-        self.resource_handles_by_key
-            .remove(&(refnum, res_type, res_id));
+        self.with_resource_manager_mut(|resource_manager| {
+            let Some((_, res_type, res_id)) =
+                resource_manager.loaded_handles.get(&handle).copied()
+            else {
+                return;
+            };
+            let Some(refnum) = resource_manager.resource_handle_files.get(&handle).copied() else {
+                return;
+            };
+            resource_manager
+                .resource_handles_by_key
+                .remove(&(refnum, res_type, res_id));
+        });
     }
 
     pub(crate) fn unload_resource_live_map_entry_for_handle(&mut self, handle: u32) {
-        let Some((ptr, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
-            return;
-        };
-        let Some(refnum) = self.resource_handle_files.get(&handle).copied() else {
-            return;
-        };
-        let Some(file) = self
-            .resources
-            .as_mut()
-            .and_then(|resources| resources.files.get_mut(&refnum))
-        else {
-            return;
-        };
+        self.with_resource_manager_mut(|resource_manager| {
+            let Some((ptr, res_type, res_id)) =
+                resource_manager.loaded_handles.get(&handle).copied()
+            else {
+                return;
+            };
+            let Some(refnum) = resource_manager.resource_handle_files.get(&handle).copied() else {
+                return;
+            };
+            let Some(file) = resource_manager
+                .resources
+                .as_mut()
+                .and_then(|resources| resources.files.get_mut(&refnum))
+            else {
+                return;
+            };
 
-        if file.loaded.get(&(res_type, res_id)).copied() == Some(ptr) {
-            file.loaded.insert((res_type, res_id), 0);
-        }
-        for ((named_type, _), (named_id, named_ptr)) in &mut file.named {
-            if *named_type == res_type && *named_id == res_id && *named_ptr == ptr {
-                *named_ptr = 0;
+            if file.loaded.get(&(res_type, res_id)).copied() == Some(ptr) {
+                file.loaded.insert((res_type, res_id), 0);
             }
-        }
+            for ((named_type, _), (named_id, named_ptr)) in &mut file.named {
+                if *named_type == res_type && *named_id == res_id && *named_ptr == ptr {
+                    *named_ptr = 0;
+                }
+            }
+        });
     }
 
     pub(crate) fn clear_resource_file_handle_index(&mut self, refnum: u16) {
-        self.resource_handles_by_key
-            .retain(|(entry_refnum, _, _), _| *entry_refnum != refnum);
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_handles_by_key
+                .retain(|(entry_refnum, _, _), _| *entry_refnum != refnum);
+        });
     }
 
     pub(crate) fn resource_search_order(&self) -> Vec<u16> {
@@ -5821,24 +5996,29 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn set_current_resource_refnum(&mut self, bus: &mut MacMemoryBus, refnum: u16) {
-        let mut selected = 0;
-        if let Some(resources) = self.resources.as_mut() {
-            resources.current_file = if resources.files.contains_key(&refnum) {
-                refnum
-            } else {
-                0
-            };
-            selected = resources.current_file;
-        }
-        self.current_resource_file
+        let selected = self.with_resource_manager_mut(|resource_manager| {
+            let mut selected = 0;
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                resources.current_file = if resources.files.contains_key(&refnum) {
+                    refnum
+                } else {
+                    0
+                };
+                selected = resources.current_file;
+            }
+            selected
+        });
+        self.process_file_system.resource_manager.current_resource_file
             .with_mut(|current_file| *current_file = selected as i16);
         bus.write_word(0x0A5A, self.current_resource_refnum());
     }
 
     pub(crate) fn set_resource_file_name(&mut self, refnum: u16, name: impl Into<String>) {
-        if let Some(resources) = self.resources.as_mut() {
-            resources.names.insert(refnum, name.into());
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                resources.names.insert(refnum, name.into());
+            }
+        });
     }
 
     /// Allocate the next non-colliding process File Manager reference number.
@@ -6023,18 +6203,15 @@ impl TrapDispatcher {
 
         let _ = self.flush_resource_file_refnum(bus, refnum);
 
-        let mut file_ptrs: HashSet<u32> = HashSet::new();
-        let mut externally_referenced_ptrs: HashSet<u32> = HashSet::new();
-        let mut closed_name: Option<String> = None;
-        let mut closed = false;
         let closing_current = self.current_resource_refnum() == refnum;
-
-        let mut surviving_classic_current = 0;
-        if let Some(resources) = self.resources.as_mut() {
+        let closed = self.with_resource_manager_mut(|resource_manager| {
+            let resources = resource_manager.resources.as_mut()?;
             if !resources.files.contains_key(&refnum) {
-                return false;
+                return None;
             }
 
+            let mut file_ptrs: HashSet<u32> = HashSet::new();
+            let mut externally_referenced_ptrs: HashSet<u32> = HashSet::new();
             if let Some(file) = resources.files.get_mut(&refnum) {
                 for attr in file.attrs.values_mut() {
                     *attr &= !(Self::RES_CHANGED_ATTR as u8);
@@ -6068,24 +6245,35 @@ impl TrapDispatcher {
                 .search_order
                 .retain(|&candidate| candidate != refnum);
             resources.files.remove(&refnum);
-            closed_name = resources.names.remove(&refnum);
-            surviving_classic_current = resources.current_file;
-            closed = true;
-        }
+            let closed_name = resources.names.remove(&refnum);
+            Some((
+                file_ptrs,
+                externally_referenced_ptrs,
+                closed_name,
+                resources.current_file,
+            ))
+        });
+        let Some((file_ptrs, externally_referenced_ptrs, closed_name, surviving_classic_current)) =
+            closed
+        else {
+            return false;
+        };
         if closing_current {
-            self.current_resource_file.with_mut(|current_file| {
-                *current_file = surviving_classic_current as i16;
-            });
+            self.process_file_system
+                .resource_manager
+                .current_resource_file
+                .with_mut(|current_file| {
+                    *current_file = surviving_classic_current as i16;
+                });
         }
         self.clear_resource_file_backing_data(refnum);
-        self.resource_file_order.remove(&refnum);
         self.clear_resource_file_handle_index(refnum);
-        self.resident_resources
-            .retain(|(entry_refnum, _, _)| *entry_refnum != refnum);
-
-        if !closed {
-            return false;
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resource_file_order.remove(&refnum);
+            resource_manager
+                .resident_resources
+                .retain(|(entry_refnum, _, _)| *entry_refnum != refnum);
+        });
 
         let mut freed_ptrs = 0usize;
         for ptr in file_ptrs {
@@ -6104,21 +6292,27 @@ impl TrapDispatcher {
         for handle in &file_handles {
             bus.write_long(*handle, 0);
             bus.free(*handle);
-            self.loaded_handles.remove(handle);
-            self.resource_handle_files.remove(handle);
-            self.detached_handle_files.remove(handle);
-            self.detached_handles.remove(handle);
             self.remove_handle_state_bits(*handle);
         }
+        self.with_resource_manager_mut(|resource_manager| {
+            for handle in &file_handles {
+                resource_manager.loaded_handles.remove(handle);
+                resource_manager.resource_handle_files.remove(handle);
+                resource_manager.detached_handle_files.remove(handle);
+                resource_manager.detached_handles.remove(handle);
+            }
+        });
 
         let detached_handles: Vec<u32> = self
             .detached_handle_files
             .iter()
             .filter_map(|(&handle, &handle_refnum)| (handle_refnum == refnum).then_some(handle))
             .collect();
-        for handle in detached_handles {
-            self.detached_handle_files.remove(&handle);
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            for handle in detached_handles {
+                resource_manager.detached_handle_files.remove(&handle);
+            }
+        });
 
         self.write_refnums.remove(&refnum);
         let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
@@ -7111,8 +7305,11 @@ impl TrapDispatcher {
         }
         let file = self.allocate_resource_fork(fork, bus);
         self.remember_preloaded_resource_residency(0, &file);
-        self.resource_file_order
-            .insert(0, Self::resource_reference_order(fork));
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_file_order
+                .insert(0, Self::resource_reference_order(fork));
+        });
         self.clear_resource_file_backing_data(0);
         self.remember_resource_fork_backing_data(0, fork);
         // Log resource types summary including nrct check.
@@ -7175,11 +7372,13 @@ impl TrapDispatcher {
         }
         let mut files = HashMap::new();
         files.insert(0, file);
-        self.resources = Some(LoadedResources {
-            files,
-            names: HashMap::from([(0, "Application".to_string())]),
-            search_order: vec![0],
-            current_file: 0,
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resources = Some(LoadedResources {
+                files,
+                names: HashMap::from([(0, "Application".to_string())]),
+                search_order: vec![0],
+                current_file: 0,
+            });
         });
         bus.write_word(0x0A5A, 0);
 
@@ -7220,16 +7419,18 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn register_resource_file(&mut self, refnum: u16, file: ResourceFileMap) {
-        let resources = self.resources.get_or_insert_with(|| LoadedResources {
-            files: HashMap::new(),
-            names: HashMap::new(),
-            search_order: vec![0],
-            current_file: 0,
+        self.with_resource_manager_mut(|resource_manager| {
+            let resources = resource_manager.resources.get_or_insert_with(|| LoadedResources {
+                files: HashMap::new(),
+                names: HashMap::new(),
+                search_order: vec![0],
+                current_file: 0,
+            });
+            resources.files.insert(refnum, file);
+            if !resources.search_order.contains(&refnum) {
+                resources.search_order.push(refnum);
+            }
         });
-        resources.files.insert(refnum, file);
-        if !resources.search_order.contains(&refnum) {
-            resources.search_order.push(refnum);
-        }
     }
 
     pub(crate) fn register_empty_resource_file(&mut self, refnum: u16) {
@@ -7248,35 +7449,37 @@ impl TrapDispatcher {
         self.remember_preloaded_resource_residency(refnum, &incoming);
         let incoming_order = Self::resource_reference_order(fork);
         let count = incoming.loaded.len();
-        let resources = self.resources.get_or_insert_with(|| LoadedResources {
-            files: HashMap::new(),
-            names: HashMap::new(),
-            search_order: vec![refnum],
-            current_file: refnum,
-        });
-        if !resources.search_order.contains(&refnum) {
-            resources.search_order.push(refnum);
-        }
-
-        let target = resources.files.entry(refnum).or_default();
-        for (key, ptr) in incoming.loaded {
-            target.loaded.entry(key).or_insert(ptr);
-        }
-        for (key, value) in incoming.named {
-            target.named.entry(key).or_insert(value);
-        }
-        for (key, name) in incoming.names_by_id {
-            target.names_by_id.entry(key).or_insert(name);
-        }
-        for (key, attrs) in incoming.attrs {
-            target.attrs.entry(key).or_insert(attrs);
-        }
-        let order = self.resource_file_order.entry(refnum).or_default();
-        for key in incoming_order {
-            if !order.contains(&key) {
-                order.push(key);
+        self.with_resource_manager_mut(|resource_manager| {
+            let resources = resource_manager.resources.get_or_insert_with(|| LoadedResources {
+                files: HashMap::new(),
+                names: HashMap::new(),
+                search_order: vec![refnum],
+                current_file: refnum,
+            });
+            if !resources.search_order.contains(&refnum) {
+                resources.search_order.push(refnum);
             }
-        }
+
+            let target = resources.files.entry(refnum).or_default();
+            for (key, ptr) in incoming.loaded {
+                target.loaded.entry(key).or_insert(ptr);
+            }
+            for (key, value) in incoming.named {
+                target.named.entry(key).or_insert(value);
+            }
+            for (key, name) in incoming.names_by_id {
+                target.names_by_id.entry(key).or_insert(name);
+            }
+            for (key, attrs) in incoming.attrs {
+                target.attrs.entry(key).or_insert(attrs);
+            }
+            let order = resource_manager.resource_file_order.entry(refnum).or_default();
+            for key in incoming_order {
+                if !order.contains(&key) {
+                    order.push(key);
+                }
+            }
+        });
         self.remember_resource_fork_backing_data(refnum, fork);
         count
     }
@@ -7291,8 +7494,11 @@ impl TrapDispatcher {
     ) {
         let file = self.allocate_resource_fork(fork, bus);
         self.remember_preloaded_resource_residency(refnum, &file);
-        self.resource_file_order
-            .insert(refnum, Self::resource_reference_order(fork));
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_file_order
+                .insert(refnum, Self::resource_reference_order(fork));
+        });
         let count = file.loaded.len();
         if trace_sound_enabled() {
             let mut type_counts: HashMap<[u8; 4], usize> = HashMap::new();
@@ -11118,9 +11324,7 @@ mod tests {
         assert!(std::ptr::eq(&*dispatcher, owner));
 
         let key = (7, *b"TEST", 128);
-        dispatcher
-            .resource_backing_data
-            .insert(key, b"fresh".to_vec());
+        dispatcher.insert_resource_backing_data_for_test(key, b"fresh".to_vec());
         assert_eq!(
             dispatcher
                 .process_file_system
@@ -11154,9 +11358,7 @@ mod tests {
         ));
 
         let key = (7, *b"TEST", 128);
-        first
-            .resource_backing_data
-            .insert(key, b"attached".to_vec());
+        first.insert_resource_backing_data_for_test(key, b"attached".to_vec());
         assert_eq!(
             second.resource_backing_data.get(&key),
             Some(&b"attached".to_vec())
@@ -11167,9 +11369,7 @@ mod tests {
     fn detached_filesystem_resource_manager_clone_is_independent() {
         let mut dispatcher = TrapDispatcher::new();
         let key = (7, *b"TEST", 128);
-        dispatcher
-            .resource_backing_data
-            .insert(key, b"original".to_vec());
+        dispatcher.insert_resource_backing_data_for_test(key, b"original".to_vec());
 
         let detached = dispatcher.process_file_system.clone();
         assert!(!dispatcher.process_file_system.ptr_eq(&detached));

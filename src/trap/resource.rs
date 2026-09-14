@@ -897,15 +897,20 @@ impl super::TrapDispatcher {
                     // working after the refill.
                     if existing_ptr == 0 && ptr != 0 {
                         existing_ptr = ptr;
-                        self.loaded_handles
-                            .insert(handle, (ptr, existing_type, existing_id));
+                        self.with_resource_manager_mut(|resource_manager| {
+                            resource_manager
+                                .loaded_handles
+                                .insert(handle, (ptr, existing_type, existing_id));
+                        });
                     }
                     if bus.read_long(handle) == 0 && (self.policy.res_load || recorded_resident) {
                         bus.write_long(handle, existing_ptr);
                         self.add_resource_materialization_tick_cost(bus, existing_ptr);
                     }
                     if bus.read_long(handle) != 0 && existing_ptr != 0 {
-                        self.resident_resources.insert(key);
+                        self.with_resource_manager_mut(|resource_manager| {
+                            resource_manager.resident_resources.insert(key);
+                        });
                         self.track_handle_ptr(existing_ptr, handle);
                     }
                     self.update_handle_state_bits(handle, |state| {
@@ -914,7 +919,9 @@ impl super::TrapDispatcher {
                     return handle;
                 }
             }
-            self.resource_handles_by_key.remove(&key);
+            self.with_resource_manager_mut(|resource_manager| {
+                resource_manager.resource_handles_by_key.remove(&key);
+            });
         }
 
         let handle = bus.alloc(4);
@@ -924,12 +931,18 @@ impl super::TrapDispatcher {
         // LoadResource can populate the master pointer later.
         let materialize = self.policy.res_load || recorded_resident;
         bus.write_long(handle, if materialize { ptr } else { 0 });
-        self.loaded_handles.insert(handle, (ptr, res_type, res_id));
-        self.resource_handle_files.insert(handle, refnum);
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .loaded_handles
+                .insert(handle, (ptr, res_type, res_id));
+            resource_manager.resource_handle_files.insert(handle, refnum);
+        });
         self.remember_resource_handle_index(handle, key.0, key.1, key.2);
         self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) | 0x20));
         if materialize && ptr != 0 {
-            self.resident_resources.insert(key);
+            self.with_resource_manager_mut(|resource_manager| {
+                resource_manager.resident_resources.insert(key);
+            });
             self.track_handle_ptr(ptr, handle);
             self.add_resource_materialization_tick_cost(bus, ptr);
         }
@@ -1019,18 +1032,20 @@ impl super::TrapDispatcher {
         bus.write_bytes(ptr, &data);
         Self::zero_loaded_resource_padding(bus, ptr, data.len() as u32);
 
-        if let Some(file) = self
-            .resources
-            .as_mut()
-            .and_then(|resources| resources.files.get_mut(&refnum))
-        {
-            file.loaded.insert((res_type, res_id), ptr);
-            file.attrs.insert((res_type, res_id), attrs);
-            if let Some(name) = name {
-                file.named.insert((res_type, name.clone()), (res_id, ptr));
-                file.names_by_id.insert((res_type, res_id), name);
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(file) = resource_manager
+                .resources
+                .as_mut()
+                .and_then(|resources| resources.files.get_mut(&refnum))
+            {
+                file.loaded.insert((res_type, res_id), ptr);
+                file.attrs.insert((res_type, res_id), attrs);
+                if let Some(name) = name {
+                    file.named.insert((res_type, name.clone()), (res_id, ptr));
+                    file.names_by_id.insert((res_type, res_id), name);
+                }
             }
-        }
+        });
 
         Some(ptr)
     }
@@ -1146,27 +1161,35 @@ impl super::TrapDispatcher {
     fn restore_loaded_resource_handle(&mut self, handle: u32, ptr: u32) {
         self.track_handle_ptr(ptr, handle);
         self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) | 0x20));
-        if let (Some((_, res_type, res_id)), Some(refnum)) = (
-            self.loaded_handles.get(&handle).copied(),
-            self.resource_handle_files.get(&handle).copied(),
-        ) {
-            self.resident_resources.insert((refnum, res_type, res_id));
-        }
-        self.detached_handles.remove(&handle);
-        if let Some(refnum) = self.detached_handle_files.remove(&handle) {
-            // A reload should repair any stale detached-file bookkeeping so
-            // later Resource Manager queries still see a live resource.
-            self.resource_handle_files.insert(handle, refnum);
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            if let (Some((_, res_type, res_id)), Some(refnum)) = (
+                resource_manager.loaded_handles.get(&handle).copied(),
+                resource_manager.resource_handle_files.get(&handle).copied(),
+            ) {
+                resource_manager
+                    .resident_resources
+                    .insert((refnum, res_type, res_id));
+            }
+            resource_manager.detached_handles.remove(&handle);
+            if let Some(refnum) = resource_manager.detached_handle_files.remove(&handle) {
+                // A reload should repair any stale detached-file bookkeeping so
+                // later Resource Manager queries still see a live resource.
+                resource_manager.resource_handle_files.insert(handle, refnum);
+            }
+        });
     }
 
     pub(crate) fn forget_resource_residency_for_handle(&mut self, handle: u32) {
-        if let (Some((_, res_type, res_id)), Some(refnum)) = (
-            self.loaded_handles.get(&handle).copied(),
-            self.resource_handle_files.get(&handle).copied(),
-        ) {
-            self.resident_resources.remove(&(refnum, res_type, res_id));
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            if let (Some((_, res_type, res_id)), Some(refnum)) = (
+                resource_manager.loaded_handles.get(&handle).copied(),
+                resource_manager.resource_handle_files.get(&handle).copied(),
+            ) {
+                resource_manager
+                    .resident_resources
+                    .remove(&(refnum, res_type, res_id));
+            }
+        });
     }
 
     /// Retain a resource handle's identity while marking its data nonresident.
@@ -1176,28 +1199,34 @@ impl super::TrapDispatcher {
     /// into the same handle. Inside Macintosh: Memory (1992), pp. 2-51--2-52,
     /// and More Macintosh Toolbox (1993), pp. 1-79--1-80.
     pub(crate) fn empty_resource_handle_residency(&mut self, handle: u32) {
-        let Some((_, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
-            return;
-        };
-        let Some(refnum) = self.resource_handle_files.get(&handle).copied() else {
-            return;
-        };
-        self.resident_resources.remove(&(refnum, res_type, res_id));
-        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-            entry.0 = 0;
-        }
-        if let Some(file) = self
-            .resources
-            .as_mut()
-            .and_then(|resources| resources.files.get_mut(&refnum))
-        {
-            file.loaded.insert((res_type, res_id), 0);
-            for ((named_type, _), (named_id, ptr)) in &mut file.named {
-                if *named_type == res_type && *named_id == res_id {
-                    *ptr = 0;
+        self.with_resource_manager_mut(|resource_manager| {
+            let Some((_, res_type, res_id)) =
+                resource_manager.loaded_handles.get(&handle).copied()
+            else {
+                return;
+            };
+            let Some(refnum) = resource_manager.resource_handle_files.get(&handle).copied() else {
+                return;
+            };
+            resource_manager
+                .resident_resources
+                .remove(&(refnum, res_type, res_id));
+            if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                entry.0 = 0;
+            }
+            if let Some(file) = resource_manager
+                .resources
+                .as_mut()
+                .and_then(|resources| resources.files.get_mut(&refnum))
+            {
+                file.loaded.insert((res_type, res_id), 0);
+                for ((named_type, _), (named_id, ptr)) in &mut file.named {
+                    if *named_type == res_type && *named_id == res_id {
+                        *ptr = 0;
+                    }
                 }
             }
-        }
+        });
     }
 
     pub(crate) fn live_resource_identity_for_handle(
@@ -1280,38 +1309,47 @@ impl super::TrapDispatcher {
                 bus.write_word(0x0A60, RMV_RES_FAILED as u16);
                 false
             } else if shadowed_system_ref {
-                if let Some(resources) = self.resources.as_mut() {
-                    if let Some(file) = resources.files.get_mut(&refnum) {
-                        file.loaded.remove(&(res_type, res_id));
-                        file.attrs.remove(&(res_type, res_id));
-                        file.names_by_id.remove(&(res_type, res_id));
-                        file.named
-                            .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
+                self.with_resource_manager_mut(|resource_manager| {
+                    if let Some(resources) = resource_manager.resources.as_mut() {
+                        if let Some(file) = resources.files.get_mut(&refnum) {
+                            file.loaded.remove(&(res_type, res_id));
+                            file.attrs.remove(&(res_type, res_id));
+                            file.names_by_id.remove(&(res_type, res_id));
+                            file.named
+                                .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
+                        }
                     }
-                }
-                if let Some(order) = self.resource_file_order.get_mut(&refnum) {
-                    order.retain(|key| *key != (res_type, res_id));
-                }
+                    if let Some(order) = resource_manager.resource_file_order.get_mut(&refnum) {
+                        order.retain(|key| *key != (res_type, res_id));
+                    }
+                });
                 self.forget_resource_backing_data(refnum, res_type, res_id);
                 bus.write_word(0x0A60, 0);
                 true
             } else {
-                if let Some(resources) = self.resources.as_mut() {
-                    if let Some(file) = resources.files.get_mut(&current_refnum) {
-                        file.loaded.remove(&(res_type, res_id));
-                        file.attrs.remove(&(res_type, res_id));
-                        file.names_by_id.remove(&(res_type, res_id));
-                        file.named
-                            .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
+                self.with_resource_manager_mut(|resource_manager| {
+                    if let Some(resources) = resource_manager.resources.as_mut() {
+                        if let Some(file) = resources.files.get_mut(&current_refnum) {
+                            file.loaded.remove(&(res_type, res_id));
+                            file.attrs.remove(&(res_type, res_id));
+                            file.names_by_id.remove(&(res_type, res_id));
+                            file.named
+                                .retain(|(t, _), (id, _)| !(*t == res_type && *id == res_id));
+                        }
                     }
-                }
-                if let Some(order) = self.resource_file_order.get_mut(&current_refnum) {
-                    order.retain(|key| *key != (res_type, res_id));
-                }
+                    if let Some(order) = resource_manager
+                        .resource_file_order
+                        .get_mut(&current_refnum)
+                    {
+                        order.retain(|key| *key != (res_type, res_id));
+                    }
+                });
                 self.forget_resource_backing_data(current_refnum, res_type, res_id);
                 self.forget_resource_handle_index_for_handle(handle);
-                self.loaded_handles.remove(&handle);
-                self.resource_handle_files.remove(&handle);
+                self.with_resource_manager_mut(|resource_manager| {
+                    resource_manager.loaded_handles.remove(&handle);
+                    resource_manager.resource_handle_files.remove(&handle);
+                });
                 self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) & !0x20));
                 bus.write_word(0x0A60, 0);
                 true
@@ -1358,43 +1396,47 @@ impl super::TrapDispatcher {
             return false;
         };
 
-        let Some(resources) = self.resources.as_mut() else {
-            bus.write_word(0x0A60, ADD_REF_FAILED as u16);
-            return false;
-        };
-        let Some(file) = resources.files.get_mut(&current_refnum) else {
-            bus.write_word(0x0A60, ADD_REF_FAILED as u16);
-            return false;
-        };
+        let name = (name_ptr != 0)
+            .then(|| bus.read_pstring(name_ptr))
+            .and_then(|name| String::from_utf8(name).ok())
+            .filter(|name| !name.is_empty());
+        let inserted = self.with_resource_manager_mut(|resource_manager| {
+            let Some(resources) = resource_manager.resources.as_mut() else {
+                return false;
+            };
+            let Some(file) = resources.files.get_mut(&current_refnum) else {
+                return false;
+            };
 
-        if file.loaded.contains_key(&(res_type, new_id))
-            || file
-                .loaded
-                .values()
-                .any(|&existing_ptr| existing_ptr == ptr)
-        {
-            bus.write_word(0x0A60, ADD_REF_FAILED as u16);
-            return false;
-        }
-
-        let attrs =
-            (source_attrs as u8) | Self::RES_CHANGED_ATTR as u8 | Self::RES_SYS_REF_ATTR as u8;
-        file.loaded.insert((res_type, new_id), ptr);
-        file.attrs.insert((res_type, new_id), attrs);
-        file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
-        if name_ptr != 0 {
-            let name_bytes = bus.read_pstring(name_ptr);
-            if let Ok(name) = String::from_utf8(name_bytes) {
-                if !name.is_empty() {
-                    file.named.insert((res_type, name.clone()), (new_id, ptr));
-                    file.names_by_id.insert((res_type, new_id), name);
-                }
+            if file.loaded.contains_key(&(res_type, new_id))
+                || file
+                    .loaded
+                    .values()
+                    .any(|&existing_ptr| existing_ptr == ptr)
+            {
+                return false;
             }
+
+            let attrs =
+                (source_attrs as u8) | Self::RES_CHANGED_ATTR as u8 | Self::RES_SYS_REF_ATTR as u8;
+            file.loaded.insert((res_type, new_id), ptr);
+            file.attrs.insert((res_type, new_id), attrs);
+            file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
+            if let Some(name) = name {
+                file.named.insert((res_type, name.clone()), (new_id, ptr));
+                file.names_by_id.insert((res_type, new_id), name);
+            }
+            resource_manager
+                .resource_file_order
+                .entry(current_refnum)
+                .or_default()
+                .push((res_type, new_id));
+            true
+        });
+        if !inserted {
+            bus.write_word(0x0A60, ADD_REF_FAILED as u16);
+            return false;
         }
-        self.resource_file_order
-            .entry(current_refnum)
-            .or_default()
-            .push((res_type, new_id));
 
         if let Some(size) = bus.get_alloc_size(ptr) {
             self.remember_resource_backing_data(
@@ -1442,20 +1484,22 @@ impl super::TrapDispatcher {
             }
         }
 
-        if let Some(resources) = self.resources.as_mut() {
-            if let Some(file) = resources.files.get_mut(&refnum) {
-                if let Some(a) = file.attrs.get_mut(&(res_type, res_id)) {
-                    *a &= !(Self::RES_CHANGED_ATTR as u8);
-                }
-                if !file
-                    .attrs
-                    .values()
-                    .any(|attr| (*attr & Self::RES_CHANGED_ATTR as u8) != 0)
-                {
-                    file.map_attrs &= !Self::RES_MAP_CHANGED_ATTR;
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                if let Some(file) = resources.files.get_mut(&refnum) {
+                    if let Some(a) = file.attrs.get_mut(&(res_type, res_id)) {
+                        *a &= !(Self::RES_CHANGED_ATTR as u8);
+                    }
+                    if !file
+                        .attrs
+                        .values()
+                        .any(|attr| (*attr & Self::RES_CHANGED_ATTR as u8) != 0)
+                    {
+                        file.map_attrs &= !Self::RES_MAP_CHANGED_ATTR;
+                    }
                 }
             }
-        }
+        });
         true
     }
 
@@ -2091,11 +2135,17 @@ impl super::TrapDispatcher {
                         self.unload_resource_live_map_entry_for_handle(handle);
                         self.forget_resource_residency_for_handle(handle);
                         self.forget_resource_handle_index_for_handle(handle);
-                        self.loaded_handles.remove(&handle);
-                        if let Some(refnum) = self.resource_handle_files.remove(&handle) {
-                            self.detached_handle_files.insert(handle, refnum);
-                        }
-                        self.detached_handles.insert(handle, (res_type, res_id));
+                        self.with_resource_manager_mut(|resource_manager| {
+                            resource_manager.loaded_handles.remove(&handle);
+                            if let Some(refnum) =
+                                resource_manager.resource_handle_files.remove(&handle)
+                            {
+                                resource_manager.detached_handle_files.insert(handle, refnum);
+                            }
+                            resource_manager
+                                .detached_handles
+                                .insert(handle, (res_type, res_id));
+                        });
                         self.update_handle_state_bits(handle, |state| {
                             Some(state.unwrap_or(0x40) & !0x20)
                         });
@@ -2151,9 +2201,11 @@ impl super::TrapDispatcher {
                         // scribbled over it first.
                         let was_empty = bus.read_long(handle) == 0;
                         bus.write_long(handle, ptr);
-                        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-                            entry.0 = ptr;
-                        }
+                        self.with_resource_manager_mut(|resource_manager| {
+                            if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                                entry.0 = ptr;
+                            }
+                        });
                         self.restore_loaded_resource_handle(handle, ptr);
                         if was_empty {
                             self.add_resource_materialization_tick_cost(bus, ptr);
@@ -2218,35 +2270,42 @@ impl super::TrapDispatcher {
                         bus.write_long(handle, 0);
                         self.untrack_handle_ptr(ptr);
                         self.forget_resource_handle_index_for_handle(handle);
-                        self.loaded_handles.remove(&handle);
-                        self.resource_handle_files.remove(&handle);
+                        self.with_resource_manager_mut(|resource_manager| {
+                            resource_manager.loaded_handles.remove(&handle);
+                            resource_manager.resource_handle_files.remove(&handle);
+                        });
                         self.remove_handle_state_bits(handle);
                         if can_reload {
                             if let Some((refnum, record_type, record_id)) = resource_record {
-                                if let Some(file) = self
-                                    .resources
-                                    .as_mut()
-                                    .and_then(|resources| resources.files.get_mut(&refnum))
-                                {
-                                    if file
-                                        .loaded
-                                        .get(&(record_type, record_id))
-                                        .is_some_and(|&loaded_ptr| loaded_ptr == ptr)
-                                    {
-                                        file.loaded.insert((record_type, record_id), 0);
-                                    }
-                                    if let Some(name) =
-                                        file.names_by_id.get(&(record_type, record_id)).cloned()
+                                self.with_resource_manager_mut(|resource_manager| {
+                                    if let Some(file) = resource_manager
+                                        .resources
+                                        .as_mut()
+                                        .and_then(|resources| resources.files.get_mut(&refnum))
                                     {
                                         if file
-                                            .named
-                                            .get(&(record_type, name.clone()))
-                                            .is_some_and(|(_, named_ptr)| *named_ptr == ptr)
+                                            .loaded
+                                            .get(&(record_type, record_id))
+                                            .is_some_and(|&loaded_ptr| loaded_ptr == ptr)
                                         {
-                                            file.named.insert((record_type, name), (record_id, 0));
+                                            file.loaded.insert((record_type, record_id), 0);
+                                        }
+                                        if let Some(name) = file
+                                            .names_by_id
+                                            .get(&(record_type, record_id))
+                                            .cloned()
+                                        {
+                                            if file
+                                                .named
+                                                .get(&(record_type, name.clone()))
+                                                .is_some_and(|(_, named_ptr)| *named_ptr == ptr)
+                                            {
+                                                file.named
+                                                    .insert((record_type, name), (record_id, 0));
+                                            }
                                         }
                                     }
-                                }
+                                });
                                 if !self.resource_ptr_referenced_elsewhere(refnum, ptr) {
                                     bus.free(ptr);
                                 }
@@ -2392,13 +2451,15 @@ impl super::TrapDispatcher {
                 let attrs = bus.read_word(sp);
                 let refnum = bus.read_word(sp + 2);
 
-                if let Some(file) = self
-                    .resources
-                    .as_mut()
-                    .and_then(|resources| resources.files.get_mut(&refnum))
-                {
-                    file.map_attrs = attrs & 0x00E0;
-                }
+                self.with_resource_manager_mut(|resource_manager| {
+                    if let Some(file) = resource_manager
+                        .resources
+                        .as_mut()
+                        .and_then(|resources| resources.files.get_mut(&refnum))
+                    {
+                        file.map_attrs = attrs & 0x00E0;
+                    }
+                });
                 // Both branches set ResErr to noErr per IM:I-126.
                 bus.write_word(0x0A60, 0);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -3029,13 +3090,15 @@ impl super::TrapDispatcher {
                         bus.write_word(0x0A60, Self::RES_ATTR_ERR as u16);
                     } else {
                         // Set the resChanged attribute (bit 1) on the resource
-                        if let Some(resources) = self.resources.as_mut() {
-                            if let Some(file) = resources.files.get_mut(&refnum) {
-                                let entry = file.attrs.entry((res_type, res_id)).or_insert(0);
-                                *entry |= Self::RES_CHANGED_ATTR as u8;
-                                file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
+                        self.with_resource_manager_mut(|resource_manager| {
+                            if let Some(resources) = resource_manager.resources.as_mut() {
+                                if let Some(file) = resources.files.get_mut(&refnum) {
+                                    let entry = file.attrs.entry((res_type, res_id)).or_insert(0);
+                                    *entry |= Self::RES_CHANGED_ATTR as u8;
+                                    file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
+                                }
                             }
-                        }
+                        });
                         bus.write_word(0x0A60, 0); // noErr
                     }
                 } else {
@@ -3070,41 +3133,49 @@ impl super::TrapDispatcher {
                         bus.write_word(0x0A60, Self::RES_ATTR_ERR as u16);
                     } else {
                         let home_refnum = self.resource_handle_files.get(&handle).copied();
-
-                        // Update the resource ID in loaded_handles for the live
-                        // home record only. System-reference shadow entries live
-                        // in the current file's map and must not re-home the
-                        // source handle.
-                        if home_refnum == Some(refnum) {
-                            if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-                                entry.2 = new_id;
-                            }
-                            if old_id != new_id {
-                                self.resource_handles_by_key
-                                    .remove(&(refnum, res_type, old_id));
-                                self.remember_resource_handle_index(
-                                    handle, refnum, res_type, new_id,
-                                );
-                            }
-                        }
-                        if old_id != new_id {
-                            if let Some(data) = self
-                                .resource_backing_data
-                                .remove(&(refnum, res_type, old_id))
-                            {
-                                self.remember_resource_backing_data(refnum, res_type, new_id, data);
-                            }
-                            if let Some(order) = self.resource_file_order.get_mut(&refnum) {
-                                if let Some(key) =
-                                    order.iter_mut().find(|key| **key == (res_type, old_id))
+                        let new_name = (name_ptr != 0)
+                            .then(|| bus.read_pstring(name_ptr))
+                            .and_then(|bytes| String::from_utf8(bytes).ok())
+                            .filter(|name| !name.is_empty());
+                        let moved_data = self.with_resource_manager_mut(|resource_manager| {
+                            // Update the resource ID in loaded_handles for the live
+                            // home record only. System-reference shadow entries live
+                            // in the current file's map and must not re-home the
+                            // source handle.
+                            if home_refnum == Some(refnum) {
+                                if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle)
                                 {
-                                    *key = (res_type, new_id);
+                                    entry.2 = new_id;
+                                }
+                                if old_id != new_id {
+                                    resource_manager
+                                        .resource_handles_by_key
+                                        .remove(&(refnum, res_type, old_id));
+                                    resource_manager
+                                        .resource_handles_by_key
+                                        .insert((refnum, res_type, new_id), handle);
                                 }
                             }
-                        }
+                            let moved_data = if old_id != new_id {
+                                let data = resource_manager
+                                    .resource_backing_data
+                                    .remove(&(refnum, res_type, old_id));
+                                if let Some(order) =
+                                    resource_manager.resource_file_order.get_mut(&refnum)
+                                {
+                                    if let Some(key) =
+                                        order.iter_mut().find(|key| **key == (res_type, old_id))
+                                    {
+                                        *key = (res_type, new_id);
+                                    }
+                                }
+                                data
+                            } else {
+                                None
+                            };
 
-                        if let Some(resources) = self.resources.as_mut() {
-                            if let Some(file) = resources.files.get_mut(&refnum) {
+                            if let Some(resources) = resource_manager.resources.as_mut() {
+                                if let Some(file) = resources.files.get_mut(&refnum) {
                                 // Move the loaded entry from old_id to new_id
                                 if let Some(ptr) = file.loaded.remove(&(res_type, old_id)) {
                                     file.loaded.insert((res_type, new_id), ptr);
@@ -3115,27 +3186,21 @@ impl super::TrapDispatcher {
                                 }
                                 let old_name = file.names_by_id.remove(&(res_type, old_id));
                                 // Update name if name_ptr != 0 (assembly-language note)
-                                if name_ptr != 0 {
+                                if let Some(name_str) = new_name {
                                     // Remove old named entry for this resource
                                     file.named.retain(|(t, _), (id, _)| {
                                         !(*t == res_type && *id == old_id)
                                     });
-                                    // Read Pascal string from name_ptr
-                                    let name_bytes = bus.read_pstring(name_ptr);
-                                    if let Ok(name_str) = String::from_utf8(name_bytes) {
-                                        if !name_str.is_empty() {
-                                            let ptr_val = file
-                                                .loaded
-                                                .get(&(res_type, new_id))
-                                                .copied()
-                                                .unwrap_or(0);
-                                            file.named.insert(
-                                                (res_type, name_str.clone()),
-                                                (new_id, ptr_val),
-                                            );
-                                            file.names_by_id.insert((res_type, new_id), name_str);
-                                        }
-                                    }
+                                    let ptr_val = file
+                                        .loaded
+                                        .get(&(res_type, new_id))
+                                        .copied()
+                                        .unwrap_or(0);
+                                    file.named.insert(
+                                        (res_type, name_str.clone()),
+                                        (new_id, ptr_val),
+                                    );
+                                    file.names_by_id.insert((res_type, new_id), name_str);
                                 } else {
                                     if let Some(name_str) = old_name {
                                         file.names_by_id.insert((res_type, new_id), name_str);
@@ -3148,6 +3213,11 @@ impl super::TrapDispatcher {
                                     }
                                 }
                             }
+                            }
+                            moved_data
+                        });
+                        if let Some(data) = moved_data {
+                            self.remember_resource_backing_data(refnum, res_type, new_id, data);
                         }
                         bus.write_word(0x0A60, 0); // noErr
                     }
@@ -3190,45 +3260,50 @@ impl super::TrapDispatcher {
                 } else {
                     let ptr = bus.read_long(handle);
                     let refnum = self.current_resource_refnum();
+                    let name = (name_ptr != 0)
+                        .then(|| bus.read_pstring(name_ptr))
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .filter(|name| !name.is_empty());
+                    self.with_resource_manager_mut(|resource_manager| {
+                        // Register in loaded_handles and resource_handle_files
+                        resource_manager
+                            .loaded_handles
+                            .insert(handle, (ptr, res_type, res_id));
+                        resource_manager.resource_handle_files.insert(handle, refnum);
+                        resource_manager
+                            .resource_handles_by_key
+                            .insert((refnum, res_type, res_id), handle);
 
-                    // Register in loaded_handles and resource_handle_files
-                    self.loaded_handles.insert(handle, (ptr, res_type, res_id));
-                    self.resource_handle_files.insert(handle, refnum);
+                        let mut added_to_file = false;
+                        if let Some(resources) = resource_manager.resources.as_mut() {
+                            if let Some(file) = resources.files.get_mut(&refnum) {
+                                // Add to loaded map
+                                file.loaded.insert((res_type, res_id), ptr);
+                                added_to_file = true;
+                                // Set resChanged attribute
+                                let entry = file.attrs.entry((res_type, res_id)).or_insert(0);
+                                *entry |= Self::RES_CHANGED_ATTR as u8;
+                                file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
+
+                                if let Some(name_str) = name {
+                                    file.named
+                                        .insert((res_type, name_str.clone()), (res_id, ptr));
+                                    file.names_by_id.insert((res_type, res_id), name_str);
+                                }
+                            }
+                        }
+                        if added_to_file {
+                            resource_manager
+                                .resource_file_order
+                                .entry(refnum)
+                                .or_default()
+                                .push((res_type, res_id));
+                        }
+                    });
                     self.remember_resource_handle_index(handle, refnum, res_type, res_id);
                     self.update_handle_state_bits(handle, |state| {
                         Some(state.unwrap_or(0x40) | 0x20)
                     });
-
-                    let mut added_to_file = false;
-                    if let Some(resources) = self.resources.as_mut() {
-                        if let Some(file) = resources.files.get_mut(&refnum) {
-                            // Add to loaded map
-                            file.loaded.insert((res_type, res_id), ptr);
-                            added_to_file = true;
-                            // Set resChanged attribute
-                            let entry = file.attrs.entry((res_type, res_id)).or_insert(0);
-                            *entry |= Self::RES_CHANGED_ATTR as u8;
-                            file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
-
-                            // Add named entry if name_ptr != 0
-                            if name_ptr != 0 {
-                                let name_bytes = bus.read_pstring(name_ptr);
-                                if let Ok(name_str) = String::from_utf8(name_bytes) {
-                                    if !name_str.is_empty() {
-                                        file.named
-                                            .insert((res_type, name_str.clone()), (res_id, ptr));
-                                        file.names_by_id.insert((res_type, res_id), name_str);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if added_to_file {
-                        self.resource_file_order
-                            .entry(refnum)
-                            .or_default()
-                            .push((res_type, res_id));
-                    }
                     if ptr != 0 {
                         if let Some(size) = bus.get_alloc_size(ptr) {
                             self.remember_resource_backing_data(
@@ -7837,9 +7912,11 @@ impl super::TrapDispatcher {
             None => 0,
         };
         if ptr != 0 && identity.is_some_and(|(old_ptr, _, _)| old_ptr == 0) {
-            if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-                entry.0 = ptr;
-            }
+            self.with_resource_manager_mut(|resource_manager| {
+                if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                    entry.0 = ptr;
+                }
+            });
             bus.write_long(handle, ptr);
             self.restore_loaded_resource_handle(handle, ptr);
         }
@@ -8059,23 +8136,25 @@ impl super::TrapDispatcher {
         let Ok((old_ptr, new_ptr)) = resized else {
             return 0;
         };
-        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-            entry.0 = new_ptr;
-        }
-        if let Some(resources) = self.resources.as_mut() {
-            for file in resources.files.values_mut() {
-                for v in file.loaded.values_mut() {
-                    if *v == old_ptr {
-                        *v = new_ptr;
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                entry.0 = new_ptr;
+            }
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                for file in resources.files.values_mut() {
+                    for v in file.loaded.values_mut() {
+                        if *v == old_ptr {
+                            *v = new_ptr;
+                        }
                     }
-                }
-                for (_id, v) in file.named.values_mut() {
-                    if *v == old_ptr {
-                        *v = new_ptr;
+                    for (_id, v) in file.named.values_mut() {
+                        if *v == old_ptr {
+                            *v = new_ptr;
+                        }
                     }
                 }
             }
-        }
+        });
         new_ptr
     }
 
@@ -9096,7 +9175,7 @@ mod tests {
             attrs: HashMap::new(),
             map_attrs: 0,
         };
-        dispatcher.resources = Some(LoadedResources {
+        dispatcher.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(0, file)]),
             names: HashMap::new(),
             search_order: vec![0],
@@ -9583,14 +9662,11 @@ mod tests {
         let data_ptr = setup_resources(&mut disp, &mut bus, b"TEST", 77, &[1, 2, 3, 4]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"TEST", 77, data_ptr);
 
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .named
-            .insert((*b"TEST", "ResizeMe".to_string()), (77, data_ptr));
+        disp.insert_named_resource_for_test(
+            0,
+            (*b"TEST", "ResizeMe".to_string()),
+            (77, data_ptr),
+        );
 
         cpu.write_reg(Register::A0, handle);
         cpu.write_reg(Register::D0, 64);
@@ -9672,8 +9748,7 @@ mod tests {
         };
         let original = memory_manager.borrow().native_allocation(handle).unwrap();
         let detached = memory_manager.borrow().detached_clone();
-        disp.loaded_handles
-            .insert(handle, (original.ptr, *b"TEST", 77));
+        disp.insert_loaded_resource_handle_for_test(handle, (original.ptr, *b"TEST", 77));
 
         cpu.write_reg(Register::A0, handle);
         cpu.write_reg(Register::D0, 64);
@@ -9929,7 +10004,7 @@ mod tests {
         let chain_ptr = bus.alloc(4);
         bus.write_bytes(chain_ptr, &[0xAA, 0xBB, 0xCC, 0xDD]);
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (
                     100,
@@ -10000,7 +10075,7 @@ mod tests {
         let images_ptr = bus.alloc(4);
         bus.write_bytes(images_ptr, &[0xBB; 4]);
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (
                     0,
@@ -10078,8 +10153,7 @@ mod tests {
         }
         let handle = bus.alloc(4);
         bus.write_long(handle, shared_ptr);
-        disp.loaded_handles
-            .insert(handle, (shared_ptr, *b"TEST", 7));
+        disp.insert_loaded_resource_handle_for_test(handle, (shared_ptr, *b"TEST", 7));
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -10454,8 +10528,8 @@ mod tests {
             .copied()
             .expect("resource handle should have a file binding");
 
-        disp.resource_handle_files.remove(&handle);
-        disp.detached_handle_files.insert(handle, refnum);
+        disp.remove_resource_handle_file_for_test(handle);
+        disp.insert_detached_resource_handle_file_for_test(handle, refnum);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, handle);
@@ -10740,15 +10814,8 @@ mod tests {
         // Match the state produced by GetResource/Get1IndResource while
         // automatic loading is disabled: the map-owned handle and backing
         // bytes remain known, but both recorded and live data pointers are NIL.
-        disp.loaded_handles.insert(handle, (0, *b"ALRT", 90));
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .loaded
-            .insert((*b"ALRT", 90), 0);
+        disp.insert_loaded_resource_handle_for_test(handle, (0, *b"ALRT", 90));
+        disp.insert_resource_pointer_for_test(0, (*b"ALRT", 90), 0);
         bus.write_long(handle, 0);
         disp.policy.set_res_load(false);
 
@@ -10769,15 +10836,8 @@ mod tests {
         let bytes = [0x11u8, 0x22, 0x33, 0x44];
         let data_ptr = setup_resources(&mut disp, &mut bus, b"CODE", 1, &bytes);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"CODE", 1, data_ptr);
-        disp.loaded_handles.insert(handle, (0, *b"CODE", 1));
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .loaded
-            .insert((*b"CODE", 1), 0);
+        disp.insert_loaded_resource_handle_for_test(handle, (0, *b"CODE", 1));
+        disp.insert_resource_pointer_for_test(0, (*b"CODE", 1), 0);
         bus.write_long(handle, 0);
         disp.policy.set_res_load(true);
 
@@ -11194,7 +11254,7 @@ mod tests {
             .insert((*b"CURS", "SystemCursor".to_string()), (1, source_ptr));
 
         let file1 = ResourceFileMap::default();
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(0, file0), (1, file1)]),
             names: HashMap::new(),
             search_order: vec![0, 1],
@@ -11569,7 +11629,7 @@ mod tests {
         named.insert((*b"STR ", "MyString".to_string()), (500i16, data_ptr));
         let mut names_by_id = HashMap::new();
         names_by_id.insert((*b"STR ", 500i16), "MyString".to_string());
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -11631,22 +11691,16 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data = [0x42, 0x43, 0x44, 0x45];
         let data_ptr = setup_resources(&mut disp, &mut bus, b"TEST", 500, &data);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .named
-            .insert((*b"TEST", "ReloadMe".to_string()), (500, data_ptr));
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .names_by_id
-            .insert((*b"TEST", 500), "ReloadMe".to_string());
+        disp.insert_named_resource_for_test(
+            0,
+            (*b"TEST", "ReloadMe".to_string()),
+            (500, data_ptr),
+        );
+        disp.insert_resource_name_for_test(
+            0,
+            (*b"TEST", 500),
+            "ReloadMe".to_string(),
+        );
 
         let name_ptr = 0x300000u32;
         write_pstring(&mut bus, name_ptr, b"ReloadMe");
@@ -11680,22 +11734,16 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let data_ptr = setup_resources(&mut disp, &mut bus, b"STR ", 500, &[0x42; 16]);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .named
-            .insert((*b"STR ", "MyString".to_string()), (500, data_ptr));
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .names_by_id
-            .insert((*b"STR ", 500), "MyString".to_string());
+        disp.insert_named_resource_for_test(
+            0,
+            (*b"STR ", "MyString".to_string()),
+            (500, data_ptr),
+        );
+        disp.insert_resource_name_for_test(
+            0,
+            (*b"STR ", 500),
+            "MyString".to_string(),
+        );
 
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"STR ", 500, data_ptr);
         let name_ptr = 0x200000u32;
@@ -11731,13 +11779,16 @@ mod tests {
             "Ferry Passengers to <DST>",
             &[0x22; 4],
         );
-        let file = disp.resources.as_mut().unwrap().files.get_mut(&0).unwrap();
-        file.named.insert(
+        disp.insert_named_resource_for_test(
+            0,
             (*b"m\x95sn", "Ferry Passengers to <DST>".to_string()),
             (128, first_ptr),
         );
-        file.names_by_id
-            .insert((*b"m\x95sn", 128), "Ferry Passengers to <DST>".to_string());
+        disp.insert_resource_name_for_test(
+            0,
+            (*b"m\x95sn", 128),
+            "Ferry Passengers to <DST>".to_string(),
+        );
 
         let first_handle =
             disp.get_or_create_resource_handle(&mut bus, *b"m\x95sn", 128, first_ptr);
@@ -11865,14 +11916,11 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"NAME", 7, &[0x31, 0x32, 0x33]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"NAME", 7, data_ptr);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .named
-            .insert((*b"NAME", "OldName".to_string()), (7, data_ptr));
+        disp.insert_named_resource_for_test(
+            0,
+            (*b"NAME", "OldName".to_string()),
+            (7, data_ptr),
+        );
 
         let name_ptr = 0x200700u32;
         write_pstring(&mut bus, name_ptr, b"NewName");
@@ -11927,22 +11975,12 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"PROT", 3, &[0x01, 0x02]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"PROT", 3, data_ptr);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .named
-            .insert((*b"PROT", "KeepName".to_string()), (3, data_ptr));
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .attrs
-            .insert((*b"PROT", 3), 0x0008u8);
+        disp.insert_named_resource_for_test(
+            0,
+            (*b"PROT", "KeepName".to_string()),
+            (3, data_ptr),
+        );
+        disp.insert_resource_attrs_for_test(0, (*b"PROT", 3), 0x0008u8);
 
         let name_ptr = 0x200900u32;
         write_pstring(&mut bus, name_ptr, b"NewName");
@@ -11977,13 +12015,7 @@ mod tests {
     fn getresfileattrs_returns_only_documented_map_attr_bits_for_open_resource_file() {
         let (mut disp, mut cpu, mut bus) = setup();
         setup_resources(&mut disp, &mut bus, b"RFAT", 1, &[0xAA]);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .map_attrs = 0x0234;
+        disp.set_resource_map_attrs_for_test(0, 0x0234);
 
         bus.write_word(TEST_SP, 0u16);
         bus.write_word(TEST_SP + 2, 0xBEEF);
@@ -12019,13 +12051,7 @@ mod tests {
     fn getresfileattrs_consumes_refnum_and_result_slot() {
         let (mut disp, mut cpu, mut bus) = setup();
         setup_resources(&mut disp, &mut bus, b"RFAT", 1, &[0xAA]);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .map_attrs = 0x0234;
+        disp.set_resource_map_attrs_for_test(0, 0x0234);
 
         bus.write_word(TEST_SP, 0u16);
         bus.write_word(TEST_SP + 2, 0xBEEF);
@@ -12103,13 +12129,7 @@ mod tests {
     fn setresfileattrs_missing_refnum_is_noop_with_noerr() {
         let (mut disp, mut cpu, mut bus) = setup();
         setup_resources(&mut disp, &mut bus, b"SRAF", 2, &[0xBB]);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .map_attrs = 0x0033;
+        disp.set_resource_map_attrs_for_test(0, 0x0033);
 
         bus.write_word(TEST_SP, 0x0F0Fu16);
         bus.write_word(TEST_SP + 2, 77u16);
@@ -12342,19 +12362,11 @@ mod tests {
         let prot_handle = disp.get_or_create_resource_handle(&mut bus, *b"PROT", 1, prot_ptr);
         bus.write_long(TEST_SP, prot_handle);
         call(&mut disp, true, 0x1AA, &mut cpu, &mut bus).unwrap(); // ChangedResource
-        {
-            let attrs = disp
-                .resources
-                .as_mut()
-                .unwrap()
-                .files
-                .get_mut(&0)
-                .unwrap()
-                .attrs
-                .entry((*b"PROT", 1))
-                .or_insert(0);
+        disp.with_resource_file_mut_for_test(0, |file| {
+            let attrs = file.attrs.entry((*b"PROT", 1)).or_insert(0);
             *attrs |= 0x0008u8; // resProtected
-        }
+        })
+        .unwrap();
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, prot_handle);
@@ -12433,8 +12445,8 @@ mod tests {
     fn home_res_file_returns_loaded_resource_refnum() {
         let (mut disp, mut cpu, mut bus) = setup();
         let handle = 0x1234u32;
-        disp.loaded_handles.insert(handle, (0x200000, *b"STR ", 1));
-        disp.resource_handle_files.insert(handle, 128);
+        disp.insert_loaded_resource_handle_for_test(handle, (0x200000, *b"STR ", 1));
+        disp.insert_resource_handle_file_for_test(handle, 128);
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -12452,8 +12464,8 @@ mod tests {
     fn home_res_file_translates_the_internal_application_map_key_to_its_fcb_refnum() {
         let (mut disp, mut cpu, mut bus) = setup();
         let handle = 0x1234u32;
-        disp.loaded_handles.insert(handle, (0x200000, *b"CODE", 1));
-        disp.resource_handle_files.insert(handle, 0);
+        disp.insert_loaded_resource_handle_for_test(handle, (0x200000, *b"CODE", 1));
+        disp.insert_resource_handle_file_for_test(handle, 0);
         bus.write_word(addr::CUR_APREF_NUM, 2);
         bus.write_long(TEST_SP, handle);
 
@@ -12468,8 +12480,8 @@ mod tests {
     fn home_res_file_returns_minus_one_for_detached_handle() {
         let (mut disp, mut cpu, mut bus) = setup();
         let handle = 0x5678u32;
-        disp.detached_handles.insert(handle, (*b"STR ", 2));
-        disp.detached_handle_files.insert(handle, 202);
+        disp.insert_detached_resource_handle_for_test(handle, (*b"STR ", 2));
+        disp.insert_detached_resource_handle_file_for_test(handle, 202);
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -13184,14 +13196,7 @@ mod tests {
         let data_ptr = setup_resources(&mut disp, &mut bus, b"ATTR", 42, &[0x11, 0x22, 0x33]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"ATTR", 42, data_ptr);
 
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .attrs
-            .insert((*b"ATTR", 42), 0x0026u8);
+        disp.insert_resource_attrs_for_test(0, (*b"ATTR", 42), 0x0026u8);
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -13230,7 +13235,7 @@ mod tests {
         bus.write_bytes(data_ptr, &[0x11, 0x22, 0x33]);
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(0, ResourceFileMap::default())]),
             names: HashMap::new(),
             search_order: vec![0],
@@ -13349,14 +13354,7 @@ mod tests {
         let data_ptr = setup_resources(&mut disp, &mut bus, b"PROT", 3, &[0x10, 0x20]);
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"PROT", 3, data_ptr);
 
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .attrs
-            .insert((*b"PROT", 3), 0x0008u8);
+        disp.insert_resource_attrs_for_test(0, (*b"PROT", 3), 0x0008u8);
 
         bus.write_long(TEST_SP, handle);
         bus.write_word(0x0A60, 0xBEEF);
@@ -15657,7 +15655,7 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
 
-        disp.resources = Some(super::super::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(super::super::dispatch::LoadedResources {
             files: HashMap::from([
                 (0, super::super::dispatch::ResourceFileMap::default()),
                 (
@@ -15675,9 +15673,8 @@ mod tests {
             search_order: vec![0, refnum],
             current_file: refnum,
         });
-        disp.loaded_handles
-            .insert(handle, (data_ptr, *b"PICT", 23002));
-        disp.resource_handle_files.insert(handle, refnum);
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"PICT", 23002));
+        disp.insert_resource_handle_file_for_test(handle, refnum);
         disp.track_handle_ptr(data_ptr, handle);
 
         let pb = 0x300000u32;

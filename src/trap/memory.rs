@@ -1079,12 +1079,14 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                 }
-                self.detached_handles.remove(&handle);
                 self.forget_resource_residency_for_handle(handle);
                 self.forget_resource_handle_index_for_handle(handle);
-                self.loaded_handles.remove(&handle);
-                self.resource_handle_files.remove(&handle);
-                self.detached_handle_files.remove(&handle);
+                self.with_resource_manager_mut(|resource_manager| {
+                    resource_manager.detached_handles.remove(&handle);
+                    resource_manager.loaded_handles.remove(&handle);
+                    resource_manager.resource_handle_files.remove(&handle);
+                    resource_manager.detached_handle_files.remove(&handle);
+                });
                 write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
@@ -1742,23 +1744,25 @@ impl super::TrapDispatcher {
                     .unwrap_or_else(|| bus.read_long(handle));
                 match self.reallocate_process_handle(bus, handle, size) {
                     Ok((_old_ptr, new_ptr)) => {
-                        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-                            entry.0 = new_ptr;
-                        }
-                        if let Some(resources) = self.resources.as_mut() {
-                            for file in resources.files.values_mut() {
-                                for loaded_ptr in file.loaded.values_mut() {
-                                    if *loaded_ptr == indexed_old_ptr {
-                                        *loaded_ptr = new_ptr;
+                        self.with_resource_manager_mut(|resource_manager| {
+                            if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                                entry.0 = new_ptr;
+                            }
+                            if let Some(resources) = resource_manager.resources.as_mut() {
+                                for file in resources.files.values_mut() {
+                                    for loaded_ptr in file.loaded.values_mut() {
+                                        if *loaded_ptr == indexed_old_ptr {
+                                            *loaded_ptr = new_ptr;
+                                        }
                                     }
-                                }
-                                for (_id, named_ptr) in file.named.values_mut() {
-                                    if *named_ptr == indexed_old_ptr {
-                                        *named_ptr = new_ptr;
+                                    for (_id, named_ptr) in file.named.values_mut() {
+                                        if *named_ptr == indexed_old_ptr {
+                                            *named_ptr = new_ptr;
+                                        }
                                     }
                                 }
                             }
-                        }
+                        });
                         write_memory_result(cpu, bus, NO_ERR);
                     }
                     Err(error) => write_memory_result(cpu, bus, error),
@@ -5585,11 +5589,9 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
 
-        dispatcher
-            .loaded_handles
-            .insert(handle, (data_ptr, *b"RSRC", 7));
-        dispatcher.resource_handle_files.insert(handle, 0);
-        dispatcher.resources = Some(LoadedResources {
+        dispatcher.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"RSRC", 7));
+        dispatcher.insert_resource_handle_file_for_test(handle, 0);
+        dispatcher.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {

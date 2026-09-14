@@ -98614,8 +98614,10 @@ pub(crate) mod tests {
         );
         assert_eq!(native.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 2);
 
-        classic.vfs_resources[0].attrs = 0x0040;
-        classic.vfs_resource_files[0].dirty = false;
+        classic.with_resource_manager_mut(|resource_manager| {
+            resource_manager.vfs_resources[0].attrs = 0x0040;
+            resource_manager.vfs_resource_files[0].dirty = false;
+        });
         assert_eq!(native.vfs_resources[0].attrs, 0x0040);
         assert!(!native.vfs_resource_files[0].dirty);
     }

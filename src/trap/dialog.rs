@@ -4544,11 +4544,13 @@ impl super::TrapDispatcher {
         }
 
         let resource_backing = self.loaded_handles.get(&handle).copied();
-        self.detached_handles.remove(&handle);
         self.forget_resource_handle_index_for_handle(handle);
-        self.loaded_handles.remove(&handle);
-        self.resource_handle_files.remove(&handle);
-        self.detached_handle_files.remove(&handle);
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.detached_handles.remove(&handle);
+            resource_manager.loaded_handles.remove(&handle);
+            resource_manager.resource_handle_files.remove(&handle);
+            resource_manager.detached_handle_files.remove(&handle);
+        });
         self.remove_handle_state_bits(handle);
 
         let data_ptr = bus.read_long(handle);
@@ -38106,7 +38108,7 @@ mod tests {
         let str_ptr = bus.alloc(6);
         bus.write_byte(str_ptr, 5);
         bus.write_bytes(str_ptr + 1, b"Hello");
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
