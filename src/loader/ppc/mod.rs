@@ -70553,14 +70553,11 @@ fn ppc_draw_control_inner(
                 if dialog_bounds.is_some() && !draw_dialog_popup {
                     return true;
                 }
-                let (draw_owner, (draw_top, draw_left, draw_bottom, draw_right)) = dialog_bounds
-                    .map(|bounds| {
-                        (
-                            PPC_MAIN_GWORLD,
-                            ppc_dialog_rect_to_global(bounds, (top, left, bottom, right)),
-                        )
-                    })
-                    .unwrap_or((owner, (top, left, bottom, right)));
+                // Draw in the owning port so its visible and clipping regions
+                // also apply to controls outside or partly outside a dialog.
+                // Macintosh Toolbox Essentials (1992), Display Rectangles, ch. 6.
+                let (draw_owner, (draw_top, draw_left, draw_bottom, draw_right)) =
+                    (owner, (top, left, bottom, right));
                 // popupMenuProc reserves `contrlMax` pixels for the label before
                 // the button. A fixed-width popup uses the rest of the control
                 // rect as its stable button width; omitting this offset makes
@@ -147620,6 +147617,35 @@ pub(crate) mod tests {
                 .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
             Some(2)
         );
+
+        // A control placed below its dialog must not draw onto the desktop.
+        let dialog_bounds =
+            ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let top = dialog_bounds.2 - dialog_bounds.0 + 10;
+        ppc_write_rect(
+            &mut loaded.memory,
+            control + PPC_CONTROL_RECT_OFFSET,
+            top, 10, top + 20, 120,
+        ).unwrap();
+        let front =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap().front_buffer;
+        let length = front.row_bytes * front.height;
+        let before = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, length).unwrap();
+        let handles = loaded.handles();
+        ppc_draw_control_inner(
+            &mut loaded.memory,
+            &handles,
+            &loaded.controls,
+            &loaded.gworlds,
+            &loaded.process_file_system.vfs_resources,
+            *loaded.process_file_system.current_resource_file,
+            control_handle,
+            true,
+        );
+        let after = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, length).unwrap();
+        assert!(before == after, "off-dialog popups must be clipped by their owning port");
+
     }
 
     #[test]
