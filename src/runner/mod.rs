@@ -4693,10 +4693,9 @@ impl FixtureRunner {
 
         let w1 = self.bus.read_word(pc_after_trap.wrapping_add(2));
 
-        // Template F: compare this TickCount result with a saved register and
-        // repeat while they are equal. Older compilers commonly emit this for
-        // a one-tick delay:
-        //   MOVE.L (A7)+,Dn; CMP.L Dn,Dm; BEQ.S <back-to-SUBQ #4,A7>
+        // Template F: compare this TickCount result with a saved register.
+        // Repeat while equal, or while an unsigned deadline is still ahead:
+        //   MOVE.L (A7)+,Dn; CMP.L Dn,Dm; BEQ.S/BHI.S <back-to-SUBQ #4,A7>
         if (w1 & 0xF1F8) == 0xB080 && (w1 & 7) as usize == dn {
             return self.try_spin_template_f(pc_after_trap, w1, tick_cap);
         }
@@ -4726,12 +4725,12 @@ impl FixtureRunner {
         false
     }
 
-    /// Template F: saved-register one-tick wait.
+    /// Template F: saved-register tick-change or unsigned-deadline wait.
     ///   SUBQ #4,A7; _TickCount; MOVE.L (A7)+,Dn
-    ///   CMP.L Dn,Dm; BEQ.S back-to-SUBQ
+    ///   CMP.L Dn,Dm; BEQ.S/BHI.S back-to-SUBQ
     ///
     /// Leave the post-trap instructions for exact CPU execution after moving
-    /// the captured result to the first tick that makes BEQ fall through.
+    /// the captured result to the first tick that makes the branch fall through.
     fn try_spin_template_f(
         &mut self,
         pc_after_trap: u32,
@@ -4739,9 +4738,15 @@ impl FixtureRunner {
         tick_cap: Option<u32>,
     ) -> bool {
         let dm = ((w_cmp >> 9) & 7) as usize;
+        let dn = (w_cmp & 7) as usize;
+        // MOVE overwrites Dn before CMP. If it also holds the deadline, CMP
+        // compares the sample with itself, not with the old register value.
+        if dm == dn {
+            return false;
+        }
         let branch_pc = pc_after_trap.wrapping_add(4);
         let w_branch = self.bus.read_word(branch_pc);
-        if (w_branch & 0xFF00) != 0x6700 || (w_branch & 0x00FF) == 0 {
+        if !matches!(w_branch & 0xFF00, 0x6200 | 0x6700) || (w_branch & 0x00FF) == 0 {
             return false;
         }
         let displacement = (w_branch & 0xFF) as i8 as i32;
@@ -4756,10 +4761,15 @@ impl FixtureRunner {
 
         let sp = self.m68k.cpu.core.a(7);
         let captured_tick = self.bus.read_long(sp);
-        if captured_tick != self.m68k.cpu.core.d(dm) {
-            return false;
-        }
-        let target_tick = captured_tick.wrapping_add(1);
+        let saved_tick = self.m68k.cpu.core.d(dm);
+        let target_tick = match w_branch & 0xFF00 {
+            0x6700 if captured_tick == saved_tick => captured_tick.wrapping_add(1),
+            // CMP.L Dn,Dm; BHI waits while saved_tick > captured_tick using
+            // unsigned arithmetic. Do not reinterpret an expired/wrapped
+            // deadline as a future wait. SC2K uses this for its newspaper.
+            0x6200 if saved_tick > captured_tick => saved_tick,
+            _ => return false,
+        };
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => {
                 self.bus.write_long(sp, self.guest_tick());
@@ -27661,6 +27671,144 @@ mod tests {
         assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 101);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
         assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 10);
+    }
+
+    fn saved_register_deadline_wait(tick: u32, deadline: u32) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        for (offset, word) in [0x594F, 0xA975, 0x201F, 0xBA80, 0x62F6, 0x4E71]
+            .into_iter()
+            .enumerate()
+        {
+            runner.bus.write_word(base + offset as u32 * 2, word);
+        }
+        runner.bus.write_long(0x016A, tick);
+        runner.set_guest_tick_for_test(tick);
+        runner.m68k.cpu.write_reg(Register::D0, 0xDEAD_BEEF);
+        runner.m68k.cpu.write_reg(Register::D5, deadline);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::PC, base + 4);
+        runner.bus.write_long(0x0010_0000, tick);
+        runner
+    }
+
+    #[test]
+    fn spin_fastfwd_saved_register_deadline_preserves_cpu_exit_state() {
+        // SC2K's newspaper uses CMP.L D0,D5; BHI. Exercise both forms of
+        // stack reservation and a deadline crossing the signed boundary.
+        for preamble in [0x594F, 0x598F] {
+            for (tick, deadline) in [(100, 101), (100, 107), (0x7FFF_FFFE, 0x8000_0001)] {
+                let mut runner = saved_register_deadline_wait(tick, deadline);
+                runner.bus.write_word(0x0001_0000, preamble);
+                let mut count = 0;
+                assert!(!runner.try_tickcount_spin_fastfwd(0x0001_0004, None, &mut count));
+                assert_eq!(runner.guest_tick(), deadline);
+                assert_eq!(runner.bus.read_long(0x0010_0000), deadline);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0xDEAD_BEEF);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D5), deadline);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_0000);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x0001_0004);
+                assert_eq!(count, 0);
+                // The real CPU executes MOVE/CMP/BHI, including stack and
+                // condition flags, instead of synthesizing those side effects.
+                for _ in 0..3 {
+                    assert!(matches!(
+                        runner.m68k.cpu.step(&mut runner.bus),
+                        crate::cpu::StepResult::Ok
+                    ));
+                }
+                assert_eq!(runner.m68k.cpu.read_reg(Register::D0), deadline);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x0010_0004);
+                assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x0001_000A);
+                assert_eq!(runner.m68k.cpu.core.get_sr() & 0x0F, 4);
+            }
+        }
+    }
+
+    #[test]
+    fn spin_fastfwd_saved_register_deadline_rejects_expired_or_unsafe_loops() {
+        for (tick, deadline) in [(100, 100), (101, 100), (u32::MAX, 0), (100, 1_000_101)] {
+            let mut runner = saved_register_deadline_wait(tick, deadline);
+            let mut count = 0;
+            assert!(!runner.try_tickcount_spin_fastfwd(0x0001_0004, None, &mut count));
+            assert_eq!(runner.guest_tick(), tick);
+            assert_eq!(runner.bus.read_long(0x0010_0000), tick);
+            assert_eq!(count, 0);
+        }
+        for (address, replacement) in [
+            (0x0001_0000, 0x4E71), // Missing stack reservation.
+            (0x0001_0002, 0xA976), // Different trap.
+            (0x0001_0006, 0xB080), // MOVE clobbers the comparison register.
+            (0x0001_0008, 0x62F4), // Branch includes extra, unchecked work.
+            (0x0001_0008, 0x6200), // Extended branch encoding.
+            (0x0001_0008, 0x6EF6), // Signed comparison has different semantics.
+        ] {
+            let mut runner = saved_register_deadline_wait(100, 105);
+            runner.bus.write_word(address, replacement);
+            runner.m68k.cpu.write_reg(Register::D0, 105);
+            let mut count = 0;
+            assert!(!runner.try_tickcount_spin_fastfwd(0x0001_0004, None, &mut count));
+            assert_eq!(runner.guest_tick(), 100);
+            assert_eq!(runner.bus.read_long(0x0010_0000), 100);
+            assert_eq!(count, 0);
+        }
+        let mut runner = saved_register_deadline_wait(100, 105);
+        runner.bus.write_word(0x0001_0006, 0xB080);
+        runner.bus.write_word(0x0001_0008, 0x67F6);
+        runner.m68k.cpu.write_reg(Register::D0, 100);
+        let mut count = 0;
+        assert!(!runner.try_tickcount_spin_fastfwd(0x0001_0004, None, &mut count));
+        assert_eq!(
+            runner.guest_tick(),
+            100,
+            "CMP D0,D0; BEQ cannot become unequal"
+        );
+    }
+
+    #[test]
+    fn spin_fastfwd_saved_register_deadline_honors_gui_cap_and_vbl_callbacks() {
+        let mut runner = saved_register_deadline_wait(100, 105);
+        runner.set_instructions_per_tick(1_000);
+        runner.tick_budget = 777;
+        let mut count = 0;
+        assert!(runner.try_tickcount_spin_fastfwd(0x0001_0004, Some(102), &mut count));
+        assert_eq!(runner.guest_tick(), 102);
+        assert_eq!(runner.bus.read_long(0x0010_0000), 102);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x0001_0004);
+        assert_eq!(runner.tick_budget, 1_000);
+        assert_eq!(count, 0);
+
+        // Advancing the clock must yield to a due VBL callback before the
+        // deadline; its stack and resume PC belong to ordinary callback code.
+        let mut runner = saved_register_deadline_wait(100, 105);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
+        let task = 0x0020_2000;
+        runner.bus.write_word(task + 4, 1);
+        runner.bus.write_long(task + 6, 0x0004_1234);
+        runner.bus.write_word(task + 10, 1);
+        runner.bus.write_word(task + 12, 0);
+        runner.dispatcher.vbl_tasks.push(VblTask {
+            task_ptr: task,
+            architecture: CallbackTaskArchitecture::M68k,
+            slot: None,
+            pending: false,
+        });
+        assert!(!runner.try_tickcount_spin_fastfwd(0x0001_0004, None, &mut count));
+        assert_eq!(runner.guest_tick(), 101);
+        assert_eq!(runner.bus.read_long(0x0010_0000), 100);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0xDEAD_BEEF);
+        assert_eq!(
+            runner.m68k.cpu.read_reg(Register::PC),
+            runner.vbl_trampoline
+        );
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), 0x000F_FFFC);
+        assert_eq!(runner.bus.read_long(0x000F_FFFC), 0x0001_0004);
+        let active = runner
+            .active_interrupt_callback
+            .expect("VBL callback pending");
+        assert!(matches!(active.source, ActiveInterruptCallbackSource::Vbl));
+        assert_eq!(active.resume_pc, 0x0001_0004);
+        assert_eq!(active.resume_sp, 0x0010_0000);
     }
 
     #[test]
