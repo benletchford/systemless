@@ -1075,6 +1075,69 @@ impl Default for PpcLoadConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcMath64Operation {
+    LongDoubleToSInt64,
+    LongDoubleToUInt64,
+    S32Set,
+    S64Absolute,
+    S64Add,
+    S64And,
+    S64BitwiseAnd,
+    S64BitwiseEor,
+    S64BitwiseNot,
+    S64BitwiseOr,
+    S64Compare,
+    S64Divide,
+    S64Eor,
+    S64Max,
+    S64Min,
+    S64Multiply,
+    S64Negate,
+    S64Not,
+    S64Or,
+    S64Set,
+    S64SetU,
+    S64ShiftLeft,
+    S64ShiftRight,
+    S64Subtract,
+    SInt64ToLongDouble,
+    SInt64ToUInt64,
+    U32SetU,
+    U64Add,
+    U64And,
+    U64BitwiseAnd,
+    U64BitwiseEor,
+    U64BitwiseNot,
+    U64BitwiseOr,
+    U64Compare,
+    U64Divide,
+    U64Eor,
+    U64Max,
+    U64Multiply,
+    U64Not,
+    U64Or,
+    U64Set,
+    U64SetU,
+    U64ShiftLeft,
+    U64ShiftRight,
+    U64Subtract,
+    UInt64ToLongDouble,
+    UInt64ToSInt64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcMathCompatibilityOperation {
+    Dec2Num,
+    Dec2Str,
+    FeClearExcept,
+    FeTestExcept,
+    Floor,
+    Modf,
+    Num2Dec,
+    Str2Dec,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
     InstallExceptionHandler,
@@ -1755,7 +1818,7 @@ pub enum PpcImportDispatcherTarget {
     MathLog,
     MathLog10,
     MathDtox80,
-    Math64,
+    Math64(PpcMath64Operation),
     X2Fix,
     Q3MemoryStorageNew,
     Q3MemoryStorageNewBuffer,
@@ -2037,7 +2100,7 @@ pub enum PpcImportDispatcherTarget {
     SpeechCompatibility,
     QuickTimeCompatibility,
     InputSprocketCompatibility,
-    MathCompatibility,
+    MathCompatibility(PpcMathCompatibilityOperation),
     StdCCompatibility,
     ObjectSupportCompatibility,
     ReturnError(i16),
@@ -14194,53 +14257,147 @@ fn dispatcher_target_for_import(
         ("MathLib", "log") => PpcImportDispatcherTarget::MathLog,
         ("MathLib", "log10") => PpcImportDispatcherTarget::MathLog10,
         ("MathLib", "dtox80") => PpcImportDispatcherTarget::MathDtox80,
-        ("Math64Lib", "LongDoubleToSInt64") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "LongDoubleToUInt64") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S32Set") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Absolute") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Add") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64And") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64BitwiseAnd") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64BitwiseEor") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64BitwiseNot") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64BitwiseOr") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Compare") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Divide") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Eor") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Max") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Min") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Multiply") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Negate") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Not") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Or") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Set") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64SetU") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64ShiftLeft") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64ShiftRight") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "S64Subtract") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "SInt64ToLongDouble") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "SInt64ToUInt64") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U32SetU") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Add") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64And") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64BitwiseAnd") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64BitwiseEor") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64BitwiseNot") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64BitwiseOr") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Compare") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Divide") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Eor") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Max") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Multiply") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Not") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Or") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Set") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64SetU") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64ShiftLeft") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64ShiftRight") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "U64Subtract") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "UInt64ToLongDouble") => PpcImportDispatcherTarget::Math64,
-        ("Math64Lib", "UInt64ToSInt64") => PpcImportDispatcherTarget::Math64,
+        ("Math64Lib", "LongDoubleToSInt64") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::LongDoubleToSInt64)
+        }
+        ("Math64Lib", "LongDoubleToUInt64") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::LongDoubleToUInt64)
+        }
+        ("Math64Lib", "S32Set") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S32Set)
+        }
+        ("Math64Lib", "S64Absolute") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Absolute)
+        }
+        ("Math64Lib", "S64Add") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Add)
+        }
+        ("Math64Lib", "S64And") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64And)
+        }
+        ("Math64Lib", "S64BitwiseAnd") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64BitwiseAnd)
+        }
+        ("Math64Lib", "S64BitwiseEor") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64BitwiseEor)
+        }
+        ("Math64Lib", "S64BitwiseNot") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64BitwiseNot)
+        }
+        ("Math64Lib", "S64BitwiseOr") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64BitwiseOr)
+        }
+        ("Math64Lib", "S64Compare") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Compare)
+        }
+        ("Math64Lib", "S64Divide") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Divide)
+        }
+        ("Math64Lib", "S64Eor") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Eor)
+        }
+        ("Math64Lib", "S64Max") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Max)
+        }
+        ("Math64Lib", "S64Min") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Min)
+        }
+        ("Math64Lib", "S64Multiply") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Multiply)
+        }
+        ("Math64Lib", "S64Negate") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Negate)
+        }
+        ("Math64Lib", "S64Not") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Not)
+        }
+        ("Math64Lib", "S64Or") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Or)
+        }
+        ("Math64Lib", "S64Set") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Set)
+        }
+        ("Math64Lib", "S64SetU") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64SetU)
+        }
+        ("Math64Lib", "S64ShiftLeft") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64ShiftLeft)
+        }
+        ("Math64Lib", "S64ShiftRight") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64ShiftRight)
+        }
+        ("Math64Lib", "S64Subtract") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Subtract)
+        }
+        ("Math64Lib", "SInt64ToLongDouble") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::SInt64ToLongDouble)
+        }
+        ("Math64Lib", "SInt64ToUInt64") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::SInt64ToUInt64)
+        }
+        ("Math64Lib", "U32SetU") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U32SetU)
+        }
+        ("Math64Lib", "U64Add") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Add)
+        }
+        ("Math64Lib", "U64And") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64And)
+        }
+        ("Math64Lib", "U64BitwiseAnd") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64BitwiseAnd)
+        }
+        ("Math64Lib", "U64BitwiseEor") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64BitwiseEor)
+        }
+        ("Math64Lib", "U64BitwiseNot") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64BitwiseNot)
+        }
+        ("Math64Lib", "U64BitwiseOr") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64BitwiseOr)
+        }
+        ("Math64Lib", "U64Compare") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Compare)
+        }
+        ("Math64Lib", "U64Divide") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Divide)
+        }
+        ("Math64Lib", "U64Eor") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Eor)
+        }
+        ("Math64Lib", "U64Max") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Max)
+        }
+        ("Math64Lib", "U64Multiply") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Multiply)
+        }
+        ("Math64Lib", "U64Not") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Not)
+        }
+        ("Math64Lib", "U64Or") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Or)
+        }
+        ("Math64Lib", "U64Set") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Set)
+        }
+        ("Math64Lib", "U64SetU") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64SetU)
+        }
+        ("Math64Lib", "U64ShiftLeft") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64ShiftLeft)
+        }
+        ("Math64Lib", "U64ShiftRight") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64ShiftRight)
+        }
+        ("Math64Lib", "U64Subtract") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Subtract)
+        }
+        ("Math64Lib", "UInt64ToLongDouble") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::UInt64ToLongDouble)
+        }
+        ("Math64Lib", "UInt64ToSInt64") => {
+            PpcImportDispatcherTarget::Math64(PpcMath64Operation::UInt64ToSInt64)
+        }
         ("MathLib", "pi") => PpcImportDispatcherTarget::NoOpPreserve,
         // ISO/IEC 9899:1990 §4.6.1.1: setjmp returns zero when invoked
         // directly. The supported callers import __setjmp without longjmp,
@@ -15456,11 +15613,30 @@ fn dispatcher_target_for_import(
             | "ISpElement_GetNextEvent"
             | "ISpTickle",
         ) => PpcImportDispatcherTarget::InputSprocketCompatibility,
-        (
-            "MathLib",
-            "dec2num" | "dec2str" | "feclearexcept" | "fetestexcept" | "floor" | "modf" | "num2dec"
-            | "str2dec",
-        ) => PpcImportDispatcherTarget::MathCompatibility,
+        ("MathLib", "dec2num") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Dec2Num,
+        ),
+        ("MathLib", "dec2str") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Dec2Str,
+        ),
+        ("MathLib", "feclearexcept") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::FeClearExcept,
+        ),
+        ("MathLib", "fetestexcept") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::FeTestExcept,
+        ),
+        ("MathLib", "floor") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Floor,
+        ),
+        ("MathLib", "modf") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Modf,
+        ),
+        ("MathLib", "num2dec") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Num2Dec,
+        ),
+        ("MathLib", "str2dec") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Str2Dec,
+        ),
         ("StdCLib", "qsort" | "signal" | "sscanf" | "strftime" | "vsprintf") => {
             PpcImportDispatcherTarget::StdCCompatibility
         }
@@ -27540,10 +27716,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 input_sprocket_virtual_elements,
             ))
         }
-        PpcImportDispatcherTarget::MathCompatibility => {
-            Some(ppc_dispatch_math_compatibility(binding, cpu, memory))
+        PpcImportDispatcherTarget::MathCompatibility(operation) => {
+            Some(ppc_dispatch_math_compatibility(operation, cpu, memory))
         }
-        PpcImportDispatcherTarget::Math64 => Some(ppc_dispatch_math64(binding, cpu, memory)),
+        PpcImportDispatcherTarget::Math64(operation) => {
+            Some(ppc_dispatch_math64(operation, cpu, memory))
+        }
         PpcImportDispatcherTarget::StdCCompatibility => Some(ppc_dispatch_stdc_compatibility(
             binding,
             cpu,
