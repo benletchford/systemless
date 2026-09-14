@@ -5668,6 +5668,73 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Restore visible dialog content without replaying the saved-under margin
+    /// over its current Window Manager frame. The structure and content regions
+    /// have separate owners (Inside Macintosh: Macintosh Toolbox Essentials,
+    /// Window Manager, "MyWindow" / "Drawing the Window Frame").
+    pub(crate) fn restore_dialog_content_pixels(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        saved: &SavedPixels,
+    ) {
+        // Keep the existing unchanged-snapshot fast path, but distinguish a
+        // content-only replay from a later full saved-under restoration.
+        if bus.dialog_snapshot_is_current(saved, bounds, true) {
+            return;
+        }
+        let (base, row_bytes, width, height, depth) = self.get_screen_params();
+        let save_rect = Self::dialog_saved_pixel_rect(bounds);
+        if depth == 8 {
+            let Some((top, left, bottom, right)) =
+                Self::rect_intersection(bounds, (0, 0, height, width))
+            else {
+                return;
+            };
+            let saved_stride = (save_rect.3 - save_rect.1) as usize;
+            let len = (right - left) as usize;
+            for y in top..bottom {
+                let offset = (y - save_rect.0) as usize * saved_stride
+                    + (left - save_rect.1) as usize;
+                if offset + len <= saved.len() {
+                    bus.restore_saved_pixels(
+                        base + y as u32 * row_bytes + left as u32,
+                        saved,
+                        offset,
+                        len,
+                    );
+                }
+            }
+        } else if let Some((byte_left, byte_end, pixels_per_byte)) =
+            Self::packed_row_byte_bounds(save_rect.1, save_rect.3, row_bytes, depth)
+        {
+            // save_dialog_pixels stores only on-screen rows in packed modes.
+            // Mask the first and last bytes: they may also contain frame pixels.
+            let saved_stride = (byte_end - byte_left) as usize;
+            let pixel_mask = (1u16 << depth) - 1;
+            for y in bounds.0.max(0)..bounds.2.min(height) {
+                let offset = (y - save_rect.0.max(0)) as usize * saved_stride;
+                for bx in byte_left..byte_end {
+                    let mut mask = 0u8;
+                    for slot in 0..pixels_per_byte {
+                        let x = (bx * pixels_per_byte + slot) as i32;
+                        if x >= i32::from(bounds.1.max(0)) && x < i32::from(bounds.3.min(width)) {
+                            mask |= (pixel_mask << (8 - u32::from(depth) * (slot + 1))) as u8;
+                        }
+                    }
+                    let Some(&value) = saved.get(offset + (bx - byte_left) as usize) else {
+                        break;
+                    };
+                    if mask != 0 {
+                        let addr = base + y as u32 * row_bytes + bx;
+                        bus.write_byte(addr, (bus.read_byte(addr) & !mask) | (value & mask));
+                    }
+                }
+            }
+        }
+        bus.remember_dialog_snapshot(saved, bounds, true);
+    }
+
     /// Restore previously saved framebuffer pixels under a dialog.
     pub(crate) fn restore_dialog_pixels(
         &self,
@@ -5675,7 +5742,7 @@ impl super::TrapDispatcher {
         rect: (i16, i16, i16, i16),
         saved: &SavedPixels,
     ) {
-        if bus.dialog_snapshot_is_current(saved, rect) {
+        if bus.dialog_snapshot_is_current(saved, rect, false) {
             return;
         }
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
@@ -5734,7 +5801,7 @@ impl super::TrapDispatcher {
             // Packed off-screen: save produced no bytes for this row,
             // so there's nothing to advance idx over here.
         }
-        bus.remember_dialog_snapshot(saved, rect);
+        bus.remember_dialog_snapshot(saved, rect, false);
     }
 
     fn restore_dialog_pixels_outside_rect(
