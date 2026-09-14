@@ -3115,9 +3115,14 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
     });
 
     let ticks = runner.guest_tick();
-    let path = format!("/tmp/systemless_headless_{:04}.png", num);
+    let path = std::env::temp_dir().join(format!("systemless_headless_{:04}.png", num));
     img.save(&path).expect("Failed to save screenshot");
-    eprintln!("[HEADLESS] Screenshot #{}: {} (ticks={})", num, path, ticks);
+    eprintln!(
+        "[HEADLESS] Screenshot #{}: {} (ticks={})",
+        num,
+        path.display(),
+        ticks
+    );
 }
 
 // Both headless clocks use the same transport and command-safe point. A debug
