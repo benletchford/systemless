@@ -1230,11 +1230,11 @@ impl ProcessFileSystemState {
             if self
                 .vfs_files
                 .iter()
-                .any(|file| file.path.eq_ignore_ascii_case(&path))
+                .any(|file| file.dirty && file.path.eq_ignore_ascii_case(&path))
                 || self
                     .vfs_resource_files
                     .iter()
-                    .any(|file| file.path.eq_ignore_ascii_case(&path))
+                    .any(|file| file.dirty && file.path.eq_ignore_ascii_case(&path))
             {
                 continue;
             }
