@@ -293,6 +293,176 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_rgb2hsl(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SetRect => {
+            let rect_ptr = cpu.gpr[3];
+            let left = cpu.gpr[4] as u16 as i16;
+            let top = cpu.gpr[5] as u16 as i16;
+            let right = cpu.gpr[6] as u16 as i16;
+            let bottom = cpu.gpr[7] as u16 as i16;
+            if rect_ptr != 0 && ppc_memory_can_write_bytes(memory, rect_ptr, 8) {
+                let _ = ppc_write_rect(memory, rect_ptr, top, left, bottom, right);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::SectRect => {
+            // Imaging With QuickDraw (1994), 3-55: SectRect writes the
+            // non-empty intersection, otherwise the canonical empty Rect.
+            let intersection = ppc_read_rect(memory, cpu.gpr[3])
+                .zip(ppc_read_rect(memory, cpu.gpr[4]))
+                .map(|(left, right)| {
+                    (
+                        left.0.max(right.0),
+                        left.1.max(right.1),
+                        left.2.min(right.2),
+                        left.3.min(right.3),
+                    )
+                });
+            let intersects =
+                intersection.is_some_and(|(top, left, bottom, right)| top < bottom && left < right);
+            let output = intersection.filter(|_| intersects).unwrap_or((0, 0, 0, 0));
+            if cpu.gpr[5] != 0 {
+                let _ = ppc_write_rect(memory, cpu.gpr[5], output.0, output.1, output.2, output.3);
+            }
+            Some(PpcImportAction::Return(u32::from(intersects)))
+        }
+        PpcImportDispatcherTarget::UnionRect => {
+            let union = ppc_read_rect(memory, cpu.gpr[3])
+                .zip(ppc_read_rect(memory, cpu.gpr[4]))
+                .map(|(first, second)| {
+                    (
+                        first.0.min(second.0),
+                        first.1.min(second.1),
+                        first.2.max(second.2),
+                        first.3.max(second.3),
+                    )
+                });
+            if let Some((top, left, bottom, right)) = union {
+                // Imaging With QuickDraw (1994), p. 3-55: UnionRect writes
+                // the smallest Rect enclosing both inputs and permits either
+                // input to alias the destination.
+                let _ = ppc_write_rect(memory, cpu.gpr[5], top, left, bottom, right);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::EqualRect => {
+            let equal = ppc_read_rect(memory, cpu.gpr[3])
+                .zip(ppc_read_rect(memory, cpu.gpr[4]))
+                .is_some_and(|(first, second)| first == second);
+            Some(PpcImportAction::Return(u32::from(equal)))
+        }
+        PpcImportDispatcherTarget::EmptyRect => {
+            let empty = ppc_read_rect(memory, cpu.gpr[3])
+                .is_some_and(|(top, left, bottom, right)| top >= bottom || left >= right);
+            Some(PpcImportAction::Return(u32::from(empty)))
+        }
+        PpcImportDispatcherTarget::SetPt => {
+            let point_ptr = cpu.gpr[3];
+            let h = cpu.gpr[4] as u16;
+            let v = cpu.gpr[5] as u16;
+            if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
+                let _ = memory.write_u16_be(point_ptr, v);
+                let _ = memory.write_u16_be(point_ptr + 2, h);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::EqualPt => {
+            // Imaging With QuickDraw (1994), p. 2-53: EqualPt returns true
+            // only when both the vertical and horizontal coordinates match.
+            // A Point occupies one PowerPC parameter word.
+            Some(PpcImportAction::Return(u32::from(cpu.gpr[3] == cpu.gpr[4])))
+        }
+        PpcImportDispatcherTarget::AddPt | PpcImportDispatcherTarget::SubPt => {
+            let src_v = (cpu.gpr[3] >> 16) as u16 as i16;
+            let src_h = cpu.gpr[3] as u16 as i16;
+            let dst = cpu.gpr[4];
+            if let Some((dst_v, dst_h)) = memory
+                .read_u16_be(dst)
+                .zip(memory.read_u16_be(dst.wrapping_add(2)))
+                .map(|(v, h)| (v as i16, h as i16))
+            {
+                // Imaging With QuickDraw (1994), pp. 2-52--2-53: AddPt and
+                // SubPt update the destination Point component-by-component.
+                let subtract =
+                    matches!(binding.dispatcher_target, PpcImportDispatcherTarget::SubPt);
+                let new_v = if subtract {
+                    dst_v.wrapping_sub(src_v)
+                } else {
+                    dst_v.wrapping_add(src_v)
+                };
+                let new_h = if subtract {
+                    dst_h.wrapping_sub(src_h)
+                } else {
+                    dst_h.wrapping_add(src_h)
+                };
+                let _ = memory.write_u16_be(dst, new_v as u16);
+                let _ = memory.write_u16_be(dst.wrapping_add(2), new_h as u16);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LocalToGlobal => {
+            ppc_transform_port_point(memory, current_gworld, cpu.gpr[3], true);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GlobalToLocal => {
+            ppc_transform_port_point(memory, current_gworld, cpu.gpr[3], false);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PtInRect => {
+            let v = (cpu.gpr[3] >> 16) as u16 as i16;
+            let h = cpu.gpr[3] as u16 as i16;
+            let rect = ppc_read_rect(memory, cpu.gpr[4]);
+            let inside = rect.is_some_and(|(top, left, bottom, right)| {
+                v >= top && v < bottom && h >= left && h < right
+            });
+            if ppc_pt_in_rect_trace_enabled()
+                && (120..=220).contains(&v)
+                && (300..=390).contains(&h)
+            {
+                if let Some((top, left, bottom, right)) = rect {
+                    eprintln!(
+                        "[PPC-PTINRECT] point=({}, {}) rect_ptr=${:08X} rect=({}, {}, {}, {}) inside={}",
+                        v, h, cpu.gpr[4], top, left, bottom, right, inside
+                    );
+                } else {
+                    eprintln!(
+                        "[PPC-PTINRECT] point=({}, {}) rect_ptr=${:08X} rect=<invalid> inside=false",
+                        v, h, cpu.gpr[4]
+                    );
+                }
+            }
+            Some(PpcImportAction::Return(u32::from(inside)))
+        }
+        PpcImportDispatcherTarget::OffsetRect => {
+            let rect_ptr = cpu.gpr[3];
+            let dh = cpu.gpr[4] as u16 as i16;
+            let dv = cpu.gpr[5] as u16 as i16;
+            if rect_ptr != 0 && ppc_memory_can_write_bytes(memory, rect_ptr, 8) {
+                let _ = ppc_offset_rect(memory, rect_ptr, dh, dv);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::MapRect => {
+            ppc_map_rect(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::InsetRect => {
+            let rect_ptr = cpu.gpr[3];
+            let dh = cpu.gpr[4] as u16 as i16;
+            let dv = cpu.gpr[5] as u16 as i16;
+            if rect_ptr != 0 && ppc_memory_can_write_bytes(memory, rect_ptr, 8) {
+                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect_ptr) {
+                    let _ = ppc_write_rect(
+                        memory,
+                        rect_ptr,
+                        top.wrapping_add(dv),
+                        left.wrapping_add(dh),
+                        bottom.wrapping_sub(dv),
+                        right.wrapping_sub(dh),
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         _ => None,
     }
 }
