@@ -6472,7 +6472,7 @@ mod tests {
             attrs: HashMap::new(),
             map_attrs: 0,
         };
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(0, file)]),
             names: HashMap::new(),
             search_order: vec![0],
@@ -6488,17 +6488,21 @@ mod tests {
     ) -> u32 {
         let proc_addr = bus.alloc(2);
         bus.write_word(proc_addr, 0x4E56); // plausible 68K LINK.W proc entry
-        let resources = disp.resources.get_or_insert_with(|| LoadedResources {
-            files: HashMap::new(),
-            names: HashMap::new(),
-            search_order: vec![0],
-            current_file: 0,
+        disp.with_resource_manager_mut(|resource_manager| {
+            let resources = resource_manager
+                .resources
+                .get_or_insert_with(|| LoadedResources {
+                    files: HashMap::new(),
+                    names: HashMap::new(),
+                    search_order: vec![0],
+                    current_file: 0,
+                });
+            let file = resources.files.entry(0).or_default();
+            file.loaded.insert((*b"WDEF", wdef_id), proc_addr);
+            if !resources.search_order.contains(&0) {
+                resources.search_order.push(0);
+            }
         });
-        let file = resources.files.entry(0).or_default();
-        file.loaded.insert((*b"WDEF", wdef_id), proc_addr);
-        if !resources.search_order.contains(&0) {
-            resources.search_order.push(0);
-        }
         proc_addr
     }
 
@@ -8585,10 +8589,10 @@ mod tests {
         );
 
         let released_ptr = disp
-            .resources
-            .as_mut()
-            .and_then(|resources| resources.files.get_mut(&0))
-            .and_then(|file| file.loaded.insert((*b"WIND", 128), 0))
+            .with_resource_file_mut_for_test(0, |file| {
+                file.loaded.insert((*b"WIND", 128), 0)
+            })
+            .flatten()
             .expect("installed WIND pointer");
         bus.free(released_ptr);
 

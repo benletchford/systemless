@@ -1828,13 +1828,6 @@ impl<T> std::ops::Deref for SharedProcessValue<T> {
     }
 }
 
-impl<T> std::ops::DerefMut for SharedProcessValue<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: see `Deref`.
-        unsafe { &mut *self.0.get() }
-    }
-}
-
 impl<T> SharedProcessValue<T> {
     pub(crate) fn from_value(value: T) -> Self {
         Self(Rc::new(UnsafeCell::new(value)))

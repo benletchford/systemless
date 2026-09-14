@@ -16619,7 +16619,7 @@ mod tests {
     fn ppc_initialization_shares_current_resource_file_and_detaches_clones() {
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner.dispatcher.resources = Some(LoadedResources {
+        runner.dispatcher.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (5, ResourceFileMap::default()),
                 (9, ResourceFileMap::default()),

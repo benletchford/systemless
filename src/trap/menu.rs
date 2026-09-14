@@ -3137,10 +3137,12 @@ impl super::TrapDispatcher {
                         self.untrack_handle_ptr(menu_ptr);
                     }
                     self.forget_resource_handle_index_for_handle(menu_handle);
-                    self.loaded_handles.remove(&menu_handle);
-                    self.detached_handles.remove(&menu_handle);
-                    self.resource_handle_files.remove(&menu_handle);
-                    self.detached_handle_files.remove(&menu_handle);
+                    self.with_resource_manager_mut(|resource_manager| {
+                        resource_manager.loaded_handles.remove(&menu_handle);
+                        resource_manager.detached_handles.remove(&menu_handle);
+                        resource_manager.resource_handle_files.remove(&menu_handle);
+                        resource_manager.detached_handle_files.remove(&menu_handle);
+                    });
                     self.remove_handle_state_bits(menu_handle);
                     bus.free(menu_handle);
                 }
@@ -6903,7 +6905,7 @@ mod tests {
 
         append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x306900, "Existing");
 
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -6979,7 +6981,7 @@ mod tests {
         let font_ptr = bus.alloc(1);
         bus.write_byte(fond_ptr, 1);
         bus.write_byte(font_ptr, 2);
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -7246,7 +7248,7 @@ mod tests {
             "Existing;Tail",
         );
 
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -7423,8 +7425,7 @@ mod tests {
         bus.write_word(mdef_ptr, 0x4E75);
         bus.write_long(mdef_handle, mdef_ptr);
         bus.write_long(menu_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+        disp.insert_loaded_resource_handle_for_test(mdef_handle, (mdef_ptr, *b"MDEF", 256));
 
         let return_pc = 0x0012_3456;
         cpu.write_reg(Register::PC, return_pc);
@@ -7492,8 +7493,7 @@ mod tests {
         bus.write_word(m68k_entry, 0x4E75);
         bus.write_long(mdef_handle, descriptor);
         bus.write_long(menu_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (descriptor, *b"MDEF", 256));
+        disp.insert_loaded_resource_handle_for_test(mdef_handle, (descriptor, *b"MDEF", 256));
 
         let return_pc = 0x0012_3456;
         cpu.write_reg(Register::PC, return_pc);
@@ -7542,8 +7542,7 @@ mod tests {
         );
         bus.write_long(mdef_handle, descriptor);
         bus.write_long(menu_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (descriptor, *b"MDEF", 256));
+        disp.insert_loaded_resource_handle_for_test(mdef_handle, (descriptor, *b"MDEF", 256));
 
         let return_pc = 0x0012_3456;
         cpu.write_reg(Register::PC, return_pc);
@@ -7569,8 +7568,7 @@ mod tests {
             bus.write_word(mdef_ptr, 0x4e75);
             bus.write_long(mdef_handle, mdef_ptr);
             bus.write_long(menu_ptr + 6, mdef_handle);
-            disp.loaded_handles
-                .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+            disp.insert_loaded_resource_handle_for_test(mdef_handle, (mdef_ptr, *b"MDEF", 256));
             let snapshot_start = TEST_SP - 160;
             let before = bus.read_bytes(snapshot_start, 160);
             if protected {
@@ -7601,8 +7599,7 @@ mod tests {
         bus.write_word(mdef_ptr, 0x4E75);
         bus.write_long(mdef_handle, mdef_ptr);
         bus.write_long(menu_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+        disp.insert_loaded_resource_handle_for_test(mdef_handle, (mdef_ptr, *b"MDEF", 256));
 
         cpu.write_reg(Register::PC, 0x0012_3456);
         cpu.write_reg(Register::A7, TEST_SP);
@@ -7721,8 +7718,7 @@ mod tests {
             bus.write_word(mdef_ptr, 0x4E75);
             bus.write_long(mdef_handle, mdef_ptr);
             bus.write_long(menu_ptr + 6, mdef_handle);
-            disp.loaded_handles
-                .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+            disp.insert_loaded_resource_handle_for_test(mdef_handle, (mdef_ptr, *b"MDEF", 256));
             insert_menu(&mut disp, &mut cpu, &mut bus, handle);
             disp.draw_menu_bar_to_fb(&mut bus);
             let original_port = *disp.current_port;
@@ -7813,8 +7809,7 @@ mod tests {
         bus.write_word(mdef_ptr, 0x4E75);
         bus.write_long(mdef_handle, mdef_ptr);
         bus.write_long(menu_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+        disp.insert_loaded_resource_handle_for_test(mdef_handle, (mdef_ptr, *b"MDEF", 256));
         insert_menu(&mut disp, &mut cpu, &mut bus, handle);
         disp.draw_menu_bar_to_fb(&mut bus);
         let original_port = *disp.current_port;
@@ -7919,8 +7914,7 @@ mod tests {
             bus.write_word(mdef_ptr, 0x4E75);
             bus.write_long(mdef_handle, mdef_ptr);
             bus.write_long(menu_ptr + 6, mdef_handle);
-            disp.loaded_handles
-                .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+            disp.insert_loaded_resource_handle_for_test(mdef_handle, (mdef_ptr, *b"MDEF", 256));
 
             let trap_pc = 0x0012_3500;
             cpu.write_reg(Register::PC, trap_pc + 2);
@@ -8827,7 +8821,7 @@ mod tests {
     fn getmenu_hit_clears_stale_reserror() {
         let (mut disp, mut cpu, mut bus) = setup();
         let menu_ptr = seed_menu_resource(&mut bus, 128, "Game");
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -8865,7 +8859,7 @@ mod tests {
         // four-byte placeholder with the loaded procedure handle.
         let (mut disp, mut cpu, mut bus) = setup();
         let menu_ptr = seed_menu_resource(&mut bus, 128, "Game");
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -8910,7 +8904,7 @@ mod tests {
         bus.write_word(menu_ptr + 6, 256);
         bus.write_word(menu_ptr + 8, 0);
         bus.write_word(mdef_ptr, 0x4E75); // RTS: sufficient callable test body.
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -8964,7 +8958,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let menu_ptr = seed_menu_resource(&mut bus, 128, "Game");
 
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -9048,7 +9042,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let menu_id = 181i16;
         let menu_ptr = seed_menu_resource(&mut bus, menu_id, "Color");
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -9125,7 +9119,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let mbar_ptr = bus.alloc(4);
         bus.write_bytes(mbar_ptr, &[0, 2, 0, 128]);
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -9162,7 +9156,7 @@ mod tests {
         let file_menu_ptr = seed_menu_resource(&mut bus, 128, "File");
         let edit_menu_ptr = seed_menu_resource(&mut bus, 129, "Edit");
         let mbar_ptr = seed_mbar_resource(&mut bus, &[128, 129]);
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -9277,7 +9271,7 @@ mod tests {
             let mdef = bus.alloc(96);
             bus.write_word(mdef, 0x4E75);
             let mbar = seed_mbar_resource(&mut bus, &[601, 602]);
-            disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
                 files: std::collections::HashMap::from([(
                     0,
                     crate::trap::dispatch::ResourceFileMap {
@@ -9298,14 +9292,10 @@ mod tests {
                 current_file: 0,
             });
             let inner = seed_mbar_resource(&mut bus, &[]);
-            disp.resources
-                .as_mut()
-                .unwrap()
-                .files
-                .get_mut(&0)
-                .unwrap()
-                .loaded
-                .insert((*b"MBAR", 901), inner);
+            disp.with_resource_file_mut_for_test(0, |file| {
+                file.loaded.insert((*b"MBAR", 901), inner);
+            })
+            .unwrap();
             let marker = bus.alloc(4);
             let code = [
                 0x206f,
@@ -9404,7 +9394,7 @@ mod tests {
             let mdef = bus.alloc(96);
             bus.write_word(mdef, 0x4E75);
             let mbar = seed_mbar_resource(&mut bus, &[601]);
-            disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
                 files: std::collections::HashMap::from([(
                     0,
                     crate::trap::dispatch::ResourceFileMap {
@@ -9425,14 +9415,10 @@ mod tests {
                 current_file: 0,
             });
             let inner = seed_mbar_resource(&mut bus, &[]);
-            disp.resources
-                .as_mut()
-                .unwrap()
-                .files
-                .get_mut(&0)
-                .unwrap()
-                .loaded
-                .insert((*b"MBAR", 901), inner);
+            disp.with_resource_file_mut_for_test(0, |file| {
+                file.loaded.insert((*b"MBAR", 901), inner);
+            })
+            .unwrap();
             let marker = bus.alloc(4);
             let code = [
                 0x206f,
@@ -9555,7 +9541,7 @@ mod tests {
         let mdef = bus.alloc(2);
         bus.write_word(mdef, 0x4E75);
         let mbar = seed_mbar_resource(&mut bus, &[601, 602]);
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -9632,7 +9618,7 @@ mod tests {
         bus.write_bytes(menu_ptr, &seed_bytes);
         bus.write_byte(menu_ptr + 300, 0xA5);
         let mbar_ptr = seed_mbar_resource(&mut bus, &[640]);
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -9683,7 +9669,7 @@ mod tests {
         let file_menu_ptr = seed_menu_resource(&mut bus, 601, "File");
         let edit_menu_ptr = seed_menu_resource(&mut bus, 602, "Edit");
         let mbar_ptr = seed_mbar_resource(&mut bus, &[601, 602]);
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -9759,7 +9745,7 @@ mod tests {
         bus.write_long(menu_res_ptr + 10, 0xFFFF_FFFF);
         write_pstring(&mut bus, menu_res_ptr + 14, "File");
         bus.write_byte(menu_res_ptr + 19, 0); // empty items terminator
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -10240,7 +10226,7 @@ mod tests {
         bus.write_byte(offset + 9, 0);
         assert_eq!(offset + 10, resource_ptr + 263);
 
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([(
                 0,
                 crate::trap::dispatch::ResourceFileMap {
@@ -16285,14 +16271,10 @@ mod tests {
         disp.menus[0].items[0].icon = 19;
         let cicn = cicn_source_with_left_stripe(16, 16);
         disp.install_test_resource(&mut bus, *b"cicn", 275, &cicn);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&0)
-            .unwrap()
-            .loaded
-            .insert((*b"cicn", 275), 0);
+        disp.with_resource_file_mut_for_test(0, |file| {
+            file.loaded.insert((*b"cicn", 275), 0);
+        })
+        .unwrap();
         assert!(
             disp.find_loaded_resource_any(*b"cicn", 275).is_none(),
             "precondition: the color icon should be nonresident"
@@ -16808,8 +16790,7 @@ mod tests {
         bus.write_word(mdef_ptr, 0x4E75);
         bus.write_long(mdef_handle, mdef_ptr);
         bus.write_long(child_ptr + 6, mdef_handle);
-        disp.loaded_handles
-            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+        disp.insert_loaded_resource_handle_for_test(mdef_handle, (mdef_ptr, *b"MDEF", 256));
 
         insert_menu(&mut disp, &mut cpu, &mut bus, root);
         insert_menu_before(&mut disp, &mut cpu, &mut bus, child, -1);

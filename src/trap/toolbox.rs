@@ -3783,9 +3783,11 @@ impl super::TrapDispatcher {
                 bus.free(old_ptr);
                 self.untrack_handle_ptr(old_ptr);
             }
-            if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-                entry.0 = 0;
-            }
+            self.with_resource_manager_mut(|resource_manager| {
+                if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                    entry.0 = 0;
+                }
+            });
             bus.write_long(handle, 0);
             return 0;
         }
@@ -3798,9 +3800,11 @@ impl super::TrapDispatcher {
                 bus.set_alloc_size(old_ptr, new_size);
                 bus.write_bytes(old_ptr, bytes);
                 self.track_handle_ptr(old_ptr, handle);
-                if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-                    entry.0 = old_ptr;
-                }
+                self.with_resource_manager_mut(|resource_manager| {
+                    if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                        entry.0 = old_ptr;
+                    }
+                });
                 return old_ptr;
             }
         }
@@ -3817,9 +3821,11 @@ impl super::TrapDispatcher {
         }
         bus.write_long(handle, new_ptr);
         self.track_handle_ptr(new_ptr, handle);
-        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-            entry.0 = new_ptr;
-        }
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
+                entry.0 = new_ptr;
+            }
+        });
         new_ptr
     }
 
@@ -9674,11 +9680,13 @@ impl super::TrapDispatcher {
                 let handle = bus.read_long(sp + 2);
 
                 if let Some((refnum, res_type, res_id)) = self.resource_record_for_handle(handle) {
-                    if let Some(resources) = self.resources.as_mut() {
-                        if let Some(file) = resources.files.get_mut(&refnum) {
-                            file.attrs.insert((res_type, res_id), new_attrs);
+                    self.with_resource_manager_mut(|resource_manager| {
+                        if let Some(resources) = resource_manager.resources.as_mut() {
+                            if let Some(file) = resources.files.get_mut(&refnum) {
+                                file.attrs.insert((res_type, res_id), new_attrs);
+                            }
                         }
-                    }
+                    });
                     bus.write_word(0x0A60, 0); // noErr
                 } else {
                     bus.write_word(0x0A60, super::TrapDispatcher::RES_NOT_FOUND as u16);
@@ -9772,14 +9780,16 @@ impl super::TrapDispatcher {
                 if file_exists {
                     let _ = self.flush_resource_file_refnum(bus, refnum);
                     // Clear resChanged on all resources in this file
-                    if let Some(resources) = self.resources.as_mut() {
-                        if let Some(file) = resources.files.get_mut(&refnum) {
-                            for attr in file.attrs.values_mut() {
-                                *attr &= !(super::TrapDispatcher::RES_CHANGED_ATTR as u8);
+                    self.with_resource_manager_mut(|resource_manager| {
+                        if let Some(resources) = resource_manager.resources.as_mut() {
+                            if let Some(file) = resources.files.get_mut(&refnum) {
+                                for attr in file.attrs.values_mut() {
+                                    *attr &= !(super::TrapDispatcher::RES_CHANGED_ATTR as u8);
+                                }
+                                file.map_attrs &= !super::TrapDispatcher::RES_MAP_CHANGED_ATTR;
                             }
-                            file.map_attrs &= !super::TrapDispatcher::RES_MAP_CHANGED_ATTR;
                         }
-                    }
+                    });
                     bus.write_word(0x0A60, 0); // noErr
                 } else {
                     bus.write_word(0x0A60, RES_F_NOT_FOUND as u16);
@@ -20840,7 +20850,7 @@ mod tests {
         bus.write_byte(data_ptr + 6, 3);
         bus.write_bytes(data_ptr + 7, b"TWO");
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (0, ResourceFileMap::default()),
                 (
@@ -23331,7 +23341,7 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
 
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([
                 (0, crate::trap::dispatch::ResourceFileMap::default()),
                 (
@@ -23349,9 +23359,8 @@ mod tests {
             search_order: vec![0, refnum],
             current_file: refnum,
         });
-        disp.loaded_handles
-            .insert(handle, (data_ptr, *b"PICT", 23002));
-        disp.resource_handle_files.insert(handle, refnum);
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"PICT", 23002));
+        disp.insert_resource_handle_file_for_test(handle, refnum);
         disp.track_handle_ptr(data_ptr, handle);
         bus.write_word(0x0A5A, refnum);
 
@@ -23376,7 +23385,7 @@ mod tests {
     #[test]
     fn test_close_res_file_invalid_refnum_sets_basiliskii_resfnotfound() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([
                 (0, crate::trap::dispatch::ResourceFileMap::default()),
                 (2, crate::trap::dispatch::ResourceFileMap::default()),
@@ -23405,7 +23414,7 @@ mod tests {
     #[test]
     fn test_use_res_file() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([
                 (0, crate::trap::dispatch::ResourceFileMap::default()),
                 (2, crate::trap::dispatch::ResourceFileMap::default()),
@@ -23429,7 +23438,7 @@ mod tests {
     #[test]
     fn test_use_res_file_invalid_refnum_preserves_current_and_sets_resfnotfound() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
             files: std::collections::HashMap::from([
                 (0, crate::trap::dispatch::ResourceFileMap::default()),
                 (2, crate::trap::dispatch::ResourceFileMap::default()),
@@ -23464,9 +23473,11 @@ mod tests {
 
         disp.install_test_resource_in_file(&mut bus, 0, *b"STR ", 128, &[0x11]);
         disp.install_test_resource_in_file(&mut bus, 2, *b"STR ", 129, &[0x22]);
-        if let Some(resources) = disp.resources.as_mut() {
-            resources.current_file = 0;
-        }
+        disp.with_resource_manager_mut(|resource_manager| {
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                resources.current_file = 0;
+            }
+        });
 
         let sp = TEST_SP;
         bus.write_long(sp, u32::from_be_bytes(*b"STR "));
@@ -23496,9 +23507,11 @@ mod tests {
 
         disp.install_test_resource_in_file(&mut bus, 0, *b"MENU", 200, &[0x33]);
         disp.install_test_resource_in_file(&mut bus, 3, *b"MENU", 201, &[0x44]);
-        if let Some(resources) = disp.resources.as_mut() {
-            resources.current_file = 0;
-        }
+        disp.with_resource_manager_mut(|resource_manager| {
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                resources.current_file = 0;
+            }
+        });
 
         let sp = TEST_SP;
         bus.write_long(sp, u32::from_be_bytes(*b"STR "));
@@ -23529,7 +23542,7 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -23544,8 +23557,8 @@ mod tests {
             search_order: vec![0],
             current_file: 0,
         });
-        disp.loaded_handles.insert(handle, (data_ptr, *b"TEST", 7));
-        disp.resource_handle_files.insert(handle, 0);
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"TEST", 7));
+        disp.insert_resource_handle_file_for_test(handle, 0);
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -23573,7 +23586,7 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -23588,8 +23601,8 @@ mod tests {
             search_order: vec![0],
             current_file: 0,
         });
-        disp.loaded_handles.insert(handle, (data_ptr, *b"PROT", 9));
-        disp.resource_handle_files.insert(handle, 0);
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"PROT", 9));
+        disp.insert_resource_handle_file_for_test(handle, 0);
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -23614,7 +23627,7 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (0, ResourceFileMap::default()),
                 (
@@ -23632,8 +23645,8 @@ mod tests {
             search_order: vec![0, 2],
             current_file: 0,
         });
-        disp.loaded_handles.insert(handle, (data_ptr, *b"OTHR", 3));
-        disp.resource_handle_files.insert(handle, 2);
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"OTHR", 3));
+        disp.insert_resource_handle_file_for_test(handle, 2);
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -23680,7 +23693,7 @@ mod tests {
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -23695,8 +23708,8 @@ mod tests {
             search_order: vec![0],
             current_file: 0,
         });
-        disp.loaded_handles.insert(handle, (data_ptr, *b"TEST", 7));
-        disp.resource_handle_files.insert(handle, 0);
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"TEST", 7));
+        disp.insert_resource_handle_file_for_test(handle, 0);
 
         let sp = TEST_SP;
         bus.write_long(sp, handle);
@@ -23722,7 +23735,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let changed = super::super::TrapDispatcher::RES_CHANGED_ATTR as u8;
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (
                     0,
@@ -23772,7 +23785,7 @@ mod tests {
     #[test]
     fn updateresfile_invalid_refnum_returns_resfnotfound() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(0, ResourceFileMap::default())]),
             names: HashMap::new(),
             search_order: vec![0],
@@ -24031,7 +24044,7 @@ mod tests {
         let data_ptr = bus.alloc(8);
         bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
         disp.policy.set_res_load(false);
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -24064,7 +24077,7 @@ mod tests {
     fn get_ind_resource_reloads_released_map_entry_when_loading_is_enabled() {
         let (mut disp, mut cpu, mut bus) = setup();
         let bytes = vec![0x10, 0x20, 0x30, 0x40];
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -24100,7 +24113,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let first_ptr = bus.alloc(4);
         let second_ptr = bus.alloc(4);
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -24115,8 +24128,11 @@ mod tests {
             search_order: vec![0],
             current_file: 0,
         });
-        disp.resource_file_order
-            .insert(0, vec![(*b"CODE", 2), (*b"CODE", 1)]);
+        disp.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_file_order
+                .insert(0, vec![(*b"CODE", 2), (*b"CODE", 1)]);
+        });
 
         bus.write_word(TEST_SP, 1);
         bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"CODE"));
@@ -24135,7 +24151,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = bus.alloc(8);
         bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -24176,7 +24192,7 @@ mod tests {
         let mut named = HashMap::new();
         named.insert((*b"STR ", "MyString".to_string()), (500i16, data_ptr));
 
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (0, ResourceFileMap::default()),
                 (
@@ -24261,9 +24277,9 @@ mod tests {
         bus.write_bytes(data_ptr, &[0x11; 8]);
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
-        disp.loaded_handles.insert(handle, (data_ptr, *b"TEST", 7));
-        disp.resource_handle_files.insert(handle, 0);
-        disp.resources = Some(LoadedResources {
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"TEST", 7));
+        disp.insert_resource_handle_file_for_test(handle, 0);
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
                 ResourceFileMap {
@@ -31007,7 +31023,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let override_ptr = bus.alloc(32);
         bus.fill_bytes(override_ptr, 32, 0xA5);
-        disp.resources = Some(LoadedResources {
+        disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([
                 (0, ResourceFileMap::default()),
                 (
@@ -36090,17 +36106,9 @@ mod tests {
         bus.write_bytes(data_ptr, &[0xC0; 8]);
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
-        disp.resources
-            .as_mut()
-            .unwrap()
-            .files
-            .get_mut(&refnum)
-            .unwrap()
-            .loaded
-            .insert((*b"PICT", 23002), data_ptr);
-        disp.loaded_handles
-            .insert(handle, (data_ptr, *b"PICT", 23002));
-        disp.resource_handle_files.insert(handle, refnum);
+        disp.insert_resource_pointer_for_test(refnum, (*b"PICT", 23002), data_ptr);
+        disp.insert_loaded_resource_handle_for_test(handle, (data_ptr, *b"PICT", 23002));
+        disp.insert_resource_handle_file_for_test(handle, refnum);
         disp.track_handle_ptr(data_ptr, handle);
 
         cpu.write_reg(Register::A7, sp);
