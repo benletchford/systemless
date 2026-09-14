@@ -67912,23 +67912,6 @@ fn ppc_dialog_rect_to_global(
     )
 }
 
-fn ppc_dialog_is_game_managed(bounds: (i16, i16, i16, i16), items: &[PpcDialogItemView]) -> bool {
-    let mut has_visible_item = false;
-    for item in items {
-        let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        let intersects =
-            rect.0 < bounds.2 && rect.2 > bounds.0 && rect.1 < bounds.3 && rect.3 > bounds.1;
-        if !intersects {
-            continue;
-        }
-        has_visible_item = true;
-        if item.item_type & !PPC_DIALOG_ITEM_DISABLED != PPC_DIALOG_ITEM_USER_ITEM {
-            return false;
-        }
-    }
-    has_visible_item
-}
-
 fn ppc_dialog_draw_callbacks(
     memory: &mut PpcSectionMem,
     items: &[PpcDialogItemView],
@@ -68317,25 +68300,11 @@ fn ppc_draw_dialog(
     let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
         return false;
     };
-    // Applications commonly use all-userItem dialogs as a convenient window
-    // shell and paint every pixel themselves before DrawDialog. Dialog Manager
-    // must not erase that application-owned surface with standard white
-    // chrome. This mirrors the mature 68K path's classification and preserves
-    // Escape Velocity's landing interface beneath its custom item callbacks.
+    // Macintosh Toolbox Essentials (1992), p. 6-142: DrawDialog redraws
+    // items, controls, text, and user-item callbacks. It does not erase the
+    // dialog surface: applications may have already drawn custom contents
+    // outside those items. Window creation supplies the initial background.
     let palette = ppc_ui_theme(gworlds).provider().palette();
-    let game_managed = ppc_dialog_is_game_managed(bounds, &items);
-    if !game_managed {
-        let _ = ppc_fill_front_rect(
-            memory,
-            front,
-            bounds,
-            ppc_theme_rgb(palette.window_background),
-        );
-        if ppc_window_proc_id(memory, dialog) != 1 {
-            let _ =
-                ppc_frame_front_rect(memory, front, bounds, ppc_theme_rgb(palette.frame_dark), 2);
-        }
-    }
     let default_item = memory
         .read_u16_be(dialog.wrapping_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
@@ -146715,32 +146684,6 @@ pub(crate) mod tests {
     mod file_manager;
 
     #[test]
-    fn game_managed_dialogs_require_visible_user_items_only() {
-        let bounds = (100, 100, 300, 500);
-        let user_item = |item_type, rect| PpcDialogItemView {
-            item_offset: 0,
-            item_type,
-            rect,
-            handle: 0,
-            payload: Vec::new(),
-        };
-        let user_items = [
-            user_item(PPC_DIALOG_ITEM_USER_ITEM, (0, 0, 20, 20)),
-            user_item(
-                PPC_DIALOG_ITEM_USER_ITEM | PPC_DIALOG_ITEM_DISABLED,
-                (30, 30, 50, 50),
-            ),
-            user_item(PPC_DIALOG_ITEM_BUTTON, (0, 0x4000, 20, 0x4010)),
-        ];
-
-        assert!(ppc_dialog_is_game_managed(bounds, &user_items));
-
-        let mut standard_items = user_items.to_vec();
-        standard_items.push(user_item(PPC_DIALOG_ITEM_BUTTON, (60, 60, 80, 140)));
-        assert!(!ppc_dialog_is_game_managed(bounds, &standard_items));
-    }
-
-    #[test]
     fn dialog_static_text_preserves_resource_line_breaks_before_wrapping() {
         let text = b"Toolbox Showcase 2.0\rClassic Macintosh Fat-App Fixture\rRunning 68K and PowerPC slices";
 
@@ -147232,6 +147175,27 @@ pub(crate) mod tests {
             .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, 1)
             .unwrap();
 
+        // Supply an existing surface; this test exercises item redraw, not
+        // window-background initialization.
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        assert!(ppc_fill_front_rect(
+            &mut loaded.memory,
+            front,
+            (40, 60, 140, 260),
+            PPC_RGB_WHITE,
+        ));
+        // Application drawing outside standard items survives DrawDialog.
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let marker =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            surface.front_buffer,
+            (200, 110),
+            marker,
+        ));
+
         assert!(ppc_draw_dialog(
             &mut loaded.memory,
             &test_handle_records!(loaded),
@@ -147245,6 +147209,11 @@ pub(crate) mod tests {
 
         let surface =
             ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (200, 110)),
+            Some(marker),
+            "DrawDialog erased application drawing outside its items"
+        );
         let black =
             ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
         let white =
