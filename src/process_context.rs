@@ -926,6 +926,46 @@ impl Default for ProcessFileSystemState {
 }
 
 impl ProcessFileSystemState {
+    /// Mutate process-owned Resource Manager state for one serialized
+    /// operation without exposing a mutable reference through `DerefMut`.
+    pub(crate) fn with_resource_manager_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut ProcessResourceManagerState) -> R,
+    ) -> R {
+        self.resource_manager.with_mut(operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_resource_file(&self, file: ProcessResourceFileRecord) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resource_files.push(file);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_vfs_resource_file(&self, file: ProcessVfsResourceFileRecord) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.vfs_resource_files.push(file);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_vfs_resource(&self, resource: ProcessVfsResourceRecord) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.vfs_resources.push(resource);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn extend_vfs_resources(
+        &self,
+        resources: impl IntoIterator<Item = ProcessVfsResourceRecord>,
+    ) {
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.vfs_resources.extend(resources);
+        });
+    }
+
     fn merge_from(&mut self, source: &mut Self) {
         assert!(
             self.files.is_empty() || source.files.is_empty(),
@@ -1072,14 +1112,18 @@ impl ProcessFileSystemState {
 
     #[cfg(test)]
     pub(crate) fn with_resources(
-        mut self,
+        self,
         resource_files: Vec<ProcessResourceFileRecord>,
         vfs_resource_files: Vec<ProcessVfsResourceFileRecord>,
         vfs_resources: Vec<ProcessVfsResourceRecord>,
     ) -> Self {
-        self.resource_files = resource_files;
-        self.vfs_resource_files.replace(vfs_resource_files);
-        self.vfs_resources = vfs_resources;
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.resource_files = resource_files;
+            resource_manager
+                .vfs_resource_files
+                .replace(vfs_resource_files);
+            resource_manager.vfs_resources = vfs_resources;
+        });
         self
     }
 
@@ -1142,13 +1186,19 @@ impl ProcessFileSystemState {
         }
         for path in deleted_paths {
             self.vfs_files.data_forks.remove(&path);
-            self.vfs_resource_files.resource_forks.remove(&path);
             self.vfs_files
                 .records
                 .retain(|file| !file.path.eq_ignore_ascii_case(&path));
-            self.vfs_resource_files
-                .records
-                .retain(|file| !file.path.eq_ignore_ascii_case(&path));
+            self.with_resource_manager_mut(|resource_manager| {
+                resource_manager
+                    .vfs_resource_files
+                    .resource_forks
+                    .remove(&path);
+                resource_manager
+                    .vfs_resource_files
+                    .records
+                    .retain(|file| !file.path.eq_ignore_ascii_case(&path));
+            });
             self.classic_vfs_metadata.remove(&path);
             self.classic_locked_files.remove(&path);
         }
@@ -1186,29 +1236,37 @@ impl ProcessFileSystemState {
                 });
             }
         }
-        if let Some(data) = self.vfs_resource_files.resource_forks.get_shared(path) {
-            let data = data.shared_handle();
-            if let Some(file) = self
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(data) = resource_manager
                 .vfs_resource_files
-                .iter_mut()
-                .find(|file| file.path.eq_ignore_ascii_case(path))
+                .resource_forks
+                .get_shared(path)
             {
-                file.creator = metadata.creator;
-                file.file_type = metadata.file_type;
-                file.finder_flags = metadata.finder_flags;
-            } else {
-                self.vfs_resource_files.push(ProcessVfsResourceFileRecord {
-                    path: path.to_string(),
-                    creator: metadata.creator,
-                    file_type: metadata.file_type,
-                    finder_flags: metadata.finder_flags,
-                    resource_len: data.len() as u32,
-                    raw_data: Some(data),
-                    map_attrs: 0,
-                    dirty: false,
-                });
+                let data = data.shared_handle();
+                if let Some(file) = resource_manager
+                    .vfs_resource_files
+                    .iter_mut()
+                    .find(|file| file.path.eq_ignore_ascii_case(path))
+                {
+                    file.creator = metadata.creator;
+                    file.file_type = metadata.file_type;
+                    file.finder_flags = metadata.finder_flags;
+                } else {
+                    resource_manager.vfs_resource_files.push(
+                        ProcessVfsResourceFileRecord {
+                            path: path.to_string(),
+                            creator: metadata.creator,
+                            file_type: metadata.file_type,
+                            finder_flags: metadata.finder_flags,
+                            resource_len: data.len() as u32,
+                            raw_data: Some(data),
+                            map_attrs: 0,
+                            dirty: false,
+                        },
+                    );
+                }
             }
-        }
+        });
     }
 
     pub(crate) fn remove_classic_vfs_path(&mut self, path: &str) {
@@ -1220,12 +1278,14 @@ impl ProcessFileSystemState {
                     .to_ascii_lowercase()
                     .starts_with(&prefix.to_ascii_lowercase())
         });
-        self.vfs_resource_files.retain(|file| {
-            !file.path.eq_ignore_ascii_case(path)
-                && !file
-                    .path
-                    .to_ascii_lowercase()
-                    .starts_with(&prefix.to_ascii_lowercase())
+        self.with_resource_manager_mut(|resource_manager| {
+            resource_manager.vfs_resource_files.retain(|file| {
+                !file.path.eq_ignore_ascii_case(path)
+                    && !file
+                        .path
+                        .to_ascii_lowercase()
+                        .starts_with(&prefix.to_ascii_lowercase())
+            });
         });
         self.vfs_directories.retain(|directory| {
             !directory.path.eq_ignore_ascii_case(path)
@@ -1291,12 +1351,6 @@ impl std::ops::Deref for ProcessFileSystemState {
 
     fn deref(&self) -> &Self::Target {
         &self.resource_manager
-    }
-}
-
-impl std::ops::DerefMut for ProcessFileSystemState {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.resource_manager
     }
 }
 
@@ -9967,18 +10021,16 @@ mod tests {
             finder_flags: 0,
             dirty: true,
         });
-        native
-            .vfs_resource_files
-            .push(ProcessVfsResourceFileRecord {
-                path: "Created".to_string(),
-                creator: 0,
-                file_type: 0,
-                finder_flags: 0,
-                resource_len: 8,
-                raw_data: Some(b"resource".to_vec().into()),
-                map_attrs: 0,
-                dirty: true,
-            });
+        native.push_vfs_resource_file(ProcessVfsResourceFileRecord {
+            path: "Created".to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            resource_len: 8,
+            raw_data: Some(b"resource".to_vec().into()),
+            map_attrs: 0,
+            dirty: true,
+        });
 
         second_data
             .with_entry_mut("Existing", |bytes| bytes.extend_from_slice(b"-after"))
@@ -10066,7 +10118,7 @@ mod tests {
             finder_flags: 0x0400,
             dirty: true,
         });
-        *first_next_dir_id = 17;
+        first_next_dir_id.with_mut(|next_dir_id| *next_dir_id = 17);
         first_default_dir_id.with_mut(|default_dir_id| *default_dir_id = 16);
 
         assert!(second_directories
@@ -10364,19 +10416,17 @@ mod tests {
             finder_flags: 0,
             dirty: false,
         });
-        target_state
-            .vfs_resource_files
-            .push(ProcessVfsResourceFileRecord {
-                path: "Shared".to_string(),
-                creator: u32::from_be_bytes(*b"CLSC"),
-                file_type: u32::from_be_bytes(*b"APPL"),
-                finder_flags: 0,
-                resource_len: 16,
-                raw_data: Some(b"classic-resource".to_vec().into()),
-                map_attrs: 0,
-                dirty: false,
-            });
-        target_state.vfs_resources.push(ProcessVfsResourceRecord {
+        target_state.push_vfs_resource_file(ProcessVfsResourceFileRecord {
+            path: "Shared".to_string(),
+            creator: u32::from_be_bytes(*b"CLSC"),
+            file_type: u32::from_be_bytes(*b"APPL"),
+            finder_flags: 0,
+            resource_len: 16,
+            raw_data: Some(b"classic-resource".to_vec().into()),
+            map_attrs: 0,
+            dirty: false,
+        });
+        target_state.push_vfs_resource(ProcessVfsResourceRecord {
             ref_num: 2,
             path: "Shared".to_string(),
             res_type: u32::from_be_bytes(*b"TEST"),
@@ -10406,7 +10456,7 @@ mod tests {
             });
         }
         for (res_id, data) in [(128, b"source".as_slice()), (129, b"new".as_slice())] {
-            source_state.vfs_resources.push(ProcessVfsResourceRecord {
+            source_state.push_vfs_resource(ProcessVfsResourceRecord {
                 ref_num: 2,
                 path: "Shared".to_string(),
                 res_type: u32::from_be_bytes(*b"TEST"),
@@ -10469,7 +10519,7 @@ mod tests {
                 .resident_resources
                 .insert((7, *b"TEST", 128));
         });
-        native.vfs_resources.push(ProcessVfsResourceRecord {
+        native.push_vfs_resource(ProcessVfsResourceRecord {
             ref_num: 7,
             path: "Shared".to_string(),
             res_type: u32::from_be_bytes(*b"TEST"),

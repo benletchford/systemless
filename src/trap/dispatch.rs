@@ -11171,18 +11171,20 @@ mod tests {
             .resource_backing_data
             .insert(key, b"original".to_vec());
 
-        let mut detached = dispatcher.process_file_system.clone();
+        let detached = dispatcher.process_file_system.clone();
         assert!(!dispatcher.process_file_system.ptr_eq(&detached));
         assert_eq!(
             detached.resource_backing_data.get(&key),
             Some(&b"original".to_vec())
         );
 
-        detached
-            .resource_backing_data
-            .get_mut(&key)
-            .expect("cloned resource backing data")
-            .extend_from_slice(b"-detached");
+        detached.with_resource_manager_mut(|resource_manager| {
+            resource_manager
+                .resource_backing_data
+                .get_mut(&key)
+                .expect("cloned resource backing data")
+                .extend_from_slice(b"-detached");
+        });
         assert_eq!(
             dispatcher.resource_backing_data.get(&key),
             Some(&b"original".to_vec())
