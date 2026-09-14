@@ -148,7 +148,7 @@ fn ppc_math64_long_double_to_unsigned(head: f64, tail: f64) -> u64 {
 }
 
 pub(super) fn ppc_dispatch_math64(
-    binding: &PpcImportBinding,
+    operation: PpcMath64Operation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
@@ -160,30 +160,34 @@ pub(super) fn ppc_dispatch_math64(
     let left = ppc_math64_read_gprs(cpu, 4);
     let right = ppc_math64_read_gprs(cpu, 6);
     let unary = left;
-    let value = match binding.symbol_name.as_str() {
-        "S64Max" => i64::MAX as u64,
-        "S64Min" => i64::MIN as u64,
-        "S64Add" => left.wrapping_add(right),
-        "S64Subtract" => left.wrapping_sub(right),
-        "S64Negate" => (left as i64).wrapping_neg() as u64,
-        "S64Absolute" => (left as i64).wrapping_abs() as u64,
-        "S64Multiply" => (left as i64).wrapping_mul(right as i64) as u64,
-        "S64BitwiseAnd" | "U64BitwiseAnd" => left & right,
-        "S64BitwiseOr" | "U64BitwiseOr" => left | right,
-        "S64BitwiseEor" | "U64BitwiseEor" => left ^ right,
-        "S64BitwiseNot" | "U64BitwiseNot" => !unary,
-        "S64ShiftRight" => ppc_math64_signed_shift_right(left as i64, cpu.gpr[6]) as u64,
-        "S64ShiftLeft" | "U64ShiftLeft" => ppc_math64_shift_left(left, cpu.gpr[6]),
-        "U64ShiftRight" => ppc_math64_shift_right(left, cpu.gpr[6]),
-        "S64Set" => i64::from(cpu.gpr[4] as i32) as u64,
-        "S64SetU" | "U64SetU" => u64::from(cpu.gpr[4]),
-        "U64Set" => (cpu.gpr[4] as i32 as i64) as u64,
-        "U64Max" => u64::MAX,
-        "U64Add" => left.wrapping_add(right),
-        "U64Subtract" => left.wrapping_sub(right),
-        "U64Multiply" => left.wrapping_mul(right),
-        "UInt64ToSInt64" | "SInt64ToUInt64" => unary,
-        "S64Divide" => {
+    let value = match operation {
+        PpcMath64Operation::S64Max => i64::MAX as u64,
+        PpcMath64Operation::S64Min => i64::MIN as u64,
+        PpcMath64Operation::S64Add => left.wrapping_add(right),
+        PpcMath64Operation::S64Subtract => left.wrapping_sub(right),
+        PpcMath64Operation::S64Negate => (left as i64).wrapping_neg() as u64,
+        PpcMath64Operation::S64Absolute => (left as i64).wrapping_abs() as u64,
+        PpcMath64Operation::S64Multiply => (left as i64).wrapping_mul(right as i64) as u64,
+        PpcMath64Operation::S64BitwiseAnd | PpcMath64Operation::U64BitwiseAnd => left & right,
+        PpcMath64Operation::S64BitwiseOr | PpcMath64Operation::U64BitwiseOr => left | right,
+        PpcMath64Operation::S64BitwiseEor | PpcMath64Operation::U64BitwiseEor => left ^ right,
+        PpcMath64Operation::S64BitwiseNot | PpcMath64Operation::U64BitwiseNot => !unary,
+        PpcMath64Operation::S64ShiftRight => {
+            ppc_math64_signed_shift_right(left as i64, cpu.gpr[6]) as u64
+        }
+        PpcMath64Operation::S64ShiftLeft | PpcMath64Operation::U64ShiftLeft => {
+            ppc_math64_shift_left(left, cpu.gpr[6])
+        }
+        PpcMath64Operation::U64ShiftRight => ppc_math64_shift_right(left, cpu.gpr[6]),
+        PpcMath64Operation::S64Set => i64::from(cpu.gpr[4] as i32) as u64,
+        PpcMath64Operation::S64SetU | PpcMath64Operation::U64SetU => u64::from(cpu.gpr[4]),
+        PpcMath64Operation::U64Set => (cpu.gpr[4] as i32 as i64) as u64,
+        PpcMath64Operation::U64Max => u64::MAX,
+        PpcMath64Operation::U64Add => left.wrapping_add(right),
+        PpcMath64Operation::U64Subtract => left.wrapping_sub(right),
+        PpcMath64Operation::U64Multiply => left.wrapping_mul(right),
+        PpcMath64Operation::UInt64ToSInt64 | PpcMath64Operation::SInt64ToUInt64 => unary,
+        PpcMath64Operation::S64Divide => {
             let dividend = left as i64;
             let divisor = right as i64;
             let (quotient, remainder) = if divisor == 0 {
@@ -198,7 +202,7 @@ pub(super) fn ppc_dispatch_math64(
             }
             quotient as u64
         }
-        "U64Divide" => {
+        PpcMath64Operation::U64Divide => {
             let (quotient, remainder) = if right == 0 {
                 (u64::MAX, left)
             } else {
@@ -209,49 +213,49 @@ pub(super) fn ppc_dispatch_math64(
             }
             quotient
         }
-        "LongDoubleToSInt64" => {
+        PpcMath64Operation::LongDoubleToSInt64 => {
             ppc_math64_long_double_to_signed(f64::from_bits(cpu.fpr[1]), f64::from_bits(cpu.fpr[2]))
                 as u64
         }
-        "LongDoubleToUInt64" => ppc_math64_long_double_to_unsigned(
+        PpcMath64Operation::LongDoubleToUInt64 => ppc_math64_long_double_to_unsigned(
             f64::from_bits(cpu.fpr[1]),
             f64::from_bits(cpu.fpr[2]),
         ),
-        "SInt64ToLongDouble" => {
+        PpcMath64Operation::SInt64ToLongDouble => {
             let (head, tail) =
                 ppc_math64_signed_to_long_double(ppc_math64_read_gprs(cpu, 3) as i64);
             cpu.fpr[1] = head.to_bits();
             cpu.fpr[2] = tail.to_bits();
             return PpcImportAction::ReturnPreserve;
         }
-        "UInt64ToLongDouble" => {
+        PpcMath64Operation::UInt64ToLongDouble => {
             let (head, tail) = ppc_math64_unsigned_to_long_double(ppc_math64_read_gprs(cpu, 3));
             cpu.fpr[1] = head.to_bits();
             cpu.fpr[2] = tail.to_bits();
             return PpcImportAction::ReturnPreserve;
         }
-        "S32Set" | "U32SetU" => {
+        PpcMath64Operation::S32Set | PpcMath64Operation::U32SetU => {
             return PpcImportAction::Return(cpu.gpr[4]);
         }
-        "S64And" | "U64And" => {
+        PpcMath64Operation::S64And | PpcMath64Operation::U64And => {
             return PpcImportAction::Return(u32::from(
                 ppc_math64_read_gprs(cpu, 3) != 0 && ppc_math64_read_gprs(cpu, 5) != 0,
             ));
         }
-        "S64Or" | "U64Or" => {
+        PpcMath64Operation::S64Or | PpcMath64Operation::U64Or => {
             return PpcImportAction::Return(u32::from(
                 ppc_math64_read_gprs(cpu, 3) != 0 || ppc_math64_read_gprs(cpu, 5) != 0,
             ));
         }
-        "S64Eor" | "U64Eor" => {
+        PpcMath64Operation::S64Eor | PpcMath64Operation::U64Eor => {
             return PpcImportAction::Return(u32::from(
                 (ppc_math64_read_gprs(cpu, 3) != 0) ^ (ppc_math64_read_gprs(cpu, 5) != 0),
             ));
         }
-        "S64Not" | "U64Not" => {
+        PpcMath64Operation::S64Not | PpcMath64Operation::U64Not => {
             return PpcImportAction::Return(u32::from(ppc_math64_read_gprs(cpu, 3) == 0));
         }
-        "S64Compare" => {
+        PpcMath64Operation::S64Compare => {
             return PpcImportAction::Return(
                 match (ppc_math64_read_gprs(cpu, 3) as i64)
                     .cmp(&(ppc_math64_read_gprs(cpu, 5) as i64))
@@ -262,7 +266,7 @@ pub(super) fn ppc_dispatch_math64(
                 },
             );
         }
-        "U64Compare" => {
+        PpcMath64Operation::U64Compare => {
             return PpcImportAction::Return(
                 match ppc_math64_read_gprs(cpu, 3).cmp(&ppc_math64_read_gprs(cpu, 5)) {
                     std::cmp::Ordering::Less => -1i32 as u32,
@@ -271,26 +275,25 @@ pub(super) fn ppc_dispatch_math64(
                 },
             );
         }
-        _ => return PpcImportAction::ReturnPreserve,
     };
     ppc_math64_write_result(memory, cpu.gpr[3], value);
     PpcImportAction::ReturnPreserve
 }
 
 pub(super) fn ppc_dispatch_math_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcMathCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "floor" => {
+    match operation {
+        PpcMathCompatibilityOperation::Floor => {
             // floor returns the nearest integer not greater than its argument,
             // preserving signed zero, NaN, and infinities.
             // PowerPC Numerics (1994), pp. 9-7--9-8.
             cpu.fpr[1] = f64::from_bits(cpu.fpr[1]).floor().to_bits();
             PpcImportAction::ReturnPreserve
         }
-        "modf" => {
+        PpcMathCompatibilityOperation::Modf => {
             let value = f64::from_bits(cpu.fpr[1]);
             let integer = if value.is_nan() { value } else { value.trunc() };
             let fractional = if value.is_infinite() {
@@ -305,13 +308,13 @@ pub(super) fn ppc_dispatch_math_compatibility(
             cpu.fpr[1] = fractional.to_bits();
             PpcImportAction::ReturnPreserve
         }
-        "dec2num" => {
+        PpcMathCompatibilityOperation::Dec2Num => {
             cpu.fpr[1] = ppc_decimal_read(memory, cpu.gpr[3])
                 .unwrap_or(f64::NAN)
                 .to_bits();
             PpcImportAction::ReturnPreserve
         }
-        "num2dec" => {
+        PpcMathCompatibilityOperation::Num2Dec => {
             let digits = memory
                 .read_u16_be(cpu.gpr[3] + 2)
                 .map(|value| value as i16)
@@ -320,7 +323,7 @@ pub(super) fn ppc_dispatch_math_compatibility(
             let _ = ppc_decimal_write(memory, cpu.gpr[6], f64::from_bits(cpu.fpr[1]), digits);
             PpcImportAction::ReturnPreserve
         }
-        "dec2str" => {
+        PpcMathCompatibilityOperation::Dec2Str => {
             let style = memory.read_u8(cpu.gpr[3]).unwrap_or(0);
             let digits = memory
                 .read_u16_be(cpu.gpr[3] + 2)
@@ -340,7 +343,7 @@ pub(super) fn ppc_dispatch_math_compatibility(
             let _ = memory.write_u8(cpu.gpr[5] + text.len() as u32, 0);
             PpcImportAction::ReturnPreserve
         }
-        "str2dec" => {
+        PpcMathCompatibilityOperation::Str2Dec => {
             let bytes = ppc_std_c_string(memory, cpu.gpr[3], 4096);
             let start = memory.read_u16_be(cpu.gpr[4]).unwrap_or(0) as usize;
             let suffix = bytes.get(start..).unwrap_or_default();
@@ -364,11 +367,10 @@ pub(super) fn ppc_dispatch_math_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "feclearexcept" => {
+        PpcMathCompatibilityOperation::FeClearExcept => {
             cpu.fpscr &= 0x0000_00ff;
             PpcImportAction::Return(0)
         }
-        "fetestexcept" => PpcImportAction::Return(0),
-        _ => PpcImportAction::ReturnPreserve,
+        PpcMathCompatibilityOperation::FeTestExcept => PpcImportAction::Return(0),
     }
 }
