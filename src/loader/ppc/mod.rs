@@ -1152,6 +1152,26 @@ pub enum PpcAppleEventCompatibilityOperation {
     Send,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcAppleTalkCompatibilityOperation {
+    GetBridgeAddress,
+    GetNodeAddress,
+    GetZoneList,
+    MppOpen,
+    NbpExtract,
+    NbpSetEntity,
+    NbpSetNte,
+    PCloseSkt,
+    PKillNbp,
+    PLookupName,
+    POpenSkt,
+    PRegisterName,
+    PRemoveName,
+    PSetSelfSend,
+    PWriteDdp,
+    StandardNbp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
     InstallExceptionHandler,
@@ -2106,7 +2126,7 @@ pub enum PpcImportDispatcherTarget {
     QuickDrawCompatibility,
     SystemCompatibility,
     FileCompatibility,
-    AppleTalkCompatibility,
+    AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     PrintingCompatibility,
     SlotCompatibility,
     StandardFileCompatibility,
@@ -15601,12 +15621,62 @@ fn dispatcher_target_for_import(
             | "PBGetWDInfoSync" | "PBHGetVolParmsSync" | "PBHGetVolSync" | "PBHOpenRFSync"
             | "PBHSetVolSync" | "PBCloseWDSync" | "PBOpenWDSync" | "create" | "fsopen",
         ) => PpcImportDispatcherTarget::FileCompatibility,
-        (
-            "InterfaceLib",
-            "GetBridgeAddress" | "GetNodeAddress" | "GetZoneList" | "MPPOpen" | "NBPExtract"
-            | "NBPSetEntity" | "NBPSetNTE" | "PCloseSkt" | "PKillNBP" | "PLookupName" | "POpenSkt"
-            | "PRegisterName" | "PRemoveName" | "PSetSelfSend" | "PWriteDDP" | "StandardNBP",
-        ) => PpcImportDispatcherTarget::AppleTalkCompatibility,
+        ("InterfaceLib", "GetBridgeAddress") => {
+            PpcImportDispatcherTarget::AppleTalkCompatibility(
+                PpcAppleTalkCompatibilityOperation::GetBridgeAddress,
+            )
+        }
+        ("InterfaceLib", "GetNodeAddress") => {
+            PpcImportDispatcherTarget::AppleTalkCompatibility(
+                PpcAppleTalkCompatibilityOperation::GetNodeAddress,
+            )
+        }
+        ("InterfaceLib", "GetZoneList") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::GetZoneList,
+        ),
+        ("InterfaceLib", "MPPOpen") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::MppOpen,
+        ),
+        ("InterfaceLib", "NBPExtract") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::NbpExtract,
+        ),
+        ("InterfaceLib", "NBPSetEntity") => {
+            PpcImportDispatcherTarget::AppleTalkCompatibility(
+                PpcAppleTalkCompatibilityOperation::NbpSetEntity,
+            )
+        }
+        ("InterfaceLib", "NBPSetNTE") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::NbpSetNte,
+        ),
+        ("InterfaceLib", "PCloseSkt") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::PCloseSkt,
+        ),
+        ("InterfaceLib", "PKillNBP") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::PKillNbp,
+        ),
+        ("InterfaceLib", "PLookupName") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::PLookupName,
+        ),
+        ("InterfaceLib", "POpenSkt") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::POpenSkt,
+        ),
+        ("InterfaceLib", "PRegisterName") => {
+            PpcImportDispatcherTarget::AppleTalkCompatibility(
+                PpcAppleTalkCompatibilityOperation::PRegisterName,
+            )
+        }
+        ("InterfaceLib", "PRemoveName") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::PRemoveName,
+        ),
+        ("InterfaceLib", "PSetSelfSend") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::PSetSelfSend,
+        ),
+        ("InterfaceLib", "PWriteDDP") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::PWriteDdp,
+        ),
+        ("InterfaceLib", "StandardNBP") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::StandardNbp,
+        ),
         (
             "InterfaceLib",
             "PrClose" | "PrCloseDoc" | "PrClosePage" | "PrError" | "PrJobDialog" | "PrOpen"
@@ -27700,8 +27770,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             next_working_directory_ref_num,
             application_working_directory_ref_num,
         )),
-        PpcImportDispatcherTarget::AppleTalkCompatibility => {
-            Some(ppc_dispatch_appletalk_compatibility(binding, cpu, memory))
+        PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => {
+            Some(ppc_dispatch_appletalk_compatibility(operation, cpu, memory))
         }
         PpcImportDispatcherTarget::PrintingCompatibility => {
             Some(ppc_dispatch_printing_compatibility(binding, cpu, memory))
@@ -29886,12 +29956,12 @@ fn ppc_dispatch_file_compatibility(
 }
 
 fn ppc_dispatch_appletalk_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcAppleTalkCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "NBPSetEntity" => {
+    match operation {
+        PpcAppleTalkCompatibilityOperation::NbpSetEntity => {
             let mut offset = 0u32;
             for source in [cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]] {
                 let bytes = ppc_read_pstring_bytes(memory, source).unwrap_or_default();
@@ -29902,21 +29972,30 @@ fn ppc_dispatch_appletalk_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "GetNodeAddress" => {
+        PpcAppleTalkCompatibilityOperation::GetNodeAddress => {
             let _ = memory.write_u8(cpu.gpr[3], 0);
             let _ = memory.write_u16_be(cpu.gpr[4], 0);
             PpcImportAction::Return(ppc_i16_result(PPC_NO_MPP_ERR))
         }
-        "GetBridgeAddress" => PpcImportAction::Return(0),
-        "GetZoneList" | "MPPOpen" | "NBPExtract" | "NBPSetNTE" | "PCloseSkt" | "PKillNBP"
-        | "PLookupName" | "POpenSkt" | "PRegisterName" | "PRemoveName" | "PSetSelfSend"
-        | "PWriteDDP" | "StandardNBP" => {
+        PpcAppleTalkCompatibilityOperation::GetBridgeAddress => PpcImportAction::Return(0),
+        PpcAppleTalkCompatibilityOperation::GetZoneList
+        | PpcAppleTalkCompatibilityOperation::MppOpen
+        | PpcAppleTalkCompatibilityOperation::NbpExtract
+        | PpcAppleTalkCompatibilityOperation::NbpSetNte
+        | PpcAppleTalkCompatibilityOperation::PCloseSkt
+        | PpcAppleTalkCompatibilityOperation::PKillNbp
+        | PpcAppleTalkCompatibilityOperation::PLookupName
+        | PpcAppleTalkCompatibilityOperation::POpenSkt
+        | PpcAppleTalkCompatibilityOperation::PRegisterName
+        | PpcAppleTalkCompatibilityOperation::PRemoveName
+        | PpcAppleTalkCompatibilityOperation::PSetSelfSend
+        | PpcAppleTalkCompatibilityOperation::PWriteDdp
+        | PpcAppleTalkCompatibilityOperation::StandardNbp => {
             if cpu.gpr[3] != 0 {
                 let _ = memory.write_u16_be(cpu.gpr[3] + 16, PPC_NO_MPP_ERR as u16);
             }
             PpcImportAction::Return(ppc_i16_result(PPC_NO_MPP_ERR))
         }
-        _ => PpcImportAction::Return(ppc_i16_result(PPC_NO_MPP_ERR)),
     }
 }
 
