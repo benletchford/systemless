@@ -7751,8 +7751,8 @@ impl PpcLoadedApp {
         // would leave the process temporarily with an empty manager view.
         // (Inside Macintosh: Files, 1992, pp. 1-7–1-9; Inside Macintosh
         // Volume I, 1985, pp. I-109–I-110.)
-        let mut current_gworld = self.current_gworld.shared_handle();
-        let mut current_gdevice = self.current_gdevice.shared_handle();
+        let current_gworld = self.current_gworld.shared_handle();
+        let current_gdevice = self.current_gdevice.shared_handle();
         let quickdraw_op_colors = self.quickdraw_op_colors.shared_handle();
         let quickdraw_hilite_colors = self.quickdraw_hilite_colors.shared_handle();
         let screen_clut = self.screen_clut.shared_handle();
@@ -7888,13 +7888,26 @@ impl PpcLoadedApp {
                                 .expect("native allocator registered during execution");
                             let mut cursor = heap.heap_cursor;
                             let limit = process_memory_manager.native_allocation_limit(heap.heap_limit);
-                            return ppc_step_menu_tracking(
-                                cpu, process_memory_manager, memory, &mut cursor, limit,
-                                &gworlds, &screen_clut, &mut toolbox_startup,
-                                &mut current_gworld, &mut current_gdevice, input,
-                                &process_file_system.resource_manager.vfs_resources,
-                                *current_resource_refnum,
-                            ).unwrap_or(PpcImportAction::Halt);
+                            return current_gworld.with_mut(|current_gworld| {
+                                current_gdevice.with_mut(|current_gdevice| {
+                                    ppc_step_menu_tracking(
+                                        cpu,
+                                        process_memory_manager,
+                                        memory,
+                                        &mut cursor,
+                                        limit,
+                                        &gworlds,
+                                        &screen_clut,
+                                        &mut toolbox_startup,
+                                        current_gworld,
+                                        current_gdevice,
+                                        input,
+                                        &process_file_system.resource_manager.vfs_resources,
+                                        *current_resource_refnum,
+                                    )
+                                    .unwrap_or(PpcImportAction::Halt)
+                                })
+                            });
                         }
                         if let Some(call) = resource_call {
                             if let Err(error) = ppc_invoke_prepared_resource(
@@ -8377,6 +8390,8 @@ impl PpcLoadedApp {
                                                 vfs_resources,
                                                 ..
                                             } = resource_manager;
+                                            current_gworld.with_mut(|current_gworld| {
+                                            current_gdevice.with_mut(|current_gdevice| {
                                             dispatch_supported_import(
                                             binding,
                                             cpu,
@@ -8453,8 +8468,8 @@ impl PpcLoadedApp {
                                             vfs_resource_files,
                                             vfs_resources,
                                             next_file_ref_num,
-                                            &mut current_gworld,
-                                            &mut current_gdevice,
+                                            current_gworld,
+                                            current_gdevice,
                                             &quickdraw_op_colors,
                                             &quickdraw_hilite_colors,
                                             screen_clut,
@@ -8483,6 +8498,8 @@ impl PpcLoadedApp {
                                             event_queue,
                                             &mut draw_sprocket,
                                             )
+                                            })
+                                            })
                                             })
                                             })
                                             })
