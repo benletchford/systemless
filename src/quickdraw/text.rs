@@ -124,6 +124,20 @@ pub fn get_font_metrics(font_id: i16, size: i16) -> FontMetrics {
     get_font_face_or_default(font_id, size).metrics
 }
 
+/// Look up decoded host text, as opposed to guest bytes cast directly to char.
+/// Unicode Latin-1 overlaps the Mac Roman byte range with different meanings
+/// (for example, U+00AE is registered, but Mac Roman byte AE is AE ligature).
+pub fn get_unicode_glyph(
+    font_id: i16,
+    size: i16,
+    ch: char,
+) -> Option<(&'static Glyph, &'static [u8])> {
+    if let Some(mac_code @ 0x80..=0xFF) = crate::mac_roman::encode_mac_roman_char(ch) {
+        return macroman_or_ascii_fallback(font_id, size, mac_code);
+    }
+    get_glyph(font_id, size, ch)
+}
+
 pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &'static [u8])> {
     let face = get_font_face_or_default(font_id, size);
     let glyphs = face.glyphs;
@@ -407,6 +421,22 @@ mod tests {
         assert!(data[glyph.data_offset..glyph.data_offset + glyph_len]
             .iter()
             .any(|pixel| *pixel != 0));
+    }
+
+    #[test]
+    fn unicode_latin1_chrome_uses_the_corresponding_mac_roman_slot() {
+        for (ch, byte) in [('®', 0xA8), ('©', 0xA9), ('é', 0x8E), ('Æ', 0xAE)] {
+            let (actual, data) = super::get_unicode_glyph(0, 12, ch).expect("Unicode glyph");
+            let (expected, _) = get_glyph(0, 12, char::from(byte)).expect("guest glyph");
+            assert!(
+                std::ptr::eq(actual, expected),
+                "wrong Mac Roman slot for {ch}"
+            );
+            let len = usize::from(actual.width) * usize::from(actual.height);
+            assert!(data[actual.data_offset..actual.data_offset + len]
+                .iter()
+                .any(|p| *p != 0));
+        }
     }
 
     #[test]
