@@ -40152,7 +40152,7 @@ mod tests {
         let (screen, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
         let port = *d.current_port;
         d.set_current_port_state(&mut bus, &mut cpu, port, None);
-        *d.device_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        d.device_clut.with_mut(|clut| *clut = TrapDispatcher::standard_mac_8bpp_clut());
         let rect = 0x300000;
         write_rect(&mut bus, rect, 10, 10, 12, 12);
 
@@ -40176,7 +40176,7 @@ mod tests {
         // Restoring an already resolved snapshot must keep exact pixel values
         // even when the palette changes while another dialog is active.
         let fg_pixel = u32::from_be_bytes(resolved.port_state_bytes[48..52].try_into().unwrap());
-        d.device_clut[fg_pixel as usize] = [0xFFFF, 0, 0];
+        d.device_clut.with_mut(|clut| clut[fg_pixel as usize] = [0xFFFF, 0, 0]);
         d.restore_current_port_state(&mut bus, &mut cpu, &resolved);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, rect);
