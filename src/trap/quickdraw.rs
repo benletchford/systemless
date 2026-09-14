@@ -19435,6 +19435,7 @@ impl super::TrapDispatcher {
             gdevice: *self.current_gdevice,
             draw_state: self.current_draw_state(),
             port_state_bytes,
+            resolved_color_fields: self.resolved_port_color_fields.get(&port).copied(),
             vis_region: Self::capture_port_region(bus, port, 24),
             clip_region: Self::capture_port_region(bus, port, 28),
         }
@@ -19482,6 +19483,16 @@ impl super::TrapDispatcher {
         self.sync_port_draw_state(bus, snapshot.port);
         for (i, byte) in snapshot.port_state_bytes.iter().copied().enumerate() {
             bus.write_byte(snapshot.port + 32 + i as u32, byte);
+        }
+        // The saved fgColor/bgColor words and their interpretation must travel
+        // together. A user-item callback can resolve a legacy blackColor (33)
+        // into a pixel; retaining that flag after restoring 33 would draw CLUT
+        // entry 33 instead of black.
+        if let Some(fields) = snapshot.resolved_color_fields {
+            self.resolved_port_color_fields
+                .insert(snapshot.port, fields);
+        } else {
+            self.resolved_port_color_fields.remove(&snapshot.port);
         }
         if let Some(region) = &snapshot.vis_region {
             Self::restore_port_region(bus, snapshot.port, 24, region);
@@ -40133,6 +40144,47 @@ mod tests {
 
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_long(port + 80), 23);
+    }
+
+    #[test]
+    fn port_snapshot_restores_legacy_and_resolved_colors_after_nested_drawing() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        let port = *d.current_port;
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        *d.device_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let rect = 0x300000;
+        write_rect(&mut bus, rect, 10, 10, 12, 12);
+
+        // Newly initialized CGrafPorts still carry the legacy blackColor and
+        // whiteColor values. A nested callback resolves both fields.
+        let legacy = d.capture_current_port_state(&bus);
+        d.resolve_current_port_color_pixels(&mut bus, true, true, false);
+        let resolved = d.capture_current_port_state(&bus);
+        d.restore_current_port_state(&mut bus, &mut cpu, &legacy);
+        bus.write_long(TEST_SP, rect);
+        d.dispatch_quickdraw(true, 0x0A2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let pixel = bus.read_byte(screen + 10 * row_bytes + 10);
+        assert_eq!(
+            d.device_clut[pixel as usize],
+            [0, 0, 0],
+            "restored black must not become palette entry 33"
+        );
+
+        // Restoring an already resolved snapshot must keep exact pixel values
+        // even when the palette changes while another dialog is active.
+        let fg_pixel = u32::from_be_bytes(resolved.port_state_bytes[48..52].try_into().unwrap());
+        d.device_clut[fg_pixel as usize] = [0xFFFF, 0, 0];
+        d.restore_current_port_state(&mut bus, &mut cpu, &resolved);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rect);
+        d.dispatch_quickdraw(true, 0x0A2, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(screen + 10 * row_bytes + 10), fg_pixel as u8);
+        assert_eq!(d.resolved_port_color_fields.get(&port).copied(), Some(3));
     }
 
     #[test]
