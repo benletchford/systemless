@@ -2189,7 +2189,7 @@ pub enum PpcImportDispatcherTarget {
     StandardFileCompatibility,
     SoundInputCompatibility,
     SpeechCompatibility(PpcSpeechCompatibilityOperation),
-    QuickTimeCompatibility,
+    QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation),
     InputSprocketCompatibility(PpcInputSprocketCompatibilityOperation),
     MathCompatibility(PpcMathCompatibilityOperation),
     StdCCompatibility(PpcStdCCompatibilityOperation),
@@ -15825,16 +15825,41 @@ fn dispatcher_target_for_import(
         ("SpeechLib", "SpeechBusy") => PpcImportDispatcherTarget::SpeechCompatibility(
             PpcSpeechCompatibilityOperation::SpeechBusy,
         ),
-        (
-            "QuickTimeLib",
-            "GetMovieTimeBase"
-            | "GetMovieVolume"
-            | "NewMovieFromDataFork"
-            | "PrerollMovie"
-            | "SetMovieVolume"
-            | "SetTimeBaseFlags"
-            | "UpdateMovie",
-        ) => PpcImportDispatcherTarget::QuickTimeCompatibility,
+        ("QuickTimeLib", "GetMovieTimeBase") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
+            )
+        }
+        ("QuickTimeLib", "GetMovieVolume") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMovieVolume,
+            )
+        }
+        ("QuickTimeLib", "NewMovieFromDataFork") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::NewMovieFromDataFork,
+            )
+        }
+        ("QuickTimeLib", "PrerollMovie") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::PrerollMovie,
+            )
+        }
+        ("QuickTimeLib", "SetMovieVolume") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::SetMovieVolume,
+            )
+        }
+        ("QuickTimeLib", "SetTimeBaseFlags") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags,
+            )
+        }
+        ("QuickTimeLib", "UpdateMovie") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::UpdateMovie,
+            )
+        }
         ("InputSprocketLib", "ISpDevices_ActivateClass") => {
             PpcImportDispatcherTarget::InputSprocketCompatibility(
                 PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
@@ -27182,8 +27207,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::SpeechCompatibility(operation) => {
             Some(ppc_dispatch_speech_compatibility(operation, cpu, memory))
         }
-        PpcImportDispatcherTarget::QuickTimeCompatibility => Some(
-            ppc_dispatch_quicktime_compatibility(binding, cpu, memory, quicktime),
+        PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => Some(
+            dispatch_quicktime_compatibility(operation, cpu, memory, quicktime),
         ),
         PpcImportDispatcherTarget::InputSprocketCompatibility(operation) => {
             Some(ppc_dispatch_input_sprocket_compatibility(
@@ -29466,98 +29491,6 @@ fn ppc_dispatch_speech_compatibility(
         | PpcSpeechCompatibilityOperation::SpeakText => {
             PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR))
         }
-    }
-}
-
-fn ppc_qt_compatibility_valid_movie(quicktime: &PpcQuickTimeState, movie: u32) -> bool {
-    movie == PPC_QT_MOVIE && !quicktime.movie_disposed
-}
-
-fn ppc_dispatch_quicktime_compatibility(
-    binding: &PpcImportBinding,
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    quicktime: &mut PpcQuickTimeState,
-) -> PpcImportAction {
-    const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
-    match binding.symbol_name.as_str() {
-        "GetMovieTimeBase" => {
-            PpcImportAction::Return(if ppc_qt_compatibility_valid_movie(quicktime, cpu.gpr[3]) {
-                PPC_QT_TIME_BASE
-            } else {
-                0
-            })
-        }
-        "GetMovieVolume" => {
-            PpcImportAction::Return(if ppc_qt_compatibility_valid_movie(quicktime, cpu.gpr[3]) {
-                quicktime.movie_volume as u16 as u32
-            } else {
-                0
-            })
-        }
-        "SetMovieVolume" => {
-            if ppc_qt_compatibility_valid_movie(quicktime, cpu.gpr[3]) {
-                quicktime.movie_volume = cpu.gpr[4] as u16 as i16;
-            }
-            PpcImportAction::ReturnPreserve
-        }
-        "SetTimeBaseFlags" => {
-            if cpu.gpr[3] == PPC_QT_TIME_BASE {
-                quicktime.movie_time_base_flags = cpu.gpr[4];
-            }
-            PpcImportAction::ReturnPreserve
-        }
-        "PrerollMovie" => {
-            let result = if ppc_qt_compatibility_valid_movie(quicktime, cpu.gpr[3]) {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
-            PpcImportAction::Return(ppc_i16_result(ppc_qt_record_error(quicktime, result)))
-        }
-        "UpdateMovie" => {
-            let result = if ppc_qt_compatibility_valid_movie(quicktime, cpu.gpr[3]) {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
-            let _ = ppc_qt_record_error(quicktime, result);
-            PpcImportAction::ReturnPreserve
-        }
-        "NewMovieFromDataFork" => {
-            let movie_out = cpu.gpr[3];
-            let changed_out = cpu.gpr[7];
-            if movie_out == 0
-                || memory.write_u32_be(movie_out, PPC_QT_MOVIE).is_none()
-                || (changed_out != 0 && memory.write_u8(changed_out, 0).is_none())
-            {
-                return PpcImportAction::Return(ppc_i16_result(ppc_qt_record_error(
-                    quicktime,
-                    PPC_PARAM_ERR,
-                )));
-            }
-            if cpu.gpr[4] as u16 as i16 == quicktime.movie_file_ref_num {
-                if let Some(bounds) = quicktime.movie_file_bounds {
-                    quicktime.movie_box = bounds;
-                }
-                quicktime.movie_tasks_until_done = quicktime.movie_file_tasks_until_done;
-                quicktime.movie_video_track = quicktime.movie_file_video_track;
-                quicktime.movie_video_samples = quicktime.movie_file_video_samples.clone();
-                quicktime.movie_audio_track = quicktime.movie_file_audio_track;
-            } else {
-                quicktime.movie_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
-                quicktime.movie_video_track = None;
-                quicktime.movie_video_samples = None;
-                quicktime.movie_audio_track = None;
-            }
-            quicktime.movie_started = false;
-            quicktime.movie_task_count = 0;
-            quicktime.movie_disposed = false;
-            quicktime.movie_at_beginning = true;
-            ppc_qt_reset_movie_video_decode_cache(quicktime);
-            PpcImportAction::Return(ppc_i16_result(ppc_qt_record_error(quicktime, PPC_NO_ERR)))
-        }
-        _ => PpcImportAction::ReturnPreserve,
     }
 }
 

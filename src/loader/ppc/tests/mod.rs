@@ -16570,6 +16570,35 @@ fn import_bindings_classify_dialog_and_utility_imports() {
             PpcImportDispatcherTarget::InputSprocketCompatibility(operation),
         );
     }
+    for (symbol, operation) in [
+        (
+            "GetMovieTimeBase",
+            PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
+        ),
+        (
+            "GetMovieVolume",
+            PpcQuickTimeCompatibilityOperation::GetMovieVolume,
+        ),
+        (
+            "NewMovieFromDataFork",
+            PpcQuickTimeCompatibilityOperation::NewMovieFromDataFork,
+        ),
+        ("PrerollMovie", PpcQuickTimeCompatibilityOperation::PrerollMovie),
+        (
+            "SetMovieVolume",
+            PpcQuickTimeCompatibilityOperation::SetMovieVolume,
+        ),
+        (
+            "SetTimeBaseFlags",
+            PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags,
+        ),
+        ("UpdateMovie", PpcQuickTimeCompatibilityOperation::UpdateMovie),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("QuickTimeLib", symbol),
+            PpcImportDispatcherTarget::QuickTimeCompatibility(operation),
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "SecondsToDate"),
         PpcImportDispatcherTarget::SecondsToDate
