@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.40.2](https://github.com/benletchford/systemless/compare/v0.40.1...v0.40.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* preserve the caller stack when updating TextEdit ([#1838](https://github.com/benletchford/systemless/issues/1838)) ([c11c0c6](https://github.com/benletchford/systemless/commit/c11c0c6dd75d0146f640c2a4ae7a1ae3408924f1))
+
+
+### Code Refactoring
+
+* **control:** scope shared manager mutation ([a5511e0](https://github.com/benletchford/systemless/commit/a5511e01e91a43db7d28904b07f2db3b7d7b8d88))
+* **cursor:** scope shared fixture mutation ([#1732](https://github.com/benletchford/systemless/issues/1732)) ([4ae60b4](https://github.com/benletchford/systemless/commit/4ae60b459652345ca4992050ae06c41b31821529))
+* **display:** scope shared palette mutation ([03ac088](https://github.com/benletchford/systemless/commit/03ac088467067c76276113aa13bb85fa7c1dbf5d))
+* **display:** unify shared gamma state ([a8fdbce](https://github.com/benletchford/systemless/commit/a8fdbceafde313bc978ac25a358c2c32b92aa65a))
+* **event:** scope scripted queue tail removal ([#1752](https://github.com/benletchford/systemless/issues/1752)) ([9726914](https://github.com/benletchford/systemless/commit/972691472fa06d923a804c30a903ea4ac87e59b6))
+* **events:** scope shared queue mutation ([61d01c6](https://github.com/benletchford/systemless/commit/61d01c61ef774df9286a3849bb6a1bc6094858fc))
+* **file:** scope application working directory ([#1763](https://github.com/benletchford/systemless/issues/1763)) ([8aeae82](https://github.com/benletchford/systemless/commit/8aeae8258b1940b5c51df9209ec1e07c82c1f5ef))
+* **file:** scope classic file lock mutation ([#1740](https://github.com/benletchford/systemless/issues/1740)) ([96dd5ff](https://github.com/benletchford/systemless/commit/96dd5ff15365613a04b65fc5a9730b2c9a76bed3))
+* **file:** scope completion queue mutation ([#1742](https://github.com/benletchford/systemless/issues/1742)) ([c504643](https://github.com/benletchford/systemless/commit/c504643b7c9e30a43a37e1e4dd4feb00ff526dcf))
+* **file:** scope default directory mutation ([#1772](https://github.com/benletchford/systemless/issues/1772)) ([d8a2cc1](https://github.com/benletchford/systemless/commit/d8a2cc173a34b8ae047e37b037cb267f734a50bb))
+* **file:** scope process fork map mutation ([#1748](https://github.com/benletchford/systemless/issues/1748)) ([8589806](https://github.com/benletchford/systemless/commit/85898063b36bc6e263e6c1570f78fbf06dc16eed))
+* **file:** scope VFS catalogue mutation ([#1744](https://github.com/benletchford/systemless/issues/1744)) ([86f8776](https://github.com/benletchford/systemless/commit/86f87760f67edeaed13bd875a96a8fae5d7406c9))
+* **file:** scope VFS directory cursor ([#1770](https://github.com/benletchford/systemless/issues/1770)) ([fbf266b](https://github.com/benletchford/systemless/commit/fbf266b6c1fa7f5f995d6630db8647e084a09270))
+* **file:** scope VFS metadata cursors ([#1768](https://github.com/benletchford/systemless/issues/1768)) ([99d26e8](https://github.com/benletchford/systemless/commit/99d26e86ff34a95d05285963434e60331ada73fe))
+* **file:** scope VFS metadata mutation ([#1746](https://github.com/benletchford/systemless/issues/1746)) ([9676985](https://github.com/benletchford/systemless/commit/96769850207897f11158208143daa9dfe8425a40))
+* **file:** scope VFS volume cursor mutation ([#1761](https://github.com/benletchford/systemless/issues/1761)) ([1dcb093](https://github.com/benletchford/systemless/commit/1dcb0930325769204e20a0d4869e75fddc31d6b9))
+* **file:** scope working directory mutation ([#1757](https://github.com/benletchford/systemless/issues/1757)) ([5078a33](https://github.com/benletchford/systemless/commit/5078a33d0e15a46740f9185f08276028d321d227))
+* **file:** scope writable refnum mutation ([#1738](https://github.com/benletchford/systemless/issues/1738)) ([818e358](https://github.com/benletchford/systemless/commit/818e35867fca1d197d76ebfbb388a72e112c8045))
+* **files:** scope open file record mutation ([559d8ab](https://github.com/benletchford/systemless/commit/559d8ab3d97ef8f662ae59cedd06c49bcebdc1aa))
+* **files:** scope process file system mutation ([#1817](https://github.com/benletchford/systemless/issues/1817)) ([3ca3ef7](https://github.com/benletchford/systemless/commit/3ca3ef700079d1859e6eaa13d9dbd746d6e58fb8))
+* **files:** scope shared fork mutation ([6b2decb](https://github.com/benletchford/systemless/commit/6b2decbc02f8064da5b1bf25100e5f90bd62524d))
+* **input:** scope shared fixture mutation ([#1736](https://github.com/benletchford/systemless/issues/1736)) ([83f2b4c](https://github.com/benletchford/systemless/commit/83f2b4ca11e2dd714ef4eb13c3d2db7de6b9339e))
+* **list:** scope shared manager mutation ([#1730](https://github.com/benletchford/systemless/issues/1730)) ([ba9d96f](https://github.com/benletchford/systemless/commit/ba9d96fadc37413933b6d0e9e0f8e4ba0d702168))
+* **menu:** scope shared menu call mutation ([#1750](https://github.com/benletchford/systemless/issues/1750)) ([207ca00](https://github.com/benletchford/systemless/commit/207ca00f61e630abbd7e086d428857c9af560757))
+* **mixed-mode:** scope shared storage mutation ([#1734](https://github.com/benletchford/systemless/issues/1734)) ([544a273](https://github.com/benletchford/systemless/commit/544a273235dd8304b53f4b5cfbfe951133373ba0))
+* **ppc:** extract blit tests ([#1831](https://github.com/benletchford/systemless/issues/1831)) ([ef5751e](https://github.com/benletchford/systemless/commit/ef5751ea6a47dd4ab8940f053b0e2728e3281e67))
+* **ppc:** extract file manager tests ([#1824](https://github.com/benletchford/systemless/issues/1824)) ([e930001](https://github.com/benletchford/systemless/commit/e9300018ffa768c0e88f350c15b6ccecda9e2abd))
+* **ppc:** extract gworld tests ([#1833](https://github.com/benletchford/systemless/issues/1833)) ([dc6bf30](https://github.com/benletchford/systemless/commit/dc6bf300a691a4c79a4168139d40088c5fd14525))
+* **ppc:** extract palette manager tests ([#1829](https://github.com/benletchford/systemless/issues/1829)) ([b67d395](https://github.com/benletchford/systemless/commit/b67d395b65ec24371f26f5bf2ba644e76d38f1ac))
+* **ppc:** extract sound dispatch ([#1840](https://github.com/benletchford/systemless/issues/1840)) ([e31c5b9](https://github.com/benletchford/systemless/commit/e31c5b98e67c287a523a02e78570834a4a55c2fb))
+* **ppc:** introduce dispatch context ([#1837](https://github.com/benletchford/systemless/issues/1837)) ([7f34acf](https://github.com/benletchford/systemless/commit/7f34acf3a3e55f1cfa164e449ac8a105bb6027ff))
+* **process:** scope shared value attachment transfer ([#1755](https://github.com/benletchford/systemless/issues/1755)) ([b0eb155](https://github.com/benletchford/systemless/commit/b0eb155eb74a30a9667f87fcaf77113563fc1c9b))
+* **quickdraw:** scope classic current port assignment ([6a62ef9](https://github.com/benletchford/systemless/commit/6a62ef913eb2f4ee564b31df8e67b0092fc81de4))
+* **quickdraw:** scope current device assignment ([db77678](https://github.com/benletchford/systemless/commit/db77678818424b5711397cd940e34248d496f8b4))
+* **quickdraw:** scope native current graphics mutation ([f5eb819](https://github.com/benletchford/systemless/commit/f5eb819ebb764174145aa96deb3160d7654f11f4))
+* **quickdraw:** scope PowerPC current port assignment ([3b7937b](https://github.com/benletchford/systemless/commit/3b7937b12f1eb52f50cecff7a8cd00c20ca968e1))
+* **quickdraw:** scope shared error mutation ([#1759](https://github.com/benletchford/systemless/issues/1759)) ([dfc8007](https://github.com/benletchford/systemless/commit/dfc8007b1f89e3bbc6540c719b622f0c581941cf))
+* **resource:** remove shared mutable dereference ([ed4c8fc](https://github.com/benletchford/systemless/commit/ed4c8fc6120c0c24377a02852e0fbab264b669fb))
+* **resource:** scope current file mutation ([#1765](https://github.com/benletchford/systemless/issues/1765)) ([b31b18c](https://github.com/benletchford/systemless/commit/b31b18c18c57d28f65c98ba9177af508f0c92f05))
+* **resource:** scope direct shared mutation ([#1774](https://github.com/benletchford/systemless/issues/1774)) ([1fb7fb3](https://github.com/benletchford/systemless/commit/1fb7fb383f39242c83398b95b0a68b05cc2f2f5a))
+* **resource:** scope process filesystem mutation ([888f72a](https://github.com/benletchford/systemless/commit/888f72a261259d618f5331d9bf7663ea203b80e6))
+* **scheduler:** scope shared task mutation ([a86bab3](https://github.com/benletchford/systemless/commit/a86bab31763d1bc012872adf0a98ba9d2b6670aa))
+* **scrap:** scope shared desktop mutation ([53e7606](https://github.com/benletchford/systemless/commit/53e7606bd3ab381ebf6a3b4285208558ec0f624c))
+* **sound:** scope remaining shared state mutation ([c30e830](https://github.com/benletchford/systemless/commit/c30e83086efdcdce35e5c25e7f0a3b3942e565d3))
+* **sound:** scope shared channel mutation ([7be8998](https://github.com/benletchford/systemless/commit/7be8998da3d8771aa4d099223f366c567dd29f86))
+* **sound:** scope shared manager operations ([a4756a8](https://github.com/benletchford/systemless/commit/a4756a815dabc328636166d60f45c567cbffaaca))
+* **textedit:** scope shared manager mutation ([93a4724](https://github.com/benletchford/systemless/commit/93a47247858d8d5e380791db26878d51bc278f2b))
+* **window:** scope shared list mutation ([#1728](https://github.com/benletchford/systemless/issues/1728)) ([2c22af6](https://github.com/benletchford/systemless/commit/2c22af6dc31a765a91517fbc9225e4617e04c791))
+
 ## [0.40.1](https://github.com/benletchford/systemless/compare/v0.40.0...v0.40.1) (2026-09-13)
 
 
