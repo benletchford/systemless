@@ -1172,6 +1172,21 @@ pub enum PpcSpeechCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcPrintingCompatibilityOperation {
+    PrClose,
+    PrCloseDoc,
+    PrClosePage,
+    PrError,
+    PrJobDialog,
+    PrOpen,
+    PrOpenDoc,
+    PrOpenPage,
+    PrPicFile,
+    PrStlDialog,
+    PrintDefault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcAppleEventCompatibilityOperation {
     CountItems,
     CreateAppleEvent,
@@ -2160,7 +2175,7 @@ pub enum PpcImportDispatcherTarget {
     SystemCompatibility,
     FileCompatibility,
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
-    PrintingCompatibility,
+    PrintingCompatibility(PpcPrintingCompatibilityOperation),
     SlotCompatibility,
     StandardFileCompatibility,
     SoundInputCompatibility,
@@ -15718,11 +15733,39 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "StandardNBP") => PpcImportDispatcherTarget::AppleTalkCompatibility(
             PpcAppleTalkCompatibilityOperation::StandardNbp,
         ),
-        (
-            "InterfaceLib",
-            "PrClose" | "PrCloseDoc" | "PrClosePage" | "PrError" | "PrJobDialog" | "PrOpen"
-            | "PrOpenDoc" | "PrOpenPage" | "PrPicFile" | "PrStlDialog" | "PrintDefault",
-        ) => PpcImportDispatcherTarget::PrintingCompatibility,
+        ("InterfaceLib", "PrClose") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrClose,
+        ),
+        ("InterfaceLib", "PrCloseDoc") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrCloseDoc,
+        ),
+        ("InterfaceLib", "PrClosePage") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrClosePage,
+        ),
+        ("InterfaceLib", "PrError") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrError,
+        ),
+        ("InterfaceLib", "PrJobDialog") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrJobDialog,
+        ),
+        ("InterfaceLib", "PrOpen") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrOpen,
+        ),
+        ("InterfaceLib", "PrOpenDoc") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrOpenDoc,
+        ),
+        ("InterfaceLib", "PrOpenPage") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrOpenPage,
+        ),
+        ("InterfaceLib", "PrPicFile") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrPicFile,
+        ),
+        ("InterfaceLib", "PrStlDialog") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrStlDialog,
+        ),
+        ("InterfaceLib", "PrintDefault") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrintDefault,
+        ),
         (
             "InterfaceLib",
             "SFindStruct" | "SGetBlock" | "SGetCString" | "SGetSRsrc" | "SGetTypeSRsrc"
@@ -27052,8 +27095,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => {
             Some(ppc_dispatch_appletalk_compatibility(operation, cpu, memory))
         }
-        PpcImportDispatcherTarget::PrintingCompatibility => {
-            Some(ppc_dispatch_printing_compatibility(binding, cpu, memory))
+        PpcImportDispatcherTarget::PrintingCompatibility(operation) => {
+            Some(ppc_dispatch_printing_compatibility(operation))
         }
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
@@ -29326,15 +29369,22 @@ fn ppc_dispatch_appletalk_compatibility(
 }
 
 fn ppc_dispatch_printing_compatibility(
-    binding: &PpcImportBinding,
-    _cpu: &mut PpcCpu,
-    _memory: &mut PpcSectionMem,
+    operation: PpcPrintingCompatibilityOperation,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "PrJobDialog" | "PrStlDialog" | "PrOpenDoc" => PpcImportAction::Return(0),
-        "PrError" => PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)),
-        "PrintDefault" => PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)),
-        _ => PpcImportAction::ReturnPreserve,
+    match operation {
+        PpcPrintingCompatibilityOperation::PrJobDialog
+        | PpcPrintingCompatibilityOperation::PrStlDialog
+        | PpcPrintingCompatibilityOperation::PrOpenDoc => PpcImportAction::Return(0),
+        PpcPrintingCompatibilityOperation::PrError
+        | PpcPrintingCompatibilityOperation::PrintDefault => {
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcPrintingCompatibilityOperation::PrClose
+        | PpcPrintingCompatibilityOperation::PrCloseDoc
+        | PpcPrintingCompatibilityOperation::PrClosePage
+        | PpcPrintingCompatibilityOperation::PrOpen
+        | PpcPrintingCompatibilityOperation::PrOpenPage
+        | PpcPrintingCompatibilityOperation::PrPicFile => PpcImportAction::ReturnPreserve,
     }
 }
 

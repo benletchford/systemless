@@ -16528,6 +16528,24 @@ fn import_bindings_classify_dialog_and_utility_imports() {
             PpcImportDispatcherTarget::SpeechCompatibility(operation),
         );
     }
+    for (symbol, operation) in [
+        ("PrClose", PpcPrintingCompatibilityOperation::PrClose),
+        ("PrCloseDoc", PpcPrintingCompatibilityOperation::PrCloseDoc),
+        ("PrClosePage", PpcPrintingCompatibilityOperation::PrClosePage),
+        ("PrError", PpcPrintingCompatibilityOperation::PrError),
+        ("PrJobDialog", PpcPrintingCompatibilityOperation::PrJobDialog),
+        ("PrOpen", PpcPrintingCompatibilityOperation::PrOpen),
+        ("PrOpenDoc", PpcPrintingCompatibilityOperation::PrOpenDoc),
+        ("PrOpenPage", PpcPrintingCompatibilityOperation::PrOpenPage),
+        ("PrPicFile", PpcPrintingCompatibilityOperation::PrPicFile),
+        ("PrStlDialog", PpcPrintingCompatibilityOperation::PrStlDialog),
+        ("PrintDefault", PpcPrintingCompatibilityOperation::PrintDefault),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::PrintingCompatibility(operation),
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "SecondsToDate"),
         PpcImportDispatcherTarget::SecondsToDate
