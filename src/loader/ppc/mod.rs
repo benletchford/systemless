@@ -130713,7 +130713,7 @@ pub(crate) mod tests {
         assert_eq!(
             replay_loaded
                 .memory
-                .read_u16_be(front_base + 0 * 16 + 4 * 2),
+                .read_u16_be(front_base + 4 * 2),
             Some(0x03e0)
         );
         assert_eq!(
