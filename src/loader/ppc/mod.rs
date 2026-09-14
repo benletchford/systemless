@@ -135,6 +135,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
 mod dispatch_event;
+mod dispatch_files;
 mod dispatch_math;
 mod dispatch_quickdraw;
 mod dispatch_sound;
@@ -16221,6 +16222,18 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     }
 
     let mut current_menu_list = ppc_current_menu_list(memory);
+    if let Some(action) = dispatch_files::dispatch_file_import(
+        dispatch_files::PpcFileDispatchContext {
+            binding,
+            cpu,
+            memory,
+            files,
+            writable_refnums,
+            vfs_files,
+        },
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_quickdraw::dispatch_quickdraw_import(
         dispatch_quickdraw::PpcQuickDrawDispatchContext {
             binding,
@@ -18063,6 +18076,23 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         }
         PpcImportDispatcherTarget::SetCCursor | PpcImportDispatcherTarget::DisposeCCursor => {
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FSClose
+        | PpcImportDispatcherTarget::PBClose
+        | PpcImportDispatcherTarget::PBFlushFile
+        | PpcImportDispatcherTarget::FSRead
+        | PpcImportDispatcherTarget::PBRead
+        | PpcImportDispatcherTarget::FSWrite
+        | PpcImportDispatcherTarget::PBWrite
+        | PpcImportDispatcherTarget::GetEOF
+        | PpcImportDispatcherTarget::PBGetEOF
+        | PpcImportDispatcherTarget::SetEOF
+        | PpcImportDispatcherTarget::AllocContig
+        | PpcImportDispatcherTarget::PBSetEOF
+        | PpcImportDispatcherTarget::GetFPos
+        | PpcImportDispatcherTarget::SetFPos
+        | PpcImportDispatcherTarget::PBSetFPos => {
+            unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
@@ -21353,51 +21383,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 current_resource_refnum,
                 last_resource_error,
             ),
-        ))),
-        PpcImportDispatcherTarget::FSClose => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fs_close(cpu, files, writable_refnums),
-        ))),
-        PpcImportDispatcherTarget::PBClose => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_close(cpu, memory, files, writable_refnums),
-        ))),
-        PpcImportDispatcherTarget::PBFlushFile => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_flush_file(cpu, memory, files),
-        ))),
-        PpcImportDispatcherTarget::FSRead => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fs_read(cpu, memory, files, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::PBRead => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_read(cpu, memory, files, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::FSWrite => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fs_write(cpu, memory, files, writable_refnums, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::PBWrite => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_write(cpu, memory, files, writable_refnums, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::GetEOF => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_eof(cpu, memory, files, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::PBGetEOF => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_get_eof(cpu, memory, files, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::SetEOF => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_set_eof(cpu, files, writable_refnums, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::AllocContig => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_alloc_contig(cpu, memory, files, writable_refnums),
-        ))),
-        PpcImportDispatcherTarget::PBSetEOF => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_set_eof(cpu, memory, files, writable_refnums, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::GetFPos => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_fpos(cpu, memory, files),
-        ))),
-        PpcImportDispatcherTarget::SetFPos => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_set_fpos(cpu, files, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::PBSetFPos => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_set_fpos(cpu, memory, files, vfs_files),
         ))),
         PpcImportDispatcherTarget::PBHCreate => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pbh_create(
