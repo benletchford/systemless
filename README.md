@@ -28,6 +28,15 @@ image, a System installation, or hardware emulation. On macOS, classic
 applications keep their own identity: guest menus appear in the native menu bar,
 while the guest application name and icon integrate with the Dock.
 
+## Try it in your browser
+
+| [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
+| :---: | :---: |
+| [![Marathon running in Systemless](.github/assets/marathon-gameplay.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](.github/assets/escape-velocity-gameplay.png)](https://systemless.org/escape-velocity) |
+
+Play these and more classic Macintosh games in your browser at
+[systemless.org](https://systemless.org/).
+
 ## Quick Start
 
 Install with Homebrew on macOS:
@@ -94,15 +103,6 @@ so its CPU totals are **not a proxy for GUI or gameplay CPU usage**. Tick
 scripts and instruction scripts cannot be combined. Time-based headless
 results still exclude the host window, compositor, and physical audio device;
 compare equal game progress and outputs, and verify windowed CPU separately.
-
-## Try it in your browser
-
-| [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
-| :---: | :---: |
-| [![Marathon running in Systemless](.github/assets/marathon-gameplay.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](.github/assets/escape-velocity-gameplay.png)](https://systemless.org/escape-velocity) |
-
-Play these and more classic Macintosh games in your browser at
-[systemless.org](https://systemless.org/).
 
 ## How it works
 
