@@ -16504,6 +16504,30 @@ fn import_bindings_classify_dialog_and_utility_imports() {
             PpcImportDispatcherTarget::StdCCompatibility(operation),
         );
     }
+    for (symbol, operation) in [
+        ("CountVoices", PpcSpeechCompatibilityOperation::CountVoices),
+        (
+            "DisposeSpeechChannel",
+            PpcSpeechCompatibilityOperation::DisposeSpeechChannel,
+        ),
+        ("GetIndVoice", PpcSpeechCompatibilityOperation::GetIndVoice),
+        (
+            "GetVoiceDescription",
+            PpcSpeechCompatibilityOperation::GetVoiceDescription,
+        ),
+        (
+            "NewSpeechChannel",
+            PpcSpeechCompatibilityOperation::NewSpeechChannel,
+        ),
+        ("SpeakString", PpcSpeechCompatibilityOperation::SpeakString),
+        ("SpeakText", PpcSpeechCompatibilityOperation::SpeakText),
+        ("SpeechBusy", PpcSpeechCompatibilityOperation::SpeechBusy),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("SpeechLib", symbol),
+            PpcImportDispatcherTarget::SpeechCompatibility(operation),
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "SecondsToDate"),
         PpcImportDispatcherTarget::SecondsToDate

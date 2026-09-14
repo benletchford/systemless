@@ -1160,6 +1160,18 @@ pub enum PpcStdCCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcSpeechCompatibilityOperation {
+    CountVoices,
+    DisposeSpeechChannel,
+    GetIndVoice,
+    GetVoiceDescription,
+    NewSpeechChannel,
+    SpeakString,
+    SpeakText,
+    SpeechBusy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcAppleEventCompatibilityOperation {
     CountItems,
     CreateAppleEvent,
@@ -2152,7 +2164,7 @@ pub enum PpcImportDispatcherTarget {
     SlotCompatibility,
     StandardFileCompatibility,
     SoundInputCompatibility,
-    SpeechCompatibility,
+    SpeechCompatibility(PpcSpeechCompatibilityOperation),
     QuickTimeCompatibility,
     InputSprocketCompatibility,
     MathCompatibility(PpcMathCompatibilityOperation),
@@ -15731,17 +15743,36 @@ fn dispatcher_target_for_import(
             "SPBCloseDevice" | "SPBGetDeviceInfo" | "SPBOpenDevice" | "SPBRecord"
             | "SPBSetDeviceInfo" | "SPBStopRecording",
         ) => PpcImportDispatcherTarget::SoundInputCompatibility,
-        (
-            "SpeechLib",
-            "CountVoices"
-            | "DisposeSpeechChannel"
-            | "GetIndVoice"
-            | "GetVoiceDescription"
-            | "NewSpeechChannel"
-            | "SpeakString"
-            | "SpeakText"
-            | "SpeechBusy",
-        ) => PpcImportDispatcherTarget::SpeechCompatibility,
+        ("SpeechLib", "CountVoices") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::CountVoices,
+        ),
+        ("SpeechLib", "DisposeSpeechChannel") => {
+            PpcImportDispatcherTarget::SpeechCompatibility(
+                PpcSpeechCompatibilityOperation::DisposeSpeechChannel,
+            )
+        }
+        ("SpeechLib", "GetIndVoice") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::GetIndVoice,
+        ),
+        ("SpeechLib", "GetVoiceDescription") => {
+            PpcImportDispatcherTarget::SpeechCompatibility(
+                PpcSpeechCompatibilityOperation::GetVoiceDescription,
+            )
+        }
+        ("SpeechLib", "NewSpeechChannel") => {
+            PpcImportDispatcherTarget::SpeechCompatibility(
+                PpcSpeechCompatibilityOperation::NewSpeechChannel,
+            )
+        }
+        ("SpeechLib", "SpeakString") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::SpeakString,
+        ),
+        ("SpeechLib", "SpeakText") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::SpeakText,
+        ),
+        ("SpeechLib", "SpeechBusy") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::SpeechBusy,
+        ),
         (
             "QuickTimeLib",
             "GetMovieTimeBase"
@@ -27079,8 +27110,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SoundInputCompatibility => {
             unreachable!("sound imports return through dispatch_sound_import")
         }
-        PpcImportDispatcherTarget::SpeechCompatibility => {
-            Some(ppc_dispatch_speech_compatibility(binding, cpu, memory))
+        PpcImportDispatcherTarget::SpeechCompatibility(operation) => {
+            Some(ppc_dispatch_speech_compatibility(operation, cpu, memory))
         }
         PpcImportDispatcherTarget::QuickTimeCompatibility => Some(
             ppc_dispatch_quicktime_compatibility(binding, cpu, memory, quicktime),
@@ -29330,12 +29361,12 @@ fn ppc_dispatch_sound_input_compatibility(
 }
 
 fn ppc_dispatch_speech_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcSpeechCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "CountVoices" => {
+    match operation {
+        PpcSpeechCompatibilityOperation::CountVoices => {
             let result = if memory.write_u16_be(cpu.gpr[3], 0).is_some() {
                 PPC_NO_ERR
             } else {
@@ -29343,18 +29374,22 @@ fn ppc_dispatch_speech_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(result))
         }
-        "SpeechBusy" => PpcImportAction::Return(0),
-        "DisposeSpeechChannel" => PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)),
-        "NewSpeechChannel" => {
+        PpcSpeechCompatibilityOperation::SpeechBusy => PpcImportAction::Return(0),
+        PpcSpeechCompatibilityOperation::DisposeSpeechChannel => {
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcSpeechCompatibilityOperation::NewSpeechChannel => {
             if cpu.gpr[4] != 0 {
                 let _ = memory.write_u32_be(cpu.gpr[4], 0);
             }
             PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR))
         }
-        "GetIndVoice" | "GetVoiceDescription" | "SpeakString" | "SpeakText" => {
+        PpcSpeechCompatibilityOperation::GetIndVoice
+        | PpcSpeechCompatibilityOperation::GetVoiceDescription
+        | PpcSpeechCompatibilityOperation::SpeakString
+        | PpcSpeechCompatibilityOperation::SpeakText => {
             PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR))
         }
-        _ => PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR)),
     }
 }
 
