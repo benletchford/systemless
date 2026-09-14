@@ -1187,6 +1187,15 @@ pub enum PpcPrintingCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcInputSprocketCompatibilityOperation {
+    DevicesActivateClass,
+    ElementDisposeVirtual,
+    ElementFlush,
+    ElementGetNextEvent,
+    Tickle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcAppleEventCompatibilityOperation {
     CountItems,
     CreateAppleEvent,
@@ -2181,7 +2190,7 @@ pub enum PpcImportDispatcherTarget {
     SoundInputCompatibility,
     SpeechCompatibility(PpcSpeechCompatibilityOperation),
     QuickTimeCompatibility,
-    InputSprocketCompatibility,
+    InputSprocketCompatibility(PpcInputSprocketCompatibilityOperation),
     MathCompatibility(PpcMathCompatibilityOperation),
     StdCCompatibility(PpcStdCCompatibilityOperation),
     ObjectSupportCompatibility,
@@ -15826,14 +15835,31 @@ fn dispatcher_target_for_import(
             | "SetTimeBaseFlags"
             | "UpdateMovie",
         ) => PpcImportDispatcherTarget::QuickTimeCompatibility,
-        (
-            "InputSprocketLib",
-            "ISpDevices_ActivateClass"
-            | "ISpElement_DisposeVirtual"
-            | "ISpElement_Flush"
-            | "ISpElement_GetNextEvent"
-            | "ISpTickle",
-        ) => PpcImportDispatcherTarget::InputSprocketCompatibility,
+        ("InputSprocketLib", "ISpDevices_ActivateClass") => {
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
+            )
+        }
+        ("InputSprocketLib", "ISpElement_DisposeVirtual") => {
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual,
+            )
+        }
+        ("InputSprocketLib", "ISpElement_Flush") => {
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::ElementFlush,
+            )
+        }
+        ("InputSprocketLib", "ISpElement_GetNextEvent") => {
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+            )
+        }
+        ("InputSprocketLib", "ISpTickle") => {
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::Tickle,
+            )
+        }
         ("MathLib", "dec2num") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::Dec2Num,
         ),
@@ -27159,9 +27185,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::QuickTimeCompatibility => Some(
             ppc_dispatch_quicktime_compatibility(binding, cpu, memory, quicktime),
         ),
-        PpcImportDispatcherTarget::InputSprocketCompatibility => {
+        PpcImportDispatcherTarget::InputSprocketCompatibility(operation) => {
             Some(ppc_dispatch_input_sprocket_compatibility(
-                binding,
+                operation,
                 cpu,
                 memory,
                 input_sprocket,
@@ -29536,32 +29562,34 @@ fn ppc_dispatch_quicktime_compatibility(
 }
 
 fn ppc_dispatch_input_sprocket_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcInputSprocketCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     input_sprocket: &mut PpcInputSprocketState,
     virtual_elements: &mut Vec<PpcInputSprocketVirtualElementRecord>,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "ISpDevices_ActivateClass" => {
+    match operation {
+        PpcInputSprocketCompatibilityOperation::DevicesActivateClass => {
             input_sprocket.keyboard_active = true;
             input_sprocket.mouse_active = true;
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
-        "ISpElement_DisposeVirtual" => {
+        PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual => {
             virtual_elements.retain(|element| element.element != cpu.gpr[3]);
             input_sprocket.virtual_element_count =
                 u32::try_from(virtual_elements.len()).unwrap_or(u32::MAX);
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
-        "ISpElement_GetNextEvent" => {
+        PpcInputSprocketCompatibilityOperation::ElementGetNextEvent => {
             if cpu.gpr[4] != 0 {
                 let _ = memory.write_u32_be(cpu.gpr[4], 0);
             }
             PpcImportAction::Return(0)
         }
-        "ISpElement_Flush" | "ISpTickle" => PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)),
-        _ => PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)),
+        PpcInputSprocketCompatibilityOperation::ElementFlush
+        | PpcInputSprocketCompatibilityOperation::Tickle => {
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
     }
 }
 
