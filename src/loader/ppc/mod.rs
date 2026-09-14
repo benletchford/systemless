@@ -18791,6 +18791,18 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     let _ = ppc_record_copy_bits(cpu, memory, gworlds, commands);
                 }
             }
+            // Screen blits must not paint through windows above the current
+            // port. Preserve their structure pixels, including presentation
+            // detail, just as the Window Manager clips rear-window chrome.
+            let saved_front = if window_list.contains(current_gworld)
+                && ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, cpu.gpr[4])
+                    .zip(ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD))
+                    .is_some_and(|(destination, front)| destination.bits.base_addr == front.base_addr)
+            {
+                ppc_front_window_occlusion_pixels(memory, gworlds, window_list, *current_gworld)
+            } else {
+                None
+            };
             let op_color = ppc_current_op_color(memory, *current_gworld, quickdraw_op_colors);
             let _ = ppc_copy_bits(
                 cpu,
@@ -18809,6 +18821,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     .copied(),
                 op_color,
             );
+            if let Some(saved) = saved_front {
+                for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
+                    let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
+                    ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::BitMapToRegion => {
@@ -144025,6 +144043,67 @@ pub(crate) mod tests {
                 Some(marker)
             );
         }
+    }
+
+    #[test]
+    fn copy_bits_does_not_overwrite_a_front_window() {
+        // ClipAbove removes every front structure region before the Window
+        // Manager asks a rear WDEF to draw. Macintosh Toolbox Essentials
+        // (1992), pp. 4-106 and 4-118--4-119.
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+        let back = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (100, 100, 260, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let _front = create_test_cwindow(
+            &mut loaded,
+            bounds_ptr,
+            (120, 250, 280, 450),
+            0,
+            true,
+            u32::MAX,
+        );
+        let front_buffer =
+            ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let bitmap = PPC_DATA_BASE + 0x2000;
+        let pixels = bitmap + 64;
+        loaded.memory.add_region(bitmap, vec![0; 128]);
+        loaded.memory.write_u32_be(bitmap, pixels).unwrap();
+        loaded.memory.write_u16_be(bitmap + 4, 8).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 6, 0, 0, 8, 64).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 20, 0, 0, 8, 64).unwrap();
+        ppc_write_rect(&mut loaded.memory, bitmap + 28, 50, 100, 58, 183).unwrap();
+        loaded.cpu.gpr[3] = back;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+        for point in [(275, 150), (210, 150)] {
+            assert!(ppc_quickdraw_write_raw_pixel(
+                &mut loaded.memory, front_buffer, point, 0x7b,
+            ));
+        }
+        loaded.cpu.gpr[3] = bitmap;
+        loaded.cpu.gpr[4] = back + 2;
+        loaded.cpu.gpr[5] = bitmap + 20;
+        loaded.cpu.gpr[6] = bitmap + 28;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, (275, 150)),
+            Some(0x7b),
+            "CopyBits painted a back window through the front window"
+        );
+        assert_ne!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front_buffer, (210, 150)),
+            Some(0x7b),
+            "CopyBits must still update the unobscured back window"
+        );
     }
 
     #[test]
