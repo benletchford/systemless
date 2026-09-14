@@ -65695,6 +65695,11 @@ fn ppc_initialize_dialog_items(
             }
             return false;
         }
+        if base_type == PPC_DIALOG_ITEM_RESOURCE_CONTROL {
+            ppc_initialize_popup_control(
+                memory, controls, vfs_resources, current_resource_refnum, item_handle,
+            );
+        }
         if memory
             .write_u32_be(items_ptr.wrapping_add(item.item_offset as u32), item_handle)
             .is_none()
@@ -69332,6 +69337,9 @@ fn ppc_dispatch_legacy_control(
                 cpu.gpr[10] as u16 as i16,
                 ref_con,
             );
+            ppc_initialize_popup_control(
+                memory, controls, vfs_resources, current_resource_refnum, handle,
+            );
             if handle != 0 && cpu.gpr[6] != 0 {
                 let _ = ppc_draw_control(
                     memory,
@@ -69395,6 +69403,9 @@ fn ppc_dispatch_legacy_control(
             } else {
                 PPC_NO_ERR
             };
+            ppc_initialize_popup_control(
+                memory, controls, vfs_resources, current_resource_refnum, handle,
+            );
             if handle != 0 && bytes[10] != 0 {
                 let _ = ppc_draw_control(
                     memory,
@@ -69860,6 +69871,43 @@ fn ppc_new_control_record_values(
     });
     *last_mem_error = PPC_NO_ERR;
     handle
+}
+
+// GetNewControl converts popup creation parameters into the live item range.
+// The resource value is title style, not the selected item; menu ID and title
+// width are retained in PpcControlRecord. Macintosh Toolbox Essentials (1992),
+// Creating Pop-Up Menus, pp. 5-25--5-27.
+fn ppc_initialize_popup_control(
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    handle: u32,
+) {
+    let Some(record) = controls.iter().find(|record| {
+        record.handle == handle && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+    }) else {
+        return;
+    };
+    let Some(control) = ppc_control_ptr(memory, handle) else {
+        return;
+    };
+    let menu_list = ppc_current_menu_list(memory);
+    let menu = ppc_get_menu_handle(memory, menu_list, record.popup_menu_id);
+    let count = if menu != 0 {
+        usize::from(ppc_count_menu_items(memory, menu))
+    } else {
+        ppc_vfs_resource_index(
+            resources, current_resource_refnum, u32::from_be_bytes(*b"MENU"),
+            record.popup_menu_id, false,
+        )
+        .and_then(|index| ppc_decode_menu_items(&resources[index].data))
+        .map_or(0, |(_, _, items)| items.len())
+    };
+    let count = count.min(i16::MAX as usize) as u16;
+    let _ = memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, u16::from(count != 0));
+    let _ = memory.write_u16_be(control + PPC_CONTROL_MIN_OFFSET, 1);
+    let _ = memory.write_u16_be(control + PPC_CONTROL_MAX_OFFSET, count);
 }
 
 fn ppc_materialize_control_resource_parameters(
@@ -147582,6 +147630,10 @@ pub(crate) mod tests {
             Some((38, 226, 58, 326))
         );
         assert_eq!(loaded.controls[0].popup_menu_id, 300);
+        assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET), Some(1));
+        assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET), Some(1));
+        assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET), Some(2));
+        assert_eq!(loaded.controls[0].popup_title_width, Some(0));
         assert_eq!(
             ppc_popup_control_selected_text(
                 &mut loaded.memory,
