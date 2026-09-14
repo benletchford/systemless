@@ -637,6 +637,10 @@ impl SoundManager {
         self.channels.push(channel);
     }
 
+    pub(crate) fn add_channel(&mut self, channel: SndChannel) {
+        self.channels.push(channel);
+    }
+
     pub(crate) fn ensure_channel_mut(&mut self, guest_ptr: u32) -> &mut SndChannel {
         if let Some(index) = self
             .channels
@@ -649,11 +653,37 @@ impl SoundManager {
         self.channels.last_mut().unwrap()
     }
 
-    fn record_command(&mut self, command: u16) {
+    pub(crate) fn record_command(&mut self, command: u16) {
         self.debug_cmd_count = self.debug_cmd_count.saturating_add(1);
+        self.record_command_code(command);
+    }
+
+    pub(crate) fn record_command_code(&mut self, command: u16) {
         if !self.debug_cmd_codes_seen.contains(&command) {
             self.debug_cmd_codes_seen.push(command);
         }
+    }
+
+    pub(crate) fn note_buffer_command(&mut self) {
+        self.debug_buffer_cmd_count = self.debug_buffer_cmd_count.saturating_add(1);
+    }
+
+    pub(crate) fn note_file_playback(&mut self) {
+        self.debug_file_play_count = self.debug_file_play_count.saturating_add(1);
+    }
+
+    pub(crate) fn note_unhandled_command(&mut self, command: u16) {
+        if !self.debug_unhandled_cmds.contains(&command) {
+            self.debug_unhandled_cmds.push(command);
+        }
+    }
+
+    pub(crate) fn queue_sound_callback(&mut self, callback: PendingSoundCallback) {
+        self.pending_sound_callbacks.push(callback);
+    }
+
+    pub(crate) fn queue_doubleback_callback(&mut self, callback: PendingDoubleBackCallback) {
+        self.pending_callbacks.push(callback);
     }
 
     /// Submit decoded bufferCmd samples from a specific CPU adapter. The

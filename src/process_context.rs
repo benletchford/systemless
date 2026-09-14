@@ -1854,6 +1854,57 @@ impl SharedProcessValue<SoundManager> {
         });
     }
 
+    pub(crate) fn add_channel(&self, channel: SndChannel) {
+        self.with_mut(|manager| manager.add_channel(channel));
+    }
+
+    pub(crate) fn record_command(&self, command: u16) {
+        self.with_mut(|manager| manager.record_command(command));
+    }
+
+    pub(crate) fn record_command_code(&self, command: u16) {
+        self.with_mut(|manager| manager.record_command_code(command));
+    }
+
+    pub(crate) fn note_buffer_command(&self) {
+        self.with_mut(SoundManager::note_buffer_command);
+    }
+
+    pub(crate) fn note_file_playback(&self) {
+        self.with_mut(SoundManager::note_file_playback);
+    }
+
+    pub(crate) fn note_unhandled_command(&self, command: u16) {
+        self.with_mut(|manager| manager.note_unhandled_command(command));
+    }
+
+    pub(crate) fn queue_sound_callback(&self, callback: crate::sound::PendingSoundCallback) {
+        self.with_mut(|manager| manager.queue_sound_callback(callback));
+    }
+
+    pub(crate) fn queue_doubleback_callback(
+        &self,
+        callback: crate::sound::PendingDoubleBackCallback,
+    ) {
+        self.with_mut(|manager| manager.queue_doubleback_callback(callback));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_pending_process_doublebacks(
+        &self,
+        doublebacks: Vec<crate::sound::PendingProcessSoundDoubleBack>,
+    ) {
+        self.with_mut(|manager| manager.pending_process_doublebacks = doublebacks);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_double_buffer_playbacks(
+        &self,
+        playbacks: Vec<crate::sound::ProcessSoundDoubleBufferPlayback>,
+    ) {
+        self.with_mut(|manager| manager.double_buffer_playbacks = playbacks);
+    }
+
     pub(crate) fn play_buffer_command_for_architecture(
         &self,
         guest_ptr: u32,
@@ -10459,9 +10510,7 @@ mod tests {
     fn attached_sound_managers_share_channels_while_clones_detach() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessSoundManager::default();
-        classic
-            .channels
-            .push(crate::sound::SndChannel::new(0x2000, false));
+        classic.add_channel(crate::sound::SndChannel::new(0x2000, false));
         let mut native = SharedProcessSoundManager::default();
 
         context.attach_sound_manager(&mut classic);
@@ -10469,9 +10518,7 @@ mod tests {
         let detached = native.clone();
 
         native.set_sys_beep_volume(0x0080_0040);
-        classic
-            .channels
-            .push(crate::sound::SndChannel::new(0x3000, false));
+        classic.add_channel(crate::sound::SndChannel::new(0x3000, false));
         native.play_file_buffer(
             0x4000,
             vec![0x80],
@@ -10486,8 +10533,9 @@ mod tests {
         assert_eq!(detached.file_playback_paused(0x4000), None);
         assert_eq!(native.toggle_file_paused(0x4000), Some(false));
         native.mix_frame(1);
-        native.double_buffer_playbacks.push(
-            crate::sound::ProcessSoundDoubleBufferPlayback {
+        native.with_mut(|manager| {
+            manager.double_buffer_playbacks.push(
+                crate::sound::ProcessSoundDoubleBufferPlayback {
                 channel: 0x6000,
                 header: 0x6100,
                 buffers: [0x6200, 0x6300],
@@ -10504,10 +10552,10 @@ mod tests {
                 active: true,
                 host_initialized: true,
                 host_buffer_loaded: true,
-            },
-        );
-        native.pending_process_doublebacks.push(
-            crate::sound::PendingProcessSoundDoubleBack {
+                },
+            );
+            manager.pending_process_doublebacks.push(
+                crate::sound::PendingProcessSoundDoubleBack {
                 architecture: crate::callback_manager::CallbackTaskArchitecture::PowerPc,
                 channel: 0x6000,
                 header: 0x6100,
@@ -10516,8 +10564,9 @@ mod tests {
                 callback: 0x6400,
                 tick: 12,
                 instruction_count: 34,
-            },
-        );
+                },
+            );
+        });
         let playback_snapshot = native.clone();
         classic.quiet_channel(0x6000);
 

@@ -7864,11 +7864,13 @@ impl FixtureRunner {
                     host_channel.quiet();
                 });
         }
-        for playback in &mut ppc_app.sound.manager.double_buffer_playbacks {
-            if !playback.active {
-                playback.host_buffer_loaded = false;
+        ppc_app.sound.manager.with_mut(|sound| {
+            for playback in &mut sound.double_buffer_playbacks {
+                if !playback.active {
+                    playback.host_buffer_loaded = false;
+                }
             }
-        }
+        });
 
         for index in 0..ppc_app.sound.manager.double_buffer_playbacks.len() {
             let playback = ppc_app.sound.manager.double_buffer_playbacks[index];
@@ -7876,7 +7878,9 @@ impl FixtureRunner {
                 continue;
             }
             if !playback.host_initialized {
-                ppc_app.sound.manager.double_buffer_playbacks[index].host_initialized = true;
+                ppc_app.sound.manager.with_mut(|sound| {
+                    sound.double_buffer_playbacks[index].host_initialized = true;
+                });
                 self.dispatcher
                     .sound_manager
                     .note_double_buffer_submission();
@@ -7901,17 +7905,21 @@ impl FixtureRunner {
                 continue;
             };
             if decoded.flags & 0x01 == 0 || decoded.samples.is_empty() {
-                Self::queue_ppc_doubleback(
-                    &mut ppc_app.sound.manager,
-                    index,
-                    self.guest_tick(),
-                    self.total_instructions,
-                );
+                ppc_app.sound.manager.with_mut(|sound| {
+                    Self::queue_ppc_doubleback(
+                        sound,
+                        index,
+                        self.guest_tick(),
+                        self.total_instructions,
+                    );
+                });
                 continue;
             }
 
             self.play_ppc_decoded_double_buffer(playback, &decoded);
-            ppc_app.sound.manager.double_buffer_playbacks[index].host_buffer_loaded = true;
+            ppc_app.sound.manager.with_mut(|sound| {
+                sound.double_buffer_playbacks[index].host_buffer_loaded = true;
+            });
         }
     }
 
@@ -8060,20 +8068,25 @@ impl FixtureRunner {
                     .memory
                     .write_u32_be(buffer_ptr.wrapping_add(4), flags & !0x01);
             }
-            ppc_app.sound.manager.double_buffer_playbacks[index].host_buffer_loaded = false;
+            ppc_app.sound.manager.with_mut(|sound| {
+                sound.double_buffer_playbacks[index].host_buffer_loaded = false;
+            });
             if flags & 0x04 != 0 {
-                ppc_app.sound.manager.double_buffer_playbacks[index].active = false;
+                ppc_app.sound.manager.with_mut(|sound| {
+                    sound.double_buffer_playbacks[index].active = false;
+                });
                 continue;
             }
 
-            Self::queue_ppc_doubleback(
-                &mut ppc_app.sound.manager,
-                index,
-                self.guest_tick(),
-                self.total_instructions,
-            );
-            ppc_app.sound.manager.double_buffer_playbacks[index].current_buffer_index =
-                buffer_index ^ 1;
+            ppc_app.sound.manager.with_mut(|sound| {
+                Self::queue_ppc_doubleback(
+                    sound,
+                    index,
+                    self.guest_tick(),
+                    self.total_instructions,
+                );
+                sound.double_buffer_playbacks[index].current_buffer_index = buffer_index ^ 1;
+            });
         }
 
         self.service_ppc_double_buffer_memory(&mut ppc_app);
@@ -8117,22 +8130,17 @@ impl FixtureRunner {
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while fired_count < 16 {
-            let Some(index) = ppc_app
-                .sound
-                .manager
-                .pending_process_doublebacks
-                .iter()
-                .position(|doubleback| {
-                    doubleback.architecture == CallbackTaskArchitecture::PowerPc
-                })
-            else {
+            let Some(doubleback) = ppc_app.sound.manager.with_mut(|sound| {
+                sound
+                    .pending_process_doublebacks
+                    .iter()
+                    .position(|doubleback| {
+                        doubleback.architecture == CallbackTaskArchitecture::PowerPc
+                    })
+                    .map(|index| sound.pending_process_doublebacks.remove(index))
+            }) else {
                 break;
             };
-            let doubleback = ppc_app
-                .sound
-                .manager
-                .pending_process_doublebacks
-                .remove(index);
             let resume_pc = ppc_app.cpu.pc;
             let probe = self
                 .process_context
@@ -8182,18 +8190,19 @@ impl FixtureRunner {
             self.prepare_ppc_execution_clock(&mut ppc_app);
 
             let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
-            if let Some(playback) = ppc_app
-                .sound
-                .manager
-                .double_buffer_playbacks
-                .iter_mut()
-                .rev()
-                .find(|playback| {
-                    playback.channel == doubleback.channel && playback.header == doubleback.header
-                })
-            {
-                playback.callback_pending_mask &= !buffer_bit;
-            }
+            ppc_app.sound.manager.with_mut(|sound| {
+                if let Some(playback) = sound
+                    .double_buffer_playbacks
+                    .iter_mut()
+                    .rev()
+                    .find(|playback| {
+                        playback.channel == doubleback.channel
+                            && playback.header == doubleback.header
+                    })
+                {
+                    playback.callback_pending_mask &= !buffer_bit;
+                }
+            });
 
             let callback_failed = invocation.unsupported_import_index.is_some()
                 || !matches!(invocation.result, PpcRunResult::Halted { .. });
@@ -8265,31 +8274,26 @@ impl FixtureRunner {
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while fired_count < 16 {
-            let Some(pending_index) = ppc_app
-                .sound
-                .manager
-                .pending_sound_callbacks
-                .iter()
-                .position(|callback| {
-                    matches!(
-                        callback,
-                        crate::sound::PendingSoundCallback::Command {
-                            architecture: CallbackTaskArchitecture::PowerPc,
-                            ..
-                        } | crate::sound::PendingSoundCallback::FileCompletion {
-                            architecture: CallbackTaskArchitecture::PowerPc,
-                            ..
-                        }
-                    )
-                })
-            else {
+            let Some(pending) = ppc_app.sound.manager.with_mut(|sound| {
+                sound
+                    .pending_sound_callbacks
+                    .iter()
+                    .position(|callback| {
+                        matches!(
+                            callback,
+                            crate::sound::PendingSoundCallback::Command {
+                                architecture: CallbackTaskArchitecture::PowerPc,
+                                ..
+                            } | crate::sound::PendingSoundCallback::FileCompletion {
+                                architecture: CallbackTaskArchitecture::PowerPc,
+                                ..
+                            }
+                        )
+                    })
+                    .map(|index| sound.pending_sound_callbacks.remove(index))
+            }) else {
                 break;
             };
-            let pending = ppc_app
-                .sound
-                .manager
-                .pending_sound_callbacks
-                .remove(pending_index);
             let (callback_addr, chan_ptr, file_playback_index, command) = match pending {
                 crate::sound::PendingSoundCallback::Command {
                     callback_addr,
@@ -9959,97 +9963,99 @@ impl FixtureRunner {
             .map(|cb| (cb.chan_ptr, cb.exhausted_buffer_index))
             .collect::<Vec<_>>();
 
-        for chan in &mut self.dispatcher.sound_manager.channels {
-            if chan.is_playing() {
-                continue; // already has data
-            }
-            let (header_ptr, buf_idx, sample_rate, num_channels, sample_size) =
-                match chan.double_buffer {
-                    Some(ref db) if !db.last_buffer_seen => (
-                        db.header_ptr,
-                        db.current_buffer,
-                        db.sample_rate,
-                        db.num_channels,
-                        db.sample_size,
-                    ),
-                    _ => continue,
-                };
-            let mut load_idx = buf_idx;
-            let mut buf_ptr = self.bus.read_long(header_ptr + 12 + (buf_idx as u32) * 4);
-            let mut can_load = buf_ptr != 0
-                && self.bus.read_long(buf_ptr + 4) & 0x01 != 0
-                && !queued_doublebacks
-                    .iter()
-                    .any(|&(pending_chan, pending_idx)| {
-                        pending_chan == chan.guest_ptr && pending_idx == buf_idx
-                    });
-            let original_idx = load_idx;
-            if !can_load {
-                let other_idx = buf_idx ^ 1;
-                let other_ptr = self.bus.read_long(header_ptr + 12 + (other_idx as u32) * 4);
-                if other_ptr == 0 {
-                    continue;
+        let sound_manager = self.dispatcher.sound_manager.shared_handle();
+        sound_manager.with_mut(|manager| {
+            for chan in &mut manager.channels {
+                if chan.is_playing() {
+                    continue; // already has data
                 }
-                let other_flags = self.bus.read_long(other_ptr + 4);
-                let other_pending =
-                    queued_doublebacks
+                let (header_ptr, buf_idx, sample_rate, num_channels, sample_size) =
+                    match chan.double_buffer {
+                        Some(ref db) if !db.last_buffer_seen => (
+                            db.header_ptr,
+                            db.current_buffer,
+                            db.sample_rate,
+                            db.num_channels,
+                            db.sample_size,
+                        ),
+                        _ => continue,
+                    };
+                let mut load_idx = buf_idx;
+                let mut buf_ptr = self.bus.read_long(header_ptr + 12 + (buf_idx as u32) * 4);
+                let mut can_load = buf_ptr != 0
+                    && self.bus.read_long(buf_ptr + 4) & 0x01 != 0
+                    && !queued_doublebacks
                         .iter()
                         .any(|&(pending_chan, pending_idx)| {
-                            pending_chan == chan.guest_ptr && pending_idx == other_idx
+                            pending_chan == chan.guest_ptr && pending_idx == buf_idx
                         });
-                if other_flags & 0x01 == 0 || other_pending {
-                    continue; // neither available buffer is ready yet
+                let original_idx = load_idx;
+                if !can_load {
+                    let other_idx = buf_idx ^ 1;
+                    let other_ptr = self.bus.read_long(header_ptr + 12 + (other_idx as u32) * 4);
+                    if other_ptr == 0 {
+                        continue;
+                    }
+                    let other_flags = self.bus.read_long(other_ptr + 4);
+                    let other_pending = queued_doublebacks.iter().any(
+                        |&(pending_chan, pending_idx)| {
+                            pending_chan == chan.guest_ptr && pending_idx == other_idx
+                        },
+                    );
+                    if other_flags & 0x01 == 0 || other_pending {
+                        continue; // neither available buffer is ready yet
+                    }
+                    load_idx = other_idx;
+                    buf_ptr = other_ptr;
+                    can_load = true;
+                    if let Some(ref mut db) = chan.double_buffer {
+                        db.current_buffer = other_idx;
+                    }
                 }
-                load_idx = other_idx;
-                buf_ptr = other_ptr;
-                can_load = true;
-                if let Some(ref mut db) = chan.double_buffer {
-                    db.current_buffer = other_idx;
+                if !can_load {
+                    continue;
                 }
-            }
-            if !can_load {
-                continue;
-            }
-            let flags = self.bus.read_long(buf_ptr + 4);
-            if trace_sound_runner_enabled() {
-                let preview = self
-                    .bus
-                    .read_bytes(buf_ptr + 16, 16)
-                    .iter()
-                    .map(|byte| format!("{:02X}", byte))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                eprintln!(
-                    "[SOUND-DB] load-ready chan=${:08X} header=${:08X} requested_idx={} load_idx={} buf=${:08X} frames={} flags=${:08X} pending={:?} first={}",
-                    chan.guest_ptr,
-                    header_ptr,
-                    original_idx,
-                    load_idx,
+                let flags = self.bus.read_long(buf_ptr + 4);
+                if trace_sound_runner_enabled() {
+                    let preview = self
+                        .bus
+                        .read_bytes(buf_ptr + 16, 16)
+                        .iter()
+                        .map(|byte| format!("{:02X}", byte))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    eprintln!(
+                        "[SOUND-DB] load-ready chan=${:08X} header=${:08X} requested_idx={} load_idx={} buf=${:08X} frames={} flags=${:08X} pending={:?} first={}",
+                        chan.guest_ptr,
+                        header_ptr,
+                        original_idx,
+                        load_idx,
+                        buf_ptr,
+                        self.bus.read_long(buf_ptr),
+                        flags,
+                        chan.double_buffer
+                            .as_ref()
+                            .map(|db| db.pending_callback_buffers)
+                            .unwrap_or([false; 2]),
+                        preview
+                    );
+                }
+                crate::trap::TrapDispatcher::load_double_buffer_samples(
+                    &mut self.bus,
+                    chan,
                     buf_ptr,
-                    self.bus.read_long(buf_ptr),
-                    flags,
-                    chan.double_buffer
-                        .as_ref()
-                        .map(|db| db.pending_callback_buffers)
-                        .unwrap_or([false; 2]),
-                    preview
+                    sample_rate,
+                    num_channels,
+                    sample_size,
                 );
-            }
-            crate::trap::TrapDispatcher::load_double_buffer_samples(
-                &mut self.bus,
-                chan,
-                buf_ptr,
-                sample_rate,
-                num_channels,
-                sample_size,
-            );
-            if flags & 0x01 != 0 {
-                if let Some(ref mut db) = chan.double_buffer {
-                    db.current_buffer = load_idx;
-                    db.complete_callback_for(load_idx);
+                if flags & 0x01 != 0 {
+                    if let Some(ref mut db) = chan.double_buffer {
+                        db.current_buffer = load_idx;
+                        db.complete_callback_for(load_idx);
+                    }
                 }
             }
-        }
+        });
     }
 
     fn dump_invalid_pc_state(&self) {
@@ -10242,32 +10248,26 @@ impl FixtureRunner {
             return false;
         }
 
-        let callback_index = self
-            .dispatcher
-            .sound_manager
-            .pending_sound_callbacks
-            .iter()
-            .position(|callback| {
-                matches!(
-                    callback,
-                    crate::sound::PendingSoundCallback::Command {
-                        architecture: CallbackTaskArchitecture::M68k,
-                        ..
-                    } | crate::sound::PendingSoundCallback::FileCompletion {
-                        architecture: CallbackTaskArchitecture::M68k,
-                        ..
-                    }
-                )
-            });
-        let Some(callback_index) = callback_index else {
+        let Some(cb) = self.dispatcher.sound_manager.with_mut(|sound| {
+            sound
+                .pending_sound_callbacks
+                .iter()
+                .position(|callback| {
+                    matches!(
+                        callback,
+                        crate::sound::PendingSoundCallback::Command {
+                            architecture: CallbackTaskArchitecture::M68k,
+                            ..
+                        } | crate::sound::PendingSoundCallback::FileCompletion {
+                            architecture: CallbackTaskArchitecture::M68k,
+                            ..
+                        }
+                    )
+                })
+                .map(|index| sound.pending_sound_callbacks.remove(index))
+        }) else {
             return false;
         };
-
-        let cb = self
-            .dispatcher
-            .sound_manager
-            .pending_sound_callbacks
-            .remove(callback_index);
         match cb {
             crate::sound::PendingSoundCallback::Command {
                 architecture: _,
@@ -10368,12 +10368,12 @@ impl FixtureRunner {
             return false;
         }
 
-        if self.dispatcher.sound_manager.pending_callbacks.is_empty() {
-            return false;
-        }
-
         // Take one callback at a time (like timer tasks).
-        let cb = self.dispatcher.sound_manager.pending_callbacks.remove(0);
+        let Some(cb) = self.dispatcher.sound_manager.with_mut(|sound| {
+            (!sound.pending_callbacks.is_empty()).then(|| sound.pending_callbacks.remove(0))
+        }) else {
+            return false;
+        };
 
         // Read the exhausted buffer pointer from the header.
         // dbhBufferPtr[0] at header+12, dbhBufferPtr[1] at header+16
@@ -16146,7 +16146,7 @@ mod tests {
             PlaybackKind::Buffer,
             0,
         );
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
 
         let (steps, running) = runner.run_steps(2, None);
 
@@ -16184,7 +16184,7 @@ mod tests {
         chan.callback_addr = callback_addr;
         chan.play_buffer(vec![0x90; 500], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
         chan.queue_callback(callback_cmd.clone());
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
 
         let (steps, running) = runner.run_steps(2, None);
 
@@ -16252,7 +16252,7 @@ mod tests {
             PlaybackKind::Buffer,
             0,
         );
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
 
         runner.mix_audio(4);
 
@@ -16541,8 +16541,7 @@ mod tests {
         });
         sound
             .manager
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::FileCompletion {
+            .queue_sound_callback(PendingSoundCallback::FileCompletion {
                 architecture: CallbackTaskArchitecture::PowerPc,
                 callback_addr: completion,
                 chan_ptr: channel,
@@ -16591,15 +16590,15 @@ mod tests {
             ppc_app.sound.manager.set_default_output_volume(0x0000_8000);
         }
 
-        let classic_channel = runner
+        let classic_callback = runner
             .dispatcher
             .sound_manager
-            .channels
-            .iter_mut()
-            .find(|channel| channel.guest_ptr == 0x0050_1000)
+            .with_channel_mut(0x0050_1000, |channel| {
+                channel.set_volume(0x0000_4000);
+                channel.callback_addr
+            })
             .expect("native channel visible to classic adapter");
-        assert_eq!(classic_channel.callback_addr, 0x0012_3456);
-        classic_channel.set_volume(0x0000_4000);
+        assert_eq!(classic_callback, 0x0012_3456);
         runner
             .dispatcher
             .sound_manager
@@ -21008,12 +21007,12 @@ mod tests {
             tick: 0,
             instruction_count: 0,
         };
-        let mut sound = PpcSoundState::default();
-        sound.manager.pending_process_doublebacks = vec![
+        let sound = PpcSoundState::default();
+        sound.manager.replace_pending_process_doublebacks(vec![
             callback(PPC_SOUND_GET_EVENT_CALLBACK),
             callback(PPC_SOUND_POST_EVENT_CALLBACK),
             callback(PPC_SOUND_SET_EVENT_MASK_CALLBACK),
-        ];
+        ]);
         let app = halted_ppc_app_with_sound(sound);
 
         assert_ppc_sound_event_boundary(app, FixtureRunner::fire_pending_ppc_sound_doublebacks);
@@ -21122,8 +21121,8 @@ mod tests {
         const BUFFER: u32 = 0x0300_3000;
         const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
 
-        let mut sound = PpcSoundState::default();
-        sound.manager.pending_process_doublebacks = vec![PpcSoundDoubleBackRecord {
+        let sound = PpcSoundState::default();
+        sound.manager.replace_pending_process_doublebacks(vec![PpcSoundDoubleBackRecord {
             architecture: CallbackTaskArchitecture::PowerPc,
             channel: CHANNEL,
             header: HEADER,
@@ -21132,7 +21131,7 @@ mod tests {
             callback: CALLBACK,
             tick: 1,
             instruction_count: 1,
-        }];
+        }]);
         let mut app = halted_ppc_app_with_sound(sound);
         let ppc_app = app.ppc.as_mut().expect("PPC app");
         let mut callback = Vec::with_capacity((CALLBACK_CYCLES + 1) * 4);
@@ -21171,8 +21170,8 @@ mod tests {
         const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
         const SAMPLES: [u8; 4] = [0x80, 0x90, 0x70, 0xa0];
 
-        let mut sound = PpcSoundState::default();
-        sound.manager.double_buffer_playbacks = vec![PpcSoundDoubleBufferPlaybackRecord {
+        let sound = PpcSoundState::default();
+        sound.manager.replace_double_buffer_playbacks(vec![PpcSoundDoubleBufferPlaybackRecord {
             channel: CHANNEL,
             header: HEADER,
             buffers: [BUFFER, 0],
@@ -21188,7 +21187,7 @@ mod tests {
             active: true,
             host_initialized: false,
             host_buffer_loaded: false,
-        }];
+        }]);
         let mut app = halted_ppc_app_with_sound(sound);
         let ppc_app = app.ppc.as_mut().expect("PPC app");
         ppc_app.memory.add_region(BUFFER, vec![0; 32]);
@@ -21700,8 +21699,8 @@ mod tests {
         let buffer0 = PPC_DATA_BASE + 0x200;
         let buffer1 = PPC_DATA_BASE + 0x300;
         let expected = vec![0x80, 0x90, 0x70, 0xa0];
-        let mut sound = PpcSoundState::default();
-        sound.manager.double_buffer_playbacks = vec![PpcSoundDoubleBufferPlaybackRecord {
+        let sound = PpcSoundState::default();
+        sound.manager.replace_double_buffer_playbacks(vec![PpcSoundDoubleBufferPlaybackRecord {
             channel,
             header,
             buffers: [buffer0, buffer1],
@@ -21717,7 +21716,7 @@ mod tests {
             active: true,
             host_initialized: false,
             host_buffer_loaded: false,
-        }];
+        }]);
         let mut app = halted_ppc_app_with_sound(sound);
         {
             let ppc_app = app.ppc.as_mut().expect("PPC app");
@@ -25054,8 +25053,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr: 0x0004_1234,
                 chan_ptr: 0x0039_38C8,
                 header_ptr,
@@ -25107,8 +25105,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr,
                 chan_ptr,
                 header_ptr,
@@ -25172,7 +25169,7 @@ mod tests {
             1,
             8,
         );
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
 
         runner.mix_audio(3);
 
@@ -25254,7 +25251,7 @@ mod tests {
             1,
             8,
         );
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
 
         runner.mix_audio(1);
         assert_eq!(runner.dispatcher.sound_manager.pending_callbacks.len(), 1);
@@ -25330,7 +25327,7 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
         runner.active_interrupt_callback = Some(ActiveInterruptCallback {
             source: ActiveInterruptCallbackSource::SoundDoubleBack,
             resume_pc: 0x0001_0000,
@@ -25413,7 +25410,7 @@ mod tests {
             waiting_for_callback: false,
             pending_callback_buffers: [false; 2],
         });
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
 
         runner.try_load_pending_double_buffers();
 
@@ -25464,12 +25461,11 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
         runner
             .dispatcher
             .sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr,
                 chan_ptr,
                 header_ptr,
@@ -25500,8 +25496,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(crate::sound::PendingSoundCallback::Command {
+            .queue_sound_callback(crate::sound::PendingSoundCallback::Command {
                 architecture: CallbackTaskArchitecture::M68k,
                 callback_addr: 0x0004_5678,
                 chan_ptr: 0x0039_38C8,
@@ -25554,8 +25549,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(crate::sound::PendingSoundCallback::Command {
+            .queue_sound_callback(crate::sound::PendingSoundCallback::Command {
                 architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
@@ -25698,8 +25692,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(crate::sound::PendingSoundCallback::Command {
+            .queue_sound_callback(crate::sound::PendingSoundCallback::Command {
                 architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
@@ -25743,8 +25736,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(crate::sound::PendingSoundCallback::FileCompletion {
+            .queue_sound_callback(crate::sound::PendingSoundCallback::FileCompletion {
                 architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
@@ -25789,8 +25781,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
                 header_ptr,
@@ -25829,8 +25820,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::Command {
+            .queue_sound_callback(PendingSoundCallback::Command {
                 architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
@@ -25869,8 +25859,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::Command {
+            .queue_sound_callback(PendingSoundCallback::Command {
                 architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
@@ -25947,8 +25936,7 @@ mod tests {
                     runner
                         .dispatcher
                         .sound_manager
-                        .pending_sound_callbacks
-                        .push(PendingSoundCallback::Command {
+                        .queue_sound_callback(PendingSoundCallback::Command {
                             architecture: CallbackTaskArchitecture::M68k,
                             callback_addr,
                             chan_ptr: 0x0039_38C8,
@@ -26066,7 +26054,7 @@ mod tests {
             waiting_for_callback: false,
             pending_callback_buffers: [false; 2],
         });
-        runner.dispatcher.sound_manager.channels.push(chan);
+        runner.dispatcher.sound_manager.add_channel(chan);
         assert_eq!(runner.run_gui_pending_sound_work(0), (0, true));
         let chan = &runner.dispatcher.sound_manager.channels[0];
         assert!(
@@ -26109,8 +26097,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .channels
-            .push(SndChannel::new(chan_ptr, false));
+            .add_channel(SndChannel::new(chan_ptr, false));
         // Guest SndChannel: flags, qLength, qHead, qTail, then 8-byte commands.
         runner.bus.write_word(chan_ptr + 28, 0xFFFF);
         runner.bus.write_word(chan_ptr + 30, 128);
@@ -26164,8 +26151,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
                 header_ptr,
@@ -26174,8 +26160,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_callbacks
-            .push(PendingDoubleBackCallback {
+            .queue_doubleback_callback(PendingDoubleBackCallback {
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
                 header_ptr,
@@ -26336,8 +26321,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(crate::sound::PendingSoundCallback::FileCompletion {
+            .queue_sound_callback(crate::sound::PendingSoundCallback::FileCompletion {
                 architecture: CallbackTaskArchitecture::PowerPc,
                 callback_addr: 0x0050_1000,
                 chan_ptr: 0x0050_2000,
@@ -30437,8 +30421,7 @@ mod tests {
         runner
             .dispatcher
             .sound_manager
-            .pending_sound_callbacks
-            .push(PendingSoundCallback::Command {
+            .queue_sound_callback(PendingSoundCallback::Command {
                 architecture: CallbackTaskArchitecture::M68k,
                 callback_addr: callback,
                 chan_ptr: 0x0039_38C8,

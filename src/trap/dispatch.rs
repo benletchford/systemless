@@ -2241,9 +2241,23 @@ impl TrapDispatcher {
         &self.sound_manager
     }
 
-    /// Mutably access the process-owned Sound Manager state.
-    pub fn sound_manager_mut(&mut self) -> &mut crate::sound::SoundManager {
-        &mut self.sound_manager
+    /// Add one process-owned Sound Manager channel without exposing the
+    /// manager's shared mutable state.
+    pub fn add_sound_channel(&self, channel: crate::sound::SndChannel) {
+        self.sound_manager.add_channel(channel);
+    }
+
+    /// Queue one Sound Manager callback at the process ownership boundary.
+    pub fn queue_sound_callback(&self, callback: crate::sound::PendingSoundCallback) {
+        self.sound_manager.queue_sound_callback(callback);
+    }
+
+    /// Queue one classic double-buffer callback at the process boundary.
+    pub fn queue_sound_doubleback_callback(
+        &self,
+        callback: crate::sound::PendingDoubleBackCallback,
+    ) {
+        self.sound_manager.queue_doubleback_callback(callback);
     }
 
     /// Attach process services outside the construction-owned migration pair.
