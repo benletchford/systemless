@@ -19677,16 +19677,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     last_mem_error,
                     handles,
                 );
-                if previous_front == Some(cpu.gpr[3]) {
-                    let _ = ppc_set_window_hilited(memory, cpu.gpr[3], true);
-                    ppc_redraw_visible_window_frame(
-                        memory,
-                        gworlds,
-                        window_list,
-                        cpu.gpr[3],
-                        toolbox_startup.host_menu_bar_hidden,
-                    );
-                } else {
+                // Macintosh Toolbox Essentials (1992), p. 4-87:
+                // selecting an already-active window has no effect. In
+                // particular, do not repaint a dialog over its contents.
+                if previous_front != Some(cpu.gpr[3]) {
                     ppc_transition_front_window_chrome(
                         memory,
                         gworlds,
@@ -147123,6 +147117,65 @@ pub(crate) mod tests {
                 popup_menu_id: 0,
                 popup_title_width: None,
             }]
+        );
+    }
+
+    #[test]
+    fn selecting_active_dialog_preserves_its_contents() {
+        let pef = synthetic_pef_with_import(b"GetNewDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[0..2].copy_from_slice(&40i16.to_be_bytes());
+        dlog[2..4].copy_from_slice(&60i16.to_be_bytes());
+        dlog[4..6].copy_from_slice(&140i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+        dlog[8..10].copy_from_slice(&1i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 32];
+        ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&190i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_CHECKBOX;
+        ditl[15] = 13;
+        ditl[16..29].copy_from_slice(b"Sound Effects");
+        for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+            let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+            loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.run_with_hle_imports(128);
+        let dialog = loaded.cpu.gpr[3];
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let marker =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            surface.front_buffer,
+            (200, 110),
+            marker,
+        ));
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (200, 110)),
+            Some(marker),
+            "selecting an already-active dialog erased its contents"
         );
     }
 
