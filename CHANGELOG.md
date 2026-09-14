@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.41.0](https://github.com/benletchford/systemless/compare/v0.40.2...v0.41.0) (2026-09-14)
+
+
+### Features
+
+* use native host cursors on Windows ([#1813](https://github.com/benletchford/systemless/issues/1813)) ([6ea0bf5](https://github.com/benletchford/systemless/commit/6ea0bf58615475302ab453728021a170edf25d02))
+
+
+### Bug Fixes
+
+* clip PowerPC popup controls to their owning dialog ([#1860](https://github.com/benletchford/systemless/issues/1860)) ([4d204a9](https://github.com/benletchford/systemless/commit/4d204a919258ef58baa4a5c74063706422cfa50a))
+* clip TextEdit carets to the visible view rectangle ([#1812](https://github.com/benletchford/systemless/issues/1812)) ([05a759b](https://github.com/benletchford/systemless/commit/05a759bc8ff417e9b090a83bf5839c185991383c))
+* decode and render MacRoman window titles correctly ([#1810](https://github.com/benletchford/systemless/issues/1810)) ([eeca3d0](https://github.com/benletchford/systemless/commit/eeca3d0c3005c9bc8c71d30db73b70f5a1ea3fca))
+* erase PowerPC text boxes before drawing replacement text ([#1874](https://github.com/benletchford/systemless/issues/1874)) ([af9dfd3](https://github.com/benletchford/systemless/commit/af9dfd38557eea51ed282b75f498de4b5e8932b2))
+* honor PowerPC directory queries and application memory requirements ([#1821](https://github.com/benletchford/systemless/issues/1821)) ([f4012ce](https://github.com/benletchford/systemless/commit/f4012ce55b349435e2c79c3b0f484318f9a945cc))
+* initialize PowerPC popup controls with their menu item range ([#1862](https://github.com/benletchford/systemless/issues/1862)) ([35db023](https://github.com/benletchford/systemless/commit/35db023e7df4e8b01563edd5c238d1b11dce1279))
+* keep cached dialog content inside its current frame ([#1809](https://github.com/benletchford/systemless/issues/1809)) ([58cb7d7](https://github.com/benletchford/systemless/commit/58cb7d7cacb7444b2a56084fa601793863cadb23))
+* keep host volume actions out of guest keyboard events ([#1822](https://github.com/benletchford/systemless/issues/1822)) ([2d7dad1](https://github.com/benletchford/systemless/commit/2d7dad15e39a5113746343a3bdd48f68fb16fbb1))
+* place expanded installer output on the writable boot volume ([#1806](https://github.com/benletchford/systemless/issues/1806)) ([aff349e](https://github.com/benletchford/systemless/commit/aff349e827acd9d3922b227c6312cc6d92eae292))
+* **ppc:** remove erasing address expression ([#1872](https://github.com/benletchford/systemless/issues/1872)) ([5380a78](https://github.com/benletchford/systemless/commit/5380a786a73f6cc4db3bb3e04573b482143e2fd5))
+* preserve PowerPC dialog graphics during redraw and selection ([#1888](https://github.com/benletchford/systemless/issues/1888)) ([62f6f20](https://github.com/benletchford/systemless/commit/62f6f20261b7eeaf1d34660db61e7c268fc1279b))
+* preserve recreated files during native catalogue publication ([#1857](https://github.com/benletchford/systemless/issues/1857)) ([ef7fc2e](https://github.com/benletchford/systemless/commit/ef7fc2e298d00c8e48c1b276b49384c260874c0c))
+* preserve resolved QuickDraw colors across port snapshots ([#1807](https://github.com/benletchford/systemless/issues/1807)) ([f05a544](https://github.com/benletchford/systemless/commit/f05a544fbbcb3c1ffcf56f91ca92c9f523c1c3b5))
+* report unsupported device control requests as errors ([#1818](https://github.com/benletchford/systemless/issues/1818)) ([8c3f5f9](https://github.com/benletchford/systemless/commit/8c3f5f9ac6b932342e4aee467d33a30f36720aba))
+* resolve externally stored files in VISE installers ([#1805](https://github.com/benletchford/systemless/issues/1805)) ([4a19574](https://github.com/benletchford/systemless/commit/4a195749706764f2478cb1bd918a249277fe1a59))
+* retain outline text during guest CPU recoloring ([#1800](https://github.com/benletchford/systemless/issues/1800)) ([4dd4eb4](https://github.com/benletchford/systemless/commit/4dd4eb4585cba2b64a9f585e43280f9dacd6e8b0))
+* save headless screenshots in the host temporary directory ([#1814](https://github.com/benletchford/systemless/issues/1814)) ([24bd451](https://github.com/benletchford/systemless/commit/24bd4515d08a4a102691a83b0ff680b1ad01e0ee))
+* support font-aware PowerPC string truncation ([#1881](https://github.com/benletchford/systemless/issues/1881)) ([8fa0818](https://github.com/benletchford/systemless/commit/8fa0818bcceb0f64a64925263a86b799540318a9))
+* **trap:** refresh process-aware toolbox routes ([9471c51](https://github.com/benletchford/systemless/commit/9471c5133b5dbbacb1f9cb61a57a4226ec9e5688))
+
+
+### Performance Improvements
+
+* avoid copying file forks during native metadata publication ([#1828](https://github.com/benletchford/systemless/issues/1828)) ([f8d99be](https://github.com/benletchford/systemless/commit/f8d99be9804cde02ac4a4a07da0c0e41f467f81a))
+* avoid unnecessary menu snapshots for document frames ([#1834](https://github.com/benletchford/systemless/issues/1834)) ([d4b4bb4](https://github.com/benletchford/systemless/commit/d4b4bb41efd195756a817207f1628f329a06a0c0))
+* fast-forward unsigned register TickCount waits ([#1826](https://github.com/benletchford/systemless/issues/1826)) ([aca398a](https://github.com/benletchford/systemless/commit/aca398af113131b8822e1a79668d36532d09cbea))
+* use numeric hashing for retained sample offsets ([#1864](https://github.com/benletchford/systemless/issues/1864)) ([32ecf80](https://github.com/benletchford/systemless/commit/32ecf80a29dca1075406b1daf9710b569fb5ac61))
+
+
+### Code Refactoring
+
+* **dialog:** move tests out of implementation module ([#1904](https://github.com/benletchford/systemless/issues/1904)) ([681c874](https://github.com/benletchford/systemless/commit/681c8747da70bd886b724cdacf80501ddeb35e83))
+* **ppc:** extract event polling dispatch ([#1900](https://github.com/benletchford/systemless/issues/1900)) ([3069b76](https://github.com/benletchford/systemless/commit/3069b767580af6283eca20aa15fb3d07c14fcb50))
+* **ppc:** extract file fork dispatch ([#1914](https://github.com/benletchford/systemless/issues/1914)) ([7dc193b](https://github.com/benletchford/systemless/commit/7dc193b5e179efc8b6390fde00a983e3cac9c2ce))
+* **ppc:** extract math compatibility dispatch ([#1884](https://github.com/benletchford/systemless/issues/1884)) ([bb35553](https://github.com/benletchford/systemless/commit/bb355531da84ee8bd421a5816dbfb73348f5dd3b))
+* **ppc:** extract qd3d fast dispatch ([#1916](https://github.com/benletchford/systemless/issues/1916)) ([750dcdc](https://github.com/benletchford/systemless/commit/750dcdce94f1647487570594e754140259d3d369))
+* **ppc:** extract quickdraw color dispatch ([#1910](https://github.com/benletchford/systemless/issues/1910)) ([e31180b](https://github.com/benletchford/systemless/commit/e31180b0d71e9c69fdb234a0a770ca3f97f8aff1))
+* **ppc:** extract quickdraw geometry dispatch ([#1912](https://github.com/benletchford/systemless/issues/1912)) ([f399418](https://github.com/benletchford/systemless/commit/f399418caec40d729d038a60517ee69896623fb4))
+* **ppc:** move remaining tests out of loader module ([b194bed](https://github.com/benletchford/systemless/commit/b194bedaa2a41d213c30c5ef114eaa4c7880ff9b))
+* **ppc:** pre-resolve Apple Event operations ([bd93b0c](https://github.com/benletchford/systemless/commit/bd93b0cab9607bb4d6b7d8ab8d3c8e7efd0563d5))
+* **ppc:** pre-resolve AppleTalk operations ([d9960e3](https://github.com/benletchford/systemless/commit/d9960e3c592d391eebcaefd4fcd131db5e98c73c))
+* **ppc:** pre-resolve math compatibility operations ([7c54a13](https://github.com/benletchford/systemless/commit/7c54a1336198595bd6324b263faf60f6b4af7382))
+* **ppc:** share scalar math import dispatch ([#1898](https://github.com/benletchford/systemless/issues/1898)) ([956a97b](https://github.com/benletchford/systemless/commit/956a97b53eba10d9c965b194210c697abe025b76))
+* **quickdraw:** move tests out of implementation module ([#1902](https://github.com/benletchford/systemless/issues/1902)) ([e1cf95e](https://github.com/benletchford/systemless/commit/e1cf95e0194eaa6f73b70aae749bef33ed0ea8d4))
+* **runner:** move tests out of implementation module ([#1908](https://github.com/benletchford/systemless/issues/1908)) ([ea066ed](https://github.com/benletchford/systemless/commit/ea066ed5c7cca02e9fd74bb77d4bb46ee2ebed85))
+* **toolbox:** move tests out of implementation module ([#1906](https://github.com/benletchford/systemless/issues/1906)) ([b561592](https://github.com/benletchford/systemless/commit/b561592937daa0560ee7d4503fba6c61256aa983))
+
 ## [0.40.2](https://github.com/benletchford/systemless/compare/v0.40.1...v0.40.2) (2026-09-14)
 
 
