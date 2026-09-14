@@ -6180,12 +6180,12 @@ impl super::TrapDispatcher {
                     },
                 );
 
-                if let Some(pos) = self.file_positions.get_mut(&ref_num) {
+                self.file_positions.with_position_mut(&ref_num, |pos| {
                     let new_eof = u32::try_from(new_eof).unwrap_or(u32::MAX);
                     if *pos > new_eof {
                         *pos = new_eof;
                     }
-                }
+                });
 
                 if let (Some(dir), Some(bytes)) = (&self.output_dir, host_sync_bytes) {
                     let host_path = dir.join(&filename);

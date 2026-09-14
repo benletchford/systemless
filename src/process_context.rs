@@ -413,13 +413,6 @@ impl std::ops::Deref for SharedProcessOpenFiles {
     }
 }
 
-impl std::ops::DerefMut for SharedProcessOpenFiles {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: see `Deref`.
-        unsafe { &mut *self.0.get() }
-    }
-}
-
 impl SharedProcessOpenFiles {
     fn from_records(records: Vec<ProcessOpenFileRecord>) -> Self {
         Self(Rc::new(UnsafeCell::new(records)))
@@ -433,6 +426,29 @@ impl SharedProcessOpenFiles {
         SharedProcessOpenFilePositions(Rc::clone(&self.0))
     }
 
+    pub(crate) fn with_mut<R>(
+        &mut self,
+        operation: impl FnOnce(&mut Vec<ProcessOpenFileRecord>) -> R,
+    ) -> R {
+        // SAFETY: process adapters execute serially, and the closure keeps the
+        // mutable record view scoped to one operation.
+        unsafe { operation(&mut *self.0.get()) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push(&mut self, record: ProcessOpenFileRecord) {
+        self.with_mut(|records| records.push(record));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_record_mut<R>(
+        &mut self,
+        index: usize,
+        operation: impl FnOnce(&mut ProcessOpenFileRecord) -> R,
+    ) -> Option<R> {
+        self.with_mut(|records| records.get_mut(index).map(operation))
+    }
+
     pub(crate) fn get(&self, ref_num: &u16) -> Option<&String> {
         let ref_num = i16::try_from(*ref_num).ok()?;
         self.iter()
@@ -444,21 +460,27 @@ impl SharedProcessOpenFiles {
         let Ok(ref_num) = i16::try_from(ref_num) else {
             return None;
         };
-        if let Some(record) = self.iter_mut().find(|record| record.ref_num == ref_num) {
-            return Some(std::mem::replace(&mut record.path, path));
-        }
-        self.push(ProcessOpenFileRecord {
-            ref_num,
-            path,
-            position: 0,
-        });
-        None
+        self.with_mut(|records| {
+            if let Some(record) = records.iter_mut().find(|record| record.ref_num == ref_num) {
+                return Some(std::mem::replace(&mut record.path, path));
+            }
+            records.push(ProcessOpenFileRecord {
+                ref_num,
+                path,
+                position: 0,
+            });
+            None
+        })
     }
 
     pub(crate) fn remove(&mut self, ref_num: &u16) -> Option<String> {
         let ref_num = i16::try_from(*ref_num).ok()?;
-        let index = self.iter().position(|record| record.ref_num == ref_num)?;
-        Some(Vec::remove(self, index).path)
+        self.with_mut(|records| {
+            let index = records
+                .iter()
+                .position(|record| record.ref_num == ref_num)?;
+            Some(records.remove(index).path)
+        })
     }
 
     pub(crate) fn contains_key(&self, ref_num: &u16) -> bool {
@@ -478,6 +500,15 @@ pub(crate) struct SharedProcessOpenFilePositions(
 );
 
 impl SharedProcessOpenFilePositions {
+    fn with_records_mut<R>(
+        &mut self,
+        operation: impl FnOnce(&mut Vec<ProcessOpenFileRecord>) -> R,
+    ) -> R {
+        // SAFETY: this view shares the same serialized process allocation as
+        // `SharedProcessOpenFiles`; the record borrow cannot escape.
+        unsafe { operation(&mut *self.0.get()) }
+    }
+
     pub(crate) fn get(&self, ref_num: &u16) -> Option<&u32> {
         let ref_num = i16::try_from(*ref_num).ok()?;
         // SAFETY: this view shares the same serialized process allocation as
@@ -488,32 +519,38 @@ impl SharedProcessOpenFilePositions {
             .map(|record| &record.position)
     }
 
-    pub(crate) fn get_mut(&mut self, ref_num: &u16) -> Option<&mut u32> {
+    pub(crate) fn with_position_mut<R>(
+        &mut self,
+        ref_num: &u16,
+        operation: impl FnOnce(&mut u32) -> R,
+    ) -> Option<R> {
         let ref_num = i16::try_from(*ref_num).ok()?;
-        // SAFETY: see `get`; mutable adapter access is serialized.
-        unsafe { &mut *self.0.get() }
-            .iter_mut()
-            .find(|record| record.ref_num == ref_num)
-            .map(|record| &mut record.position)
+        self.with_records_mut(|records| {
+            records
+                .iter_mut()
+                .find(|record| record.ref_num == ref_num)
+                .map(|record| operation(&mut record.position))
+        })
     }
 
     pub(crate) fn insert(&mut self, ref_num: u16, position: usize) -> Option<usize> {
         let position = u32::try_from(position).unwrap_or(u32::MAX);
         if let Some(old) = self.get(&ref_num).copied() {
-            *self
-                .get_mut(&ref_num)
-                .expect("open file disappeared while updating its position") = position;
+            self.with_position_mut(&ref_num, |current| *current = position)
+                .expect("open file disappeared while updating its position");
             return usize::try_from(old).ok();
         }
         let Ok(ref_num) = i16::try_from(ref_num) else {
             return None;
         };
-        // Some focused File Manager fixtures seed the mark before the path.
-        // A later path insertion fills this same canonical record.
-        unsafe { &mut *self.0.get() }.push(ProcessOpenFileRecord {
-            ref_num,
-            path: String::new(),
-            position,
+        self.with_records_mut(|records| {
+            // Some focused File Manager fixtures seed the mark before the
+            // path. A later path insertion fills this same canonical record.
+            records.push(ProcessOpenFileRecord {
+                ref_num,
+                path: String::new(),
+                position,
+            });
         });
         None
     }
