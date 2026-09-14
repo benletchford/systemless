@@ -8392,6 +8392,7 @@ impl PpcLoadedApp {
                                             } = resource_manager;
                                             current_gworld.with_mut(|current_gworld| {
                                             current_gdevice.with_mut(|current_gdevice| {
+                                            files.with_mut(|files| {
                                             dispatch_supported_import(
                                             binding,
                                             cpu,
@@ -8459,7 +8460,7 @@ impl PpcLoadedApp {
                                             &timer_tasks,
                                             &vbl_tasks,
                                             &callback_scheduling,
-                                            &mut **files,
+                                            files,
                                             writable_refnums,
                                             vfs_files,
                                             stdio_streams,
@@ -8498,6 +8499,7 @@ impl PpcLoadedApp {
                                             event_queue,
                                             &mut draw_sprocket,
                                             )
+                                            })
                                             })
                                             })
                                             })
@@ -98830,7 +98832,10 @@ pub(crate) mod tests {
             .writable_refnums
             .contains(&(PPC_FIRST_FILE_REF_NUM as u16)));
 
-        native.files[0].position = 12;
+        native
+            .files
+            .with_record_mut(0, |file| file.position = 12)
+            .expect("seeded native open file");
         assert_eq!(
             classic
                 .file_positions
