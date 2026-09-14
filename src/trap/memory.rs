@@ -246,6 +246,7 @@ fn scribble_uninitialized_allocation(bus: &mut MacMemoryBus, address: u32, size:
 }
 
 const NO_ERR: u32 = 0;
+const CONTROL_ERR: u32 = (-17i32) as u32;
 const BAD_UNIT_ERR: u32 = (-21i32) as u32;
 const PARAM_ERR: u32 = (-50i32) as u32;
 const MEM_FULL_ERR: u32 = (-108i32) as u32;
@@ -2269,12 +2270,20 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Devices 1994, p. 1-16
             // _Control ($A004): Handles cscSetMode (csCode=2) by returning
             // page/base address through the inline csParam VDPgInfo record
-            // and cscSetEntries (csCode=3) via VDSetEntryRecord; returns noErr.
+            // and cscSetEntries (csCode=3) via VDSetEntryRecord. Unsupported
+            // requests return controlErr (IM:Devices 1994, pp. 1-35--1-36, 1-77).
             (false, 0x04) => {
                 let pb = cpu.read_reg(Register::A0);
                 let mut control_result = NO_ERR;
                 if pb != 0 {
                     let cs_code = bus.read_word(pb + 26) as i16;
+                    if !matches!(cs_code, 2 | 3 | 4) {
+                        // Do not advertise an output we did not produce. For
+                        // example, a drive-icon request (21) expects an icon
+                        // pointer in csParam; noErr with untouched output makes
+                        // callers copy arbitrary memory instead of receiving an error.
+                        control_result = CONTROL_ERR;
+                    }
                     // cscSetMode (csCode=2): switch mode/page and return base address.
                     // Low-level PBControl stores the VDPgInfo record inline in
                     // CntrlParam.csParam, whose documented layout is short[11].
@@ -12957,7 +12966,8 @@ mod tests {
         // and uses CntrlParam.ioResult in the parameter block.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = 0x300000u32;
-        // Write a non-zero value at ioResult (pb+16) to verify it gets cleared
+        bus.write_word(pb + 26, 2); // supported cscSetMode request
+                                    // Write a non-zero value at ioResult (pb+16) to verify it gets cleared
         bus.write_word(pb + 16, 0xFFFF);
         cpu.write_reg(Register::A0, pb);
         let result = dispatcher.dispatch_memory(false, 0x04, &mut cpu, &mut bus);
@@ -12969,6 +12979,31 @@ mod tests {
             0,
             "_Control should set ioResult at pb+16 to 0"
         );
+    }
+
+    #[test]
+    fn unsupported_control_request_reports_error_without_fabricating_output() {
+        // Inside Macintosh: Devices (1994), pp. 1-76--1-77: controlErr
+        // means the driver does not respond to this control request; the OS
+        // trap returns its result in D0 and the parameter block's ioResult.
+        for code in [0, 21, 22, 0xFFFF] {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let pb = 0x300000;
+            bus.write_word(pb + 26, code);
+            bus.write_word(pb + 16, 0x1234);
+            bus.write_bytes(pb + 28, &[0xA5; 22]);
+            cpu.write_reg(Register::A0, pb);
+            let sp = cpu.read_reg(Register::A7);
+            dispatcher
+                .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i32, -17);
+            assert_eq!(bus.read_word(pb + 16) as i16, -17);
+            assert_eq!(bus.read_bytes(pb + 28, 22), vec![0xA5; 22]);
+            assert_eq!(cpu.read_reg(Register::A0), pb);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+        }
     }
 
     #[test]
