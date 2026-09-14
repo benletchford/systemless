@@ -5602,7 +5602,7 @@ impl super::TrapDispatcher {
                         .collect()
                 })
                 .unwrap_or_default();
-            self.restore_dialog_pixels(bus, bounds, &snapshot.pixels);
+            self.restore_dialog_content_pixels(bus, bounds, &snapshot.pixels);
             for (top, left, width, height, pixels) in preserved_front_pixels {
                 self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
             }
@@ -5802,7 +5802,7 @@ impl super::TrapDispatcher {
         if let Some(ref tracking) = self.dialog_tracking {
             if !tracking.game_managed && tracking.rendered_pixels_final {
                 // Blit the pre-rendered dialog snapshot (includes pictures)
-                self.restore_dialog_pixels(bus, tracking.bounds, &tracking.rendered_pixels);
+                self.restore_dialog_content_pixels(bus, tracking.bounds, &tracking.rendered_pixels);
 
                 // Re-draw the edit text field on top (may have changed since snapshot)
                 if tracking.edit_item > 0 {
@@ -8506,6 +8506,35 @@ mod redraw_chrome_tests {
         let guest = bus.read_bytes(base, 64 * 64);
         bus.write_bytes(base, &guest);
         assert!(bus.outline_presentation_rgb().unwrap().2 != expected);
+    }
+
+    #[test]
+    fn visible_dialog_snapshot_restores_content_without_overwriting_current_frame() {
+        // Macintosh Toolbox Essentials, "Window Regions": the application's
+        // content excludes the frame drawn by the Window Manager. Exercise
+        // non-byte-aligned edges too, so packed snapshots preserve frame bits.
+        for depth in [1, 2, 4, 8] {
+            let (mut disp, _cpu, mut bus) = setup_with_port();
+            let base = bus.alloc(64 * 64);
+            disp.screen_mode = (base, 64, 64, 64, depth);
+            let bounds = (20, 17, 40, 37);
+            bus.fill_bytes(base, 64 * 64, 0xFF);
+            let saved = disp.save_dialog_pixels(&bus, bounds);
+            bus.fill_zeros(base, 64 * 64);
+            disp.dialog_visible_snapshots.insert(0x183000,
+                super::super::dispatch::PersistentDialogSnapshot { bounds, pixels: saved });
+            disp.restore_visible_dialog_snapshots(&mut bus);
+            let mask = ((1u16 << depth) - 1) as u8;
+            for y in 0..64u32 {
+                for x in 0..64u32 {
+                    let bit = x * u32::from(depth);
+                    let byte = bus.read_byte(base + y * 64 + bit / 8);
+                    let actual = (byte >> (8 - u32::from(depth) - bit % 8)) & mask;
+                    let expected = if (20..40).contains(&y) && (17..37).contains(&x) { mask } else { 0 };
+                    assert_eq!(actual, expected, "depth={depth} at ({x},{y})");
+                }
+            }
+        }
     }
 
     #[test]

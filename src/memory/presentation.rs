@@ -322,7 +322,7 @@ impl<T> SavedPixels<T> {
 pub(crate) struct Presentation {
     revision: u64,
     cpu_copy: [Option<Arc<DetailCell>>; 4],
-    restored_dialog: Option<(u64, (i16, i16, i16, i16), u64)>,
+    restored_dialog: Option<(u64, (i16, i16, i16, i16), bool, u64)>,
     output_cache: std::cell::RefCell<Option<(u64, u32, Vec<u32>)>>,
     offscreen: BTreeMap<u32, Arc<DetailCell>>,
     base: u32,
@@ -952,14 +952,20 @@ impl MacMemoryBus {
         &self,
         saved: &SavedPixels,
         rect: (i16, i16, i16, i16),
+        content_only: bool,
     ) -> bool {
-        self.presentation
-            .as_ref()
-            .is_some_and(|p| p.restored_dialog == Some((saved.identity, rect, p.revision)))
+        self.presentation.as_ref().is_some_and(|p| {
+            p.restored_dialog == Some((saved.identity, rect, content_only, p.revision))
+        })
     }
-    pub(crate) fn remember_dialog_snapshot(&self, saved: &SavedPixels, rect: (i16, i16, i16, i16)) {
+    pub(crate) fn remember_dialog_snapshot(
+        &self,
+        saved: &SavedPixels,
+        rect: (i16, i16, i16, i16),
+        content_only: bool,
+    ) {
         if let Some(mut p) = self.presentation.as_mut() {
-            p.restored_dialog = Some((saved.identity, rect, p.revision));
+            p.restored_dialog = Some((saved.identity, rect, content_only, p.revision));
         }
     }
 
@@ -1949,7 +1955,7 @@ mod tests {
         for _ in 0..10 {
             bus.prepare_outline_presentation(screen, palette);
             let saved = bus.save_pixel_bytes(0x1000, 2);
-            bus.remember_dialog_snapshot(&saved, (0, 0, 1, 2));
+            bus.remember_dialog_snapshot(&saved, (0, 0, 1, 2), false);
             assert_eq!(bus.presentation_epoch(), epoch);
         }
         palette[0] = [200, 0, 0];
@@ -1963,22 +1969,27 @@ mod tests {
         paint_detail(&mut bus, 0x1000);
         let saved = bus.save_pixel_bytes(0x1000, 2);
         let rect = (0, 0, 1, 2);
-        bus.remember_dialog_snapshot(&saved, rect);
-        assert!(bus.dialog_snapshot_is_current(&saved.clone(), rect));
-        assert!(!bus.dialog_snapshot_is_current(&saved, (1, 0, 2, 2)));
+        bus.remember_dialog_snapshot(&saved, rect, false);
+        assert!(bus.dialog_snapshot_is_current(&saved.clone(), rect, false));
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect, true));
+        bus.remember_dialog_snapshot(&saved, rect, true);
+        assert!(bus.dialog_snapshot_is_current(&saved, rect, true));
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect, false));
+        bus.remember_dialog_snapshot(&saved, rect, false);
+        assert!(!bus.dialog_snapshot_is_current(&saved, (1, 0, 2, 2), false));
         let _ = bus.save_pixel_bytes(0x1000, 2);
         bus.write_byte(0x1001, 255);
-        assert!(bus.dialog_snapshot_is_current(&saved, rect));
+        assert!(bus.dialog_snapshot_is_current(&saved, rect, false));
         let mut changed = saved.clone();
         changed[0] = 1;
-        assert!(!bus.dialog_snapshot_is_current(&changed, rect));
+        assert!(!bus.dialog_snapshot_is_current(&changed, rect, false));
         // Even a same-byte write over a glyph discards its subpixel coverage.
         bus.write_byte(0x1000, bus.read_byte(0x1000));
-        assert!(!bus.dialog_snapshot_is_current(&saved, rect));
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect, false));
         bus.restore_saved_pixels(0x1000, &saved, 0, 2);
-        bus.remember_dialog_snapshot(&saved, rect);
+        bus.remember_dialog_snapshot(&saved, rect, false);
         paint_detail(&mut bus, 0x1000);
-        assert!(!bus.dialog_snapshot_is_current(&saved, rect));
+        assert!(!bus.dialog_snapshot_is_current(&saved, rect, false));
     }
 
     #[test]
