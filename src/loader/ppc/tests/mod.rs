@@ -55319,7 +55319,6 @@ fn selecting_active_dialog_preserves_its_contents() {
     loaded.cpu.gpr[3] = 128;
     loaded.run_with_hle_imports(128);
     let dialog = loaded.cpu.gpr[3];
-    loaded.cpu.gpr[3] = dialog;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
     let surface =
         ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
