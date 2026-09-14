@@ -136,6 +136,7 @@ use std::sync::OnceLock;
 
 mod dispatch_event;
 mod dispatch_files;
+mod dispatch_low_memory;
 mod dispatch_math;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
@@ -16293,6 +16294,17 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_low_memory::dispatch_low_memory_import(
+        dispatch_low_memory::PpcLowMemoryDispatchContext {
+            target: &binding.dispatcher_target,
+            cpu,
+            memory,
+            current_menu_list,
+            default_dir_id,
+        },
+    ) {
+        return Some(action);
+    }
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InstallExceptionHandler => {
@@ -17446,54 +17458,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 vfs_resources,
                 *current_resource_refnum,
             ))
-        }
-        PpcImportDispatcherTarget::LMGetMenuList => {
-            Some(PpcImportAction::Return(current_menu_list))
-        }
-        PpcImportDispatcherTarget::LMGetMenuFlash => Some(PpcImportAction::Return(ppc_i16_result(
-            memory
-                .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
-                .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT) as i16,
-        ))),
-        PpcImportDispatcherTarget::LMGetPaintWhite => Some(PpcImportAction::Return(u32::from(
-            memory.read_u16_be(0x09dc).unwrap_or(1) != 0,
-        ))),
-        PpcImportDispatcherTarget::LMGetSysMap => {
-            // LowMem.h: LMGetSysMap returns the signed reference number of
-            // the System file's resource map. The HLE resource chain uses
-            // refnum 0 as its system/application fallback map.
-            Some(PpcImportAction::Return(ppc_i16_result(0)))
-        }
-        PpcImportDispatcherTarget::LMSetPaintWhite => {
-            let _ = memory.write_u16_be(0x09dc, u16::from(cpu.gpr[3] != 0));
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LMSetResumeProc => {
-            let _ = memory.write_u32_be(crate::memory::globals::addr::RESUME_PROC, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LMSetACount => {
-            let _ =
-                memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, cpu.gpr[3] as u16);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LMSetANumber => {
-            let _ = memory.write_u16_be(crate::memory::globals::addr::ANUMBER, cpu.gpr[3] as u16);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LMSetDlgFont => {
-            let _ = memory.write_u16_be(crate::memory::globals::addr::DLG_FONT, cpu.gpr[3] as u16);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetMenuFlash => {
-            // SetMenuFlash
-            // Sets the number of times a selected menu item blinks and stores
-            // the value in the MenuFlash low-memory global.
-            // PROCEDURE SetMenuFlash(count: INTEGER);
-            // Macintosh Toolbox Essentials (1992), p. 3-142.
-            let _ =
-                memory.write_u16_be(crate::memory::globals::addr::MENU_FLASH, cpu.gpr[3] as u16);
-            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ClearMenuBar => {
             let mut allocator = PpcProcessAllocatorView {
@@ -20805,17 +20769,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             // offscreen GWorld. Macintosh Toolbox Essentials (1992), p. 4-91.
             Some(PpcImportAction::Return(part as u32))
         }
-        PpcImportDispatcherTarget::GetGrayRgn => Some(PpcImportAction::Return(
-            memory
-                .read_u32_be(PPC_GRAY_RGN_ADDR)
-                .unwrap_or(PPC_GRAY_RGN_HANDLE),
-        )),
-        PpcImportDispatcherTarget::LMSetGrayRgn => {
-            // Macintosh Toolbox Essentials (1992), p. 4-113: GrayRgn is the
-            // low-memory handle to the current desktop region.
-            let _ = memory.write_u32_be(PPC_GRAY_RGN_ADDR, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
         PpcImportDispatcherTarget::GetDCtlEntry => {
             Some(PpcImportAction::Return(if cpu.gpr[3] as u16 as i16 == 0 {
                 PPC_MAIN_DCE_HANDLE
@@ -23589,48 +23542,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         }
         PpcImportDispatcherTarget::GetKeys => {
             Some(dispatch_getkeys_import(cpu, memory, input, None))
-        }
-        PpcImportDispatcherTarget::LMGetUTableBase => {
-            // Inside Macintosh: Devices (1994), pp. 1-8--1-9: UTableBase
-            // points to an array of DCE handles, with the Sound Driver at
-            // unit 3 (reference number -4).
-            Some(PpcImportAction::Return(PPC_UNIT_TABLE))
-        }
-        PpcImportDispatcherTarget::LMGetCurDirStore => {
-            // Inside Macintosh: PowerPC System Software (1994), p. 1-57:
-            // LMGetCurDirStore returns the CurDirStore directory ID at $0398.
-            Some(PpcImportAction::Return(
-                memory
-                    .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
-                    .unwrap_or(default_dir_id),
-            ))
-        }
-        PpcImportDispatcherTarget::LMSetCurDirStore => {
-            // Inside Macintosh: PowerPC System Software (1994), p. 1-57:
-            // LMSetCurDirStore sets the CurDirStore directory ID at $0398.
-            let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LMGetRndSeed => Some(PpcImportAction::Return(
-            memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1),
-        )),
-        PpcImportDispatcherTarget::LMSetRndSeed => {
-            // Inside Macintosh: Memory (1992), pp. 2-6--2-8: RndSeed is the
-            // 32-bit random-number seed low-memory global at $0156.
-            let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetCurrentA5 => {
-            // Inside Macintosh: Memory (1992), 4-25 and PowerPC System
-            // Software (1994), 1-63: native code uses its RTOC; this value is
-            // the synthetic mini-A5 world supplied to legacy callbacks.
-            Some(PpcImportAction::Return(PPC_DATA_BASE))
-        }
-        PpcImportDispatcherTarget::SetA5 => {
-            // There is no architectural A5 register in native PowerPC code.
-            // Preserve the documented "return old A5" behavior for glue that
-            // brackets a legacy callback.
-            Some(PpcImportAction::Return(PPC_DATA_BASE))
         }
         PpcImportDispatcherTarget::SysEnvirons => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_sys_environs(memory, cpu.gpr[4]),
@@ -27053,7 +26964,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 },
             )
         }
-        PpcImportDispatcherTarget::LMGetCurrentA5 => Some(PpcImportAction::Return(PPC_DATA_BASE)),
         PpcImportDispatcherTarget::InsTime | PpcImportDispatcherTarget::InsXTime => {
             timer_tasks.with_mut(|timer_tasks| {
                 ppc_install_time_task(
@@ -27380,6 +27290,28 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             // Systemless exposes the generic QuickDraw 3D Accelerator path,
             // not a fabricated 3Dfx board, so leave hwConfig untouched.
             Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::LMGetMenuList
+        | PpcImportDispatcherTarget::LMGetMenuFlash
+        | PpcImportDispatcherTarget::LMGetPaintWhite
+        | PpcImportDispatcherTarget::LMGetSysMap
+        | PpcImportDispatcherTarget::LMSetPaintWhite
+        | PpcImportDispatcherTarget::LMSetResumeProc
+        | PpcImportDispatcherTarget::LMSetACount
+        | PpcImportDispatcherTarget::LMSetANumber
+        | PpcImportDispatcherTarget::LMSetDlgFont
+        | PpcImportDispatcherTarget::SetMenuFlash
+        | PpcImportDispatcherTarget::GetGrayRgn
+        | PpcImportDispatcherTarget::LMSetGrayRgn
+        | PpcImportDispatcherTarget::LMGetUTableBase
+        | PpcImportDispatcherTarget::LMGetCurDirStore
+        | PpcImportDispatcherTarget::LMSetCurDirStore
+        | PpcImportDispatcherTarget::LMGetRndSeed
+        | PpcImportDispatcherTarget::LMSetRndSeed
+        | PpcImportDispatcherTarget::SetCurrentA5
+        | PpcImportDispatcherTarget::SetA5
+        | PpcImportDispatcherTarget::LMGetCurrentA5 => {
+            unreachable!("low-memory imports return through dispatch_low_memory_import")
         }
         PpcImportDispatcherTarget::TickCount
         | PpcImportDispatcherTarget::GetDateTime
