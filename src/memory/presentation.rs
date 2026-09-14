@@ -7,6 +7,7 @@ mod controls;
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
@@ -347,6 +348,30 @@ impl<T> SavedPixels<T> {
     }
 }
 
+// These tables are keyed only by host-generated physical sample offsets in
+// the bounded presentation surface. They do not hash guest strings or arbitrary
+// resource keys. Mix both the low bucket bits and high tag bits without paying
+// SipHash's per-sample cost during glyph painting and erasure.
+#[derive(Default)]
+struct SampleOffsetHasher(u64);
+
+impl Hasher for SampleOffsetHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_usize(usize::from(byte));
+        }
+    }
+
+    fn write_usize(&mut self, offset: usize) {
+        let mixed = ((offset as u64) ^ self.0).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+}
+
 pub(crate) struct Presentation {
     revision: u64,
     cpu_drawing: bool,
@@ -368,8 +393,8 @@ pub(crate) struct Presentation {
     guest_values: Vec<u16>,
     text_cells: Vec<bool>,
     detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
-    ink: HashMap<usize, Ink>,
-    run_ink: HashSet<usize>,
+    ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
+    run_ink: HashSet<usize, BuildHasherDefault<SampleOffsetHasher>>,
     offscreen_run_ink: HashSet<(u32, usize)>,
     in_text_run: bool,
     pub erasing_text: bool,
@@ -1680,8 +1705,8 @@ impl MacMemoryBus {
             guest_values: vec![256; width as usize * height as usize],
             text_cells: vec![false; width as usize * height as usize],
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
-            ink: HashMap::new(),
-            run_ink: HashSet::new(),
+            ink: HashMap::default(),
+            run_ink: HashSet::default(),
             offscreen_run_ink: HashSet::new(),
             in_text_run: false,
             erasing_text: false,
