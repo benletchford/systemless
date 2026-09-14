@@ -21674,7 +21674,7 @@ mod tests {
         let prefs_path = "System Folder/Preferences/Test App Prefs";
         runner.native.application_mut().unwrap().vfs_files[0]
             .data
-            .extend_from_slice(b"-native");
+            .with_mut(|data| data.extend_from_slice(b"-native"));
         assert_eq!(
             runner.dispatcher().vfs.get(prefs_path).unwrap(),
             b"prefs-native",

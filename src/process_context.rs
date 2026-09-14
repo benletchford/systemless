@@ -106,16 +106,17 @@ impl std::ops::Deref for ProcessForkBytes {
     }
 }
 
-impl std::ops::DerefMut for ProcessForkBytes {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: see `Deref`.
-        unsafe { &mut *self.0.get() }
-    }
-}
-
 impl ProcessForkBytes {
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0))
+    }
+
+    /// Mutate this process-owned fork for one serialized operation without
+    /// allowing the mutable byte reference to escape.
+    pub fn with_mut<R>(&mut self, operation: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        // SAFETY: the process runner serializes attached adapter access. The
+        // closure keeps the mutable reference scoped to this operation.
+        unsafe { operation(&mut *self.0.get()) }
     }
 
     #[cfg(test)]
@@ -163,12 +164,18 @@ impl ProcessForkMap {
         self.0.get(path).map(|bytes| &**bytes)
     }
 
-    pub fn get_mut<Q>(&mut self, path: &Q) -> Option<&mut Vec<u8>>
+    pub fn with_entry_mut<Q, R>(
+        &mut self,
+        path: &Q,
+        operation: impl FnOnce(&mut Vec<u8>) -> R,
+    ) -> Option<R>
     where
         String: std::borrow::Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.0.get_mut(path).map(|bytes| &mut **bytes)
+        self.0
+            .get_mut(path)
+            .map(|bytes| bytes.with_mut(operation))
     }
 
     pub(crate) fn get_shared<Q>(&self, path: &Q) -> Option<&ProcessForkBytes>
@@ -2223,7 +2230,7 @@ impl SharedProcessValue<ProcessForkMap> {
         String: std::borrow::Borrow<Q>,
         Q: Eq + Hash + ?Sized,
     {
-        self.with_mut(|forks| forks.get_mut(path).map(update))
+        self.with_mut(|forks| forks.with_entry_mut(path, update))
     }
 
     pub(crate) fn with_entry_or_default_mut<R>(
@@ -2231,7 +2238,7 @@ impl SharedProcessValue<ProcessForkMap> {
         path: String,
         update: impl FnOnce(&mut Vec<u8>) -> R,
     ) -> R {
-        self.with_mut(|forks| update(forks.0.entry(path).or_default()))
+        self.with_mut(|forks| forks.0.entry(path).or_default().with_mut(update))
     }
 }
 
