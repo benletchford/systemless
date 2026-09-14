@@ -161,12 +161,12 @@ impl super::TrapDispatcher {
         let level = u32::from(bus.read_byte(crate::memory::globals::addr::SD_VOLUME) & 7);
         let gain = level * 0x0100 / 7;
         let packed_gain = gain | (gain << 16);
-        let channel = self
-            .sound_manager
-            .find_channel_mut(channel_ptr)
+        self.sound_manager
+            .with_channel_mut(channel_ptr, |channel| {
+                channel.set_volume(packed_gain);
+                channel.play_buffer(samples, sample_rate_fixed, sound::PlaybackKind::Buffer, 0);
+            })
             .ok_or(WRITE_ERR)?;
-        channel.set_volume(packed_gain);
-        channel.play_buffer(samples, sample_rate_fixed, sound::PlaybackKind::Buffer, 0);
 
         if trace_sound_enabled() {
             eprintln!(
@@ -773,9 +773,9 @@ impl super::TrapDispatcher {
                             cpu.write_reg(Register::A7, sp + param_bytes);
                         } else {
                             let chan_ptr = bus.read_long(sp);
-                            if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
+                            self.sound_manager.with_channel_mut(chan_ptr, |chan| {
                                 chan.pause_file_playback_toggle();
-                            }
+                            });
                             bus.write_word(sp + param_bytes, 0); // noErr
                             cpu.write_reg(Register::A7, sp + param_bytes);
                         }
@@ -789,9 +789,9 @@ impl super::TrapDispatcher {
                     0x08 => {
                         let _quiet_now = bus.read_word(sp) as i16;
                         let chan_ptr = bus.read_long(sp + 2);
-                        if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
+                        self.sound_manager.with_channel_mut(chan_ptr, |chan| {
                             chan.quiet();
-                        }
+                        });
                         bus.write_word(sp + param_bytes, 0); // noErr
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
@@ -1101,13 +1101,16 @@ impl super::TrapDispatcher {
                     }
                     let channel_busy = self
                         .sound_manager
-                        .find_channel_mut(chan_ptr)
+                        .find_channel(chan_ptr)
                         .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
                         .unwrap_or(false);
                     if channel_busy {
                         if cmd.cmd == sound::cmd::CALLBACK {
-                            if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
-                                chan.queue_callback(cmd);
+                            if self
+                                .sound_manager
+                                .with_channel_mut(chan_ptr, |chan| chan.queue_callback(cmd))
+                                .is_some()
+                            {
                                 0
                             } else {
                                 -205 // badChannel
@@ -1379,7 +1382,7 @@ impl super::TrapDispatcher {
 
                 let active = self
                     .sound_manager
-                    .find_channel_mut(chan_ptr)
+                    .find_channel(chan_ptr)
                     .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
                     .unwrap_or(false);
                 if active {
@@ -1406,7 +1409,7 @@ impl super::TrapDispatcher {
                     self.execute_sound_command(bus, chan_ptr, cmd);
                     let still_active = self
                         .sound_manager
-                        .find_channel_mut(chan_ptr)
+                        .find_channel(chan_ptr)
                         .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
                         .unwrap_or(false);
                     if !still_active {
@@ -1470,45 +1473,44 @@ impl super::TrapDispatcher {
                 // as a recognised no-op.
             }
             sound::cmd::CALLBACK => {
-                if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
+                let pending_callback = self.sound_manager.with_channel_mut(chan_ptr, |chan| {
                     if chan.has_active_playback() || chan.double_buffer.is_some() {
-                        chan.queue_callback(cmd);
+                        chan.queue_callback(cmd.clone());
+                        None
                     } else {
-                        let callback_addr = chan.callback_addr;
-                        let chan_ptr = chan.guest_ptr;
-                        if callback_addr != 0 {
-                            self.sound_manager.pending_sound_callbacks.push(
-                                crate::sound::PendingSoundCallback::Command {
-                                    architecture:
-                                        crate::callback_manager::CallbackTaskArchitecture::M68k,
-                                    callback_addr,
-                                    chan_ptr,
-                                    cmd,
-                                },
-                            );
-                        }
+                        (chan.callback_addr != 0).then_some((chan.callback_addr, chan.guest_ptr))
                     }
+                });
+                if let Some(Some((callback_addr, chan_ptr))) = pending_callback {
+                    self.sound_manager.pending_sound_callbacks.push(
+                        crate::sound::PendingSoundCallback::Command {
+                            architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
+                            callback_addr,
+                            chan_ptr,
+                            cmd,
+                        },
+                    );
                 }
             }
             sound::cmd::VOLUME => {
-                if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
+                self.sound_manager.with_channel_mut(chan_ptr, |chan| {
                     chan.set_volume(cmd.param2);
-                }
+                });
             }
             sound::cmd::BUFFER | sound::cmd::SOUND => {
                 self.execute_buffer_cmd(bus, chan_ptr, &cmd);
             }
             sound::cmd::RATE => {
-                if let Some(chan) = self.sound_manager.find_channel_mut(chan_ptr) {
+                self.sound_manager.with_channel_mut(chan_ptr, |chan| {
                     chan.set_rate(cmd.param2);
-                }
+                });
             }
             sound::cmd::GET_RATE => {
                 if cmd.param2 != 0 {
                     let rate = self
                         .sound_manager
-                        .find_channel_mut(chan_ptr)
-                        .map(|c| c.current_rate())
+                        .find_channel(chan_ptr)
+                        .map(|channel| channel.current_rate())
                         .unwrap_or(0x0001_0000);
                     bus.write_long(cmd.param2, rate);
                 }
@@ -1718,28 +1720,22 @@ impl super::TrapDispatcher {
         let sample_count = samples.len();
 
         // If no channel specified (chan_ptr == 0), use or create a default channel.
-        let chan = if chan_ptr == 0 {
-            if self.sound_manager.channels.is_empty() {
-                self.sound_manager.channels.push(SndChannel::new(0, true));
-            }
-            self.sound_manager.channels.last_mut().unwrap()
+        let started_channel = if chan_ptr == 0 {
+            self.sound_manager.with_default_channel_mut(|chan| {
+                chan.play_buffer(samples, sample_rate, sound::PlaybackKind::Buffer, 0);
+                chan.guest_ptr
+            })
         } else {
-            if let Some(c) = self.sound_manager.find_channel_mut(chan_ptr) {
-                c
-            } else {
-                // Channel not found — create one implicitly.
-                self.sound_manager
-                    .channels
-                    .push(SndChannel::new(chan_ptr, false));
-                self.sound_manager.channels.last_mut().unwrap()
-            }
+            self.sound_manager.with_ensured_channel_mut(chan_ptr, |chan| {
+                chan.play_buffer(samples, sample_rate, sound::PlaybackKind::Buffer, 0);
+                chan.guest_ptr
+            })
         };
 
-        chan.play_buffer(samples, sample_rate, sound::PlaybackKind::Buffer, 0);
         if trace_sound_enabled() {
             eprintln!(
                 "[SOUND] bufferCmd started playback on chan=${:08X} samples={} rate=${:08X}",
-                chan.guest_ptr, sample_count, sample_rate
+                started_channel, sample_count, sample_rate
             );
         }
     }
@@ -1892,7 +1888,7 @@ impl super::TrapDispatcher {
                 && effective_chan != 0
                 && self
                     .sound_manager
-                    .find_channel_mut(effective_chan)
+                    .find_channel(effective_chan)
                     .map(|chan| {
                         chan.has_active_playback()
                             || chan.double_buffer.is_some()
@@ -1914,7 +1910,7 @@ impl super::TrapDispatcher {
         if temporary_channel
             && !self
                 .sound_manager
-                .find_channel_mut(effective_chan)
+                .find_channel(effective_chan)
                 .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
                 .unwrap_or(false)
         {
@@ -2113,39 +2109,30 @@ impl super::TrapDispatcher {
         // code paths.
         self.sound_manager.note_double_buffer_submission();
 
-        // Find or create the channel.
-        let chan = if let Some(c) = self.sound_manager.find_channel_mut(chan_ptr) {
-            c
-        } else {
-            self.sound_manager
-                .channels
-                .push(SndChannel::new(chan_ptr, false));
-            self.sound_manager.channels.last_mut().unwrap()
-        };
+        self.sound_manager.with_ensured_channel_mut(chan_ptr, |chan| {
+            chan.double_buffer = Some(sound::DoubleBufferState {
+                header_ptr,
+                current_buffer: 0,
+                callback_addr,
+                chan_ptr,
+                sample_rate,
+                num_channels,
+                sample_size,
+                last_buffer_seen: false,
+                waiting_for_callback: false,
+                pending_callback_buffers: [false; 2],
+            });
 
-        // Set up double-buffer state.
-        chan.double_buffer = Some(sound::DoubleBufferState {
-            header_ptr,
-            current_buffer: 0,
-            callback_addr,
-            chan_ptr,
-            sample_rate,
-            num_channels,
-            sample_size,
-            last_buffer_seen: false,
-            waiting_for_callback: false,
-            pending_callback_buffers: [false; 2],
+            // Read samples from buffer 0 and start playing.
+            Self::load_double_buffer_samples(
+                bus,
+                chan,
+                buf0_ptr,
+                sample_rate,
+                num_channels,
+                sample_size,
+            );
         });
-
-        // Read samples from buffer 0 and start playing.
-        Self::load_double_buffer_samples(
-            bus,
-            chan,
-            buf0_ptr,
-            sample_rate,
-            num_channels,
-            sample_size,
-        );
         0
     }
 
@@ -2291,26 +2278,24 @@ impl super::TrapDispatcher {
             return -205; // badChannel
         } else {
             let guest_ptr = bus.alloc(GUEST_SND_CHANNEL_SIZE);
-            self.sound_manager
-                .channels
-                .push(SndChannel::new(guest_ptr, true));
+            self.sound_manager.register_channel(
+                guest_ptr,
+                true,
+                0,
+                crate::callback_manager::CallbackTaskArchitecture::M68k,
+            );
             guest_ptr
         };
 
-        let chan = if let Some(chan) = self.sound_manager.find_channel_mut(effective_chan) {
-            chan
-        } else {
-            self.sound_manager
-                .channels
-                .push(SndChannel::new(effective_chan, false));
-            self.sound_manager.channels.last_mut().unwrap()
-        };
-        chan.play_buffer(
-            samples,
-            sample_rate_fixed,
-            sound::PlaybackKind::File,
-            if async_flag != 0 { completion } else { 0 },
-        );
+        self.sound_manager
+            .with_ensured_channel_mut(effective_chan, |chan| {
+                chan.play_buffer(
+                    samples,
+                    sample_rate_fixed,
+                    sound::PlaybackKind::File,
+                    if async_flag != 0 { completion } else { 0 },
+                );
+            });
         // Bump the SndStartFilePlay submission counter AFTER play_buffer
         // succeeds (i.e. AIFF parsed + playback installed).
         self.sound_manager.debug_file_play_count += 1;
@@ -3242,7 +3227,7 @@ mod tests {
         );
         let chan = disp
             .legacy_sound_driver_channel
-            .and_then(|ptr| disp.sound_manager.find_channel_mut(ptr))
+            .and_then(|ptr| disp.sound_manager.find_channel(ptr))
             .expect("legacy sound driver channel allocated");
         assert_eq!(chan.playback_sample_rate(), Some(crate::sound::RATE_22KHZ_FIXED));
         let free_form_mix = disp.sound_manager.mix_frame(4);
@@ -3259,7 +3244,7 @@ mod tests {
         );
         let chan_frac = disp
             .legacy_sound_driver_channel
-            .and_then(|ptr| disp.sound_manager.find_channel_mut(ptr))
+            .and_then(|ptr| disp.sound_manager.find_channel(ptr))
             .expect("legacy sound driver channel allocated");
         let expected_frac_rate = ((u64::from(crate::sound::RATE_22KHZ_FIXED) * 0x2AAA) >> 16) as u32;
         assert_eq!(chan_frac.playback_sample_rate(), Some(expected_frac_rate));
@@ -3593,7 +3578,7 @@ mod tests {
         assert_eq!(bus.read_word(sp + 10), 0);
         assert!(disp
             .sound_manager
-            .find_channel_mut(chan_ptr)
+            .find_channel(chan_ptr)
             .expect("channel exists")
             .is_playing());
         assert_eq!(
@@ -3657,14 +3642,15 @@ mod tests {
         bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET, 0);
         bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, 0);
         disp.sound_manager
-            .find_channel_mut(chan_ptr)
-            .expect("channel exists")
-            .play_buffer(
-                vec![0x10, 0x11],
-                crate::sound::OUTPUT_RATE << 16,
-                PlaybackKind::Buffer,
-                0,
-            );
+            .with_channel_mut(chan_ptr, |channel| {
+                channel.play_buffer(
+                    vec![0x10, 0x11],
+                    crate::sound::OUTPUT_RATE << 16,
+                    PlaybackKind::Buffer,
+                    0,
+                );
+            })
+            .expect("channel exists");
 
         let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
         let header_offset = 16u32;
@@ -4359,7 +4345,7 @@ mod tests {
 
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         assert_ne!(chan_ptr, 0);
-        assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_some());
+        assert!(disp.sound_manager.find_channel(chan_ptr).is_some());
     }
 
     #[test]
@@ -4385,7 +4371,7 @@ mod tests {
         assert_eq!(bus.read_long(chan_ptr + 8), user_routine);
         let chan = disp
             .sound_manager
-            .find_channel_mut(chan_ptr)
+            .find_channel(chan_ptr)
             .expect("channel tracked");
         assert_eq!(chan.callback_addr, user_routine);
     }
@@ -4433,7 +4419,7 @@ mod tests {
             .unwrap()
             .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
-        assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_some());
+        assert!(disp.sound_manager.find_channel(chan_ptr).is_some());
 
         let sp = TEST_SP + 0x40;
         cpu.write_reg(Register::A7, sp);
@@ -4445,7 +4431,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
         assert_eq!(bus.read_word(sp + 6), 0);
-        assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_none());
+        assert!(disp.sound_manager.find_channel(chan_ptr).is_none());
         assert!(
             bus.get_alloc_size(chan_ptr).is_none(),
             "Sound Manager-owned channel storage must be released on dispose"
@@ -4476,7 +4462,7 @@ mod tests {
             .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
             .unwrap()
             .is_ok());
-        assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_some());
+        assert!(disp.sound_manager.find_channel(chan_ptr).is_some());
         bus.write_long(chan_ptr, 0x1111_0001);
         bus.write_long(chan_ptr + 4, 0x1111_0002);
         bus.write_long(chan_ptr + 8, 0x1111_0003);
@@ -4499,7 +4485,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
         assert_eq!(bus.read_word(sp + 6), 0);
-        assert!(disp.sound_manager.find_channel_mut(chan_ptr).is_none());
+        assert!(disp.sound_manager.find_channel(chan_ptr).is_none());
         assert_eq!(
             bus.get_alloc_size(chan_ptr),
             Some(GUEST_SND_CHANNEL_SIZE),
@@ -4670,14 +4656,15 @@ mod tests {
             .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         disp.sound_manager
-            .find_channel_mut(chan_ptr)
-            .expect("channel exists")
-            .play_buffer(
-                vec![0x80; 128],
-                crate::sound::OUTPUT_RATE << 16,
-                PlaybackKind::Buffer,
-                0,
-            );
+            .with_channel_mut(chan_ptr, |channel| {
+                channel.play_buffer(
+                    vec![0x80; 128],
+                    crate::sound::OUTPUT_RATE << 16,
+                    PlaybackKind::Buffer,
+                    0,
+                );
+            })
+            .expect("channel exists");
 
         let cmd_ptr = 0x230040;
         bus.write_word(cmd_ptr, cmd::QUIET);
@@ -4697,7 +4684,7 @@ mod tests {
         assert_eq!(bus.read_word(sp + 10), 0);
         assert!(disp
             .sound_manager
-            .find_channel_mut(chan_ptr)
+            .find_channel(chan_ptr)
             .expect("channel exists")
             .is_playing());
         assert_eq!(disp.sound_manager.mix_frame(64).len(), 64);
@@ -4719,14 +4706,15 @@ mod tests {
             .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         disp.sound_manager
-            .find_channel_mut(chan_ptr)
-            .expect("channel exists")
-            .play_buffer(
-                vec![0xa0; 8],
-                crate::sound::OUTPUT_RATE << 16,
-                PlaybackKind::Buffer,
-                0,
-            );
+            .with_channel_mut(chan_ptr, |channel| {
+                channel.play_buffer(
+                    vec![0xa0; 8],
+                    crate::sound::OUTPUT_RATE << 16,
+                    PlaybackKind::Buffer,
+                    0,
+                );
+            })
+            .expect("channel exists");
 
         let cmd_ptr = 0x230030;
         bus.write_word(cmd_ptr, cmd::VOLUME);
@@ -4787,14 +4775,15 @@ mod tests {
             .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         disp.sound_manager
-            .find_channel_mut(chan_ptr)
-            .expect("channel exists")
-            .play_buffer(
-                vec![0x80, 0x80],
-                crate::sound::OUTPUT_RATE << 16,
-                PlaybackKind::Buffer,
-                0,
-            );
+            .with_channel_mut(chan_ptr, |channel| {
+                channel.play_buffer(
+                    vec![0x80, 0x80],
+                    crate::sound::OUTPUT_RATE << 16,
+                    PlaybackKind::Buffer,
+                    0,
+                );
+            })
+            .expect("channel exists");
 
         let cmd_ptr = 0x230060;
         bus.write_word(cmd_ptr, cmd::CALLBACK);
@@ -4995,9 +4984,8 @@ mod tests {
             .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         disp.sound_manager
-            .find_channel_mut(chan_ptr)
-            .expect("channel exists")
-            .set_rate(0x0001_8000);
+            .with_channel_mut(chan_ptr, |channel| channel.set_rate(0x0001_8000))
+            .expect("channel exists");
 
         let rate_out_ptr = 0x230300;
         bus.write_long(rate_out_ptr, 0xDEAD_BEEF);
@@ -5073,14 +5061,15 @@ mod tests {
             .is_ok());
         let chan_ptr = bus.read_long(chan_ptr_ptr);
         disp.sound_manager
-            .find_channel_mut(chan_ptr)
-            .expect("channel exists")
-            .play_buffer(
-                vec![0x20, 0x21],
-                crate::sound::OUTPUT_RATE << 16,
-                PlaybackKind::Buffer,
-                0,
-            );
+            .with_channel_mut(chan_ptr, |channel| {
+                channel.play_buffer(
+                    vec![0x20, 0x21],
+                    crate::sound::OUTPUT_RATE << 16,
+                    PlaybackKind::Buffer,
+                    0,
+                );
+            })
+            .expect("channel exists");
 
         let header = 0x230180;
         bus.write_long(header, 0);
@@ -5163,7 +5152,7 @@ mod tests {
 
         assert!(disp
             .sound_manager
-            .find_channel_mut(chan_ptr)
+            .find_channel(chan_ptr)
             .expect("channel exists")
             .is_playing());
         assert_eq!(disp.sound_manager.mix_frame(6), vec![0x80; 6]);
@@ -5205,7 +5194,7 @@ mod tests {
         assert_eq!(disp.sound_manager.debug_double_buffer_count, 1);
         let chan = disp
             .sound_manager
-            .find_channel_mut(chan_ptr)
+            .find_channel(chan_ptr)
             .expect("zero-rate probe should still create a channel");
         assert!(chan.is_playing());
         assert_eq!(

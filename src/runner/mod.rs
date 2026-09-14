@@ -7858,9 +7858,11 @@ impl FixtureRunner {
             .map(|playback| playback.channel)
             .collect::<Vec<_>>();
         for channel in stopped_channels {
-            if let Some(host_channel) = self.dispatcher.sound_manager.find_channel_mut(channel) {
-                host_channel.quiet();
-            }
+            self.dispatcher
+                .sound_manager
+                .with_channel_mut(channel, |host_channel| {
+                    host_channel.quiet();
+                });
         }
         for playback in &mut ppc_app.sound.manager.double_buffer_playbacks {
             if !playback.active {
