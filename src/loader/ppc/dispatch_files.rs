@@ -182,6 +182,41 @@ pub(super) fn dispatch_file_import(
                 last_resource_error,
             ),
         ))),
+        PpcImportDispatcherTarget::FSpOpenDF => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_open_df(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                files,
+                writable_refnums,
+                next_file_ref_num,
+            ))))
+        }
+        PpcImportDispatcherTarget::HOpen => {
+            let result = ppc_h_open(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                files,
+                writable_refnums,
+                next_file_ref_num,
+                default_dir_id,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::PBHOpenDF => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pbh_open_df(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                files,
+                writable_refnums,
+                next_file_ref_num,
+            ))))
+        }
         _ => None,
     }
 }
