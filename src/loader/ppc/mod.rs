@@ -1325,6 +1325,14 @@ pub enum PpcParameterBlockCreateOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcDeleteByNameOperation {
+    LegacyHighLevel,
+    HierarchicalHighLevel,
+    LegacyParameterBlock,
+    HierarchicalParameterBlock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyMemoryUtilityOperation {
     BitClear,
     BitNot,
@@ -1877,9 +1885,7 @@ pub enum PpcImportDispatcherTarget {
     FSpCreate,
     PBCreate(PpcParameterBlockCreateOperation),
     FSpDelete,
-    HDelete,
-    FSDelete,
-    PBDelete,
+    DeleteByName(PpcDeleteByNameOperation),
     HCreate,
     Create,
     DSpGetFirstContext,
@@ -15469,14 +15475,22 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Legacy)
         }
         ("InterfaceLib", "FSpDelete") => PpcImportDispatcherTarget::FSpDelete,
-        ("InterfaceLib", "HDelete") => PpcImportDispatcherTarget::HDelete,
-        ("InterfaceLib", "FSDelete") => PpcImportDispatcherTarget::FSDelete,
+        ("InterfaceLib", "HDelete") => PpcImportDispatcherTarget::DeleteByName(
+            PpcDeleteByNameOperation::HierarchicalHighLevel,
+        ),
+        ("InterfaceLib", "FSDelete") => PpcImportDispatcherTarget::DeleteByName(
+            PpcDeleteByNameOperation::LegacyHighLevel,
+        ),
         ("InterfaceLib", "PBDelete")
         | ("InterfaceLib", "PBDeleteSync")
-        | ("InterfaceLib", "PBDeleteAsync")
-        | ("InterfaceLib", "PBHDelete")
-        | ("InterfaceLib", "PBHDeleteSync")
-        | ("InterfaceLib", "PBHDeleteAsync") => PpcImportDispatcherTarget::PBDelete,
+        | ("InterfaceLib", "PBDeleteAsync") => PpcImportDispatcherTarget::DeleteByName(
+            PpcDeleteByNameOperation::LegacyParameterBlock,
+        ),
+        ("InterfaceLib", "PBHDelete" | "PBHDeleteSync" | "PBHDeleteAsync") => {
+            PpcImportDispatcherTarget::DeleteByName(
+                PpcDeleteByNameOperation::HierarchicalParameterBlock,
+            )
+        }
         ("InterfaceLib", "HCreate") => PpcImportDispatcherTarget::HCreate,
         ("InterfaceLib", "Create") => PpcImportDispatcherTarget::Create,
         ("InterfaceLib", "GetNewDialog") => PpcImportDispatcherTarget::GetNewDialog,
@@ -22012,11 +22026,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 vfs_resources,
             ))))
         }
-        PpcImportDispatcherTarget::HDelete
-        | PpcImportDispatcherTarget::FSDelete
-        | PpcImportDispatcherTarget::PBDelete => {
+        PpcImportDispatcherTarget::DeleteByName(operation) => {
             let result = ppc_delete_by_name(
-                binding,
+                operation,
                 cpu,
                 memory,
                 vfs_directories,
@@ -89136,7 +89148,7 @@ fn ppc_fsp_delete(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_delete_by_name(
-    binding: &PpcImportBinding,
+    operation: PpcDeleteByNameOperation,
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -89148,11 +89160,11 @@ fn ppc_delete_by_name(
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     default_dir_id: u32,
 ) -> i16 {
-    let is_parameter_block = matches!(
-        binding.dispatcher_target,
-        PpcImportDispatcherTarget::PBDelete
-    );
-    let (vref, dir_id, name_ptr, pb) = if is_parameter_block {
+    let (vref, dir_id, name_ptr, pb) = if matches!(
+        operation,
+        PpcDeleteByNameOperation::LegacyParameterBlock
+            | PpcDeleteByNameOperation::HierarchicalParameterBlock
+    ) {
         let pb = cpu.gpr[3];
         if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 24) {
             return PPC_PARAM_ERR;
@@ -89163,7 +89175,10 @@ fn ppc_delete_by_name(
         let Some(vref) = memory.read_u16_be(pb + 22).map(|value| value as i16) else {
             return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
         };
-        let hierarchical = binding.symbol_name.starts_with("PBHDelete");
+        let hierarchical = matches!(
+            operation,
+            PpcDeleteByNameOperation::HierarchicalParameterBlock
+        );
         let dir_id = if hierarchical {
             let Some(dir_id) = memory.read_u32_be(pb + 48) else {
                 return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
@@ -89173,10 +89188,7 @@ fn ppc_delete_by_name(
             0
         };
         (vref, dir_id, name_ptr, Some(pb))
-    } else if matches!(
-        binding.dispatcher_target,
-        PpcImportDispatcherTarget::HDelete
-    ) {
+    } else if matches!(operation, PpcDeleteByNameOperation::HierarchicalHighLevel) {
         (cpu.gpr[3] as u16 as i16, cpu.gpr[4], cpu.gpr[5], None)
     } else {
         (cpu.gpr[4] as u16 as i16, 0, cpu.gpr[3], None)
