@@ -165,8 +165,8 @@ pub(super) fn dispatch_sound_import(
         PpcImportDispatcherTarget::GetSoundHeaderOffset => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_get_sound_header_offset(cpu, memory)),
         )),
-        PpcImportDispatcherTarget::SoundInputCompatibility => {
-            Some(ppc_dispatch_sound_input_compatibility(binding, cpu, memory))
+        PpcImportDispatcherTarget::SoundInputCompatibility(operation) => {
+            Some(ppc_dispatch_sound_input_compatibility(operation, cpu, memory))
         }
         _ => None,
     }
