@@ -1291,6 +1291,24 @@ pub enum PpcSystemCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcFileCompatibilityOperation {
+    Create,
+    FsOpen,
+    OpenDf,
+    OpenRf,
+    PbCatSearchSync,
+    PbCloseWdSync,
+    PbDirCreateSync,
+    PbGetFPosSync,
+    PbGetWdInfoSync,
+    PbHGetVolParmsSync,
+    PbHGetVolSync,
+    PbHOpenRfSync,
+    PbHSetVolSync,
+    PbOpenWdSync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
     ElementDisposeVirtual,
@@ -2286,7 +2304,7 @@ pub enum PpcImportDispatcherTarget {
     DialogCompatibility(PpcDialogCompatibilityOperation),
     QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation),
     SystemCompatibility(PpcSystemCompatibilityOperation),
-    FileCompatibility,
+    FileCompatibility(PpcFileCompatibilityOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     PrintingCompatibility(PpcPrintingCompatibilityOperation),
     SlotCompatibility,
@@ -15824,12 +15842,20 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SystemEdit") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::SystemEdit),
         ("InterfaceLib", "TruncText") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::TruncText),
         ("InterfaceLib", "UpperString") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::UpperString),
-        (
-            "InterfaceLib",
-            "OpenDF" | "OpenRF" | "PBCatSearchSync" | "PBDirCreateSync" | "PBGetFPosSync"
-            | "PBGetWDInfoSync" | "PBHGetVolParmsSync" | "PBHGetVolSync" | "PBHOpenRFSync"
-            | "PBHSetVolSync" | "PBCloseWDSync" | "PBOpenWDSync" | "create" | "fsopen",
-        ) => PpcImportDispatcherTarget::FileCompatibility,
+        ("InterfaceLib", "OpenDF") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::OpenDf),
+        ("InterfaceLib", "OpenRF") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::OpenRf),
+        ("InterfaceLib", "PBCatSearchSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbCatSearchSync),
+        ("InterfaceLib", "PBCloseWDSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbCloseWdSync),
+        ("InterfaceLib", "PBDirCreateSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbDirCreateSync),
+        ("InterfaceLib", "PBGetFPosSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbGetFPosSync),
+        ("InterfaceLib", "PBGetWDInfoSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbGetWdInfoSync),
+        ("InterfaceLib", "PBHGetVolParmsSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHGetVolParmsSync),
+        ("InterfaceLib", "PBHGetVolSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHGetVolSync),
+        ("InterfaceLib", "PBHOpenRFSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHOpenRfSync),
+        ("InterfaceLib", "PBHSetVolSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHSetVolSync),
+        ("InterfaceLib", "PBOpenWDSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbOpenWdSync),
+        ("InterfaceLib", "create") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::Create),
+        ("InterfaceLib", "fsopen") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::FsOpen),
         ("InterfaceLib", "GetBridgeAddress") => {
             PpcImportDispatcherTarget::AppleTalkCompatibility(
                 PpcAppleTalkCompatibilityOperation::GetBridgeAddress,
@@ -27289,8 +27315,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             handles,
             launched_app_path,
         )),
-        PpcImportDispatcherTarget::FileCompatibility => Some(ppc_dispatch_file_compatibility(
-            binding,
+        PpcImportDispatcherTarget::FileCompatibility(operation) => Some(ppc_dispatch_file_compatibility(
+            operation,
             cpu,
             memory,
             files,
@@ -29239,7 +29265,7 @@ fn ppc_dispatch_system_compatibility(
 }
 
 fn ppc_dispatch_file_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcFileCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     files: &mut Vec<PpcFileRecord>,
@@ -29250,8 +29276,8 @@ fn ppc_dispatch_file_compatibility(
     next_working_directory_ref_num: &mut i16,
     application_working_directory_ref_num: &mut i16,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "PBGetFPosSync" => {
+    match operation {
+        PpcFileCompatibilityOperation::PbGetFPosSync => {
             let pb = cpu.gpr[3];
             let ref_num = memory.read_u16_be(pb + 24).map(|value| value as i16);
             let result = ref_num
@@ -29265,7 +29291,7 @@ fn ppc_dispatch_file_compatibility(
                 });
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
         }
-        "PBHGetVolSync" => {
+        PpcFileCompatibilityOperation::PbHGetVolSync => {
             let pb = cpu.gpr[3];
             let working_directory = ppc_working_directory_info(
                 0,
@@ -29296,7 +29322,7 @@ fn ppc_dispatch_file_compatibility(
             let _ = memory.write_u32_be(pb + 48, working_directory.dir_id);
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, PPC_NO_ERR)))
         }
-        "PBOpenWDSync" => {
+        PpcFileCompatibilityOperation::PbOpenWdSync => {
             let pb = cpu.gpr[3];
             let requested_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
             let requested_dir_id = memory.read_u32_be(pb + 48).unwrap_or(0);
@@ -29370,7 +29396,7 @@ fn ppc_dispatch_file_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
         }
-        "PBGetWDInfoSync" => {
+        PpcFileCompatibilityOperation::PbGetWdInfoSync => {
             let pb = cpu.gpr[3];
             let input_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
             let wd_index = memory.read_u16_be(pb + 26).unwrap_or(0) as i16;
@@ -29415,7 +29441,7 @@ fn ppc_dispatch_file_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
         }
-        "PBCloseWDSync" => {
+        PpcFileCompatibilityOperation::PbCloseWdSync => {
             let pb = cpu.gpr[3];
             let wd_ref_num = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
             let is_volume_ref_num = wd_ref_num == PPC_BOOT_VOLUME_REF_NUM
@@ -29435,7 +29461,7 @@ fn ppc_dispatch_file_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
         }
-        "PBHSetVolSync" => {
+        PpcFileCompatibilityOperation::PbHSetVolSync => {
             let pb = cpu.gpr[3];
             let requested_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
             let requested_dir_id = memory.read_u32_be(pb + 48).unwrap_or(0);
@@ -29520,18 +29546,22 @@ fn ppc_dispatch_file_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
         }
-        "PBHGetVolParmsSync" => {
+        PpcFileCompatibilityOperation::PbHGetVolParmsSync => {
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(
                 memory, cpu.gpr[3], PPC_NO_ERR,
             )))
         }
-        "PBHOpenRFSync" | "PBCatSearchSync" | "PBDirCreateSync" => PpcImportAction::Return(
+        PpcFileCompatibilityOperation::PbHOpenRfSync
+        | PpcFileCompatibilityOperation::PbCatSearchSync
+        | PpcFileCompatibilityOperation::PbDirCreateSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_FNF_ERR)),
         ),
-        "OpenDF" | "OpenRF" | "create" | "fsopen" => {
+        PpcFileCompatibilityOperation::OpenDf
+        | PpcFileCompatibilityOperation::OpenRf
+        | PpcFileCompatibilityOperation::Create
+        | PpcFileCompatibilityOperation::FsOpen => {
             PpcImportAction::Return(ppc_i16_result(PPC_FNF_ERR))
         }
-        _ => PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)),
     }
 }
 
