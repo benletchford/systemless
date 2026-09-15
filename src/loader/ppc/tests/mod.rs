@@ -6590,7 +6590,12 @@ fn launched_application_path_crosses_adapters_and_native_imports_without_clone_a
 
     classic.set_launched_app_path("Apps/Classic App");
     assert_eq!(native.launched_app_path(), Some("Apps/Classic App"));
-    run_test_import(&mut native, PpcImportDispatcherTarget::SystemCompatibility);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LmGetCurApName,
+        ),
+    );
     assert_eq!(
         ppc_read_pstring_bytes(&mut native.memory, PPC_IMPORT_CUR_AP_NAME),
         Some(b"Classic App".to_vec())
@@ -6598,7 +6603,12 @@ fn launched_application_path_crosses_adapters_and_native_imports_without_clone_a
 
     native.set_launched_app_path("Apps/Native App");
     assert_eq!(classic.launched_app_path(), Some("Apps/Native App"));
-    run_test_import(&mut native, PpcImportDispatcherTarget::SystemCompatibility);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LmGetCurApName,
+        ),
+    );
     assert_eq!(
         ppc_read_pstring_bytes(&mut native.memory, PPC_IMPORT_CUR_AP_NAME),
         Some(b"Native App".to_vec())
@@ -16736,6 +16746,56 @@ fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", symbol),
             PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+        );
+    }
+}
+
+#[test]
+fn system_compatibility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("BuildDDPwds", PpcSystemCompatibilityOperation::BuildDdPwds),
+        ("CTBGetCTBVersion", PpcSystemCompatibilityOperation::CtbGetCtbVersion),
+        ("CallComponentUPP", PpcSystemCompatibilityOperation::CallComponentUpp),
+        ("DIBadMount", PpcSystemCompatibilityOperation::DiBadMount),
+        ("DILoad", PpcSystemCompatibilityOperation::DiLoad),
+        ("DIUnload", PpcSystemCompatibilityOperation::DiUnload),
+        ("Debugger", PpcSystemCompatibilityOperation::Debugger),
+        ("Dequeue", PpcSystemCompatibilityOperation::Dequeue),
+        ("Enqueue", PpcSystemCompatibilityOperation::Enqueue),
+        ("FindNextComponent", PpcSystemCompatibilityOperation::FindNextComponent),
+        ("GetNextProcess", PpcSystemCompatibilityOperation::GetNextProcess),
+        ("GetScript", PpcSystemCompatibilityOperation::GetScript),
+        ("GetScriptManagerVariable", PpcSystemCompatibilityOperation::GetScriptManagerVariable),
+        ("GetScriptVariable", PpcSystemCompatibilityOperation::GetScriptVariable),
+        ("GetSysBeepVolume", PpcSystemCompatibilityOperation::GetSysBeepVolume),
+        ("IUCompString", PpcSystemCompatibilityOperation::IuCompString),
+        ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
+        ("InitCRM", PpcSystemCompatibilityOperation::InitCrm),
+        ("InitCTBUtilities", PpcSystemCompatibilityOperation::InitCtbUtilities),
+        ("KeyTranslate", PpcSystemCompatibilityOperation::KeyTranslate),
+        ("LaunchApplication", PpcSystemCompatibilityOperation::LaunchApplication),
+        ("LMGetCurApName", PpcSystemCompatibilityOperation::LmGetCurApName),
+        ("LMGetSFSaveDisk", PpcSystemCompatibilityOperation::LmGetSfSaveDisk),
+        ("LMGetSysFontFam", PpcSystemCompatibilityOperation::LmGetSysFontFam),
+        ("LMGetSysFontSize", PpcSystemCompatibilityOperation::LmGetSysFontSize),
+        ("MIDIAddPort", PpcSystemCompatibilityOperation::MidiAddPort),
+        ("MIDIRemovePort", PpcSystemCompatibilityOperation::MidiRemovePort),
+        ("MIDISignOut", PpcSystemCompatibilityOperation::MidiSignOut),
+        ("MIDIWritePacket", PpcSystemCompatibilityOperation::MidiWritePacket),
+        ("Munger", PpcSystemCompatibilityOperation::Munger),
+        ("NMRemove", PpcSystemCompatibilityOperation::NmRemove),
+        ("ObscureCursor", PpcSystemCompatibilityOperation::ObscureCursor),
+        ("OpenDefaultComponent", PpcSystemCompatibilityOperation::OpenDefaultComponent),
+        ("ResetAlertStage", PpcSystemCompatibilityOperation::ResetAlertStage),
+        ("SetFrontProcess", PpcSystemCompatibilityOperation::SetFrontProcess),
+        ("StyledLineBreak", PpcSystemCompatibilityOperation::StyledLineBreak),
+        ("SystemEdit", PpcSystemCompatibilityOperation::SystemEdit),
+        ("TruncText", PpcSystemCompatibilityOperation::TruncText),
+        ("UpperString", PpcSystemCompatibilityOperation::UpperString),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::SystemCompatibility(operation),
         );
     }
 }

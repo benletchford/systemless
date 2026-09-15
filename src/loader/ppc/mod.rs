@@ -1248,6 +1248,49 @@ pub enum PpcQuickDrawCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcSystemCompatibilityOperation {
+    BuildDdPwds,
+    CtbGetCtbVersion,
+    CallComponentUpp,
+    DiBadMount,
+    DiLoad,
+    DiUnload,
+    Debugger,
+    Dequeue,
+    Enqueue,
+    FindNextComponent,
+    GetNextProcess,
+    GetScript,
+    GetScriptManagerVariable,
+    GetScriptVariable,
+    GetSysBeepVolume,
+    IuCompString,
+    IuDateString,
+    InitCrm,
+    InitCtbUtilities,
+    KeyTranslate,
+    LaunchApplication,
+    LmGetCurApName,
+    LmGetSfSaveDisk,
+    LmGetSysFontFam,
+    LmGetSysFontSize,
+    MidiAddPort,
+    MidiRemovePort,
+    MidiSignOut,
+    MidiWritePacket,
+    Munger,
+    NmRemove,
+    ObscureCursor,
+    OpenDefaultComponent,
+    ResetAlertStage,
+    SetFrontProcess,
+    StyledLineBreak,
+    SystemEdit,
+    TruncText,
+    UpperString,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
     ElementDisposeVirtual,
@@ -2242,7 +2285,7 @@ pub enum PpcImportDispatcherTarget {
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
     DialogCompatibility(PpcDialogCompatibilityOperation),
     QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation),
-    SystemCompatibility,
+    SystemCompatibility(PpcSystemCompatibilityOperation),
     FileCompatibility,
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     PrintingCompatibility(PpcPrintingCompatibilityOperation),
@@ -15742,48 +15785,45 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetItemStyle),
         ("InterfaceLib", "SetStdCProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetStdCProcs),
         ("InterfaceLib", "SetStdProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetStdProcs),
-        (
-            "InterfaceLib",
-            "BuildDDPwds"
-            | "CTBGetCTBVersion"
-            | "CallComponentUPP"
-            | "DIBadMount"
-            | "DILoad"
-            | "DIUnload"
-            | "Debugger"
-            | "Dequeue"
-            | "Enqueue"
-            | "FindNextComponent"
-            | "GetNextProcess"
-            | "GetScript"
-            | "GetScriptManagerVariable"
-            | "GetScriptVariable"
-            | "GetSysBeepVolume"
-            | "IUCompString"
-            | "IUDateString"
-            | "InitCRM"
-            | "InitCTBUtilities"
-            | "KeyTranslate"
-            | "LMGetCurApName"
-            | "LMGetSFSaveDisk"
-            | "LMGetSysFontFam"
-            | "LMGetSysFontSize"
-            | "LaunchApplication"
-            | "MIDIAddPort"
-            | "MIDIRemovePort"
-            | "MIDISignOut"
-            | "MIDIWritePacket"
-            | "Munger"
-            | "NMRemove"
-            | "ObscureCursor"
-            | "OpenDefaultComponent"
-            | "ResetAlertStage"
-            | "SetFrontProcess"
-            | "StyledLineBreak"
-            | "SystemEdit"
-            | "TruncText"
-            | "UpperString",
-        ) => PpcImportDispatcherTarget::SystemCompatibility,
+        ("InterfaceLib", "BuildDDPwds") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::BuildDdPwds),
+        ("InterfaceLib", "CTBGetCTBVersion") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CtbGetCtbVersion),
+        ("InterfaceLib", "CallComponentUPP") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CallComponentUpp),
+        ("InterfaceLib", "DIBadMount") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiBadMount),
+        ("InterfaceLib", "DILoad") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiLoad),
+        ("InterfaceLib", "DIUnload") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiUnload),
+        ("InterfaceLib", "Debugger") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Debugger),
+        ("InterfaceLib", "Dequeue") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Dequeue),
+        ("InterfaceLib", "Enqueue") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Enqueue),
+        ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::FindNextComponent),
+        ("InterfaceLib", "GetNextProcess") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetNextProcess),
+        ("InterfaceLib", "GetScript") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetScript),
+        ("InterfaceLib", "GetScriptManagerVariable") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetScriptManagerVariable),
+        ("InterfaceLib", "GetScriptVariable") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetScriptVariable),
+        ("InterfaceLib", "GetSysBeepVolume") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetSysBeepVolume),
+        ("InterfaceLib", "IUCompString") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::IuCompString),
+        ("InterfaceLib", "IUDateString") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::IuDateString),
+        ("InterfaceLib", "InitCRM") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCrm),
+        ("InterfaceLib", "InitCTBUtilities") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCtbUtilities),
+        ("InterfaceLib", "KeyTranslate") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::KeyTranslate),
+        ("InterfaceLib", "LMGetCurApName") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetCurApName),
+        ("InterfaceLib", "LMGetSFSaveDisk") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSfSaveDisk),
+        ("InterfaceLib", "LMGetSysFontFam") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSysFontFam),
+        ("InterfaceLib", "LMGetSysFontSize") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSysFontSize),
+        ("InterfaceLib", "LaunchApplication") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LaunchApplication),
+        ("InterfaceLib", "MIDIAddPort") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiAddPort),
+        ("InterfaceLib", "MIDIRemovePort") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiRemovePort),
+        ("InterfaceLib", "MIDISignOut") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiSignOut),
+        ("InterfaceLib", "MIDIWritePacket") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiWritePacket),
+        ("InterfaceLib", "Munger") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Munger),
+        ("InterfaceLib", "NMRemove") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmRemove),
+        ("InterfaceLib", "ObscureCursor") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::ObscureCursor),
+        ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::OpenDefaultComponent),
+        ("InterfaceLib", "ResetAlertStage") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::ResetAlertStage),
+        ("InterfaceLib", "SetFrontProcess") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::SetFrontProcess),
+        ("InterfaceLib", "StyledLineBreak") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::StyledLineBreak),
+        ("InterfaceLib", "SystemEdit") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::SystemEdit),
+        ("InterfaceLib", "TruncText") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::TruncText),
+        ("InterfaceLib", "UpperString") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::UpperString),
         (
             "InterfaceLib",
             "OpenDF" | "OpenRF" | "PBCatSearchSync" | "PBDirCreateSync" | "PBGetFPosSync"
@@ -27238,8 +27278,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 toolbox_startup,
             ))
         }
-        PpcImportDispatcherTarget::SystemCompatibility => Some(ppc_dispatch_system_compatibility(
-            binding,
+        PpcImportDispatcherTarget::SystemCompatibility(operation) => Some(ppc_dispatch_system_compatibility(
+            operation,
             cpu,
             process_memory_manager,
             memory,
@@ -29017,7 +29057,7 @@ fn ppc_dequeue_compatibility(memory: &mut PpcSectionMem, element: u32, header: u
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_system_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcSystemCompatibilityOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -29027,8 +29067,8 @@ fn ppc_dispatch_system_compatibility(
     handles: &mut Vec<PpcHandleRecord>,
     launched_app_path: Option<&str>,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "Munger" => {
+    match operation {
+        PpcSystemCompatibilityOperation::Munger => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -29042,19 +29082,19 @@ fn ppc_dispatch_system_compatibility(
                 handles,
             ))
         }
-        "Enqueue" => {
+        PpcSystemCompatibilityOperation::Enqueue => {
             let _ = ppc_enqueue_compatibility(memory, cpu.gpr[3], cpu.gpr[4]);
             PpcImportAction::ReturnPreserve
         }
-        "Dequeue" => PpcImportAction::Return(ppc_i16_result(ppc_dequeue_compatibility(
+        PpcSystemCompatibilityOperation::Dequeue => PpcImportAction::Return(ppc_i16_result(ppc_dequeue_compatibility(
             memory, cpu.gpr[3], cpu.gpr[4],
         ))),
         // ObscureCursor has no effect on the cursor level. It hides the cursor
         // only until the user moves the mouse, which the host injects each frame.
         // PROCEDURE ObscureCursor;
         // Inside Macintosh Volume I, I-168.
-        "ObscureCursor" => PpcImportAction::ReturnPreserve,
-        "UpperString" => {
+        PpcSystemCompatibilityOperation::ObscureCursor => PpcImportAction::ReturnPreserve,
+        PpcSystemCompatibilityOperation::UpperString => {
             if let Some(bytes) = ppc_read_pstring_bytes(memory, cpu.gpr[3]) {
                 let upper = bytes
                     .into_iter()
@@ -29064,7 +29104,7 @@ fn ppc_dispatch_system_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "IUCompString" => {
+        PpcSystemCompatibilityOperation::IuCompString => {
             let lhs = ppc_read_pstring_bytes(memory, cpu.gpr[3]).unwrap_or_default();
             let rhs = ppc_read_pstring_bytes(memory, cpu.gpr[4]).unwrap_or_default();
             let lhs = lhs
@@ -29082,7 +29122,7 @@ fn ppc_dispatch_system_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(ordering))
         }
-        "TruncText" => {
+        PpcSystemCompatibilityOperation::TruncText => {
             let width = usize::from(cpu.gpr[3] as u16);
             let text = cpu.gpr[4];
             let length_ptr = cpu.gpr[5];
@@ -29111,7 +29151,7 @@ fn ppc_dispatch_system_compatibility(
             let _ = memory.write_u16_be(length_ptr, capacity as u16);
             PpcImportAction::Return(1)
         }
-        "StyledLineBreak" => {
+        PpcSystemCompatibilityOperation::StyledLineBreak => {
             let text_len = cpu.gpr[4];
             let text_end = cpu.gpr[6].min(text_len);
             let width_ptr = cpu.gpr[8];
@@ -29130,7 +29170,7 @@ fn ppc_dispatch_system_compatibility(
                 PpcImportAction::Return(1)
             }
         }
-        "GetNextProcess" => {
+        PpcSystemCompatibilityOperation::GetNextProcess => {
             let psn = cpu.gpr[3];
             let current = (
                 memory.read_u32_be(psn).unwrap_or(u32::MAX),
@@ -29144,8 +29184,8 @@ fn ppc_dispatch_system_compatibility(
                 PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))
             }
         }
-        "SetFrontProcess" => PpcImportAction::Return(0),
-        "LMGetCurApName" => {
+        PpcSystemCompatibilityOperation::SetFrontProcess => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::LmGetCurApName => {
             let name = launched_app_path
                 .and_then(|path| path.rsplit('/').next())
                 .unwrap_or("Systemless");
@@ -29153,10 +29193,10 @@ fn ppc_dispatch_system_compatibility(
             let _ = ppc_write_pstring_bytes(memory, PPC_IMPORT_CUR_AP_NAME, &encoded);
             PpcImportAction::Return(PPC_IMPORT_CUR_AP_NAME)
         }
-        "LMGetSysFontFam" => PpcImportAction::Return(0),
-        "LMGetSysFontSize" => PpcImportAction::Return(12),
-        "LMGetSFSaveDisk" => PpcImportAction::Return(0),
-        "GetSysBeepVolume" => {
+        PpcSystemCompatibilityOperation::LmGetSysFontFam => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::LmGetSysFontSize => PpcImportAction::Return(12),
+        PpcSystemCompatibilityOperation::LmGetSfSaveDisk => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::GetSysBeepVolume => {
             let result = if memory.write_u32_be(cpu.gpr[3], 0x0100_0100).is_some() {
                 PPC_NO_ERR
             } else {
@@ -29164,26 +29204,37 @@ fn ppc_dispatch_system_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(result))
         }
-        "IUDateString" => {
+        PpcSystemCompatibilityOperation::IuDateString => {
             let _ = ppc_write_pstring_bytes(memory, cpu.gpr[5], b"");
             PpcImportAction::ReturnPreserve
         }
-        "SystemEdit" | "WaitMouseUp" | "DIBadMount" => PpcImportAction::Return(0),
-        "FindNextComponent" | "OpenDefaultComponent" => PpcImportAction::Return(0),
-        "CTBGetCTBVersion" => PpcImportAction::Return(0x0200),
-        "GetScriptManagerVariable"
-        | "GetScriptVariable"
-        | "GetScript"
-        | "KeyTranslate"
-        | "CallComponentUPP" => PpcImportAction::Return(0),
-        "LaunchApplication" => PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR)),
-        "BuildDDPwds" => PpcImportAction::ReturnPreserve,
-        "MIDIAddPort" | "MIDIRemovePort" | "MIDISignOut" | "MIDIWritePacket" => {
+        PpcSystemCompatibilityOperation::SystemEdit
+        | PpcSystemCompatibilityOperation::DiBadMount => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::FindNextComponent
+        | PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::CtbGetCtbVersion => PpcImportAction::Return(0x0200),
+        PpcSystemCompatibilityOperation::GetScriptManagerVariable
+        | PpcSystemCompatibilityOperation::GetScriptVariable
+        | PpcSystemCompatibilityOperation::GetScript
+        | PpcSystemCompatibilityOperation::KeyTranslate
+        | PpcSystemCompatibilityOperation::CallComponentUpp => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::LaunchApplication => {
+            PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))
+        }
+        PpcSystemCompatibilityOperation::BuildDdPwds => PpcImportAction::ReturnPreserve,
+        PpcSystemCompatibilityOperation::MidiAddPort
+        | PpcSystemCompatibilityOperation::MidiRemovePort
+        | PpcSystemCompatibilityOperation::MidiSignOut
+        | PpcSystemCompatibilityOperation::MidiWritePacket => {
             PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR))
         }
-        "DILoad" | "DIUnload" | "Debugger" | "InitCRM" | "InitCTBUtilities" | "NMRemove"
-        | "ResetAlertStage" => PpcImportAction::ReturnPreserve,
-        _ => PpcImportAction::ReturnPreserve,
+        PpcSystemCompatibilityOperation::DiLoad
+        | PpcSystemCompatibilityOperation::DiUnload
+        | PpcSystemCompatibilityOperation::Debugger
+        | PpcSystemCompatibilityOperation::InitCrm
+        | PpcSystemCompatibilityOperation::InitCtbUtilities
+        | PpcSystemCompatibilityOperation::NmRemove
+        | PpcSystemCompatibilityOperation::ResetAlertStage => PpcImportAction::ReturnPreserve,
     }
 }
 
