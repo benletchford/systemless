@@ -1199,6 +1199,19 @@ pub enum PpcStandardFileOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcDialogCompatibilityOperation {
+    AppendDitl,
+    CountDitl,
+    DialogSelect,
+    FindDialogItem,
+    HideDialogItem,
+    IsDialogEvent,
+    ShortenDitl,
+    ShowDialogItem,
+    UpdateDialog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
     ElementDisposeVirtual,
@@ -2191,7 +2204,7 @@ pub enum PpcImportDispatcherTarget {
     LegacyControl,
     LegacyWindow,
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
-    DialogCompatibility,
+    DialogCompatibility(PpcDialogCompatibilityOperation),
     QuickDrawCompatibility,
     SystemCompatibility,
     FileCompatibility,
@@ -15634,11 +15647,33 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "AESend") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::Send,
         ),
-        (
-            "InterfaceLib",
-            "AppendDITL" | "CountDITL" | "DialogSelect" | "FindDialogItem" | "HideDialogItem"
-            | "IsDialogEvent" | "ShortenDITL" | "ShowDialogItem" | "UpdateDialog",
-        ) => PpcImportDispatcherTarget::DialogCompatibility,
+        ("InterfaceLib", "AppendDITL") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AppendDitl,
+        ),
+        ("InterfaceLib", "CountDITL") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CountDitl,
+        ),
+        ("InterfaceLib", "DialogSelect") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::DialogSelect,
+        ),
+        ("InterfaceLib", "FindDialogItem") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::FindDialogItem,
+        ),
+        ("InterfaceLib", "HideDialogItem") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::HideDialogItem,
+        ),
+        ("InterfaceLib", "IsDialogEvent") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::IsDialogEvent,
+        ),
+        ("InterfaceLib", "ShortenDITL") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::ShortenDitl,
+        ),
+        ("InterfaceLib", "ShowDialogItem") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::ShowDialogItem,
+        ),
+        ("InterfaceLib", "UpdateDialog") => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::UpdateDialog,
+        ),
         (
             "InterfaceLib",
             "AnimateEntry" | "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyDeepMask"
@@ -27103,24 +27138,26 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 handles,
             ))
         }
-        PpcImportDispatcherTarget::DialogCompatibility => Some(ppc_dispatch_dialog_compatibility(
-            binding,
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            gworlds,
-            screen_clut,
-            current_gworld,
-            current_gdevice,
-            dialog_callback_stack,
-            vfs_resources,
-            *current_resource_refnum,
-        )),
+        PpcImportDispatcherTarget::DialogCompatibility(operation) => {
+            Some(ppc_dispatch_dialog_compatibility(
+                operation,
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                screen_clut,
+                current_gworld,
+                current_gdevice,
+                dialog_callback_stack,
+                vfs_resources,
+                *current_resource_refnum,
+            ))
+        }
         PpcImportDispatcherTarget::QuickDrawCompatibility => {
             Some(ppc_dispatch_quickdraw_compatibility(
                 binding,
@@ -27562,7 +27599,7 @@ fn ppc_offset_ditl_items(bytes: &mut [u8], items: &[PpcDialogItemView], dv: i16,
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_dialog_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcDialogCompatibilityOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -27580,8 +27617,8 @@ fn ppc_dispatch_dialog_compatibility(
     current_resource_refnum: i16,
 ) -> PpcImportAction {
     let dialog = cpu.gpr[3];
-    match binding.symbol_name.as_str() {
-        "IsDialogEvent" => {
+    match operation {
+        PpcDialogCompatibilityOperation::IsDialogEvent => {
             let result = ppc_read_dialog_event(memory, cpu.gpr[3])
                 .and_then(|event| {
                     let dialog = ppc_dialog_for_event(memory, gworlds, event.what, event.message)?;
@@ -27601,7 +27638,7 @@ fn ppc_dispatch_dialog_compatibility(
                 .unwrap_or(false);
             PpcImportAction::Return(u32::from(result))
         }
-        "DialogSelect" => {
+        PpcDialogCompatibilityOperation::DialogSelect => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return action;
             }
@@ -27736,12 +27773,12 @@ fn ppc_dispatch_dialog_compatibility(
                 _ => PpcImportAction::Return(0),
             }
         }
-        "CountDITL" => PpcImportAction::Return(
+        PpcDialogCompatibilityOperation::CountDitl => PpcImportAction::Return(
             ppc_dialog_items_for_dialog(memory, handles, dialog)
                 .and_then(|items| u32::try_from(items.len()).ok())
                 .unwrap_or(0),
         ),
-        "FindDialogItem" => {
+        PpcDialogCompatibilityOperation::FindDialogItem => {
             let point = cpu.gpr[4];
             let v = (point >> 16) as u16 as i16;
             let h = point as u16 as i16;
@@ -27756,7 +27793,8 @@ fn ppc_dispatch_dialog_compatibility(
                 .unwrap_or(0);
             PpcImportAction::Return(found)
         }
-        "HideDialogItem" | "ShowDialogItem" => {
+        PpcDialogCompatibilityOperation::HideDialogItem
+        | PpcDialogCompatibilityOperation::ShowDialogItem => {
             if let Some((_handle, ptr, _bytes, items)) =
                 ppc_dialog_live_items(memory, handles, dialog)
             {
@@ -27766,17 +27804,14 @@ fn ppc_dispatch_dialog_compatibility(
                     .and_then(|index| items.get(index))
                 {
                     let left = item.rect.1;
-                    let should_move = if binding.symbol_name == "HideDialogItem" {
+                    let hide = operation == PpcDialogCompatibilityOperation::HideDialogItem;
+                    let should_move = if hide {
                         left < 0x2000
                     } else {
                         left > 0x2000
                     };
                     if should_move {
-                        let delta = if binding.symbol_name == "HideDialogItem" {
-                            0x4000i16
-                        } else {
-                            -0x4000i16
-                        };
+                        let delta = if hide { 0x4000i16 } else { -0x4000i16 };
                         let item_addr = ptr + item.item_offset as u32;
                         let _ = memory
                             .write_u16_be(item_addr + 6, item.rect.1.wrapping_add(delta) as u16);
@@ -27787,7 +27822,7 @@ fn ppc_dispatch_dialog_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "AppendDITL" => {
+        PpcDialogCompatibilityOperation::AppendDitl => {
             let Some((handle, _ptr, current_bytes, current_items)) =
                 ppc_dialog_live_items(memory, handles, dialog)
             else {
@@ -27840,7 +27875,7 @@ fn ppc_dispatch_dialog_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "ShortenDITL" => {
+        PpcDialogCompatibilityOperation::ShortenDitl => {
             let Some((handle, _ptr, mut bytes, items)) =
                 ppc_dialog_live_items(memory, handles, dialog)
             else {
@@ -27879,7 +27914,7 @@ fn ppc_dispatch_dialog_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "UpdateDialog" => {
+        PpcDialogCompatibilityOperation::UpdateDialog => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return action;
             }
@@ -27910,7 +27945,6 @@ fn ppc_dispatch_dialog_compatibility(
                 _ => PpcImportAction::ReturnPreserve,
             }
         }
-        _ => PpcImportAction::ReturnPreserve,
     }
 }
 
