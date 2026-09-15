@@ -16249,10 +16249,37 @@ fn import_bindings_classify_file_manager_imports() {
 }
 
 #[test]
+fn file_compatibility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("OpenDF", PpcFileCompatibilityOperation::OpenDf),
+        ("OpenRF", PpcFileCompatibilityOperation::OpenRf),
+        ("PBCatSearchSync", PpcFileCompatibilityOperation::PbCatSearchSync),
+        ("PBCloseWDSync", PpcFileCompatibilityOperation::PbCloseWdSync),
+        ("PBDirCreateSync", PpcFileCompatibilityOperation::PbDirCreateSync),
+        ("PBGetFPosSync", PpcFileCompatibilityOperation::PbGetFPosSync),
+        ("PBGetWDInfoSync", PpcFileCompatibilityOperation::PbGetWdInfoSync),
+        ("PBHGetVolParmsSync", PpcFileCompatibilityOperation::PbHGetVolParmsSync),
+        ("PBHGetVolSync", PpcFileCompatibilityOperation::PbHGetVolSync),
+        ("PBHOpenRFSync", PpcFileCompatibilityOperation::PbHOpenRfSync),
+        ("PBHSetVolSync", PpcFileCompatibilityOperation::PbHSetVolSync),
+        ("PBOpenWDSync", PpcFileCompatibilityOperation::PbOpenWdSync),
+        ("create", PpcFileCompatibilityOperation::Create),
+        ("fsopen", PpcFileCompatibilityOperation::FsOpen),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::FileCompatibility(operation),
+        );
+    }
+}
+
+#[test]
 fn pbhgetvolsync_returns_working_directory_fields_at_wdpb_offsets() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "PBHGetVolSync"),
-        PpcImportDispatcherTarget::FileCompatibility
+        PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbHGetVolSync,
+        )
     );
     let pef = synthetic_pef_with_import(b"PBHGetVolSync");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -16301,7 +16328,9 @@ fn pbhgetvolsync_returns_working_directory_fields_at_wdpb_offsets() {
 fn native_parameter_block_working_directory_lifecycle_uses_process_registry() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "PBCloseWDSync"),
-        PpcImportDispatcherTarget::FileCompatibility
+        PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbCloseWdSync,
+        )
     );
     let pef = synthetic_pef_with_import(b"PBOpenWDSync");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -16337,7 +16366,9 @@ fn native_parameter_block_working_directory_lifecycle_uses_process_registry() {
         })
     );
 
-    loaded.imports[0].symbol_name = "PBGetWDInfoSync".to_string();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FileCompatibility(
+        PpcFileCompatibilityOperation::PbGetWdInfoSync,
+    );
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = loaded.halt_pc;
     loaded.cpu.gpr[3] = parameter_block;
@@ -16364,7 +16395,9 @@ fn native_parameter_block_working_directory_lifecycle_uses_process_registry() {
         Some(0x1234_5678)
     );
 
-    loaded.imports[0].symbol_name = "PBCloseWDSync".to_string();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FileCompatibility(
+        PpcFileCompatibilityOperation::PbCloseWdSync,
+    );
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = loaded.halt_pc;
     loaded.cpu.gpr[3] = parameter_block;
