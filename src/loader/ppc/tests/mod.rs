@@ -5542,7 +5542,10 @@ fn native_inval_menu_bar_defers_and_coalesces_one_draw_until_an_event_scan() {
 
     loaded.cpu.gpr[3] = 0;
     loaded.cpu.gpr[4] = event;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNextEvent);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
     assert!(!loaded.event_queue.menu_bar_is_invalid());
     assert_eq!(loaded.toolbox_startup.menu_bar_draw_count, 1);
     assert_ne!(
@@ -5559,7 +5562,10 @@ fn native_inval_menu_bar_defers_and_coalesces_one_draw_until_an_event_scan() {
     ));
     loaded.cpu.gpr[3] = 0;
     loaded.cpu.gpr[4] = event;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNextEvent);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
     assert_eq!(loaded.toolbox_startup.menu_bar_draw_count, 1);
     assert_eq!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 5)),
@@ -5740,7 +5746,10 @@ fn attached_event_launch_state_shares_native_first_and_classic_first_oapp_once()
         .reset_for_launch(true);
     native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
     native.cpu.gpr[4] = native_event;
-    run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
     assert_eq!(native.cpu.gpr[3], 1);
     assert!(context.event_queue().is_empty());
     assert!(classic
@@ -5778,7 +5787,10 @@ fn attached_event_launch_state_shares_native_first_and_classic_first_oapp_once()
 
     native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
     native.cpu.gpr[4] = native_event;
-    run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
     assert_eq!(native.cpu.gpr[3], 0);
     assert_eq!(native.memory.read_u16_be(native_event), Some(0));
     assert!(context.event_queue().is_empty());
@@ -5859,7 +5871,10 @@ fn attached_event_launch_state_requires_awareness_and_high_level_mask() {
         .reset_for_launch(false);
     native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
     native.cpu.gpr[4] = native_event;
-    run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
     assert_eq!(native.cpu.gpr[3], 0);
     assert!(!native
         .apple_events
@@ -5872,7 +5887,10 @@ fn attached_event_launch_state_requires_awareness_and_high_level_mask() {
         .reset_for_launch(true);
     native.cpu.gpr[3] = 0x0008;
     native.cpu.gpr[4] = native_event;
-    run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
     assert_eq!(native.cpu.gpr[3], 0);
     assert!(!native
         .apple_events
@@ -16568,11 +16586,11 @@ fn import_bindings_classify_dialog_and_utility_imports() {
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetNextEvent"),
-        PpcImportDispatcherTarget::GetNextEvent
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent)
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "WaitNextEvent"),
-        PpcImportDispatcherTarget::GetNextEvent
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetOSEvent"),
@@ -63473,6 +63491,7 @@ fn hle_import_runner_handles_event_button_and_exit_utilities() {
     let mut loaded = load_pef_application(&pef).unwrap();
     let event_ptr = PPC_DATA_BASE + 0x1100;
     loaded.memory.add_region(event_ptr, vec![0xaa; 16]);
+    loaded.imports[0].symbol_name = "GetNextEvent".to_string();
     loaded.cpu.gpr[3] = 0xffff;
     loaded.cpu.gpr[4] = event_ptr;
     loaded.cpu.gpr[5] = 10;
@@ -63717,7 +63736,9 @@ fn ppc_apple_event_manager_delivers_oapp_and_calls_registered_native_handler() {
         .set_high_level_event_aware(true);
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
-    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNextEvent;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNextEvent(
+        PpcEventPollOperation::GetNextEvent,
+    );
     loaded.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
     loaded.cpu.gpr[4] = event_record;
     loaded.cpu.gpr[5] = 0;

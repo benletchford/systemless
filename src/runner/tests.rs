@@ -8985,7 +8985,10 @@
             .add_region(PPC_SOUND_EVENT_RECORD, vec![0; 16]);
         ppc_app.import_count = 3;
         ppc_app.imports = [
-            ("GetNextEvent", PpcImportDispatcherTarget::GetNextEvent),
+            (
+                "GetNextEvent",
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+            ),
             ("PostEvent", PpcImportDispatcherTarget::PostEvent),
             ("SetEventMask", PpcImportDispatcherTarget::SetEventMask),
         ]
