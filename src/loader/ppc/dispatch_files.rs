@@ -7,6 +7,12 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) files: &'a mut Vec<PpcFileRecord>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
+    pub(super) vfs_directories: &'a [PpcVfsDirectory],
+    pub(super) deleted_vfs_file_paths: &'a mut Vec<String>,
+    pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
+    pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,
+    pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
+    pub(super) default_dir_id: u32,
 }
 
 pub(super) fn dispatch_file_import(
@@ -19,6 +25,12 @@ pub(super) fn dispatch_file_import(
         files,
         writable_refnums,
         vfs_files,
+        vfs_directories,
+        deleted_vfs_file_paths,
+        vfs_resource_files,
+        resource_files,
+        vfs_resources,
+        default_dir_id,
     } = context;
 
     match binding.dispatcher_target {
@@ -67,6 +79,54 @@ pub(super) fn dispatch_file_import(
         PpcImportDispatcherTarget::PBSetFPos => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_set_fpos(cpu, memory, files, vfs_files),
         ))),
+        PpcImportDispatcherTarget::PBCreate(operation) => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_pb_create(
+                operation,
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                default_dir_id,
+            )),
+        )),
+        PpcImportDispatcherTarget::FSpCreate => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_fsp_create(cpu, memory, vfs_directories, vfs_files),
+        ))),
+        PpcImportDispatcherTarget::HCreate => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_h_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
+        ))),
+        PpcImportDispatcherTarget::Create => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
+        ))),
+        PpcImportDispatcherTarget::FSpDelete => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_fsp_delete(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                deleted_vfs_file_paths,
+                files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+            ),
+        ))),
+        PpcImportDispatcherTarget::DeleteByName(operation) => {
+            let result = ppc_delete_by_name(
+                operation,
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                deleted_vfs_file_paths,
+                files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+                default_dir_id,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         _ => None,
     }
 }

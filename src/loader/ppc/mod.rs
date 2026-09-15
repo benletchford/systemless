@@ -16860,6 +16860,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             files,
             writable_refnums,
             vfs_files,
+            vfs_directories,
+            deleted_vfs_file_paths,
+            vfs_resource_files,
+            resource_files,
+            vfs_resources,
+            default_dir_id,
         },
     ) {
         return Some(action);
@@ -18713,7 +18719,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::PBSetEOF
         | PpcImportDispatcherTarget::GetFPos
         | PpcImportDispatcherTarget::SetFPos
-        | PpcImportDispatcherTarget::PBSetFPos => {
+        | PpcImportDispatcherTarget::PBSetFPos
+        | PpcImportDispatcherTarget::PBCreate(_)
+        | PpcImportDispatcherTarget::FSpCreate
+        | PpcImportDispatcherTarget::HCreate
+        | PpcImportDispatcherTarget::Create
+        | PpcImportDispatcherTarget::FSpDelete
+        | PpcImportDispatcherTarget::DeleteByName(_) => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -21994,54 +22006,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 last_resource_error,
             ),
         ))),
-        PpcImportDispatcherTarget::PBCreate(operation) => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_create(
-                operation,
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSpCreate => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_create(cpu, memory, vfs_directories, vfs_files),
-        ))),
-        PpcImportDispatcherTarget::HCreate => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_h_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
-        ))),
-        PpcImportDispatcherTarget::Create => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
-        ))),
-        PpcImportDispatcherTarget::FSpDelete => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_delete(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                deleted_vfs_file_paths,
-                files,
-                vfs_resource_files,
-                resource_files,
-                vfs_resources,
-            ))))
-        }
-        PpcImportDispatcherTarget::DeleteByName(operation) => {
-            let result = ppc_delete_by_name(
-                operation,
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                deleted_vfs_file_paths,
-                files,
-                vfs_resource_files,
-                resource_files,
-                vfs_resources,
-                default_dir_id,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
         PpcImportDispatcherTarget::GetNewDialog => {
             if ppc_hle_trace_enabled() {
                 eprintln!(
