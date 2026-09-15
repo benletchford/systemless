@@ -145,7 +145,7 @@ fn load_pef_application_rejects_unsupported_screen_depth() {
 }
 
 #[test]
-fn display_manager_get_and_mode_list_follow_every_live_screen_depth() {
+fn display_manager_get_follows_live_depth_and_mode_list_advertises_supported_depths() {
     for depth in [1, 2, 4, 8, 16] {
         let get_pef = synthetic_pef_with_import(b"DMGetDisplayMode");
         let mut loaded = load_pef_application_with_config(
@@ -211,21 +211,16 @@ fn display_manager_get_and_mode_list_follow_every_live_screen_depth() {
             Some(PPC_DM_MODE_LIST_MAGIC)
         );
         let mode = ppc_dm_live_display_mode(&mut loaded.memory, PPC_MAIN_GDEVICE).unwrap();
-        let listed_switch = list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET;
         let resolution = list + PPC_DM_MODE_LIST_RESOLUTION_INFO_OFFSET;
         let timing = list + PPC_DM_MODE_LIST_TIMING_INFO_OFFSET;
-        let vp_block = list + PPC_DM_MODE_LIST_VP_BLOCK_OFFSET;
+        let depth_block = list + PPC_DM_MODE_LIST_DEPTH_BLOCK_OFFSET;
+        let live_depth_index = [1u16, 2, 4, 8, 16]
+            .iter()
+            .position(|candidate| *candidate == depth as u16)
+            .unwrap() as u32;
         assert_eq!(
-            loaded.memory.read_u16_be(listed_switch),
-            Some(mode.depth_mode as u16)
-        );
-        assert_eq!(
-            loaded.memory.read_u32_be(listed_switch + 2),
-            Some(mode.display_mode_id)
-        );
-        assert_eq!(
-            loaded.memory.read_u32_be(listed_switch + 8),
-            Some(mode.base_addr)
+            loaded.memory.read_u32_be(list + PPC_DM_MODE_LIST_ENTRY_OFFSET + 4),
+            Some(list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + live_depth_index * 16)
         );
         assert_eq!(loaded.memory.read_u32_be(resolution + 8), Some(mode.width));
         assert_eq!(
@@ -240,35 +235,27 @@ fn display_manager_get_and_mode_list_follow_every_live_screen_depth() {
             loaded.memory.read_u32_be(timing),
             Some(mode.display_mode_id)
         );
-        assert_eq!(
-            loaded.memory.read_u16_be(vp_block + 4),
-            Some(mode.row_bytes)
-        );
-        assert_eq!(
-            ppc_read_rect(&mut loaded.memory, vp_block + 6),
-            Some(mode.bounds)
-        );
-        assert_eq!(loaded.memory.read_u16_be(vp_block + 14), Some(0));
-        assert_eq!(loaded.memory.read_u16_be(vp_block + 16), Some(0));
-        assert_eq!(loaded.memory.read_u32_be(vp_block + 18), Some(0));
-        assert_eq!(loaded.memory.read_u32_be(vp_block + 22), Some(72 << 16));
-        assert_eq!(loaded.memory.read_u32_be(vp_block + 26), Some(72 << 16));
-        assert_eq!(
-            loaded.memory.read_u16_be(vp_block + 30),
-            Some(mode.pixel_type)
-        );
-        assert_eq!(
-            loaded.memory.read_u16_be(vp_block + 32),
-            Some(mode.pixel_size)
-        );
-        assert_eq!(
-            loaded.memory.read_u16_be(vp_block + 34),
-            Some(mode.component_count)
-        );
-        assert_eq!(
-            loaded.memory.read_u16_be(vp_block + 36),
-            Some(mode.component_size)
-        );
+        assert_eq!(loaded.memory.read_u32_be(depth_block), Some(5));
+        for (index, listed_depth) in [1u16, 2, 4, 8, 16].into_iter().enumerate() {
+            let offset = index as u32;
+            let listed_switch = list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + offset * 16;
+            let depth_info = list + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET + offset * 20;
+            let vp_block = list + PPC_DM_MODE_LIST_VP_BLOCK_OFFSET + offset * 42;
+            assert_eq!(loaded.memory.read_u32_be(depth_info), Some(listed_switch));
+            assert_eq!(loaded.memory.read_u32_be(depth_info + 4), Some(vp_block));
+            assert_eq!(
+                loaded.memory.read_u16_be(listed_switch),
+                Some(crate::display::classic_depth_mode(listed_depth).unwrap())
+            );
+            assert_eq!(
+                loaded.memory.read_u16_be(vp_block + 32),
+                Some(listed_depth)
+            );
+            assert_eq!(
+                ppc_read_rect(&mut loaded.memory, vp_block + 6),
+                Some(mode.bounds)
+            );
+        }
     }
 }
 
@@ -345,7 +332,7 @@ fn display_manager_check_accepts_only_the_live_timing_and_depth_mode() {
 }
 
 #[test]
-fn display_manager_set_is_an_atomic_noop_outside_the_live_mode() {
+fn display_manager_set_rejects_unknown_modes_and_accepts_opaque_display_state() {
     let pef = synthetic_pef_with_import(b"DMSetDisplayMode");
     let mut loaded = load_pef_application_with_config(
         &pef,
@@ -424,7 +411,10 @@ fn display_manager_set_is_an_atomic_noop_outside_the_live_mode() {
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
-    loaded.memory.write_u32_be(depth_mode_ptr, 16).unwrap();
+    loaded
+        .memory
+        .write_u32_be(depth_mode_ptr, 0xdead)
+        .unwrap();
     loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
     loaded.cpu.gpr[4] = PPC_DM_CURRENT_DISPLAY_MODE_ID;
     loaded.cpu.gpr[5] = depth_mode_ptr;
@@ -435,7 +425,7 @@ fn display_manager_set_is_an_atomic_noop_outside_the_live_mode() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DM_MODE_NOT_FOUND_ERR));
-    assert_eq!(loaded.memory.read_u32_be(depth_mode_ptr), Some(16));
+    assert_eq!(loaded.memory.read_u32_be(depth_mode_ptr), Some(0xdead));
     assert_eq!(
         ppc_memory_read_bytes(
             &mut loaded.memory,
@@ -470,7 +460,7 @@ fn display_manager_set_is_an_atomic_noop_outside_the_live_mode() {
     let probe = loaded.run_with_hle_imports(64);
 
     assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u32_be(depth_mode_ptr), Some(depth_mode));
     assert_eq!(
         ppc_memory_read_bytes(
@@ -480,7 +470,7 @@ fn display_manager_set_is_an_atomic_noop_outside_the_live_mode() {
         )
         .unwrap(),
         gdevice_before,
-        "the scalar reserved parameter must not be dereferenced as VDSwitchInfo"
+        "the opaque display-state parameter must not be dereferenced"
     );
     assert_eq!(
         ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_PIXMAP, PPC_PIXMAP_SIZE).unwrap(),
@@ -490,5 +480,42 @@ fn display_manager_set_is_an_atomic_noop_outside_the_live_mode() {
         ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, screen_row_bytes,)
             .unwrap(),
         screen_before
+    );
+}
+
+#[test]
+fn display_manager_set_switches_to_an_advertised_depth() {
+    let pef = synthetic_pef_with_import(b"DMSetDisplayMode");
+    let mut loaded = load_pef_application_with_config(
+        &pef,
+        PpcLoadConfig {
+            screen_depth: 16,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let depth_mode_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(depth_mode_ptr, vec![0; 4]);
+    loaded
+        .memory
+        .write_u32_be(
+            depth_mode_ptr,
+            u32::from(crate::display::classic_depth_mode(8).unwrap()),
+        )
+        .unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = PPC_DM_CURRENT_DISPLAY_MODE_ID;
+    loaded.cpu.gpr[5] = depth_mode_ptr;
+    loaded.cpu.gpr[6] = PPC_DATA_BASE + 0x2000;
+    loaded.cpu.gpr[7] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(8));
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_MAIN_GDEVICE_RECORD + 42),
+        Some(u32::from(crate::display::classic_depth_mode(8).unwrap()))
     );
 }

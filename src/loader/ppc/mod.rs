@@ -690,16 +690,16 @@ const PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET: u32 = 156;
 const PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET: u32 = 160;
 const PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET: u32 = 164;
 const PPC_GRAF_PORT_SIZE: u32 = 108;
-const PPC_DM_MODE_LIST_SIZE: u32 = 256;
+const PPC_DM_MODE_LIST_SIZE: u32 = 0x320;
 const PPC_DM_MODE_LIST_MAGIC: u32 = u32::from_be_bytes(*b"DML1");
 const PPC_DM_MODE_LIST_ENTRY_OFFSET: u32 = 0x10;
 const PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET: u32 = 0x30;
-const PPC_DM_MODE_LIST_RESOLUTION_INFO_OFFSET: u32 = 0x40;
-const PPC_DM_MODE_LIST_TIMING_INFO_OFFSET: u32 = 0x60;
-const PPC_DM_MODE_LIST_DEPTH_BLOCK_OFFSET: u32 = 0x78;
-const PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET: u32 = 0x90;
-const PPC_DM_MODE_LIST_VP_BLOCK_OFFSET: u32 = 0xa8;
-const PPC_DM_MODE_LIST_NAME_OFFSET: u32 = 0xd8;
+const PPC_DM_MODE_LIST_RESOLUTION_INFO_OFFSET: u32 = 0x80;
+const PPC_DM_MODE_LIST_TIMING_INFO_OFFSET: u32 = 0xa0;
+const PPC_DM_MODE_LIST_DEPTH_BLOCK_OFFSET: u32 = 0xb8;
+const PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET: u32 = 0xd0;
+const PPC_DM_MODE_LIST_VP_BLOCK_OFFSET: u32 = 0x140;
+const PPC_DM_MODE_LIST_NAME_OFFSET: u32 = 0x220;
 const PPC_DM_CURRENT_DISPLAY_MODE_ID: u32 = 0x80;
 const PPC_DM_NO_SWITCH_CONFIRM_MASK: u32 = 1;
 const PPC_DM_DEPTH_NOT_AVAILABLE_MASK: u32 = 1 << 1;
@@ -946,7 +946,12 @@ const PPC_ISP_VIRTUAL_ELEMENT_RECORD_SIZE: u32 = 16 + PPC_ISP_NEED_SIZE;
 const PPC_ISP_ELEMENT_NEED_INDEX_OFFSET: u32 = 8;
 const PPC_ISP_ELEMENT_NEED_SOURCE_OFFSET: u32 = 12;
 const PPC_ISP_ELEMENT_NEED_RECORD_OFFSET: u32 = 16;
-const PPC_ISP_ELEMENT_LIST_RECORD_SIZE: u32 = 8;
+const PPC_ISP_ELEMENT_LIST_HEADER_SIZE: u32 = 8;
+const PPC_ISP_ELEMENT_LIST_ENTRY_SIZE: u32 = 12;
+const PPC_ISP_ELEMENT_LIST_CAPACITY: u32 = 64;
+const PPC_ISP_ELEMENT_LIST_RECORD_SIZE: u32 = PPC_ISP_ELEMENT_LIST_HEADER_SIZE
+    + PPC_ISP_ELEMENT_LIST_ENTRY_SIZE * PPC_ISP_ELEMENT_LIST_CAPACITY;
+const PPC_ISP_ELEMENT_EVENT_SIZE: u32 = 20;
 const PPC_ISP_ELEMENT_KIND_BUTTON: u32 = 0x6275_746e;
 const PPC_ISP_ELEMENT_KIND_DPAD: u32 = 0x6470_6164;
 const PPC_ISP_ELEMENT_KIND_AXIS: u32 = 0x6178_6973;
@@ -1343,6 +1348,7 @@ pub enum PpcLegacyMemoryUtilityOperation {
     LockMemory,
     MaxBlock,
     PurgeSpace,
+    ReserveMem,
     SetGrowZone,
     StackSpace,
     TempFreeMem,
@@ -1574,6 +1580,8 @@ pub enum PpcImportDispatcherTarget {
     Color2Index,
     Index2Color,
     RGB2HSL,
+    RGB2HSV,
+    HSV2RGB,
     FixRatio,
     FixMul,
     FixDiv,
@@ -1746,6 +1754,7 @@ pub enum PpcImportDispatcherTarget {
     DrawGrowIcon,
     MenuNoop,
     MenuKey,
+    MenuEvent,
     MenuChoice,
     MenuSelect,
     TestDeviceAttribute,
@@ -1939,6 +1948,7 @@ pub enum PpcImportDispatcherTarget {
     TENew,
     TEStyleNew,
     TESetStyle,
+    TEUseStyleScrap,
     TEContinuousStyle,
     MeasureText,
     TEGetText,
@@ -2340,6 +2350,7 @@ pub enum PpcImportDispatcherTarget {
     QAEngineGestalt,
     ISpElementNewVirtualFromNeeds,
     ISpElementListNew,
+    ISpElementListAddElements,
     ISpElementListGetNextEvent,
     ISpElementListFlush,
     ISpDevicesExtract,
@@ -2755,6 +2766,7 @@ fn isp_action_binding_name(binding: PpcInputSprocketActionBinding) -> &'static s
         PpcInputSprocketActionBinding::ButtonVolumeDown => "button/volume-down",
         PpcInputSprocketActionBinding::ButtonToggleGps => "button/gps-toggle",
         PpcInputSprocketActionBinding::ButtonQuit => "button/quit",
+        PpcInputSprocketActionBinding::ButtonConfirm => "button/confirm",
         PpcInputSprocketActionBinding::ButtonPrimary => "button/primary",
         PpcInputSprocketActionBinding::DpadDirectional => "dpad/directional",
         PpcInputSprocketActionBinding::DeltaYaw => "delta/yaw",
@@ -14887,6 +14899,9 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         }
         ("InputSprocketLib", "ISpElementList_New") => PpcImportDispatcherTarget::ISpElementListNew,
+        ("InputSprocketLib", "ISpElementList_AddElements") => {
+            PpcImportDispatcherTarget::ISpElementListAddElements
+        }
         ("InputSprocketLib", "ISpElementList_GetNextEvent") => {
             PpcImportDispatcherTarget::ISpElementListGetNextEvent
         }
@@ -15068,6 +15083,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "Color2Index") => PpcImportDispatcherTarget::Color2Index,
         ("InterfaceLib", "Index2Color") => PpcImportDispatcherTarget::Index2Color,
         ("InterfaceLib", "RGB2HSL") => PpcImportDispatcherTarget::RGB2HSL,
+        ("InterfaceLib", "RGB2HSV") => PpcImportDispatcherTarget::RGB2HSV,
+        ("InterfaceLib", "HSV2RGB") => PpcImportDispatcherTarget::HSV2RGB,
         ("InterfaceLib", "FixRatio") => PpcImportDispatcherTarget::FixRatio,
         ("InterfaceLib", "FixMul") => PpcImportDispatcherTarget::FixMul,
         ("InterfaceLib", "FixDiv") => PpcImportDispatcherTarget::FixDiv,
@@ -15155,6 +15172,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,
         ("InterfaceLib", "SubPt") => PpcImportDispatcherTarget::SubPt,
         ("InterfaceLib", "MenuKey") => PpcImportDispatcherTarget::MenuKey,
+        ("AppearanceLib" | "InterfaceLib", "MenuEvent") => PpcImportDispatcherTarget::MenuEvent,
         ("InterfaceLib", "MenuChoice") => PpcImportDispatcherTarget::MenuChoice,
         ("InterfaceLib", "MenuSelect") => PpcImportDispatcherTarget::MenuSelect,
         ("InterfaceLib", "MoveTo") => PpcImportDispatcherTarget::MoveTo,
@@ -15526,6 +15544,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "TENew") => PpcImportDispatcherTarget::TENew,
         ("InterfaceLib", "TEStyleNew") => PpcImportDispatcherTarget::TEStyleNew,
         ("InterfaceLib", "TESetStyle") => PpcImportDispatcherTarget::TESetStyle,
+        ("InterfaceLib", "TEUseStyleScrap") => PpcImportDispatcherTarget::TEUseStyleScrap,
         ("InterfaceLib", "TEContinuousStyle") => PpcImportDispatcherTarget::TEContinuousStyle,
         ("InterfaceLib", "TEGetText") => PpcImportDispatcherTarget::TEGetText,
         ("InterfaceLib", "TEDispose") | ("InterfaceLib", "TEDispos") => PpcImportDispatcherTarget::TEDispose,
@@ -15860,6 +15879,9 @@ fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "PurgeSpace") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::PurgeSpace,
+        ),
+        ("InterfaceLib", "ReserveMem") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::ReserveMem,
         ),
         ("InterfaceLib", "SetGrowZone") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::SetGrowZone,
@@ -18322,6 +18344,22 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             }
             Some(PpcImportAction::Return(result))
         }
+        PpcImportDispatcherTarget::MenuEvent => {
+            // Menus.h: MenuEvent examines a classic EventRecord and returns
+            // the MenuKey-style packed result for command-key keyboard
+            // events, or zero when the event has no menu equivalent.
+            let event = cpu.gpr[3];
+            let what = memory.read_u16_be(event).unwrap_or(0);
+            let message = memory.read_u32_be(event + 2).unwrap_or(0);
+            let modifiers = memory.read_u16_be(event + 14).unwrap_or(0);
+            let result = if matches!(what, 3 | 5) && modifiers & 0x0100 != 0 {
+                ppc_menu_key(memory, current_menu_list, message as u8)
+                    .map_or(0, MenuKeySelection::packed_result)
+            } else {
+                0
+            };
+            Some(PpcImportAction::Return(result))
+        }
         PpcImportDispatcherTarget::MenuChoice => {
             // MenuChoice is a parameterless C function that returns the
             // standard MDEF's packed MenuDisable low-memory value unchanged.
@@ -18751,6 +18789,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Color2Index
         | PpcImportDispatcherTarget::Index2Color
         | PpcImportDispatcherTarget::RGB2HSL
+        | PpcImportDispatcherTarget::RGB2HSV
+        | PpcImportDispatcherTarget::HSV2RGB
         | PpcImportDispatcherTarget::SetRect
         | PpcImportDispatcherTarget::SectRect
         | PpcImportDispatcherTarget::UnionRect
@@ -21874,22 +21914,44 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         }
         PpcImportDispatcherTarget::DMSetDisplayMode => {
             let depth_mode = cpu.gpr[5];
-            let reserved = cpu.gpr[6];
+            let reserved = cpu.gpr[7];
+            // Display Manager 2.0 accepts an opaque display-state value in
+            // r6. The single-display HLE keeps the restorable state in its
+            // live GDevice records, so it need not dereference that value.
             let result = if reserved != 0
                 || depth_mode == 0
                 || !ppc_memory_can_write_bytes(memory, depth_mode, 4)
             {
                 PPC_PARAM_ERR
-            } else if let Some(mode) = ppc_dm_live_display_mode(memory, cpu.gpr[3]) {
-                let requested = memory
-                    .read_u32_be(depth_mode)
-                    .map(|depth| (depth, cpu.gpr[4]));
-                if requested != Some((mode.depth_mode, mode.display_mode_id)) {
+            } else if ppc_main_gdevice_record_for_depth(memory, cpu.gpr[3]).is_none() {
+                PPC_PARAM_ERR
+            } else if cpu.gpr[4] != PPC_DM_CURRENT_DISPLAY_MODE_ID {
+                PPC_DM_MODE_NOT_FOUND_ERR
+            } else if let Some(requested_depth_mode) = memory.read_u32_be(depth_mode) {
+                if crate::display::classic_pixel_size(requested_depth_mode as u16).is_none() {
                     PPC_DM_MODE_NOT_FOUND_ERR
-                } else if memory.write_u32_be(depth_mode, mode.depth_mode).is_some() {
-                    PPC_NO_ERR
                 } else {
-                    PPC_PARAM_ERR
+                    let mut set_depth_cpu = cpu.clone();
+                    set_depth_cpu.gpr[4] = requested_depth_mode;
+                    set_depth_cpu.gpr[5] = 0;
+                    set_depth_cpu.gpr[6] = 0;
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let result = ppc_set_depth(
+                        &set_depth_cpu,
+                        Some(&mut allocator),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        gworlds,
+                        toolbox_startup,
+                        screen_clut,
+                        color_manager_clut,
+                    );
+                    result
                 }
             } else {
                 PPC_PARAM_ERR
@@ -22531,6 +22593,103 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     *quickdraw_fore_color,
                     quickdraw_fore_indices,
                 );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::TEUseStyleScrap => {
+            // TextEdit.h exposes the native PPC ABI as (rangeStart, rangeEnd,
+            // StScrpHandle, redraw, TEHandle). A style scrap may describe
+            // several relative runs; preserve its first complete style for
+            // the requested range until multi-run scrap application is
+            // represented by the native TextEdit model.
+            let range_start = cpu.gpr[3] as i32;
+            let range_end = cpu.gpr[4] as i32;
+            let scrap_handle = cpu.gpr[5];
+            let redraw = cpu.gpr[6] != 0;
+            let te_handle = cpu.gpr[7];
+            let scrap_ptr = memory
+                .read_u32_be(scrap_handle)
+                .filter(|ptr| *ptr != 0)
+                .unwrap_or(0);
+            let has_style = scrap_ptr != 0
+                && memory
+                    .read_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET)
+                    .unwrap_or(0)
+                    != 0;
+            if has_style {
+                let source = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
+                let text_style_ptr = ppc_process_heap_alloc(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    12,
+                    true,
+                );
+                if text_style_ptr != 0 {
+                    let font = memory
+                        .read_u16_be(source + PPC_TE_SCRAP_STYLE_FONT_OFFSET)
+                        .unwrap_or(0);
+                    let face = memory
+                        .read_u8(source + PPC_TE_SCRAP_STYLE_FACE_OFFSET)
+                        .unwrap_or(0);
+                    let size = memory
+                        .read_u16_be(source + PPC_TE_SCRAP_STYLE_SIZE_OFFSET)
+                        .unwrap_or(0);
+                    let _ = memory.write_u16_be(text_style_ptr, font);
+                    let _ = memory.write_u8(text_style_ptr + 2, face);
+                    let _ = memory.write_u16_be(text_style_ptr + 4, size);
+                    for offset in [0u32, 2, 4] {
+                        let component = memory
+                            .read_u16_be(source + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + offset)
+                            .unwrap_or(0);
+                        let _ = memory.write_u16_be(
+                            text_style_ptr + 6 + offset,
+                            component,
+                        );
+                    }
+                    let (start, end) = if range_end < range_start {
+                        (range_end, range_start)
+                    } else {
+                        (range_start, range_end)
+                    };
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    if ppc_te_set_style_for_range(
+                        Some(&mut allocator),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        te_handle,
+                        start.max(0) as usize,
+                        end.max(0) as usize,
+                        0x000f,
+                        text_style_ptr,
+                    ) {
+                        let _ = ppc_te_recalculate_layout(
+                            Some(&mut allocator),
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                            te_handle,
+                        );
+                        if redraw {
+                            ppc_te_draw(
+                                memory,
+                                handles,
+                                gworlds,
+                                te_handle,
+                                *current_gworld,
+                                *quickdraw_fore_color,
+                                quickdraw_fore_indices,
+                            );
+                        }
+                    }
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -26974,14 +27133,40 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         )),
         PpcImportDispatcherTarget::ISpElementListNew => {
             Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_isp_element_list_new(cpu, process_memory_manager, memory, heap_cursor),
+                ppc_isp_element_list_new(
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    input_sprocket_virtual_elements,
+                ),
             )))
         }
+        PpcImportDispatcherTarget::ISpElementListAddElements => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_isp_element_list_add_elements(
+                cpu,
+                memory,
+                input_sprocket_virtual_elements,
+            )),
+        )),
         PpcImportDispatcherTarget::ISpElementListGetNextEvent => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_get_next_event(cpu, memory)),
+            ppc_i16_result(ppc_isp_element_list_get_next_event(
+                cpu,
+                memory,
+                input,
+                *input_sprocket,
+                input_sprocket_virtual_elements,
+                *tick_count,
+            )),
         )),
         PpcImportDispatcherTarget::ISpElementListFlush => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_flush(cpu)),
+            ppc_i16_result(ppc_isp_element_list_flush(
+                cpu,
+                memory,
+                input,
+                *input_sprocket,
+                input_sprocket_virtual_elements,
+            )),
         )),
         PpcImportDispatcherTarget::ISpDevicesExtract => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_devices_extract(cpu, memory)),
@@ -60063,6 +60248,88 @@ fn ppc_rgb2hsl(memory: &mut PpcSectionMem, rgb_ptr: u32, hsl_ptr: u32) -> bool {
             .is_some()
 }
 
+fn ppc_rgb2hsv(memory: &mut PpcSectionMem, rgb_ptr: u32, hsv_ptr: u32) -> bool {
+    // Inside Macintosh Volume VI (1991), pp. 19-10--19-11: HSVColor uses
+    // unsigned 16-bit fractions for hue, saturation, and value.
+    let Some(rgb) = ppc_read_rgb_color(memory, rgb_ptr) else {
+        return false;
+    };
+    if hsv_ptr == 0 || !ppc_memory_can_write_bytes(memory, hsv_ptr, 6) {
+        return false;
+    }
+    let red = f64::from(rgb.red) / 65_535.0;
+    let green = f64::from(rgb.green) / 65_535.0;
+    let blue = f64::from(rgb.blue) / 65_535.0;
+    let greatest = red.max(green).max(blue);
+    let least = red.min(green).min(blue);
+    let delta = greatest - least;
+    let saturation = if greatest == 0.0 {
+        0.0
+    } else {
+        delta / greatest
+    };
+    let hue = if delta == 0.0 {
+        0.0
+    } else {
+        let mut sector = if greatest == red {
+            (green - blue) / delta
+        } else if greatest == green {
+            2.0 + (blue - red) / delta
+        } else {
+            4.0 + (red - green) / delta
+        };
+        if sector < 0.0 {
+            sector += 6.0;
+        }
+        sector / 6.0
+    };
+    let to_small_fract =
+        |component: f64| -> u16 { (component.clamp(0.0, 1.0) * 65_535.0).round() as u16 };
+    memory.write_u16_be(hsv_ptr, to_small_fract(hue)).is_some()
+        && memory
+            .write_u16_be(hsv_ptr + 2, to_small_fract(saturation))
+            .is_some()
+        && memory
+            .write_u16_be(hsv_ptr + 4, to_small_fract(greatest))
+            .is_some()
+}
+
+fn ppc_hsv2rgb(memory: &mut PpcSectionMem, hsv_ptr: u32, rgb_ptr: u32) -> bool {
+    if hsv_ptr == 0
+        || rgb_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, hsv_ptr, 6)
+        || !ppc_memory_can_write_bytes(memory, rgb_ptr, 6)
+    {
+        return false;
+    }
+    let hue = f64::from(memory.read_u16_be(hsv_ptr).unwrap_or(0)) / 65_535.0;
+    let saturation = f64::from(memory.read_u16_be(hsv_ptr + 2).unwrap_or(0)) / 65_535.0;
+    let value = f64::from(memory.read_u16_be(hsv_ptr + 4).unwrap_or(0)) / 65_535.0;
+    let (red, green, blue) = if saturation == 0.0 {
+        (value, value, value)
+    } else {
+        let scaled_hue = hue * 6.0;
+        let sector = scaled_hue.floor() as u32 % 6;
+        let fraction = scaled_hue - scaled_hue.floor();
+        let low = value * (1.0 - saturation);
+        let falling = value * (1.0 - saturation * fraction);
+        let rising = value * (1.0 - saturation * (1.0 - fraction));
+        match sector {
+            0 => (value, rising, low),
+            1 => (falling, value, low),
+            2 => (low, value, rising),
+            3 => (low, falling, value),
+            4 => (rising, low, value),
+            _ => (value, low, falling),
+        }
+    };
+    let to_word =
+        |component: f64| -> u16 { (component.clamp(0.0, 1.0) * 65_535.0).round() as u16 };
+    memory.write_u16_be(rgb_ptr, to_word(red)).is_some()
+        && memory.write_u16_be(rgb_ptr + 2, to_word(green)).is_some()
+        && memory.write_u16_be(rgb_ptr + 4, to_word(blue)).is_some()
+}
+
 fn ppc_optional_rgb_color(memory: &mut PpcSectionMem, color: u32) -> Option<Option<PpcRgbColor>> {
     if color == 0 {
         Some(None)
@@ -60562,6 +60829,7 @@ fn ppc_isp_element_list_new(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
 ) -> i16 {
     let count = cpu.gpr[3];
     let elements_ptr = cpu.gpr[4];
@@ -60570,7 +60838,8 @@ fn ppc_isp_element_list_new(
     let Some(elements_size) = count.checked_mul(4) else {
         return PPC_PARAM_ERR;
     };
-    if out_list_ptr == 0
+    if count > PPC_ISP_ELEMENT_LIST_CAPACITY
+        || out_list_ptr == 0
         || !ppc_memory_can_write_bytes(memory, out_list_ptr, 4)
         || (count > 0
             && (elements_ptr == 0
@@ -60581,7 +60850,8 @@ fn ppc_isp_element_list_new(
 
     // Apple Game Sprockets Legacy Reference (2003), ISpElementList_New:
     // the returned value is an opaque list reference initialized with the
-    // supplied elements. Keep only the state needed by the empty event queue.
+    // supplied elements. The host-private tail tracks each member's refCon
+    // and last state so event transitions can be delivered deterministically.
     let _ = memory.write_u32_be(out_list_ptr, 0);
     let list = ppc_process_heap_alloc(
         process_memory_manager,
@@ -60599,32 +60869,256 @@ fn ppc_isp_element_list_new(
     {
         return PPC_MEM_FULL_ERR;
     }
+    for index in 0..count {
+        let Some(element) = memory.read_u32_be(elements_ptr + index * 4) else {
+            return PPC_PARAM_ERR;
+        };
+        if !ppc_isp_element_list_write_entry(
+            memory,
+            list,
+            index,
+            element,
+            0,
+            ppc_isp_virtual_element_default_state(element, virtual_elements),
+        ) {
+            return PPC_MEM_FULL_ERR;
+        }
+    }
     PPC_NO_ERR
 }
 
-fn ppc_isp_element_list_get_next_event(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+fn ppc_isp_element_list_add_elements(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
+) -> i16 {
     let list = cpu.gpr[3];
+    let ref_con = cpu.gpr[4];
+    let count = cpu.gpr[5];
+    let elements_ptr = cpu.gpr[6];
+    let Some(elements_size) = count.checked_mul(4) else {
+        return PPC_PARAM_ERR;
+    };
+    if list == 0
+        || !ppc_memory_can_write_bytes(memory, list, PPC_ISP_ELEMENT_LIST_RECORD_SIZE)
+        || (count > 0
+            && (elements_ptr == 0
+                || !ppc_memory_can_read_bytes(memory, elements_ptr, elements_size)))
+    {
+        return PPC_PARAM_ERR;
+    }
+    let Some(existing_count) = memory.read_u32_be(list) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(new_count) = existing_count.checked_add(count) else {
+        return PPC_PARAM_ERR;
+    };
+    if new_count > PPC_ISP_ELEMENT_LIST_CAPACITY {
+        return PPC_PARAM_ERR;
+    }
+    for offset in 0..count {
+        let Some(element) = memory.read_u32_be(elements_ptr + offset * 4) else {
+            return PPC_PARAM_ERR;
+        };
+        if !ppc_isp_element_list_write_entry(
+            memory,
+            list,
+            existing_count + offset,
+            element,
+            ref_con,
+            ppc_isp_virtual_element_default_state(element, virtual_elements),
+        ) {
+            return PPC_PARAM_ERR;
+        }
+    }
+    if memory.write_u32_be(list, new_count).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_isp_element_list_get_next_event(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    input: PpcInputSnapshot,
+    input_sprocket: PpcInputSprocketState,
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
+    tick_count: u32,
+) -> i16 {
+    let list = cpu.gpr[3];
+    let buffer_size = cpu.gpr[4];
+    let event_ptr = cpu.gpr[5];
     let was_event_ptr = cpu.gpr[6];
-    if list == 0 || was_event_ptr == 0 || !ppc_memory_can_write_bytes(memory, was_event_ptr, 1) {
+    if list == 0
+        || !ppc_memory_can_read_bytes(memory, list, PPC_ISP_ELEMENT_LIST_RECORD_SIZE)
+        || was_event_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, was_event_ptr, 1)
+        || (buffer_size > 0
+            && (event_ptr == 0 || !ppc_memory_can_write_bytes(memory, event_ptr, buffer_size)))
+    {
         return PPC_PARAM_ERR;
     }
 
     // Apple Game Sprockets Legacy Reference (2003),
-    // ISpElementList_GetNextEvent: outWasEvent is false when the FIFO is empty.
+    // ISpElementList_GetNextEvent: events contain AbsoluteTime, element,
+    // refCon, and data. Button data is 1 on press and 0 on release.
+    let count = memory
+        .read_u32_be(list)
+        .unwrap_or(0)
+        .min(PPC_ISP_ELEMENT_LIST_CAPACITY);
+    for index in 0..count {
+        let Some((element, ref_con, previous_state)) =
+            ppc_isp_element_list_read_entry(memory, list, index)
+        else {
+            return PPC_PARAM_ERR;
+        };
+        let Some(current_state) = ppc_isp_virtual_element_simple_state(
+            element,
+            input,
+            input_sprocket,
+            virtual_elements,
+        ) else {
+            continue;
+        };
+        if current_state == previous_state {
+            continue;
+        }
+
+        let event = [
+            0u32,
+            tick_count,
+            element,
+            ref_con,
+            current_state,
+        ];
+        let copy_size = buffer_size.min(PPC_ISP_ELEMENT_EVENT_SIZE);
+        for offset in 0..copy_size {
+            let word = event[(offset / 4) as usize];
+            let shift = 24 - (offset % 4) * 8;
+            if memory
+                .write_u8(event_ptr + offset, ((word >> shift) & 0xff) as u8)
+                .is_none()
+            {
+                return PPC_PARAM_ERR;
+            }
+        }
+        if memory
+            .write_u32_be(
+                ppc_isp_element_list_entry_address(list, index) + 8,
+                current_state,
+            )
+            .is_none()
+            || memory.write_u8(was_event_ptr, 1).is_none()
+        {
+            return PPC_PARAM_ERR;
+        }
+        return if buffer_size < PPC_ISP_ELEMENT_EVENT_SIZE {
+            PPC_PARAM_ERR
+        } else {
+            PPC_NO_ERR
+        };
+    }
+
     if memory.write_u8(was_event_ptr, 0).is_none() {
         return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
 }
 
-fn ppc_isp_element_list_flush(cpu: &PpcCpu) -> i16 {
-    if cpu.gpr[3] == 0 {
-        PPC_PARAM_ERR
-    } else {
-        // Systemless does not queue InputSprocket events yet, so a valid list
-        // is already in the documented post-flush state.
-        PPC_NO_ERR
+fn ppc_isp_element_list_flush(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    input: PpcInputSnapshot,
+    input_sprocket: PpcInputSprocketState,
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
+) -> i16 {
+    let list = cpu.gpr[3];
+    if list == 0 || !ppc_memory_can_write_bytes(memory, list, PPC_ISP_ELEMENT_LIST_RECORD_SIZE) {
+        return PPC_PARAM_ERR;
     }
+    let count = memory
+        .read_u32_be(list)
+        .unwrap_or(0)
+        .min(PPC_ISP_ELEMENT_LIST_CAPACITY);
+    for index in 0..count {
+        let Some((element, _, _)) = ppc_isp_element_list_read_entry(memory, list, index) else {
+            return PPC_PARAM_ERR;
+        };
+        let Some(state) = ppc_isp_virtual_element_simple_state(
+            element,
+            input,
+            input_sprocket,
+            virtual_elements,
+        ) else {
+            continue;
+        };
+        if memory
+            .write_u32_be(ppc_isp_element_list_entry_address(list, index) + 8, state)
+            .is_none()
+        {
+            return PPC_PARAM_ERR;
+        }
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_isp_element_list_entry_address(list: u32, index: u32) -> u32 {
+    list + PPC_ISP_ELEMENT_LIST_HEADER_SIZE + index * PPC_ISP_ELEMENT_LIST_ENTRY_SIZE
+}
+
+fn ppc_isp_element_list_write_entry(
+    memory: &mut PpcSectionMem,
+    list: u32,
+    index: u32,
+    element: u32,
+    ref_con: u32,
+    state: u32,
+) -> bool {
+    let entry = ppc_isp_element_list_entry_address(list, index);
+    memory.write_u32_be(entry, element).is_some()
+        && memory.write_u32_be(entry + 4, ref_con).is_some()
+        && memory.write_u32_be(entry + 8, state).is_some()
+}
+
+fn ppc_isp_element_list_read_entry(
+    memory: &mut PpcSectionMem,
+    list: u32,
+    index: u32,
+) -> Option<(u32, u32, u32)> {
+    let entry = ppc_isp_element_list_entry_address(list, index);
+    Some((
+        memory.read_u32_be(entry)?,
+        memory.read_u32_be(entry + 4)?,
+        memory.read_u32_be(entry + 8)?,
+    ))
+}
+
+fn ppc_isp_virtual_element_default_state(
+    element: u32,
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
+) -> u32 {
+    virtual_elements
+        .iter()
+        .find(|record| record.element == element)
+        .map_or(0, |record| record.default_state)
+}
+
+fn ppc_isp_virtual_element_simple_state(
+    element: u32,
+    input: PpcInputSnapshot,
+    input_sprocket: PpcInputSprocketState,
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
+) -> Option<u32> {
+    let record = virtual_elements
+        .iter()
+        .find(|record| record.element == element)?;
+    Some(ppc_isp_input_simple_state(
+        record.kind,
+        record.default_state,
+        input,
+        input_sprocket,
+        record.action_binding,
+    ))
 }
 
 fn ppc_isp_read_need_record(memory: &mut PpcSectionMem, need_ptr: u32) -> Option<Vec<u8>> {
@@ -60713,8 +61207,10 @@ fn ppc_isp_action_binding(kind: u32, need_name: Option<&str>) -> PpcInputSprocke
                 PpcInputSprocketActionBinding::ButtonJetUp
             } else if ppc_isp_need_name_matches_all(need_name, &["jet", "down"]) {
                 PpcInputSprocketActionBinding::ButtonJetDown
-            } else if ppc_isp_need_name_matches(need_name, &["pause"]) {
+            } else if ppc_isp_need_name_matches(need_name, &["pause", "escape"]) {
                 PpcInputSprocketActionBinding::ButtonPause
+            } else if ppc_isp_need_name_matches(need_name, &["return", "enter", "confirm"]) {
+                PpcInputSprocketActionBinding::ButtonConfirm
             } else if ppc_isp_need_name_matches_all(need_name, &["zoom", "in"]) {
                 PpcInputSprocketActionBinding::ButtonZoomIn
             } else if ppc_isp_need_name_matches_all(need_name, &["zoom", "out"]) {
@@ -60959,6 +61455,10 @@ fn ppc_isp_button_pressed(
             input_sprocket.keyboard_active
                 && input.key_down(PPC_KEY_COMMAND)
                 && input.key_down(PPC_KEY_Q)
+        }
+        PpcInputSprocketActionBinding::ButtonConfirm => {
+            input_sprocket.keyboard_active
+                && input.any_key_down(&[PPC_KEY_RETURN, PPC_KEY_NUMPAD_ENTER])
         }
         _ => {
             (input_sprocket.mouse_active && input.mouse_button)
@@ -62132,7 +62632,7 @@ fn ppc_get_resource(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    vfs_resources: &mut [PpcVfsResourceRecord],
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     current_only: bool,
     load_data: bool,
@@ -62140,28 +62640,51 @@ fn ppc_get_resource(
 ) -> u32 {
     let res_type = cpu.gpr[3];
     let res_id = cpu.gpr[4] as u16 as i16;
-    let Some(index) = ppc_vfs_resource_index(
+    let index = match ppc_vfs_resource_index(
         vfs_resources,
         current_resource_refnum,
         res_type,
         res_id,
         current_only,
-    ) else {
-        // Classic Resource Manager lookups can return NIL without reporting
-        // an error. Mac OS 8 does so for missing IDs with both GetResource
-        // and Get1Resource; callers must test the returned handle.
-        *last_resource_error = PPC_NO_ERR;
-        if ppc_hle_trace_enabled() {
-            eprintln!(
-                "[PPC-TRACE] {}Resource('{}', {}) current_ref={} -> NULL err={}",
-                if current_only { "Get1" } else { "Get" },
-                ppc_res_type_text(res_type),
-                res_id,
-                current_resource_refnum,
-                PPC_NO_ERR
-            );
+    ) {
+        Some(index) => index,
+        None => {
+            let system_string = (!current_only
+                && res_type == u32::from_be_bytes(*b"STR "))
+            .then(|| crate::trap::TrapDispatcher::system_str_default_body(res_id))
+            .flatten();
+            if let Some(data) = system_string {
+                vfs_resources.push(PpcVfsResourceRecord {
+                    ref_num: 0,
+                    path: "__system__/STR ".to_string(),
+                    res_type,
+                    res_id,
+                    name: Vec::new(),
+                    data: data.to_vec(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+                vfs_resources.len() - 1
+            } else {
+                // Classic Resource Manager lookups can return NIL without reporting
+                // an error. Mac OS 8 does so for missing IDs with both GetResource
+                // and Get1Resource; callers must test the returned handle.
+                *last_resource_error = PPC_NO_ERR;
+                if ppc_hle_trace_enabled() {
+                    eprintln!(
+                        "[PPC-TRACE] {}Resource('{}', {}) current_ref={} -> NULL err={}",
+                        if current_only { "Get1" } else { "Get" },
+                        ppc_res_type_text(res_type),
+                        res_id,
+                        current_resource_refnum,
+                        PPC_NO_ERR
+                    );
+                }
+                return 0;
+            }
         }
-        return 0;
     };
     let handle = ppc_materialize_vfs_resource_handle(
         process_memory_manager,
@@ -62203,7 +62726,7 @@ fn ppc_get_icon_suite(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    vfs_resources: &mut [PpcVfsResourceRecord],
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     resource_load_enabled: bool,
     last_resource_error: &mut i16,
@@ -62353,10 +62876,16 @@ fn ppc_get_named_resource(
                     record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
                 }
         });
+        let current_map_is_empty = current_only
+            && !vfs_resources
+                .iter()
+                .any(|record| record.ref_num == current_resource_refnum);
         // More Macintosh Toolbox (1993), pp. 1-75--1-76: a missing name
-        // reports resNotFound, while an absent resource type returns NIL with
-        // noErr. The "1" form restricts both checks to the current map.
-        *last_resource_error = if type_exists {
+        // reports resNotFound, while an absent resource type in a populated
+        // map returns NIL with noErr. Mac OS 8.1 reports resNotFound for a
+        // newly created, wholly empty resource map; classic applications use
+        // that result to distinguish first-run initialization from failure.
+        *last_resource_error = if type_exists || current_map_is_empty {
             PPC_RES_NOT_FOUND_ERR
         } else {
             PPC_NO_ERR
@@ -71871,6 +72400,51 @@ fn ppc_dm_write_switch_info(
     Some(())
 }
 
+fn ppc_dm_mode_at_depth(mode: PpcDmLiveDisplayMode, depth: u16) -> Option<PpcDmLiveDisplayMode> {
+    let (pixel_type, component_count, component_size) = match depth {
+        1 | 2 | 4 | 8 => (0, 1, depth),
+        16 => (16, 3, 5),
+        _ => return None,
+    };
+    Some(PpcDmLiveDisplayMode {
+        depth_mode: u32::from(crate::display::classic_depth_mode(depth)?),
+        row_bytes: u16::try_from(ppc_row_bytes(mode.width, u32::from(depth))?).ok()?,
+        pixel_type,
+        pixel_size: depth,
+        component_count,
+        component_size,
+        ..mode
+    })
+}
+
+fn ppc_dm_write_vp_block(
+    memory: &mut PpcSectionMem,
+    vp_block: u32,
+    mode: PpcDmLiveDisplayMode,
+) -> Option<()> {
+    memory.write_u32_be(vp_block, 0)?;
+    memory.write_u16_be(vp_block + 4, mode.row_bytes)?;
+    ppc_write_rect(
+        memory,
+        vp_block + 6,
+        mode.bounds.0,
+        mode.bounds.1,
+        mode.bounds.2,
+        mode.bounds.3,
+    )?;
+    memory.write_u16_be(vp_block + 14, mode.pm_version)?;
+    memory.write_u16_be(vp_block + 16, mode.pack_type)?;
+    memory.write_u32_be(vp_block + 18, mode.pack_size)?;
+    memory.write_u32_be(vp_block + 22, mode.h_res)?;
+    memory.write_u32_be(vp_block + 26, mode.v_res)?;
+    memory.write_u16_be(vp_block + 30, mode.pixel_type)?;
+    memory.write_u16_be(vp_block + 32, mode.pixel_size)?;
+    memory.write_u16_be(vp_block + 34, mode.component_count)?;
+    memory.write_u16_be(vp_block + 36, mode.component_size)?;
+    memory.write_u32_be(vp_block + 38, mode.plane_bytes)?;
+    Some(())
+}
+
 fn ppc_dm_new_display_mode_list(
     cpu: &PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
@@ -71906,7 +72480,15 @@ fn ppc_dm_new_display_mode_list_values(
     {
         return PPC_PARAM_ERR;
     }
-    let Some(mode) = ppc_dm_live_display_mode(memory, PPC_MAIN_GDEVICE) else {
+    let Some(live_mode) = ppc_dm_live_display_mode(memory, PPC_MAIN_GDEVICE) else {
+        return PPC_PARAM_ERR;
+    };
+    const DEPTHS: [u16; 5] = [1, 2, 4, 8, 16];
+    let Some(modes) = DEPTHS
+        .map(|depth| ppc_dm_mode_at_depth(live_mode, depth))
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+    else {
         return PPC_PARAM_ERR;
     };
     let list = process_memory_manager.new_native_ptr(memory, PPC_DM_MODE_LIST_SIZE, true);
@@ -71920,92 +72502,71 @@ fn ppc_dm_new_display_mode_list_values(
         return PPC_MEM_FULL_ERR;
     }
     let entry = list + PPC_DM_MODE_LIST_ENTRY_OFFSET;
-    let switch_info = list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET;
     let resolution = list + PPC_DM_MODE_LIST_RESOLUTION_INFO_OFFSET;
     let timing = list + PPC_DM_MODE_LIST_TIMING_INFO_OFFSET;
     let depth_block = list + PPC_DM_MODE_LIST_DEPTH_BLOCK_OFFSET;
-    let depth_info = list + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET;
-    let vp_block = list + PPC_DM_MODE_LIST_VP_BLOCK_OFFSET;
     let name = list + PPC_DM_MODE_LIST_NAME_OFFSET;
 
     // Universal Interfaces 3.4.1 Displays.h defines one
     // DMDisplayModeListEntryRec per timing and one DMDepthInfoRec per
-    // supported depth. This single-screen list advertises only the active
-    // timing/depth pair reflected by the live GDevice and PixMap above.
+    // supported depth. The software display exposes one timing with every
+    // indexed and direct mode supported by SetDepth,
+    // regardless of which depth happens to be active while the caller asks.
     let _ = memory.write_u32_be(list, PPC_DM_MODE_LIST_MAGIC);
     let _ = memory.write_u32_be(list + 4, display_id);
     let _ = memory.write_u32_be(entry, 0);
-    let _ = memory.write_u32_be(entry + 4, switch_info);
+    let live_depth_index = DEPTHS
+        .iter()
+        .position(|depth| *depth == live_mode.pixel_size)
+        .unwrap_or(0) as u32;
+    let _ = memory.write_u32_be(
+        entry + 4,
+        list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + live_depth_index * 16,
+    );
     let _ = memory.write_u32_be(entry + 8, resolution);
     let _ = memory.write_u32_be(entry + 12, timing);
     let _ = memory.write_u32_be(entry + 16, depth_block);
-    let _ = memory.write_u32_be(entry + 20, 1);
+    let _ = memory.write_u32_be(entry + 20, DEPTHS.len() as u32);
     let _ = memory.write_u32_be(entry + 24, name);
     let _ = memory.write_u32_be(entry + 28, 0);
 
-    let _ = ppc_dm_write_switch_info(memory, switch_info, mode);
+    for (index, mode) in modes.iter().copied().enumerate() {
+        let offset = index as u32;
+        let switch_info = list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + offset * 16;
+        let depth_info = list + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET + offset * 20;
+        let vp_block = list + PPC_DM_MODE_LIST_VP_BLOCK_OFFSET + offset * 42;
+        let _ = ppc_dm_write_switch_info(memory, switch_info, mode);
+        let _ = memory.write_u32_be(depth_info, switch_info);
+        let _ = memory.write_u32_be(depth_info + 4, vp_block);
+        let _ = memory.write_u32_be(depth_info + 8, 0);
+        let _ = memory.write_u32_be(depth_info + 12, 0);
+        let _ = memory.write_u32_be(depth_info + 16, 0);
+        let _ = ppc_dm_write_vp_block(memory, vp_block, mode);
+    }
 
     let _ = memory.write_u32_be(resolution, 0);
-    let _ = memory.write_u32_be(resolution + 4, mode.display_mode_id);
-    let _ = memory.write_u32_be(resolution + 8, mode.width);
-    let _ = memory.write_u32_be(resolution + 12, mode.height);
+    let _ = memory.write_u32_be(resolution + 4, live_mode.display_mode_id);
+    let _ = memory.write_u32_be(resolution + 8, live_mode.width);
+    let _ = memory.write_u32_be(resolution + 12, live_mode.height);
     let _ = memory.write_u32_be(resolution + 16, 60 << 16);
-    let _ = memory.write_u32_be(resolution + 20, mode.depth_mode);
+    let _ = memory.write_u32_be(resolution + 20, live_mode.depth_mode);
     let _ = memory.write_u32_be(resolution + 24, 0);
     let _ = memory.write_u32_be(resolution + 28, 0);
 
-    let _ = memory.write_u32_be(timing, mode.display_mode_id);
+    let _ = memory.write_u32_be(timing, live_mode.display_mode_id);
     let _ = memory.write_u32_be(timing + 4, 0);
     let _ = memory.write_u32_be(timing + 8, 0);
     let _ = memory.write_u32_be(timing + 12, 0);
     let _ = memory.write_u32_be(timing + 16, 0b111);
 
-    let _ = memory.write_u32_be(depth_block, 1);
-    let _ = memory.write_u32_be(depth_block + 4, depth_info);
+    let _ = memory.write_u32_be(depth_block, DEPTHS.len() as u32);
+    let _ = memory.write_u32_be(depth_block + 4, list + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET);
     let _ = memory.write_u32_be(depth_block + 8, 0);
     let _ = memory.write_u32_be(depth_block + 12, 0);
     let _ = memory.write_u32_be(depth_block + 16, 0);
-    let _ = memory.write_u32_be(depth_info, switch_info);
-    let _ = memory.write_u32_be(depth_info + 4, vp_block);
-    let _ = memory.write_u32_be(depth_info + 8, 0);
-    let _ = memory.write_u32_be(depth_info + 12, 0);
-    let _ = memory.write_u32_be(depth_info + 16, 0);
-
     // Video.h VPBlock is 68K-aligned even for CFM clients: long, short,
     // Rect, two shorts, three longs, four shorts, and a final long.
-    let _ = memory.write_u32_be(vp_block, 0);
-    let _ = memory.write_u16_be(vp_block + 4, mode.row_bytes);
-    let _ = ppc_write_rect(
-        memory,
-        vp_block + 6,
-        mode.bounds.0,
-        mode.bounds.1,
-        mode.bounds.2,
-        mode.bounds.3,
-    );
-    let _ = memory.write_u16_be(vp_block + 14, mode.pm_version);
-    let _ = memory.write_u16_be(vp_block + 16, mode.pack_type);
-    let _ = memory.write_u32_be(vp_block + 18, mode.pack_size);
-    let _ = memory.write_u32_be(vp_block + 22, mode.h_res);
-    let _ = memory.write_u32_be(vp_block + 26, mode.v_res);
-    let _ = memory.write_u16_be(vp_block + 30, mode.pixel_type);
-    let _ = memory.write_u16_be(vp_block + 32, mode.pixel_size);
-    let _ = memory.write_u16_be(vp_block + 34, mode.component_count);
-    let _ = memory.write_u16_be(vp_block + 36, mode.component_size);
-    let _ = memory.write_u32_be(vp_block + 38, mode.plane_bytes);
-    let mode_name = if mode.pixel_size <= 8 {
-        format!(
-            "{} x {}, {} Colors",
-            mode.width,
-            mode.height,
-            1u32 << mode.pixel_size
-        )
-    } else {
-        format!(
-            "{} x {}, {}-bit Color",
-            mode.width, mode.height, mode.pixel_size
-        )
-    };
+    let mode_name = format!("{} x {}", live_mode.width, live_mode.height);
     let _ = ppc_write_pstring_bytes(memory, name, mode_name.as_bytes());
     let _ = memory.write_u32_be(count_out, 1);
     let _ = memory.write_u32_be(list_out, list);
@@ -90778,6 +91339,21 @@ fn ppc_dispatch_legacy_memory_utility(
             if cpu.gpr[4] != 0 {
                 memory.write_u32_be(cpu.gpr[4], contiguous)?;
             }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyMemoryUtilityOperation::ReserveMem => {
+            let requested = cpu.gpr[3];
+            let available = ppc_largest_free_ptr_block(
+                memory,
+                *heap_cursor,
+                heap_limit,
+                free_ptr_blocks,
+            );
+            *last_mem_error = if requested <= available {
+                PPC_NO_ERR
+            } else {
+                PPC_MEM_FULL_ERR
+            };
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyMemoryUtilityOperation::SetGrowZone => {

@@ -293,6 +293,14 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_rgb2hsl(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::RGB2HSV => {
+            ppc_rgb2hsv(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::HSV2RGB => {
+            ppc_hsv2rgb(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::SetRect => {
             let rect_ptr = cpu.gpr[3];
             let left = cpu.gpr[4] as u16 as i16;

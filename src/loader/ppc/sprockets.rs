@@ -180,6 +180,7 @@ pub enum PpcInputSprocketActionBinding {
     ButtonVolumeDown,
     ButtonToggleGps,
     ButtonQuit,
+    ButtonConfirm,
     ButtonPrimary,
     DpadDirectional,
     DeltaYaw,

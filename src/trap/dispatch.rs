@@ -6392,9 +6392,9 @@ impl TrapDispatcher {
     pub(crate) fn system_str_default_body(res_id: i16) -> Option<&'static [u8]> {
         match res_id {
             // Owner Name (Sharing Setup)
-            -16096 => Some(b"\x0EMacintosh User"),
+            -16096 => Some(b"\x0EMacintosh User\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"),
             // Macintosh Name (Sharing Setup, AppleTalk identity)
-            -16413 => Some(b"\x09Macintosh"),
+            -16413 => Some(b"\x09Macintosh\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"),
             // Owner Password (encrypted blob — empty placeholder)
             -16097 => Some(b"\x00"),
             _ => None,
@@ -11177,12 +11177,12 @@ mod tests {
         // Owner Name (Sharing Setup) — Networking 1994, 2-799.
         assert_eq!(
             TrapDispatcher::system_str_default_body(-16096),
-            Some(&b"\x0EMacintosh User"[..])
+            Some(&b"\x0EMacintosh User\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"[..])
         );
         // Macintosh Name (Sharing Setup, AppleTalk identity).
         assert_eq!(
             TrapDispatcher::system_str_default_body(-16413),
-            Some(&b"\x09Macintosh"[..])
+            Some(&b"\x09Macintosh\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"[..])
         );
         // Owner Password (encrypted blob — empty Pascal string).
         assert_eq!(
@@ -11190,21 +11190,24 @@ mod tests {
             Some(&b"\x00"[..])
         );
 
-        // Pascal-string contract: every body must start with a valid
-        // length byte that matches the tail length.
+        // Pascal-string contract: every body must contain the complete
+        // string. Sharing Setup stores the visible names in fixed 32-byte
+        // System-file resources, so their trailing bytes are significant to
+        // applications that copy the whole resource handle.
         for &id in &[-16096i16, -16097, -16413] {
             let body = TrapDispatcher::system_str_default_body(id).expect("known id");
             assert!(!body.is_empty(), "id={} body must be non-empty", id);
             let len = body[0] as usize;
-            assert_eq!(
-                len + 1,
-                body.len(),
-                "id={} length byte ({}) must match tail length ({})",
+            assert!(
+                len + 1 <= body.len(),
+                "id={} length byte ({}) exceeds body length ({})",
                 id,
                 len,
-                body.len() - 1
+                body.len()
             );
         }
+        assert_eq!(TrapDispatcher::system_str_default_body(-16096).unwrap().len(), 32);
+        assert_eq!(TrapDispatcher::system_str_default_body(-16413).unwrap().len(), 32);
 
         // Negative space: anything outside the table returns None so
         // unrelated GetResource('STR ', N) probes still observe the

@@ -41,6 +41,46 @@ use super::*;
     }
 
     #[test]
+    fn hle_import_runner_adds_input_sprocket_elements_to_list() {
+        let pef = synthetic_pef_with_library_import(
+            b"InputSprocketLib",
+            b"ISpElementList_AddElements",
+        );
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let list = PPC_DATA_BASE + 0x1000;
+        let elements_ptr = PPC_DATA_BASE + 0x1100;
+        loaded
+            .memory
+            .add_region(list, vec![0; PPC_ISP_ELEMENT_LIST_RECORD_SIZE as usize]);
+        loaded.memory.add_region(elements_ptr, vec![0; 8]);
+        loaded.memory.write_u32_be(list, 2).unwrap();
+        loaded.memory.write_u32_be(elements_ptr, 0x1111).unwrap();
+        loaded
+            .memory
+            .write_u32_be(elements_ptr + 4, 0x2222)
+            .unwrap();
+        loaded.cpu.gpr[3] = list;
+        loaded.cpu.gpr[4] = 7;
+        loaded.cpu.gpr[5] = 2;
+        loaded.cpu.gpr[6] = elements_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(list), Some(4));
+        assert_eq!(
+            ppc_isp_element_list_read_entry(&mut loaded.memory, list, 2),
+            Some((0x1111, 7, 0))
+        );
+        assert_eq!(
+            ppc_isp_element_list_read_entry(&mut loaded.memory, list, 3),
+            Some((0x2222, 7, 0))
+        );
+    }
+
+    #[test]
     fn hle_import_runner_polls_empty_input_sprocket_element_list() {
         let pef =
             synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_GetNextEvent");
@@ -56,6 +96,102 @@ use super::*;
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.memory.read_u8(was_event_ptr), Some(0));
+    }
+
+    #[test]
+    fn input_sprocket_element_list_delivers_button_press_and_release_once() {
+        let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetVersion");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let list = PPC_DATA_BASE + 0x1000;
+        let event_ptr = PPC_DATA_BASE + 0x2000;
+        let was_event_ptr = PPC_DATA_BASE + 0x2100;
+        let element = 0x0300_1000;
+        loaded
+            .memory
+            .add_region(list, vec![0; PPC_ISP_ELEMENT_LIST_RECORD_SIZE as usize]);
+        loaded.memory.add_region(event_ptr, vec![0; 20]);
+        loaded.memory.add_region(was_event_ptr, vec![0; 1]);
+        loaded.memory.write_u32_be(list, 1).unwrap();
+        assert!(ppc_isp_element_list_write_entry(
+            &mut loaded.memory,
+            list,
+            0,
+            element,
+            4,
+            0,
+        ));
+        loaded
+            .input_sprocket_virtual_elements
+            .push(PpcInputSprocketVirtualElementRecord {
+                element,
+                need_index: 4,
+                need_source: 0,
+                kind: PPC_ISP_ELEMENT_KIND_BUTTON,
+                default_state: 0,
+                action_binding: PpcInputSprocketActionBinding::ButtonFire,
+                need_name: "Fire".to_string(),
+                need_record: Vec::new(),
+            });
+        loaded.cpu.gpr[3] = list;
+        loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        loaded.cpu.gpr[5] = event_ptr;
+        loaded.cpu.gpr[6] = was_event_ptr;
+        let active = PpcInputSprocketState {
+            initialized: true,
+            keyboard_active: true,
+            mouse_active: true,
+            ..PpcInputSprocketState::default()
+        };
+        let mut pressed = PpcInputSnapshot::default();
+        pressed.key_map[(PPC_KEY_SPACE / 8) as usize] |= 1u8 << (PPC_KEY_SPACE % 8);
+
+        assert_eq!(
+            ppc_isp_element_list_get_next_event(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                pressed,
+                active,
+                &loaded.input_sprocket_virtual_elements,
+                123,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.memory.read_u8(was_event_ptr), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 4), Some(123));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 8), Some(element));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 12), Some(4));
+        assert_eq!(
+            loaded.memory.read_u32_be(event_ptr + 16),
+            Some(PPC_ISP_BUTTON_PRESSED)
+        );
+
+        assert_eq!(
+            ppc_isp_element_list_get_next_event(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                pressed,
+                active,
+                &loaded.input_sprocket_virtual_elements,
+                124,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.memory.read_u8(was_event_ptr), Some(0));
+
+        assert_eq!(
+            ppc_isp_element_list_get_next_event(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                PpcInputSnapshot::default(),
+                active,
+                &loaded.input_sprocket_virtual_elements,
+                125,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.memory.read_u8(was_event_ptr), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 16), Some(0));
     }
 
     #[test]
@@ -880,6 +1016,16 @@ use super::*;
                 "Pause",
                 PpcInputSprocketActionBinding::ButtonPause,
                 PPC_KEY_ESCAPE,
+            ),
+            (
+                "Escape",
+                PpcInputSprocketActionBinding::ButtonPause,
+                PPC_KEY_ESCAPE,
+            ),
+            (
+                "Return",
+                PpcInputSprocketActionBinding::ButtonConfirm,
+                PPC_KEY_RETURN,
             ),
             (
                 "Zoom In",
