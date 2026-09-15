@@ -16678,6 +16678,19 @@ fn import_bindings_classify_dialog_and_utility_imports() {
         );
     }
     for (symbol, operation) in [
+        ("SPBCloseDevice", PpcSoundInputCompatibilityOperation::CloseDevice),
+        ("SPBGetDeviceInfo", PpcSoundInputCompatibilityOperation::GetDeviceInfo),
+        ("SPBOpenDevice", PpcSoundInputCompatibilityOperation::OpenDevice),
+        ("SPBRecord", PpcSoundInputCompatibilityOperation::Record),
+        ("SPBSetDeviceInfo", PpcSoundInputCompatibilityOperation::SetDeviceInfo),
+        ("SPBStopRecording", PpcSoundInputCompatibilityOperation::StopRecording),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::SoundInputCompatibility(operation),
+        );
+    }
+    for (symbol, operation) in [
         ("PrClose", PpcPrintingCompatibilityOperation::PrClose),
         ("PrCloseDoc", PpcPrintingCompatibilityOperation::PrCloseDoc),
         ("PrClosePage", PpcPrintingCompatibilityOperation::PrClosePage),
@@ -16815,6 +16828,23 @@ fn import_bindings_classify_dialog_and_utility_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "ExitToShell"),
         PpcImportDispatcherTarget::ExitToShell
+    );
+}
+
+#[test]
+fn sound_input_open_failure_clears_the_output_reference() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SPBOpenDevice")).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0xaa; 4]);
+    loaded.cpu.gpr[5] = output;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0));
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR)
     );
 }
 

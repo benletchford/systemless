@@ -1160,6 +1160,16 @@ pub enum PpcStdCCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcSoundInputCompatibilityOperation {
+    CloseDevice,
+    GetDeviceInfo,
+    OpenDevice,
+    Record,
+    SetDeviceInfo,
+    StopRecording,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcSpeechCompatibilityOperation {
     CountVoices,
     DisposeSpeechChannel,
@@ -2383,7 +2393,7 @@ pub enum PpcImportDispatcherTarget {
     PrintingCompatibility(PpcPrintingCompatibilityOperation),
     SlotCompatibility,
     StandardFileCompatibility(PpcStandardFileOperation),
-    SoundInputCompatibility,
+    SoundInputCompatibility(PpcSoundInputCompatibilityOperation),
     SpeechCompatibility(PpcSpeechCompatibilityOperation),
     QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation),
     InputSprocketCompatibility(PpcInputSprocketCompatibilityOperation),
@@ -16197,11 +16207,34 @@ fn dispatcher_target_for_import(
                 PpcStandardFileOperation::StandardPutFile,
             )
         }
-        (
-            "InterfaceLib",
-            "SPBCloseDevice" | "SPBGetDeviceInfo" | "SPBOpenDevice" | "SPBRecord"
-            | "SPBSetDeviceInfo" | "SPBStopRecording",
-        ) => PpcImportDispatcherTarget::SoundInputCompatibility,
+        ("InterfaceLib", "SPBCloseDevice") => {
+            PpcImportDispatcherTarget::SoundInputCompatibility(
+                PpcSoundInputCompatibilityOperation::CloseDevice,
+            )
+        }
+        ("InterfaceLib", "SPBGetDeviceInfo") => {
+            PpcImportDispatcherTarget::SoundInputCompatibility(
+                PpcSoundInputCompatibilityOperation::GetDeviceInfo,
+            )
+        }
+        ("InterfaceLib", "SPBOpenDevice") => {
+            PpcImportDispatcherTarget::SoundInputCompatibility(
+                PpcSoundInputCompatibilityOperation::OpenDevice,
+            )
+        }
+        ("InterfaceLib", "SPBRecord") => PpcImportDispatcherTarget::SoundInputCompatibility(
+            PpcSoundInputCompatibilityOperation::Record,
+        ),
+        ("InterfaceLib", "SPBSetDeviceInfo") => {
+            PpcImportDispatcherTarget::SoundInputCompatibility(
+                PpcSoundInputCompatibilityOperation::SetDeviceInfo,
+            )
+        }
+        ("InterfaceLib", "SPBStopRecording") => {
+            PpcImportDispatcherTarget::SoundInputCompatibility(
+                PpcSoundInputCompatibilityOperation::StopRecording,
+            )
+        }
         ("SpeechLib", "CountVoices") => PpcImportDispatcherTarget::SpeechCompatibility(
             PpcSpeechCompatibilityOperation::CountVoices,
         ),
@@ -27603,7 +27636,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SndPauseFilePlay
         | PpcImportDispatcherTarget::SndStopFilePlay
         | PpcImportDispatcherTarget::GetSoundHeaderOffset
-        | PpcImportDispatcherTarget::SoundInputCompatibility => {
+        | PpcImportDispatcherTarget::SoundInputCompatibility(_) => {
             unreachable!("sound imports return through dispatch_sound_import")
         }
         PpcImportDispatcherTarget::SpeechCompatibility(operation) => {
@@ -29867,11 +29900,11 @@ fn ppc_dispatch_slot_compatibility(
 }
 
 fn ppc_dispatch_sound_input_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcSoundInputCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
-    if binding.symbol_name == "SPBOpenDevice" && cpu.gpr[5] != 0 {
+    if operation == PpcSoundInputCompatibilityOperation::OpenDevice && cpu.gpr[5] != 0 {
         let _ = memory.write_u32_be(cpu.gpr[5], 0);
     }
     PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR))
