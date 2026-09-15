@@ -421,7 +421,9 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             entry.finder_flags,
             1,
         )?;
-        payload.installer_roots.extend(entry_payload.installer_roots);
+        payload
+            .installer_roots
+            .extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -497,22 +499,17 @@ fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<Loaded
         return load_disk_image(runner, &payload.data);
     }
 
-    if crate::runner::trace_load_enabled() {
-        eprintln!("[LOAD] Loading from MacBinary format");
-    }
-
     let mut executable = None;
-    insert_payload_into_vfs(
-        runner,
-        Payload {
-            dirs: Vec::new(),
-            files: vec![payload],
-            volumes: Vec::new(),
-            installer_roots: Vec::new(),
-            skipped_disk_image_errors: Vec::new(),
-        },
-        &mut executable,
-    );
+    let payload = payload_from_forks(
+        &payload.name,
+        payload.data,
+        payload.rsrc,
+        payload.file_type,
+        payload.creator,
+        payload.finder_flags,
+        payload.executable_priority,
+    )?;
+    insert_payload_into_vfs(runner, payload, &mut executable);
     let executable = executable.ok_or("No executable found in MacBinary file")?;
     load_selected_executable(runner, &executable)
 }
@@ -1412,7 +1409,9 @@ fn payload_from_stuffit_archive(
             entry.finder_flags,
             executable_priority,
         )?;
-        payload.installer_roots.extend(entry_payload.installer_roots);
+        payload
+            .installer_roots
+            .extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -1958,7 +1957,9 @@ fn expand_installer_maker_payload(
             }
             Err(error) => return Err(error),
         };
-        payload.installer_roots.extend(entry_payload.installer_roots);
+        payload
+            .installer_roots
+            .extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -2126,7 +2127,9 @@ fn expand_vise_payload(
             0,
             executable_priority,
         )?;
-        payload.installer_roots.extend(entry_payload.installer_roots);
+        payload
+            .installer_roots
+            .extend(entry_payload.installer_roots);
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
         payload.volumes.extend(entry_payload.volumes);
@@ -4589,6 +4592,33 @@ mod tests {
         assert_eq!(
             runner.dispatcher().vfs.get("Gridz™ Demo"),
             Some(&data.to_vec())
+        );
+    }
+
+    #[test]
+    fn macbinary_installer_expands_its_vise_data_fork_before_launch() {
+        let app_data = b"installed application data";
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let installer_data =
+            crate::game::vise::make_test_archive("Installed Game", app_data, &app_rsrc);
+        let installer_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let macbinary =
+            make_macbinary_application("Original Installer", &installer_data, &installer_rsrc);
+        let mut runner = new_runner();
+
+        load_macbinary(&mut runner, &macbinary).expect("MacBinary installer should expand");
+
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs
+                .get("Original Installer/Installed Game"),
+            Some(&app_data.to_vec())
+        );
+        assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
+        assert_eq!(
+            runner.dispatcher().launched_app_path(),
+            Some("Original Installer/Installed Game")
         );
     }
 
