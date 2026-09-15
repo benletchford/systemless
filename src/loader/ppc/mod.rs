@@ -1309,6 +1309,28 @@ pub enum PpcFileCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcLegacyControlOperation {
+    DisposeControl,
+    DrawOneControl,
+    FindControl,
+    GetControlMaximum,
+    GetControlMinimum,
+    GetControlTitle,
+    GetControlValue,
+    GetNewControl,
+    HideControl,
+    KillControls,
+    MoveControl,
+    NewControl,
+    SetControlMaximum,
+    SetControlMinimum,
+    ShowControl,
+    SizeControl,
+    TestControl,
+    TrackControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcStdIoOperation {
     ClearErr,
     FileBuffer,
@@ -2315,7 +2337,7 @@ pub enum PpcImportDispatcherTarget {
     SlotVInstall,
     SlotVRemove,
     LegacyMemoryUtility,
-    LegacyControl,
+    LegacyControl(PpcLegacyControlOperation),
     LegacyWindow,
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
     DialogCompatibility(PpcDialogCompatibilityOperation),
@@ -15742,13 +15764,60 @@ fn dispatcher_target_for_import(
             | "MaxBlock" | "PurgeSpace" | "SetGrowZone" | "StackSpace" | "TempFreeMem"
             | "UnlockMemory",
         ) => PpcImportDispatcherTarget::LegacyMemoryUtility,
-        (
-            "InterfaceLib",
-            "DisposeControl" | "Draw1Control" | "FindControl" | "GetControlMaximum"
-            | "GetControlMinimum" | "GetControlTitle" | "GetControlValue" | "GetNewControl"
-            | "HideControl" | "KillControls" | "MoveControl" | "NewControl" | "SetControlMaximum"
-            | "SetControlMinimum" | "ShowControl" | "SizeControl" | "TestControl" | "TrackControl",
-        ) => PpcImportDispatcherTarget::LegacyControl,
+        ("InterfaceLib", "DisposeControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::DisposeControl,
+        ),
+        ("InterfaceLib", "Draw1Control") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::DrawOneControl,
+        ),
+        ("InterfaceLib", "FindControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::FindControl,
+        ),
+        ("InterfaceLib", "GetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlMaximum,
+        ),
+        ("InterfaceLib", "GetControlMinimum") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlMinimum,
+        ),
+        ("InterfaceLib", "GetControlTitle") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlTitle,
+        ),
+        ("InterfaceLib", "GetControlValue") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlValue,
+        ),
+        ("InterfaceLib", "GetNewControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetNewControl,
+        ),
+        ("InterfaceLib", "HideControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::HideControl,
+        ),
+        ("InterfaceLib", "KillControls") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::KillControls,
+        ),
+        ("InterfaceLib", "MoveControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::MoveControl,
+        ),
+        ("InterfaceLib", "NewControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::NewControl,
+        ),
+        ("InterfaceLib", "SetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetControlMaximum,
+        ),
+        ("InterfaceLib", "SetControlMinimum") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetControlMinimum,
+        ),
+        ("InterfaceLib", "ShowControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::ShowControl,
+        ),
+        ("InterfaceLib", "SizeControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SizeControl,
+        ),
+        ("InterfaceLib", "TestControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::TestControl,
+        ),
+        ("InterfaceLib", "TrackControl") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::TrackControl,
+        ),
         (
             "InterfaceLib",
             "BringToFront" | "CalcVis" | "DisposeWindow" | "DragWindow" | "GetNewWindow"
@@ -27255,8 +27324,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             last_mem_error,
             handles,
         ),
-        PpcImportDispatcherTarget::LegacyControl => ppc_dispatch_legacy_control(
-            binding,
+        PpcImportDispatcherTarget::LegacyControl(operation) => ppc_dispatch_legacy_control(
+            operation,
             cpu,
             process_memory_manager,
             memory,
@@ -68458,7 +68527,7 @@ fn ppc_dispatch_popup_track_control(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_legacy_control(
-    binding: &PpcImportBinding,
+    operation: PpcLegacyControlOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -68475,8 +68544,8 @@ fn ppc_dispatch_legacy_control(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> Option<PpcImportAction> {
-    match binding.symbol_name.as_str() {
-        "NewControl" => {
+    match operation {
+        PpcLegacyControlOperation::NewControl => {
             let ref_con = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
                 .and_then(|address| memory.read_u32_be(address))
                 .unwrap_or(0);
@@ -68517,7 +68586,7 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::Return(handle))
         }
-        "GetNewControl" => {
+        PpcLegacyControlOperation::GetNewControl => {
             let resource_id = cpu.gpr[3] as u16 as i16;
             let owner = cpu.gpr[4];
             let Some(index) = ppc_vfs_resource_index(
@@ -68583,7 +68652,7 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::Return(handle))
         }
-        "DisposeControl" => {
+        PpcLegacyControlOperation::DisposeControl => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -68600,7 +68669,7 @@ fn ppc_dispatch_legacy_control(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        "KillControls" => {
+        PpcLegacyControlOperation::KillControls => {
             let owner = cpu.gpr[3];
             let control_handles = ppc_window_control_handles(memory, owner);
             let mut allocator = PpcProcessAllocatorView {
@@ -68622,18 +68691,21 @@ fn ppc_dispatch_legacy_control(
             let _ = memory.write_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET), 0);
             Some(PpcImportAction::ReturnPreserve)
         }
-        "GetControlValue" | "GetControlMinimum" | "GetControlMaximum" => {
-            let offset = match binding.symbol_name.as_str() {
-                "GetControlMinimum" => PPC_CONTROL_MIN_OFFSET,
-                "GetControlMaximum" => PPC_CONTROL_MAX_OFFSET,
-                _ => PPC_CONTROL_VALUE_OFFSET,
+        PpcLegacyControlOperation::GetControlValue
+        | PpcLegacyControlOperation::GetControlMinimum
+        | PpcLegacyControlOperation::GetControlMaximum => {
+            let offset = match operation {
+                PpcLegacyControlOperation::GetControlMinimum => PPC_CONTROL_MIN_OFFSET,
+                PpcLegacyControlOperation::GetControlMaximum => PPC_CONTROL_MAX_OFFSET,
+                PpcLegacyControlOperation::GetControlValue => PPC_CONTROL_VALUE_OFFSET,
+                _ => unreachable!(),
             };
             let value = ppc_control_ptr(memory, cpu.gpr[3])
                 .and_then(|control| memory.read_u16_be(control.wrapping_add(offset)))
                 .unwrap_or(0) as i16;
             Some(PpcImportAction::Return(ppc_i16_result(value)))
         }
-        "GetControlTitle" => {
+        PpcLegacyControlOperation::GetControlTitle => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                 let title =
                     ppc_read_pstring_bytes(memory, control.wrapping_add(PPC_CONTROL_TITLE_OFFSET))
@@ -68644,10 +68716,11 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "SetControlMinimum" | "SetControlMaximum" => {
+        PpcLegacyControlOperation::SetControlMinimum
+        | PpcLegacyControlOperation::SetControlMaximum => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                 let value = cpu.gpr[4] as u16 as i16;
-                let offset = if binding.symbol_name == "SetControlMinimum" {
+                let offset = if operation == PpcLegacyControlOperation::SetControlMinimum {
                     PPC_CONTROL_MIN_OFFSET
                 } else {
                     PPC_CONTROL_MAX_OFFSET
@@ -68666,9 +68739,9 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "ShowControl" | "HideControl" => {
+        PpcLegacyControlOperation::ShowControl | PpcLegacyControlOperation::HideControl => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
-                let visible = binding.symbol_name == "ShowControl";
+                let visible = operation == PpcLegacyControlOperation::ShowControl;
                 let _ = memory.write_u8(
                     control.wrapping_add(PPC_CONTROL_VISIBLE_OFFSET),
                     if visible { 0xff } else { 0 },
@@ -68687,13 +68760,13 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "MoveControl" | "SizeControl" => {
+        PpcLegacyControlOperation::MoveControl | PpcLegacyControlOperation::SizeControl => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                 let rect_addr = control.wrapping_add(PPC_CONTROL_RECT_OFFSET);
                 if let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect_addr) {
                     let width = right.saturating_sub(left);
                     let height = bottom.saturating_sub(top);
-                    let result = if binding.symbol_name == "MoveControl" {
+                    let result = if operation == PpcLegacyControlOperation::MoveControl {
                         let new_left = cpu.gpr[4] as u16 as i16;
                         let new_top = cpu.gpr[5] as u16 as i16;
                         ppc_write_rect(
@@ -68731,7 +68804,7 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "FindControl" => {
+        PpcLegacyControlOperation::FindControl => {
             let v = (cpu.gpr[3] >> 16) as u16 as i16;
             let h = cpu.gpr[3] as u16 as i16;
             let (handle, part) =
@@ -68741,7 +68814,7 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
-        "TestControl" => {
+        PpcLegacyControlOperation::TestControl => {
             let v = (cpu.gpr[4] >> 16) as u16 as i16;
             let h = cpu.gpr[4] as u16 as i16;
             let part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
@@ -68753,7 +68826,7 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
-        "TrackControl" => {
+        PpcLegacyControlOperation::TrackControl => {
             // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
             // -1 selects contrlAction; a second -1 invokes the popup CDEF.
             let action_proc = if cpu.gpr[5] == u32::MAX {
@@ -68858,7 +68931,7 @@ fn ppc_dispatch_legacy_control(
                 .into_ppc_import_action()?,
             )
         }
-        "Draw1Control" => {
+        PpcLegacyControlOperation::DrawOneControl => {
             let _ = ppc_draw_control(
                 memory,
                 handles,
@@ -68870,7 +68943,6 @@ fn ppc_dispatch_legacy_control(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        _ => None,
     }
 }
 
