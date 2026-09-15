@@ -477,6 +477,58 @@ pub fn decode_vise_fork(packed: &[u8], expected_len: usize) -> Result<Vec<u8>, S
     })
 }
 
+#[cfg(test)]
+pub(crate) fn make_test_archive(name: &str, data_fork: &[u8], resource_fork: &[u8]) -> Vec<u8> {
+    use flate2::{write::DeflateEncoder, Compression};
+    use std::io::Write;
+
+    fn encode(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bytes).unwrap();
+        let mut encoded = encoder.finish().unwrap();
+        let mut inverse = [0u8; 256];
+        for (index, decoded) in VISE_DEOBFUSCATION_TABLE.iter().copied().enumerate() {
+            inverse[decoded as usize] = index as u8;
+        }
+        for byte in &mut encoded {
+            *byte = inverse[*byte as usize];
+        }
+        for pair in encoded.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        encoded
+    }
+
+    assert!(name.len() <= u8::MAX as usize);
+    let packed_data = encode(data_fork);
+    let packed_rsrc = encode(resource_fork);
+    let payload_offset = VISE_HEADER_LEN;
+    let catalog_offset = payload_offset + packed_data.len() + packed_rsrc.len();
+    let mut archive = vec![0u8; VISE_HEADER_LEN];
+    archive[..4].copy_from_slice(VISE_MAGIC);
+    archive[16..20].copy_from_slice(&VISE_VERSION_35_LITE.to_be_bytes());
+    archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+    archive.extend_from_slice(&packed_data);
+    archive.extend_from_slice(&packed_rsrc);
+    let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+    catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
+    catalog[16..18].copy_from_slice(&1u16.to_be_bytes());
+    archive.extend_from_slice(&catalog);
+    archive.extend_from_slice(b"FVCT");
+    let mut file = [0u8; VISE_FILE_RECORD_LEN];
+    file[40..44].copy_from_slice(b"APPL");
+    file[44..48].copy_from_slice(b"TEST");
+    file[64..68].copy_from_slice(&(packed_data.len() as u32).to_be_bytes());
+    file[68..72].copy_from_slice(&(data_fork.len() as u32).to_be_bytes());
+    file[72..76].copy_from_slice(&(packed_rsrc.len() as u32).to_be_bytes());
+    file[76..80].copy_from_slice(&(resource_fork.len() as u32).to_be_bytes());
+    file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+    file[118] = name.len() as u8;
+    archive.extend_from_slice(&file);
+    archive.extend_from_slice(name.as_bytes());
+    archive
+}
+
 fn decode_concatenated_deflate(data: &[u8], required_len: usize) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(required_len);
     let mut offset = 0usize;
