@@ -1,6 +1,6 @@
 [package]
 name = "systemless"
-version = "0.41.3"
+version = "0.41.4"
 edition = "2021"
 rust-version = "1.93"
 # Emulator code is GPL-3.0-or-later.
