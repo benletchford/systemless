@@ -17558,6 +17558,55 @@
     }
 
     #[test]
+    fn exit_to_shell_launches_best_application_created_by_installer() {
+        let app_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let app_fork = make_resource_fork_bytes(&[(*b"CODE", 0, &app_code0)]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+
+        runner
+            .dispatcher
+            .vfs
+            .insert("Existing/Previous Game".to_string(), Vec::new());
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Existing/Previous Game".to_string(), app_fork.clone());
+        runner.dispatcher.set_vfs_entry_finfo(
+            "Existing/Previous Game",
+            u32::from_be_bytes(*b"APPL"),
+            u32::from_be_bytes(*b"GAME"),
+            0,
+        );
+        runner.arm_installer_handoff();
+        for path in ["Installed/Register", "Installed/Main Game"] {
+            runner.dispatcher.vfs.insert(path.to_string(), Vec::new());
+            runner
+                .dispatcher
+                .vfs_rsrc
+                .insert(path.to_string(), app_fork.clone());
+            runner.dispatcher.set_vfs_entry_finfo(
+                path,
+                u32::from_be_bytes(*b"APPL"),
+                u32::from_be_bytes(*b"GAME"),
+                0,
+            );
+        }
+        runner.bus.write_word(base, 0xA9F4); // _ExitToShell
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+
+        let (_steps, running) = runner.run_steps(1, None);
+
+        assert!(running, "installer exit should activate the installed game");
+        assert!(!runner.is_halted());
+        assert_eq!(
+            runner.dispatcher.launched_app_path(),
+            Some("Installed/Main Game")
+        );
+    }
+
+    #[test]
     fn halted_by_exit_to_shell_rejects_invalid_pc_halts() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner

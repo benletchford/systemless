@@ -1654,6 +1654,7 @@ pub struct FixtureRunner {
     ppc_host_mirror_base: u32,
     ppc_host_mirror_capacity: u32,
     prefer_powerpc_executables: bool,
+    installer_handoff_baseline: Option<BTreeSet<String>>,
     trace_buffer: std::collections::VecDeque<(u32, u16, u32, u32, u32, u32)>, // (PC, Op, A0, SP, A6, A5)
     /// Set to true when the application calls ExitToShell
     halted: bool,
@@ -1926,6 +1927,7 @@ impl FixtureRunner {
             ppc_host_mirror_base: 0,
             ppc_host_mirror_capacity: 0,
             prefer_powerpc_executables: false,
+            installer_handoff_baseline: None,
             trace_buffer: std::collections::VecDeque::with_capacity(2000),
             halted: false,
             halted_trap: None,
@@ -1994,6 +1996,15 @@ impl FixtureRunner {
     /// Returns whether fat applications should prefer a PowerPC fragment.
     pub fn prefers_powerpc_executables(&self) -> bool {
         self.prefer_powerpc_executables
+    }
+
+    pub(crate) fn arm_installer_handoff(&mut self) {
+        self.installer_handoff_baseline = Some(
+            self.vfs_file_summaries()
+                .into_iter()
+                .map(|file| file.path)
+                .collect(),
+        );
     }
 
     pub fn set_external_q3_renderer_enabled(&mut self, enabled: bool) {
@@ -3649,6 +3660,21 @@ impl FixtureRunner {
             self.halted_pc = Some(self.m68k.cpu.read_reg(Register::PC));
             self.halted_sp = Some(self.m68k.cpu.read_reg(Register::A7));
             self.halted_d0 = Some((-43i32) as u32);
+        }
+        true
+    }
+
+    fn service_installer_handoff(&mut self) -> bool {
+        let Some(baseline) = self.installer_handoff_baseline.take() else {
+            return false;
+        };
+        let Some(path) = crate::game::launch::select_installed_application(self, &baseline) else {
+            return false;
+        };
+
+        if let Err(err) = self.switch_to_launched_application(&path) {
+            eprintln!("[LAUNCH] Failed to switch to installed application {path:?}: {err}");
+            return false;
         }
         true
     }
@@ -6694,6 +6720,10 @@ impl FixtureRunner {
                                 if self.halted {
                                     return (count, false);
                                 }
+                                continue;
+                            }
+                            if matches!(opcode, 0xA9F2 | 0xA9F4) && self.service_installer_handoff()
+                            {
                                 continue;
                             }
                             // Surface the auto-pop caller PC if the
