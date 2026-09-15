@@ -1309,6 +1309,23 @@ pub enum PpcFileCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcStdIoOperation {
+    ClearErr,
+    FileBuffer,
+    FileClose,
+    FileEof,
+    FileError,
+    FileFlush,
+    FileOpen,
+    FilePrintf,
+    FileRead,
+    FileSeek,
+    FileTell,
+    FileWrite,
+    IoBuffer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
     ElementDisposeVirtual,
@@ -1971,7 +1988,7 @@ pub enum PpcImportDispatcherTarget {
     StdAtoi,
     StdGetenv,
     StdSprintf,
-    StdIoCompatibility,
+    StdIoCompatibility(PpcStdIoOperation),
     StdAbs,
     StdToupper,
     StdTolower,
@@ -14656,11 +14673,45 @@ fn dispatcher_target_for_import(
         ("StdCLib", "atoi") => PpcImportDispatcherTarget::StdAtoi,
         ("StdCLib", "getenv") => PpcImportDispatcherTarget::StdGetenv,
         ("StdCLib", "sprintf") => PpcImportDispatcherTarget::StdSprintf,
-        (
-            "StdCLib",
-            "fopen" | "fclose" | "fread" | "fwrite" | "fseek" | "ftell" | "fprintf" | "_filbuf"
-            | "fflush" | "feof" | "ferror" | "clearerr" | "_iob",
-        ) => PpcImportDispatcherTarget::StdIoCompatibility,
+        ("StdCLib", "clearerr") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::ClearErr)
+        }
+        ("StdCLib", "_filbuf") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileBuffer)
+        }
+        ("StdCLib", "fclose") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileClose)
+        }
+        ("StdCLib", "feof") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileEof)
+        }
+        ("StdCLib", "ferror") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileError)
+        }
+        ("StdCLib", "fflush") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileFlush)
+        }
+        ("StdCLib", "fopen") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileOpen)
+        }
+        ("StdCLib", "fprintf") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FilePrintf)
+        }
+        ("StdCLib", "fread") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileRead)
+        }
+        ("StdCLib", "fseek") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileSeek)
+        }
+        ("StdCLib", "ftell") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileTell)
+        }
+        ("StdCLib", "fwrite") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileWrite)
+        }
+        ("StdCLib", "_iob") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::IoBuffer)
+        }
         ("StdCLib", "abs") => PpcImportDispatcherTarget::StdAbs,
         ("StdCLib", "toupper") => PpcImportDispatcherTarget::StdToupper,
         ("StdCLib", "tolower") => PpcImportDispatcherTarget::StdTolower,
@@ -24028,9 +24079,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::StdSprintf => {
             Some(PpcImportAction::Return(ppc_std_sprintf(cpu, memory)))
         }
-        PpcImportDispatcherTarget::StdIoCompatibility => {
+        PpcImportDispatcherTarget::StdIoCompatibility(operation) => {
             Some(ppc_dispatch_process_stdio_compatibility(
-                binding,
+                operation,
                 cpu,
                 process_memory_manager,
                 memory,
@@ -29850,7 +29901,7 @@ fn ppc_stdio_set_error(stream: u32, stdio_streams: &mut HashMap<u32, PpcStdioStr
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 fn ppc_dispatch_stdio_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcStdIoOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -29862,7 +29913,7 @@ fn ppc_dispatch_stdio_compatibility(
 ) -> PpcImportAction {
     let mut writable_refnums = HashSet::new();
     ppc_dispatch_stdio_compatibility_with_manager(
-        binding,
+        operation,
         cpu,
         None,
         memory,
@@ -29878,7 +29929,7 @@ fn ppc_dispatch_stdio_compatibility(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_process_stdio_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcStdIoOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -29891,7 +29942,7 @@ fn ppc_dispatch_process_stdio_compatibility(
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
 ) -> PpcImportAction {
     ppc_dispatch_stdio_compatibility_with_manager(
-        binding,
+        operation,
         cpu,
         Some(process_memory_manager),
         memory,
@@ -29907,7 +29958,7 @@ fn ppc_dispatch_process_stdio_compatibility(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_stdio_compatibility_with_manager(
-    binding: &PpcImportBinding,
+    operation: PpcStdIoOperation,
     cpu: &mut PpcCpu,
     mut process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
@@ -29920,8 +29971,8 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
 ) -> PpcImportAction {
     let stream = cpu.gpr[3];
-    match binding.symbol_name.as_str() {
-        "fopen" => {
+    match operation {
+        PpcStdIoOperation::FileOpen => {
             let mode = ppc_std_c_string(memory, cpu.gpr[4], 16);
             let Some(&mode_kind @ (b'r' | b'w' | b'a')) = mode.first() else {
                 return PpcImportAction::Return(0);
@@ -30020,7 +30071,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             *next_file_ref_num = next_ref_num;
             PpcImportAction::Return(stream_ptr)
         }
-        "fclose" => {
+        PpcStdIoOperation::FileClose => {
             let Some(record) = stdio_streams.get_mut(&stream) else {
                 return PpcImportAction::Return(u32::MAX);
             };
@@ -30036,7 +30087,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             }
             PpcImportAction::Return(0)
         }
-        "fread" | "fwrite" => {
+        PpcStdIoOperation::FileRead | PpcStdIoOperation::FileWrite => {
             let destination = cpu.gpr[3];
             let element_size = cpu.gpr[4];
             let element_count = cpu.gpr[5];
@@ -30050,7 +30101,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
                 return PpcImportAction::Return(0);
             };
-            let permitted = if binding.symbol_name == "fread" {
+            let permitted = if operation == PpcStdIoOperation::FileRead {
                 record.readable
             } else {
                 record.writable
@@ -30065,19 +30116,19 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
                 return PpcImportAction::Return(0);
             };
             if standard {
-                if binding.symbol_name == "fwrite"
+                if operation == PpcStdIoOperation::FileWrite
                     && !ppc_memory_can_read_bytes(memory, destination, total)
                 {
                     ppc_stdio_set_error(stream, stdio_streams);
                     return PpcImportAction::Return(0);
                 }
-                return PpcImportAction::Return(if binding.symbol_name == "fwrite" {
+                return PpcImportAction::Return(if operation == PpcStdIoOperation::FileWrite {
                     element_count
                 } else {
                     0
                 });
             }
-            if binding.symbol_name == "fread" {
+            if operation == PpcStdIoOperation::FileRead {
                 let start = usize::try_from(position)
                     .unwrap_or(usize::MAX)
                     .min(data_len);
@@ -30155,7 +30206,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
                 PpcImportAction::Return(element_count)
             }
         }
-        "fseek" => {
+        PpcStdIoOperation::FileSeek => {
             let offset = cpu.gpr[4] as i32 as i64;
             let whence = cpu.gpr[5];
             let Some((standard, _ref_num, position, _path, data_len)) =
@@ -30184,13 +30235,13 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             }
             PpcImportAction::Return(0)
         }
-        "ftell" => {
+        PpcStdIoOperation::FileTell => {
             let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
                 return PpcImportAction::Return(u32::MAX);
             };
             PpcImportAction::Return(record.position)
         }
-        "_filbuf" => {
+        PpcStdIoOperation::FileBuffer => {
             let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
                 return PpcImportAction::Return(u32::MAX);
             };
@@ -30221,7 +30272,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             ppc_stdio_set_position(stream, new_position, stdio_streams, files);
             PpcImportAction::Return(u32::from(byte))
         }
-        "fprintf" => {
+        PpcStdIoOperation::FilePrintf => {
             const SCRATCH_SIZE: u32 = 16 * 1024;
             let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
                 return PpcImportAction::Return(u32::MAX);
@@ -30296,26 +30347,40 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             ppc_stdio_set_position(stream, new_position, stdio_streams, files);
             PpcImportAction::Return(length)
         }
-        "fflush" | "feof" | "ferror" | "clearerr" => {
+        PpcStdIoOperation::FileFlush => {
+            if stdio_streams
+                .get(&stream)
+                .filter(|record| !record.closed)
+                .is_none()
+            {
+                return PpcImportAction::Return(u32::MAX);
+            }
+            PpcImportAction::Return(0)
+        }
+        PpcStdIoOperation::FileEof => {
+            let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
+                return PpcImportAction::Return(u32::MAX);
+            };
+            PpcImportAction::Return(u32::from(record.eof))
+        }
+        PpcStdIoOperation::FileError => {
+            let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
+                return PpcImportAction::Return(u32::MAX);
+            };
+            PpcImportAction::Return(u32::from(record.error))
+        }
+        PpcStdIoOperation::ClearErr => {
             let Some(record) = stdio_streams
                 .get_mut(&stream)
                 .filter(|record| !record.closed)
             else {
                 return PpcImportAction::Return(u32::MAX);
             };
-            match binding.symbol_name.as_str() {
-                "feof" => PpcImportAction::Return(u32::from(record.eof)),
-                "ferror" => PpcImportAction::Return(u32::from(record.error)),
-                "clearerr" => {
-                    record.eof = false;
-                    record.error = false;
-                    PpcImportAction::ReturnPreserve
-                }
-                _ => PpcImportAction::Return(0),
-            }
+            record.eof = false;
+            record.error = false;
+            PpcImportAction::ReturnPreserve
         }
-        "_iob" => PpcImportAction::Return(PPC_STDIO_IOB_ADDR),
-        _ => PpcImportAction::Return(u32::MAX),
+        PpcStdIoOperation::IoBuffer => PpcImportAction::Return(PPC_STDIO_IOB_ADDR),
     }
 }
 

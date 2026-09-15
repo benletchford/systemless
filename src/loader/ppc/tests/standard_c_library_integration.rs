@@ -117,7 +117,10 @@ fn stdio_records_advance_the_process_owned_heap_immediately() {
     native.cpu.gpr[3] = path;
     native.cpu.gpr[4] = mode;
 
-    run_test_import(&mut native, PpcImportDispatcherTarget::StdIoCompatibility);
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileOpen),
+    );
 
     let stream = native.cpu.gpr[3];
     assert_ne!(stream, 0);
@@ -354,13 +357,8 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
 
     cpu.gpr[3] = path;
     cpu.gpr[4] = mode;
-    let fopen = compatibility_binding(
-        "StdCLib",
-        "fopen",
-        PpcImportDispatcherTarget::StdIoCompatibility,
-    );
     let PpcImportAction::Return(stream) = ppc_dispatch_stdio_compatibility(
-        &fopen,
+        PpcStdIoOperation::FileOpen,
         &mut cpu,
         &mut loaded.memory,
         test_heap_cursor!(loaded),
@@ -378,14 +376,9 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[4] = 2;
     cpu.gpr[5] = 2;
     cpu.gpr[6] = stream;
-    let fread = compatibility_binding(
-        "StdCLib",
-        "fread",
-        PpcImportDispatcherTarget::StdIoCompatibility,
-    );
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fread,
+            PpcStdIoOperation::FileRead,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -402,11 +395,6 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
         Some(b"abcd".to_vec())
     );
 
-    let fwrite = compatibility_binding(
-        "StdCLib",
-        "fwrite",
-        PpcImportDispatcherTarget::StdIoCompatibility,
-    );
     loaded.memory.write_bytes(destination, b"XY").unwrap();
     cpu.gpr[3] = destination;
     cpu.gpr[4] = 1;
@@ -414,7 +402,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[6] = stream;
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fwrite,
+            PpcStdIoOperation::FileWrite,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -432,7 +420,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[3] = path;
     cpu.gpr[4] = mode;
     let PpcImportAction::Return(read_write_stream) = ppc_dispatch_stdio_compatibility(
-        &fopen,
+        PpcStdIoOperation::FileOpen,
         &mut cpu,
         &mut loaded.memory,
         test_heap_cursor!(loaded),
@@ -451,7 +439,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[6] = read_write_stream;
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fwrite,
+            PpcStdIoOperation::FileWrite,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -467,17 +455,12 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
 
     let format = PPC_DATA_BASE + 0x2300;
     loaded.memory.add_region(format, b"%20000d\0".to_vec());
-    let fprintf = compatibility_binding(
-        "StdCLib",
-        "fprintf",
-        PpcImportDispatcherTarget::StdIoCompatibility,
-    );
     cpu.gpr[3] = read_write_stream;
     cpu.gpr[4] = format;
     cpu.gpr[5] = 0;
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fprintf,
+            PpcStdIoOperation::FilePrintf,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -496,7 +479,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[4] = mode;
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fopen,
+            PpcStdIoOperation::FileOpen,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -517,7 +500,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[4] = mode;
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fopen,
+            PpcStdIoOperation::FileOpen,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -539,7 +522,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[4] = mode;
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fopen,
+            PpcStdIoOperation::FileOpen,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -561,7 +544,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     loaded.memory.write_bytes(destination, b"X").unwrap();
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fwrite,
+            PpcStdIoOperation::FileWrite,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -576,7 +559,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
     cpu.gpr[3] = 0xdead_beef;
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &fwrite,
+            PpcStdIoOperation::FileWrite,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -593,14 +576,9 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
         .is_some_and(|record| record.error));
 
     cpu.gpr[3] = stream;
-    let ftell = compatibility_binding(
-        "StdCLib",
-        "ftell",
-        PpcImportDispatcherTarget::StdIoCompatibility,
-    );
     assert_eq!(
         ppc_dispatch_stdio_compatibility(
-            &ftell,
+            PpcStdIoOperation::FileTell,
             &mut cpu,
             &mut loaded.memory,
             test_heap_cursor!(loaded),
@@ -613,11 +591,6 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
         PpcImportAction::Return(4)
     );
 
-    let fclose = compatibility_binding(
-        "StdCLib",
-        "fclose",
-        PpcImportDispatcherTarget::StdIoCompatibility,
-    );
     for stream in [
         stream,
         read_write_stream,
@@ -627,7 +600,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
         cpu.gpr[3] = stream;
         assert_eq!(
             ppc_dispatch_stdio_compatibility(
-                &fclose,
+                PpcStdIoOperation::FileClose,
                 &mut cpu,
                 &mut loaded.memory,
                 test_heap_cursor!(loaded),
