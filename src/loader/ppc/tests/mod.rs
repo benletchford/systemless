@@ -13301,25 +13301,25 @@ fn unavailable_weak_import_relocates_to_cfm_unresolved_symbol_address() {
 }
 
 #[test]
-fn legacy_memory_utility_imports_are_classified_generically() {
-    for symbol in [
-        "BitNot",
-        "BitSet",
-        "BitClr",
-        "Fix2X",
-        "GetMyZone",
-        "HandleZone",
-        "LockMemory",
-        "MaxBlock",
-        "PurgeSpace",
-        "SetGrowZone",
-        "StackSpace",
-        "TempFreeMem",
-        "UnlockMemory",
+fn legacy_memory_utility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("BitClr", PpcLegacyMemoryUtilityOperation::BitClear),
+        ("BitNot", PpcLegacyMemoryUtilityOperation::BitNot),
+        ("BitSet", PpcLegacyMemoryUtilityOperation::BitSet),
+        ("Fix2X", PpcLegacyMemoryUtilityOperation::FixToExtended),
+        ("GetMyZone", PpcLegacyMemoryUtilityOperation::GetMyZone),
+        ("HandleZone", PpcLegacyMemoryUtilityOperation::HandleZone),
+        ("LockMemory", PpcLegacyMemoryUtilityOperation::LockMemory),
+        ("MaxBlock", PpcLegacyMemoryUtilityOperation::MaxBlock),
+        ("PurgeSpace", PpcLegacyMemoryUtilityOperation::PurgeSpace),
+        ("SetGrowZone", PpcLegacyMemoryUtilityOperation::SetGrowZone),
+        ("StackSpace", PpcLegacyMemoryUtilityOperation::StackSpace),
+        ("TempFreeMem", PpcLegacyMemoryUtilityOperation::TempFreeMem),
+        ("UnlockMemory", PpcLegacyMemoryUtilityOperation::UnlockMemory),
     ] {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", symbol),
-            PpcImportDispatcherTarget::LegacyMemoryUtility,
+            PpcImportDispatcherTarget::LegacyMemoryUtility(operation),
             "{symbol}"
         );
     }
