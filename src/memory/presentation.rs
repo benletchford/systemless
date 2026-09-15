@@ -380,6 +380,8 @@ pub(crate) struct Presentation {
     restored_dialog: Option<(u64, (i16, i16, i16, i16), bool, u64)>,
     output_cache: std::cell::RefCell<Option<(u64, u32, Vec<u32>)>>,
     offscreen: BTreeMap<u32, Arc<DetailCell>>,
+    // Conservative bounds: deletion may leave false positives, never false negatives.
+    offscreen_bounds: Option<(u32, u32)>,
     base: u32,
     row_bytes: u32,
     width: u32,
@@ -490,6 +492,19 @@ impl Presentation {
         }
     }
 
+    fn include_offscreen_address(&mut self, address: u32) {
+        self.offscreen_bounds = Some(match self.offscreen_bounds {
+            Some((first, last)) => (first.min(address), last.max(address)),
+            None => (address, address),
+        });
+    }
+
+    #[inline]
+    fn may_have_offscreen_detail(&self, address: u32, end: u64) -> bool {
+        self.offscreen_bounds
+            .is_some_and(|(first, last)| address <= last && end > u64::from(first))
+    }
+
     /// Only screen bytes and retained offscreen glyphs need write interception.
     /// Ordinary heap/stack ranges retain the bus's bulk memory paths.
     pub(super) fn observes_range(&self, address: u32, len: usize) -> bool {
@@ -506,10 +521,8 @@ impl Presentation {
         {
             return true;
         }
-        self.offscreen
-            .range(address..=(end - 1) as u32)
-            .next()
-            .is_some()
+        self.may_have_offscreen_detail(address, end)
+            && self.offscreen.range(address..=(end - 1) as u32).next().is_some()
     }
 
     fn position(&self, address: u32) -> Option<(u32, u32)> {
@@ -744,7 +757,11 @@ impl Presentation {
 
     fn detail(&self, address: u32) -> Option<Arc<DetailCell>> {
         let Some((x, y)) = self.position(address) else {
-            return self.offscreen.get(&address).cloned();
+            return if self.may_have_offscreen_detail(address, u64::from(address) + 1) {
+                self.offscreen.get(&address).cloned()
+            } else {
+                None
+            };
         };
         if !self.text_cells[(y * self.width + x) as usize] {
             return None;
@@ -826,6 +843,7 @@ impl Presentation {
         }
         self.revision = self.revision.wrapping_add(1);
         let Some((x, y)) = self.position(address) else {
+            self.include_offscreen_address(address);
             self.offscreen.insert(address, cell.clone());
             return;
         };
@@ -890,6 +908,11 @@ impl Presentation {
 
     pub fn write(&mut self, address: u32, value: u8) {
         let Some((x, y)) = self.position(address) else {
+            if self.glyph.is_none()
+                && !self.may_have_offscreen_detail(address, u64::from(address) + 1)
+            {
+                return;
+            }
             if self.offscreen.contains_key(&address) || self.glyph.is_some() {
                 self.revision = self.revision.wrapping_add(1);
             }
@@ -971,6 +994,10 @@ impl Presentation {
     pub fn glyph_pixel(&mut self, address: u32, x: i16, y: i16, foreground: u8, background: u8) {
         self.revision = self.revision.wrapping_add(1);
         let Some((px, py)) = self.position(address) else {
+            if self.glyph.is_none() {
+                return;
+            }
+            self.include_offscreen_address(address);
             let Some((glyph, h, v)) = &self.glyph else {
                 return;
             };
@@ -1676,6 +1703,7 @@ impl MacMemoryBus {
             restored_dialog: None,
             output_cache: std::cell::RefCell::new(None),
             offscreen: BTreeMap::new(),
+            offscreen_bounds: None,
             base,
             row_bytes,
             width: width.into(),
@@ -1720,6 +1748,10 @@ impl MacMemoryBus {
             }
         }
         if let Some((offscreen, glyph_count)) = retained {
+            presentation.offscreen_bounds = offscreen
+                .first_key_value()
+                .zip(offscreen.last_key_value())
+                .map(|((&first, _), (&last, _))| (first, last));
             presentation.offscreen = offscreen;
             presentation.glyph_count = glyph_count;
         }
@@ -1955,6 +1987,43 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn offscreen_detail_bounds_preserve_insertions_and_partial_ranges() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x8000);
+        let detail = bus.presentation.as_ref().unwrap().detail(0x8000).unwrap();
+        let mut p = bus.presentation.as_mut().unwrap();
+        assert!(!p.observes_range(0x7000, 0x1000));
+        assert!(p.observes_range(0x7fff, 2));
+        assert!(!p.observes_range(0x8001, 1));
+        p.put_detail(0x9000, &detail);
+        p.put_detail(0x6000, &detail);
+        assert_eq!(p.detail(0x6000), Some(detail.clone()));
+        assert!(p.observes_range(0x8fff, 2));
+        assert!(!p.observes_range(0x6001, 0x1fff));
+        // Bounds can stay conservative after erasure: the map remains the
+        // authority for ranges inside them, including a removed endpoint.
+        p.write(0x6000, detail.value);
+        assert!(p.detail(0x6000).is_none());
+        assert!(!p.observes_range(0x6000, 1));
+        assert_eq!(p.detail(0x9000), Some(detail.clone()));
+        p.put_detail(u32::MAX, &detail);
+        assert!(p.observes_range(u32::MAX, 1));
+        assert!(!p.observes_range(u32::MAX, 0));
+        assert!(p.observes_range(u32::MAX - 1, 3));
+        p.write(u32::MAX, detail.value);
+        assert!(p.detail(u32::MAX).is_none());
+        drop(p);
+        // Changing the screen mapping can retain offscreen glyphs; their
+        // bounds must survive that transfer into a new presentation surface.
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.enable_outline_presentation((0x2000, 8, 8, 8, 8), palette, 2);
+        assert!(bus.presentation.as_ref().unwrap().observes_range(0x9000, 1));
+        assert_eq!(bus.presentation.as_ref().unwrap().detail(0x9000), Some(detail));
+        bus.write_byte(0x9000, 0);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x9000).is_none());
     }
 
     #[test]
