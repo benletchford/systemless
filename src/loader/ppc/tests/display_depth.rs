@@ -1673,9 +1673,11 @@ fn hle_import_runner_depth_ctable_cache_drops_closed_color_ports() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseWindow);
     loaded.cpu.gpr[3] = cport;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseCPort);
-    loaded.imports[0].symbol_name = "DisposeWindow".to_string();
     loaded.cpu.gpr[3] = windows[1];
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow),
+    );
 
     for pixmap_handle in owned_pixmap_handles {
         assert!(

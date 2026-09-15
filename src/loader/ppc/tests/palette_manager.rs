@@ -715,22 +715,28 @@ use super::*;
             )
         ));
 
-        loaded.imports[0].symbol_name = "SendBehind".to_string();
         loaded.cpu.gpr[3] = windows[2];
         loaded.cpu.gpr[4] = windows[0];
-        run_target(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+        run_target(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind),
+        );
         assert_eq!(loaded.screen_clut[1], colors[1]);
         assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
 
-        loaded.imports[0].symbol_name = "BringToFront".to_string();
         loaded.cpu.gpr[3] = windows[2];
-        run_target(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+        run_target(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront),
+        );
         assert_eq!(loaded.screen_clut[1], colors[2]);
 
-        loaded.imports[0].symbol_name = "SendBehind".to_string();
         loaded.cpu.gpr[3] = windows[2];
         loaded.cpu.gpr[4] = windows[0];
-        run_target(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+        run_target(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind),
+        );
         assert_eq!(loaded.screen_clut[1], colors[1]);
 
         loaded.cpu.gpr[3] = windows[1];

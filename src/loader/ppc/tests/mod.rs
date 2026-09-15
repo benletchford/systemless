@@ -13334,6 +13334,31 @@ fn legacy_memory_utility_imports_pre_resolve_to_typed_operations() {
 }
 
 #[test]
+fn legacy_window_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("BringToFront", PpcLegacyWindowOperation::BringToFront),
+        ("CalcVis", PpcLegacyWindowOperation::CalculateVisibleRegion),
+        ("DisposeWindow", PpcLegacyWindowOperation::DisposeWindow),
+        ("DragWindow", PpcLegacyWindowOperation::DragWindow),
+        ("GetNewWindow", PpcLegacyWindowOperation::GetNewWindow),
+        ("GetWTitle", PpcLegacyWindowOperation::GetWindowTitle),
+        ("GrowWindow", PpcLegacyWindowOperation::GrowWindow),
+        ("HiliteWindow", PpcLegacyWindowOperation::HighlightWindow),
+        ("NewWindow", PpcLegacyWindowOperation::NewWindow),
+        ("SendBehind", PpcLegacyWindowOperation::SendBehind),
+        ("SetWTitle", PpcLegacyWindowOperation::SetWindowTitle),
+        ("TrackBox", PpcLegacyWindowOperation::TrackBox),
+        ("TrackGoAway", PpcLegacyWindowOperation::TrackGoAway),
+        ("ZoomWindow", PpcLegacyWindowOperation::ZoomWindow),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::LegacyWindow(operation),
+        );
+    }
+}
+
+#[test]
 fn hle_import_runner_handles_legacy_bit_utilities() {
     let mut set = load_pef_application(&synthetic_pef_with_import(b"BitSet")).unwrap();
     let byte = PPC_HEAP_BASE;
@@ -52662,10 +52687,12 @@ fn hle_import_runner_new_cwindow_draws_document_frame_at_supported_depths() {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();
         ppc_write_pstring_bytes(&mut loaded.memory, scratch + 20, b"X");
-        loaded.imports[0].symbol_name = "SetWTitle".to_string();
         loaded.cpu.gpr[3] = window;
         loaded.cpu.gpr[4] = scratch + 20;
-        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle),
+        );
         let frame_after_title =
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();
@@ -52683,10 +52710,12 @@ fn hle_import_runner_new_cwindow_draws_document_frame_at_supported_depths() {
             Some(b"X".to_vec()),
         );
 
-        loaded.imports[0].symbol_name = "HiliteWindow".to_string();
         loaded.cpu.gpr[3] = window;
         loaded.cpu.gpr[4] = 0;
-        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow),
+        );
         assert_eq!(
             loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET),
             Some(0),
@@ -52703,7 +52732,10 @@ fn hle_import_runner_new_cwindow_draws_document_frame_at_supported_depths() {
         );
 
         loaded.cpu.gpr[4] = 1;
-        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow),
+        );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
             Some(black),
@@ -52716,10 +52748,12 @@ fn hle_import_runner_new_cwindow_draws_document_frame_at_supported_depths() {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();
         ppc_write_pstring_bytes(&mut loaded.memory, scratch + 20, b"Hidden");
-        loaded.imports[0].symbol_name = "SetWTitle".to_string();
         loaded.cpu.gpr[3] = window;
         loaded.cpu.gpr[4] = scratch + 20;
-        run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle),
+        );
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
             Some(hidden_frame.clone()),
@@ -53007,8 +53041,9 @@ fn hle_import_runner_track_go_away_retains_restores_and_uses_release_point() {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();
 
-        loaded.imports[0].symbol_name = "TrackGoAway".to_string();
-        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::TrackGoAway,
+        );
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = window;
@@ -53197,8 +53232,9 @@ fn hle_import_runner_drag_window_retains_outline_and_moves_on_valid_release() {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();
 
-        loaded.imports[0].symbol_name = "DragWindow".to_string();
-        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::DragWindow,
+        );
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = window;
@@ -53377,8 +53413,9 @@ fn hle_import_runner_grow_window_retains_clamps_and_uses_release_size() {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                 .unwrap();
 
-        loaded.imports[0].symbol_name = "GrowWindow".to_string();
-        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GrowWindow,
+        );
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = window;
@@ -53623,7 +53660,10 @@ fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
     loaded.set_event_queue(std::iter::empty());
 
     loaded.cpu.gpr[3] = hidden;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow),
+    );
 
     assert_eq!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160)),
@@ -53725,7 +53765,10 @@ fn ppc_zoom_window_recalculates_visibility_and_queues_redraw() {
     loaded.cpu.gpr[3] = window;
     loaded.cpu.gpr[4] = 8;
     loaded.cpu.gpr[5] = 1;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow),
+    );
 
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
@@ -53786,7 +53829,10 @@ fn ppc_zoom_front_promotion_preserves_promoted_window_pixels() {
     loaded.cpu.gpr[3] = promoted;
     loaded.cpu.gpr[4] = 4;
     loaded.cpu.gpr[5] = 1;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow),
+    );
 
     assert_eq!(loaded.window_list.first().copied(), Some(promoted));
     assert_eq!(
