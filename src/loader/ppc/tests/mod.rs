@@ -16409,6 +16409,34 @@ fn import_bindings_classify_dialog_and_utility_imports() {
         dispatcher_target_for_import("InterfaceLib", "ModalDialog"),
         PpcImportDispatcherTarget::ModalDialog
     );
+    for (symbol, operation) in [
+        ("AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
+        ("CountDITL", PpcDialogCompatibilityOperation::CountDitl),
+        ("DialogSelect", PpcDialogCompatibilityOperation::DialogSelect),
+        (
+            "FindDialogItem",
+            PpcDialogCompatibilityOperation::FindDialogItem,
+        ),
+        (
+            "HideDialogItem",
+            PpcDialogCompatibilityOperation::HideDialogItem,
+        ),
+        (
+            "IsDialogEvent",
+            PpcDialogCompatibilityOperation::IsDialogEvent,
+        ),
+        ("ShortenDITL", PpcDialogCompatibilityOperation::ShortenDitl),
+        (
+            "ShowDialogItem",
+            PpcDialogCompatibilityOperation::ShowDialogItem,
+        ),
+        ("UpdateDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::DialogCompatibility(operation),
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "SetControlTitle"),
         PpcImportDispatcherTarget::SetControlTitle
