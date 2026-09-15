@@ -16285,10 +16285,85 @@ fn import_bindings_classify_file_manager_imports() {
         dispatcher_target_for_import("InterfaceLib", "FSpCreate"),
         PpcImportDispatcherTarget::FSpCreate
     );
+    for symbol in ["PBHCreate", "PBHCreateSync", "PBHCreateAsync"] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::PBCreate(
+                PpcParameterBlockCreateOperation::Hierarchical
+            ),
+            "{symbol}"
+        );
+    }
+    for symbol in ["PBCreate", "PBCreateSync", "PBCreateAsync"] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Legacy),
+            "{symbol}"
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "FSpDelete"),
         PpcImportDispatcherTarget::FSpDelete
     );
+}
+
+#[test]
+fn hle_import_runner_uses_typed_parameter_block_create_operation() {
+    let pef = synthetic_pef_with_import(b"PBHCreate");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let folder_id = PPC_FIRST_DYNAMIC_DIR_ID;
+    loaded.vfs_directories.push(PpcVfsDirectory {
+        dir_id: folder_id,
+        parent_dir_id: PPC_ROOT_DIR_ID,
+        path: "Typed Folder".to_string(),
+        creator: PPC_DIRECTORY_CREATOR,
+        file_type: PPC_DIRECTORY_FILE_TYPE,
+        finder_flags: 0,
+        dirty: false,
+    });
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(pb, vec![0; 64]);
+    loaded.memory.add_region(name_ptr, vec![0; 64]);
+    loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 48, folder_id).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Hierarchical)
+    );
+    loaded.imports[0].symbol_name = "PBCreate".to_string();
+    write_ppc_pstring(&mut loaded.memory, name_ptr, b"Hierarchical File");
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Typed Folder/Hierarchical File"));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target =
+        PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Legacy);
+    loaded.imports[0].symbol_name = "PBHCreate".to_string();
+    write_ppc_pstring(&mut loaded.memory, name_ptr, b"Legacy File");
+    loaded.cpu.gpr[3] = pb;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(loaded.vfs_files.iter().any(|file| file.path == "Legacy File"));
+    assert!(!loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Typed Folder/Legacy File"));
 }
 
 #[test]
