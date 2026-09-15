@@ -1326,6 +1326,24 @@ pub enum PpcLegacyMemoryUtilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcLegacyWindowOperation {
+    BringToFront,
+    CalculateVisibleRegion,
+    DisposeWindow,
+    DragWindow,
+    GetNewWindow,
+    GetWindowTitle,
+    GrowWindow,
+    HighlightWindow,
+    NewWindow,
+    SendBehind,
+    SetWindowTitle,
+    TrackBox,
+    TrackGoAway,
+    ZoomWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyControlOperation {
     DisposeControl,
     DrawOneControl,
@@ -2355,7 +2373,7 @@ pub enum PpcImportDispatcherTarget {
     SlotVRemove,
     LegacyMemoryUtility(PpcLegacyMemoryUtilityOperation),
     LegacyControl(PpcLegacyControlOperation),
-    LegacyWindow,
+    LegacyWindow(PpcLegacyWindowOperation),
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
     DialogCompatibility(PpcDialogCompatibilityOperation),
     QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation),
@@ -15868,12 +15886,48 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "TrackControl") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::TrackControl,
         ),
-        (
-            "InterfaceLib",
-            "BringToFront" | "CalcVis" | "DisposeWindow" | "DragWindow" | "GetNewWindow"
-            | "GetWTitle" | "GrowWindow" | "HiliteWindow" | "NewWindow" | "SendBehind"
-            | "SetWTitle" | "TrackBox" | "TrackGoAway" | "ZoomWindow",
-        ) => PpcImportDispatcherTarget::LegacyWindow,
+        ("InterfaceLib", "BringToFront") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::BringToFront,
+        ),
+        ("InterfaceLib", "CalcVis") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::CalculateVisibleRegion,
+        ),
+        ("InterfaceLib", "DisposeWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::DisposeWindow,
+        ),
+        ("InterfaceLib", "DragWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::DragWindow,
+        ),
+        ("InterfaceLib", "GetNewWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GetNewWindow,
+        ),
+        ("InterfaceLib", "GetWTitle") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GetWindowTitle,
+        ),
+        ("InterfaceLib", "GrowWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GrowWindow,
+        ),
+        ("InterfaceLib", "HiliteWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::HighlightWindow,
+        ),
+        ("InterfaceLib", "NewWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::NewWindow,
+        ),
+        ("InterfaceLib", "SendBehind") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::SendBehind,
+        ),
+        ("InterfaceLib", "SetWTitle") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::SetWindowTitle,
+        ),
+        ("InterfaceLib", "TrackBox") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::TrackBox,
+        ),
+        ("InterfaceLib", "TrackGoAway") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::TrackGoAway,
+        ),
+        ("InterfaceLib", "ZoomWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::ZoomWindow,
+        ),
         ("InterfaceLib", "AECountItems") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::CountItems,
         ),
@@ -27394,8 +27448,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             *current_resource_refnum,
             last_resource_error,
         ),
-        PpcImportDispatcherTarget::LegacyWindow => ppc_dispatch_legacy_window(
-            binding,
+        PpcImportDispatcherTarget::LegacyWindow(operation) => ppc_dispatch_legacy_window(
+            operation,
             cpu,
             process_memory_manager,
             memory,
@@ -70132,7 +70186,7 @@ fn ppc_draw_control_inner(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_legacy_window(
-    binding: &PpcImportBinding,
+    operation: PpcLegacyWindowOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -70158,8 +70212,8 @@ fn ppc_dispatch_legacy_window(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> Option<PpcImportAction> {
-    match binding.symbol_name.as_str() {
-        "NewWindow" => {
+    match operation {
+        PpcLegacyWindowOperation::NewWindow => {
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
@@ -70209,7 +70263,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::Return(window))
         }
-        "GetNewWindow" => {
+        PpcLegacyWindowOperation::GetNewWindow => {
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let resource_id = cpu.gpr[3] as u16 as i16;
             let Some(index) = ppc_vfs_resource_index(
@@ -70295,7 +70349,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::Return(window))
         }
-        "GetWTitle" => {
+        PpcLegacyWindowOperation::GetWindowTitle => {
             let title = memory
                 .read_u32_be(cpu.gpr[3].wrapping_add(PPC_CWINDOW_TITLE_HANDLE_OFFSET))
                 .filter(|handle| *handle != 0)
@@ -70308,7 +70362,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "SetWTitle" => {
+        PpcLegacyWindowOperation::SetWindowTitle => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -70333,7 +70387,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "DisposeWindow" => {
+        PpcLegacyWindowOperation::DisposeWindow => {
             let window = cpu.gpr[3];
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
@@ -70448,7 +70502,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "HiliteWindow" => {
+        PpcLegacyWindowOperation::HighlightWindow => {
             let _ = ppc_set_window_hilited(memory, cpu.gpr[3], cpu.gpr[4] != 0);
             ppc_redraw_visible_window_frame(
                 memory,
@@ -70459,7 +70513,7 @@ fn ppc_dispatch_legacy_window(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        "BringToFront" => {
+        PpcLegacyWindowOperation::BringToFront => {
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             ppc_reorder_window(gworlds, window_list, cpu.gpr[3], 0, true);
             ppc_recalculate_window_vis_regions(
@@ -70483,7 +70537,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "SendBehind" => {
+        PpcLegacyWindowOperation::SendBehind => {
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             ppc_reorder_window(gworlds, window_list, cpu.gpr[3], cpu.gpr[4], false);
             ppc_recalculate_window_vis_regions(
@@ -70507,7 +70561,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "DragWindow" => Some(ppc_dispatch_drag_window(
+        PpcLegacyWindowOperation::DragWindow => Some(ppc_dispatch_drag_window(
             cpu,
             process_memory_manager,
             memory,
@@ -70524,7 +70578,7 @@ fn ppc_dispatch_legacy_window(
             when,
             input,
         )),
-        "GrowWindow" => Some(ppc_dispatch_grow_window(
+        PpcLegacyWindowOperation::GrowWindow => Some(ppc_dispatch_grow_window(
             cpu,
             memory,
             gworlds,
@@ -70533,7 +70587,7 @@ fn ppc_dispatch_legacy_window(
             screen_clut,
             input,
         )),
-        "TrackBox" => {
+        PpcLegacyWindowOperation::TrackBox => {
             let part = cpu.gpr[5] as u16 as i16;
             let inside = ppc_window_part_contains_point(
                 memory,
@@ -70545,7 +70599,7 @@ fn ppc_dispatch_legacy_window(
             );
             Some(PpcImportAction::Return(u32::from(inside)))
         }
-        "TrackGoAway" => Some(ppc_dispatch_track_go_away(
+        PpcLegacyWindowOperation::TrackGoAway => Some(ppc_dispatch_track_go_away(
             cpu,
             memory,
             gworlds,
@@ -70553,7 +70607,7 @@ fn ppc_dispatch_legacy_window(
             event_queue,
             input,
         )),
-        "ZoomWindow" => {
+        PpcLegacyWindowOperation::ZoomWindow => {
             let window = cpu.gpr[3];
             let was_visible = ppc_window_is_visible(memory, window);
             let previous_front = ppc_front_visible_process_window(memory, window_list);
@@ -70621,7 +70675,7 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "CalcVis" => {
+        PpcLegacyWindowOperation::CalculateVisibleRegion => {
             let window = cpu.gpr[3];
             let mut vis_rgn = memory
                 .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
@@ -70646,7 +70700,6 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        _ => None,
     }
 }
 
