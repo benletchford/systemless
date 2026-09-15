@@ -1732,17 +1732,17 @@ fn native_insert_menu_does_not_evict_entries_from_a_full_partition() {
 #[test]
 fn quickdraw_compatibility_menu_item_icon_and_style_accessors_round_trip() {
     let scratch = PPC_DATA_BASE + 0x1000;
-    for (symbol, initial, replacement, attribute_offset) in [
-        (b"GetItemIcon".as_slice(), 7u8, 0u8, 0u32),
-        (b"SetItemIcon".as_slice(), 7u8, 11u8, 0u32),
-        (b"GetItemStyle".as_slice(), 3u8, 0u8, 3u32),
-        (b"SetItemStyle".as_slice(), 3u8, 0x25u8, 3u32),
+    for (symbol, operation, initial, replacement, attribute_offset) in [
+        (b"GetItemIcon".as_slice(), PpcQuickDrawCompatibilityOperation::GetItemIcon, 7u8, 0u8, 0u32),
+        (b"SetItemIcon".as_slice(), PpcQuickDrawCompatibilityOperation::SetItemIcon, 7u8, 11u8, 0u32),
+        (b"GetItemStyle".as_slice(), PpcQuickDrawCompatibilityOperation::GetItemStyle, 3u8, 0u8, 3u32),
+        (b"SetItemStyle".as_slice(), PpcQuickDrawCompatibilityOperation::SetItemStyle, 3u8, 0x25u8, 3u32),
     ] {
         let pef = synthetic_pef_with_import(symbol);
         let mut loaded = load_pef_application(&pef).unwrap();
         assert_eq!(
             loaded.imports[0].dispatcher_target,
-            PpcImportDispatcherTarget::QuickDrawCompatibility,
+            PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
         );
         let item = if attribute_offset == 0 {
             b"Item^7".as_slice()
@@ -16695,6 +16695,49 @@ fn import_bindings_classify_dialog_and_utility_imports() {
         dispatcher_target_for_import("InterfaceLib", "ExitToShell"),
         PpcImportDispatcherTarget::ExitToShell
     );
+}
+
+#[test]
+fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("AnimateEntry", PpcQuickDrawCompatibilityOperation::AnimateEntry),
+        ("AnimatePalette", PpcQuickDrawCompatibilityOperation::AnimatePalette),
+        ("BackPat", PpcQuickDrawCompatibilityOperation::BackPat),
+        ("BackPixPat", PpcQuickDrawCompatibilityOperation::BackPixPat),
+        ("ClosePicture", PpcQuickDrawCompatibilityOperation::ClosePicture),
+        ("CopyDeepMask", PpcQuickDrawCompatibilityOperation::CopyDeepMask),
+        ("CopyMask", PpcQuickDrawCompatibilityOperation::CopyMask),
+        ("CopyPalette", PpcQuickDrawCompatibilityOperation::CopyPalette),
+        ("CTab2Palette", PpcQuickDrawCompatibilityOperation::Ctab2Palette),
+        ("DisposeGDevice", PpcQuickDrawCompatibilityOperation::DisposeGDevice),
+        ("DisposePalette", PpcQuickDrawCompatibilityOperation::DisposePalette),
+        ("Exp1to3", PpcQuickDrawCompatibilityOperation::Exp1To3),
+        ("Exp1to6", PpcQuickDrawCompatibilityOperation::Exp1To6),
+        ("GetCPixel", PpcQuickDrawCompatibilityOperation::GetCPixel),
+        ("GetEntryUsage", PpcQuickDrawCompatibilityOperation::GetEntryUsage),
+        ("GetItemIcon", PpcQuickDrawCompatibilityOperation::GetItemIcon),
+        ("GetItemStyle", PpcQuickDrawCompatibilityOperation::GetItemStyle),
+        ("GetNewPalette", PpcQuickDrawCompatibilityOperation::GetNewPalette),
+        ("NewGDevice", PpcQuickDrawCompatibilityOperation::NewGDevice),
+        ("NewPalette", PpcQuickDrawCompatibilityOperation::NewPalette),
+        ("OpenPicture", PpcQuickDrawCompatibilityOperation::OpenPicture),
+        ("Palette2CTab", PpcQuickDrawCompatibilityOperation::Palette2Ctab),
+        ("PenPat", PpcQuickDrawCompatibilityOperation::PenPat),
+        ("PlotIcon", PpcQuickDrawCompatibilityOperation::PlotIcon),
+        ("ScrollRect", PpcQuickDrawCompatibilityOperation::ScrollRect),
+        ("SetCPixel", PpcQuickDrawCompatibilityOperation::SetCPixel),
+        ("SetEntryColor", PpcQuickDrawCompatibilityOperation::SetEntryColor),
+        ("SetEntryUsage", PpcQuickDrawCompatibilityOperation::SetEntryUsage),
+        ("SetItemIcon", PpcQuickDrawCompatibilityOperation::SetItemIcon),
+        ("SetItemStyle", PpcQuickDrawCompatibilityOperation::SetItemStyle),
+        ("SetStdCProcs", PpcQuickDrawCompatibilityOperation::SetStdCProcs),
+        ("SetStdProcs", PpcQuickDrawCompatibilityOperation::SetStdProcs),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+        );
+    }
 }
 
 #[test]
@@ -54621,7 +54664,9 @@ fn hle_import_runner_scrollrect_clips_and_reports_exact_l_shape() {
 
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::QuickDrawCompatibility,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ScrollRect,
+        ),
     );
 
     // The requested rect is clipped to [0,5)×[0,5), and the source is
@@ -54652,7 +54697,12 @@ fn hle_import_runner_backpat_and_backpixpat_install_fill_patterns() {
     loaded.memory.add_region(pattern_ptr, vec![0; 8]);
     loaded.memory.write_bytes(pattern_ptr, &[0x80; 8]).unwrap();
     loaded.cpu.gpr[3] = pattern_ptr;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::QuickDrawCompatibility);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::BackPat,
+        ),
+    );
     assert_eq!(loaded.toolbox_startup.quickdraw_back_pattern, [0x80; 8]);
     assert_eq!(
         loaded
@@ -54674,7 +54724,12 @@ fn hle_import_runner_backpat_and_backpixpat_install_fill_patterns() {
         .write_bytes(pattern_record + 20, &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0])
         .unwrap();
     loaded.cpu.gpr[3] = pattern_handle;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::QuickDrawCompatibility);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::BackPixPat,
+        ),
+    );
     assert_eq!(
         loaded
             .memory
@@ -61128,7 +61183,9 @@ fn powerpc_openpicture_records_and_replays_dynamic_commands() {
     loaded.cpu.gpr[3] = frame;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::QuickDrawCompatibility,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::OpenPicture,
+        ),
     );
     let handle = loaded.cpu.gpr[3];
     assert_ne!(handle, 0);
@@ -61163,10 +61220,11 @@ fn powerpc_openpicture_records_and_replays_dynamic_commands() {
         "recording must not paint into the live port"
     );
 
-    loaded.imports[0].symbol_name = "ClosePicture".to_string();
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::QuickDrawCompatibility,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ClosePicture,
+        ),
     );
     let picture =
         ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle).unwrap();

@@ -1212,6 +1212,42 @@ pub enum PpcDialogCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcQuickDrawCompatibilityOperation {
+    AnimateEntry,
+    AnimatePalette,
+    BackPat,
+    BackPixPat,
+    ClosePicture,
+    CopyDeepMask,
+    CopyMask,
+    CopyPalette,
+    Ctab2Palette,
+    DisposeGDevice,
+    DisposePalette,
+    Exp1To3,
+    Exp1To6,
+    GetCPixel,
+    GetEntryUsage,
+    GetItemIcon,
+    GetItemStyle,
+    GetNewPalette,
+    NewGDevice,
+    NewPalette,
+    OpenPicture,
+    Palette2Ctab,
+    PenPat,
+    PlotIcon,
+    ScrollRect,
+    SetCPixel,
+    SetEntryColor,
+    SetEntryUsage,
+    SetItemIcon,
+    SetItemStyle,
+    SetStdCProcs,
+    SetStdProcs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
     ElementDisposeVirtual,
@@ -2205,7 +2241,7 @@ pub enum PpcImportDispatcherTarget {
     LegacyWindow,
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
     DialogCompatibility(PpcDialogCompatibilityOperation),
-    QuickDrawCompatibility,
+    QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation),
     SystemCompatibility,
     FileCompatibility,
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
@@ -15674,17 +15710,38 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "UpdateDialog") => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::UpdateDialog,
         ),
-        (
-            "InterfaceLib",
-            "AnimateEntry" | "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyDeepMask"
-            | "CopyMask"
-            | "CopyPalette" | "CTab2Palette" | "DisposeGDevice" | "DisposePalette" | "Exp1to3"
-            | "Exp1to6" | "GetCPixel" | "GetEntryUsage" | "GetItemIcon" | "GetItemStyle"
-            | "ClosePicture" | "GetNewPalette" | "NewGDevice" | "NewPalette" | "OpenPicture"
-            | "PenPat" | "PlotIcon" | "Palette2CTab" | "ScrollRect" | "SetEntryColor"
-            | "SetEntryUsage" | "SetItemIcon" | "SetItemStyle" | "SetCPixel" | "SetStdCProcs"
-            | "SetStdProcs",
-        ) => PpcImportDispatcherTarget::QuickDrawCompatibility,
+        ("InterfaceLib", "AnimateEntry") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::AnimateEntry),
+        ("InterfaceLib", "AnimatePalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::AnimatePalette),
+        ("InterfaceLib", "BackPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::BackPat),
+        ("InterfaceLib", "BackPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::BackPixPat),
+        ("InterfaceLib", "ClosePicture") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::ClosePicture),
+        ("InterfaceLib", "CopyDeepMask") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::CopyDeepMask),
+        ("InterfaceLib", "CopyMask") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::CopyMask),
+        ("InterfaceLib", "CopyPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::CopyPalette),
+        ("InterfaceLib", "CTab2Palette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Ctab2Palette),
+        ("InterfaceLib", "DisposeGDevice") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::DisposeGDevice),
+        ("InterfaceLib", "DisposePalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::DisposePalette),
+        ("InterfaceLib", "Exp1to3") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Exp1To3),
+        ("InterfaceLib", "Exp1to6") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Exp1To6),
+        ("InterfaceLib", "GetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetCPixel),
+        ("InterfaceLib", "GetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetEntryUsage),
+        ("InterfaceLib", "GetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetItemIcon),
+        ("InterfaceLib", "GetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetItemStyle),
+        ("InterfaceLib", "GetNewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetNewPalette),
+        ("InterfaceLib", "NewGDevice") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::NewGDevice),
+        ("InterfaceLib", "NewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::NewPalette),
+        ("InterfaceLib", "OpenPicture") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::OpenPicture),
+        ("InterfaceLib", "Palette2CTab") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Palette2Ctab),
+        ("InterfaceLib", "PenPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::PenPat),
+        ("InterfaceLib", "PlotIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::PlotIcon),
+        ("InterfaceLib", "ScrollRect") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::ScrollRect),
+        ("InterfaceLib", "SetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetCPixel),
+        ("InterfaceLib", "SetEntryColor") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetEntryColor),
+        ("InterfaceLib", "SetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetEntryUsage),
+        ("InterfaceLib", "SetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetItemIcon),
+        ("InterfaceLib", "SetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetItemStyle),
+        ("InterfaceLib", "SetStdCProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetStdCProcs),
+        ("InterfaceLib", "SetStdProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetStdProcs),
         (
             "InterfaceLib",
             "BuildDDPwds"
@@ -27158,9 +27215,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 *current_resource_refnum,
             ))
         }
-        PpcImportDispatcherTarget::QuickDrawCompatibility => {
+        PpcImportDispatcherTarget::QuickDrawCompatibility(operation) => {
             Some(ppc_dispatch_quickdraw_compatibility(
-                binding,
+                operation,
                 cpu,
                 process_memory_manager,
                 memory,
@@ -27950,7 +28007,7 @@ fn ppc_dispatch_dialog_compatibility(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_quickdraw_compatibility(
-    binding: &PpcImportBinding,
+    operation: PpcQuickDrawCompatibilityOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -27970,8 +28027,8 @@ fn ppc_dispatch_quickdraw_compatibility(
     back_color: PpcRgbColor,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
-    match binding.symbol_name.as_str() {
-        "SetCPixel" => {
+    match operation {
+        PpcQuickDrawCompatibilityOperation::SetCPixel => {
             let color = ppc_read_rgb_color(memory, cpu.gpr[5]);
             let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
             if let (Some(color), Some(surface)) = (color, surface) {
@@ -27985,7 +28042,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "GetCPixel" => {
+        PpcQuickDrawCompatibilityOperation::GetCPixel => {
             let color = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)
                 .and_then(|surface| {
                     let front = surface.front_buffer;
@@ -28020,7 +28077,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             let _ = ppc_write_rgb_color(memory, cpu.gpr[5], color);
             PpcImportAction::ReturnPreserve
         }
-        "GetItemIcon" => {
+        PpcQuickDrawCompatibilityOperation::GetItemIcon => {
             // GetItemIcon reads the one-byte icon number stored after the
             // item's Pascal text. Macintosh Toolbox Essentials (1992),
             // pp. 3-132--3-133.
@@ -28031,7 +28088,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             let _ = memory.write_u8(cpu.gpr[5], icon);
             PpcImportAction::ReturnPreserve
         }
-        "SetItemIcon" => {
+        PpcQuickDrawCompatibilityOperation::SetItemIcon => {
             // SetItemIcon stores only the icon-number byte; the standard
             // MDEF resolves resource ID icon+256 when it draws the item.
             // Macintosh Toolbox Essentials (1992), pp. 3-137--3-138.
@@ -28040,7 +28097,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             });
             PpcImportAction::ReturnPreserve
         }
-        "GetItemStyle" => {
+        PpcQuickDrawCompatibilityOperation::GetItemStyle => {
             // GetItemStyle returns the item's QuickDraw Style byte.
             // Macintosh Toolbox Essentials (1992), pp. 3-132--3-133.
             let style =
@@ -28050,7 +28107,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             let _ = memory.write_u8(cpu.gpr[5], style);
             PpcImportAction::ReturnPreserve
         }
-        "SetItemStyle" => {
+        PpcQuickDrawCompatibilityOperation::SetItemStyle => {
             // SetItemStyle replaces the one-byte QuickDraw face bitset used
             // by the standard MDEF. Macintosh Toolbox Essentials (1992),
             // pp. 3-133--3-134.
@@ -28059,7 +28116,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             });
             PpcImportAction::ReturnPreserve
         }
-        "OpenPicture" => {
+        PpcQuickDrawCompatibilityOperation::OpenPicture => {
             let rect = ppc_read_rect(memory, cpu.gpr[3]).unwrap_or((0, 0, 1, 1));
             let mut bytes = Vec::from(minimal_pict_bytes());
             bytes[2..4].copy_from_slice(&rect.0.to_be_bytes());
@@ -28082,7 +28139,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             };
             PpcImportAction::Return(handle)
         }
-        "ClosePicture" => {
+        PpcQuickDrawCompatibilityOperation::ClosePicture => {
             if let Some((handle, _, frame, commands)) = toolbox_startup.open_picture.take() {
                 let picture = pict::finish_recording(frame, commands);
                 let size = u32::try_from(picture.len()).unwrap_or(u32::MAX);
@@ -28109,7 +28166,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "PlotIcon" => {
+        PpcQuickDrawCompatibilityOperation::PlotIcon => {
             let rect = ppc_read_rect(memory, cpu.gpr[3]);
             let icon = ppc_handle_bytes(memory, handles, cpu.gpr[4]);
             let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
@@ -28143,7 +28200,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "CopyPalette" => {
+        PpcQuickDrawCompatibilityOperation::CopyPalette => {
             let src_palette = cpu.gpr[3];
             let dst_palette = cpu.gpr[4];
             let src_entry = cpu.gpr[5] as u16 as i16;
@@ -28218,7 +28275,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "NewPalette" => {
+        PpcQuickDrawCompatibilityOperation::NewPalette => {
             let entry_count = u32::from(cpu.gpr[3] as u16);
             let byte_count = 16u32.saturating_add(entry_count.saturating_mul(16));
             let handle = ppc_process_alloc_handle(
@@ -28261,7 +28318,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::Return(handle)
         }
-        "NewGDevice" => {
+        PpcQuickDrawCompatibilityOperation::NewGDevice => {
             let handle = ppc_process_alloc_handle(
                 process_memory_manager,
                 memory,
@@ -28279,7 +28336,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             ppc_register_gdevice(toolbox_startup, handle);
             PpcImportAction::Return(handle)
         }
-        "DisposeGDevice" => {
+        PpcQuickDrawCompatibilityOperation::DisposeGDevice => {
             toolbox_startup.active_device_palettes.remove(&cpu.gpr[3]);
             toolbox_startup
                 .known_gdevices
@@ -28302,7 +28359,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             );
             PpcImportAction::ReturnPreserve
         }
-        "DisposePalette" => {
+        PpcQuickDrawCompatibilityOperation::DisposePalette => {
             // Inside Macintosh Volume VI 1991, p. 20-24: DisposePalette
             // releases the relocatable Palette record and its master pointer.
             ppc_release_palette_allocations_and_restore(
@@ -28330,7 +28387,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             );
             PpcImportAction::ReturnPreserve
         }
-        "Palette2CTab" => {
+        PpcQuickDrawCompatibilityOperation::Palette2Ctab => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -28347,7 +28404,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             );
             PpcImportAction::ReturnPreserve
         }
-        "CTab2Palette" => {
+        PpcQuickDrawCompatibilityOperation::Ctab2Palette => {
             let ctable_handle = cpu.gpr[3];
             let palette_handle = cpu.gpr[4];
             let usage = cpu.gpr[5] as u16;
@@ -28407,7 +28464,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "GetNewPalette" => {
+        PpcQuickDrawCompatibilityOperation::GetNewPalette => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -28432,7 +28489,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::Return(palette)
         }
-        "ScrollRect" => {
+        PpcQuickDrawCompatibilityOperation::ScrollRect => {
             let rect = ppc_read_rect(memory, cpu.gpr[3]);
             let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
             if let (Some(port_rect), Some(surface)) = (rect, surface) {
@@ -28557,15 +28614,15 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "CopyMask" => {
+        PpcQuickDrawCompatibilityOperation::CopyMask => {
             let _ = ppc_copy_mask(cpu, memory, gworlds, color_manager_clut);
             PpcImportAction::ReturnPreserve
         }
-        "CopyDeepMask" => {
+        PpcQuickDrawCompatibilityOperation::CopyDeepMask => {
             let _ = ppc_copy_deep_mask(cpu, memory, gworlds, color_manager_clut);
             PpcImportAction::ReturnPreserve
         }
-        "SetEntryColor" => {
+        PpcQuickDrawCompatibilityOperation::SetEntryColor => {
             // PaletteHandle, entry index, and RGBColor pointer. Inside Macintosh
             // Volume VI 1991, p. 20-25.
             let palette_handle = cpu.gpr[3];
@@ -28596,7 +28653,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "GetEntryUsage" => {
+        PpcQuickDrawCompatibilityOperation::GetEntryUsage => {
             let palette_handle = cpu.gpr[3];
             let entry = cpu.gpr[4] as u16 as i16;
             if entry >= 0 {
@@ -28621,7 +28678,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "SetEntryUsage" => {
+        PpcQuickDrawCompatibilityOperation::SetEntryUsage => {
             // Inside Macintosh Volume VI 1991, pp. 20-24--20-25.
             let palette_handle = cpu.gpr[3];
             let entry = cpu.gpr[4] as u16 as i16;
@@ -28650,7 +28707,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "AnimateEntry" => {
+        PpcQuickDrawCompatibilityOperation::AnimateEntry => {
             let window = cpu.gpr[3];
             let entry = usize::from(cpu.gpr[4] as u16);
             let assigned_palette = memory
@@ -28703,7 +28760,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "AnimatePalette" => {
+        PpcQuickDrawCompatibilityOperation::AnimatePalette => {
             // Inside Macintosh Volume VI (1991), pp. 20-22--20-23:
             // copy a source ColorTable range into animated destination
             // palette entries and immediately update their device indexes.
@@ -28781,7 +28838,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "PenPat" => {
+        PpcQuickDrawCompatibilityOperation::PenPat => {
             let mut pattern = [0; 8];
             if memory.read_bytes_into(cpu.gpr[3], &mut pattern).is_some() {
                 // Imaging With QuickDraw (1994), pp. 3-38--3-40: PenPat
@@ -28792,7 +28849,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "BackPat" => {
+        PpcQuickDrawCompatibilityOperation::BackPat => {
             let mut pattern = [0u8; 8];
             if memory.read_bytes_into(cpu.gpr[3], &mut pattern).is_some() {
                 // BackPat changes the legacy pattern used to fill exposed
@@ -28806,7 +28863,7 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "BackPixPat" => {
+        PpcQuickDrawCompatibilityOperation::BackPixPat => {
             let pattern_handle = cpu.gpr[3];
             if pattern_handle != 0 {
                 // Keep the handle in the live CGrafPort so subsequent
@@ -28832,10 +28889,12 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "SetStdCProcs" | "SetStdProcs" | "Exp1to3" | "Exp1to6" => {
+        PpcQuickDrawCompatibilityOperation::SetStdCProcs
+        | PpcQuickDrawCompatibilityOperation::SetStdProcs
+        | PpcQuickDrawCompatibilityOperation::Exp1To3
+        | PpcQuickDrawCompatibilityOperation::Exp1To6 => {
             PpcImportAction::ReturnPreserve
         }
-        _ => PpcImportAction::ReturnPreserve,
     }
 }
 
