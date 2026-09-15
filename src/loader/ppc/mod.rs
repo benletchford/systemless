@@ -16865,6 +16865,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             vfs_resource_files,
             resource_files,
             vfs_resources,
+            next_file_ref_num,
+            current_resource_refnum,
+            last_resource_error,
             default_dir_id,
         },
     ) {
@@ -18725,7 +18728,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::HCreate
         | PpcImportDispatcherTarget::Create
         | PpcImportDispatcherTarget::FSpDelete
-        | PpcImportDispatcherTarget::DeleteByName(_) => {
+        | PpcImportDispatcherTarget::DeleteByName(_)
+        | PpcImportDispatcherTarget::FSOpen
+        | PpcImportDispatcherTarget::FSpCreateResFile
+        | PpcImportDispatcherTarget::HCreateResFile
+        | PpcImportDispatcherTarget::FSpOpenResFile => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -21957,55 +21964,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::DMEndConfigureDisplays => {
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
-        PpcImportDispatcherTarget::FSOpen => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_open(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                files,
-                writable_refnums,
-                next_file_ref_num,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSpCreateResFile => {
-            ppc_fsp_create_res_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HCreateResFile => {
-            ppc_h_create_res_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::FSpOpenResFile => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_open_res_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                resource_files,
-                vfs_resources,
-                next_file_ref_num,
-                current_resource_refnum,
-                last_resource_error,
-            ),
-        ))),
         PpcImportDispatcherTarget::GetNewDialog => {
             if ppc_hle_trace_enabled() {
                 eprintln!(
