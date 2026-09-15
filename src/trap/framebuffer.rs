@@ -108,6 +108,26 @@ pub(crate) struct MenuMarkIndexCache {
     pub(crate) indices: [u8; crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.len()],
 }
 
+/// A complete 8-bit menu bar, including retained outline coverage. Replaying
+/// it still repairs guest overwrites, without erasing and repainting each title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MenuBarCacheKey {
+    screen: (u32, u32, i16, i16, u16),
+    height: i16,
+    theme: crate::ui_theme::UiThemeId,
+    colors: u64,
+    menu_colors: Vec<u8>,
+    titles: Vec<(i16, String, bool, crate::menu_manager::MenuBarTitleRegion)>,
+    highlighted: Option<usize>,
+    outline_scale: Option<u32>,
+}
+
+pub(crate) struct MenuBarCache {
+    key: MenuBarCacheKey,
+    rect: (i16, i16, i16, i16),
+    pixels: crate::memory::SavedPixels,
+}
+
 /// Which piece of themed chrome a cached rendering is, with the inputs its
 /// artwork depends on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3116,6 +3136,36 @@ impl super::TrapDispatcher {
         if menu_bar_height <= 0 {
             return;
         }
+        let cache_key = (pixel_size == 8).then(|| MenuBarCacheKey {
+            screen: self.get_screen_params(),
+            height: menu_bar_height,
+            theme: self.ui_theme_id(),
+            colors: self.with_color_mirror(bus, |mirror| mirror.digest),
+            menu_colors: Self::live_menu_color_table_bytes(bus),
+            titles: self
+                .current_menu_title_regions_with_indices(bus)
+                .into_iter()
+                .filter_map(|(i, region)| {
+                    self.menus
+                        .get(i)
+                        .map(|menu| (menu.id, menu.title.clone(), menu.enabled, region))
+                })
+                .collect(),
+            highlighted: self.current_menu_bar_highlight_index(bus),
+            outline_scale: bus.outline_presentation_scale(),
+        });
+        if let Some(key) = &cache_key {
+            let cache = self.menu_bar_cache.borrow();
+            if let Some(cache) = cache.as_ref().filter(|cache| &cache.key == key) {
+                // Repainting is a native drawing boundary even if every menu
+                // pixel is unchanged. Commit any preceding guest recoloring,
+                // which an ordinary menu repaint's first store would finish.
+                bus.end_cpu_drawing(true);
+                let (top, left, width, height) = cache.rect;
+                self.restore_screen_rect_pixels(bus, top, left, width, height, &cache.pixels);
+                return;
+            }
+        }
         let menu_bar_bg_index = self.menu_bar_background_pixel_index(bus, pixel_size);
 
         if !self.draw_theme_menu_bar_chrome(bus, menu_bar_height) {
@@ -3337,6 +3387,18 @@ impl super::TrapDispatcher {
 
         if let Some(menu_idx) = self.current_menu_bar_highlight_index(bus) {
             self.highlight_menu_title(bus, menu_idx);
+        }
+
+        if let Some(key) = cache_key {
+            if let Some((top, left, width, height, pixels)) =
+                self.save_screen_rect_pixels(bus, (0, 0, menu_bar_height, screen_width))
+            {
+                *self.menu_bar_cache.borrow_mut() = Some(MenuBarCache {
+                    key,
+                    rect: (top, left, width, height),
+                    pixels,
+                });
+            }
         }
     }
 

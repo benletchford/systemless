@@ -1085,7 +1085,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn live_menu_color_table_bytes(bus: &MacMemoryBus) -> Vec<u8> {
+    pub(super) fn live_menu_color_table_bytes(bus: &MacMemoryBus) -> Vec<u8> {
         Self::menu_color_table_bytes(bus, bus.read_long(addr::MENU_C_INFO))
     }
 
@@ -13107,6 +13107,150 @@ mod tests {
             8,
             "selected color cicn artwork should keep its mapped color"
         );
+    }
+
+    #[test]
+    fn cached_menu_bar_finishes_pending_cpu_recolor_like_a_repaint() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 622, 0x302F00, "File");
+        insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+        let palette = std::array::from_fn(|i| disp.device_clut[i].map(|c| (c >> 8) as u8));
+        bus.enable_outline_presentation(disp.screen_mode, palette, 4);
+        disp.draw_menu_bar_to_fb(&mut bus);
+        let body = base + row_bytes * 24;
+        let len = (row_bytes * 40) as usize;
+        bus.fill_bytes(body, len as u32, 255);
+        super::super::TrapDispatcher::fb_draw_string_styled_index(
+            &mut bus, base, row_bytes, 8, 160, 64, 10, 45, "A", 0, 12, 0, 0,
+        );
+        let original = bus.save_pixel_bytes(body, len);
+        assert_ne!(
+            original,
+            crate::memory::SavedPixels::from(original.to_vec()),
+            "the body must contain retained outline coverage"
+        );
+
+        // A frame can end halfway through a CPU-drawn indexed highlight.
+        // Repainting the menu used to finish that pending color transaction.
+        bus.begin_cpu_drawing();
+        for offset in 0..len as u32 {
+            bus.write_byte(body + offset, bus.read_byte(body + offset) ^ 1);
+        }
+        bus.end_cpu_drawing(false);
+        disp.draw_menu_bar_to_fb(&mut bus);
+        let cached = bus.save_pixel_bytes(body, len);
+        disp.menu_bar_cache.borrow_mut().take();
+        disp.draw_menu_bar_to_fb(&mut bus);
+        assert_eq!(
+            cached,
+            bus.save_pixel_bytes(body, len),
+            "a cache hit must commit the same retained body coverage as a repaint"
+        );
+        assert_ne!(
+            cached,
+            crate::memory::SavedPixels::from(cached.to_vec()),
+            "recoloring must keep the body's antialiased glyph"
+        );
+    }
+
+    #[test]
+    fn cached_menu_bar_restores_outline_coverage_and_tracks_live_inputs() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 622, 0x302F00, "File");
+        insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+        let main = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, main);
+        let gdevice = bus.read_long(main);
+        let pixmap = bus.read_long(bus.read_long(gdevice + 22));
+        let ctab = bus.read_long(bus.read_long(pixmap + 42));
+        let palette = std::array::from_fn(|i| disp.device_clut[i].map(|c| (c >> 8) as u8));
+        bus.enable_outline_presentation(disp.screen_mode, palette, 4);
+
+        for step in 0..10 {
+            match step {
+                1 => disp.menus[0].title = "Changed".into(),
+                2 => disp.menus[0].enabled = false,
+                3 => {
+                    disp.menus[0].enabled = true;
+                    bus.write_word(crate::memory::globals::addr::THE_MENU, 622);
+                }
+                4 => {
+                    bus.write_word(crate::memory::globals::addr::THE_MENU, 0);
+                    bus.write_word(ctab + 8 + 2, 0);
+                    bus.write_word(ctab + 8 + 4, 0);
+                    bus.write_word(ctab + 8 + 6, 0);
+                }
+                5 => bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 24),
+                6 => disp.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault),
+                7 => bus.enable_outline_presentation(disp.screen_mode, palette, 2),
+                8 => {
+                    disp.set_ui_theme_id(crate::ui_theme::UiThemeId::ClassicSystem7);
+                    let entry = bus.alloc(MC_ENTRY_SIZE as u32);
+                    write_mc_entry_colors(
+                        &mut bus,
+                        entry,
+                        622,
+                        0,
+                        (0xFFFF, 0, 0),
+                        (0xFFFF, 0xFFFF, 0xFFFF),
+                        (0, 0, 0),
+                        (0xFFFF, 0xFFFF, 0xFFFF),
+                    );
+                    cpu.write_reg(Register::A7, TEST_SP);
+                    bus.write_long(TEST_SP, entry);
+                    bus.write_word(TEST_SP + 4, 1);
+                    assert!(disp
+                        .dispatch_menu(true, 0x265, &mut cpu, &mut bus)
+                        .unwrap()
+                        .is_ok());
+                }
+                9 => {
+                    // Guest edits can bypass SetMCEntries; read live bytes
+                    // instead of relying on a host-side generation counter.
+                    let table =
+                        bus.read_long(bus.read_long(crate::memory::globals::addr::MENU_C_INFO));
+                    bus.write_word(table + 4, 0);
+                    bus.write_word(table + 6, 0xFFFF);
+                }
+                _ => {}
+            }
+            // First render may hit an old key: compare it with an explicitly
+            // uncached repaint, then overwrite the band and require a replay
+            // to recover both guest bytes and retained antialiasing coverage.
+            disp.draw_menu_bar_to_fb(&mut bus);
+            let actual = bus.read_bytes(base, (row_bytes * 24) as usize);
+            let actual_outline = bus.outline_presentation_rgb().unwrap().2;
+            disp.menu_bar_cache.borrow_mut().take();
+            disp.draw_menu_bar_to_fb(&mut bus);
+            assert_eq!(
+                actual,
+                bus.read_bytes(base, (row_bytes * 24) as usize),
+                "step {step}"
+            );
+            assert_eq!(
+                actual_outline,
+                bus.outline_presentation_rgb().unwrap().2,
+                "step {step}"
+            );
+            let height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as u32;
+            bus.fill_bytes(base, row_bytes * height, 17);
+            let glyphs = bus.outline_presentation_rgb().unwrap().3;
+            disp.draw_menu_bar_to_fb(&mut bus);
+            assert_eq!(
+                actual,
+                bus.read_bytes(base, (row_bytes * 24) as usize),
+                "replay {step}"
+            );
+            let replay = bus.outline_presentation_rgb().unwrap();
+            assert_eq!(actual_outline, replay.2, "outline replay {step}");
+            assert_eq!(glyphs, replay.3, "a cache hit must not repaint glyphs");
+        }
     }
 
     #[test]
