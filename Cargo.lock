@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.41.2"
+version = "0.41.3"
 dependencies = [
  "clap",
  "cpal",

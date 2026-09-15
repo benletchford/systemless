@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.3](https://github.com/benletchford/systemless/compare/v0.41.2...v0.41.3) (2026-09-15)
+
+
+### Bug Fixes
+
+* allow current-permission resource-fork writes ([3385905](https://github.com/benletchford/systemless/commit/33859053593147a6ccc137bfa51b9aeda8490193))
+
 ## [0.41.2](https://github.com/benletchford/systemless/compare/v0.41.1...v0.41.2) (2026-09-15)
 
 
