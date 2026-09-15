@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.4](https://github.com/benletchford/systemless/compare/v0.41.3...v0.41.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* launch applications created by installers ([#1989](https://github.com/benletchford/systemless/issues/1989)) ([5173cfb](https://github.com/benletchford/systemless/commit/5173cfb7ce0e2e3bf790df79787d5bb0dc234855))
+
 ## [0.41.3](https://github.com/benletchford/systemless/compare/v0.41.2...v0.41.3) (2026-09-15)
 
 
