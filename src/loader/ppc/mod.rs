@@ -1319,6 +1319,12 @@ pub enum PpcFileCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcParameterBlockCreateOperation {
+    Legacy,
+    Hierarchical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyMemoryUtilityOperation {
     BitClear,
     BitNot,
@@ -1869,7 +1875,7 @@ pub enum PpcImportDispatcherTarget {
     SetFPos,
     PBSetFPos,
     FSpCreate,
-    PBHCreate,
+    PBCreate(PpcParameterBlockCreateOperation),
     FSpDelete,
     HDelete,
     FSDelete,
@@ -15454,12 +15460,14 @@ fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBSetFPosSync")
         | ("InterfaceLib", "PBSetFPosAsync") => PpcImportDispatcherTarget::PBSetFPos,
         ("InterfaceLib", "FSpCreate") => PpcImportDispatcherTarget::FSpCreate,
-        ("InterfaceLib", "PBHCreate")
-        | ("InterfaceLib", "PBHCreateSync")
-        | ("InterfaceLib", "PBHCreateAsync")
-        | ("InterfaceLib", "PBCreate")
+        ("InterfaceLib", "PBHCreate" | "PBHCreateSync" | "PBHCreateAsync") => {
+            PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Hierarchical)
+        }
+        ("InterfaceLib", "PBCreate")
         | ("InterfaceLib", "PBCreateSync")
-        | ("InterfaceLib", "PBCreateAsync") => PpcImportDispatcherTarget::PBHCreate,
+        | ("InterfaceLib", "PBCreateAsync") => {
+            PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Legacy)
+        }
         ("InterfaceLib", "FSpDelete") => PpcImportDispatcherTarget::FSpDelete,
         ("InterfaceLib", "HDelete") => PpcImportDispatcherTarget::HDelete,
         ("InterfaceLib", "FSDelete") => PpcImportDispatcherTarget::FSDelete,
@@ -21972,9 +21980,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 last_resource_error,
             ),
         ))),
-        PpcImportDispatcherTarget::PBHCreate => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pbh_create(
-                binding,
+        PpcImportDispatcherTarget::PBCreate(operation) => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_create(
+                operation,
                 cpu,
                 memory,
                 vfs_directories,
@@ -88994,8 +89002,8 @@ fn ppc_h_create(
     )
 }
 
-fn ppc_pbh_create(
-    binding: &PpcImportBinding,
+fn ppc_pb_create(
+    operation: PpcParameterBlockCreateOperation,
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -89012,7 +89020,7 @@ fn ppc_pbh_create(
     let Some(vref) = memory.read_u16_be(pb + 22).map(|value| value as i16) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
-    let hierarchical = binding.symbol_name.starts_with("PBHCreate");
+    let hierarchical = matches!(operation, PpcParameterBlockCreateOperation::Hierarchical);
     let dir_id = if hierarchical {
         let Some(dir_id) = memory.read_u32_be(pb + 48) else {
             return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
