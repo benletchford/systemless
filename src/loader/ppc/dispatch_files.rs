@@ -12,6 +12,9 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,
     pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
+    pub(super) next_file_ref_num: &'a mut i16,
+    pub(super) current_resource_refnum: &'a mut i16,
+    pub(super) last_resource_error: &'a mut i16,
     pub(super) default_dir_id: u32,
 }
 
@@ -30,6 +33,9 @@ pub(super) fn dispatch_file_import(
         vfs_resource_files,
         resource_files,
         vfs_resources,
+        next_file_ref_num,
+        current_resource_refnum,
+        last_resource_error,
         default_dir_id,
     } = context;
 
@@ -127,6 +133,55 @@ pub(super) fn dispatch_file_import(
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::FSOpen => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_open(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                files,
+                writable_refnums,
+                next_file_ref_num,
+                default_dir_id,
+            ))))
+        }
+        PpcImportDispatcherTarget::FSpCreateResFile => {
+            ppc_fsp_create_res_file(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::HCreateResFile => {
+            ppc_h_create_res_file(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FSpOpenResFile => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_fsp_open_res_file(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+                next_file_ref_num,
+                current_resource_refnum,
+                last_resource_error,
+            ),
+        ))),
         _ => None,
     }
 }
