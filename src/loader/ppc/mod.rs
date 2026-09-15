@@ -88254,13 +88254,6 @@ fn ppc_fsp_open_res_file(
         }
         return -1;
     }
-    ppc_materialize_resource_records_for_path(vfs_resource_files, vfs_resources, &path);
-    ppc_materialize_quilt_resources_for_existing_path(
-        vfs_files,
-        vfs_resource_files,
-        vfs_resources,
-        &path,
-    );
     if let Some(existing) = resource_files
         .iter()
         .find(|record| record.path.eq_ignore_ascii_case(&path))
@@ -88276,6 +88269,13 @@ fn ppc_fsp_open_res_file(
         }
         return existing.ref_num;
     }
+    ppc_materialize_resource_records_for_path(vfs_resource_files, vfs_resources, &path);
+    ppc_materialize_quilt_resources_for_existing_path(
+        vfs_files,
+        vfs_resource_files,
+        vfs_resources,
+        &path,
+    );
     let ref_num = *next_file_ref_num;
     let Some(next_ref_num) = next_file_ref_num.checked_add(1) else {
         *last_resource_error = PPC_PARAM_ERR;
@@ -88486,13 +88486,6 @@ fn ppc_open_resource_path(
             return -1;
         }
     }
-    ppc_materialize_resource_records_for_path(vfs_resource_files, vfs_resources, &path);
-    ppc_materialize_quilt_resources_for_existing_path(
-        vfs_files,
-        vfs_resource_files,
-        vfs_resources,
-        &path,
-    );
     if let Some(existing) = resource_files
         .iter()
         .find(|record| record.path.eq_ignore_ascii_case(&path))
@@ -88510,6 +88503,13 @@ fn ppc_open_resource_path(
         }
         return existing.ref_num;
     }
+    ppc_materialize_resource_records_for_path(vfs_resource_files, vfs_resources, &path);
+    ppc_materialize_quilt_resources_for_existing_path(
+        vfs_files,
+        vfs_resource_files,
+        vfs_resources,
+        &path,
+    );
     let ref_num = *next_file_ref_num;
     let Some(next_ref_num) = next_file_ref_num.checked_add(1) else {
         *last_resource_error = PPC_PARAM_ERR;
