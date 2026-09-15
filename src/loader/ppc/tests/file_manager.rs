@@ -6079,6 +6079,46 @@ use super::*;
     }
 
     #[test]
+    fn hle_import_runner_get_string_synthesizes_system_owner_name() {
+        let pef = synthetic_pef_with_import(b"GetString");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.set_current_resource_refnum(5);
+        loaded.cpu.gpr[3] = (-16096i16) as u16 as u32;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let handle = loaded.cpu.gpr[3];
+        assert_ne!(handle, 0);
+        let pointer = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, pointer).as_deref(),
+            Some(&b"Macintosh User"[..])
+        );
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(loaded.process_file_system.vfs_resources.len(), 1);
+        assert_eq!(
+            loaded.process_file_system.vfs_resources[0].path,
+            "__system__/STR "
+        );
+        assert_eq!(loaded.process_file_system.vfs_resources[0].data.len(), 32);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1Resource;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        loaded.cpu.gpr[4] = (-16413i16) as u16 as u32;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.process_file_system.vfs_resources.len(), 1);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    }
+
+    #[test]
     fn hle_import_runner_get_res_info_outputs_are_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"GetResInfo");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -7135,6 +7175,24 @@ use super::*;
         loaded.cpu.gpr[3] = res_type;
         loaded.cpu.gpr[4] = name_ptr;
         let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
+    fn get1_named_resource_reports_not_found_for_empty_current_map() {
+        let pef = synthetic_pef_with_import(b"Get1NamedResource");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let name_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(name_ptr, vec![0; 256]);
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b"First Run");
+        loaded.set_current_resource_refnum(128);
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"pref");
+        loaded.cpu.gpr[4] = name_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
         assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);

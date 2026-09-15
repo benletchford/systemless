@@ -636,6 +636,22 @@ fn marathon_runtime_imports_have_native_dispatch_targets() {
         PpcImportDispatcherTarget::RGB2HSL
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RGB2HSV"),
+        PpcImportDispatcherTarget::RGB2HSV
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HSV2RGB"),
+        PpcImportDispatcherTarget::HSV2RGB
+    );
+    assert_eq!(
+        dispatcher_target_for_import("AppearanceLib", "MenuEvent"),
+        PpcImportDispatcherTarget::MenuEvent
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TEUseStyleScrap"),
+        PpcImportDispatcherTarget::TEUseStyleScrap
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "FixRatio"),
         PpcImportDispatcherTarget::FixRatio
     );
@@ -885,6 +901,33 @@ fn menu_accessors_parse_item_count_text_and_command() {
     cpu.gpr[5] = output;
     ppc_get_item_cmd(&cpu, &mut memory);
     assert_eq!(memory.read_u16_be(output), Some(0x1b));
+}
+
+#[test]
+fn menu_event_resolves_command_key_events_only() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MenuEvent")).unwrap();
+    install_test_menu(
+        &mut loaded,
+        PPC_DATA_BASE + 0x1000,
+        128,
+        b"Game",
+        b"Start/S",
+    );
+    let event = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(event, vec![0; 16]);
+    loaded.memory.write_u16_be(event, 3).unwrap();
+    loaded.memory.write_u32_be(event + 2, u32::from(b's')).unwrap();
+    loaded.memory.write_u16_be(event + 14, 0x0100).unwrap();
+    loaded.cpu.gpr[3] = event;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuEvent);
+
+    assert_eq!(loaded.cpu.gpr[3], (128 << 16) | 1);
+
+    loaded.memory.write_u16_be(event + 14, 0).unwrap();
+    loaded.cpu.gpr[3] = event;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuEvent);
+    assert_eq!(loaded.cpu.gpr[3], 0);
 }
 
 // IM:V 1986 pp. V-228--V-230 and MTE 1992 pp. 3-108--3-109:
@@ -12045,6 +12088,38 @@ fn ppc_rgb2hsl_converts_primary_and_gray_colors() {
 }
 
 #[test]
+fn ppc_rgb2hsv_converts_primary_and_gray_colors() {
+    let rgb = 0x2000;
+    let hsv = 0x2100;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(rgb, vec![0; 0x200]);
+    memory.write_u16_be(rgb, 0).unwrap();
+    memory.write_u16_be(rgb + 2, 0xffff).unwrap();
+    memory.write_u16_be(rgb + 4, 0).unwrap();
+
+    assert!(ppc_rgb2hsv(&mut memory, rgb, hsv));
+    assert_eq!(memory.read_u16_be(hsv), Some(0x5555));
+    assert_eq!(memory.read_u16_be(hsv + 2), Some(0xffff));
+    assert_eq!(memory.read_u16_be(hsv + 4), Some(0xffff));
+
+    memory.write_u16_be(rgb, 0x2468).unwrap();
+    memory.write_u16_be(rgb + 2, 0x2468).unwrap();
+    memory.write_u16_be(rgb + 4, 0x2468).unwrap();
+    assert!(ppc_rgb2hsv(&mut memory, rgb, hsv));
+    assert_eq!(memory.read_u16_be(hsv), Some(0));
+    assert_eq!(memory.read_u16_be(hsv + 2), Some(0));
+    assert_eq!(memory.read_u16_be(hsv + 4), Some(0x2468));
+
+    memory.write_u16_be(hsv, 0xaaaa).unwrap();
+    memory.write_u16_be(hsv + 2, 0xffff).unwrap();
+    memory.write_u16_be(hsv + 4, 0xffff).unwrap();
+    assert!(ppc_hsv2rgb(&mut memory, hsv, rgb));
+    assert_eq!(memory.read_u16_be(rgb), Some(0));
+    assert_eq!(memory.read_u16_be(rgb + 2), Some(0));
+    assert_eq!(memory.read_u16_be(rgb + 4), Some(0xffff));
+}
+
+#[test]
 fn ppc_fix_ratio_truncates_signed_results_and_saturates_zero_divisors() {
     assert_eq!(ppc_fix_ratio(3, 2), 0x0001_8000);
     assert_eq!(ppc_fix_ratio(-1, 3), -0x0000_5555);
@@ -13330,6 +13405,7 @@ fn legacy_memory_utility_imports_pre_resolve_to_typed_operations() {
         ("LockMemory", PpcLegacyMemoryUtilityOperation::LockMemory),
         ("MaxBlock", PpcLegacyMemoryUtilityOperation::MaxBlock),
         ("PurgeSpace", PpcLegacyMemoryUtilityOperation::PurgeSpace),
+        ("ReserveMem", PpcLegacyMemoryUtilityOperation::ReserveMem),
         ("SetGrowZone", PpcLegacyMemoryUtilityOperation::SetGrowZone),
         ("StackSpace", PpcLegacyMemoryUtilityOperation::StackSpace),
         ("TempFreeMem", PpcLegacyMemoryUtilityOperation::TempFreeMem),
@@ -13411,6 +13487,25 @@ fn hle_import_runner_converts_fixed_to_extended_result_register() {
 
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), -1.5);
+}
+
+#[test]
+fn reserve_mem_reports_whether_a_contiguous_block_is_available() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ReserveMem")).unwrap();
+    loaded.cpu.gpr[3] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = u32::MAX;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
 }
 
 #[test]
@@ -57732,6 +57827,74 @@ fn hle_import_runner_creates_and_disposes_native_styled_textedit_records() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.memory.read_u32_be(te_handle), Some(0));
     assert!(test_handle_records!(loaded).is_empty());
+}
+
+#[test]
+fn te_use_style_scrap_applies_the_first_scrap_style_to_the_requested_range() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 80, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 80, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let te_handle = loaded.cpu.gpr[3];
+
+    loaded.memory.write_bytes(scratch + 0x20, b"Styled").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x20;
+    loaded.cpu.gpr[4] = 6;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+
+    loaded.cpu.gpr[3] = 22;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let scrap_handle = loaded.cpu.gpr[3];
+    let scrap_ptr = loaded.memory.read_u32_be(scrap_handle).unwrap();
+    let element = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
+    loaded
+        .memory
+        .write_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(element + PPC_TE_SCRAP_STYLE_FONT_OFFSET, 4)
+        .unwrap();
+    loaded
+        .memory
+        .write_u8(element + PPC_TE_SCRAP_STYLE_FACE_OFFSET, 0x04)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET, 11)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(element + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + 2, 0xffff)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 3;
+    loaded.cpu.gpr[5] = scrap_handle;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEUseStyleScrap);
+
+    let runs = ppc_te_style_runs(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        te_handle,
+        6,
+    );
+    assert_eq!(runs[0].start, 0);
+    assert_eq!(runs[0].style.font, 4);
+    assert_eq!(runs[0].style.face, 0x04);
+    assert_eq!(runs[0].style.size, 11);
+    assert_eq!(runs[0].style.color.green, 0xffff);
+    assert_eq!(runs[1].start, 3);
 }
 
 #[test]
