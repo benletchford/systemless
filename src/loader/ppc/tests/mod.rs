@@ -26194,7 +26194,6 @@ fn hle_import_runner_reports_q3_error_state() {
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
-    loaded.imports[0].symbol_name = "Q3Error_Get".to_string();
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Q3ErrorGet;
     loaded.cpu.gpr[3] = short_first_error_out_ptr;
 
@@ -26219,7 +26218,6 @@ fn hle_import_runner_reports_q3_error_state() {
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
-    loaded.imports[0].symbol_name = "Q3Error_Get".to_string();
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Q3ErrorGet;
     loaded.cpu.gpr[3] = first_error_out_ptr;
 

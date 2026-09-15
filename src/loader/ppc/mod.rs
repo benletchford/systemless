@@ -16811,7 +16811,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     // next import observes its canonical records immediately.
     let handles = &mut process_memory_manager.native_handle_records().to_vec();
     if is_quickdraw_3d_library(&binding.library_name)
-        && binding.symbol_name != "Q3Error_Get"
+        && !matches!(
+            binding.dispatcher_target,
+            PpcImportDispatcherTarget::Q3ErrorGet
+        )
         && q3_error_state.clear_on_next_q3_call
     {
         q3_error_state.clear();
