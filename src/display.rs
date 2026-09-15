@@ -191,6 +191,17 @@ pub fn outline_output_scale(logical: (u32, u32), drawable: (u32, u32)) -> u32 {
     scale.clamp(1, 4)
 }
 
+/// Divide by an invariant positive coverage total without a per-channel DIV.
+/// `reciprocal` is `u64::MAX / divisor`. The high half of the product is
+/// never above the true quotient and is at most one below it: the reciprocal
+/// underestimates 2^64/divisor by at most one, and numerator is below 2^64.
+/// The remainder comparison supplies that possible final unit exactly.
+#[inline]
+fn coverage_quotient(numerator: u64, divisor: u64, reciprocal: u64) -> u64 {
+    let estimate = ((u128::from(numerator) * u128::from(reciprocal)) >> 64) as u64;
+    estimate + u64::from(numerator - estimate * divisor >= divisor)
+}
+
 /// Resize presentation pixels with area coverage on shrinking axes and nearest
 /// sampling on enlarging axes. Shared by software desktop and browser output.
 pub fn resize_argb_coverage(
@@ -208,39 +219,53 @@ pub fn resize_argb_coverage(
         output.copy_from_slice(source);
         return;
     }
-    let interval = |position: u32, source: u32, destination: u32| -> (u64, u64, u64) {
-        if source > destination {
-            (
-                u64::from(position) * u64::from(source),
-                u64::from(position + 1) * u64::from(source),
-                u64::from(destination),
-            )
-        } else {
-            let cell = ((u64::from(position) * 2 + 1) * u64::from(source)
-                / (u64::from(destination) * 2))
-                .min(u64::from(source - 1));
-            (cell, cell + 1, 1)
-        }
-    };
-    for y in 0..dh {
-        let (top, bottom, uy) = interval(y, sh, dh);
-        for x in 0..dw {
-            let (left, right, ux) = interval(x, sw, dw);
+    // A destination column uses the same source coverage on every row.
+    // Calculate each axis once instead of repeating integer division and
+    // interval intersections for every destination pixel.
+    fn axis_coverage(source: u32, destination: u32) -> Vec<Vec<(usize, u64)>> {
+        (0..destination)
+            .map(|position| {
+                if source <= destination {
+                    let cell = ((u64::from(position) * 2 + 1) * u64::from(source)
+                        / (u64::from(destination) * 2))
+                        .min(u64::from(source - 1));
+                    vec![(cell as usize, 1)]
+                } else {
+                    let left = u64::from(position) * u64::from(source);
+                    let right = u64::from(position + 1) * u64::from(source);
+                    let unit = u64::from(destination);
+                    (left / unit..right.div_ceil(unit))
+                        .map(|cell| {
+                            let weight = right.min((cell + 1) * unit) - left.max(cell * unit);
+                            (cell as usize, weight)
+                        })
+                        .collect()
+                }
+            })
+            .collect()
+    }
+    let horizontal = axis_coverage(sw, dw);
+    let vertical = axis_coverage(sh, dh);
+    let total = u64::from(if sw > dw { sw } else { 1 }) * u64::from(if sh > dh { sh } else { 1 });
+    let reciprocal = u64::MAX / total;
+    for (y, rows) in vertical.iter().enumerate() {
+        for (x, columns) in horizontal.iter().enumerate() {
             let mut sum = [0u64; 4];
-            let total = (right - left) * (bottom - top);
-            for sy in top / uy..bottom.div_ceil(uy) {
-                let wy = bottom.min((sy + 1) * uy) - top.max(sy * uy);
-                for sx in left / ux..right.div_ceil(ux) {
-                    let weight = wy * (right.min((sx + 1) * ux) - left.max(sx * ux));
-                    let pixel = source[sy as usize * sw as usize + sx as usize];
+            for &(sy, wy) in rows {
+                for &(sx, wx) in columns {
+                    let weight = wy * wx;
+                    let pixel = source[sy * sw as usize + sx];
                     for (channel, sum) in sum.iter_mut().enumerate() {
                         *sum += u64::from((pixel >> (channel * 8)) & 255) * weight;
                     }
                 }
             }
-            output[y as usize * dw as usize + x as usize] =
+            // Keep the original integer accumulation and round only once,
+            // after both axes, so fractional text coverage stays bit-exact.
+            output[y * dw as usize + x] =
                 sum.iter().enumerate().fold(0, |pixel, (channel, sum)| {
-                    pixel | ((((sum + total / 2) / total) as u32) << (channel * 8))
+                    let value = coverage_quotient(sum + total / 2, total, reciprocal);
+                    pixel | ((value as u32) << (channel * 8))
                 });
         }
     }
@@ -1667,6 +1692,80 @@ mod tests {
             assert_eq!(super::outline_output_scale((800, 600), drawable), expected);
         }
         assert_eq!(super::outline_output_scale((0, 0), (800, 600)), 1);
+    }
+
+    #[test]
+    fn coverage_reciprocal_matches_integer_division_at_boundaries() {
+        for divisor in [
+            1u64,
+            2,
+            3,
+            5,
+            7,
+            255,
+            256,
+            1_920_000,
+            u32::MAX as u64,
+            1u64 << 63,
+            u64::MAX,
+        ] {
+            for numerator in [
+                0,
+                1,
+                divisor - 1,
+                divisor,
+                divisor.saturating_add(1),
+                divisor.saturating_mul(255),
+                u64::MAX - 1,
+                u64::MAX,
+            ] {
+                assert_eq!(
+                    super::coverage_quotient(numerator, divisor, u64::MAX / divisor),
+                    numerator / divisor,
+                );
+            }
+        }
+        let mut seed = 0x123456789abcdef0u64;
+        for _ in 0..100_000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let numerator = seed;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let divisor = seed.max(1);
+            assert_eq!(
+                super::coverage_quotient(numerator, divisor, u64::MAX / divisor),
+                numerator / divisor,
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_resize_preserves_all_channels_with_mixed_axis_scales() {
+        let mut output = Vec::new();
+        let source = [
+            0x10203040, 0x50607080, 0x90a0b0c0, 0xc0b0a090, 0x80706050, 0x40302010,
+        ];
+        super::resize_argb_coverage(&source, (3, 2), (2, 3), &mut output);
+        assert_eq!(
+            output,
+            [0x25354555, 0x7b8b9bab, 0xab9b8b7b, 0x55453525, 0xab9b8b7b, 0x55453525,]
+        );
+
+        let transposed = [
+            source[0], source[3], source[1], source[4], source[2], source[5],
+        ];
+        super::resize_argb_coverage(&transposed, (2, 3), (3, 2), &mut output);
+        assert_eq!(
+            output,
+            [0x25354555, 0xab9b8b7b, 0xab9b8b7b, 0x7b8b9bab, 0x55453525, 0x55453525,]
+        );
+
+        super::resize_argb_coverage(
+            &[0x00000000, 0x11223344, 0xaabbccdd, 0xffffffff],
+            (2, 2),
+            (1, 1),
+            &mut output,
+        );
+        assert_eq!(output, [0x6f778088]);
     }
 
     #[test]
