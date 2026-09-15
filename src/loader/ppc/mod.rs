@@ -1309,6 +1309,23 @@ pub enum PpcFileCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcLegacyMemoryUtilityOperation {
+    BitClear,
+    BitNot,
+    BitSet,
+    FixToExtended,
+    GetMyZone,
+    HandleZone,
+    LockMemory,
+    MaxBlock,
+    PurgeSpace,
+    SetGrowZone,
+    StackSpace,
+    TempFreeMem,
+    UnlockMemory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyControlOperation {
     DisposeControl,
     DrawOneControl,
@@ -2336,7 +2353,7 @@ pub enum PpcImportDispatcherTarget {
     VRemove,
     SlotVInstall,
     SlotVRemove,
-    LegacyMemoryUtility,
+    LegacyMemoryUtility(PpcLegacyMemoryUtilityOperation),
     LegacyControl(PpcLegacyControlOperation),
     LegacyWindow,
     AppleEventCompatibility(PpcAppleEventCompatibilityOperation),
@@ -15758,12 +15775,45 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "VRemove") => PpcImportDispatcherTarget::VRemove,
         ("InterfaceLib", "SlotVInstall") => PpcImportDispatcherTarget::SlotVInstall,
         ("InterfaceLib", "SlotVRemove") => PpcImportDispatcherTarget::SlotVRemove,
-        (
-            "InterfaceLib",
-            "BitNot" | "BitSet" | "BitClr" | "Fix2X" | "GetMyZone" | "HandleZone" | "LockMemory"
-            | "MaxBlock" | "PurgeSpace" | "SetGrowZone" | "StackSpace" | "TempFreeMem"
-            | "UnlockMemory",
-        ) => PpcImportDispatcherTarget::LegacyMemoryUtility,
+        ("InterfaceLib", "BitClr") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::BitClear,
+        ),
+        ("InterfaceLib", "BitNot") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::BitNot,
+        ),
+        ("InterfaceLib", "BitSet") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::BitSet,
+        ),
+        ("InterfaceLib", "Fix2X") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::FixToExtended,
+        ),
+        ("InterfaceLib", "GetMyZone") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::GetMyZone,
+        ),
+        ("InterfaceLib", "HandleZone") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::HandleZone,
+        ),
+        ("InterfaceLib", "LockMemory") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::LockMemory,
+        ),
+        ("InterfaceLib", "MaxBlock") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::MaxBlock,
+        ),
+        ("InterfaceLib", "PurgeSpace") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::PurgeSpace,
+        ),
+        ("InterfaceLib", "SetGrowZone") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::SetGrowZone,
+        ),
+        ("InterfaceLib", "StackSpace") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::StackSpace,
+        ),
+        ("InterfaceLib", "TempFreeMem") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::TempFreeMem,
+        ),
+        ("InterfaceLib", "UnlockMemory") => PpcImportDispatcherTarget::LegacyMemoryUtility(
+            PpcLegacyMemoryUtilityOperation::UnlockMemory,
+        ),
         ("InterfaceLib", "DisposeControl") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::DisposeControl,
         ),
@@ -27314,16 +27364,18 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             });
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
-        PpcImportDispatcherTarget::LegacyMemoryUtility => ppc_dispatch_legacy_memory_utility(
-            binding,
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-        ),
+        PpcImportDispatcherTarget::LegacyMemoryUtility(operation) => {
+            ppc_dispatch_legacy_memory_utility(
+                operation,
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            )
+        }
         PpcImportDispatcherTarget::LegacyControl(operation) => ppc_dispatch_legacy_control(
             operation,
             cpu,
@@ -90630,7 +90682,7 @@ fn ppc_alloc_ptr(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_legacy_memory_utility(
-    binding: &PpcImportBinding,
+    operation: PpcLegacyMemoryUtilityOperation,
     cpu: &mut PpcCpu,
     process_memory_manager: &ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -90644,14 +90696,14 @@ fn ppc_dispatch_legacy_memory_utility(
     // and Memory (1992), pp. 2-42--2-83, define these routines independently
     // of any application. Keeping their implementations in one dispatcher is
     // only an ABI grouping; behavior is selected solely by the imported API.
-    match binding.symbol_name.as_str() {
-        "BitNot" => Some(PpcImportAction::Return(!cpu.gpr[3])),
-        "BitSet" | "BitClr" => {
+    match operation {
+        PpcLegacyMemoryUtilityOperation::BitNot => Some(PpcImportAction::Return(!cpu.gpr[3])),
+        PpcLegacyMemoryUtilityOperation::BitSet | PpcLegacyMemoryUtilityOperation::BitClear => {
             let bit_number = cpu.gpr[4];
             let byte_addr = cpu.gpr[3].checked_add(bit_number / 8)?;
             let mask = 0x80u8 >> (bit_number & 7);
             let old = memory.read_u8(byte_addr)?;
-            let value = if binding.symbol_name == "BitSet" {
+            let value = if operation == PpcLegacyMemoryUtilityOperation::BitSet {
                 old | mask
             } else {
                 old & !mask
@@ -90659,13 +90711,15 @@ fn ppc_dispatch_legacy_memory_utility(
             memory.write_u8(byte_addr, value)?;
             Some(PpcImportAction::ReturnPreserve)
         }
-        "Fix2X" => {
+        PpcLegacyMemoryUtilityOperation::FixToExtended => {
             let fixed = cpu.gpr[3] as i32;
             cpu.fpr[1] = (f64::from(fixed) / 65_536.0).to_bits();
             Some(PpcImportAction::ReturnPreserve)
         }
-        "GetMyZone" => Some(PpcImportAction::Return(PPC_APPLICATION_ZONE)),
-        "HandleZone" => {
+        PpcLegacyMemoryUtilityOperation::GetMyZone => {
+            Some(PpcImportAction::Return(PPC_APPLICATION_ZONE))
+        }
+        PpcLegacyMemoryUtilityOperation::HandleZone => {
             let handle = cpu.gpr[3];
             let valid = handle == 0 || handles.iter().any(|record| record.handle == handle);
             *last_mem_error = if valid { PPC_NO_ERR } else { -111 };
@@ -90675,7 +90729,8 @@ fn ppc_dispatch_legacy_memory_utility(
                 0
             }))
         }
-        "LockMemory" | "UnlockMemory" => {
+        PpcLegacyMemoryUtilityOperation::LockMemory
+        | PpcLegacyMemoryUtilityOperation::UnlockMemory => {
             // The native heap is resident host memory, so a valid mapped range
             // is already immovable for the lifetime requested by the caller.
             let start = cpu.gpr[3];
@@ -90690,13 +90745,15 @@ fn ppc_dispatch_legacy_memory_utility(
             let result = if mapped { PPC_NO_ERR } else { PPC_PARAM_ERR };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
-        "MaxBlock" => Some(PpcImportAction::Return(ppc_largest_free_ptr_block(
-            memory,
-            *heap_cursor,
-            heap_limit,
-            free_ptr_blocks,
-        ))),
-        "PurgeSpace" => {
+        PpcLegacyMemoryUtilityOperation::MaxBlock => {
+            Some(PpcImportAction::Return(ppc_largest_free_ptr_block(
+                memory,
+                *heap_cursor,
+                heap_limit,
+                free_ptr_blocks,
+            )))
+        }
+        PpcLegacyMemoryUtilityOperation::PurgeSpace => {
             let total = ppc_heap_free_capacity(memory, *heap_cursor, heap_limit)
                 .0
                 .saturating_add(
@@ -90715,19 +90772,18 @@ fn ppc_dispatch_legacy_memory_utility(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "SetGrowZone" => {
+        PpcLegacyMemoryUtilityOperation::SetGrowZone => {
             memory.write_u32_be(PPC_APPLICATION_ZONE + 16, cpu.gpr[3])?;
             Some(PpcImportAction::ReturnPreserve)
         }
-        "StackSpace" => Some(PpcImportAction::Return(
+        PpcLegacyMemoryUtilityOperation::StackSpace => Some(PpcImportAction::Return(
             cpu.gpr[1].saturating_sub(
                 process_memory_manager.application_heap_limit(heap_limit),
             ),
         )),
-        "TempFreeMem" => Some(PpcImportAction::Return(
+        PpcLegacyMemoryUtilityOperation::TempFreeMem => Some(PpcImportAction::Return(
             ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0,
         )),
-        _ => None,
     }
 }
 
