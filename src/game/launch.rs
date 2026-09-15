@@ -2450,6 +2450,9 @@ fn load_selected_executable(
     runner: &mut FixtureRunner,
     executable: &ExecutableCandidate,
 ) -> Result<LoadedApp, String> {
+    if executable.is_installer {
+        runner.arm_installer_handoff();
+    }
     runner
         .dispatcher_mut()
         .set_launched_app_path(&executable.name);
@@ -2809,6 +2812,38 @@ fn maybe_select_executable_with_override_and_preference(
     if take {
         *executable_entry = Some(candidate);
     }
+}
+
+pub(crate) fn select_installed_application(
+    runner: &mut FixtureRunner,
+    baseline: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let prefer_powerpc = runner.prefers_powerpc_executables() || prefer_powerpc();
+    let mut selected = None;
+    for file in runner.vfs_file_summaries() {
+        if baseline.contains(&file.path) {
+            continue;
+        }
+        let Some(snapshot) = runner.vfs_file_snapshot(&file.path) else {
+            continue;
+        };
+        maybe_select_executable_with_override_and_preference(
+            &mut selected,
+            &snapshot.path,
+            &snapshot.data_fork,
+            &snapshot.resource_fork,
+            snapshot.file_type == u32::from_be_bytes(*b"APPL"),
+            snapshot.data_fork.len(),
+            snapshot.creator.to_be_bytes(),
+            1,
+            None,
+            prefer_powerpc,
+        );
+    }
+
+    selected
+        .filter(|candidate| !candidate.is_installer)
+        .map(|candidate| candidate.name)
 }
 
 fn executable_override_match_rank(name: &str, executable_override: Option<&str>) -> u8 {
