@@ -2059,18 +2059,18 @@ use super::*;
 
     #[test]
     fn import_bindings_classify_all_standard_file_entry_points() {
-        for symbol in [
-            "CustomGetFile",
-            "CustomPutFile",
-            "SFGetFile",
-            "SFPGetFile",
-            "SFPPutFile",
-            "SFPutFile",
-            "StandardPutFile",
+        for (symbol, operation) in [
+            ("CustomGetFile", PpcStandardFileOperation::CustomGetFile),
+            ("CustomPutFile", PpcStandardFileOperation::CustomPutFile),
+            ("SFGetFile", PpcStandardFileOperation::SfGetFile),
+            ("SFPGetFile", PpcStandardFileOperation::SfpGetFile),
+            ("SFPPutFile", PpcStandardFileOperation::SfpPutFile),
+            ("SFPutFile", PpcStandardFileOperation::SfPutFile),
+            ("StandardPutFile", PpcStandardFileOperation::StandardPutFile),
         ] {
             assert_eq!(
                 dispatcher_target_for_import("InterfaceLib", symbol),
-                PpcImportDispatcherTarget::StandardFileCompatibility,
+                PpcImportDispatcherTarget::StandardFileCompatibility(operation),
                 "{symbol} must use the Standard File compatibility ABI"
             );
         }

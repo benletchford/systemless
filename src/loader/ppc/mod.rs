@@ -1187,6 +1187,18 @@ pub enum PpcPrintingCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcStandardFileOperation {
+    StandardGetFile,
+    CustomGetFile,
+    CustomPutFile,
+    SfGetFile,
+    SfpGetFile,
+    SfpPutFile,
+    SfPutFile,
+    StandardPutFile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
     ElementDisposeVirtual,
@@ -2186,7 +2198,7 @@ pub enum PpcImportDispatcherTarget {
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     PrintingCompatibility(PpcPrintingCompatibilityOperation),
     SlotCompatibility,
-    StandardFileCompatibility,
+    StandardFileCompatibility(PpcStandardFileOperation),
     SoundInputCompatibility,
     SpeechCompatibility(PpcSpeechCompatibilityOperation),
     QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation),
@@ -15780,16 +15792,29 @@ fn dispatcher_target_for_import(
             "SFindStruct" | "SGetBlock" | "SGetCString" | "SGetSRsrc" | "SGetTypeSRsrc"
             | "SNextTypeSRsrc",
         ) => PpcImportDispatcherTarget::SlotCompatibility,
-        (
-            "InterfaceLib",
-            "CustomGetFile"
-                | "CustomPutFile"
-                | "SFGetFile"
-                | "SFPGetFile"
-                | "SFPPutFile"
-                | "SFPutFile"
-                | "StandardPutFile",
-        ) => PpcImportDispatcherTarget::StandardFileCompatibility,
+        ("InterfaceLib", "CustomGetFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
+            PpcStandardFileOperation::CustomGetFile,
+        ),
+        ("InterfaceLib", "CustomPutFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
+            PpcStandardFileOperation::CustomPutFile,
+        ),
+        ("InterfaceLib", "SFGetFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
+            PpcStandardFileOperation::SfGetFile,
+        ),
+        ("InterfaceLib", "SFPGetFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
+            PpcStandardFileOperation::SfpGetFile,
+        ),
+        ("InterfaceLib", "SFPPutFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
+            PpcStandardFileOperation::SfpPutFile,
+        ),
+        ("InterfaceLib", "SFPutFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
+            PpcStandardFileOperation::SfPutFile,
+        ),
+        ("InterfaceLib", "StandardPutFile") => {
+            PpcImportDispatcherTarget::StandardFileCompatibility(
+                PpcStandardFileOperation::StandardPutFile,
+            )
+        }
         (
             "InterfaceLib",
             "SPBCloseDevice" | "SPBGetDeviceInfo" | "SPBOpenDevice" | "SPBRecord"
@@ -21271,8 +21296,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         }
         PpcImportDispatcherTarget::StandardGetFile => {
             Some(ppc_dispatch_standard_file(
-                "StandardGetFile",
-                PpcStandardFileMode::GetModern,
+                PpcStandardFileOperation::StandardGetFile,
                 cpu,
                 memory,
                 toolbox_startup,
@@ -27152,17 +27176,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
         }
-        PpcImportDispatcherTarget::StandardFileCompatibility => {
-            let mode = match binding.symbol_name.as_str() {
-                "StandardPutFile" | "CustomPutFile" => PpcStandardFileMode::PutModern,
-                "SFPPutFile" | "SFPutFile" => PpcStandardFileMode::PutLegacy,
-                "CustomGetFile" => PpcStandardFileMode::GetModern,
-                "SFGetFile" | "SFPGetFile" => PpcStandardFileMode::GetLegacy,
-                _ => return Some(PpcImportAction::ReturnPreserve),
-            };
+        PpcImportDispatcherTarget::StandardFileCompatibility(operation) => {
             Some(ppc_dispatch_standard_file(
-                binding.symbol_name.as_str(),
-                mode,
+                operation,
                 cpu,
                 memory,
                 toolbox_startup,
@@ -84623,18 +84639,52 @@ fn ppc_standard_file_point_from_gpr(point: u32) -> (i16, i16) {
     ((point >> 16) as u16 as i16, point as u16 as i16)
 }
 
-fn ppc_standard_file_requested_origin(symbol_name: &str, cpu: &PpcCpu) -> Option<(i16, i16)> {
-    let point = match symbol_name {
-        "SFGetFile" | "SFPGetFile" | "SFPutFile" | "SFPPutFile" => cpu.gpr[3],
-        "CustomGetFile" => cpu.gpr[8],
-        "CustomPutFile" => cpu.gpr[7],
-        _ => return None,
-    };
-    let origin = ppc_standard_file_point_from_gpr(point);
-    if origin == (-1, -1) {
-        None
-    } else {
-        Some(origin)
+impl PpcStandardFileOperation {
+    fn mode(self) -> PpcStandardFileMode {
+        match self {
+            Self::StandardGetFile | Self::CustomGetFile => PpcStandardFileMode::GetModern,
+            Self::SfGetFile | Self::SfpGetFile => PpcStandardFileMode::GetLegacy,
+            Self::CustomPutFile | Self::StandardPutFile => PpcStandardFileMode::PutModern,
+            Self::SfpPutFile | Self::SfPutFile => PpcStandardFileMode::PutLegacy,
+        }
+    }
+
+    fn requested_origin(self, cpu: &PpcCpu) -> Option<(i16, i16)> {
+        let point = match self {
+            Self::SfGetFile | Self::SfpGetFile | Self::SfpPutFile | Self::SfPutFile => cpu.gpr[3],
+            Self::CustomGetFile => cpu.gpr[8],
+            Self::CustomPutFile => cpu.gpr[7],
+            Self::StandardGetFile | Self::StandardPutFile => return None,
+        };
+        let origin = ppc_standard_file_point_from_gpr(point);
+        if origin == (-1, -1) {
+            None
+        } else {
+            Some(origin)
+        }
+    }
+
+    fn filter_pointer(self, cpu: &PpcCpu) -> (u32, bool) {
+        match self {
+            Self::StandardGetFile => (cpu.gpr[3], false),
+            Self::CustomGetFile => (cpu.gpr[3], true),
+            Self::SfGetFile | Self::SfpGetFile => (cpu.gpr[5], false),
+            Self::CustomPutFile
+            | Self::SfpPutFile
+            | Self::SfPutFile
+            | Self::StandardPutFile => (0, false),
+        }
+    }
+
+    fn prompt_pointer(self, cpu: &PpcCpu) -> u32 {
+        match self {
+            Self::CustomPutFile | Self::StandardPutFile => cpu.gpr[3],
+            Self::SfpPutFile | Self::SfPutFile => cpu.gpr[4],
+            Self::StandardGetFile
+            | Self::CustomGetFile
+            | Self::SfGetFile
+            | Self::SfpGetFile => 0,
+        }
     }
 }
 
@@ -84652,14 +84702,6 @@ fn ppc_standard_file_prompt(memory: &mut PpcSectionMem, prompt_ptr: u32) -> Vec<
 
 const PPC_STANDARD_FILE_FILTER_PB_SIZE: u32 = 256;
 const PPC_STANDARD_FILE_FILTER_NAME_OFFSET: u32 = 128;
-
-fn ppc_standard_file_filter_pointer(symbol_name: &str, cpu: &PpcCpu) -> (u32, bool) {
-    match symbol_name {
-        "StandardGetFile" | "CustomGetFile" => (cpu.gpr[3], symbol_name == "CustomGetFile"),
-        "SFGetFile" | "SFPGetFile" => (cpu.gpr[5], false),
-        _ => (0, false),
-    }
-}
 
 fn ppc_standard_file_write_filter_pb(
     memory: &mut PpcSectionMem,
@@ -85437,7 +85479,7 @@ fn ppc_standard_file_get_service(
 }
 
 fn ppc_standard_file_get_start(
-    symbol_name: &str,
+    operation: PpcStandardFileOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
@@ -85563,7 +85605,7 @@ fn ppc_standard_file_get_start(
         front_buffer,
         saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
     };
-    let (filter_ptr, callback_with_data) = ppc_standard_file_filter_pointer(symbol_name, cpu);
+    let (filter_ptr, callback_with_data) = operation.filter_pointer(cpu);
     if filter_ptr != 0 {
         if let Some(callback) = ppc_resolve_callback_target(memory, filter_ptr, cpu.gpr[2], None)
             .filter(|callback| memory.read_u32_be(callback.entry).is_some())
@@ -85667,8 +85709,7 @@ fn ppc_standard_file_put_start(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_standard_file(
-    symbol_name: &str,
-    mode: PpcStandardFileMode,
+    operation: PpcStandardFileOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
@@ -85685,11 +85726,12 @@ fn ppc_dispatch_standard_file(
     next_working_directory_ref_num: &mut i16,
     event_queue: &mut EventQueue,
 ) -> PpcImportAction {
-    let requested_origin = ppc_standard_file_requested_origin(symbol_name, cpu);
+    let mode = operation.mode();
+    let requested_origin = operation.requested_origin(cpu);
     match mode {
         PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {
             ppc_standard_file_get_start(
-                symbol_name,
+                operation,
                 cpu,
                 memory,
                 startup,
@@ -85812,11 +85854,7 @@ fn ppc_dispatch_standard_file(
                 startup.standard_file_put_tracking = Some(tracking);
                 PpcImportAction::Yield(u64::MAX)
             } else {
-                let prompt_ptr = match symbol_name {
-                    "StandardPutFile" | "CustomPutFile" => cpu.gpr[3],
-                    "SFPutFile" | "SFPPutFile" => cpu.gpr[4],
-                    _ => 0,
-                };
+                let prompt_ptr = operation.prompt_pointer(cpu);
                 ppc_standard_file_put_start(
                     cpu,
                     memory,
