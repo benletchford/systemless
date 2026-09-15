@@ -469,8 +469,9 @@ use super::*;
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
-        loaded.imports[0].symbol_name = "DisposePalette".to_string();
-        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickDrawCompatibility;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::DisposePalette,
+        );
         loaded.cpu.gpr[3] = palette_handle;
         loaded.run_with_hle_imports(64);
         assert_eq!(loaded.toolbox_startup.application_palette, 0);
@@ -2799,8 +2800,9 @@ use super::*;
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
-        loaded.imports[0].symbol_name = "DisposePalette".to_string();
-        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickDrawCompatibility;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::DisposePalette,
+        );
         loaded.cpu.gpr[3] = handle;
         loaded.run_with_hle_imports(64);
         assert!(loaded
