@@ -16298,6 +16298,35 @@ fn stdio_imports_pre_resolve_to_typed_operations() {
 }
 
 #[test]
+fn legacy_control_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("DisposeControl", PpcLegacyControlOperation::DisposeControl),
+        ("Draw1Control", PpcLegacyControlOperation::DrawOneControl),
+        ("FindControl", PpcLegacyControlOperation::FindControl),
+        ("GetControlMaximum", PpcLegacyControlOperation::GetControlMaximum),
+        ("GetControlMinimum", PpcLegacyControlOperation::GetControlMinimum),
+        ("GetControlTitle", PpcLegacyControlOperation::GetControlTitle),
+        ("GetControlValue", PpcLegacyControlOperation::GetControlValue),
+        ("GetNewControl", PpcLegacyControlOperation::GetNewControl),
+        ("HideControl", PpcLegacyControlOperation::HideControl),
+        ("KillControls", PpcLegacyControlOperation::KillControls),
+        ("MoveControl", PpcLegacyControlOperation::MoveControl),
+        ("NewControl", PpcLegacyControlOperation::NewControl),
+        ("SetControlMaximum", PpcLegacyControlOperation::SetControlMaximum),
+        ("SetControlMinimum", PpcLegacyControlOperation::SetControlMinimum),
+        ("ShowControl", PpcLegacyControlOperation::ShowControl),
+        ("SizeControl", PpcLegacyControlOperation::SizeControl),
+        ("TestControl", PpcLegacyControlOperation::TestControl),
+        ("TrackControl", PpcLegacyControlOperation::TrackControl),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::LegacyControl(operation),
+        );
+    }
+}
+
+#[test]
 fn pbhgetvolsync_returns_working_directory_fields_at_wdpb_offsets() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "PBHGetVolSync"),
