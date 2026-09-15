@@ -7266,6 +7266,48 @@
         assert_eq!(cpu.read_reg(Register::D0), (-43i32) as u32);
     }
 
+    #[test]
+    fn test_pb_open_rf_current_permission_allows_fswrite() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let filename = "Installer Output";
+        disp.vfs.insert(filename.to_string(), Vec::new());
+        disp.vfs_rsrc.insert(filename.to_string(), Vec::new());
+
+        let pb = 0x300000u32;
+        let name_ptr = 0x310000u32;
+        bus.write_pstring(name_ptr, filename.as_bytes());
+        bus.write_long(pb + 18, name_ptr);
+        bus.write_byte(pb + 27, 0); // fsCurPerm
+        cpu.write_reg(Register::A0, pb);
+
+        disp.dispatch_toolbox(false, 0x0A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let refnum = bus.read_word(pb + 24);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert!(disp.write_refnums.contains(&refnum));
+
+        let write_buf = 0x310100u32;
+        bus.write_bytes(write_buf, &[0xCA, 0xFE, 0xBA, 0xBE]);
+        bus.write_word(pb + 24, refnum);
+        bus.write_long(pb + 32, write_buf);
+        bus.write_long(pb + 36, 4);
+        bus.write_word(pb + 44, 1); // fsFromStart
+        bus.write_long(pb + 46, 0);
+        cpu.write_reg(Register::A0, pb);
+
+        disp.dispatch_resource(false, 0x03, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(
+            disp.vfs_rsrc.get(filename),
+            Some(&vec![0xCA, 0xFE, 0xBA, 0xBE])
+        );
+    }
+
     // HCreateResFile ($A81B) — missing file creation plus PBOpenRF visibility.
     #[test]
     fn test_hcreate_res_file_creates_missing_file_and_resource_fork() {

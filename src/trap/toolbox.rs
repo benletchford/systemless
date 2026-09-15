@@ -7073,6 +7073,15 @@ impl super::TrapDispatcher {
                     let rsrc_key = format!("__rsrc__{}", vfs_key);
                     self.vfs.insert_if_absent(rsrc_key.clone(), rsrc_data);
                     self.open_files.insert(refnum, rsrc_key);
+                    // Files 1992, 2-8 and 2-117: fsCurPerm grants read/write
+                    // when the volume permits it, just as it does for the
+                    // data-fork PBOpen path. Classic installers commonly
+                    // create a file, open its empty resource fork with
+                    // fsCurPerm, then populate it through FSWrite.
+                    if matches!(permission, 0 | 2 | 3 | 4) && !self.vfs_path_is_read_only(&vfs_key)
+                    {
+                        self.write_refnums.insert(refnum);
+                    }
                     self.file_positions.insert(refnum, 0);
                     bus.write_word(pb + 24, refnum);
                     bus.write_word(pb + 16, 0); // noErr
