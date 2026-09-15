@@ -18732,7 +18732,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FSOpen
         | PpcImportDispatcherTarget::FSpCreateResFile
         | PpcImportDispatcherTarget::HCreateResFile
-        | PpcImportDispatcherTarget::FSpOpenResFile => {
+        | PpcImportDispatcherTarget::FSpOpenResFile
+        | PpcImportDispatcherTarget::FSpOpenDF
+        | PpcImportDispatcherTarget::HOpen
+        | PpcImportDispatcherTarget::PBHOpenDF => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -21827,30 +21830,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             scrap.desktop.load();
             Some(PpcImportAction::Return(0))
         }
-        PpcImportDispatcherTarget::FSpOpenDF => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_open_df(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                files,
-                writable_refnums,
-                next_file_ref_num,
-            ))))
-        }
-        PpcImportDispatcherTarget::HOpen => {
-            let result = ppc_h_open(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                files,
-                writable_refnums,
-                next_file_ref_num,
-                default_dir_id,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
         PpcImportDispatcherTarget::DMGetFirstScreenDevice => {
             // Display Manager's device iterator exposes the single active
             // screen modeled by this runtime (the same policy as GetDeviceList).
@@ -22083,17 +22062,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 }
             }
             Some(PpcImportAction::Return(dialog))
-        }
-        PpcImportDispatcherTarget::PBHOpenDF => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pbh_open_df(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                files,
-                writable_refnums,
-                next_file_ref_num,
-            ))))
         }
         PpcImportDispatcherTarget::GetDialogItem => {
             ppc_get_dialog_item(cpu, memory, handles);
