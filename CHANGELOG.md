@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.5](https://github.com/benletchford/systemless/compare/v0.41.4...v0.41.5) (2026-09-15)
+
+
+### Bug Fixes
+
+* **ppc:** complete classic services for Meteor Storm gameplay ([#1994](https://github.com/benletchford/systemless/issues/1994)) ([71277f5](https://github.com/benletchford/systemless/commit/71277f553e099ad122cf8603800f976784705cf1))
+
 ## [0.41.4](https://github.com/benletchford/systemless/compare/v0.41.3...v0.41.4) (2026-09-15)
 
 
