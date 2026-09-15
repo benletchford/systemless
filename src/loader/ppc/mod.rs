@@ -1416,6 +1416,12 @@ pub enum PpcAppleEventCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcEventPollOperation {
+    GetNextEvent,
+    WaitNextEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcAppleTalkCompatibilityOperation {
     GetBridgeAddress,
     GetNodeAddress,
@@ -1972,7 +1978,7 @@ pub enum PpcImportDispatcherTarget {
     FlushEvents,
     SetEventMask,
     DisposeDialog,
-    GetNextEvent,
+    GetNextEvent(PpcEventPollOperation),
     GetOSEvent,
     EventAvail,
     OSEventAvail,
@@ -15581,9 +15587,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeDialog" | "CloseDialog") => {
             PpcImportDispatcherTarget::DisposeDialog
         }
-        ("InterfaceLib", "GetNextEvent") | ("InterfaceLib", "WaitNextEvent") => {
-            PpcImportDispatcherTarget::GetNextEvent
-        }
+        ("InterfaceLib", "GetNextEvent") => PpcImportDispatcherTarget::GetNextEvent(
+            PpcEventPollOperation::GetNextEvent,
+        ),
+        ("InterfaceLib", "WaitNextEvent") => PpcImportDispatcherTarget::GetNextEvent(
+            PpcEventPollOperation::WaitNextEvent,
+        ),
         ("InterfaceLib", "GetOSEvent") => PpcImportDispatcherTarget::GetOSEvent,
         ("InterfaceLib", "EventAvail") => PpcImportDispatcherTarget::EventAvail,
         ("InterfaceLib", "OSEventAvail") => PpcImportDispatcherTarget::OSEventAvail,
@@ -27690,7 +27699,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         }
         PpcImportDispatcherTarget::FlushEvents
         | PpcImportDispatcherTarget::SetEventMask
-        | PpcImportDispatcherTarget::GetNextEvent
+        | PpcImportDispatcherTarget::GetNextEvent(_)
         | PpcImportDispatcherTarget::GetOSEvent
         | PpcImportDispatcherTarget::EventAvail
         | PpcImportDispatcherTarget::OSEventAvail

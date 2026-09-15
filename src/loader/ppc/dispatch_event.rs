@@ -433,7 +433,7 @@ pub(super) fn dispatch_event_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetNextEvent | PpcImportDispatcherTarget::GetOSEvent => {
+        PpcImportDispatcherTarget::GetNextEvent(_) | PpcImportDispatcherTarget::GetOSEvent => {
             let event_mask = cpu.gpr[3] as u16;
             let event_ptr = cpu.gpr[4];
             let sleep_ticks = cpu.gpr[5];
@@ -493,7 +493,12 @@ pub(super) fn dispatch_event_import(
                 ));
             }
             let action = PpcImportAction::Return(u32::from(has_event));
-            if binding.symbol_name == "WaitNextEvent" && !has_event && sleep_ticks > 0 {
+            if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
+            ) && !has_event
+                && sleep_ticks > 0
+            {
                 Some(ppc_import_action_with_extra_cycles(
                     action,
                     u64::from(sleep_ticks)
