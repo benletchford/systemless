@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.41.2](https://github.com/benletchford/systemless/compare/v0.41.1...v0.41.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* expand MacBinary installer payloads before launch ([#1976](https://github.com/benletchford/systemless/issues/1976)) ([f73bd8a](https://github.com/benletchford/systemless/commit/f73bd8acabf710b7c95be6fcfc2fe8e91b52604d))
+
+
+### Performance Improvements
+
+* bound offscreen text metadata lookups ([#1943](https://github.com/benletchford/systemless/issues/1943)) ([c9694d4](https://github.com/benletchford/systemless/commit/c9694d45fd3ca5f5832e770483a23ca3d9902e6a))
+* precompute image coverage and normalization ([#1949](https://github.com/benletchford/systemless/issues/1949)) ([87ee112](https://github.com/benletchford/systemless/commit/87ee112ad9d3828f7ebbfef9cbdbbd02fb6df9e7))
+* reuse unchanged menu bar pixels and text coverage ([#1948](https://github.com/benletchford/systemless/issues/1948)) ([685eb33](https://github.com/benletchford/systemless/commit/685eb3304df3ade3cc2485f610a845899913558b))
+
+
+### Code Refactoring
+
+* **ppc:** route data fork opens by domain ([#1973](https://github.com/benletchford/systemless/issues/1973)) ([6bf33a1](https://github.com/benletchford/systemless/commit/6bf33a181e1f42a078d331838eed8f5cfde5ea0d))
+* **ppc:** route file mutations by domain ([#1969](https://github.com/benletchford/systemless/issues/1969)) ([ae9e47e](https://github.com/benletchford/systemless/commit/ae9e47e6f705dc2d6334d0b16354ccf3489e1d0b))
+* **ppc:** route file opens by domain ([#1971](https://github.com/benletchford/systemless/issues/1971)) ([e7e6c6f](https://github.com/benletchford/systemless/commit/e7e6c6f8be234872726a2f40274ec5fd28701d9a))
+* **ppc:** type dialog compatibility dispatch ([#1940](https://github.com/benletchford/systemless/issues/1940)) ([4639fd6](https://github.com/benletchford/systemless/commit/4639fd62f60f53f31e22e418db4c033375d9f433))
+* **ppc:** type event poll dispatch ([#1963](https://github.com/benletchford/systemless/issues/1963)) ([7f82c38](https://github.com/benletchford/systemless/commit/7f82c382794c955ffcc3ed59904692fdc17bf4f8))
+* **ppc:** type file compatibility dispatch ([#1947](https://github.com/benletchford/systemless/issues/1947)) ([8edbb1d](https://github.com/benletchford/systemless/commit/8edbb1d7f7c2bc1e98978412fc1c4b022f0db229))
+* **ppc:** type file deletion dispatch ([#1967](https://github.com/benletchford/systemless/issues/1967)) ([56b2d0d](https://github.com/benletchford/systemless/commit/56b2d0dec0a7c4092b255061333a8abb9e6534f0))
+* **ppc:** type input sprocket compatibility dispatch ([#1934](https://github.com/benletchford/systemless/issues/1934)) ([172027e](https://github.com/benletchford/systemless/commit/172027ec9d5767e3762402f887e4def18406d2e4))
+* **ppc:** type legacy control dispatch ([#1953](https://github.com/benletchford/systemless/issues/1953)) ([2ea98ba](https://github.com/benletchford/systemless/commit/2ea98ba23762e4946f9a67753be22fb7ec32b47f))
+* **ppc:** type legacy memory dispatch ([#1955](https://github.com/benletchford/systemless/issues/1955)) ([758293f](https://github.com/benletchford/systemless/commit/758293f83f1419ca7cf06a48c183dd1d7cbc73f9))
+* **ppc:** type legacy window dispatch ([#1957](https://github.com/benletchford/systemless/issues/1957)) ([2382758](https://github.com/benletchford/systemless/commit/23827583c2623c59410a170e84ba763b7d1dd759))
+* **ppc:** type parameter-block file creation ([#1965](https://github.com/benletchford/systemless/issues/1965)) ([2fc013d](https://github.com/benletchford/systemless/commit/2fc013d8cd638b51dec4ef7c16a06c1a25f48c7e))
+* **ppc:** type printing compatibility dispatch ([#1931](https://github.com/benletchford/systemless/issues/1931)) ([9755008](https://github.com/benletchford/systemless/commit/9755008f10b82e410a02bbb79a5860288a9f205f))
+* **ppc:** type qd3d error boundary ([#1961](https://github.com/benletchford/systemless/issues/1961)) ([7d56f07](https://github.com/benletchford/systemless/commit/7d56f0720621e4e942e3faab946d5e4c9f622faf))
+* **ppc:** type quickdraw compatibility dispatch ([#1942](https://github.com/benletchford/systemless/issues/1942)) ([2a73dd2](https://github.com/benletchford/systemless/commit/2a73dd2f677163879df47a2bbd620425777d4130))
+* **ppc:** type quicktime compatibility dispatch ([#1936](https://github.com/benletchford/systemless/issues/1936)) ([6cef19a](https://github.com/benletchford/systemless/commit/6cef19ad32d08743503a8cf201e7a89483537d35))
+* **ppc:** type sound input dispatch ([#1959](https://github.com/benletchford/systemless/issues/1959)) ([bc8a6cc](https://github.com/benletchford/systemless/commit/bc8a6cc7940b5d3d872de118cd7cc00d14f50820))
+* **ppc:** type standard file compatibility dispatch ([#1938](https://github.com/benletchford/systemless/issues/1938)) ([0ced668](https://github.com/benletchford/systemless/commit/0ced66845662bda6e0edab70a6daaa198f299b92))
+* **ppc:** type stdio dispatch ([#1951](https://github.com/benletchford/systemless/issues/1951)) ([4e002ba](https://github.com/benletchford/systemless/commit/4e002baa97f38b9133ec75164465267d0255c9ca))
+* **ppc:** type system compatibility dispatch ([#1945](https://github.com/benletchford/systemless/issues/1945)) ([7970c8e](https://github.com/benletchford/systemless/commit/7970c8efd42039321db7169cb1bc367e5b5c042b))
+
 ## [0.41.1](https://github.com/benletchford/systemless/compare/v0.41.0...v0.41.1) (2026-09-14)
 
 
