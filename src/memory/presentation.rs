@@ -1506,6 +1506,11 @@ impl MacMemoryBus {
         }
     }
 
+    /// Sampling scale used by cached retained-pixel snapshots.
+    pub(crate) fn outline_presentation_scale(&self) -> Option<u32> {
+        self.presentation.as_ref().map(|p| p.scale)
+    }
+
     /// Whether an outline presentation surface is available to a frontend.
     pub fn has_outline_presentation(&self) -> bool {
         self.presentation.is_some()
