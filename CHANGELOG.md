@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.7](https://github.com/benletchford/systemless/compare/v0.41.6...v0.41.7) (2026-09-16)
+
+
+### Bug Fixes
+
+* **rendering:** resolve retained coverage at the drawable size ([#1997](https://github.com/benletchford/systemless/issues/1997)) ([f723456](https://github.com/benletchford/systemless/commit/f7234562c6bda7242ebf154407ccde26028930b0))
+* **vise:** decode grouped stream forks and encode literal slash catalog names ([#2000](https://github.com/benletchford/systemless/issues/2000)) ([5f7e3cc](https://github.com/benletchford/systemless/commit/5f7e3ccf45c4d8fb99b13af0200dd9d24ddb0abe))
+
 ## [0.41.6](https://github.com/benletchford/systemless/compare/v0.41.5...v0.41.6) (2026-09-16)
 
 
