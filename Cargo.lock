@@ -1786,9 +1786,9 @@ dependencies = [
 
 [[package]]
 name = "ppc"
-version = "0.6.0"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3c3398a600341cf4832aa283433bc481194ebbefe68d42baf8b140601d5a19b"
+checksum = "04fb4c94e2a5e4601cb8ab5a6684713db506b0fa455127ef16a170d3f3ef53a0"
 dependencies = [
  "ieee-apsqrt",
  "rustc_apfloat",

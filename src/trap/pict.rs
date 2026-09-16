@@ -1649,7 +1649,10 @@ fn parse_compressed_quicktime(
         );
     }
 
-    if codec != u32::from_be_bytes(*b"smc ") || width == 0 || height == 0 {
+    let is_smc = codec == u32::from_be_bytes(*b"smc ");
+    let is_rle = codec == u32::from_be_bytes(*b"rle ");
+
+    if (!is_smc && !is_rle) || width == 0 || height == 0 {
         return (end, Some(source_clut));
     }
     let data_start = cursor.saturating_add(description_size);
@@ -1657,11 +1660,7 @@ fn parse_compressed_quicktime(
         return (end, Some(source_clut));
     }
     let compressed = bus.read_bytes(data_start, data_size as usize);
-    let mut decoder = super::smc::SmcDecoder::new(width, height);
-    let Ok(pixels) = decoder.decode(&compressed) else {
-        return (end, Some(source_clut));
-    };
-    let color_map = build_src_to_dst_table(&source_clut, device_clut);
+
     let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = (
         screen_mode.0,
         screen_mode.1,
@@ -1674,28 +1673,115 @@ fn parse_compressed_quicktime(
     let crop_left = i32::from(src_left).max(0).min(width as i32);
     let crop_bottom = i32::from(src_bottom).max(crop_top).min(height as i32);
     let crop_right = i32::from(src_right).max(crop_left).min(width as i32);
-    for source_y in crop_top..crop_bottom {
-        for source_x in crop_left..crop_right {
-            if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
-                continue;
+
+    if is_rle && depth == 16 {
+        let mut decoder = super::qtrle::QtRle16Decoder::new(width, height);
+        let Ok(pixels) = decoder.decode(&compressed) else {
+            return (end, Some(source_clut));
+        };
+        for source_y in crop_top..crop_bottom {
+            for source_x in crop_left..crop_right {
+                if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
+                    continue;
+                }
+                let x =
+                    ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
+                let y =
+                    ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
+                let pixel = pixels[source_y as usize * width + source_x as usize];
+                if pixel_size == 16 {
+                    write_rgb555_pixel_clipped(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        y,
+                        pixel,
+                        screen_w,
+                        screen_h,
+                        dst_clip,
+                    );
+                } else if pixel_size == 32 {
+                    if x >= 0
+                        && y >= 0
+                        && x < screen_w
+                        && y < screen_h
+                        && dst_clip_contains(dst_clip, x, y)
+                    {
+                        let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u32;
+                        let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u32;
+                        let b = ((pixel & 0x1F) * 255 / 31) as u32;
+                        let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 4;
+                        bus.write_long(addr, (r << 16) | (g << 8) | b);
+                    }
+                } else {
+                    let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
+                    let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u8;
+                    let b = ((pixel & 0x1F) * 255 / 31) as u8;
+                    let idx = closest_clut_index(
+                        r as u16 * 257,
+                        g as u16 * 257,
+                        b as u16 * 257,
+                        device_clut,
+                    );
+                    write_pixel_clipped(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        y,
+                        idx,
+                        screen_w,
+                        screen_h,
+                        pixel_size,
+                        dst_clip,
+                    );
+                }
             }
-            let x =
-                ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
-            let y =
-                ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
-            let source_index = pixels[source_y as usize * width + source_x as usize];
-            write_pixel_clipped(
-                bus,
-                screen_base,
-                screen_rb,
-                x,
-                y,
-                color_map[usize::from(source_index)],
-                screen_w,
-                screen_h,
-                pixel_size,
-                dst_clip,
-            );
+        }
+    } else {
+        let mut smc_dec;
+        let mut rle_dec;
+        let pixels: &[u8] = if is_smc {
+            smc_dec = super::smc::SmcDecoder::new(width, height);
+            let Ok(px) = smc_dec.decode(&compressed) else {
+                return (end, Some(source_clut));
+            };
+            px
+        } else if is_rle && depth <= 8 {
+            rle_dec = super::qtrle::QtRleDecoder::new(width, height);
+            let Ok(px) = rle_dec.decode(&compressed) else {
+                return (end, Some(source_clut));
+            };
+            px
+        } else {
+            return (end, Some(source_clut));
+        };
+
+        let color_map = build_src_to_dst_table(&source_clut, device_clut);
+        for source_y in crop_top..crop_bottom {
+            for source_x in crop_left..crop_right {
+                if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
+                    continue;
+                }
+                let x =
+                    ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
+                let y =
+                    ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
+                let source_index = pixels[source_y as usize * width + source_x as usize];
+                write_pixel_clipped(
+                    bus,
+                    screen_base,
+                    screen_rb,
+                    x,
+                    y,
+                    color_map[usize::from(source_index)],
+                    screen_w,
+                    screen_h,
+                    pixel_size,
+                    dst_clip,
+                );
+            }
         }
     }
 

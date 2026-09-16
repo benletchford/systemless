@@ -122,6 +122,115 @@ impl QtRleDecoder {
     }
 }
 
+/// Persistent QuickTime Animation decoder producing 16-bit RGB555 pixels.
+#[derive(Clone, Debug)]
+pub(crate) struct QtRle16Decoder {
+    width: usize,
+    height: usize,
+    /// Reconstructed frame as RGB555 words.
+    pixels: Vec<u16>,
+}
+
+impl QtRle16Decoder {
+    pub(crate) fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            pixels: vec![0; width.saturating_mul(height)],
+        }
+    }
+
+    /// Decode one sample and return the reconstructed frame (RGB555).
+    pub(crate) fn decode(&mut self, data: &[u8]) -> Result<&[u16], &'static str> {
+        if self.width == 0 || self.height == 0 {
+            return Err("qtrle: zero dimensions");
+        }
+        if data.len() < 8 {
+            return Err("qtrle: frame too short");
+        }
+        let header = u16::from_be_bytes([data[4], data[5]]);
+        let (start_line, num_lines, mut p) = if header & 0x0008 != 0 {
+            if data.len() < 14 {
+                return Err("qtrle: truncated header");
+            }
+            let start = u16::from_be_bytes([data[6], data[7]]) as usize;
+            let lines = u16::from_be_bytes([data[10], data[11]]) as usize;
+            (start, lines, 14usize)
+        } else {
+            (0usize, self.height, 6usize)
+        };
+
+        let w = self.width;
+        let end = data.len();
+        let get = |p: &mut usize| -> Option<u8> {
+            if *p >= end {
+                None
+            } else {
+                let b = data[*p];
+                *p += 1;
+                Some(b)
+            }
+        };
+        let get_u16 = |p: &mut usize| -> Option<u16> {
+            if *p + 2 > end {
+                None
+            } else {
+                let val = u16::from_be_bytes([data[*p], data[*p + 1]]);
+                *p += 2;
+                Some(val)
+            }
+        };
+
+        let mut row = start_line;
+        for _ in 0..num_lines {
+            if row >= self.height {
+                break;
+            }
+            let row_base = row * w;
+            let mut x: isize = 0;
+
+            // Initial per-line skip (pixels, not groups of 4).
+            let Some(skip) = get(&mut p) else { break };
+            x += (skip as isize) - 1;
+
+            loop {
+                let Some(code) = get(&mut p) else { break };
+                if code == 0xFF {
+                    break; // -1: end of line
+                }
+                let code = code as i8;
+                if code == 0 {
+                    // Additional skip.
+                    let Some(skip) = get(&mut p) else { break };
+                    x += (skip as isize) - 1;
+                } else if code < 0 {
+                    // A single 16-bit RGB555 pixel repeated (-code) times.
+                    let count = (-(code as isize)) as usize;
+                    let Some(pixel) = get_u16(&mut p) else { break };
+                    for _ in 0..count {
+                        if x >= 0 && (x as usize) < w {
+                            self.pixels[row_base + x as usize] = pixel;
+                        }
+                        x += 1;
+                    }
+                } else {
+                    // `code` literal 16-bit RGB555 pixels.
+                    for _ in 0..code as usize {
+                        let Some(pixel) = get_u16(&mut p) else { break };
+                        if x >= 0 && (x as usize) < w {
+                            self.pixels[row_base + x as usize] = pixel;
+                        }
+                        x += 1;
+                    }
+                }
+            }
+            row += 1;
+        }
+
+        Ok(&self.pixels)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +309,32 @@ mod tests {
         dec.decode(&f1).expect("f1");
         // Line 0 preserved, line 1 updated.
         assert_eq!(dec.indices, vec![5, 5, 5, 5, 9, 9, 9, 9]);
+    }
+
+    #[test]
+    fn rle16_literal_pixels() {
+        // 4×1 image. One line: skip=1 (no skip), code=2 (two literal pixels), then [0x1234, 0x5678], terminator 0xFF.
+        let mut body = vec![1u8, 2u8];
+        body.extend_from_slice(&0x1234u16.to_be_bytes());
+        body.extend_from_slice(&0x5678u16.to_be_bytes());
+        body.push(0xFF);
+        let s = sample(0, 1, &body);
+        let mut dec = QtRle16Decoder::new(4, 1);
+        let out = dec.decode(&s).expect("decode");
+        assert_eq!(out, &[0x1234, 0x5678, 0, 0]);
+    }
+
+    #[test]
+    fn rle16_negative_repeat_and_skips() {
+        // 6×1 image. skip=2 (skip 1), code=-2 (repeat 0x7FFF twice), code=0 (additional skip=2: skip 1), code=1 (literal 0x001F), terminator 0xFF.
+        let mut body = vec![2u8, (-2i8) as u8];
+        body.extend_from_slice(&0x7FFFu16.to_be_bytes());
+        body.extend_from_slice(&[0, 2, 1]);
+        body.extend_from_slice(&0x001Fu16.to_be_bytes());
+        body.push(0xFF);
+        let s = sample(0, 1, &body);
+        let mut dec = QtRle16Decoder::new(6, 1);
+        let out = dec.decode(&s).expect("decode");
+        assert_eq!(out, &[0, 0x7FFF, 0x7FFF, 0, 0x001F, 0]);
     }
 }
