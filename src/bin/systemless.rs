@@ -14,6 +14,10 @@
 //! headless-only library and skip the `winit` / `softbuffer` / `cpal`
 //! link.
 
+#[cfg(target_os = "windows")]
+#[path = "desktop/d3d_present.rs"]
+mod d3d_present;
+
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
 #[path = "desktop/headless_time.rs"]
@@ -797,6 +801,10 @@ impl HostMouseReleaseLatch {
 }
 
 struct App {
+    #[cfg(target_os = "windows")]
+    gpu: Option<d3d_present::D3dPresenter>,
+    #[cfg(target_os = "windows")]
+    gpu_frame: systemless::memory::CompactPresentation,
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
     surface: Option<metal_present::MetalPresenter>,
@@ -967,6 +975,10 @@ impl App {
         }
         Self {
             window: None,
+            #[cfg(target_os = "windows")]
+            gpu: None,
+            #[cfg(target_os = "windows")]
+            gpu_frame: Default::default(),
             surface: None,
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
@@ -2024,6 +2036,59 @@ impl App {
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
         }
 
+        #[cfg(target_os = "windows")]
+        if self.gpu.is_some() {
+            let exported = {
+                let _timing = FramePhaseTimer::new("GPU compact preparation");
+                if let Some(guest) = guest_frame.as_ref() {
+                    runner
+                        .bus()
+                        .compact_presentation(guest, &frame_argb, &mut self.gpu_frame)
+                } else {
+                    self.gpu_frame.width = game_w;
+                    self.gpu_frame.height = game_h;
+                    self.gpu_frame.scale = 1;
+                    self.gpu_frame.cells.clear();
+                    self.gpu_frame
+                        .cells
+                        .extend(frame_argb.iter().map(|p| p & 0xffffff));
+                    self.gpu_frame.detail.clear();
+                    true
+                }
+            };
+            let result = if exported {
+                self.gpu.as_mut().unwrap().present(
+                    &self.gpu_frame,
+                    (buf_w, buf_h),
+                    aspect_fit_dimensions(game_w, game_h, buf_w, buf_h),
+                )
+            } else {
+                Err("frame cannot use the opaque compact transport".into())
+            };
+            match result {
+                Ok(submitted) => {
+                    self.frame_argb = frame_argb;
+                    if submitted {
+                        self.last_presented_guest_tick = Some(presented_tick);
+                    }
+                    self.force_next_render = !submitted;
+                    self.render_headroom = Self::next_render_headroom(render_start.elapsed());
+                    return;
+                }
+                Err(message) => {
+                    eprintln!("[GPU] {message}; switching to software presentation");
+                    self.gpu = None;
+                    let window = self.window.as_ref().unwrap().clone();
+                    let context = softbuffer::Context::new(window.clone())
+                        .expect("Failed to create software context");
+                    self.surface = Some(
+                        Surface::new(&context, window).expect("Failed to create software surface"),
+                    );
+                    self.surface_size = None;
+                }
+            }
+        }
+
         let mut presented = std::mem::take(&mut self.presentation_argb);
         #[cfg(target_os = "macos")]
         let logical_size = (presentation_rect.width, presentation_rect.height);
@@ -2758,14 +2823,35 @@ impl ApplicationHandler for App {
             #[cfg(target_os = "macos")]
             let surface = metal_present::MetalPresenter::new(window.clone())
                 .expect("Failed to create Metal presenter");
+            #[cfg(target_os = "windows")]
+            if std::env::var_os("SYSTEMLESS_D3D11").is_some() {
+                match d3d_present::D3dPresenter::new(window.clone()) {
+                    Ok(gpu) => {
+                        eprintln!("[GPU] experimental D3D11 compact coverage enabled");
+                        self.gpu = Some(gpu);
+                    }
+                    Err(message) => eprintln!("[GPU] {message}; using software presentation"),
+                }
+            }
             #[cfg(not(target_os = "macos"))]
-            let context =
-                softbuffer::Context::new(window.clone()).expect("Failed to create context");
-            #[cfg(not(target_os = "macos"))]
-            let surface = Surface::new(&context, window.clone()).expect("Failed to create surface");
-
+            {
+                #[cfg(target_os = "windows")]
+                let software = self.gpu.is_none();
+                #[cfg(not(target_os = "windows"))]
+                let software = true;
+                if software {
+                    let context =
+                        softbuffer::Context::new(window.clone()).expect("Failed to create context");
+                    self.surface = Some(
+                        Surface::new(&context, window.clone()).expect("Failed to create surface"),
+                    );
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                self.surface = Some(surface);
+            }
             self.window = Some(window);
-            self.surface = Some(surface);
         }
     }
 
@@ -3142,7 +3228,10 @@ fn bind_headless_debug_server(
 ) -> Option<debug_server::DebugServer> {
     let path = path?;
     let server = debug_server::DebugServer::bind(&path).unwrap_or_else(|error| {
-        eprintln!("Error: cannot bind debug socket {}: {error}", path.display());
+        eprintln!(
+            "Error: cannot bind debug socket {}: {error}",
+            path.display()
+        );
         std::process::exit(1);
     });
     #[cfg(all(feature = "debug-server", unix))]
@@ -4644,9 +4733,7 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner
-            .dispatcher_mut()
-            .add_sound_channel(chan);
+        runner.dispatcher_mut().add_sound_channel(chan);
         runner
             .dispatcher_mut()
             .queue_sound_doubleback_callback(PendingDoubleBackCallback {
@@ -4771,9 +4858,7 @@ mod tests {
             1,
             8,
         );
-        runner
-            .dispatcher_mut()
-            .add_sound_channel(chan);
+        runner.dispatcher_mut().add_sound_channel(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);

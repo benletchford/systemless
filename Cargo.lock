@@ -2272,6 +2272,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "ttf-parser",
+ "windows",
  "winit",
  "zeno",
  "zip",

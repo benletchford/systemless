@@ -128,4 +128,5 @@ impl m68k::AddressBus for MacMemoryBus {
 }
 
 pub(crate) mod presentation;
+pub use presentation::CompactPresentation;
 pub use presentation::SavedPixels;
