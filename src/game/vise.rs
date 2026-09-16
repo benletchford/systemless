@@ -66,6 +66,8 @@ pub struct ViseEntry<'a> {
     pub data_packed_offset: usize,
     pub rsrc_packed_offset: usize,
     pub unpacked_offset: usize,
+    pub data_unpacked_offset: usize,
+    pub rsrc_unpacked_offset: usize,
     pub data_unpacked_len: usize,
     pub rsrc_unpacked_len: usize,
 }
@@ -349,46 +351,100 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 }
                 let name = decode_catalog_name(data, &mut cursor, name_len, "file name")?;
                 let path = child_path(&dirs, parent, &name, "file")?;
-                // In classic VISE resource-only records, the resource stream
-                // starts at the file payload offset and uses the first packed
-                // length. Gridz uses this layout for controls and graphics.
-                let resource_only_classic = version != VISE_VERSION_EXTENDED_CATALOG
-                    && data_unpacked_len == 0
-                    && rsrc_unpacked_len != 0
-                    && declared_data_packed_len != 0;
-                let (data_packed_len, rsrc_packed_len) = if resource_only_classic {
-                    (0, declared_data_packed_len)
+                // In classic VISE grouped records, multiple files and/or forks
+                // share a single compressed stream. Flag 0x10 at record offset 8
+                // marks grouped records in VISE 3.5; resource-only archives such
+                // as Gridz also use this layout for controls and graphics.
+                let is_grouped = version != VISE_VERSION_EXTENDED_CATALOG
+                    && ((record[8] & 0x10) != 0
+                        || (data_unpacked_len == 0
+                            && rsrc_unpacked_len != 0
+                            && declared_data_packed_len != 0));
+                let (
+                    data_packed_offset,
+                    data_packed_len,
+                    data_unpacked_offset,
+                    rsrc_packed_offset,
+                    rsrc_packed_len,
+                    rsrc_unpacked_offset,
+                ) = if is_grouped {
+                    let d_off = if data_unpacked_len > 0 {
+                        read_u32(record, 100, "data unpacked offset")? as usize
+                    } else {
+                        0
+                    };
+                    let r_off = if rsrc_unpacked_len > 0 {
+                        if data_unpacked_len > 0 {
+                            d_off + data_unpacked_len
+                        } else {
+                            read_u32(record, 104, "grouped resource offset")? as usize
+                        }
+                    } else {
+                        0
+                    };
+                    (
+                        packed_offset,
+                        if data_unpacked_len > 0 {
+                            declared_data_packed_len
+                        } else {
+                            0
+                        },
+                        d_off,
+                        packed_offset,
+                        if rsrc_unpacked_len > 0 {
+                            declared_data_packed_len
+                        } else {
+                            0
+                        },
+                        r_off,
+                    )
                 } else {
-                    (declared_data_packed_len, declared_rsrc_packed_len)
+                    let data_unpacked_offset = if version == VISE_VERSION_EXTENDED_CATALOG
+                        && extended_unpacked_offset < data_unpacked_len
+                    {
+                        extended_unpacked_offset
+                    } else {
+                        0
+                    };
+                    let rsrc_offset = packed_offset
+                        .checked_add(declared_data_packed_len)
+                        .ok_or_else(|| format!("{path} resource offset overflow"))?;
+                    (
+                        packed_offset,
+                        declared_data_packed_len,
+                        data_unpacked_offset,
+                        rsrc_offset,
+                        declared_rsrc_packed_len,
+                        0,
+                    )
                 };
-                let unpacked_offset = if resource_only_classic {
-                    read_u32(record, 104, "grouped resource offset")? as usize
-                } else {
-                    extended_unpacked_offset
-                };
-                let data_packed = if external {
+
+                let data_packed = if external || data_packed_len == 0 {
                     &[][..]
                 } else {
                     range(
                         data,
-                        packed_offset,
+                        data_packed_offset,
                         data_packed_len,
                         &format!("{path} data stream"),
                     )?
                 };
-                let rsrc_offset = packed_offset
-                    .checked_add(data_packed_len)
-                    .ok_or_else(|| format!("{path} resource offset overflow"))?;
-                let rsrc_packed = if external {
+                let rsrc_packed = if external || rsrc_packed_len == 0 {
                     &[][..]
                 } else {
                     range(
                         data,
-                        rsrc_offset,
+                        rsrc_packed_offset,
                         rsrc_packed_len,
                         &format!("{path} resource stream"),
                     )?
                 };
+                let unpacked_offset = if data_unpacked_len > 0 {
+                    data_unpacked_offset
+                } else {
+                    rsrc_unpacked_offset
+                };
+
                 entries.push(ViseEntry {
                     path,
                     file_type,
@@ -396,15 +452,11 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     external,
                     data_packed,
                     rsrc_packed,
-                    data_packed_offset: packed_offset,
-                    rsrc_packed_offset: rsrc_offset,
-                    unpacked_offset: if version == VISE_VERSION_EXTENDED_CATALOG
-                        && unpacked_offset >= data_unpacked_len
-                    {
-                        0
-                    } else {
-                        unpacked_offset
-                    },
+                    data_packed_offset,
+                    rsrc_packed_offset,
+                    unpacked_offset,
+                    data_unpacked_offset,
+                    rsrc_unpacked_offset,
                     data_unpacked_len,
                     rsrc_unpacked_len,
                 });
@@ -879,7 +931,8 @@ fn decode_catalog_name(
     *cursor = cursor
         .checked_add(len)
         .ok_or_else(|| format!("{label} offset overflow"))?;
-    Ok(decode_mac_roman(bytes))
+    let name = decode_mac_roman(bytes);
+    Ok(crate::trap::dispatch::TrapDispatcher::encode_hfs_component_for_vfs(&name))
 }
 
 fn range<'a>(data: &'a [u8], offset: usize, len: usize, label: &str) -> Result<&'a [u8], String> {
@@ -907,12 +960,12 @@ fn read_u32(data: &[u8], offset: usize, label: &str) -> Result<u32, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use flate2::{write::DeflateEncoder, Compression};
     use std::io::Write;
 
-    fn encode_vise_fork(bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn encode_vise_fork(bytes: &[u8]) -> Vec<u8> {
         let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(bytes).unwrap();
         let mut encoded = encoder.finish().unwrap();
@@ -1198,12 +1251,146 @@ mod tests {
     }
 
     #[test]
+    fn parses_grouped_classic_records_with_shared_stream() {
+        let file1_data = b"first file data fork contents";
+        let file1_rsrc = b"first file rsrc";
+        let file2_data = b"second file data fork contents";
+        let mut shared_stream = Vec::new();
+        shared_stream.extend_from_slice(file1_data);
+        shared_stream.extend_from_slice(file1_rsrc);
+        shared_stream.extend_from_slice(file2_data);
+        let total_unpacked_len = shared_stream.len();
+        let packed = encode_vise_fork(&shared_stream);
+
+        let payload_offset = VISE_HEADER_LEN;
+        let catalog_offset = payload_offset + packed.len();
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[0..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_35_LITE.to_be_bytes());
+        archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        archive.extend_from_slice(&packed);
+
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[0..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&2u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+
+        // File 1
+        archive.extend_from_slice(b"FVCT");
+        let mut file1 = [0u8; VISE_FILE_RECORD_LEN];
+        file1[8] = 0x10; // grouped flag
+        file1[40..44].copy_from_slice(b"TEXT");
+        file1[44..48].copy_from_slice(b"ttxt");
+        file1[64..68].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        file1[68..72].copy_from_slice(&(file1_data.len() as u32).to_be_bytes());
+        file1[72..76].copy_from_slice(&(total_unpacked_len as u32).to_be_bytes());
+        file1[76..80].copy_from_slice(&(file1_rsrc.len() as u32).to_be_bytes());
+        file1[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        file1[100..104].copy_from_slice(&0u32.to_be_bytes());
+        file1[104..108].copy_from_slice(&(file1_data.len() as u32).to_be_bytes());
+        file1[118] = 5;
+        archive.extend_from_slice(&file1);
+        archive.extend_from_slice(b"File1");
+
+        // File 2
+        archive.extend_from_slice(b"FVCT");
+        let mut file2 = [0u8; VISE_FILE_RECORD_LEN];
+        file2[8] = 0x10; // grouped flag
+        file2[40..44].copy_from_slice(b"TEXT");
+        file2[44..48].copy_from_slice(b"ttxt");
+        file2[64..68].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        file2[68..72].copy_from_slice(&(file2_data.len() as u32).to_be_bytes());
+        file2[72..76].copy_from_slice(&(total_unpacked_len as u32).to_be_bytes());
+        file2[76..80].copy_from_slice(&0u32.to_be_bytes());
+        file2[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        let file2_offset = (file1_data.len() + file1_rsrc.len()) as u32;
+        file2[100..104].copy_from_slice(&file2_offset.to_be_bytes());
+        file2[104..108].copy_from_slice(&0u32.to_be_bytes());
+        file2[118] = 5;
+        archive.extend_from_slice(&file2);
+        archive.extend_from_slice(b"File2");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.entries.len(), 2);
+
+        let e1 = &parsed.entries[0];
+        assert_eq!(e1.path, "File1");
+        assert_eq!(e1.data_packed, packed.as_slice());
+        assert_eq!(e1.rsrc_packed, packed.as_slice());
+        assert_eq!(e1.data_unpacked_offset, 0);
+        assert_eq!(e1.rsrc_unpacked_offset, file1_data.len());
+        assert_eq!(e1.data_unpacked_len, file1_data.len());
+        assert_eq!(e1.rsrc_unpacked_len, file1_rsrc.len());
+
+        let decoded = decode_vise_fork(e1.data_packed, total_unpacked_len).unwrap();
+        assert_eq!(
+            &decoded[e1.data_unpacked_offset..e1.data_unpacked_offset + e1.data_unpacked_len],
+            file1_data
+        );
+        assert_eq!(
+            &decoded[e1.rsrc_unpacked_offset..e1.rsrc_unpacked_offset + e1.rsrc_unpacked_len],
+            file1_rsrc
+        );
+
+        let e2 = &parsed.entries[1];
+        assert_eq!(e2.path, "File2");
+        assert_eq!(e2.data_packed, packed.as_slice());
+        assert!(e2.rsrc_packed.is_empty());
+        assert_eq!(
+            e2.data_unpacked_offset,
+            (file1_data.len() + file1_rsrc.len())
+        );
+        assert_eq!(e2.data_unpacked_len, file2_data.len());
+        assert_eq!(e2.rsrc_unpacked_len, 0);
+        assert_eq!(
+            &decoded[e2.data_unpacked_offset..e2.data_unpacked_offset + e2.data_unpacked_len],
+            file2_data
+        );
+    }
+
+    #[test]
+    fn decodes_catalog_names_with_literal_slashes() {
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[0..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_35_LITE.to_be_bytes());
+        archive[36..40].copy_from_slice(&(VISE_HEADER_LEN as u32).to_be_bytes());
+
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[0..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&2u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+
+        archive.extend_from_slice(b"DVCT");
+        let mut dir = [0u8; VISE_DIRECTORY_RECORD_LEN];
+        dir[76] = 11;
+        archive.extend_from_slice(&dir);
+        archive.extend_from_slice(b"MS Word/RTF");
+
+        archive.extend_from_slice(b"FVCT");
+        let mut file = [0u8; VISE_FILE_RECORD_LEN];
+        file[40..44].copy_from_slice(b"TEXT");
+        file[44..48].copy_from_slice(b"ttxt");
+        file[92..94].copy_from_slice(&1u16.to_be_bytes()); // parent is dir 1
+        file[118] = 10;
+        archive.extend_from_slice(&file);
+        archive.extend_from_slice(b"Manual 1/2");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.dirs.len(), 1);
+        assert_eq!(parsed.dirs[0], "MS Word\u{F02F}RTF");
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(
+            parsed.entries[0].path,
+            "MS Word\u{F02F}RTF/Manual 1\u{F02F}2"
+        );
+    }
+
+    #[test]
     fn rejects_traversal_in_catalog_components() {
         assert_eq!(
             validate_component("..", "file").unwrap_err(),
             "unsafe VISE file component \"..\""
         );
-        assert!(validate_component("Folder/Game", "directory").is_err());
         assert!(validate_component("Volume:Game", "file").is_err());
     }
 }

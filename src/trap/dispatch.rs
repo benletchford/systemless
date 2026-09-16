@@ -4206,7 +4206,7 @@ impl TrapDispatcher {
         Self::normalize_vfs_path_components(&path)
     }
 
-    fn encode_hfs_component_for_vfs(component: &str) -> String {
+    pub(crate) fn encode_hfs_component_for_vfs(component: &str) -> String {
         component
             .chars()
             .map(|character| {
