@@ -197,7 +197,7 @@ pub fn outline_output_scale(logical: (u32, u32), drawable: (u32, u32)) -> u32 {
 /// underestimates 2^64/divisor by at most one, and numerator is below 2^64.
 /// The remainder comparison supplies that possible final unit exactly.
 #[inline]
-fn coverage_quotient(numerator: u64, divisor: u64, reciprocal: u64) -> u64 {
+pub(crate) fn coverage_quotient(numerator: u64, divisor: u64, reciprocal: u64) -> u64 {
     let estimate = ((u128::from(numerator) * u128::from(reciprocal)) >> 64) as u64;
     estimate + u64::from(numerator - estimate * divisor >= divisor)
 }

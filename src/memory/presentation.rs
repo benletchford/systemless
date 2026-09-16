@@ -3,6 +3,7 @@
 //! outline glyphs retain indexed coverage through snapshots and pixel transfers.
 //! Frontends consume the presentation at its physical dimensions.
 mod controls;
+mod resample;
 
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
@@ -378,7 +379,7 @@ pub(crate) struct Presentation {
     cpu_recolor: Option<CpuRecolor>,
     cpu_copy: [Option<Arc<DetailCell>>; 4],
     restored_dialog: Option<(u64, (i16, i16, i16, i16), bool, u64)>,
-    output_cache: std::cell::RefCell<Option<(u64, u32, Vec<u32>)>>,
+    output_cache: std::cell::RefCell<Option<(u64, (u32, u32), Vec<u32>)>>,
     offscreen: BTreeMap<u32, Arc<DetailCell>>,
     // Conservative bounds: deletion may leave false positives, never false negatives.
     offscreen_bounds: Option<(u32, u32)>,
@@ -532,16 +533,17 @@ impl Presentation {
     }
 
     fn resolved_argb(&self, scale: u32) -> std::cell::Ref<'_, [u32]> {
+        let size = (self.logical_width() * scale, self.height * scale);
         if !self
             .output_cache
             .borrow()
             .as_ref()
-            .is_some_and(|(revision, cached_scale, _)| {
-                *revision == self.revision && *cached_scale == scale
+            .is_some_and(|(revision, cached_size, _)| {
+                *revision == self.revision && *cached_size == size
             })
         {
             let mut cache = self.output_cache.borrow_mut();
-            let (_, _, pixels) = cache.get_or_insert_with(|| (0, 0, Vec::new()));
+            let (_, _, pixels) = cache.get_or_insert_with(|| (0, (0, 0), Vec::new()));
             pixels.clear();
             pixels.reserve((self.logical_width() * self.height * scale * scale) as usize);
             self.render_scaled(scale, |rgb, count| {
@@ -551,9 +553,9 @@ impl Presentation {
                     | u32::from(rgb[2]);
                 pixels.extend(std::iter::repeat_n(pixel, count as usize));
             });
-            let (revision, cached_scale, _) = cache.as_mut().unwrap();
+            let (revision, cached_size, _) = cache.as_mut().unwrap();
             *revision = self.revision;
-            *cached_scale = scale;
+            *cached_size = size;
         }
         std::cell::Ref::map(self.output_cache.borrow(), |cache| {
             cache.as_ref().unwrap().2.as_slice()
@@ -1977,7 +1979,7 @@ mod tests {
         bus
     }
 
-    fn paint_detail(bus: &mut MacMemoryBus, address: u32) {
+    pub(super) fn paint_detail(bus: &mut MacMemoryBus, address: u32) {
         bus.presentation.as_mut().unwrap().glyph = Some((
             OutlineGlyph {
                 pixels: vec![64, 255, 0, 128],
