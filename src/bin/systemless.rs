@@ -2028,16 +2028,29 @@ impl App {
         #[cfg(target_os = "macos")]
         let logical_size = (presentation_rect.width, presentation_rect.height);
         #[cfg(not(target_os = "macos"))]
-        let logical_size = (game_w, game_h);
+        let drawable_rect = aspect_fit_dimensions(game_w, game_h, buf_w, buf_h);
+        #[cfg(target_os = "macos")]
         let output_scale = display::outline_output_scale(logical_size, (buf_w, buf_h));
         let mut used_outlines = false;
         #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
         let (game_w, game_h) = if let Some((width, height)) =
             guest_frame.as_ref().and_then(|guest| {
                 let _timing = FramePhaseTimer::new("outline pixel expansion");
-                runner
-                    .bus()
-                    .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
+                #[cfg(target_os = "macos")]
+                {
+                    runner
+                        .bus()
+                        .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    runner.bus().presented_argb_resized(
+                        guest,
+                        &frame_argb,
+                        (drawable_rect.2, drawable_rect.3),
+                        &mut presented,
+                    )
+                }
             }) {
             #[cfg(target_os = "macos")]
             {
@@ -2079,8 +2092,7 @@ impl App {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let (draw_x, draw_y, draw_w, draw_h) =
-                aspect_fit_dimensions(game_w, game_h, buf_w, buf_h);
+            let (draw_x, draw_y, draw_w, draw_h) = drawable_rect;
             let draw_x = draw_x as usize;
             let draw_y = draw_y as usize;
             let draw_w = draw_w as usize;
