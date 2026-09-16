@@ -30,7 +30,7 @@ include = [
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 m68k = { version = "0.13.0" }
-ppc = "0.6.0"
+ppc = "0.6.2"
 thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
