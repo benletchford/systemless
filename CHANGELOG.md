@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.6](https://github.com/benletchford/systemless/compare/v0.41.5...v0.41.6) (2026-09-16)
+
+
+### Performance Improvements
+
+* **memory:** bypass range routing for non-shared guest accesses and avoid redundant resource parsing ([#1991](https://github.com/benletchford/systemless/issues/1991)) ([48ebc3d](https://github.com/benletchford/systemless/commit/48ebc3d46c3654dc2a511b2d028770ef82fc03dd))
+
 ## [0.41.5](https://github.com/benletchford/systemless/compare/v0.41.4...v0.41.5) (2026-09-15)
 
 
