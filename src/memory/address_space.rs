@@ -86,7 +86,12 @@ impl GuestAddressSpaceState {
 
     #[inline]
     fn overlaps_shared(&self, start: u64, end: u64) -> bool {
-        self.may_overlap_shared(start, end) && ranges_overlap(start, end, shared_ranges(self))
+        self.may_overlap_shared(start, end)
+            && self.shared_regions.iter().any(|mapping| {
+                let mapping_start = u64::from(mapping.base);
+                let mapping_end = mapping_start.saturating_add(mapping.region.len() as u64);
+                start < mapping_end && mapping_start < end
+            })
     }
 }
 
@@ -158,11 +163,7 @@ fn ranges_cover_shared(state: &GuestAddressSpaceState, start: u64, end: u64) -> 
 /// This walks mapping boundaries rather than bytes, so a large writable alias
 /// still reaches the classic bus's bulk fast path.
 #[inline]
-fn shared_range_route(
-    state: &GuestAddressSpaceState,
-    start: u64,
-    end: u64,
-) -> GuestMemoryRoute {
+fn shared_range_route(state: &GuestAddressSpaceState, start: u64, end: u64) -> GuestMemoryRoute {
     let mut cursor = start;
     let mut writable = None;
     while cursor < end {
@@ -223,18 +224,22 @@ fn ranges_cover_ordinary(state: &GuestAddressSpaceState, start: u64, end: u64) -
 
 #[inline]
 fn shared_ranges(state: &GuestAddressSpaceState) -> impl Iterator<Item = (u64, u64)> + '_ {
-    state
-        .shared_regions
-        .iter()
-        .filter_map(|mapping| Some((u64::from(mapping.base), mapping_end(mapping.base, mapping.region.len())?)))
+    state.shared_regions.iter().filter_map(|mapping| {
+        Some((
+            u64::from(mapping.base),
+            mapping_end(mapping.base, mapping.region.len())?,
+        ))
+    })
 }
 
 #[inline]
 fn ordinary_ranges(state: &GuestAddressSpaceState) -> impl Iterator<Item = (u64, u64)> + '_ {
-    state
-        .ordinary_regions
-        .iter()
-        .filter_map(|mapping| Some((u64::from(mapping.base), mapping_end(mapping.base, mapping.len)?)))
+    state.ordinary_regions.iter().filter_map(|mapping| {
+        Some((
+            u64::from(mapping.base),
+            mapping_end(mapping.base, mapping.len)?,
+        ))
+    })
 }
 
 #[inline]
@@ -379,11 +384,7 @@ fn route_range_state(
 /// aliases have taken precedence. Bulk classic operations use this to decide
 /// whether their flat-RAM slice fast path is valid.
 #[inline]
-fn sparse_mapping_overlaps_state(
-    state: &GuestAddressSpaceState,
-    address: u32,
-    len: usize,
-) -> bool {
+fn sparse_mapping_overlaps_state(state: &GuestAddressSpaceState, address: u32, len: usize) -> bool {
     if len == 0 {
         return false;
     }
@@ -531,11 +532,7 @@ fn write_routed_u16_state(
     }
     let bytes = value.to_be_bytes();
     for offset in 0..bytes.len() {
-        if !routed_byte_is_writable_state(
-            state,
-            address.wrapping_add(offset as u32),
-            flat_limit,
-        ) {
+        if !routed_byte_is_writable_state(state, address.wrapping_add(offset as u32), flat_limit) {
             return None;
         }
     }
@@ -560,11 +557,7 @@ fn write_routed_u32_state(
     }
     let bytes = value.to_be_bytes();
     for offset in 0..bytes.len() {
-        if !routed_byte_is_writable_state(
-            state,
-            address.wrapping_add(offset as u32),
-            flat_limit,
-        ) {
+        if !routed_byte_is_writable_state(state, address.wrapping_add(offset as u32), flat_limit) {
             return None;
         }
     }
@@ -607,11 +600,7 @@ impl SharedGuestAddressSpace {
     }
 
     #[inline]
-    pub(crate) fn route_byte(
-        &self,
-        address: u32,
-        flat_limit: Option<u32>,
-    ) -> GuestMemoryRoute {
+    pub(crate) fn route_byte(&self, address: u32, flat_limit: Option<u32>) -> GuestMemoryRoute {
         self.with_state_mut(|state| route_byte_state(state, address, flat_limit))
     }
 
@@ -678,29 +667,17 @@ impl SharedGuestAddressSpace {
     /// RAM or is unmapped; the caller must not fall through when the route is
     /// `Shared`/`Sparse` because read-only mappings are still authoritative.
     #[inline]
-    pub(crate) fn read_routed_u8(
-        &self,
-        address: u32,
-        flat_limit: Option<u32>,
-    ) -> Option<u8> {
+    pub(crate) fn read_routed_u8(&self, address: u32, flat_limit: Option<u32>) -> Option<u8> {
         self.with_state_mut(|state| read_routed_u8_state(state, address, flat_limit))
     }
 
     #[inline]
-    pub(crate) fn read_routed_u16(
-        &self,
-        address: u32,
-        flat_limit: Option<u32>,
-    ) -> Option<u16> {
+    pub(crate) fn read_routed_u16(&self, address: u32, flat_limit: Option<u32>) -> Option<u16> {
         self.with_state_mut(|state| read_routed_u16_state(state, address, flat_limit))
     }
 
     #[inline]
-    pub(crate) fn read_routed_u32(
-        &self,
-        address: u32,
-        flat_limit: Option<u32>,
-    ) -> Option<u32> {
+    pub(crate) fn read_routed_u32(&self, address: u32, flat_limit: Option<u32>) -> Option<u32> {
         self.with_state_mut(|state| read_routed_u32_state(state, address, flat_limit))
     }
 
@@ -735,11 +712,7 @@ impl SharedGuestAddressSpace {
     }
 
     #[inline]
-    pub(crate) fn routed_byte_is_writable(
-        &self,
-        address: u32,
-        flat_limit: Option<u32>,
-    ) -> bool {
+    pub(crate) fn routed_byte_is_writable(&self, address: u32, flat_limit: Option<u32>) -> bool {
         self.with_state_mut(|state| routed_byte_is_writable_state(state, address, flat_limit))
     }
 
@@ -758,11 +731,7 @@ impl SharedGuestAddressSpace {
     /// Return the end of the highest read-only runtime reservation overlapping
     /// a candidate native heap allocation.
     #[inline]
-    pub(crate) fn readonly_allocation_overlap_end(
-        &self,
-        address: u32,
-        len: u32,
-    ) -> Option<u32> {
+    pub(crate) fn readonly_allocation_overlap_end(&self, address: u32, len: u32) -> Option<u32> {
         self.adapter().readonly_allocation_overlap_end(address, len)
     }
 
@@ -775,10 +744,7 @@ impl SharedGuestAddressSpace {
     /// Exclusively borrow the retained process address space for one operation.
     ///
     /// The runner serializes this access with both CPU adapters.
-    pub(crate) fn with_mut<R>(
-        &self,
-        f: impl FnOnce(&mut GuestAddressSpace) -> R,
-    ) -> R {
+    pub(crate) fn with_mut<R>(&self, f: impl FnOnce(&mut GuestAddressSpace) -> R) -> R {
         f(&mut self.adapter())
     }
 }
@@ -1010,10 +976,7 @@ impl GuestAddressSpace {
             return None;
         }
         let state = self.state_mut();
-        if !state
-            .readonly_allocation_exclusions
-            .contains(&(base, len))
-        {
+        if !state.readonly_allocation_exclusions.contains(&(base, len)) {
             state.readonly_allocation_exclusions.push((base, len));
         }
         Some(())
@@ -1088,14 +1051,15 @@ impl GuestAddressSpace {
         let start = u64::from(address);
         let end = start.checked_add(u64::from(len))?;
         let state = self.state();
-        let exclusion_ends = state
-            .readonly_allocation_exclusions
-            .iter()
-            .filter_map(|&(base, len)| {
-                let mapping_start = u64::from(base);
-                let mapping_end = mapping_start.checked_add(u64::from(len))?;
-                (start < mapping_end && mapping_start < end).then_some(mapping_end)
-            });
+        let exclusion_ends =
+            state
+                .readonly_allocation_exclusions
+                .iter()
+                .filter_map(|&(base, len)| {
+                    let mapping_start = u64::from(base);
+                    let mapping_end = mapping_start.checked_add(u64::from(len))?;
+                    (start < mapping_end && mapping_start < end).then_some(mapping_end)
+                });
         let shared_ends = state
             .shared_regions
             .iter()
@@ -1114,11 +1078,7 @@ impl GuestAddressSpace {
     /// Return the total and largest contiguous byte counts remaining in a
     /// half-open range after clipping and unioning staged exclusions and live
     /// read-only shared mappings.
-    pub(crate) fn readonly_allocation_available_bytes(
-        &self,
-        start: u32,
-        end: u32,
-    ) -> (u32, u32) {
+    pub(crate) fn readonly_allocation_available_bytes(&self, start: u32, end: u32) -> (u32, u32) {
         if start >= end {
             return (0, 0);
         }
@@ -1130,9 +1090,7 @@ impl GuestAddressSpace {
             .iter()
             .filter_map(|&(base, len)| {
                 let mapping_start = u64::from(base).max(range_start);
-                let mapping_end = u64::from(base)
-                    .checked_add(u64::from(len))?
-                    .min(range_end);
+                let mapping_end = u64::from(base).checked_add(u64::from(len))?.min(range_end);
                 (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
             });
         let shared = state
@@ -1146,9 +1104,7 @@ impl GuestAddressSpace {
                     .min(range_end);
                 (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
             });
-        let mut reserved = excluded
-            .chain(shared)
-            .collect::<Vec<_>>();
+        let mut reserved = excluded.chain(shared).collect::<Vec<_>>();
         reserved.sort_unstable_by_key(|&(mapping_start, _)| mapping_start);
 
         let mut available_start = range_start;
@@ -1182,8 +1138,13 @@ impl GuestAddressSpace {
         if dst.is_empty() {
             return Some(());
         }
-        match self.route(addr, dst.len(), None) {
-            GuestMemoryRoute::Sparse => self.state_mut().regions.read_bytes_into(addr, dst),
+        let end = range_end(addr, dst.len())?;
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            return state.regions.read_bytes_into(addr, dst);
+        }
+        match route_range_state(state, addr, dst.len(), None) {
+            GuestMemoryRoute::Sparse => state.regions.read_bytes_into(addr, dst),
             GuestMemoryRoute::Shared
             | GuestMemoryRoute::SharedReadOnly
             | GuestMemoryRoute::Mixed => {
@@ -1201,10 +1162,17 @@ impl GuestAddressSpace {
         if src.is_empty() {
             return Some(());
         }
-        match self.route(addr, src.len(), None) {
+        let end = range_end(addr, src.len())?;
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            state.regions.write_bytes(addr, src)?;
+            state.presentation.write_bytes(addr, src);
+            return Some(());
+        }
+        match route_range_state(state, addr, src.len(), None) {
             GuestMemoryRoute::Sparse => {
-                self.state_mut().regions.write_bytes(addr, src)?;
-                self.state().presentation.write_bytes(addr, src);
+                state.regions.write_bytes(addr, src)?;
+                state.presentation.write_bytes(addr, src);
                 return Some(());
             }
             GuestMemoryRoute::Shared => {
@@ -1246,11 +1214,7 @@ impl GuestAddressSpace {
                     shared.push((address, byte));
                 }
                 GuestMemoryRoute::Sparse => {
-                    ordinary.push((
-                        address,
-                        self.state_mut().regions.read_u8(address)?,
-                        byte,
-                    ));
+                    ordinary.push((address, self.state_mut().regions.read_u8(address)?, byte));
                 }
                 GuestMemoryRoute::Flat | GuestMemoryRoute::Unmapped | GuestMemoryRoute::Mixed => {
                     return None;
@@ -1366,23 +1330,32 @@ impl GuestAddressSpace {
     fn locate_shared_mapping(&self, addr: u32) -> Option<(&SharedRegionMapping, usize)> {
         shared_mapping_at(self.state(), addr)
     }
-
 }
 
 impl PpcMemory for GuestAddressSpace {
     #[inline]
     fn read_u8(&mut self, addr: u32) -> Option<u8> {
-        read_routed_u8_state(self.state_mut(), addr, None)
+        let state = self.state_mut();
+        let start = u64::from(addr);
+        if !state.overlaps_shared(start, start + 1) {
+            return PpcMemory::read_u8(&mut state.regions, addr);
+        }
+        read_routed_u8_state(state, addr, None)
     }
 
     #[inline]
     fn read_u16_be(&mut self, addr: u32) -> Option<u16> {
-        match self.route(addr, 2, None) {
+        let Some(end) = range_end(addr, 2) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            return PpcMemory::read_u16_be(&mut state.regions, addr);
+        }
+        match route_range_state(state, addr, 2, None) {
             GuestMemoryRoute::Sparse
             | GuestMemoryRoute::Shared
-            | GuestMemoryRoute::SharedReadOnly => {
-                read_routed_u16_state(self.state_mut(), addr, None)
-            }
+            | GuestMemoryRoute::SharedReadOnly => read_routed_u16_state(state, addr, None),
             GuestMemoryRoute::Mixed => {
                 let mut bytes = [0; 2];
                 self.read_bytes_into(addr, &mut bytes)?;
@@ -1394,12 +1367,17 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn read_u32_be(&mut self, addr: u32) -> Option<u32> {
-        match self.route(addr, 4, None) {
+        let Some(end) = range_end(addr, 4) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            return PpcMemory::read_u32_be(&mut state.regions, addr);
+        }
+        match route_range_state(state, addr, 4, None) {
             GuestMemoryRoute::Sparse
             | GuestMemoryRoute::Shared
-            | GuestMemoryRoute::SharedReadOnly => {
-                read_routed_u32_state(self.state_mut(), addr, None)
-            }
+            | GuestMemoryRoute::SharedReadOnly => read_routed_u32_state(state, addr, None),
             GuestMemoryRoute::Mixed => {
                 let mut bytes = [0; 4];
                 self.read_bytes_into(addr, &mut bytes)?;
@@ -1411,8 +1389,15 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn read_u64_be(&mut self, addr: u32) -> Option<u64> {
-        match self.route(addr, 8, None) {
-            GuestMemoryRoute::Sparse => self.state_mut().regions.read_u64_be(addr),
+        let Some(end) = range_end(addr, 8) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            return state.regions.read_u64_be(addr);
+        }
+        match route_range_state(state, addr, 8, None) {
+            GuestMemoryRoute::Sparse => state.regions.read_u64_be(addr),
             GuestMemoryRoute::Shared
             | GuestMemoryRoute::SharedReadOnly
             | GuestMemoryRoute::Mixed => {
@@ -1426,23 +1411,33 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn read_instruction_u32_be(&mut self, addr: u32) -> Option<u32> {
-        match self.route(addr, 4, None) {
-            GuestMemoryRoute::Sparse => {
-                self.state_mut().regions.read_instruction_u32_be(addr)
-            }
+        let Some(end) = range_end(addr, 4) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            return state.regions.read_instruction_u32_be(addr);
+        }
+        match route_range_state(state, addr, 4, None) {
+            GuestMemoryRoute::Sparse => state.regions.read_instruction_u32_be(addr),
             GuestMemoryRoute::Shared
             | GuestMemoryRoute::SharedReadOnly
-            | GuestMemoryRoute::Mixed => {
-                self.read_u32_be(addr)
-            }
+            | GuestMemoryRoute::Mixed => self.read_u32_be(addr),
             GuestMemoryRoute::Flat | GuestMemoryRoute::Unmapped => None,
         }
     }
 
     #[inline]
     fn instruction_cache_token(&mut self, addr: u32) -> Option<u64> {
-        match self.route(addr, 4, None) {
-            GuestMemoryRoute::Sparse => self.state_mut().regions.instruction_cache_token(addr),
+        let Some(end) = range_end(addr, 4) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            return state.regions.instruction_cache_token(addr);
+        }
+        match route_range_state(state, addr, 4, None) {
+            GuestMemoryRoute::Sparse => state.regions.instruction_cache_token(addr),
             GuestMemoryRoute::Shared
             | GuestMemoryRoute::SharedReadOnly
             | GuestMemoryRoute::Flat
@@ -1453,17 +1448,31 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn write_u8(&mut self, addr: u32, value: u8) -> Option<()> {
-        write_routed_u8_state(self.state_mut(), addr, value, None)
+        let state = self.state_mut();
+        let start = u64::from(addr);
+        if !state.overlaps_shared(start, start + 1) {
+            PpcMemory::write_u8(&mut state.regions, addr, value)?;
+            state.presentation.write_bytes(addr, &[value]);
+            return Some(());
+        }
+        write_routed_u8_state(state, addr, value, None)
     }
 
     #[inline]
     fn write_u16_be(&mut self, addr: u32, value: u16) -> Option<()> {
-        match self.route(addr, 2, None) {
+        let Some(end) = range_end(addr, 2) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            PpcMemory::write_u16_be(&mut state.regions, addr, value)?;
+            state.presentation.write_bytes(addr, &value.to_be_bytes());
+            return Some(());
+        }
+        match route_range_state(state, addr, 2, None) {
             GuestMemoryRoute::Sparse
             | GuestMemoryRoute::Shared
-            | GuestMemoryRoute::SharedReadOnly => {
-                write_routed_u16_state(self.state_mut(), addr, value, None)
-            }
+            | GuestMemoryRoute::SharedReadOnly => write_routed_u16_state(state, addr, value, None),
             GuestMemoryRoute::Mixed => self.write_bytes(addr, &value.to_be_bytes()),
             GuestMemoryRoute::Flat | GuestMemoryRoute::Unmapped => None,
         }
@@ -1471,12 +1480,19 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn write_u32_be(&mut self, addr: u32, value: u32) -> Option<()> {
-        match self.route(addr, 4, None) {
+        let Some(end) = range_end(addr, 4) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            PpcMemory::write_u32_be(&mut state.regions, addr, value)?;
+            state.presentation.write_bytes(addr, &value.to_be_bytes());
+            return Some(());
+        }
+        match route_range_state(state, addr, 4, None) {
             GuestMemoryRoute::Sparse
             | GuestMemoryRoute::Shared
-            | GuestMemoryRoute::SharedReadOnly => {
-                write_routed_u32_state(self.state_mut(), addr, value, None)
-            }
+            | GuestMemoryRoute::SharedReadOnly => write_routed_u32_state(state, addr, value, None),
             GuestMemoryRoute::Mixed => self.write_bytes(addr, &value.to_be_bytes()),
             GuestMemoryRoute::Flat | GuestMemoryRoute::Unmapped => None,
         }
@@ -1484,19 +1500,24 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn write_u64_be(&mut self, addr: u32, value: u64) -> Option<()> {
-        match self.route(addr, 8, None) {
+        let Some(end) = range_end(addr, 8) else {
+            return None;
+        };
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            state.regions.write_u64_be(addr, value)?;
+            state.presentation.write_bytes(addr, &value.to_be_bytes());
+            return Some(());
+        }
+        match route_range_state(state, addr, 8, None) {
             GuestMemoryRoute::Sparse => {
-                self.state_mut().regions.write_u64_be(addr, value)?;
-                self.state()
-                    .presentation
-                    .write_bytes(addr, &value.to_be_bytes());
+                state.regions.write_u64_be(addr, value)?;
+                state.presentation.write_bytes(addr, &value.to_be_bytes());
                 Some(())
             }
             GuestMemoryRoute::Shared
             | GuestMemoryRoute::SharedReadOnly
-            | GuestMemoryRoute::Mixed => {
-                self.write_bytes(addr, &value.to_be_bytes())
-            }
+            | GuestMemoryRoute::Mixed => self.write_bytes(addr, &value.to_be_bytes()),
             GuestMemoryRoute::Flat | GuestMemoryRoute::Unmapped => None,
         }
     }
@@ -2363,8 +2384,14 @@ mod tests {
         assert_eq!(MemoryBus::read_long(&bus, SPARSE), 0x1122_3344);
 
         MemoryBus::write_long(&mut bus, SPARSE, 0x5566_7788);
-        assert_eq!(PpcMemory::read_u32_be(&mut moved, SPARSE), Some(0x5566_7788));
-        assert_eq!(PpcMemory::read_u32_be(&mut detached, SPARSE), Some(0x1122_3344));
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut moved, SPARSE),
+            Some(0x5566_7788)
+        );
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut detached, SPARSE),
+            Some(0x1122_3344)
+        );
 
         PpcMemory::write_u32_be(&mut detached, SPARSE, 0x99aa_bbcc).unwrap();
         assert_eq!(MemoryBus::read_long(&bus, SPARSE), 0x5566_7788);
