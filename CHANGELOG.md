@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.8](https://github.com/benletchford/systemless/compare/v0.41.7...v0.41.8) (2026-09-16)
+
+
+### Bug Fixes
+
+* **pict:** decode 16-bit QuickTime Animation streams and update ppc to 0.6.2 ([#2002](https://github.com/benletchford/systemless/issues/2002)) ([60c3668](https://github.com/benletchford/systemless/commit/60c3668f087f53e93546d6a1c0c38d4223449b37))
+
 ## [0.41.7](https://github.com/benletchford/systemless/compare/v0.41.6...v0.41.7) (2026-09-16)
 
 
