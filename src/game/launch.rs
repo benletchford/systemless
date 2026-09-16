@@ -1996,31 +1996,29 @@ fn expand_vise_payload(
         if entry.external {
             continue;
         }
-        for (packed_offset, packed, unpacked_len) in [
+        for (packed_offset, packed, unpacked_offset, unpacked_len) in [
             (
                 entry.data_packed_offset,
                 entry.data_packed,
+                entry.data_unpacked_offset,
                 entry.data_unpacked_len,
             ),
             (
                 entry.rsrc_packed_offset,
                 entry.rsrc_packed,
+                entry.rsrc_unpacked_offset,
                 entry.rsrc_unpacked_len,
             ),
         ] {
-            if unpacked_len == 0 {
+            if unpacked_len == 0 || packed.is_empty() {
                 continue;
             }
-            let required_len =
-                entry
-                    .unpacked_offset
-                    .checked_add(unpacked_len)
-                    .ok_or_else(|| {
-                        format!(
-                            "Installer VISE {name}/{} unpacked fork range overflow",
-                            entry.path
-                        )
-                    })?;
+            let required_len = unpacked_offset.checked_add(unpacked_len).ok_or_else(|| {
+                format!(
+                    "Installer VISE {name}/{} unpacked fork range overflow",
+                    entry.path
+                )
+            })?;
             let key = (packed_offset, packed.len());
             required_by_stream
                 .entry(key)
@@ -2055,37 +2053,35 @@ fn expand_vise_payload(
     };
     for entry in archive.entries {
         let extract_fork = |packed_offset: usize,
-                            packed_len: usize,
+                            packed: &[u8],
+                            unpacked_offset: usize,
                             unpacked_len: usize,
                             fork_name: &str|
          -> Result<Vec<u8>, String> {
             if unpacked_len == 0 {
                 return Ok(Vec::new());
             }
-            let key = (packed_offset, packed_len);
+            let key = (packed_offset, packed.len());
             let decoded = decoded_by_stream.get(&key).ok_or_else(|| {
                 format!(
                     "Installer VISE {name}/{} {fork_name} fork: missing decoded stream",
                     entry.path
                 )
             })?;
-            let end = entry
-                .unpacked_offset
-                .checked_add(unpacked_len)
-                .ok_or_else(|| {
-                    format!(
-                        "Installer VISE {name}/{} {fork_name} fork range overflow",
-                        entry.path
-                    )
-                })?;
+            let end = unpacked_offset.checked_add(unpacked_len).ok_or_else(|| {
+                format!(
+                    "Installer VISE {name}/{} {fork_name} fork range overflow",
+                    entry.path
+                )
+            })?;
             decoded
-                .get(entry.unpacked_offset..end)
+                .get(unpacked_offset..end)
                 .map(<[u8]>::to_vec)
                 .ok_or_else(|| {
                     format!(
                         "Installer VISE {name}/{} {fork_name} fork range {}..{} exceeds decoded stream {}",
                         entry.path,
-                        entry.unpacked_offset,
+                        unpacked_offset,
                         end,
                         decoded.len()
                     )
@@ -2097,13 +2093,15 @@ fn expand_vise_payload(
         } else {
             let data = extract_fork(
                 entry.data_packed_offset,
-                entry.data_packed.len(),
+                entry.data_packed,
+                entry.data_unpacked_offset,
                 entry.data_unpacked_len,
                 "data",
             )?;
             let rsrc = extract_fork(
                 entry.rsrc_packed_offset,
-                entry.rsrc_packed.len(),
+                entry.rsrc_packed,
+                entry.rsrc_unpacked_offset,
                 entry.rsrc_unpacked_len,
                 "resource",
             )?;
@@ -3542,6 +3540,78 @@ mod tests {
         archive[68 + 112] = 1;
         archive[68 + 94..68 + 96].copy_from_slice(&1u16.to_be_bytes());
         assert!(crate::game::vise::parse_vise(&archive).unwrap().is_err());
+    }
+
+    #[test]
+    fn vise_grouped_stream_expands_payload_files_and_forks() {
+        let file1_data = b"first file data fork contents";
+        let file1_rsrc = b"first file rsrc";
+        let file2_data = b"second file data fork contents";
+        let mut shared_stream = Vec::new();
+        shared_stream.extend_from_slice(file1_data);
+        shared_stream.extend_from_slice(file1_rsrc);
+        shared_stream.extend_from_slice(file2_data);
+        let total_unpacked_len = shared_stream.len();
+        let packed = crate::game::vise::tests::encode_vise_fork(&shared_stream);
+
+        let payload_offset = 44;
+        let catalog_offset = payload_offset + packed.len();
+        let mut archive = vec![0u8; 44];
+        archive[0..4].copy_from_slice(b"SVCT");
+        archive[16..20].copy_from_slice(&0x8001_0202u32.to_be_bytes());
+        archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        archive.extend_from_slice(&packed);
+
+        let mut catalog = [0u8; 20];
+        catalog[0..4].copy_from_slice(b"CVCT");
+        catalog[16..18].copy_from_slice(&2u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+
+        // File 1
+        archive.extend_from_slice(b"FVCT");
+        let mut file1 = [0u8; 120];
+        file1[8] = 0x10; // grouped flag
+        file1[40..44].copy_from_slice(b"TEXT");
+        file1[44..48].copy_from_slice(b"ttxt");
+        file1[64..68].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        file1[68..72].copy_from_slice(&(file1_data.len() as u32).to_be_bytes());
+        file1[72..76].copy_from_slice(&(total_unpacked_len as u32).to_be_bytes());
+        file1[76..80].copy_from_slice(&(file1_rsrc.len() as u32).to_be_bytes());
+        file1[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        file1[100..104].copy_from_slice(&0u32.to_be_bytes());
+        file1[104..108].copy_from_slice(&(file1_data.len() as u32).to_be_bytes());
+        file1[118] = 5;
+        archive.extend_from_slice(&file1);
+        archive.extend_from_slice(b"File1");
+
+        // File 2
+        archive.extend_from_slice(b"FVCT");
+        let mut file2 = [0u8; 120];
+        file2[8] = 0x10; // grouped flag
+        file2[40..44].copy_from_slice(b"APPL");
+        file2[44..48].copy_from_slice(b"TEST");
+        file2[64..68].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        file2[68..72].copy_from_slice(&(file2_data.len() as u32).to_be_bytes());
+        file2[72..76].copy_from_slice(&(total_unpacked_len as u32).to_be_bytes());
+        file2[76..80].copy_from_slice(&0u32.to_be_bytes());
+        file2[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        let file2_offset = (file1_data.len() + file1_rsrc.len()) as u32;
+        file2[100..104].copy_from_slice(&file2_offset.to_be_bytes());
+        file2[104..108].copy_from_slice(&0u32.to_be_bytes());
+        file2[118] = 5;
+        archive.extend_from_slice(&file2);
+        archive.extend_from_slice(b"File2");
+
+        let expanded = expand_vise_payload("Installer", &archive, 0, &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(expanded.files.len(), 2);
+        assert_eq!(expanded.files[0].name, "Installer/File1");
+        assert_eq!(expanded.files[0].data, file1_data);
+        assert_eq!(expanded.files[0].rsrc, file1_rsrc);
+        assert_eq!(expanded.files[1].name, "Installer/File2");
+        assert_eq!(expanded.files[1].data, file2_data);
+        assert!(expanded.files[1].rsrc.is_empty());
     }
 
     fn installer_on_source_volume() -> Payload {
