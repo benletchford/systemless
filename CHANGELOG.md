@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.9](https://github.com/benletchford/systemless/compare/v0.41.8...v0.41.9) (2026-09-17)
+
+
+### Bug Fixes
+
+* **toolbox:** map CurApRefNum to internal refnum 0 in UseResFile ([#2005](https://github.com/benletchford/systemless/issues/2005)) ([392138c](https://github.com/benletchford/systemless/commit/392138c4b7d3b974c32747361dd8d480ec9a408e))
+
 ## [0.41.8](https://github.com/benletchford/systemless/compare/v0.41.7...v0.41.8) (2026-09-16)
 
 
