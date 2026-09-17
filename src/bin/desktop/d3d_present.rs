@@ -1,13 +1,19 @@
 //! Opt-in Windows compact-coverage prototype (SYSTEMLESS_D3D11=1).
-//! Device/context access stays on the window thread. A zero-time wait and
-//! DO_NOT_WAIT presentation bound queueing without blocking input on vsync.
+//! Device/context access stays on the window thread. A wait worker wakes it
+//! when DXGI is ready, independently of the guest tick and input handling.
 use systemless::memory::CompactPresentation;
+#[path = "d3d_wait.rs"]
+mod d3d_wait;
+use d3d_wait::FrameWaiter;
 use windows::{
-    core::{s, Interface, PCSTR},
+    core::{s, w, Interface, PCSTR},
     Win32::{
-        Foundation::{CloseHandle, HANDLE, HMODULE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, HANDLE, HMODULE, HWND},
         Graphics::{Direct3D::Fxc::*, Direct3D::*, Direct3D11::*, Dxgi::Common::*, Dxgi::*},
-        System::Threading::WaitForSingleObject,
+        UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+            WINDOW_EX_STYLE, WS_CHILD, WS_DISABLED, WS_VISIBLE,
+        },
     },
 };
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -16,6 +22,20 @@ use winit::window::Window;
 type Result<T> = std::result::Result<T, String>;
 fn error(e: windows::core::Error) -> String {
     e.to_string()
+}
+
+/// A flip-model HWND cannot return to GDI, even after its swap chain is gone.
+/// Keep that restriction on a disposable child so the parent remains usable
+/// by softbuffer after any GPU failure. Disabled children pass mouse input to
+/// their parent; winit continues to own input, focus and the native cursor.
+struct PresentationWindow(HWND);
+
+impl Drop for PresentationWindow {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyWindow(self.0);
+        }
+    }
 }
 
 struct Upload {
@@ -93,7 +113,9 @@ pub struct D3dPresenter {
     context: ID3D11DeviceContext,
     swap: IDXGISwapChain2,
     ready: HANDLE,
+    waiter: Option<FrameWaiter>,
     queue_slot: bool,
+    retry_at: Option<std::time::Instant>,
     target: Option<ID3D11RenderTargetView>,
     size: (u32, u32),
     vertex: ID3D11VertexShader,
@@ -104,11 +126,15 @@ pub struct D3dPresenter {
     detail: Option<Upload>,
     verified_size: Option<(u32, u32)>,
     frames: u64,
+    // Fields drop in declaration order: release all D3D objects before the
+    // child, and keep its parent alive until after the child is destroyed.
+    child: PresentationWindow,
     _window: std::rc::Rc<Window>,
 }
 
 impl Drop for D3dPresenter {
     fn drop(&mut self) {
+        self.waiter.take();
         unsafe {
             self.context.ClearState();
             self.context.Flush();
@@ -149,7 +175,10 @@ unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
 }
 
 impl D3dPresenter {
-    pub fn new(window: std::rc::Rc<Window>) -> Result<Self> {
+    pub fn new(
+        window: std::rc::Rc<Window>,
+        wake: winit::event_loop::EventLoopProxy<()>,
+    ) -> Result<Self> {
         let RawWindowHandle::Win32(handle) =
             window.window_handle().map_err(|e| e.to_string())?.as_raw()
         else {
@@ -178,6 +207,23 @@ impl D3dPresenter {
             let adapter = dxgi.GetAdapter().map_err(error)?;
             let factory: IDXGIFactory2 = adapter.GetParent().map_err(error)?;
             let hwnd = HWND(handle.hwnd.get());
+            let child = PresentationWindow(CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                None,
+                WS_CHILD | WS_VISIBLE | WS_DISABLED,
+                0,
+                0,
+                1,
+                1,
+                hwnd,
+                None,
+                None,
+                None,
+            ));
+            if child.0 == HWND(0) {
+                return Err(error(windows::core::Error::from_win32()));
+            }
             let desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: 1,
                 Height: 1,
@@ -195,7 +241,7 @@ impl D3dPresenter {
                 ..Default::default()
             };
             let swap: IDXGISwapChain2 = factory
-                .CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)
+                .CreateSwapChainForHwnd(&device, child.0, &desc, None, None)
                 .map_err(error)?
                 .cast()
                 .map_err(error)?;
@@ -257,12 +303,21 @@ impl D3dPresenter {
             if ready.is_invalid() {
                 return Err("no DXGI frame latency event".into());
             }
+            let waiter = match FrameWaiter::new(ready, move || wake.send_event(()).is_ok()) {
+                Ok(waiter) => waiter,
+                Err(message) => {
+                    let _ = CloseHandle(ready);
+                    return Err(message);
+                }
+            };
             Ok(Self {
                 device,
                 context,
                 swap,
                 ready,
+                waiter: Some(waiter),
                 queue_slot: false,
+                retry_at: None,
                 target: None,
                 size: (1, 1),
                 vertex: vertex.unwrap(),
@@ -273,13 +328,22 @@ impl D3dPresenter {
                 detail: None,
                 verified_size: None,
                 frames: 0,
+                child,
                 _window: window,
             })
         }
     }
 
+    pub fn cancel_retry(&mut self) {
+        self.retry_at = None;
+    }
+
+    pub fn retry_at(&self) -> Option<std::time::Instant> {
+        self.retry_at
+    }
+
     /// False means the previous frame is still queued; retry with the newest
-    /// guest state next tick. It does not accumulate a queue of old images.
+    /// guest state on the readiness notification. No old-image queue accumulates.
     pub fn present(
         &mut self,
         frame: &CompactPresentation,
@@ -309,11 +373,11 @@ impl D3dPresenter {
         }
         unsafe {
             if !self.queue_slot {
-                match WaitForSingleObject(self.ready, 0) {
-                    WAIT_OBJECT_0 => self.queue_slot = true,
-                    WAIT_TIMEOUT => return Ok(false),
-                    _ => return Err("DXGI frame event failed".into()),
+                if !self.waiter.as_ref().unwrap().is_ready()? {
+                    let _waiting = super::FramePhaseTimer::new("GPU waiting for queue slot");
+                    return Ok(false);
                 }
+                self.queue_slot = true;
             }
             if self.size != size || self.target.is_none() {
                 self.context.OMSetRenderTargets(None, None);
@@ -331,6 +395,16 @@ impl D3dPresenter {
                 self.device
                     .CreateRenderTargetView(&back, None, Some(&mut self.target))
                     .map_err(error)?;
+                SetWindowPos(
+                    self.child.0,
+                    None,
+                    0,
+                    0,
+                    size.0 as i32,
+                    size.1 as i32,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                )
+                .map_err(error)?;
                 self.size = size;
             }
             let _timing = super::FramePhaseTimer::new("GPU upload and submission");
@@ -396,12 +470,19 @@ impl D3dPresenter {
             // No ALLOW_TEARING flag: this is still a composed window.
             let result = self.swap.Present(0, DXGI_PRESENT_DO_NOT_WAIT);
             if result == DXGI_ERROR_WAS_STILL_DRAWING {
+                // A ready queue slot does not guarantee Present itself cannot
+                // return busy. No new latency signal is owed in this case.
+                self.retry_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_millis(1));
+                let _busy = super::FramePhaseTimer::new("GPU Present busy");
                 return Ok(false);
             }
             result.ok().map_err(error)?;
             // Retain this permission across WAS_STILL_DRAWING retries: the
             // latency event was already consumed, but no present was queued.
+            self.retry_at = None;
             self.queue_slot = false;
+            self.waiter.as_ref().unwrap().arm()?;
             let _accepted = super::FramePhaseTimer::new("GPU present accepted");
             self.frames += 1;
             Ok(true)
