@@ -562,14 +562,20 @@ impl StandardMenuChrome {
 
     pub(crate) fn for_each_frame_pixel(self, mut visit: impl FnMut(i16, i16)) {
         let (top, left, bottom, right) = self.rect;
+        if bottom <= top || right <= left {
+            return;
+        }
+        let last_x = right - 1;
+        let last_y = bottom - 1;
         for y in top..bottom {
-            for x in left..right {
-                if x == left
-                    || x == right.saturating_sub(1)
-                    || y == bottom.saturating_sub(1)
-                    || (self.top_border && y == top)
-                {
+            if (self.top_border && y == top) || y == last_y {
+                for x in left..right {
                     visit(x, y);
+                }
+            } else {
+                visit(left, y);
+                if last_x > left {
+                    visit(last_x, y);
                 }
             }
         }

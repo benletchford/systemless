@@ -80,7 +80,7 @@ pub(super) fn frame(runner: &mut FixtureRunner, audio_samples: usize) -> FrameWo
         if !running
             || runner.guest_tick() >= target
             || steps == 0
-            || (steps < requested && runner.is_ui_tracking_active())
+            || runner.is_ui_tracking_active()
         {
             break;
         }
