@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.10](https://github.com/benletchford/systemless/compare/v0.41.9...v0.41.10) (2026-09-17)
+
+
+### Bug Fixes
+
+* **menu:** prevent cpu spin and redundant parsing during menu hover ([#2010](https://github.com/benletchford/systemless/issues/2010)) ([98be0a5](https://github.com/benletchford/systemless/commit/98be0a5fdc04c601759809247858f665f883faa4))
+
 ## [0.41.9](https://github.com/benletchford/systemless/compare/v0.41.8...v0.41.9) (2026-09-17)
 
 
