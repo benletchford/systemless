@@ -1436,7 +1436,7 @@ impl App {
                     total_steps += steps;
                 }
             }
-            if !running {
+            if !running || runner.is_ui_tracking_active() {
                 break;
             }
         }
