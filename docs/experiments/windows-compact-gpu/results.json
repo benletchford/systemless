@@ -1066,5 +1066,53 @@
         ]
       }
     ]
+  },
+  "ev_override_functional_check": {
+    "run": "ev-gpu-validation-a",
+    "binary": "gpu-pacing-production-v6-final.exe",
+    "backend": "D3D11",
+    "readback_verification": true,
+    "timing_claim": false,
+    "exact_readbacks": 59,
+    "verified_output_pixels": 34299224,
+    "sizes": [
+      [
+        500,
+        375
+      ],
+      [
+        800,
+        600
+      ],
+      [
+        1100,
+        760
+      ],
+      [
+        1104,
+        828
+      ]
+    ],
+    "gpu_errors": [],
+    "stages": [
+      "trial notice",
+      "new pilot",
+      "pilot name",
+      "ship name",
+      "intro animation",
+      "flight",
+      "keyboard thrust",
+      "138% resize",
+      "reduced resize",
+      "minimize/restore",
+      "1100x760 letterbox"
+    ],
+    "actual_desktop_screenshots": [
+      "flight-scaled-desktop.png",
+      "flight-restored-desktop.png"
+    ],
+    "binary_sha256": "353448d303e47fa76c6a733de6f03952a823e6526a7283c6bb50b2ee4a5f05d6",
+    "date_utc": "2026-09-17",
+    "approximate_time_utc": "05:33\u201305:38"
   }
 }

@@ -71,6 +71,7 @@ Native cursor updates remain independent of the image presenter. These observati
 - Windows GNU release build on 0.41.9; Linux GUI `cargo check --locked --all-features --bin systemless` also passed. A production release executable on the preceding, runtime-identical 0.41.8 base completed registration, New City, newspaper, city and physical menu input through the child window.
 - That production smoke run's 17 GPU readbacks matched the independent CPU oracle over 8,160,000 output pixels.
 - Scripted creation failure, simulated loss after 3,000 accepted presents, and one injected busy Present all recovered and closed normally. The busy case continued GPU rendering; 32 exact readbacks covered 19,891,620 output pixels, including 800×600, 1104×828, 500×375 and 1100×760. The loss case had 14 exact readbacks before fallback. Separate actual-desktop evidence above checks that fallback visibly updates.
+- EV Override 1.0.1 passed native Windows GUI pilot creation, ship naming, intro animation, flight, keyboard thrust, 800×600 / 1104×828 / 500×375 / 1100×760 resizing, and minimize/restore on the final 0.41.9 production executable. All 59 GPU readbacks exactly matched the CPU oracle over 34,299,224 output pixels; no GPU errors were reported. This was a functional check with synchronous readback enabled, not an EV performance measurement.
 - The unchanged shader previously passed 313 synthetic cases / 26,107,104 output pixels against an independent CPU reference.
 - Native Windows wait-worker test passed, checking one notification per arm and shutdown while waiting. The presentation suite passed 34 tests, including compact transport at 8/16/32-bit depth, retained detail, guest writes, overlays and unsupported alpha, on the same runtime base before its release-only version bump.
 - The final 0.41.9 diagnostic pair completed Fire, National Guard, normal/scaled input and fully visible non-4:3 resize captures. Earlier partially offscreen captures are not used as evidence of visible resize correctness.
@@ -82,6 +83,14 @@ Native cursor updates remain independent of the image presenter. These observati
 ![Fire city at a non-four-to-three client size with black side borders](windows-compact-gpu/fire-letterbox.png)
 
 *Final GPU run, actual desktop capture at 1100×760: Fire continues after dismissing the dialog; aspect ratio and black side borders survive resizing.*
+
+![EV Override flight at 138 percent with the GPU presenter](windows-compact-gpu/ev-flight-138.png)
+
+*EV Override 1.0.1, actual desktop capture at 1104×828: gameplay after creating a pilot and ship. The 59 exact readbacks cover native, enlarged, reduced and letterboxed output; they verify agreement with the software filter, not historical-game visual accuracy.*
+
+![EV Override flight after minimize and restore at a letterboxed size](windows-compact-gpu/ev-flight-restored.png)
+
+*Actual desktop capture after minimize/restore at 1100×760: flight continues and the black side borders preserve the original aspect ratio. The test used an isolated copy of the supplied archive and its own pilot saves.*
 
 A compact machine-readable result set and executable/source hashes are in [results.json](windows-compact-gpu/results.json). Local raw data are named `gpu-pacing-v6-final-{selected,baseline}-a` under `target/windows-validation`; analysis uses `analyze-gpu-pacing.py` and `analyze-gpu-display-latency.py`. CPU timing used a bounded 300,000-row buffer, filled after all four CPU measurement stages; later menu/cursor measurements used independent observer CSVs. DXGI statistics were buffered separately. No per-frame synchronous timing-file writes were used.
 
