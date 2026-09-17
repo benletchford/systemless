@@ -72,6 +72,10 @@ Systemless does not ship applications, games, Mac ROMs, or Apple system software
 Use legally obtained application archives.
 
 For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
+Windows uses D3D11 presentation by default, with automatic software fallback if
+GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
+to force software presentation.
+
 For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
 The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
 phases that take at least 50 ms. During normal gameplay, drawable waits on the

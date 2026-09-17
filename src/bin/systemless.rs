@@ -2907,13 +2907,13 @@ impl ApplicationHandler for App {
             let surface = metal_present::MetalPresenter::new(window.clone())
                 .expect("Failed to create Metal presenter");
             #[cfg(target_os = "windows")]
-            if std::env::var_os("SYSTEMLESS_D3D11").is_some() {
+            if std::env::var_os("SYSTEMLESS_D3D11").as_deref() != Some(std::ffi::OsStr::new("0")) {
                 match d3d_present::D3dPresenter::new(
                     window.clone(),
                     self.gpu_wake.as_ref().unwrap().clone(),
                 ) {
                     Ok(gpu) => {
-                        eprintln!("[GPU] experimental D3D11 compact coverage enabled");
+                        eprintln!("[GPU] D3D11 compact coverage enabled");
                         self.gpu = Some(gpu);
                     }
                     Err(message) => eprintln!("[GPU] {message}; using software presentation"),

@@ -1,4 +1,4 @@
-//! Opt-in Windows compact-coverage prototype (SYSTEMLESS_D3D11=1).
+//! Windows compact-coverage presenter (disable with SYSTEMLESS_D3D11=0).
 //! Device/context access stays on the window thread. A wait worker wakes it
 //! when DXGI is ready, independently of the guest tick and input handling.
 use systemless::memory::CompactPresentation;

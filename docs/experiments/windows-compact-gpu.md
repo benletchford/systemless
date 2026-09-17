@@ -1,6 +1,6 @@
 # Windows compact GPU presentation
 
-This opt-in D3D11 backend moves final coverage integration off the Windows window thread while preserving the single-pass software image from #1997. In the final SC2K comparison, scaled-city median main-thread work fell from **20.65 ms to 6.90 ms**, and paused scaled-menu desktop-update latency fell from **69.96 ms to 41.73 ms**. Software remains the default; set `SYSTEMLESS_D3D11=1` to try the backend.
+The default Windows D3D11 backend moves final coverage integration off the Windows window thread while preserving the single-pass software image from #1997. In the final SC2K comparison, scaled-city median main-thread work fell from **20.65 ms to 6.90 ms**, and paused scaled-menu desktop-update latency fell from **69.96 ms to 41.73 ms**. Device creation or presentation errors automatically fall back to software; set `SYSTEMLESS_D3D11=0` to force software from launch.
 
 The tested base is upstream `edf0fd4` (0.41.9), still current when checked after measurement. Coppet (#2007) is a separate change and is not in either measured configuration. This work contributes to #1724; it does not resolve every simulation or input delay.
 
@@ -68,6 +68,7 @@ Native cursor updates remain independent of the image presenter. These observati
 
 ## Correctness and fallback checks
 
+- After enabling D3D11 by default, a fresh Windows GNU release build passed. With the setting absent, D3D11 initialized and all five readbacks matched 2,400,000 output pixels. With `SYSTEMLESS_D3D11=0`, no GPU presenter initialized. Actual desktop captures in both cases displayed registration and subsequently typed text. The policy switch changes presenter selection only; the paired performance measurements above used the same presenters with an explicit backend choice.
 - Windows GNU release build on 0.41.9; Linux GUI `cargo check --locked --all-features --bin systemless` also passed. A production release executable on the preceding, runtime-identical 0.41.8 base completed registration, New City, newspaper, city and physical menu input through the child window.
 - That production smoke run's 17 GPU readbacks matched the independent CPU oracle over 8,160,000 output pixels.
 - Scripted creation failure, simulated loss after 3,000 accepted presents, and one injected busy Present all recovered and closed normally. The busy case continued GPU rendering; 32 exact readbacks covered 19,891,620 output pixels, including 800×600, 1104×828, 500×375 and 1100×760. The loss case had 14 exact readbacks before fallback. Separate actual-desktop evidence above checks that fallback visibly updates.
@@ -96,7 +97,7 @@ A compact machine-readable result set and executable/source hashes are in [resul
 
 ## Running and remaining limits
 
-Build with `cargo build --release --features gui --target x86_64-pc-windows-gnu`. Set `SYSTEMLESS_D3D11=1` when launching the Windows executable, or leave it unset for software presentation. Native hardware cursors are independent of this choice.
+Build with `cargo build --release --features gui --target x86_64-pc-windows-gnu`. Leave `SYSTEMLESS_D3D11` unset for the default GPU presenter, or set it to `0` to force software presentation. `1` also enables the GPU presenter. Native hardware cursors are independent of this choice.
 
 `SYSTEMLESS_GPU_VERIFY=1` enables synchronous GPU readback and a full CPU oracle. Use it only for correctness checks; it materially changes timings. `SYSTEMLESS_GPU_CAPTURE_DIR` can name an existing directory for verified output images.
 

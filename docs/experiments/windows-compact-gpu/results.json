@@ -1114,5 +1114,18 @@
     "binary_sha256": "353448d303e47fa76c6a733de6f03952a823e6526a7283c6bb50b2ee4a5f05d6",
     "date_utc": "2026-09-17",
     "approximate_time_utc": "05:33\u201305:38"
+  },
+  "default_selection_smoke": {
+    "binary": "gpu-pacing-production-default.exe",
+    "sha256": "0d50145e0dfc8ba93e90d9e2d60df862ed23276ee74d3cb3a8acc2f5e55328d8",
+    "base": "b6ff97f",
+    "change": "Windows defaults to D3D11; SYSTEMLESS_D3D11=0 forces software; other runtime unchanged",
+    "default_unset": "D3D11 initialized; actual desktop showed registration and subsequently typed text",
+    "override_0": "software initialized; no GPU initialization; actual desktop showed registration and subsequently typed text",
+    "exact_readbacks": 5,
+    "verified_output_pixels": 2400000,
+    "timing_claim": false,
+    "date_utc": "2026-09-17",
+    "source_note": "One-line conditional formatting applied after release build; behavior unchanged."
   }
 }
