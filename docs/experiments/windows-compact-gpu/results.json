@@ -1,0 +1,1070 @@
+{
+  "schema": 1,
+  "conditions": "Native Windows; Ryzen 7 5700U / integrated Radeon; 1920x1080 about60.05Hz; AC 98%, Balanced, saver off; GPU then software; same diagnostic executable; fresh cities; no concurrent build or other game windows",
+  "provenance": {
+    "base": "edf0fd470c051183eea19057736807558c68d308",
+    "source_commit": "b8e1adb97d8762d7b417afa50ee9d05703ae0ae1",
+    "version": "0.41.9",
+    "variant": "V6: latest prepared frame and disposable disabled GPU child HWND",
+    "sha256": {
+      "gpu-pacing-gui.exe": "ab11b35d5b7d336f7be3e62eed90fc910449a63b8c94dc5f59bce72873a417e5",
+      "gpu-pacing-production-v6-final.exe": "353448d303e47fa76c6a733de6f03952a823e6526a7283c6bb50b2ee4a5f05d6",
+      "gpu-pacing-gui.rs": "e39bf0e1364d17bab242b8836c411f71e82a5ba06352f3c6bc116ac8adbe83a0",
+      "gpu-pacing-d3d.rs": "dc8a4bd4383a95bb0cc34f1cd60125de2e604184d6543d754c1dc0ace79dcd88",
+      "gpu-pacing-diagnostics.rs": "f0ca3084664f0154f9e6f066d3de245c3da820c75b7448817e3101cc8c8b97f7",
+      "libsystemless-gpu-pacing.rlib": "bb2c4807f91c1deb2c5de9a3eeabc58f58364bbc7e72d82495c0cde151ada24f",
+      "build-gpu-pacing-gui.py": "2d547ca404731eda583eec10426f845c6c5f93b5b92c0f698adcf184b9be3a1d",
+      "measure-menu-desktop.exe": "31b5c97ba7100f8d542dffedf371fa0b1b5743397b7405634a225d7e05c98346",
+      "measure-menu-desktop.c": "5088661413ffe0bd8fcb76aec792667f0cdcf7fd0fd2aacd15f8f2b2ad6f7ec1",
+      "cursor-latency.exe": "3a6b95c935adac52ce08a7a0d2de2ae41200dd0ad5260990fbe740339a949cd3",
+      "cursor-latency.c": "b28f2c927fdbfd33525e380701c760bde549813341f3cc6c6736fbcd50497cd3"
+    },
+    "production_note": "Release executable compiled before restoration of three unrelated formatting hunks; final diagnostic compiled after that formatting-only cleanup."
+  },
+  "runs": {
+    "baseline": {
+      "cpu": {
+        "run": "gpu-pacing-v6-final-baseline-a",
+        "stages": {
+          "new-city-native": {
+            "stage": "new-city-native",
+            "width": 800,
+            "height": 600,
+            "start_ms": 1789621594225,
+            "end_ms": 1789621609241,
+            "last_input_start": 131207156,
+            "last_input_end": 131207156,
+            "no_input_during_stage": true,
+            "update_rate": 60.135855087906236,
+            "submission_rate": 60.135855087906236,
+            "submission_intervals": {
+              "count": 902,
+              "median_ms": 16.6396484375,
+              "p95_ms": 17.92626953125,
+              "max_ms": 19.87890625
+            },
+            "combined_work_per_update": {
+              "count": 903,
+              "median_ms": 6.8116,
+              "p95_ms": 7.8681,
+              "max_ms": 8.9672
+            },
+            "main_thread_work_ms_per_second": 412.57568593500264,
+            "retry_count": 0,
+            "present_busy_count": 0
+          },
+          "new-city-scaled": {
+            "stage": "new-city-scaled",
+            "width": 1104,
+            "height": 828,
+            "start_ms": 1789621615633,
+            "end_ms": 1789621630647,
+            "last_input_start": 131207156,
+            "last_input_end": 131207156,
+            "no_input_during_stage": true,
+            "update_rate": 60.14386572532303,
+            "submission_rate": 40.76195550819236,
+            "submission_intervals": {
+              "count": 611,
+              "median_ms": 22.263916015625,
+              "p95_ms": 29.623779296875,
+              "max_ms": 34.95556640625
+            },
+            "combined_work_per_update": {
+              "count": 903,
+              "median_ms": 20.8094,
+              "p95_ms": 22.2789,
+              "max_ms": 27.1798
+            },
+            "main_thread_work_ms_per_second": 887.6702211269483,
+            "retry_count": 0,
+            "present_busy_count": 0
+          },
+          "city-scaled": {
+            "stage": "city-scaled",
+            "width": 1104,
+            "height": 828,
+            "start_ms": 1789621673064,
+            "end_ms": 1789621688065,
+            "last_input_start": 131353843,
+            "last_input_end": 131353843,
+            "no_input_during_stage": true,
+            "update_rate": 59.5960269315379,
+            "submission_rate": 36.46423571761883,
+            "submission_intervals": {
+              "count": 546,
+              "median_ms": 28.37451171875,
+              "p95_ms": 33.9853515625,
+              "max_ms": 58.885498046875
+            },
+            "combined_work_per_update": {
+              "count": 894,
+              "median_ms": 20.6536,
+              "p95_ms": 28.8293,
+              "max_ms": 53.4457
+            },
+            "main_thread_work_ms_per_second": 878.1693087127525,
+            "retry_count": 0,
+            "present_busy_count": 0
+          },
+          "city-native": {
+            "stage": "city-native",
+            "width": 800,
+            "height": 600,
+            "start_ms": 1789621694485,
+            "end_ms": 1789621709492,
+            "last_input_start": 131353843,
+            "last_input_end": 131353843,
+            "no_input_during_stage": true,
+            "update_rate": 59.97201306057173,
+            "submission_rate": 59.97201306057173,
+            "submission_intervals": {
+              "count": 899,
+              "median_ms": 16.652099609375,
+              "p95_ms": 20.935546875,
+              "max_ms": 37.669189453125
+            },
+            "combined_work_per_update": {
+              "count": 900,
+              "median_ms": 7.44935,
+              "p95_ms": 16.5339,
+              "max_ms": 37.7656
+            },
+            "main_thread_work_ms_per_second": 563.0827014060105,
+            "retry_count": 0,
+            "present_busy_count": 0
+          }
+        },
+        "power_before": {
+          "timestamp_utc": "2026-09-17T05:05:47.1498297Z",
+          "ac_line_status": 1,
+          "battery_saver_enabled": false,
+          "battery_percent": 98,
+          "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+        },
+        "power_after": {
+          "timestamp_utc": "2026-09-17T05:10:10.8433791Z",
+          "ac_line_status": 1,
+          "battery_saver_enabled": false,
+          "battery_percent": 98,
+          "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+        },
+        "scope": "Main-thread elapsed work including asynchronous presentation retries, accepted DXGI submissions (software Present calls for control); not physical scanout or GPU completion."
+      },
+      "display_and_latency": {
+        "run": "gpu-pacing-v6-final-baseline-a",
+        "display_statistics": {
+          "new-city-native": {
+            "sample_count": 0,
+            "valid_count": 0,
+            "no_input_during_stage": true,
+            "status_counts": {},
+            "observed_distinct_count": 0
+          },
+          "new-city-scaled": {
+            "sample_count": 0,
+            "valid_count": 0,
+            "no_input_during_stage": true,
+            "status_counts": {},
+            "observed_distinct_count": 0
+          },
+          "city-scaled": {
+            "sample_count": 0,
+            "valid_count": 0,
+            "no_input_during_stage": true,
+            "status_counts": {},
+            "observed_distinct_count": 0
+          },
+          "city-native": {
+            "sample_count": 0,
+            "valid_count": 0,
+            "no_input_during_stage": true,
+            "status_counts": {},
+            "observed_distinct_count": 0
+          }
+        },
+        "menu_latency": {
+          "active-native": {
+            "metadata": {
+              "qpc_frequency": "10000000",
+              "width": "800",
+              "height": "600",
+              "epoch_ms": "1789621653390.800",
+              "qpc_anchor": "1313741257576"
+            },
+            "attempted_count": 20,
+            "successful_count": 20,
+            "timeouts": 0,
+            "interference_count": 0,
+            "coalesced_frames": 2,
+            "first_desktop_update_ms": {
+              "count": 20,
+              "median_ms": 39.82925,
+              "p95_ms": 492.3857,
+              "min_ms": 27.0482,
+              "max_ms": 867.3096
+            },
+            "observer_return_ms": {
+              "count": 20,
+              "median_ms": 40.870999999999995,
+              "p95_ms": 493.5007,
+              "min_ms": 27.7512,
+              "max_ms": 868.1575
+            },
+            "sendinput_return_ms": {
+              "count": 20,
+              "median_ms": 0.817,
+              "p95_ms": 2.4029,
+              "min_ms": 0.5677,
+              "max_ms": 6.3336
+            }
+          },
+          "native": {
+            "metadata": {
+              "qpc_frequency": "10000000",
+              "width": "800",
+              "height": "600",
+              "epoch_ms": "1789621724452.192",
+              "qpc_anchor": "1314451871499"
+            },
+            "attempted_count": 20,
+            "successful_count": 20,
+            "timeouts": 0,
+            "interference_count": 0,
+            "coalesced_frames": 4,
+            "first_desktop_update_ms": {
+              "count": 20,
+              "median_ms": 43.54675,
+              "p95_ms": 56.0356,
+              "min_ms": 31.0713,
+              "max_ms": 56.261
+            },
+            "observer_return_ms": {
+              "count": 20,
+              "median_ms": 44.4943,
+              "p95_ms": 57.1488,
+              "min_ms": 31.9796,
+              "max_ms": 57.3558
+            },
+            "sendinput_return_ms": {
+              "count": 20,
+              "median_ms": 0.8374,
+              "p95_ms": 2.1453,
+              "min_ms": 0.4899,
+              "max_ms": 21.2934
+            }
+          },
+          "scaled": {
+            "metadata": {
+              "qpc_frequency": "10000000",
+              "width": "1104",
+              "height": "828",
+              "epoch_ms": "1789621768620.828",
+              "qpc_anchor": "1314893557868"
+            },
+            "attempted_count": 20,
+            "successful_count": 20,
+            "timeouts": 0,
+            "interference_count": 0,
+            "coalesced_frames": 2,
+            "first_desktop_update_ms": {
+              "count": 20,
+              "median_ms": 69.9614,
+              "p95_ms": 95.3632,
+              "min_ms": 40.0445,
+              "max_ms": 96.8771
+            },
+            "observer_return_ms": {
+              "count": 20,
+              "median_ms": 71.15465,
+              "p95_ms": 96.427,
+              "min_ms": 41.0021,
+              "max_ms": 97.6093
+            },
+            "sendinput_return_ms": {
+              "count": 20,
+              "median_ms": 0.75675,
+              "p95_ms": 1.7337,
+              "min_ms": 0.4971,
+              "max_ms": 13.5492
+            }
+          }
+        },
+        "cursor_latency": {
+          "native": {
+            "recorded_count": 210,
+            "warmup_count": 10,
+            "measured_count": 200,
+            "valid_count": 200,
+            "pointer_visible_count": 200,
+            "event_ms": {
+              "count": 200,
+              "median_ms": 0.09025,
+              "p95_ms": 0.2536,
+              "min_ms": 0.0479,
+              "max_ms": 0.5164
+            },
+            "observer_return_ms": {
+              "count": 200,
+              "median_ms": 0.6148,
+              "p95_ms": 1.0963,
+              "min_ms": 0.3129,
+              "max_ms": 1.9701
+            }
+          },
+          "scaled": {
+            "recorded_count": 210,
+            "warmup_count": 10,
+            "measured_count": 200,
+            "valid_count": 200,
+            "pointer_visible_count": 200,
+            "event_ms": {
+              "count": 200,
+              "median_ms": 0.08675,
+              "p95_ms": 0.2238,
+              "min_ms": 0.0508,
+              "max_ms": 1.1992
+            },
+            "observer_return_ms": {
+              "count": 200,
+              "median_ms": 0.6386499999999999,
+              "p95_ms": 1.1576,
+              "min_ms": 0.328,
+              "max_ms": 2.032
+            }
+          }
+        },
+        "scope": "Menu: injected mouse press to first desktop image showing the dropdown, using Desktop Duplication QPC timestamps; not physical mouse-to-photon latency. Cursor: SetCursorPos to Desktop Duplication LastMouseUpdateTime, with observer return reported separately and ten explicitly marked warmups excluded. DXGI figures are OS presentation statistics, not camera measurements. QPC frequency was measured on this laptop. Initial/disjoint/zero statistics are excluded and counted."
+      },
+      "cpu_buffer": {
+        "rows": 300000,
+        "last_timestamp_ms": 1789621711959.9495,
+        "covers_all_cpu_stages": true
+      }
+    },
+    "selected": {
+      "cpu": {
+        "run": "gpu-pacing-v6-final-selected-a",
+        "stages": {
+          "new-city-native": {
+            "stage": "new-city-native",
+            "width": 800,
+            "height": 600,
+            "start_ms": 1789621294150,
+            "end_ms": 1789621309154,
+            "last_input_start": 130918046,
+            "last_input_end": 130918046,
+            "no_input_during_stage": true,
+            "update_rate": 60.117302052785924,
+            "submission_rate": 60.117302052785924,
+            "submission_intervals": {
+              "count": 901,
+              "median_ms": 16.66357421875,
+              "p95_ms": 17.5703125,
+              "max_ms": 21.88720703125
+            },
+            "combined_work_per_update": {
+              "count": 902,
+              "median_ms": 5.94805,
+              "p95_ms": 6.811,
+              "max_ms": 7.6761
+            },
+            "main_thread_work_ms_per_second": 360.01587576646233,
+            "retry_count": 485,
+            "present_busy_count": 0
+          },
+          "new-city-scaled": {
+            "stage": "new-city-scaled",
+            "width": 1104,
+            "height": 828,
+            "start_ms": 1789621315578,
+            "end_ms": 1789621330586,
+            "last_input_start": 130918046,
+            "last_input_end": 130918046,
+            "no_input_during_stage": true,
+            "update_rate": 60.101279317697234,
+            "submission_rate": 60.101279317697234,
+            "submission_intervals": {
+              "count": 901,
+              "median_ms": 16.665283203125,
+              "p95_ms": 17.597900390625,
+              "max_ms": 21.287109375
+            },
+            "combined_work_per_update": {
+              "count": 902,
+              "median_ms": 6.20505,
+              "p95_ms": 7.0914,
+              "max_ms": 9.314
+            },
+            "main_thread_work_ms_per_second": 375.515605010661,
+            "retry_count": 505,
+            "present_busy_count": 0
+          },
+          "city-scaled": {
+            "stage": "city-scaled",
+            "width": 1104,
+            "height": 828,
+            "start_ms": 1789621373038,
+            "end_ms": 1789621388044,
+            "last_input_start": 131053515,
+            "last_input_end": 131053515,
+            "no_input_during_stage": true,
+            "update_rate": 60.17592962814874,
+            "submission_rate": 56.97720911635346,
+            "submission_intervals": {
+              "count": 854,
+              "median_ms": 16.711181640625,
+              "p95_ms": 26.065673828125,
+              "max_ms": 40.158935546875
+            },
+            "combined_work_per_update": {
+              "count": 904,
+              "median_ms": 6.9006,
+              "p95_ms": 16.905,
+              "max_ms": 31.4252
+            },
+            "main_thread_work_ms_per_second": 561.4466146874584,
+            "retry_count": 341,
+            "present_busy_count": 0
+          },
+          "city-native": {
+            "stage": "city-native",
+            "width": 800,
+            "height": 600,
+            "start_ms": 1789621394446,
+            "end_ms": 1789621409451,
+            "last_input_start": 131053515,
+            "last_input_end": 131053515,
+            "no_input_during_stage": true,
+            "update_rate": 60.17994001999333,
+            "submission_rate": 59.78007330889703,
+            "submission_intervals": {
+              "count": 896,
+              "median_ms": 16.65380859375,
+              "p95_ms": 19.705078125,
+              "max_ms": 31.047607421875
+            },
+            "combined_work_per_update": {
+              "count": 903,
+              "median_ms": 6.7813,
+              "p95_ms": 16.5939,
+              "max_ms": 29.1764
+            },
+            "main_thread_work_ms_per_second": 516.902199266911,
+            "retry_count": 473,
+            "present_busy_count": 0
+          }
+        },
+        "power_before": {
+          "timestamp_utc": "2026-09-17T05:00:47.0023763Z",
+          "ac_line_status": 1,
+          "battery_saver_enabled": false,
+          "battery_percent": 98,
+          "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+        },
+        "power_after": {
+          "timestamp_utc": "2026-09-17T05:05:45.9067784Z",
+          "ac_line_status": 1,
+          "battery_saver_enabled": false,
+          "battery_percent": 98,
+          "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+        },
+        "scope": "Main-thread elapsed work including asynchronous presentation retries, accepted DXGI submissions (software Present calls for control); not physical scanout or GPU completion."
+      },
+      "display_and_latency": {
+        "run": "gpu-pacing-v6-final-selected-a",
+        "display_statistics": {
+          "new-city-native": {
+            "sample_count": 902,
+            "valid_count": 902,
+            "no_input_during_stage": true,
+            "status_counts": {
+              "0": 902
+            },
+            "observed_distinct_count": 902,
+            "monotonic_statistics": true,
+            "qpc_frequency": 10000000,
+            "elapsed_seconds": 15.0030293,
+            "presented_rate": 60.054538452444405,
+            "refresh_rate": 60.054538452444405,
+            "presented_count_increments": {
+              "1": 901
+            },
+            "refresh_gaps": {
+              "1": 901
+            },
+            "sync_qpc_intervals": {
+              "count": 901,
+              "median_ms": 16.6511,
+              "p95_ms": 16.6554,
+              "min_ms": 16.6482,
+              "max_ms": 16.6616
+            }
+          },
+          "new-city-scaled": {
+            "sample_count": 902,
+            "valid_count": 902,
+            "no_input_during_stage": true,
+            "status_counts": {
+              "0": 902
+            },
+            "observed_distinct_count": 902,
+            "monotonic_statistics": true,
+            "qpc_frequency": 10000000,
+            "elapsed_seconds": 15.0031578,
+            "presented_rate": 60.0540240935145,
+            "refresh_rate": 60.0540240935145,
+            "presented_count_increments": {
+              "1": 901
+            },
+            "refresh_gaps": {
+              "1": 901
+            },
+            "sync_qpc_intervals": {
+              "count": 901,
+              "median_ms": 16.6512,
+              "p95_ms": 16.6552,
+              "min_ms": 16.6483,
+              "max_ms": 16.6619
+            }
+          },
+          "city-scaled": {
+            "sample_count": 855,
+            "valid_count": 855,
+            "no_input_during_stage": true,
+            "status_counts": {
+              "0": 855
+            },
+            "observed_distinct_count": 855,
+            "monotonic_statistics": true,
+            "qpc_frequency": 10000000,
+            "elapsed_seconds": 14.9863088,
+            "presented_rate": 56.98534651841686,
+            "refresh_rate": 60.05481483205524,
+            "presented_count_increments": {
+              "1": 854
+            },
+            "refresh_gaps": {
+              "1": 808,
+              "2": 46
+            },
+            "sync_qpc_intervals": {
+              "count": 854,
+              "median_ms": 16.651,
+              "p95_ms": 33.299,
+              "min_ms": 16.6489,
+              "max_ms": 33.3087
+            }
+          },
+          "city-native": {
+            "sample_count": 897,
+            "valid_count": 897,
+            "no_input_during_stage": true,
+            "status_counts": {
+              "0": 897
+            },
+            "observed_distinct_count": 897,
+            "monotonic_statistics": true,
+            "qpc_frequency": 10000000,
+            "elapsed_seconds": 14.9866074,
+            "presented_rate": 59.78671330243828,
+            "refresh_rate": 60.05361827253845,
+            "presented_count_increments": {
+              "1": 896
+            },
+            "refresh_gaps": {
+              "1": 892,
+              "2": 4
+            },
+            "sync_qpc_intervals": {
+              "count": 896,
+              "median_ms": 16.6511,
+              "p95_ms": 16.6556,
+              "min_ms": 16.6493,
+              "max_ms": 33.3105
+            }
+          }
+        },
+        "menu_latency": {
+          "active-native": {
+            "metadata": {
+              "qpc_frequency": "10000000",
+              "width": "800",
+              "height": "600",
+              "epoch_ms": "1789621353359.152",
+              "qpc_anchor": "1310740941095"
+            },
+            "attempted_count": 20,
+            "successful_count": 20,
+            "timeouts": 0,
+            "interference_count": 0,
+            "coalesced_frames": 0,
+            "first_desktop_update_ms": {
+              "count": 20,
+              "median_ms": 35.3091,
+              "p95_ms": 397.2969,
+              "min_ms": 26.7905,
+              "max_ms": 744.7349
+            },
+            "observer_return_ms": {
+              "count": 20,
+              "median_ms": 36.2285,
+              "p95_ms": 399.1568,
+              "min_ms": 27.6549,
+              "max_ms": 745.4933
+            },
+            "sendinput_return_ms": {
+              "count": 20,
+              "median_ms": 0.8531,
+              "p95_ms": 1.9357,
+              "min_ms": 0.4741,
+              "max_ms": 6.4781
+            }
+          },
+          "native": {
+            "metadata": {
+              "qpc_frequency": "10000000",
+              "width": "800",
+              "height": "600",
+              "epoch_ms": "1789621424499.088",
+              "qpc_anchor": "1311452340460"
+            },
+            "attempted_count": 20,
+            "successful_count": 20,
+            "timeouts": 0,
+            "interference_count": 0,
+            "coalesced_frames": 1,
+            "first_desktop_update_ms": {
+              "count": 20,
+              "median_ms": 39.61815,
+              "p95_ms": 51.6862,
+              "min_ms": 24.1413,
+              "max_ms": 69.6939
+            },
+            "observer_return_ms": {
+              "count": 20,
+              "median_ms": 41.158500000000004,
+              "p95_ms": 52.4212,
+              "min_ms": 24.9928,
+              "max_ms": 70.6879
+            },
+            "sendinput_return_ms": {
+              "count": 20,
+              "median_ms": 0.7992,
+              "p95_ms": 1.8956,
+              "min_ms": 0.5969,
+              "max_ms": 23.6301
+            }
+          },
+          "scaled": {
+            "metadata": {
+              "qpc_frequency": "10000000",
+              "width": "1104",
+              "height": "828",
+              "epoch_ms": "1789621469617.695",
+              "qpc_anchor": "1311903526532"
+            },
+            "attempted_count": 20,
+            "successful_count": 20,
+            "timeouts": 0,
+            "interference_count": 0,
+            "coalesced_frames": 0,
+            "first_desktop_update_ms": {
+              "count": 20,
+              "median_ms": 41.72695,
+              "p95_ms": 53.971,
+              "min_ms": 26.5446,
+              "max_ms": 57.7217
+            },
+            "observer_return_ms": {
+              "count": 20,
+              "median_ms": 42.8326,
+              "p95_ms": 55.8872,
+              "min_ms": 27.7249,
+              "max_ms": 58.9645
+            },
+            "sendinput_return_ms": {
+              "count": 20,
+              "median_ms": 1.04165,
+              "p95_ms": 2.0958,
+              "min_ms": 0.5187,
+              "max_ms": 11.0603
+            }
+          }
+        },
+        "cursor_latency": {
+          "native": {
+            "recorded_count": 210,
+            "warmup_count": 10,
+            "measured_count": 200,
+            "valid_count": 200,
+            "pointer_visible_count": 200,
+            "event_ms": {
+              "count": 200,
+              "median_ms": 0.08815,
+              "p95_ms": 0.2627,
+              "min_ms": 0.0478,
+              "max_ms": 1.4316
+            },
+            "observer_return_ms": {
+              "count": 200,
+              "median_ms": 0.7132499999999999,
+              "p95_ms": 1.3588,
+              "min_ms": 0.2985,
+              "max_ms": 2.6405
+            }
+          },
+          "scaled": {
+            "recorded_count": 210,
+            "warmup_count": 10,
+            "measured_count": 200,
+            "valid_count": 200,
+            "pointer_visible_count": 200,
+            "event_ms": {
+              "count": 200,
+              "median_ms": 0.09054999999999999,
+              "p95_ms": 0.2543,
+              "min_ms": 0.0493,
+              "max_ms": 0.4062
+            },
+            "observer_return_ms": {
+              "count": 200,
+              "median_ms": 0.6844,
+              "p95_ms": 2.2991,
+              "min_ms": 0.3481,
+              "max_ms": 4.92
+            }
+          }
+        },
+        "scope": "Menu: injected mouse press to first desktop image showing the dropdown, using Desktop Duplication QPC timestamps; not physical mouse-to-photon latency. Cursor: SetCursorPos to Desktop Duplication LastMouseUpdateTime, with observer return reported separately and ten explicitly marked warmups excluded. DXGI figures are OS presentation statistics, not camera measurements. QPC frequency was measured on this laptop. Initial/disjoint/zero statistics are excluded and counted."
+      },
+      "cpu_buffer": {
+        "rows": 300000,
+        "last_timestamp_ms": 1789621411811.0747,
+        "covers_all_cpu_stages": true
+      }
+    }
+  },
+  "active_menu_outliers": {
+    "selected": [
+      {
+        "trial": "2",
+        "latency_ms": 744.7349,
+        "overlapping_phase_count": 7020,
+        "longest_phases": [
+          {
+            "phase": "total frame work",
+            "frame": "6356",
+            "relative_start_ms": 686.70068359375,
+            "duration_ms": 36.5366
+          },
+          {
+            "phase": "CPU and audio frame",
+            "frame": "6356",
+            "relative_start_ms": 686.70068359375,
+            "duration_ms": 27.9139
+          },
+          {
+            "phase": "foreground CPU batch",
+            "frame": "6356",
+            "relative_start_ms": 692.85009765625,
+            "duration_ms": 21.6252
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6317",
+            "relative_start_ms": 38.26318359375,
+            "duration_ms": 20.5117
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6330",
+            "relative_start_ms": 254.442626953125,
+            "duration_ms": 19.8444
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6354",
+            "relative_start_ms": 653.610595703125,
+            "duration_ms": 19.3702
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6333",
+            "relative_start_ms": 304.280517578125,
+            "duration_ms": 17.0078
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6326",
+            "relative_start_ms": 188.065673828125,
+            "duration_ms": 16.9273
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6339",
+            "relative_start_ms": 403.78515625,
+            "duration_ms": 16.7866
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6342",
+            "relative_start_ms": 454.029541015625,
+            "duration_ms": 16.6914
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6350",
+            "relative_start_ms": 586.948974609375,
+            "duration_ms": 16.6649
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6346",
+            "relative_start_ms": 520.554443359375,
+            "duration_ms": 16.661
+          }
+        ]
+      },
+      {
+        "trial": "12",
+        "latency_ms": 397.2969,
+        "overlapping_phase_count": 3505,
+        "longest_phases": [
+          {
+            "phase": "total frame work",
+            "frame": "6734",
+            "relative_start_ms": 349.324951171875,
+            "duration_ms": 40.1556
+          },
+          {
+            "phase": "CPU and audio frame",
+            "frame": "6734",
+            "relative_start_ms": 349.324951171875,
+            "duration_ms": 32.3505
+          },
+          {
+            "phase": "foreground CPU batch",
+            "frame": "6734",
+            "relative_start_ms": 359.3037109375,
+            "duration_ms": 22.2207
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6726",
+            "relative_start_ms": 216.376953125,
+            "duration_ms": 20.7095
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6720",
+            "relative_start_ms": 116.595947265625,
+            "duration_ms": 17.0505
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6732",
+            "relative_start_ms": 316.1796875,
+            "duration_ms": 17.0343
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6735",
+            "relative_start_ms": 389.7099609375,
+            "duration_ms": 16.9099
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6730",
+            "relative_start_ms": 283.283935546875,
+            "duration_ms": 16.874
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6722",
+            "relative_start_ms": 150.332763671875,
+            "duration_ms": 16.8474
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6728",
+            "relative_start_ms": 249.82080078125,
+            "duration_ms": 16.7918
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6718",
+            "relative_start_ms": 83.525146484375,
+            "duration_ms": 16.7438
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6724",
+            "relative_start_ms": 183.93359375,
+            "duration_ms": 16.5635
+          }
+        ]
+      }
+    ],
+    "baseline": [
+      {
+        "trial": "5",
+        "latency_ms": 492.3857,
+        "overlapping_phase_count": 6490,
+        "longest_phases": [
+          {
+            "phase": "total frame work",
+            "frame": "6391",
+            "relative_start_ms": 430.76513671875,
+            "duration_ms": 40.9079
+          },
+          {
+            "phase": "CPU and audio frame",
+            "frame": "6391",
+            "relative_start_ms": 430.765380859375,
+            "duration_ms": 31.757
+          },
+          {
+            "phase": "foreground CPU batch",
+            "frame": "6391",
+            "relative_start_ms": 440.414794921875,
+            "duration_ms": 21.9612
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6384",
+            "relative_start_ms": 314.486572265625,
+            "duration_ms": 20.914
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6364",
+            "relative_start_ms": -18.1435546875,
+            "duration_ms": 19.8715
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6388",
+            "relative_start_ms": 380.701171875,
+            "duration_ms": 19.191
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6386",
+            "relative_start_ms": 347.703125,
+            "duration_ms": 17.5518
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6393",
+            "relative_start_ms": 488.6279296875,
+            "duration_ms": 17.1646
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6369",
+            "relative_start_ms": 64.897705078125,
+            "duration_ms": 16.9555
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6392",
+            "relative_start_ms": 471.677978515625,
+            "duration_ms": 16.945
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6372",
+            "relative_start_ms": 114.76220703125,
+            "duration_ms": 16.6994
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6382",
+            "relative_start_ms": 281.019287109375,
+            "duration_ms": 16.6268
+          }
+        ]
+      },
+      {
+        "trial": "14",
+        "latency_ms": 867.3096,
+        "overlapping_phase_count": 3726,
+        "longest_phases": [
+          {
+            "phase": "total frame work",
+            "frame": "6768",
+            "relative_start_ms": 822.6259765625,
+            "duration_ms": 39.4081
+          },
+          {
+            "phase": "CPU and audio frame",
+            "frame": "6768",
+            "relative_start_ms": 822.626220703125,
+            "duration_ms": 30.933
+          },
+          {
+            "phase": "foreground CPU batch",
+            "frame": "6768",
+            "relative_start_ms": 831.672119140625,
+            "duration_ms": 21.7467
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6739",
+            "relative_start_ms": 340.466064453125,
+            "duration_ms": 20.3444
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6766",
+            "relative_start_ms": 789.177978515625,
+            "duration_ms": 20.1417
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6769",
+            "relative_start_ms": 862.04052734375,
+            "duration_ms": 17.2847
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6742",
+            "relative_start_ms": 390.19873046875,
+            "duration_ms": 17.2338
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6748",
+            "relative_start_ms": 489.667236328125,
+            "duration_ms": 17.0579
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6744",
+            "relative_start_ms": 423.60009765625,
+            "duration_ms": 16.9702
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6722",
+            "relative_start_ms": 57.4033203125,
+            "duration_ms": 16.8509
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6756",
+            "relative_start_ms": 622.853515625,
+            "duration_ms": 16.8069
+          },
+          {
+            "phase": "total frame work",
+            "frame": "6738",
+            "relative_start_ms": 323.65673828125,
+            "duration_ms": 16.8046
+          }
+        ]
+      }
+    ]
+  }
+}
