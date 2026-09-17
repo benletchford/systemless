@@ -3338,10 +3338,7 @@ fn bind_headless_debug_server(
 ) -> Option<debug_server::DebugServer> {
     let path = path?;
     let server = debug_server::DebugServer::bind(&path).unwrap_or_else(|error| {
-        eprintln!(
-            "Error: cannot bind debug socket {}: {error}",
-            path.display()
-        );
+        eprintln!("Error: cannot bind debug socket {}: {error}", path.display());
         std::process::exit(1);
     });
     #[cfg(all(feature = "debug-server", unix))]
@@ -4843,7 +4840,9 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner.dispatcher_mut().add_sound_channel(chan);
+        runner
+            .dispatcher_mut()
+            .add_sound_channel(chan);
         runner
             .dispatcher_mut()
             .queue_sound_doubleback_callback(PendingDoubleBackCallback {
@@ -4968,7 +4967,9 @@ mod tests {
             1,
             8,
         );
-        runner.dispatcher_mut().add_sound_channel(chan);
+        runner
+            .dispatcher_mut()
+            .add_sound_channel(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);
