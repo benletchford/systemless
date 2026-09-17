@@ -6050,6 +6050,36 @@
     }
 
     #[test]
+    fn test_use_res_file_with_cur_apref_num_maps_to_internal_app_file_zero() {
+        use crate::memory::globals::addr;
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_loaded_resources_for_test(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([
+                (0, crate::trap::dispatch::ResourceFileMap::default()),
+                (96, crate::trap::dispatch::ResourceFileMap::default()),
+            ]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![96, 0],
+            current_file: 96,
+        });
+        bus.write_word(addr::CUR_APREF_NUM, 2);
+        bus.write_word(0x0A5A, 96);
+        bus.write_word(0x0A60, 0);
+
+        let sp = TEST_SP;
+        bus.write_word(sp, 2); // guest FCB refnum matching CUR_APREF_NUM
+
+        let result = disp.dispatch_toolbox(true, 0x198, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(disp.current_resource_refnum(), 0);
+        assert_eq!(bus.read_word(0x0A5A), 0);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
     fn uniqueid_scans_all_open_files_while_unique1id_uses_current_file_only() {
         // Inside Macintosh Volume I (1985), p. I-121:
         // UniqueID searches all open resource files for the type.

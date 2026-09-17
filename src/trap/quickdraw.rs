@@ -12345,6 +12345,25 @@ impl super::TrapDispatcher {
                 let want_g = bus.read_word(rgb_ptr + 2);
                 let want_b = bus.read_word(rgb_ptr + 4);
 
+                let the_gdevice = bus.read_long(0x0CC8);
+                let gdh = if *self.current_gdevice != 0 {
+                    *self.current_gdevice
+                } else if the_gdevice != 0 {
+                    the_gdevice
+                } else {
+                    self.main_gdevice_handle
+                };
+                let ctab_handle = if gdh != 0 {
+                    Self::gdevice_ctab_handle(bus, gdh)
+                } else {
+                    0
+                };
+                let target_clut = if ctab_handle != 0 && gdh != self.main_gdevice_handle {
+                    self.read_port_clut(bus, ctab_handle)
+                } else {
+                    *self.device_clut
+                };
+
                 // Use the same `closest_clut_index` helper as DrawPicture /
                 // CopyBits path so the dst index for a given RGB matches
                 // across QuickDraw entry points. Linear-scan Euclidean
@@ -12367,14 +12386,27 @@ impl super::TrapDispatcher {
                 // skip semantic by zeroing reserved entries' RGB before
                 // matching is overkill; instead, fall back to the linear
                 // scan when ANY reserved entries exist.
+                let wanted = [want_r, want_g, want_b];
                 let any_reserved = self.clut_reserved.iter().any(|&r| r);
-                let best_idx = if any_reserved {
+                let exact_pos = target_clut.iter().enumerate().position(|(i, &e)| {
+                    if any_reserved
+                        && (gdh == 0 || gdh == self.main_gdevice_handle)
+                        && self.clut_reserved[i]
+                    {
+                        false
+                    } else {
+                        e == wanted
+                    }
+                });
+                let best_idx = if let Some(idx) = exact_pos {
+                    idx
+                } else if any_reserved && (gdh == 0 || gdh == self.main_gdevice_handle) {
                     let want_r = want_r as i64;
                     let want_g = want_g as i64;
                     let want_b = want_b as i64;
                     let mut best_idx: usize = 0;
                     let mut best_dist: i64 = i64::MAX;
-                    for (i, entry) in self.device_clut.iter().enumerate() {
+                    for (i, entry) in target_clut.iter().enumerate() {
                         if self.clut_reserved[i] {
                             continue;
                         }
@@ -12392,8 +12424,7 @@ impl super::TrapDispatcher {
                     }
                     best_idx
                 } else {
-                    super::pict::closest_clut_index(want_r, want_g, want_b, &self.device_clut)
-                        as usize
+                    super::pict::closest_clut_index(want_r, want_g, want_b, &target_clut) as usize
                 };
 
                 bus.write_long(sp + 4, best_idx as u32);
@@ -24011,7 +24042,7 @@ impl super::TrapDispatcher {
                 .set_implicit(crate::display::default_display_gamma());
         }
         let incoming_default_palette = start == 0
-            && count == 255
+            && (count == 255 || count == 254)
             && Self::table_looks_like_scaled_canonical_system_8bpp(bus, table_ptr);
         // Extend the seeded_picture_palette window whenever a scaled-
         // canonical SetEntries fires against a non-canonical cm[]. An
@@ -24083,7 +24114,7 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let is_full_replace = start == 0 && count == 255;
+        let is_full_replace = start == 0 && (count == 255 || count == 254);
         let previous_frame_was_dimmed =
             Self::clut_is_dimmed_derivative_of(&self.device_clut, &self.color_manager_clut);
 

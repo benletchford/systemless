@@ -6897,19 +6897,26 @@ impl super::TrapDispatcher {
             (true, 0x198) => {
                 let sp = cpu.read_reg(Register::A7);
                 let refnum = bus.read_word(sp);
-                if trace_sound_enabled() {
+                let cur_apref_num = bus.read_word(crate::memory::globals::addr::CUR_APREF_NUM);
+                let target_refnum = if refnum == cur_apref_num {
+                    0
+                } else {
+                    refnum
+                };
+                if trace_sound_enabled() || super::dispatch::trace_resfile_enabled() {
                     eprintln!(
-                        "[RSRC] UseResFile refnum={} name={:?}",
+                        "[RSRC] UseResFile refnum={} (target={}) name={:?}",
                         refnum,
-                        self.resource_file_name(refnum)
+                        target_refnum,
+                        self.resource_file_name(target_refnum)
                     );
                 }
                 let file_exists = self
                     .resources
                     .as_ref()
-                    .is_some_and(|r| r.files.contains_key(&refnum));
+                    .is_some_and(|r| r.files.contains_key(&target_refnum));
                 if file_exists {
-                    self.set_current_resource_refnum(bus, refnum);
+                    self.set_current_resource_refnum(bus, target_refnum);
                     bus.write_word(0x0A60, 0); // noErr
                 } else {
                     // IM:I I-116: invalid refnum leaves the current file
