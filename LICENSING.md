@@ -8,16 +8,23 @@ The Systemless emulator and runtime code in this public repository is
 distributed under GPL-3.0-or-later. See [LICENSE](./LICENSE) for the full licence
 text.
 
-Bundled URW Core 35 and Noto Sans Symbols 2 fonts are distributed under the
+Bundled URW Core 35, Noto Sans Symbols 2 and Coppet fonts are distributed under the
 SIL Open Font License 1.1. See their [URW source record](src/quickdraw/fonts/urw/README.md)
 and [Noto source record](src/quickdraw/fonts/noto/README.md), including the original
 copyright and licence notices.
 
+[Coppet](src/quickdraw/fonts/coppet/README.md) is a modified Inter font fitted
+using historical OFL Kurrajong data. Its font binary, editable source and font
+build script remain under [OFL-1.1](src/quickdraw/fonts/coppet/OFL.txt), with the
+Inter and Kurrajong notices retained. They are not relicensed under the GPL;
+the emulator integration is GPL-3.0-or-later. Coppet contains no Apple font
+software or glyph artwork.
+
 The Geneva 9 ASCII compatibility advances are a separate data component under
 the SIL Open Font License 1.1. See its [source record](src/quickdraw/fonts/compatibility/README.md)
 and [licence notice](src/quickdraw/fonts/compatibility/OFL.txt). The GPL runtime
-embeds these separately licensed values while URW continues to supply the glyph
-pixels and bearings.
+embeds these separately licensed values while Coppet supplies the 9-point
+ASCII artwork and URW supplies the remaining fallback glyphs.
 
 ## Separate commercial licensing
 

@@ -1,0 +1,17 @@
+{
+  "upstream_base": "7438e3391b2a59635ac199626f271d16e5dc88be",
+  "scope": "Coppet 9pt ASCII fallback; release Windows GNU fat LTO",
+  "sha256": {
+    "outline.rs": "48c1a306a20fa844232f7870db5e6370226a67446ba4dd4fa0df39887c2e839e",
+    "coppet/Coppet-Regular.ttf": "039de58d710483aad4110106677a46bd39d822204542520470b2becdcda30afb",
+    "coppet/Coppet-Regular.ttx": "2ed390178725404cdc2ebdfa1deab54abdfac178e7d3f51ccbb2660a8a93f6e9",
+    "coppet/build.py": "7b7db0de30972d5a2ef06842db9491e5ab0981a343fc44e8366d35692a8dc0b4",
+    "coppet-master.exe": "8ded16490fc54ea9040a4a6741f5ee1d7a56470a02f30c5612a82e797df11849",
+    "coppet-candidate.exe": "90e3bcb90b0d3fd33cd4a6ba7d82d26472fadcc2cb5cee7530ca6017dd0782a3",
+    "coppet-master-diagnostic.exe": "bf656e4e70b04968e8c3395c8017201f30429b5733dec019a1a5ea948cef6eec",
+    "coppet-candidate-diagnostic.exe": "4722bfa8a217c79fb240c3e28f572884d45371bd5f4d67692e9f37089e3db74f",
+    "coppet-final.exe": "40bf64071205164b628d25069bf2862d999b8606e9f634893a633678bd56b4cd"
+  },
+  "rebuild_verified_byte_identical": true,
+  "final_validation_base": "392138c4b7d3b974c32747361dd8d480ec9a408e"
+}

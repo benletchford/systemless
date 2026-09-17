@@ -1,0 +1,271 @@
+{
+  "run": "coppet-gui-master-validation",
+  "stages": {
+    "new-city-native": {
+      "stage": "new-city-native",
+      "width": 800,
+      "height": 600,
+      "start_ms": 1789614268141,
+      "end_ms": 1789614283152,
+      "phases": {
+        "CPU and audio frame": {
+          "count": 847,
+          "median_ms": 1.3496,
+          "p95_ms": 2.2599,
+          "max_ms": 11.3363
+        },
+        "foreground CPU batch": {
+          "count": 847,
+          "median_ms": 0.1813,
+          "p95_ms": 0.2258,
+          "max_ms": 0.4252
+        },
+        "outline palette preparation": {
+          "count": 847,
+          "median_ms": 0.0016,
+          "p95_ms": 0.0036,
+          "max_ms": 0.0102
+        },
+        "outline pixel expansion": {
+          "count": 847,
+          "median_ms": 2.186,
+          "p95_ms": 2.6473,
+          "max_ms": 3.7233
+        },
+        "render frame (main thread)": {
+          "count": 846,
+          "median_ms": 5.6854,
+          "p95_ms": 6.6777,
+          "max_ms": 9.3277
+        },
+        "software frame submission": {
+          "count": 847,
+          "median_ms": 0.3281,
+          "p95_ms": 0.6993,
+          "max_ms": 1.4828
+        },
+        "software surface acquisition": {
+          "count": 847,
+          "median_ms": 0.0002,
+          "p95_ms": 0.0005,
+          "max_ms": 0.0009
+        },
+        "total frame work": {
+          "count": 846,
+          "median_ms": 7.1402,
+          "p95_ms": 8.3609,
+          "max_ms": 16.7848
+        },
+        "window compositing": {
+          "count": 846,
+          "median_ms": 1.8648,
+          "p95_ms": 2.5763,
+          "max_ms": 4.2371
+        }
+      }
+    },
+    "new-city-scaled": {
+      "stage": "new-city-scaled",
+      "width": 1104,
+      "height": 828,
+      "start_ms": 1789614289614,
+      "end_ms": 1789614304625,
+      "phases": {
+        "CPU and audio frame": {
+          "count": 902,
+          "median_ms": 0.8256,
+          "p95_ms": 1.7819,
+          "max_ms": 2.4409
+        },
+        "foreground CPU batch": {
+          "count": 609,
+          "median_ms": 0.1245,
+          "p95_ms": 0.2749,
+          "max_ms": 0.3473
+        },
+        "outline palette preparation": {
+          "count": 609,
+          "median_ms": 0.0018,
+          "p95_ms": 0.0037,
+          "max_ms": 0.0139
+        },
+        "outline pixel expansion": {
+          "count": 608,
+          "median_ms": 16.5188,
+          "p95_ms": 17.9306,
+          "max_ms": 21.621
+        },
+        "render frame (main thread)": {
+          "count": 608,
+          "median_ms": 20.40535,
+          "p95_ms": 22.3207,
+          "max_ms": 29.5282
+        },
+        "software frame submission": {
+          "count": 609,
+          "median_ms": 0.5609,
+          "p95_ms": 0.7299,
+          "max_ms": 1.965
+        },
+        "software surface acquisition": {
+          "count": 609,
+          "median_ms": 0.0001,
+          "p95_ms": 0.0002,
+          "max_ms": 0.0005
+        },
+        "total frame work": {
+          "count": 901,
+          "median_ms": 20.9165,
+          "p95_ms": 22.9034,
+          "max_ms": 29.7954
+        },
+        "window compositing": {
+          "count": 609,
+          "median_ms": 1.9275,
+          "p95_ms": 2.9939,
+          "max_ms": 5.224
+        }
+      }
+    },
+    "city-scaled": {
+      "stage": "city-scaled",
+      "width": 1104,
+      "height": 828,
+      "start_ms": 1789614330124,
+      "end_ms": 1789614345132,
+      "phases": {
+        "CPU and audio frame": {
+          "count": 896,
+          "median_ms": 0.4802,
+          "p95_ms": 8.7604,
+          "max_ms": 33.0421
+        },
+        "foreground CPU batch": {
+          "count": 3516,
+          "median_ms": 0.485,
+          "p95_ms": 1.0443,
+          "max_ms": 25.8405
+        },
+        "outline palette preparation": {
+          "count": 534,
+          "median_ms": 0.0018,
+          "p95_ms": 0.8145,
+          "max_ms": 1.6019
+        },
+        "outline pixel expansion": {
+          "count": 534,
+          "median_ms": 15.686050000000002,
+          "p95_ms": 16.9346,
+          "max_ms": 21.1364
+        },
+        "render frame (main thread)": {
+          "count": 533,
+          "median_ms": 20.2102,
+          "p95_ms": 24.2527,
+          "max_ms": 26.4527
+        },
+        "software frame submission": {
+          "count": 534,
+          "median_ms": 0.56725,
+          "p95_ms": 0.7499,
+          "max_ms": 1.1232
+        },
+        "software surface acquisition": {
+          "count": 535,
+          "median_ms": 0.0001,
+          "p95_ms": 0.0002,
+          "max_ms": 0.0006
+        },
+        "total frame work": {
+          "count": 895,
+          "median_ms": 20.6064,
+          "p95_ms": 29.2027,
+          "max_ms": 52.7216
+        },
+        "window compositing": {
+          "count": 534,
+          "median_ms": 2.5736,
+          "p95_ms": 5.7051,
+          "max_ms": 7.9689
+        }
+      }
+    },
+    "city-native": {
+      "stage": "city-native",
+      "width": 800,
+      "height": 600,
+      "start_ms": 1789614351669,
+      "end_ms": 1789614366681,
+      "phases": {
+        "CPU and audio frame": {
+          "count": 901,
+          "median_ms": 1.0568,
+          "p95_ms": 10.7007,
+          "max_ms": 33.0109
+        },
+        "foreground CPU batch": {
+          "count": 4030,
+          "median_ms": 0.4866,
+          "p95_ms": 0.9068,
+          "max_ms": 25.0254
+        },
+        "outline palette preparation": {
+          "count": 901,
+          "median_ms": 0.0019,
+          "p95_ms": 0.7451,
+          "max_ms": 1.3493
+        },
+        "outline pixel expansion": {
+          "count": 900,
+          "median_ms": 2.1115000000000004,
+          "p95_ms": 2.606,
+          "max_ms": 3.968
+        },
+        "render frame (main thread)": {
+          "count": 900,
+          "median_ms": 6.33225,
+          "p95_ms": 10.169,
+          "max_ms": 12.3446
+        },
+        "software frame submission": {
+          "count": 900,
+          "median_ms": 0.33775,
+          "p95_ms": 0.6788,
+          "max_ms": 1.7509
+        },
+        "software surface acquisition": {
+          "count": 900,
+          "median_ms": 0.0002,
+          "p95_ms": 0.0005,
+          "max_ms": 0.0165
+        },
+        "total frame work": {
+          "count": 900,
+          "median_ms": 7.7221,
+          "p95_ms": 16.5657,
+          "max_ms": 38.7032
+        },
+        "window compositing": {
+          "count": 901,
+          "median_ms": 2.7234,
+          "p95_ms": 5.8121,
+          "max_ms": 7.839
+        }
+      }
+    }
+  },
+  "power_before": {
+    "timestamp_utc": "2026-09-17T03:03:39.4085169Z",
+    "ac_line_status": 1,
+    "battery_saver_enabled": false,
+    "battery_percent": 99,
+    "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+  },
+  "power_after": {
+    "timestamp_utc": "2026-09-17T03:06:08.3598988Z",
+    "ac_line_status": 1,
+    "battery_saver_enabled": false,
+    "battery_percent": 99,
+    "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+  }
+}

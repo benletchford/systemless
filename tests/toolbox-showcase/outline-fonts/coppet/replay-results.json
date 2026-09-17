@@ -1,0 +1,926 @@
+{
+  "runs": {
+    "coppet-replay-master-scaled-a": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.09455,
+            "p95_ms": 0.1253
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.9396499999999999,
+            "p95_ms": 2.9575
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.3256,
+            "p95_ms": 0.6497
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 17.0435,
+            "p95_ms": 25.6063
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.3466,
+            "p95_ms": 0.4474
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 20.02325,
+            "p95_ms": 29.5234
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.08854999999999999,
+            "p95_ms": 2.0751
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.1704999999999997,
+            "p95_ms": 2.7293
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.3273,
+            "p95_ms": 0.4579
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 19.83475,
+            "p95_ms": 22.4864
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.33294999999999997,
+            "p95_ms": 0.4288
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 22.9393,
+            "p95_ms": 29.6375
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.19305,
+            "p95_ms": 20.5468
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.64485,
+            "p95_ms": 5.9188
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.33204999999999996,
+            "p95_ms": 0.4678
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 16.402099999999997,
+            "p95_ms": 18.2821
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.33309999999999995,
+            "p95_ms": 0.4455
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 20.549799999999998,
+            "p95_ms": 40.6148
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T03:00:06.1316740Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T03:00:34.2244423Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    },
+    "coppet-replay-master-native-a": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.09175,
+            "p95_ms": 0.127
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.8721999999999999,
+            "p95_ms": 2.5038
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.3059,
+            "p95_ms": 0.4203
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 2.1706000000000003,
+            "p95_ms": 2.3919
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.17515,
+            "p95_ms": 0.2131
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 4.6458,
+            "p95_ms": 5.3911
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.0876,
+            "p95_ms": 2.0677
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.1688,
+            "p95_ms": 2.5619
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.30295,
+            "p95_ms": 0.3655
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 2.4392500000000004,
+            "p95_ms": 2.6324
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.1668,
+            "p95_ms": 0.199
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 5.2244,
+            "p95_ms": 6.2326
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.18845,
+            "p95_ms": 20.2758
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.5631500000000003,
+            "p95_ms": 5.314
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.3187,
+            "p95_ms": 0.4343
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 2.08915,
+            "p95_ms": 2.3564
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.16785,
+            "p95_ms": 0.2103
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 5.5215499999999995,
+            "p95_ms": 25.2637
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T02:59:17.4849535Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T02:59:29.9461706Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    },
+    "coppet-replay-candidate-native-a": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.09204999999999999,
+            "p95_ms": 0.1255
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.8595000000000002,
+            "p95_ms": 2.1155
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.29845,
+            "p95_ms": 0.3825
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 2.16695,
+            "p95_ms": 2.4518
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.16570000000000001,
+            "p95_ms": 0.211
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 4.61065,
+            "p95_ms": 5.1085
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.08574999999999999,
+            "p95_ms": 1.9617
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.16325,
+            "p95_ms": 2.6939
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.30605000000000004,
+            "p95_ms": 0.3937
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 2.4501999999999997,
+            "p95_ms": 2.7099
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.1665,
+            "p95_ms": 0.2179
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 5.221500000000001,
+            "p95_ms": 7.1156
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.19665,
+            "p95_ms": 20.9647
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.6897,
+            "p95_ms": 5.5976
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.3285,
+            "p95_ms": 0.5141
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 2.1192,
+            "p95_ms": 2.8554
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.177,
+            "p95_ms": 0.2333
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 5.88345,
+            "p95_ms": 25.8744
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T02:59:30.0316712Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T02:59:41.9961933Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    },
+    "coppet-replay-master-scaled-b": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.0921,
+            "p95_ms": 0.1362
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.95945,
+            "p95_ms": 2.9092
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.32955,
+            "p95_ms": 0.5052
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 16.913800000000002,
+            "p95_ms": 22.5379
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.34395,
+            "p95_ms": 0.4675
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 19.6984,
+            "p95_ms": 25.4297
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.08815,
+            "p95_ms": 2.0543
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.1539,
+            "p95_ms": 2.8553
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.3214,
+            "p95_ms": 0.4798
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 19.54405,
+            "p95_ms": 21.9882
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.34045000000000003,
+            "p95_ms": 0.5106
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 22.754350000000002,
+            "p95_ms": 26.85
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.1899,
+            "p95_ms": 20.1543
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.58555,
+            "p95_ms": 5.2701
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.32915000000000005,
+            "p95_ms": 0.4572
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 16.3126,
+            "p95_ms": 18.6004
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.32755,
+            "p95_ms": 0.4208
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 20.3335,
+            "p95_ms": 39.6008
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T03:01:29.7549520Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T03:01:57.9217365Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    },
+    "coppet-replay-master-native-b": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.0921,
+            "p95_ms": 0.1217
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.86825,
+            "p95_ms": 2.73
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.327,
+            "p95_ms": 0.5432
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 2.18705,
+            "p95_ms": 2.6806
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.1815,
+            "p95_ms": 0.2327
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 4.68605,
+            "p95_ms": 6.3363
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.08945,
+            "p95_ms": 2.0162
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.2127499999999998,
+            "p95_ms": 3.148
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.3306,
+            "p95_ms": 0.5541
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 2.49315,
+            "p95_ms": 3.0709
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.17435,
+            "p95_ms": 0.2323
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 5.50815,
+            "p95_ms": 7.6816
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.19224999999999998,
+            "p95_ms": 20.419
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.5739,
+            "p95_ms": 5.0937
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.3204,
+            "p95_ms": 0.4717
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 2.1165,
+            "p95_ms": 2.4617
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.17345,
+            "p95_ms": 0.225
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 5.54825,
+            "p95_ms": 25.2399
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T02:59:54.0949408Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T03:00:06.0510970Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    },
+    "coppet-replay-candidate-scaled-a": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.0921,
+            "p95_ms": 0.1234
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.8921999999999999,
+            "p95_ms": 2.9719
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.329,
+            "p95_ms": 0.5448
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 16.6569,
+            "p95_ms": 26.8618
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.3326,
+            "p95_ms": 0.4141
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 19.4299,
+            "p95_ms": 30.9675
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.0857,
+            "p95_ms": 1.9651
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.1950000000000003,
+            "p95_ms": 2.708
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.32245,
+            "p95_ms": 0.4651
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 19.60355,
+            "p95_ms": 22.1249
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.32284999999999997,
+            "p95_ms": 0.401
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 22.7716,
+            "p95_ms": 27.1142
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.1865,
+            "p95_ms": 20.735
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.6479,
+            "p95_ms": 5.7398
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.3381,
+            "p95_ms": 0.4886
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 15.983049999999999,
+            "p95_ms": 18.3879
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.33294999999999997,
+            "p95_ms": 0.4307
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 19.90165,
+            "p95_ms": 40.5496
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T03:00:34.3116950Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T03:01:01.4423987Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    },
+    "coppet-replay-candidate-scaled-b": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.09325,
+            "p95_ms": 0.1244
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.9060000000000001,
+            "p95_ms": 2.3061
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.31425000000000003,
+            "p95_ms": 0.4535
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 16.62355,
+            "p95_ms": 18.0912
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.33825,
+            "p95_ms": 0.4795
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 19.3662,
+            "p95_ms": 21.1329
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.08805,
+            "p95_ms": 2.3189
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.2015000000000002,
+            "p95_ms": 2.7062
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.31379999999999997,
+            "p95_ms": 0.4404
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 19.31145,
+            "p95_ms": 20.5029
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.3275,
+            "p95_ms": 0.4125
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 22.503950000000003,
+            "p95_ms": 25.6619
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.1988,
+            "p95_ms": 20.8241
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.71,
+            "p95_ms": 6.1147
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.3366,
+            "p95_ms": 0.525
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 16.414299999999997,
+            "p95_ms": 19.9667
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.33825,
+            "p95_ms": 0.4545
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 20.653100000000002,
+            "p95_ms": 40.643
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T03:01:01.5150302Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T03:01:29.6786632Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    },
+    "coppet-replay-candidate-native-b": {
+      "stages": {
+        "new_city": {
+          "cpu_ms": {
+            "n": 100,
+            "median_ms": 0.09,
+            "p95_ms": 0.1135
+          },
+          "compose_ms": {
+            "n": 100,
+            "median_ms": 1.8526,
+            "p95_ms": 2.3311
+          },
+          "raster_ms": {
+            "n": 100,
+            "median_ms": 0.30245,
+            "p95_ms": 0.4328
+          },
+          "outline_ms": {
+            "n": 100,
+            "median_ms": 2.16585,
+            "p95_ms": 2.3182
+          },
+          "resize_ms": {
+            "n": 100,
+            "median_ms": 0.16544999999999999,
+            "p95_ms": 0.218
+          },
+          "total_ms": {
+            "n": 100,
+            "median_ms": 4.608499999999999,
+            "p95_ms": 5.2506
+          }
+        },
+        "newspaper": {
+          "cpu_ms": {
+            "n": 80,
+            "median_ms": 0.08765,
+            "p95_ms": 2.6074
+          },
+          "compose_ms": {
+            "n": 80,
+            "median_ms": 2.1732500000000003,
+            "p95_ms": 2.924
+          },
+          "raster_ms": {
+            "n": 80,
+            "median_ms": 0.32545,
+            "p95_ms": 0.4956
+          },
+          "outline_ms": {
+            "n": 80,
+            "median_ms": 2.4781,
+            "p95_ms": 2.7986
+          },
+          "resize_ms": {
+            "n": 80,
+            "median_ms": 0.18605,
+            "p95_ms": 0.2413
+          },
+          "total_ms": {
+            "n": 80,
+            "median_ms": 5.48675,
+            "p95_ms": 7.7885
+          }
+        },
+        "city": {
+          "cpu_ms": {
+            "n": 250,
+            "median_ms": 0.18455,
+            "p95_ms": 20.2998
+          },
+          "compose_ms": {
+            "n": 250,
+            "median_ms": 2.54845,
+            "p95_ms": 5.5474
+          },
+          "raster_ms": {
+            "n": 250,
+            "median_ms": 0.31375,
+            "p95_ms": 0.4495
+          },
+          "outline_ms": {
+            "n": 250,
+            "median_ms": 2.08405,
+            "p95_ms": 2.4164
+          },
+          "resize_ms": {
+            "n": 250,
+            "median_ms": 0.16895,
+            "p95_ms": 0.2159
+          },
+          "total_ms": {
+            "n": 250,
+            "median_ms": 5.50745,
+            "p95_ms": 25.4238
+          }
+        }
+      },
+      "power_before": {
+        "timestamp_utc": "2026-09-17T02:59:42.0834267Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      },
+      "power_after": {
+        "timestamp_utc": "2026-09-17T02:59:54.0136172Z",
+        "ac_line_status": 1,
+        "battery_saver_enabled": false,
+        "battery_percent": 99,
+        "active_power_scheme": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"
+      }
+    }
+  },
+  "different_instruction_tick_rows": {
+    "coppet-replay-master-scaled-a": 0,
+    "coppet-replay-master-native-a": 0,
+    "coppet-replay-candidate-native-a": 1,
+    "coppet-replay-master-scaled-b": 0,
+    "coppet-replay-master-native-b": 0,
+    "coppet-replay-candidate-scaled-a": 1,
+    "coppet-replay-candidate-scaled-b": 1,
+    "coppet-replay-candidate-native-b": 1
+  }
+}

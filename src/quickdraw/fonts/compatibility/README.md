@@ -1,6 +1,6 @@
 # Classic layout compatibility data
 
-Systemless uses bundled URW outlines for fallback font pixels. This directory
+Systemless uses bundled URW and Coppet outlines for fallback font pixels. This directory
 contains separately licensed logical metrics used where a classic-compatible
 layout is required. It does not contain Apple font software or glyph artwork.
 
@@ -25,8 +25,8 @@ historical OFL-licensed Kurrajong 9 source:
 PR #1524 later removed the old bitmap catalogue. The compatibility component
 retains only the 95 advance values from that licensed Systemless source. It
 excludes the historical bitmap pixels, masks, bearings, origins, heights, and
-all extended characters. Current URW font files remain the source of raster
-pixels, bearings, coverage, and extended Mac Roman glyphs.
+all extended characters. [Coppet](../coppet/README.md) supplies the 9-point ASCII
+artwork; URW retains extended Mac Roman glyphs and the existing font metrics.
 
 To verify the public source and component:
 
