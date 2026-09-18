@@ -17022,6 +17022,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             last_resource_error,
             default_dir_id,
             launched_app_path,
+            vfs_volumes,
+            working_directories,
+            next_working_directory_ref_num,
+            application_working_directory_ref_num,
         },
     ) {
         return Some(action);
@@ -18866,7 +18870,14 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::UseResFile
         | PpcImportDispatcherTarget::OpenResFile
         | PpcImportDispatcherTarget::HOpenResFile
-        | PpcImportDispatcherTarget::ResError => {
+        | PpcImportDispatcherTarget::ResError
+        | PpcImportDispatcherTarget::GetVol
+        | PpcImportDispatcherTarget::GetWDInfo
+        | PpcImportDispatcherTarget::HGetVol
+        | PpcImportDispatcherTarget::HSetVol
+        | PpcImportDispatcherTarget::FlushVol
+        | PpcImportDispatcherTarget::PBFlushVol
+        | PpcImportDispatcherTarget::PBHGetVInfo => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -21845,9 +21856,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 vfs_resource_files,
                 default_dir_id,
             ),
-        ))),
-        PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
         ))),
         PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_get_fcb_info(
@@ -25098,56 +25106,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             };
             Some(PpcImportAction::Return(ppc_i16_result(error)))
         }
-        // FUNCTION GetVol (volName: StringPtr; VAR vRefNum: Integer): OSErr;
-        // Inside Macintosh: Files (1992), 2-134 (lines 7672-7695).
-        PpcImportDispatcherTarget::GetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_vol(
-                cpu,
-                memory,
-                default_dir_id,
-                *application_working_directory_ref_num,
-                working_directories,
-                vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::GetWDInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_wd_info(
-                cpu,
-                memory,
-                default_dir_id,
-                *application_working_directory_ref_num,
-                working_directories,
-                vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::HGetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hget_vol(
-                cpu,
-                memory,
-                default_dir_id,
-                *application_working_directory_ref_num,
-                working_directories,
-                vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::HSetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hset_vol(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_volumes,
-                default_dir_id,
-                working_directories,
-                next_working_directory_ref_num,
-                application_working_directory_ref_num,
-            ),
-        ))),
-        PpcImportDispatcherTarget::FlushVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_flush_vol(cpu, memory),
-        ))),
-        PpcImportDispatcherTarget::PBFlushVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR),
-        ))),
         PpcImportDispatcherTarget::ParamText => {
             param_text.with_mut(|slots| ppc_param_text(cpu, memory, slots));
             Some(PpcImportAction::ReturnPreserve)
@@ -82376,7 +82334,7 @@ fn ppc_volume_name_for_ref_num<'a>(
     }
 }
 
-fn ppc_hget_vol(
+pub(super) fn ppc_hget_vol(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     default_dir_id: u32,
@@ -82416,7 +82374,7 @@ fn ppc_hget_vol(
     PPC_NO_ERR
 }
 
-fn ppc_hset_vol(
+pub(super) fn ppc_hset_vol(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -82534,7 +82492,7 @@ fn ppc_hset_vol(
     PPC_NO_ERR
 }
 
-fn ppc_get_vol(
+pub(super) fn ppc_get_vol(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     default_dir_id: u32,
@@ -82569,7 +82527,7 @@ fn ppc_get_vol(
     PPC_NO_ERR
 }
 
-fn ppc_get_wd_info(
+pub(super) fn ppc_get_wd_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     default_dir_id: u32,
@@ -82604,7 +82562,7 @@ fn ppc_get_wd_info(
     PPC_NO_ERR
 }
 
-fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+pub(super) fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let name_ptr = cpu.gpr[3];
     if name_ptr != 0 && ppc_read_pstring_bytes(memory, name_ptr).is_none() {
         return PPC_PARAM_ERR;
@@ -84804,7 +84762,7 @@ fn ppc_set_finfo_for_path(
     found
 }
 
-fn ppc_pbh_get_v_info(
+pub(super) fn ppc_pbh_get_v_info(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
@@ -84956,7 +84914,7 @@ fn ppc_pbh_get_v_info(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_complete_pb(memory: &mut PpcSectionMem, pb: u32, err: i16) -> i16 {
+pub(super) fn ppc_complete_pb(memory: &mut PpcSectionMem, pb: u32, err: i16) -> i16 {
     if memory.write_u16_be(pb + 16, err as u16).is_none() {
         PPC_PARAM_ERR
     } else {
