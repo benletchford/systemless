@@ -10411,15 +10411,17 @@ mod tests {
         disp.window_proc_id = 0;
         disp.window_title = "Document".to_string();
         let protected = screen_base + 70 * 800 + 60;
-        bus.write_byte(protected, 0x7B);
-
-        disp.redraw_chrome(&mut bus);
-
-        assert_eq!(
-            bus.read_byte(protected),
-            0x7B,
-            "active-document chrome must remain behind visual-front utility content"
-        );
+        for value in [0x7B, 0x56] {
+            bus.write_byte(protected, value);
+            // The second paint reuses the document title. Its saved pixels
+            // must still stay behind freshly updated utility-window content.
+            disp.redraw_chrome(&mut bus);
+            assert_eq!(
+                bus.read_byte(protected),
+                value,
+                "active-document chrome must remain behind visual-front utility content"
+            );
+        }
     }
 
     #[test]
