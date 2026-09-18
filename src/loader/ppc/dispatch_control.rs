@@ -1644,7 +1644,7 @@ pub(super) fn ppc_draw_control_inner(
                 ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
             }
             1008..=1023 => {
-                // The standard pop-up CDEF is resource ID 63, warning proc IDs
+                // The standard pop-up CDEF is resource ID 63, whose proc IDs
                 // occupy 63 << 4 through 63 << 4 | 15. Its contrlMin field is
                 // the MENU resource ID and contrlValue is the one-based item.
                 let dialog_bounds = memory
@@ -1760,11 +1760,11 @@ pub(super) fn ppc_draw_control_inner(
                             draw_owner,
                             (
                                 arrow_h.saturating_sub(offset),
-                                center_v.saturating_sub(3 - offset),
+                                center_v.saturating_add(3 - offset),
                             ),
                             (
                                 arrow_h.saturating_add(offset),
-                                center_v.saturating_sub(3 - offset),
+                                center_v.saturating_add(3 - offset),
                             ),
                             ppc_theme_rgb(palette.frame_dark),
                             None,
