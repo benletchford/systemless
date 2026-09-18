@@ -50173,7 +50173,7 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         b"dplv" => Some((0x0002_0006, PPC_NO_ERR)),
         b"dply" => Some((0x0000_0007, PPC_NO_ERR)),
         b"alis" => Some((1, PPC_NO_ERR)),
-        b"fs  " => Some((1, PPC_NO_ERR)),
+        b"fs  " => Some(((1 << 0) | (1 << 1), PPC_NO_ERR)),
         b"fold" => Some((1, PPC_NO_ERR)),
         b"qtim" => Some((PPC_QUICKTIME_VERSION, PPC_NO_ERR)),
         b"drag" => Some((0, PPC_NO_ERR)),
