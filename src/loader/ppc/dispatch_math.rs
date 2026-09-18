@@ -17,6 +17,13 @@ pub(super) fn dispatch_math_import(
             cpu.fpr[1] = value.sqrt().to_bits();
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MathExp => {
+            // Inside Macintosh: PowerPC Numerics (1994), pp. 10-18--10-19:
+            // exp returns e raised to the power of x.
+            let value = f64::from_bits(cpu.fpr[1]);
+            cpu.fpr[1] = value.exp().to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MathSin => {
             let value = f64::from_bits(cpu.fpr[1]);
             cpu.fpr[1] = value.sin().to_bits();

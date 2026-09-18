@@ -2137,6 +2137,7 @@ pub enum PpcImportDispatcherTarget {
     ExitToShell,
     MathCeil,
     MathSqrt,
+    MathExp,
     MathSin,
     MathCos,
     MathAsin,
@@ -2844,6 +2845,7 @@ fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTarget) -> u64
         PpcImportDispatcherTarget::Q3ViewEndRendering => 0,
         PpcImportDispatcherTarget::MathCeil
         | PpcImportDispatcherTarget::MathSqrt
+        | PpcImportDispatcherTarget::MathExp
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos
         | PpcImportDispatcherTarget::MathAsin
@@ -14687,6 +14689,7 @@ fn dispatcher_target_for_import(
         }
         ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
+        ("MathLib", "exp") => PpcImportDispatcherTarget::MathExp,
         ("MathLib", "sin") => PpcImportDispatcherTarget::MathSin,
         ("MathLib", "cos") => PpcImportDispatcherTarget::MathCos,
         ("MathLib", "asin") => PpcImportDispatcherTarget::MathAsin,
@@ -25222,6 +25225,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         }
         ref target @ (PpcImportDispatcherTarget::MathCeil
         | PpcImportDispatcherTarget::MathSqrt
+        | PpcImportDispatcherTarget::MathExp
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos
         | PpcImportDispatcherTarget::MathAsin

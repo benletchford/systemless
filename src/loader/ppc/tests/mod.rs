@@ -15469,6 +15469,10 @@ fn import_bindings_classify_mathlib_imports() {
         PpcImportDispatcherTarget::MathSqrt
     );
     assert_eq!(
+        dispatcher_target_for_import("MathLib", "exp"),
+        PpcImportDispatcherTarget::MathExp
+    );
+    assert_eq!(
         dispatcher_target_for_import("MathLib", "sin"),
         PpcImportDispatcherTarget::MathSin
     );
@@ -51901,6 +51905,22 @@ fn hle_import_runner_handles_mathlib_log10_in_fpr1() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
     assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), 3.0);
+}
+
+#[test]
+fn hle_import_runner_handles_mathlib_exp_in_fpr1() {
+    let pef = synthetic_pef_with_library_import(b"MathLib", b"exp");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0xfeed_face;
+    loaded.cpu.fpr[1] = 1.0f64.to_bits();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
+    let result = f64::from_bits(loaded.cpu.fpr[1]);
+    assert!((result - std::f64::consts::E).abs() < 1e-12);
 }
 
 #[test]
