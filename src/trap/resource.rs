@@ -3889,9 +3889,9 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A0, 1);
                         cpu.write_reg(Register::D0, 0);
                     }
-                    // gestaltFSAttr ('fs  ') -> has FSSpec calls
+                    // gestaltFSAttr ('fs  ') -> has FSSpec calls and extended dispatch
                     b"fs  " => {
-                        cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(Register::A0, (1 << 0) | (1 << 1));
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltFindFolderAttr ('fold') -> FindFolder present
@@ -14617,6 +14617,17 @@ mod tests {
             cpu.read_reg(Register::A0) & ((1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 7)),
             0x9B
         );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_file_system_attributes_report_fsspec_and_extended_dispatch() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xBEEF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"fs  "));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), (1 << 0) | (1 << 1));
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
