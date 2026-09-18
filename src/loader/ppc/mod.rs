@@ -140,6 +140,7 @@ mod dispatch_low_memory;
 mod dispatch_math;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
+mod dispatch_resources;
 mod dispatch_sound;
 mod pef_dump;
 mod theme;
@@ -17034,6 +17035,24 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_resources::dispatch_resource_import(
+        dispatch_resources::PpcResourceDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            vfs_resources,
+            current_resource_refnum,
+            resource_policy,
+            last_resource_error,
+        },
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_quickdraw::dispatch_quickdraw_import(
         dispatch_quickdraw::PpcQuickDrawDispatchContext {
             binding,
@@ -17731,37 +17750,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::SetResLoad => {
-            // Inside Macintosh Volume I (1985), I-118: SetResLoad controls
-            // whether subsequent Resource Manager lookups load resource data.
-            resource_policy.set_res_load(cpu.gpr[3] != 0);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LoadResource => {
-            // Inside Macintosh Volume I (1985), I-120: LoadResource fills an
-            // empty resource handle and reports resNotFound for other handles.
-            let handle = cpu.gpr[3];
-            if let Some(index) = vfs_resources
-                .iter()
-                .position(|resource| resource.handle == handle)
-            {
-                let _ = ppc_materialize_vfs_resource_handle(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    vfs_resources,
-                    index,
-                    true,
-                    last_resource_error,
-                );
-            } else {
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
         PpcImportDispatcherTarget::GetIndString => {
             ppc_get_ind_string(
                 cpu,
@@ -17796,75 +17784,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 vfs_resources,
                 *current_resource_refnum,
                 false,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::GetResource => {
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] GetResource type='{}' id={} current_refnum={}",
-                    format_ppc_fourcc(cpu.gpr[3]),
-                    cpu.gpr[4] as i16,
-                    *current_resource_refnum
-                );
-            }
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::Get1Resource => {
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] Get1Resource type='{}' id={} current_refnum={}",
-                    format_ppc_fourcc(cpu.gpr[3]),
-                    cpu.gpr[4] as i16,
-                    *current_resource_refnum
-                );
-            }
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                true,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::GetNamedResource
-        | PpcImportDispatcherTarget::Get1NamedResource => {
-            let current_only = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::Get1NamedResource
-            );
-            Some(PpcImportAction::Return(ppc_get_named_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                current_only,
                 resource_policy.res_load(),
                 last_resource_error,
             )))
@@ -18469,26 +18388,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::MenuSelect => ppc_step_menu_tracking(
             cpu, process_memory_manager, memory, heap_cursor, heap_limit, gworlds, screen_clut, toolbox_startup, current_gworld, current_gdevice, input, vfs_resources, *current_resource_refnum,
         ),
-        PpcImportDispatcherTarget::GetIndResource | PpcImportDispatcherTarget::Get1IndResource => {
-            let current_only = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::Get1IndResource
-            );
-            Some(PpcImportAction::Return(ppc_get_ind_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                current_only,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
         PpcImportDispatcherTarget::GetResAttrs => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_get_res_attrs(cpu, vfs_resources, last_resource_error),
         ))),
@@ -18528,42 +18427,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::HomeResFile => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_home_res_file(cpu, vfs_resources, last_resource_error),
         ))),
-        PpcImportDispatcherTarget::CountResources => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_count_resources(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                last_resource_error,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Count1Resources => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_count_resources(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                true,
-                last_resource_error,
-            )),
-        )),
-        PpcImportDispatcherTarget::UniqueID => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_unique_id(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                last_resource_error,
-            ))))
-        }
-        PpcImportDispatcherTarget::Unique1ID => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_unique_id(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                true,
-                last_resource_error,
-            ))))
-        }
         PpcImportDispatcherTarget::UpdateResFile => {
             ppc_update_res_file(
                 cpu,
@@ -18612,29 +18475,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 vfs_resource_files,
                 vfs_resources,
                 *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ReleaseResource => {
-            ppc_release_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::DetachResource => {
-            ppc_detach_resource(
-                cpu,
-                process_memory_manager,
-                vfs_resources,
                 last_resource_error,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -18898,6 +18738,22 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FSMakeFSSpec
         | PpcImportDispatcherTarget::PBGetFCBInfo => {
             unreachable!("file imports return through dispatch_file_import")
+        }
+        PpcImportDispatcherTarget::SetResLoad
+        | PpcImportDispatcherTarget::LoadResource
+        | PpcImportDispatcherTarget::GetResource
+        | PpcImportDispatcherTarget::Get1Resource
+        | PpcImportDispatcherTarget::GetNamedResource
+        | PpcImportDispatcherTarget::Get1NamedResource
+        | PpcImportDispatcherTarget::GetIndResource
+        | PpcImportDispatcherTarget::Get1IndResource
+        | PpcImportDispatcherTarget::CountResources
+        | PpcImportDispatcherTarget::Count1Resources
+        | PpcImportDispatcherTarget::UniqueID
+        | PpcImportDispatcherTarget::Unique1ID
+        | PpcImportDispatcherTarget::ReleaseResource
+        | PpcImportDispatcherTarget::DetachResource => {
+            unreachable!("resource imports return through dispatch_resource_import")
         }
         PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
@@ -62656,7 +62512,7 @@ fn ppc_handle_resize_allocation_size(
     }
 }
 
-fn ppc_get_resource(
+pub(super) fn ppc_get_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -62866,7 +62722,7 @@ fn ppc_resource_name_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_get_named_resource(
+pub(super) fn ppc_get_named_resource(
     cpu: &PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -62939,7 +62795,7 @@ fn ppc_get_named_resource(
     handle
 }
 
-fn ppc_get_ind_resource(
+pub(super) fn ppc_get_ind_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -63643,7 +63499,7 @@ fn ppc_get_cursor(
     )
 }
 
-fn ppc_materialize_vfs_resource_handle(
+pub(super) fn ppc_materialize_vfs_resource_handle(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -63844,7 +63700,7 @@ fn ppc_home_res_file(
     record.ref_num
 }
 
-fn ppc_count_resources(
+pub(super) fn ppc_count_resources(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -63872,7 +63728,7 @@ fn ppc_count_resources(
     i16::try_from(count).unwrap_or(i16::MAX)
 }
 
-fn ppc_unique_id(
+pub(super) fn ppc_unique_id(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -64677,7 +64533,7 @@ fn ppc_remove_resource(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_release_resource(
+pub(super) fn ppc_release_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -64719,7 +64575,7 @@ fn ppc_release_resource(
     }
 }
 
-fn ppc_detach_resource(
+pub(super) fn ppc_detach_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     vfs_resources: &mut [PpcVfsResourceRecord],
