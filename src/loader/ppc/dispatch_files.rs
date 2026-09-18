@@ -17,6 +17,10 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) last_resource_error: &'a mut i16,
     pub(super) default_dir_id: u32,
     pub(super) launched_app_path: Option<&'a str>,
+    pub(super) vfs_volumes: &'a [PpcVfsVolumeRecord],
+    pub(super) working_directories: &'a mut HashMap<i16, ProcessWorkingDirectory>,
+    pub(super) next_working_directory_ref_num: &'a mut i16,
+    pub(super) application_working_directory_ref_num: &'a mut i16,
 }
 
 pub(super) fn dispatch_file_import(
@@ -39,6 +43,10 @@ pub(super) fn dispatch_file_import(
         last_resource_error,
         default_dir_id,
         launched_app_path,
+        vfs_volumes,
+        working_directories,
+        next_working_directory_ref_num,
+        application_working_directory_ref_num,
     } = context;
 
     match binding.dispatcher_target {
@@ -261,6 +269,57 @@ pub(super) fn dispatch_file_import(
         }
         PpcImportDispatcherTarget::ResError => Some(PpcImportAction::Return(ppc_i16_result(
             *last_resource_error,
+        ))),
+        PpcImportDispatcherTarget::GetVol => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_get_vol(
+                cpu,
+                memory,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+                vfs_volumes,
+            ),
+        ))),
+        PpcImportDispatcherTarget::GetWDInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_get_wd_info(
+                cpu,
+                memory,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+                vfs_volumes,
+            ),
+        ))),
+        PpcImportDispatcherTarget::HGetVol => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_hget_vol(
+                cpu,
+                memory,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+                vfs_volumes,
+            ),
+        ))),
+        PpcImportDispatcherTarget::HSetVol => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_hset_vol(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_volumes,
+                default_dir_id,
+                working_directories,
+                next_working_directory_ref_num,
+                application_working_directory_ref_num,
+            ),
+        ))),
+        PpcImportDispatcherTarget::FlushVol => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_flush_vol(cpu, memory),
+        ))),
+        PpcImportDispatcherTarget::PBFlushVol => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR),
+        ))),
+        PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
         ))),
         _ => None,
     }
