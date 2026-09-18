@@ -16,6 +16,7 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) current_resource_refnum: &'a mut i16,
     pub(super) last_resource_error: &'a mut i16,
     pub(super) default_dir_id: u32,
+    pub(super) launched_app_path: Option<&'a str>,
 }
 
 pub(super) fn dispatch_file_import(
@@ -37,6 +38,7 @@ pub(super) fn dispatch_file_import(
         current_resource_refnum,
         last_resource_error,
         default_dir_id,
+        launched_app_path,
     } = context;
 
     match binding.dispatcher_target {
@@ -217,6 +219,49 @@ pub(super) fn dispatch_file_import(
                 next_file_ref_num,
             ))))
         }
+        PpcImportDispatcherTarget::CurResFile => Some(PpcImportAction::Return(ppc_i16_result(
+            *current_resource_refnum,
+        ))),
+        PpcImportDispatcherTarget::UseResFile => {
+            ppc_set_current_resource_refnum(
+                memory,
+                current_resource_refnum,
+                cpu.gpr[3] as u16 as i16,
+            );
+            *last_resource_error = 0;
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::OpenResFile => Some(PpcImportAction::Return(ppc_open_res_file(
+            cpu,
+            memory,
+            vfs_files,
+            vfs_resource_files,
+            resource_files,
+            vfs_resources,
+            next_file_ref_num,
+            current_resource_refnum,
+            last_resource_error,
+            launched_app_path,
+        ) as u16
+            as u32)),
+        PpcImportDispatcherTarget::HOpenResFile => {
+            Some(PpcImportAction::Return(ppc_h_open_res_file(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+                next_file_ref_num,
+                current_resource_refnum,
+                last_resource_error,
+                default_dir_id,
+            ) as u16 as u32))
+        }
+        PpcImportDispatcherTarget::ResError => Some(PpcImportAction::Return(ppc_i16_result(
+            *last_resource_error,
+        ))),
         _ => None,
     }
 }
