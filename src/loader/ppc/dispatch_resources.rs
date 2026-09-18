@@ -9,6 +9,8 @@ pub(super) struct PpcResourceDispatchContext<'a> {
     pub(super) heap_limit: u32,
     pub(super) last_mem_error: &'a mut i16,
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,
+    pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
     pub(super) current_resource_refnum: &'a mut i16,
     pub(super) resource_policy: &'a SharedProcessResourcePolicy,
@@ -27,6 +29,8 @@ pub(super) fn dispatch_resource_import(
         heap_limit,
         last_mem_error,
         handles,
+        resource_files,
+        vfs_resource_files,
         vfs_resources,
         current_resource_refnum,
         resource_policy,
@@ -211,6 +215,139 @@ pub(super) fn dispatch_resource_import(
                 vfs_resources,
                 last_resource_error,
             );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetIndString => {
+            ppc_get_ind_string(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                *current_resource_refnum,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        // FUNCTION GetString (stringID: Integer): StringHandle;
+        // Inside Macintosh: Text (1993), 5-49 (lines 15621-15642).
+        // GetString is the Text Utilities wrapper around
+        // GetResource('STR ', stringID), including its NIL-on-miss behavior.
+        PpcImportDispatcherTarget::GetString => {
+            let string_id = cpu.gpr[3];
+            cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+            cpu.gpr[4] = string_id;
+            Some(PpcImportAction::Return(ppc_get_resource(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                *current_resource_refnum,
+                false,
+                resource_policy.res_load(),
+                last_resource_error,
+            )))
+        }
+        PpcImportDispatcherTarget::GetResAttrs => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_get_res_attrs(cpu, vfs_resources, last_resource_error),
+        ))),
+        PpcImportDispatcherTarget::SetResAttrs => {
+            ppc_set_res_attrs(cpu, vfs_resource_files, vfs_resources, last_resource_error);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetResInfo => {
+            ppc_get_res_info(cpu, memory, vfs_resources, last_resource_error);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetResourceSizeOnDisk => {
+            // More Macintosh Toolbox (1993), 1-105: this reports the exact
+            // on-disk resource size even when SetResLoad left its handle empty.
+            let size = vfs_resources
+                .iter()
+                .find(|resource| resource.handle == cpu.gpr[3])
+                .and_then(|resource| i32::try_from(resource.data.len()).ok());
+            if let Some(size) = size {
+                *last_resource_error = PPC_NO_ERR;
+                Some(PpcImportAction::Return(size as u32))
+            } else {
+                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+                Some(PpcImportAction::Return(u32::MAX))
+            }
+        }
+        PpcImportDispatcherTarget::SetResInfo => {
+            ppc_set_res_info(
+                cpu,
+                memory,
+                vfs_resource_files,
+                vfs_resources,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::HomeResFile => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_home_res_file(cpu, vfs_resources, last_resource_error),
+        ))),
+        PpcImportDispatcherTarget::UpdateResFile => {
+            ppc_update_res_file(
+                cpu,
+                memory,
+                handles,
+                resource_files,
+                vfs_resource_files,
+                vfs_resources,
+                *current_resource_refnum,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::AddResource => {
+            *last_resource_error = ppc_add_resource(
+                cpu,
+                process_memory_manager,
+                memory,
+                handles,
+                resource_files,
+                vfs_resource_files,
+                vfs_resources,
+                *current_resource_refnum,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::ChangedResource => {
+            ppc_changed_resource(cpu, vfs_resource_files, vfs_resources, last_resource_error);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::WriteResource => {
+            ppc_write_resource(
+                cpu,
+                memory,
+                handles,
+                vfs_resource_files,
+                vfs_resources,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::RemoveResource => {
+            ppc_remove_resource(
+                cpu,
+                process_memory_manager,
+                vfs_resource_files,
+                vfs_resources,
+                *current_resource_refnum,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::ReadPartialResource => {
+            ppc_read_partial_resource(cpu, memory, vfs_resources, last_resource_error);
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
