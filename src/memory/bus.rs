@@ -2665,12 +2665,10 @@ impl MemoryBus for MacMemoryBus {
             GuestMemoryRoute::Unmapped => return,
             GuestMemoryRoute::Flat => {}
         }
-        if !self.is_guest_address_writable(address, 2) {
-            return;
-        }
-        let translated = self.range_translates_contiguously(address, 2);
-        let protected_address = translated.unwrap_or(address);
-        if self.readonly_code_overlaps(protected_address, 2) {
+        // Only a complete Flat route reaches here. It has already proved
+        // contiguous translation and local-RAM bounds; retain the protection
+        // check without routing the same range a second time.
+        if self.readonly_code_overlaps(foreign_address, 2) {
             return;
         }
         maybe_log_mem_write(address, 2, value as u32);
@@ -2678,27 +2676,23 @@ impl MemoryBus for MacMemoryBus {
         // Fast path: watchpoint disarmed + tracer disabled + write fully in-bounds.
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
+            && !self.foreign_ordinary_sparse_overlaps(foreign_address, 2)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, 2);
         #[cfg(not(debug_assertions))]
-        let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
+        let fast = !self.foreign_ordinary_sparse_overlaps(foreign_address, 2)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, 2);
-        if let Some(address) =
-            translated.filter(|&address| (address as u64) + 2 <= self.ram_size as u64)
-        {
-            if fast {
-                self.ram.write_word_in_bounds(address as usize, value);
-                return;
-            }
-            if self.only_write_probe_blocks_fast_path() {
-                self.record_write_probe_range(address, 2);
-                self.ram.write_word_in_bounds(address as usize, value);
-                return;
-            }
+        if fast {
+            self.ram.write_word_in_bounds(foreign_address as usize, value);
+            return;
+        }
+        if self.only_write_probe_blocks_fast_path() {
+            self.record_write_probe_range(foreign_address, 2);
+            self.ram.write_word_in_bounds(foreign_address as usize, value);
+            return;
         }
         self.write_byte(address, (value >> 8) as u8);
         self.write_byte(address.wrapping_add(1), value as u8);
@@ -2732,39 +2726,33 @@ impl MemoryBus for MacMemoryBus {
             GuestMemoryRoute::Unmapped => return,
             GuestMemoryRoute::Flat => {}
         }
-        if !self.is_guest_address_writable(address, 4) {
-            return;
-        }
-        let translated = self.range_translates_contiguously(address, 4);
-        let protected_address = translated.unwrap_or(address);
-        if self.readonly_code_overlaps(protected_address, 4) {
+        // Only a complete Flat route reaches here. It has already proved
+        // contiguous translation and local-RAM bounds; retain the protection
+        // check without routing the same range a second time.
+        if self.readonly_code_overlaps(foreign_address, 4) {
             return;
         }
         maybe_log_mem_write(address, 4, value);
 
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
+            && !self.foreign_ordinary_sparse_overlaps(foreign_address, 4)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, 4);
         #[cfg(not(debug_assertions))]
-        let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
+        let fast = !self.foreign_ordinary_sparse_overlaps(foreign_address, 4)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, 4);
-        if let Some(address) =
-            translated.filter(|&address| (address as u64) + 4 <= self.ram_size as u64)
-        {
-            if fast {
-                self.ram.write_long_in_bounds(address as usize, value);
-                return;
-            }
-            if self.only_write_probe_blocks_fast_path() {
-                self.record_write_probe_range(address, 4);
-                self.ram.write_long_in_bounds(address as usize, value);
-                return;
-            }
+        if fast {
+            self.ram.write_long_in_bounds(foreign_address as usize, value);
+            return;
+        }
+        if self.only_write_probe_blocks_fast_path() {
+            self.record_write_probe_range(foreign_address, 4);
+            self.ram.write_long_in_bounds(foreign_address as usize, value);
+            return;
         }
         self.write_word(address, (value >> 16) as u16);
         self.write_word(address.wrapping_add(2), value as u16);
@@ -4210,6 +4198,67 @@ mod tests {
 
         bus.set_addressing_32_bit(false);
         assert!(bus.is_guest_address_mapped(0x00ff_ffff, 2));
+    }
+
+    #[test]
+    fn scalar_flat_writes_preserve_atomic_protection_and_tagged_probes() {
+        for (addressing_32_bit, tag) in [(true, 0), (false, 0), (false, 0xab00_0000)] {
+            for width in [2u32, 4] {
+                for protected_offset in -1..=width as i32 {
+                    let mut bus = MacMemoryBus::new(4096);
+                    bus.set_addressing_32_bit(addressing_32_bit);
+                    let base = 0x104;
+                    bus.fill_bytes(base - 2, width + 4, 0x5a);
+                    bus.protect_readonly_code((base as i32 + protected_offset) as u32, 1);
+                    bus.begin_write_probe();
+                    match width {
+                        2 => bus.write_word(tag | base, 0x1122),
+                        _ => bus.write_long(tag | base, 0x1122_3344),
+                    }
+                    let blocked = (0..width as i32).contains(&protected_offset);
+                    let mut expected = vec![0x5a; width as usize + 4];
+                    if !blocked {
+                        expected[2..2 + width as usize]
+                            .copy_from_slice(&[0x11, 0x22, 0x33, 0x44][..width as usize]);
+                    }
+                    assert_eq!(bus.read_bytes(base - 2, width as usize + 4), expected,
+                        "32-bit={addressing_32_bit}, tag={tag:x}, width={width}, protected={protected_offset}");
+                    assert_eq!(bus.finish_write_probe_unchanged(), blocked);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_wrapped_writes_keep_atomic_readonly_preflight() {
+        for width in [2u32, 4] {
+            for protect in [false, true] {
+                let mut bus = MacMemoryBus::new(0x0100_0004);
+                bus.set_addressing_32_bit(false);
+                let start = 0x0100_0000 - width / 2;
+                bus.fill_bytes(start, width / 2, 0x5a);
+                bus.fill_bytes(0, width / 2, 0x5a);
+                // Backing RAM exists above 16 MiB, but 24-bit writes must
+                // wrap to zero instead of using that contiguous storage.
+                if protect {
+                    bus.protect_readonly_code(0, 1);
+                }
+                bus.begin_write_probe();
+                match width {
+                    2 => bus.write_word(0xab00_0000 | start, 0x1122),
+                    _ => bus.write_long(0xab00_0000 | start, 0x1122_3344),
+                }
+                let expected = if protect {
+                    vec![0x5a; width as usize]
+                } else {
+                    [0x11, 0x22, 0x33, 0x44][..width as usize].to_vec()
+                };
+                assert_eq!(bus.read_bytes(start, width as usize), expected);
+                assert_eq!(bus.finish_write_probe_unchanged(), protect);
+                bus.set_addressing_32_bit(true);
+                assert_eq!(bus.read_long(0x0100_0000), 0);
+            }
+        }
     }
 
     #[test]
