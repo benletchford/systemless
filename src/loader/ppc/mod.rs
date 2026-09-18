@@ -17016,6 +17016,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             writable_refnums,
             vfs_files,
             vfs_directories,
+            next_vfs_dir_id,
             deleted_vfs_file_paths,
             vfs_resource_files,
             resource_files,
@@ -18891,7 +18892,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FSpSetFInfo
         | PpcImportDispatcherTarget::HSetFInfo
         | PpcImportDispatcherTarget::PBGetCatInfo
-        | PpcImportDispatcherTarget::PBSetCatInfo => {
+        | PpcImportDispatcherTarget::PBSetCatInfo
+        | PpcImportDispatcherTarget::DirCreate
+        | PpcImportDispatcherTarget::FSpDirCreate
+        | PpcImportDispatcherTarget::FSMakeFSSpec
+        | PpcImportDispatcherTarget::PBGetFCBInfo => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -21775,47 +21780,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 aliases,
             ))))
         }
-        PpcImportDispatcherTarget::DirCreate => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_dir_create(
-                cpu,
-                memory,
-                vfs_directories,
-                next_vfs_dir_id,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSpDirCreate => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_dir_create(
-                cpu,
-                memory,
-                vfs_directories,
-                next_vfs_dir_id,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSMakeFSSpec => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_make_fsspec(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_get_fcb_info(
-                cpu,
-                memory,
-                files,
-                resource_files,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                launched_app_path,
-            ),
-        ))),
         PpcImportDispatcherTarget::StandardGetFile => {
             Some(ppc_dispatch_standard_file(
                 PpcStandardFileOperation::StandardGetFile,
@@ -84049,7 +84013,7 @@ fn ppc_map_rect(memory: &mut PpcSectionMem, rect_ptr: u32, src_ptr: u32, dst_ptr
     );
 }
 
-fn ppc_fs_make_fsspec(
+pub(super) fn ppc_fs_make_fsspec(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -84835,7 +84799,7 @@ pub(super) fn ppc_complete_pb(memory: &mut PpcSectionMem, pb: u32, err: i16) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_pb_get_fcb_info(
+pub(super) fn ppc_pb_get_fcb_info(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     files: &[PpcFileRecord],
@@ -89917,7 +89881,7 @@ fn initial_ppc_vfs_directories() -> Vec<PpcVfsDirectory> {
     ]
 }
 
-fn ppc_dir_create(
+pub(super) fn ppc_dir_create(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut Vec<PpcVfsDirectory>,
@@ -89967,7 +89931,7 @@ fn ppc_dir_create(
     PPC_NO_ERR
 }
 
-fn ppc_fsp_dir_create(
+pub(super) fn ppc_fsp_dir_create(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut Vec<PpcVfsDirectory>,
