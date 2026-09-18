@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.12](https://github.com/benletchford/systemless/compare/v0.41.11...v0.41.12) (2026-09-18)
+
+
+### Bug Fixes
+
+* **ppc:** implement QuickTime duration, DrawSprocket VBL proc, and lowercase aliases ([#2021](https://github.com/benletchford/systemless/issues/2021)) ([d99e569](https://github.com/benletchford/systemless/commit/d99e5697eb61bbf150ebcb5bd98a6b93c1accf43))
+
 ## [0.41.11](https://github.com/benletchford/systemless/compare/v0.41.10...v0.41.11) (2026-09-18)
 
 
