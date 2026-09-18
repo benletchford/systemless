@@ -18588,7 +18588,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DirCreate
         | PpcImportDispatcherTarget::FSpDirCreate
         | PpcImportDispatcherTarget::FSMakeFSSpec
-        | PpcImportDispatcherTarget::PBGetFCBInfo => {
+        | PpcImportDispatcherTarget::PBGetFCBInfo
+        | PpcImportDispatcherTarget::FindFolder
+        | PpcImportDispatcherTarget::ResolveAliasFile
+        | PpcImportDispatcherTarget::FileCompatibility(_) => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::SetResLoad
@@ -21451,33 +21454,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             cfm_connections,
             next_cfm_connection_id,
             import_run_state,
-        )),
-        PpcImportDispatcherTarget::FindFolder => {
-            let folder_type = cpu.gpr[4];
-            let found_vref_ptr = cpu.gpr[6];
-            let found_dir_id_ptr = cpu.gpr[7];
-            let found_dir_id = ppc_find_folder_dir_id(folder_type);
-            if found_vref_ptr == 0
-                || found_dir_id_ptr == 0
-                || !ppc_memory_can_write_bytes(memory, found_vref_ptr, 2)
-                || !ppc_memory_can_write_bytes(memory, found_dir_id_ptr, 4)
-            {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
-            } else {
-                let _ = memory.write_u16_be(found_vref_ptr, PPC_BOOT_VOLUME_REF_NUM as u16);
-                let _ = memory.write_u32_be(found_dir_id_ptr, found_dir_id);
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-            }
-        }
-        PpcImportDispatcherTarget::ResolveAliasFile => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_resolve_alias_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-            )),
         )),
         PpcImportDispatcherTarget::ResolveAlias => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_resolve_alias(cpu, memory, vfs_directories, handles, aliases),
@@ -27396,18 +27372,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             handles,
             launched_app_path,
         )),
-        PpcImportDispatcherTarget::FileCompatibility(operation) => Some(ppc_dispatch_file_compatibility(
-            operation,
-            cpu,
-            memory,
-            files,
-            vfs_directories,
-            vfs_volumes,
-            default_dir_id,
-            working_directories,
-            next_working_directory_ref_num,
-            application_working_directory_ref_num,
-        )),
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => {
             Some(ppc_dispatch_appletalk_compatibility(operation, cpu, memory))
         }
@@ -29345,7 +29309,7 @@ fn ppc_dispatch_system_compatibility(
     }
 }
 
-fn ppc_dispatch_file_compatibility(
+pub(super) fn ppc_dispatch_file_compatibility(
     operation: PpcFileCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -89707,7 +89671,7 @@ pub(super) fn ppc_fsp_dir_create(
     PPC_NO_ERR
 }
 
-fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
+pub(super) fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
     if folder_type == u32::from_be_bytes(*b"pref") {
         PPC_PREFERENCES_DIR_ID
     } else {
@@ -90362,7 +90326,7 @@ fn ppc_update_alias(
     PPC_NO_ERR
 }
 
-fn ppc_resolve_alias_file(
+pub(super) fn ppc_resolve_alias_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -91148,7 +91112,7 @@ fn ppc_free_ptr_block_fits_limit(record: &ProcessPtrRecord, heap_limit: u32) -> 
         .is_some_and(|end| end <= heap_limit)
 }
 
-fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
+pub(super) fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
     memory.preflight_writable_range(addr, len)
 }
 
