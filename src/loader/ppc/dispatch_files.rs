@@ -403,6 +403,28 @@ pub(super) fn dispatch_file_import(
                 default_dir_id,
             ))))
         }
+        PpcImportDispatcherTarget::PBGetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_get_cat_info(
+                cpu,
+                memory,
+                vfs_volumes,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+                default_dir_id,
+            ),
+        ))),
+        PpcImportDispatcherTarget::PBSetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_set_cat_info(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            ),
+        ))),
         _ => None,
     }
 }
