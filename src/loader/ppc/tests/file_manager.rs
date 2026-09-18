@@ -7412,3 +7412,106 @@ use super::*;
         assert_eq!(loaded.vfs_resource_files[0].path, "Preferences");
         assert!(loaded.vfs_resource_files[0].dirty);
     }
+
+    #[test]
+    fn classic_resource_query_and_count_imports_use_the_vfs() {
+        let pef = synthetic_pef_with_import(b"CountResources");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let current_refnum = *loaded.process_file_system.current_resource_file;
+        let other_refnum = current_refnum + 1;
+
+        // Resource in current file
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_refnum,
+            path: "App".to_string(),
+            res_type: u32::from_be_bytes(*b"STR "),
+            res_id: 128,
+            name: b"First".to_vec(),
+            data: b"hello".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        // Resource in another file
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: other_refnum,
+            path: "Other".to_string(),
+            res_type: u32::from_be_bytes(*b"STR "),
+            res_id: 129,
+            name: b"Second".to_vec(),
+            data: b"world".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+
+        // CountResources (all files): should be 2
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 2);
+
+        // Count1Resources (current file only): should be 1
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Count1Resources;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 1);
+
+        // Unique1ID: candidate should be 129 (since 128 exists in current file)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Unique1ID;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 129);
+
+        // UniqueID: candidate should be 130 (since 128 and 129 exist across files)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::UniqueID;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 130);
+
+        // GetIndResource: 1-based index 1 -> res_id 128
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetIndResource;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        let handle1 = loaded.cpu.gpr[3];
+        assert_ne!(handle1, 0);
+        assert_eq!(
+            ppc_handle_bytes(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                handle1
+            ),
+            Some(b"hello".to_vec())
+        );
+
+        // Get1IndResource: 1-based index 1 -> res_id 128
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1IndResource;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], handle1);
+
+        // Get1IndResource: index 2 should not exist in current file
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1IndResource;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        loaded.cpu.gpr[4] = 2;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+    }
+
