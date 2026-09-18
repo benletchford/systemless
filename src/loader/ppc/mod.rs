@@ -4132,7 +4132,7 @@ fn push_ppc_hle_import_trace_entry(
     trace.push(entry);
 }
 
-fn ppc_set_current_resource_refnum(
+pub(super) fn ppc_set_current_resource_refnum(
     memory: &mut PpcSectionMem,
     current_resource_refnum: &mut i16,
     refnum: i16,
@@ -16891,6 +16891,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             current_resource_refnum,
             last_resource_error,
             default_dir_id,
+            launched_app_path,
         },
     ) {
         return Some(action);
@@ -17575,18 +17576,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::MemError => {
             Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)))
         }
-        PpcImportDispatcherTarget::CurResFile => Some(PpcImportAction::Return(ppc_i16_result(
-            *current_resource_refnum,
-        ))),
-        PpcImportDispatcherTarget::UseResFile => {
-            ppc_set_current_resource_refnum(
-                memory,
-                current_resource_refnum,
-                cpu.gpr[3] as u16 as i16,
-            );
-            *last_resource_error = 0;
-            Some(PpcImportAction::ReturnPreserve)
-        }
         PpcImportDispatcherTarget::CloseResFile => {
             ppc_close_res_file(
                 cpu,
@@ -17604,37 +17593,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::OpenResFile => Some(PpcImportAction::Return(ppc_open_res_file(
-            cpu,
-            memory,
-            vfs_files,
-            vfs_resource_files,
-            resource_files,
-            vfs_resources,
-            next_file_ref_num,
-            current_resource_refnum,
-            last_resource_error,
-            launched_app_path,
-        ) as u16
-            as u32)),
-        PpcImportDispatcherTarget::HOpenResFile => {
-            Some(PpcImportAction::Return(ppc_h_open_res_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                resource_files,
-                vfs_resources,
-                next_file_ref_num,
-                current_resource_refnum,
-                last_resource_error,
-                default_dir_id,
-            ) as u16 as u32))
-        }
-        PpcImportDispatcherTarget::ResError => Some(PpcImportAction::Return(ppc_i16_result(
-            *last_resource_error,
-        ))),
         PpcImportDispatcherTarget::SetResLoad => {
             // Inside Macintosh Volume I (1985), I-118: SetResLoad controls
             // whether subsequent Resource Manager lookups load resource data.
@@ -18773,7 +18731,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FSpOpenResFile
         | PpcImportDispatcherTarget::FSpOpenDF
         | PpcImportDispatcherTarget::HOpen
-        | PpcImportDispatcherTarget::PBHOpenDF => {
+        | PpcImportDispatcherTarget::PBHOpenDF
+        | PpcImportDispatcherTarget::CurResFile
+        | PpcImportDispatcherTarget::UseResFile
+        | PpcImportDispatcherTarget::OpenResFile
+        | PpcImportDispatcherTarget::HOpenResFile
+        | PpcImportDispatcherTarget::ResError => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -88876,7 +88839,7 @@ fn ppc_fsp_open_res_file(
     ref_num
 }
 
-fn ppc_open_res_file(
+pub(super) fn ppc_open_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_files: &mut ProcessVfsFileRecords,
@@ -88940,7 +88903,7 @@ fn ppc_open_res_file(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_h_open_res_file(
+pub(super) fn ppc_h_open_res_file(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
