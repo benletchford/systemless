@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.11](https://github.com/benletchford/systemless/compare/v0.41.10...v0.41.11) (2026-09-18)
+
+
+### Bug Fixes
+
+* **trap:** report gestaltHasFSSpecCalls in gestaltFSAttr ([#2016](https://github.com/benletchford/systemless/issues/2016)) ([64e2efa](https://github.com/benletchford/systemless/commit/64e2efa0828b809368ec1a169c7f75923fbe020c))
+
 ## [0.41.10](https://github.com/benletchford/systemless/compare/v0.41.9...v0.41.10) (2026-09-17)
 
 
