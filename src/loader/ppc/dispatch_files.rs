@@ -7,7 +7,7 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) files: &'a mut Vec<PpcFileRecord>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
-    pub(super) vfs_directories: &'a [PpcVfsDirectory],
+    pub(super) vfs_directories: &'a mut [PpcVfsDirectory],
     pub(super) deleted_vfs_file_paths: &'a mut Vec<String>,
     pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,
@@ -321,6 +321,88 @@ pub(super) fn dispatch_file_import(
         PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
         ))),
+        PpcImportDispatcherTarget::PBGetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+                default_dir_id,
+                false,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBHGetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+                default_dir_id,
+                true,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBSetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_set_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+                false,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBHSetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_set_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+                true,
+            ))))
+        }
+        PpcImportDispatcherTarget::FSpGetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_fsp_get_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
+        ))),
+        PpcImportDispatcherTarget::GetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_get_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            ))))
+        }
+        PpcImportDispatcherTarget::HGetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_get_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            ))))
+        }
+        PpcImportDispatcherTarget::FSpSetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_fsp_set_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
+        ))),
+        PpcImportDispatcherTarget::HSetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_set_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            ))))
+        }
         _ => None,
     }
 }
