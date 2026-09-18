@@ -7,7 +7,8 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) files: &'a mut Vec<PpcFileRecord>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
-    pub(super) vfs_directories: &'a mut [PpcVfsDirectory],
+    pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
+    pub(super) next_vfs_dir_id: &'a mut u32,
     pub(super) deleted_vfs_file_paths: &'a mut Vec<String>,
     pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,
@@ -34,6 +35,7 @@ pub(super) fn dispatch_file_import(
         writable_refnums,
         vfs_files,
         vfs_directories,
+        next_vfs_dir_id,
         deleted_vfs_file_paths,
         vfs_resource_files,
         resource_files,
@@ -423,6 +425,47 @@ pub(super) fn dispatch_file_import(
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+            ),
+        ))),
+        PpcImportDispatcherTarget::DirCreate => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_dir_create(
+                cpu,
+                memory,
+                vfs_directories,
+                next_vfs_dir_id,
+                default_dir_id,
+            ))))
+        }
+        PpcImportDispatcherTarget::FSpDirCreate => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_dir_create(
+                cpu,
+                memory,
+                vfs_directories,
+                next_vfs_dir_id,
+                default_dir_id,
+            ))))
+        }
+        PpcImportDispatcherTarget::FSMakeFSSpec => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_make_fsspec(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_get_fcb_info(
+                cpu,
+                memory,
+                files,
+                resource_files,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+                launched_app_path,
             ),
         ))),
         _ => None,
