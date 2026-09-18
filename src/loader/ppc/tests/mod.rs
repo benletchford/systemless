@@ -16136,6 +16136,7 @@ fn import_bindings_classify_resource_read_imports() {
             PpcImportDispatcherTarget::Get1IndResource,
         ),
         ("GetIndString", PpcImportDispatcherTarget::GetIndString),
+        ("getindstring", PpcImportDispatcherTarget::GetIndString),
         ("GetString", PpcImportDispatcherTarget::GetString),
         ("GetResAttrs", PpcImportDispatcherTarget::GetResAttrs),
         ("SetResAttrs", PpcImportDispatcherTarget::SetResAttrs),
@@ -16807,7 +16808,15 @@ fn import_bindings_classify_dialog_and_utility_imports() {
         PpcImportDispatcherTarget::GetDialogItemText
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "getdialogitemtext"),
+        PpcImportDispatcherTarget::GetDialogItemText
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "SetDialogItemText"),
+        PpcImportDispatcherTarget::SetDialogItemText
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "setdialogitemtext"),
         PpcImportDispatcherTarget::SetDialogItemText
     );
     assert_eq!(
@@ -17318,6 +17327,18 @@ fn import_bindings_classify_quicktime_imports() {
     assert_eq!(
         dispatcher_target_for_import("QuickTimeLib", "GoToBeginningOfMovie"),
         PpcImportDispatcherTarget::QtGoToBeginningOfMovie
+    );
+    assert_eq!(
+        dispatcher_target_for_import("QuickTimeLib", "GoToEndOfMovie"),
+        PpcImportDispatcherTarget::QtGoToEndOfMovie
+    );
+    assert_eq!(
+        dispatcher_target_for_import("QuickTimeLib", "GetMovieDuration"),
+        PpcImportDispatcherTarget::QtGetMovieDuration
+    );
+    assert_eq!(
+        dispatcher_target_for_import("QuickTimeLib", "LoadMovieIntoRam"),
+        PpcImportDispatcherTarget::QtLoadMovieIntoRam
     );
     assert_eq!(
         dispatcher_target_for_import("QuickTimeLib", "CloseMovieFile"),
@@ -49581,6 +49602,44 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
         loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
         None
     );
+
+    loaded.quicktime.movie_file_duration = 240;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtGetMovieDuration;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 240);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtLoadMovieIntoRam;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 240;
+    loaded.cpu.gpr[6] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_at_beginning = true;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtGoToEndOfMovie;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(!loaded.quicktime.movie_at_beginning);
+    assert!(!loaded.quicktime.movie_started);
+    assert!(loaded.quicktime.movie_task_count >= 1);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtCloseMovieFile;

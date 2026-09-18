@@ -774,6 +774,7 @@ use super::*;
             user_select_count: 1,
             last_swap_context: Some(PPC_DSP_CONTEXT),
             swap_count: 3,
+            ..PpcDrawSprocketState::default()
         };
 
         let probe = loaded.run_with_hle_imports(64);
@@ -1744,5 +1745,65 @@ use super::*;
             Some(context_attributes.page_count)
         );
         assert_eq!(loaded.memory.read_u8(attributes_ptr + 52), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_handles_draw_sprocket_vbl_busy_and_alt_buffer_calls() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetVBLProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = 0x0200_1000;
+        loaded.cpu.gpr[5] = 0x1234_5678;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.draw_sprocket.vbl_proc, Some(0x0200_1000));
+        assert_eq!(loaded.draw_sprocket.vbl_refcon, Some(0x1234_5678));
+
+        let busy_ptr = 0x0400_0100;
+        loaded.memory.write_u8(busy_ptr, 1).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DSpContextIsBusy;
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = busy_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u8(busy_ptr), Some(0));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DSpAltBufferDispose;
+        loaded.cpu.gpr[3] = 0x0300_0100;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target =
+            PpcImportDispatcherTarget::DSpContextInvalBackBufferRect;
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target =
+            PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer;
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = 0x0300_0100;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     }
 
