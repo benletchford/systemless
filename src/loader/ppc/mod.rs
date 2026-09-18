@@ -17139,6 +17139,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) =
+        dispatch_math::dispatch_math_import(&binding.dispatcher_target, cpu, memory)
+    {
+        return Some(action);
+    }
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InstallExceptionHandler => {
@@ -18665,95 +18670,48 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::InsetRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
-        PpcImportDispatcherTarget::FixRatio => Some(PpcImportAction::Return(ppc_fix_ratio(
-            cpu.gpr[3] as u16 as i16,
-            cpu.gpr[4] as u16 as i16,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixMul => Some(PpcImportAction::Return(ppc_fix_mul(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixDiv => Some(PpcImportAction::Return(ppc_fix_div(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Long2Fix => Some(PpcImportAction::Return(ppc_long_to_fix(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Fix2Long => Some(PpcImportAction::Return(ppc_fix_to_long(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixRound => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fix_round(cpu.gpr[3] as i32),
-        ))),
-        PpcImportDispatcherTarget::Fix2Frac => Some(PpcImportAction::Return(ppc_fix_to_frac(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Frac2Fix => Some(PpcImportAction::Return(ppc_frac_to_fix(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Frac2X => {
-            let frac = cpu.gpr[3] as i32;
-            cpu.fpr[1] = (f64::from(frac) / 1_073_741_824.0).to_bits();
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::MathCeil
+        | PpcImportDispatcherTarget::MathSqrt
+        | PpcImportDispatcherTarget::MathExp
+        | PpcImportDispatcherTarget::MathSin
+        | PpcImportDispatcherTarget::MathCos
+        | PpcImportDispatcherTarget::MathAsin
+        | PpcImportDispatcherTarget::MathTan
+        | PpcImportDispatcherTarget::MathAtan
+        | PpcImportDispatcherTarget::MathAtan2
+        | PpcImportDispatcherTarget::MathPow
+        | PpcImportDispatcherTarget::MathFmod
+        | PpcImportDispatcherTarget::MathLog
+        | PpcImportDispatcherTarget::MathLog10
+        | PpcImportDispatcherTarget::MathDtox80
+        | PpcImportDispatcherTarget::X2Fix
+        | PpcImportDispatcherTarget::FixRatio
+        | PpcImportDispatcherTarget::FixMul
+        | PpcImportDispatcherTarget::FixDiv
+        | PpcImportDispatcherTarget::Long2Fix
+        | PpcImportDispatcherTarget::Fix2Long
+        | PpcImportDispatcherTarget::FixRound
+        | PpcImportDispatcherTarget::Fix2Frac
+        | PpcImportDispatcherTarget::Frac2Fix
+        | PpcImportDispatcherTarget::Frac2X
+        | PpcImportDispatcherTarget::X2Frac
+        | PpcImportDispatcherTarget::FracSin
+        | PpcImportDispatcherTarget::FracCos
+        | PpcImportDispatcherTarget::FracSqrt
+        | PpcImportDispatcherTarget::FracMul
+        | PpcImportDispatcherTarget::FracDiv
+        | PpcImportDispatcherTarget::FixATan2
+        | PpcImportDispatcherTarget::WideAdd
+        | PpcImportDispatcherTarget::WideSubtract
+        | PpcImportDispatcherTarget::WideNegate
+        | PpcImportDispatcherTarget::WideShift
+        | PpcImportDispatcherTarget::WideMultiply
+        | PpcImportDispatcherTarget::WideDivide
+        | PpcImportDispatcherTarget::WideWideDivide
+        | PpcImportDispatcherTarget::WideCompare
+        | PpcImportDispatcherTarget::WideSquareRoot => {
+            unreachable!("math imports return through dispatch_math_import")
         }
-        PpcImportDispatcherTarget::X2Frac => {
-            let value = f64::from_bits(cpu.fpr[1]);
-            Some(PpcImportAction::Return(ppc_f64_to_frac(value)))
-        }
-        PpcImportDispatcherTarget::FracSin => Some(PpcImportAction::Return(ppc_frac_sin(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FracCos => Some(PpcImportAction::Return(ppc_frac_cos(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FracSqrt => {
-            Some(PpcImportAction::Return(ppc_frac_sqrt(cpu.gpr[3])))
-        }
-        PpcImportDispatcherTarget::FracMul => Some(PpcImportAction::Return(ppc_frac_mul(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FracDiv => Some(PpcImportAction::Return(ppc_frac_div(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixATan2 => Some(PpcImportAction::Return(ppc_fix_atan2(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::WideAdd => Some(PpcImportAction::Return(ppc_wide_add(
-            memory, cpu.gpr[3], cpu.gpr[4],
-        ))),
-        PpcImportDispatcherTarget::WideSubtract => Some(PpcImportAction::Return(
-            ppc_wide_subtract(memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        PpcImportDispatcherTarget::WideNegate => {
-            Some(PpcImportAction::Return(ppc_wide_negate(memory, cpu.gpr[3])))
-        }
-        PpcImportDispatcherTarget::WideShift => Some(PpcImportAction::Return(ppc_wide_shift(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4] as i32,
-        ))),
-        PpcImportDispatcherTarget::WideMultiply => Some(PpcImportAction::Return(
-            ppc_wide_multiply(memory, cpu.gpr[3] as i32, cpu.gpr[4] as i32, cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::WideDivide => Some(PpcImportAction::Return(ppc_wide_divide(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4] as i32,
-            cpu.gpr[5],
-        ) as u32)),
-        PpcImportDispatcherTarget::WideWideDivide => Some(PpcImportAction::Return(
-            ppc_wide_wide_divide(memory, cpu.gpr[3], cpu.gpr[4] as i32, cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::WideSquareRoot => Some(PpcImportAction::Return(
-            ppc_wide_square_root(memory, cpu.gpr[3]),
-        )),
-        PpcImportDispatcherTarget::WideCompare => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_wide_compare(memory, cpu.gpr[3], cpu.gpr[4]),
-        ))),
         PpcImportDispatcherTarget::MoveTo => {
             *quickdraw_pen_h = cpu.gpr[3] as u16 as i16;
             *quickdraw_pen_v = cpu.gpr[4] as u16 as i16;
@@ -24776,23 +24734,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             } else {
                 Some(action)
             }
-        }
-        ref target @ (PpcImportDispatcherTarget::MathCeil
-        | PpcImportDispatcherTarget::MathSqrt
-        | PpcImportDispatcherTarget::MathExp
-        | PpcImportDispatcherTarget::MathSin
-        | PpcImportDispatcherTarget::MathCos
-        | PpcImportDispatcherTarget::MathAsin
-        | PpcImportDispatcherTarget::MathTan
-        | PpcImportDispatcherTarget::MathAtan
-        | PpcImportDispatcherTarget::MathAtan2
-        | PpcImportDispatcherTarget::MathPow
-        | PpcImportDispatcherTarget::MathFmod
-        | PpcImportDispatcherTarget::MathLog
-        | PpcImportDispatcherTarget::MathLog10
-        | PpcImportDispatcherTarget::MathDtox80
-        | PpcImportDispatcherTarget::X2Fix) => {
-            dispatch_math::dispatch_math_import(target, cpu, memory)
         }
         PpcImportDispatcherTarget::Q3Initialize => {
             q3_lifecycle.initialize_count = q3_lifecycle.initialize_count.saturating_add(1);
@@ -54312,7 +54253,7 @@ fn ppc_rgb_color_to_rgb555(color: PpcRgbColor) -> u16 {
     (component(color.red) << 10) | (component(color.green) << 5) | component(color.blue)
 }
 
-fn ppc_fix_ratio(numerator: i16, denominator: i16) -> i32 {
+pub(super) fn ppc_fix_ratio(numerator: i16, denominator: i16) -> i32 {
     // Inside Macintosh Volume I (1985), p. I-467: FixRatio returns the
     // truncated signed 16.16 quotient and uses asymmetric saturation when the
     // denominator is zero.
@@ -54326,13 +54267,13 @@ fn ppc_fix_ratio(numerator: i16, denominator: i16) -> i32 {
     ((i64::from(numerator) << 16) / i64::from(denominator)) as i32
 }
 
-fn ppc_fix_mul(left: i32, right: i32) -> i32 {
+pub(super) fn ppc_fix_mul(left: i32, right: i32) -> i32 {
     // Inside Macintosh Volume I (1985), p. I-467: FixMul rounds its signed
     // 32.32 intermediate to the nearest representable 16.16 value.
     ((i64::from(left) * i64::from(right) + 0x8000) >> 16) as i32
 }
 
-fn ppc_fix_div(numerator: i32, denominator: i32) -> i32 {
+pub(super) fn ppc_fix_div(numerator: i32, denominator: i32) -> i32 {
     // Operating System Utilities (1994), pp. 3-39--3-40: FixDiv divides two
     // signed 16.16 values and returns a signed 16.16 quotient. Saturate when
     // the quotient is not representable, including division by zero.
@@ -54343,7 +54284,7 @@ fn ppc_fix_div(numerator: i32, denominator: i32) -> i32 {
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_long_to_fix(value: i32) -> i32 {
+pub(super) fn ppc_long_to_fix(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-43: inputs outside the signed
     // 16-bit integer range saturate to the extrema of Fixed.
     if value > 0x7fff {
@@ -54355,7 +54296,7 @@ fn ppc_long_to_fix(value: i32) -> i32 {
     }
 }
 
-fn ppc_fix_to_long(value: i32) -> i32 {
+pub(super) fn ppc_fix_to_long(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-44: round to the nearest
     // integer, with exact halves rounded away from zero.
     let value = i64::from(value);
@@ -54366,7 +54307,7 @@ fn ppc_fix_to_long(value: i32) -> i32 {
     }
 }
 
-fn ppc_fix_round(value: i32) -> i16 {
+pub(super) fn ppc_fix_round(value: i32) -> i16 {
     // Inside Macintosh Volume I (1985), p. I-467: round to nearest integer,
     // with exact halves rounded away from zero.
     let value = i64::from(value);
@@ -54391,24 +54332,24 @@ fn ppc_radians_to_fixed(value: f64) -> i32 {
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
-fn ppc_fix_to_frac(value: i32) -> i32 {
+pub(super) fn ppc_fix_to_frac(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-44: shift left 14 bits with saturation.
     (i64::from(value) << 14).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_frac_to_fix(value: i32) -> i32 {
+pub(super) fn ppc_frac_to_fix(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-44: shift right 14 bits with nearest rounding.
     ((i64::from(value) + (1 << 13)) >> 14).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_f64_to_frac(value: f64) -> u32 {
+pub(super) fn ppc_f64_to_frac(value: f64) -> u32 {
     // Operating System Utilities (1994), p. 3-46: convert float to Fract with saturation.
     (value * 1_073_741_824.0)
         .round()
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32 as u32
 }
 
-fn ppc_frac_sin(value: i32) -> i32 {
+pub(super) fn ppc_frac_sin(value: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-64: sine of Fixed radians returned as Fract.
     let sin_val = ppc_fixed_radians(value).sin();
     (sin_val * 1_073_741_824.0)
@@ -54416,7 +54357,7 @@ fn ppc_frac_sin(value: i32) -> i32 {
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
-fn ppc_frac_cos(value: i32) -> i32 {
+pub(super) fn ppc_frac_cos(value: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-64: cosine of Fixed radians returned as Fract.
     let cos_val = ppc_fixed_radians(value).cos();
     (cos_val * 1_073_741_824.0)
@@ -54424,7 +54365,7 @@ fn ppc_frac_cos(value: i32) -> i32 {
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
-fn ppc_frac_sqrt(value: u32) -> u32 {
+pub(super) fn ppc_frac_sqrt(value: u32) -> u32 {
     // Operating System Utilities (1994), p. 3-41: unsigned Fract 0..4-2^-30 square root.
     let val = (value as f64) / 1_073_741_824.0;
     let sqrt_val = val.sqrt();
@@ -54433,7 +54374,7 @@ fn ppc_frac_sqrt(value: u32) -> u32 {
         .clamp(0.0, 2_147_483_648.0) as u32
 }
 
-fn ppc_frac_mul(x: i32, y: i32) -> i32 {
+pub(super) fn ppc_frac_mul(x: i32, y: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-63: add half a unit in
     // magnitude, then chop toward zero.
     let product = i64::from(x) * i64::from(y);
@@ -54442,7 +54383,7 @@ fn ppc_frac_mul(x: i32, y: i32) -> i32 {
     rounded.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
+pub(super) fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
     // Inside Macintosh Volume I (1985), p. I-468: signed 2.30 quotient, saturating on divide-by-zero.
     if denominator == 0 {
         return if numerator >= 0 { i32::MAX } else { i32::MIN };
@@ -54451,7 +54392,7 @@ fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_fix_atan2(x: i32, y: i32) -> i32 {
+pub(super) fn ppc_fix_atan2(x: i32, y: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-65: arctangent of y/x in radians.
     ppc_radians_to_fixed(f64::from(y).atan2(f64::from(x)))
 }
@@ -54468,7 +54409,7 @@ fn ppc_write_wide(memory: &mut PpcSectionMem, address: u32, value: i64) -> Optio
     Some(())
 }
 
-fn ppc_wide_add(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
+pub(super) fn ppc_wide_add(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-49: add source to
     // target in place and return the target pointer.
     if let (Some(target_value), Some(source_value)) =
@@ -54479,7 +54420,7 @@ fn ppc_wide_add(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
     target
 }
 
-fn ppc_wide_subtract(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
+pub(super) fn ppc_wide_subtract(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-50: subtract source
     // from target in place and return the target pointer.
     if let (Some(target_value), Some(source_value)) =
@@ -54490,7 +54431,7 @@ fn ppc_wide_subtract(memory: &mut PpcSectionMem, target: u32, source: u32) -> u3
     target
 }
 
-fn ppc_wide_negate(memory: &mut PpcSectionMem, target: u32) -> u32 {
+pub(super) fn ppc_wide_negate(memory: &mut PpcSectionMem, target: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-50: replace target
     // with its two's-complement negative and return the target pointer.
     if let Some(value) = ppc_read_wide(memory, target) {
@@ -54518,7 +54459,7 @@ fn ppc_round_wide_quotient(dividend: i128, divisor: i128) -> i128 {
     }
 }
 
-fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
+pub(super) fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-51: positive shifts
     // move right with rounding; negative shifts move left.
     if let Some(value) = ppc_read_wide(memory, target) {
@@ -54543,7 +54484,7 @@ fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
     target
 }
 
-fn ppc_wide_multiply(
+pub(super) fn ppc_wide_multiply(
     memory: &mut PpcSectionMem,
     multiplicand: i32,
     multiplier: i32,
@@ -54556,7 +54497,7 @@ fn ppc_wide_multiply(
     target
 }
 
-fn ppc_wide_divide(
+pub(super) fn ppc_wide_divide(
     memory: &mut PpcSectionMem,
     dividend_ptr: u32,
     divisor: i32,
@@ -54607,7 +54548,7 @@ fn ppc_wide_divide(
     }
 }
 
-fn ppc_wide_wide_divide(
+pub(super) fn ppc_wide_wide_divide(
     memory: &mut PpcSectionMem,
     dividend_ptr: u32,
     divisor: i32,
@@ -54639,7 +54580,7 @@ fn ppc_wide_wide_divide(
     dividend_ptr
 }
 
-fn ppc_wide_square_root(memory: &mut PpcSectionMem, source: u32) -> u32 {
+pub(super) fn ppc_wide_square_root(memory: &mut PpcSectionMem, source: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-53: interpret the
     // complete source as an unsigned wide value and return its square root.
     let Some(high) = memory.read_u32_be(source) else {
@@ -54654,7 +54595,7 @@ fn ppc_wide_square_root(memory: &mut PpcSectionMem, source: u32) -> u32 {
     ((u64::from(high) << 32) | u64::from(low)).isqrt() as u32
 }
 
-fn ppc_wide_compare(memory: &mut PpcSectionMem, target: u32, source: u32) -> i16 {
+pub(super) fn ppc_wide_compare(memory: &mut PpcSectionMem, target: u32, source: u32) -> i16 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-54: return 1, -1,
     // or 0 according to the ordering of the two wide values.
     match (ppc_read_wide(memory, target), ppc_read_wide(memory, source)) {
