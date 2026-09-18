@@ -17735,23 +17735,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::MemError => {
             Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)))
         }
-        PpcImportDispatcherTarget::CloseResFile => {
-            ppc_close_res_file(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                resource_files,
-                vfs_resource_files,
-                vfs_resources,
-                current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
         PpcImportDispatcherTarget::NewMenu => {
             let menu_proc = ppc_menu_definition_handle(
                 0,
@@ -18635,7 +18618,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::ChangedResource
         | PpcImportDispatcherTarget::WriteResource
         | PpcImportDispatcherTarget::RemoveResource
-        | PpcImportDispatcherTarget::ReadPartialResource => {
+        | PpcImportDispatcherTarget::ReadPartialResource
+        | PpcImportDispatcherTarget::CloseResFile => {
             unreachable!("resource imports return through dispatch_resource_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -88869,7 +88853,7 @@ fn ppc_open_resource_path(
     ref_num
 }
 
-fn ppc_close_res_file(
+pub(super) fn ppc_close_res_file(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,

@@ -350,6 +350,23 @@ pub(super) fn dispatch_resource_import(
             ppc_read_partial_resource(cpu, memory, vfs_resources, last_resource_error);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::CloseResFile => {
+            ppc_close_res_file(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                resource_files,
+                vfs_resource_files,
+                vfs_resources,
+                current_resource_refnum,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         _ => None,
     }
 }
