@@ -17045,6 +17045,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             heap_limit,
             last_mem_error,
             handles,
+            resource_files,
+            vfs_resource_files,
             vfs_resources,
             current_resource_refnum,
             resource_policy,
@@ -17750,44 +17752,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetIndString => {
-            ppc_get_ind_string(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        // FUNCTION GetString (stringID: Integer): StringHandle;
-        // Inside Macintosh: Text (1993), 5-49 (lines 15621-15642).
-        // GetString is the Text Utilities wrapper around
-        // GetResource('STR ', stringID), including its NIL-on-miss behavior.
-        PpcImportDispatcherTarget::GetString => {
-            let string_id = cpu.gpr[3];
-            cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
-            cpu.gpr[4] = string_id;
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
         PpcImportDispatcherTarget::NewMenu => {
             let menu_proc = ppc_menu_definition_handle(
                 0,
@@ -18388,101 +18352,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::MenuSelect => ppc_step_menu_tracking(
             cpu, process_memory_manager, memory, heap_cursor, heap_limit, gworlds, screen_clut, toolbox_startup, current_gworld, current_gdevice, input, vfs_resources, *current_resource_refnum,
         ),
-        PpcImportDispatcherTarget::GetResAttrs => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_res_attrs(cpu, vfs_resources, last_resource_error),
-        ))),
-        PpcImportDispatcherTarget::SetResAttrs => {
-            ppc_set_res_attrs(cpu, vfs_resource_files, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetResInfo => {
-            ppc_get_res_info(cpu, memory, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetResourceSizeOnDisk => {
-            // More Macintosh Toolbox (1993), 1-105: this reports the exact
-            // on-disk resource size even when SetResLoad left its handle empty.
-            let size = vfs_resources
-                .iter()
-                .find(|resource| resource.handle == cpu.gpr[3])
-                .and_then(|resource| i32::try_from(resource.data.len()).ok());
-            if let Some(size) = size {
-                *last_resource_error = PPC_NO_ERR;
-                Some(PpcImportAction::Return(size as u32))
-            } else {
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                Some(PpcImportAction::Return(u32::MAX))
-            }
-        }
-        PpcImportDispatcherTarget::SetResInfo => {
-            ppc_set_res_info(
-                cpu,
-                memory,
-                vfs_resource_files,
-                vfs_resources,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HomeResFile => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_home_res_file(cpu, vfs_resources, last_resource_error),
-        ))),
-        PpcImportDispatcherTarget::UpdateResFile => {
-            ppc_update_res_file(
-                cpu,
-                memory,
-                handles,
-                resource_files,
-                vfs_resource_files,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::AddResource => {
-            *last_resource_error = ppc_add_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                handles,
-                resource_files,
-                vfs_resource_files,
-                vfs_resources,
-                *current_resource_refnum,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ChangedResource => {
-            ppc_changed_resource(cpu, vfs_resource_files, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::WriteResource => {
-            ppc_write_resource(
-                cpu,
-                memory,
-                handles,
-                vfs_resource_files,
-                vfs_resources,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::RemoveResource => {
-            ppc_remove_resource(
-                cpu,
-                process_memory_manager,
-                vfs_resource_files,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ReadPartialResource => {
-            ppc_read_partial_resource(cpu, memory, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
         PpcImportDispatcherTarget::GetPicture => {
             let picture = ppc_get_picture(
                 cpu,
@@ -18752,7 +18621,21 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::UniqueID
         | PpcImportDispatcherTarget::Unique1ID
         | PpcImportDispatcherTarget::ReleaseResource
-        | PpcImportDispatcherTarget::DetachResource => {
+        | PpcImportDispatcherTarget::DetachResource
+        | PpcImportDispatcherTarget::GetIndString
+        | PpcImportDispatcherTarget::GetString
+        | PpcImportDispatcherTarget::GetResAttrs
+        | PpcImportDispatcherTarget::SetResAttrs
+        | PpcImportDispatcherTarget::GetResInfo
+        | PpcImportDispatcherTarget::GetResourceSizeOnDisk
+        | PpcImportDispatcherTarget::SetResInfo
+        | PpcImportDispatcherTarget::HomeResFile
+        | PpcImportDispatcherTarget::UpdateResFile
+        | PpcImportDispatcherTarget::AddResource
+        | PpcImportDispatcherTarget::ChangedResource
+        | PpcImportDispatcherTarget::WriteResource
+        | PpcImportDispatcherTarget::RemoveResource
+        | PpcImportDispatcherTarget::ReadPartialResource => {
             unreachable!("resource imports return through dispatch_resource_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -62868,7 +62751,7 @@ pub(super) fn ppc_get_ind_resource(
     handle
 }
 
-fn ppc_get_ind_string(
+pub(super) fn ppc_get_ind_string(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -63582,7 +63465,7 @@ pub(super) fn ppc_materialize_vfs_resource_handle(
     handle
 }
 
-fn ppc_get_res_attrs(
+pub(super) fn ppc_get_res_attrs(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     last_resource_error: &mut i16,
@@ -63596,7 +63479,7 @@ fn ppc_get_res_attrs(
     record.attrs as i16
 }
 
-fn ppc_set_res_attrs(
+pub(super) fn ppc_set_res_attrs(
     cpu: &mut PpcCpu,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
     vfs_resources: &mut [PpcVfsResourceRecord],
@@ -63618,7 +63501,7 @@ fn ppc_set_res_attrs(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_get_res_info(
+pub(super) fn ppc_get_res_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_resources: &[PpcVfsResourceRecord],
@@ -63651,7 +63534,7 @@ fn ppc_get_res_info(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_set_res_info(
+pub(super) fn ppc_set_res_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
@@ -63686,7 +63569,7 @@ fn ppc_set_res_info(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_home_res_file(
+pub(super) fn ppc_home_res_file(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     last_resource_error: &mut i16,
@@ -63749,7 +63632,7 @@ pub(super) fn ppc_unique_id(
     i16::MAX
 }
 
-fn ppc_update_res_file(
+pub(super) fn ppc_update_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -64387,7 +64270,7 @@ fn ppc_complete_apple_event_dispatch(
     );
 }
 
-fn ppc_add_resource(
+pub(super) fn ppc_add_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -64441,7 +64324,7 @@ fn ppc_add_resource(
     PPC_NO_ERR
 }
 
-fn ppc_changed_resource(
+pub(super) fn ppc_changed_resource(
     cpu: &mut PpcCpu,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
     vfs_resources: &mut [PpcVfsResourceRecord],
@@ -64466,7 +64349,7 @@ fn ppc_changed_resource(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_write_resource(
+pub(super) fn ppc_write_resource(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -64505,7 +64388,7 @@ fn ppc_drop_raw_resource_data(record: &mut PpcVfsResourceRecord) {
     record.raw_attrs = None;
 }
 
-fn ppc_remove_resource(
+pub(super) fn ppc_remove_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
@@ -64598,7 +64481,7 @@ pub(super) fn ppc_detach_resource(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_read_partial_resource(
+pub(super) fn ppc_read_partial_resource(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_resources: &[PpcVfsResourceRecord],
