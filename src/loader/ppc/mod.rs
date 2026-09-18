@@ -1923,6 +1923,11 @@ pub enum PpcImportDispatcherTarget {
     DSpContextSetClutEntries,
     DSpContextGetDisplayID,
     DSpContextGetAttributes,
+    DSpContextSetVblProc,
+    DSpContextIsBusy,
+    DSpAltBufferDispose,
+    DSpContextInvalBackBufferRect,
+    DSpContextSetUnderlayAltBuffer,
     DMGetDisplayIDByGDevice,
     DMGetGDeviceByDisplayID,
     GetNewDialog,
@@ -2391,6 +2396,9 @@ pub enum PpcImportDispatcherTarget {
     QtDisposeMovie,
     QtIsMovieDone,
     QtGoToBeginningOfMovie,
+    QtGoToEndOfMovie,
+    QtGetMovieDuration,
+    QtLoadMovieIntoRam,
     QtCloseMovieFile,
     CloseComponent,
     NewRoutineDescriptor,
@@ -14895,6 +14903,21 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_GetAttributes") => {
             PpcImportDispatcherTarget::DSpContextGetAttributes
         }
+        ("DrawSprocketLib", "DSpContext_SetVBLProc") => {
+            PpcImportDispatcherTarget::DSpContextSetVblProc
+        }
+        ("DrawSprocketLib", "DSpContext_IsBusy") => {
+            PpcImportDispatcherTarget::DSpContextIsBusy
+        }
+        ("DrawSprocketLib", "DSpAltBuffer_Dispose") => {
+            PpcImportDispatcherTarget::DSpAltBufferDispose
+        }
+        ("DrawSprocketLib", "DSpContext_InvalBackBufferRect") => {
+            PpcImportDispatcherTarget::DSpContextInvalBackBufferRect
+        }
+        ("DrawSprocketLib", "DSpContext_SetUnderlayAltBuffer") => {
+            PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer
+        }
         ("InputSprocketLib", "ISpElement_NewVirtualFromNeeds") => {
             PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         }
@@ -14997,7 +15020,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "ResError") => PpcImportDispatcherTarget::ResError,
         ("InterfaceLib", "SetResLoad") => PpcImportDispatcherTarget::SetResLoad,
         ("InterfaceLib", "LoadResource") => PpcImportDispatcherTarget::LoadResource,
-        ("InterfaceLib", "GetIndString") => PpcImportDispatcherTarget::GetIndString,
+        ("InterfaceLib", "GetIndString") | ("InterfaceLib", "getindstring") => {
+            PpcImportDispatcherTarget::GetIndString
+        }
         ("InterfaceLib", "GetString") => PpcImportDispatcherTarget::GetString,
         ("InterfaceLib", "GetResource") => PpcImportDispatcherTarget::GetResource,
         ("InterfaceLib", "Get1Resource") => PpcImportDispatcherTarget::Get1Resource,
@@ -15522,8 +15547,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetDialogItem") | ("InterfaceLib", "SetDItem") => {
             PpcImportDispatcherTarget::SetDialogItem
         }
-        ("InterfaceLib", "GetDialogItemText") => PpcImportDispatcherTarget::GetDialogItemText,
-        ("InterfaceLib", "SetDialogItemText") => PpcImportDispatcherTarget::SetDialogItemText,
+        ("InterfaceLib", "GetDialogItemText") | ("InterfaceLib", "getdialogitemtext") => {
+            PpcImportDispatcherTarget::GetDialogItemText
+        }
+        ("InterfaceLib", "SetDialogItemText") | ("InterfaceLib", "setdialogitemtext") => {
+            PpcImportDispatcherTarget::SetDialogItemText
+        }
         ("InterfaceLib", "SetDialogDefaultItem") => PpcImportDispatcherTarget::SetDialogDefaultItem,
         ("InterfaceLib" | "AppearanceLib", "SetDialogCancelItem") => {
             PpcImportDispatcherTarget::SetDialogCancelItem
@@ -15798,6 +15827,9 @@ fn dispatcher_target_for_import(
         ("QuickTimeLib", "GoToBeginningOfMovie") => {
             PpcImportDispatcherTarget::QtGoToBeginningOfMovie
         }
+        ("QuickTimeLib", "GoToEndOfMovie") => PpcImportDispatcherTarget::QtGoToEndOfMovie,
+        ("QuickTimeLib", "GetMovieDuration") => PpcImportDispatcherTarget::QtGetMovieDuration,
+        ("QuickTimeLib", "LoadMovieIntoRam") => PpcImportDispatcherTarget::QtLoadMovieIntoRam,
         ("QuickTimeLib", "CloseMovieFile") => PpcImportDispatcherTarget::QtCloseMovieFile,
         ("QuickTimeLib", "EnterMovies") => PpcImportDispatcherTarget::QtEnterMovies,
         ("QuickTimeLib", "ExitMovies") => PpcImportDispatcherTarget::QtExitMovies,
@@ -24955,6 +24987,56 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
             }
         }
+        PpcImportDispatcherTarget::DSpContextSetVblProc => {
+            let error = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+                error
+            } else {
+                draw_sprocket.vbl_proc = Some(cpu.gpr[4]);
+                draw_sprocket.vbl_refcon = Some(cpu.gpr[5]);
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
+        PpcImportDispatcherTarget::DSpContextIsBusy => {
+            let error = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+                error
+            } else {
+                let busy_out = cpu.gpr[4];
+                if busy_out == 0 || !ppc_memory_can_write_bytes(memory, busy_out, 1) {
+                    PPC_PARAM_ERR
+                } else if memory.write_u8(busy_out, 0).is_none() {
+                    PPC_PARAM_ERR
+                } else {
+                    PPC_NO_ERR
+                }
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
+        PpcImportDispatcherTarget::DSpAltBufferDispose => {
+            let alt_buffer = cpu.gpr[3];
+            let error = if alt_buffer == 0 {
+                PPC_PARAM_ERR
+            } else {
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
+        PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => {
+            let error = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+                error
+            } else {
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
+        PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => {
+            let error = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+                error
+            } else {
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
         // FUNCTION GetVol (volName: StringPtr; VAR vRefNum: Integer): OSErr;
         // Inside Macintosh: Files (1992), 2-134 (lines 7672-7695).
         PpcImportDispatcherTarget::GetVol => Some(PpcImportAction::Return(ppc_i16_result(
@@ -27349,6 +27431,22 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             let error = ppc_qt_go_to_beginning_of_movie(cpu, quicktime, sound);
             let _ = ppc_qt_record_error(quicktime, error);
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::QtGoToEndOfMovie => {
+            let error = ppc_qt_go_to_end_of_movie(cpu, quicktime, sound);
+            let _ = ppc_qt_record_error(quicktime, error);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::QtGetMovieDuration => {
+            let (error, duration) = ppc_qt_get_movie_duration(cpu, quicktime);
+            let _ = ppc_qt_record_error(quicktime, error);
+            Some(PpcImportAction::Return(duration))
+        }
+        PpcImportDispatcherTarget::QtLoadMovieIntoRam => {
+            let error = ppc_qt_load_movie_into_ram(cpu, quicktime);
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_qt_record_error(quicktime, error),
+            )))
         }
         PpcImportDispatcherTarget::QtCloseMovieFile => {
             let error = ppc_qt_close_movie_file(cpu, quicktime);
@@ -48582,6 +48680,41 @@ fn ppc_qt_go_to_beginning_of_movie(
     PPC_NO_ERR
 }
 
+fn ppc_qt_go_to_end_of_movie(
+    cpu: &mut PpcCpu,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+) -> i16 {
+    if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
+        return PPC_PARAM_ERR;
+    }
+    quicktime.movie_at_beginning = false;
+    quicktime.movie_started = false;
+    quicktime.movie_task_count = quicktime.movie_tasks_until_done.max(1);
+    ppc_qt_reset_movie_video_decode_cache(quicktime);
+    ppc_qt_stop_movie_audio(sound);
+    PPC_NO_ERR
+}
+
+fn ppc_qt_get_movie_duration(cpu: &mut PpcCpu, quicktime: &PpcQuickTimeState) -> (i16, u32) {
+    if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
+        return (PPC_PARAM_ERR, 0);
+    }
+    let duration = if quicktime.movie_file_duration > 0 {
+        quicktime.movie_file_duration as u32
+    } else {
+        600
+    };
+    (PPC_NO_ERR, duration)
+}
+
+fn ppc_qt_load_movie_into_ram(cpu: &mut PpcCpu, quicktime: &PpcQuickTimeState) -> i16 {
+    if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_qt_start_movie(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -60541,6 +60674,11 @@ fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) -> Option<&
         PpcImportDispatcherTarget::DSpContextSetClutEntries => Some("set_clut_entries"),
         PpcImportDispatcherTarget::DSpContextGetDisplayID => Some("get_display_id"),
         PpcImportDispatcherTarget::DSpContextGetAttributes => Some("get_attributes"),
+        PpcImportDispatcherTarget::DSpContextSetVblProc => Some("set_vbl_proc"),
+        PpcImportDispatcherTarget::DSpContextIsBusy => Some("is_busy"),
+        PpcImportDispatcherTarget::DSpAltBufferDispose => Some("alt_buffer_dispose"),
+        PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => Some("inval_back_buffer_rect"),
+        PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => Some("set_underlay_alt_buffer"),
         _ => None,
     }
 }
