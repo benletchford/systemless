@@ -18889,7 +18889,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::GetFInfo
         | PpcImportDispatcherTarget::HGetFInfo
         | PpcImportDispatcherTarget::FSpSetFInfo
-        | PpcImportDispatcherTarget::HSetFInfo => {
+        | PpcImportDispatcherTarget::HSetFInfo
+        | PpcImportDispatcherTarget::PBGetCatInfo
+        | PpcImportDispatcherTarget::PBSetCatInfo => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -21801,28 +21803,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 default_dir_id,
             ))))
         }
-        PpcImportDispatcherTarget::PBGetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_get_cat_info(
-                cpu,
-                memory,
-                vfs_volumes,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                default_dir_id,
-            ),
-        ))),
-        PpcImportDispatcherTarget::PBSetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_set_cat_info(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ),
-        ))),
         PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_get_fcb_info(
                 cpu,
@@ -84151,7 +84131,8 @@ struct PpcCatalogEntry {
     is_directory: bool,
 }
 
-fn ppc_pb_get_cat_info(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_pb_get_cat_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
@@ -84279,7 +84260,7 @@ fn ppc_pb_get_cat_info(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_pb_set_cat_info(
+pub(super) fn ppc_pb_set_cat_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut [PpcVfsDirectory],
