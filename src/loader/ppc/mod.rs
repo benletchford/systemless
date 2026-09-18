@@ -144,6 +144,7 @@ mod dispatch_memory;
 mod dispatch_menu;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
+mod dispatch_quicktime;
 mod dispatch_resources;
 mod dispatch_sound;
 mod dispatch_textedit;
@@ -17159,6 +17160,23 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_quicktime::dispatch_quicktime_import(
+        dispatch_quicktime::PpcQuickTimeDispatchContext {
+            binding,
+            cpu,
+            memory,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            vfs_resources,
+            gworlds,
+            current_gworld: *current_gworld,
+            quicktime,
+            sound,
+        },
+    ) {
+        return Some(action);
+    }
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InstallExceptionHandler => {
@@ -17355,6 +17373,32 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::ISpDevicesDeactivate
         | PpcImportDispatcherTarget::ISpConfigure => {
             unreachable!("inputsprocket imports return through dispatch_inputsprocket_import")
+        }
+        PpcImportDispatcherTarget::QtEnterMovies
+        | PpcImportDispatcherTarget::QtExitMovies
+        | PpcImportDispatcherTarget::QtGetMoviesError
+        | PpcImportDispatcherTarget::QtGetMoviesStickyError
+        | PpcImportDispatcherTarget::QtClearMoviesStickyError
+        | PpcImportDispatcherTarget::QtGetGraphicsImporterForFile
+        | PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect
+        | PpcImportDispatcherTarget::QtGraphicsImportSetGWorld
+        | PpcImportDispatcherTarget::QtGraphicsImportDraw
+        | PpcImportDispatcherTarget::QtOpenMovieFile
+        | PpcImportDispatcherTarget::QtNewMovieFromFile
+        | PpcImportDispatcherTarget::QtGetMovieBox
+        | PpcImportDispatcherTarget::QtSetMovieBox
+        | PpcImportDispatcherTarget::QtSetMovieGWorld
+        | PpcImportDispatcherTarget::QtStartMovie
+        | PpcImportDispatcherTarget::QtStopMovie
+        | PpcImportDispatcherTarget::QtMoviesTask
+        | PpcImportDispatcherTarget::QtDisposeMovie
+        | PpcImportDispatcherTarget::QtIsMovieDone
+        | PpcImportDispatcherTarget::QtGoToBeginningOfMovie
+        | PpcImportDispatcherTarget::QtGoToEndOfMovie
+        | PpcImportDispatcherTarget::QtGetMovieDuration
+        | PpcImportDispatcherTarget::QtLoadMovieIntoRam
+        | PpcImportDispatcherTarget::QtCloseMovieFile => {
+            unreachable!("quicktime imports return through dispatch_quicktime_import")
         }
         PpcImportDispatcherTarget::DrawGrowIcon => {
             ppc_draw_grow_icon(memory, gworlds, window_list, cpu.gpr[3]);
@@ -24452,146 +24496,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::QADeviceGetNextEngine => Some(PpcImportAction::Return(0)),
         PpcImportDispatcherTarget::QAEngineGestalt => {
             Some(PpcImportAction::Return(ppc_qa_engine_gestalt(cpu, memory)))
-        }
-        PpcImportDispatcherTarget::QtEnterMovies => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_qt_enter_movies(quicktime),
-        ))),
-        PpcImportDispatcherTarget::QtExitMovies => {
-            ppc_qt_exit_movies(quicktime);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtGetMoviesError => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_qt_get_movies_error(quicktime)),
-        )),
-        PpcImportDispatcherTarget::QtGetMoviesStickyError => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_qt_get_movies_sticky_error(quicktime)),
-        )),
-        PpcImportDispatcherTarget::QtClearMoviesStickyError => {
-            ppc_qt_clear_movies_sticky_error(quicktime);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtGetGraphicsImporterForFile => {
-            let error = ppc_qt_get_graphics_importer_for_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                quicktime,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect => {
-            let error = ppc_qt_graphics_import_get_bounds_rect(cpu, memory, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGraphicsImportSetGWorld => {
-            let error = ppc_qt_graphics_import_set_gworld(cpu, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGraphicsImportDraw => {
-            let error =
-                ppc_qt_graphics_import_draw(cpu, memory, gworlds, *current_gworld, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtOpenMovieFile => {
-            let error = ppc_qt_open_movie_file(cpu, memory, vfs_directories, vfs_files, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtNewMovieFromFile => {
-            let error = ppc_qt_new_movie_from_file(
-                cpu,
-                memory,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                quicktime,
-                sound,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGetMovieBox => {
-            let error = ppc_qt_get_movie_box(cpu, memory, quicktime);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtSetMovieBox => {
-            let error = ppc_qt_set_movie_box(cpu, memory, quicktime);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtSetMovieGWorld => {
-            let error = ppc_qt_set_movie_gworld(cpu, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtStartMovie => {
-            let error = ppc_qt_start_movie(cpu, memory, gworlds, *current_gworld, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtStopMovie => {
-            let error = ppc_qt_stop_movie(cpu, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtMoviesTask => {
-            let error = ppc_qt_movies_task(cpu, memory, gworlds, *current_gworld, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtDisposeMovie => {
-            let error = ppc_qt_dispose_movie(cpu, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtIsMovieDone => {
-            let (error, done) = ppc_qt_is_movie_done(cpu, quicktime);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::Return(u32::from(done)))
-        }
-        PpcImportDispatcherTarget::QtGoToBeginningOfMovie => {
-            let error = ppc_qt_go_to_beginning_of_movie(cpu, quicktime, sound);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtGoToEndOfMovie => {
-            let error = ppc_qt_go_to_end_of_movie(cpu, quicktime, sound);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtGetMovieDuration => {
-            let (error, duration) = ppc_qt_get_movie_duration(cpu, quicktime);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::Return(duration))
-        }
-        PpcImportDispatcherTarget::QtLoadMovieIntoRam => {
-            let error = ppc_qt_load_movie_into_ram(cpu, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtCloseMovieFile => {
-            let error = ppc_qt_close_movie_file(cpu, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
         }
         PpcImportDispatcherTarget::CloseComponent => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_close_component(cpu, quicktime),
