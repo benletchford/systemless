@@ -24,9 +24,7 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) application_working_directory_ref_num: &'a mut i16,
 }
 
-pub(super) fn dispatch_file_import(
-    context: PpcFileDispatchContext<'_>,
-) -> Option<PpcImportAction> {
+pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Option<PpcImportAction> {
     let PpcFileDispatchContext {
         binding,
         cpu,
@@ -97,16 +95,16 @@ pub(super) fn dispatch_file_import(
         PpcImportDispatcherTarget::PBSetFPos => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_set_fpos(cpu, memory, files, vfs_files),
         ))),
-        PpcImportDispatcherTarget::PBCreate(operation) => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_pb_create(
+        PpcImportDispatcherTarget::PBCreate(operation) => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_create(
                 operation,
                 cpu,
                 memory,
                 vfs_directories,
                 vfs_files,
                 default_dir_id,
-            )),
-        )),
+            ))))
+        }
         PpcImportDispatcherTarget::FSpCreate => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_fsp_create(cpu, memory, vfs_directories, vfs_files),
         ))),
@@ -116,8 +114,8 @@ pub(super) fn dispatch_file_import(
         PpcImportDispatcherTarget::Create => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
         ))),
-        PpcImportDispatcherTarget::FSpDelete => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_delete(
+        PpcImportDispatcherTarget::FSpDelete => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_delete(
                 cpu,
                 memory,
                 vfs_directories,
@@ -127,8 +125,8 @@ pub(super) fn dispatch_file_import(
                 vfs_resource_files,
                 resource_files,
                 vfs_resources,
-            ),
-        ))),
+            ))))
+        }
         PpcImportDispatcherTarget::DeleteByName(operation) => {
             let result = ppc_delete_by_name(
                 operation,
@@ -272,38 +270,38 @@ pub(super) fn dispatch_file_import(
         PpcImportDispatcherTarget::ResError => Some(PpcImportAction::Return(ppc_i16_result(
             *last_resource_error,
         ))),
-        PpcImportDispatcherTarget::GetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_vol(
+        PpcImportDispatcherTarget::GetVol => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_get_vol(
                 cpu,
                 memory,
                 default_dir_id,
                 *application_working_directory_ref_num,
                 working_directories,
                 vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::GetWDInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_wd_info(
+            ))))
+        }
+        PpcImportDispatcherTarget::GetWDInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_get_wd_info(
                 cpu,
                 memory,
                 default_dir_id,
                 *application_working_directory_ref_num,
                 working_directories,
                 vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::HGetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hget_vol(
+            ))))
+        }
+        PpcImportDispatcherTarget::HGetVol => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_hget_vol(
                 cpu,
                 memory,
                 default_dir_id,
                 *application_working_directory_ref_num,
                 working_directories,
                 vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::HSetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hset_vol(
+            ))))
+        }
+        PpcImportDispatcherTarget::HSetVol => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_hset_vol(
                 cpu,
                 memory,
                 vfs_directories,
@@ -312,8 +310,8 @@ pub(super) fn dispatch_file_import(
                 working_directories,
                 next_working_directory_ref_num,
                 application_working_directory_ref_num,
-            ),
-        ))),
+            ))))
+        }
         PpcImportDispatcherTarget::FlushVol => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_flush_vol(cpu, memory),
         ))),
@@ -468,6 +466,47 @@ pub(super) fn dispatch_file_import(
                 launched_app_path,
             ),
         ))),
+        PpcImportDispatcherTarget::FindFolder => {
+            let folder_type = cpu.gpr[4];
+            let found_vref_ptr = cpu.gpr[6];
+            let found_dir_id_ptr = cpu.gpr[7];
+            let found_dir_id = ppc_find_folder_dir_id(folder_type);
+            if found_vref_ptr == 0
+                || found_dir_id_ptr == 0
+                || !ppc_memory_can_write_bytes(memory, found_vref_ptr, 2)
+                || !ppc_memory_can_write_bytes(memory, found_dir_id_ptr, 4)
+            {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+            } else {
+                let _ = memory.write_u16_be(found_vref_ptr, PPC_BOOT_VOLUME_REF_NUM as u16);
+                let _ = memory.write_u32_be(found_dir_id_ptr, found_dir_id);
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+            }
+        }
+        PpcImportDispatcherTarget::ResolveAliasFile => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_resolve_alias_file(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+            )),
+        )),
+        PpcImportDispatcherTarget::FileCompatibility(operation) => {
+            Some(ppc_dispatch_file_compatibility(
+                operation,
+                cpu,
+                memory,
+                files,
+                vfs_directories,
+                vfs_volumes,
+                default_dir_id,
+                working_directories,
+                next_working_directory_ref_num,
+                application_working_directory_ref_num,
+            ))
+        }
         _ => None,
     }
 }
