@@ -17013,6 +17013,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             binding,
             cpu,
             memory,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            handles,
+            aliases,
             files,
             writable_refnums,
             vfs_files,
@@ -18591,6 +18596,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::PBGetFCBInfo
         | PpcImportDispatcherTarget::FindFolder
         | PpcImportDispatcherTarget::ResolveAliasFile
+        | PpcImportDispatcherTarget::ResolveAlias
+        | PpcImportDispatcherTarget::UpdateAlias
+        | PpcImportDispatcherTarget::NewAlias
         | PpcImportDispatcherTarget::FileCompatibility(_) => {
             unreachable!("file imports return through dispatch_file_import")
         }
@@ -21455,30 +21463,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             next_cfm_connection_id,
             import_run_state,
         )),
-        PpcImportDispatcherTarget::ResolveAlias => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_resolve_alias(cpu, memory, vfs_directories, handles, aliases),
-        ))),
-        PpcImportDispatcherTarget::UpdateAlias => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_update_alias(
-                cpu,
-                memory,
-                last_mem_error,
-                vfs_directories,
-                handles,
-                aliases,
-            ))))
-        }
-        PpcImportDispatcherTarget::NewAlias => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_new_alias(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-                handles,
-                aliases,
-            ))))
-        }
         PpcImportDispatcherTarget::StandardGetFile => {
             Some(ppc_dispatch_standard_file(
                 PpcStandardFileOperation::StandardGetFile,
@@ -89679,7 +89663,7 @@ pub(super) fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
     }
 }
 
-fn ppc_new_alias(
+pub(super) fn ppc_new_alias(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -90181,7 +90165,7 @@ fn ppc_read_fixed_pstring_bytes(
     Some(bytes)
 }
 
-fn ppc_resolve_alias(
+pub(super) fn ppc_resolve_alias(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -90223,7 +90207,7 @@ fn ppc_resolve_alias(
     PPC_NO_ERR
 }
 
-fn ppc_update_alias(
+pub(super) fn ppc_update_alias(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     last_mem_error: &mut i16,
