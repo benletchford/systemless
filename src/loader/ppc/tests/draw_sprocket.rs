@@ -1807,3 +1807,24 @@ use super::*;
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     }
 
+    #[test]
+    fn fire_vbl_tasks_invokes_active_draw_sprocket_vbl_proc() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpStartup");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        loaded.memory.add_region(VECTOR, vec![0; 8]);
+        loaded.memory.write_u32_be(VECTOR, ENTRY).unwrap();
+        loaded.memory.write_u32_be(VECTOR + 4, PPC_DATA_BASE).unwrap();
+        loaded.memory.add_region(ENTRY, vec![0x4e, 0x80, 0x00, 0x20]);
+        loaded.draw_sprocket.active_context = Some(PPC_DSP_CONTEXT);
+        loaded.draw_sprocket.context_state = PpcDspContextPlayState::Active;
+        loaded.draw_sprocket.vbl_proc = Some(VECTOR);
+        loaded.draw_sprocket.vbl_refcon = Some(0x1234_5678);
+
+        let probes = loaded.fire_vbl_tasks_for_ticks(0, 2, 10, 64, false, false);
+        assert_eq!(probes.len(), 2);
+        assert_eq!(probes[0].invocation.callback, VECTOR);
+        assert_eq!(probes[1].invocation.callback, VECTOR);
+    }
+
