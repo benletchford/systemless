@@ -4,6 +4,11 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) process_memory_manager: &'a mut ProcessNativeMemoryManager,
+    pub(super) heap_cursor: &'a mut u32,
+    pub(super) last_mem_error: &'a mut i16,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) aliases: &'a mut Vec<PpcAliasRecord>,
     pub(super) files: &'a mut Vec<PpcFileRecord>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
@@ -29,6 +34,11 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         binding,
         cpu,
         memory,
+        process_memory_manager,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        aliases,
         files,
         writable_refnums,
         vfs_files,
@@ -506,6 +516,30 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 next_working_directory_ref_num,
                 application_working_directory_ref_num,
             ))
+        }
+        PpcImportDispatcherTarget::ResolveAlias => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_resolve_alias(cpu, memory, vfs_directories, handles, aliases),
+        ))),
+        PpcImportDispatcherTarget::UpdateAlias => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_update_alias(
+                cpu,
+                memory,
+                last_mem_error,
+                vfs_directories,
+                handles,
+                aliases,
+            ))))
+        }
+        PpcImportDispatcherTarget::NewAlias => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_new_alias(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                aliases,
+            ))))
         }
         _ => None,
     }
