@@ -18880,7 +18880,16 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::HSetVol
         | PpcImportDispatcherTarget::FlushVol
         | PpcImportDispatcherTarget::PBFlushVol
-        | PpcImportDispatcherTarget::PBHGetVInfo => {
+        | PpcImportDispatcherTarget::PBHGetVInfo
+        | PpcImportDispatcherTarget::PBGetFInfo
+        | PpcImportDispatcherTarget::PBHGetFInfo
+        | PpcImportDispatcherTarget::PBSetFInfo
+        | PpcImportDispatcherTarget::PBHSetFInfo
+        | PpcImportDispatcherTarget::FSpGetFInfo
+        | PpcImportDispatcherTarget::GetFInfo
+        | PpcImportDispatcherTarget::HGetFInfo
+        | PpcImportDispatcherTarget::FSpSetFInfo
+        | PpcImportDispatcherTarget::HSetFInfo => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::GetForeColor
@@ -21792,52 +21801,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 default_dir_id,
             ))))
         }
-        PpcImportDispatcherTarget::PBGetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                default_dir_id,
-                false,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBHGetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                default_dir_id,
-                true,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBSetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_set_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-                false,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBHSetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_set_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-                true,
-            ))))
-        }
         PpcImportDispatcherTarget::PBGetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_get_cat_info(
                 cpu,
@@ -21873,42 +21836,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 launched_app_path,
             ),
         ))),
-        PpcImportDispatcherTarget::FSpGetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_get_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
-        ))),
-        PpcImportDispatcherTarget::GetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::HGetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSpSetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_set_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
-        ))),
-        PpcImportDispatcherTarget::HSetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_set_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
         PpcImportDispatcherTarget::StandardGetFile => {
             Some(ppc_dispatch_standard_file(
                 PpcStandardFileOperation::StandardGetFile,
@@ -84447,7 +84374,7 @@ fn ppc_pb_set_cat_info(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_pb_get_finfo(
+pub(super) fn ppc_pb_get_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -84531,7 +84458,7 @@ fn ppc_pb_get_finfo(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_pb_set_finfo(
+pub(super) fn ppc_pb_set_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -85337,7 +85264,7 @@ fn ppc_parent_dir_id_for_path(vfs_directories: &[PpcVfsDirectory], path: &str) -
     ppc_directory_id_for_path(vfs_directories, parent_path).unwrap_or(PPC_ROOT_DIR_ID)
 }
 
-fn ppc_get_finfo(
+pub(super) fn ppc_get_finfo(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -85412,7 +85339,7 @@ fn ppc_h_finfo_path(
     ppc_vfs_file_or_resource_path(vfs_files, vfs_resource_files, &requested_path).ok_or(PPC_FNF_ERR)
 }
 
-fn ppc_h_get_finfo(
+pub(super) fn ppc_h_get_finfo(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -85448,7 +85375,7 @@ fn ppc_h_get_finfo(
     }
 }
 
-fn ppc_h_set_finfo(
+pub(super) fn ppc_h_set_finfo(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -86963,7 +86890,7 @@ fn ppc_dispatch_standard_file(
     }
 }
 
-fn ppc_fsp_get_finfo(
+pub(super) fn ppc_fsp_get_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -87037,7 +86964,7 @@ fn ppc_fsp_get_finfo(
     PPC_FNF_ERR
 }
 
-fn ppc_fsp_set_finfo(
+pub(super) fn ppc_fsp_set_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut [PpcVfsDirectory],
