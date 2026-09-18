@@ -2196,6 +2196,49 @@ mod tests {
     }
 
     #[test]
+    fn hot_cpu_copy_loops_preserve_detail_and_hot_stores_erase_it() {
+        use m68k::{AddressBus, CpuCore, CpuType};
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let original = bus.presentation.as_ref().unwrap().detail(0x1000).unwrap();
+        assert!(AddressBus::fast_mem(&mut bus).is_none());
+        assert!(AddressBus::tracked_mem(&mut bus).is_some());
+        // MOVE.L (A0),(A1); DBRA D0,loop. Repeat enough to compile the copy.
+        for (i, word) in [0x2290, 0x51c8, 0xfffc].into_iter().enumerate() {
+            MemoryBus::write_word(&mut bus, 0x200 + i as u32 * 2, word);
+        }
+        let mut cpu = CpuCore::new();
+        cpu.set_cpu_type(CpuType::M68040);
+        cpu.set_a(0, 0x1000);
+        cpu.set_a(1, 0x8000);
+        cpu.set_d(0, 1023);
+        cpu.pc = 0x200;
+        assert_eq!(cpu.run_batch(&mut bus, 2048, &[0x206]).instructions, 2048);
+        assert_eq!(
+            bus.presentation.as_ref().unwrap().detail(0x8000),
+            Some(original.clone())
+        );
+        bus.fill_bytes(0x1000, 4, 255);
+        cpu.set_a(0, 0x8000);
+        cpu.set_a(1, 0x1000);
+        cpu.set_d(0, 1023);
+        cpu.pc = 0x200;
+        assert_eq!(cpu.run_batch(&mut bus, 2048, &[0x206]).instructions, 2048);
+        assert_eq!(
+            bus.presentation.as_ref().unwrap().detail(0x1000),
+            Some(original)
+        );
+        // Replacing the recorded copy with a register store must invalidate
+        // the old trace and erase coverage even when its logical bytes match.
+        MemoryBus::write_word(&mut bus, 0x200, 0x2281); // MOVE.L D1,(A1)
+        cpu.set_d(1, MemoryBus::read_long(&bus, 0x1000));
+        cpu.set_d(0, 1023);
+        cpu.pc = 0x200;
+        assert_eq!(cpu.run_batch(&mut bus, 2048, &[0x206]).instructions, 2048);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
+    }
+
+    #[test]
     fn cpu_copy_does_not_resurrect_detail_invalidated_in_the_saved_background() {
         let mut bus = bus();
         paint_detail(&mut bus, 0x1000);

@@ -125,6 +125,11 @@ impl m68k::AddressBus for MacMemoryBus {
         let (ptr, len) = self.fast_mem_window()?;
         Some(m68k::FastMem { ptr, base: 0, len })
     }
+
+    fn tracked_mem(&mut self) -> Option<m68k::TrackedMem> {
+        let (ptr, len) = self.tracked_mem_window()?;
+        Some(m68k::TrackedMem { ptr, base: 0, len })
+    }
 }
 
 pub(crate) mod presentation;

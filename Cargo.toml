@@ -136,3 +136,7 @@ debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 incremental = false
+
+[patch.crates-io]
+# Review dependency; replace with the published m68k release before merging.
+m68k = { git = "https://github.com/rlanday/m68k-rs", rev = "02cb0a169e9a9bd5008617a9434db7c21f19ebf8" }
