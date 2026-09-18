@@ -137,6 +137,7 @@ use std::sync::OnceLock;
 mod dispatch_drawsprocket;
 mod dispatch_event;
 mod dispatch_files;
+mod dispatch_inputsprocket;
 mod dispatch_low_memory;
 mod dispatch_math;
 mod dispatch_memory;
@@ -17142,6 +17143,22 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_inputsprocket::dispatch_inputsprocket_import(
+        dispatch_inputsprocket::PpcInputSprocketDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            input_sprocket,
+            input_sprocket_virtual_elements,
+            input,
+            tick_count: *tick_count,
+        },
+    ) {
+        return Some(action);
+    }
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InstallExceptionHandler => {
@@ -17314,6 +17331,30 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DSpContextInvalBackBufferRect
         | PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => {
             unreachable!("drawsprocket imports return through dispatch_drawsprocket_import")
+        }
+        PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
+        | PpcImportDispatcherTarget::ISpElementListNew
+        | PpcImportDispatcherTarget::ISpElementListAddElements
+        | PpcImportDispatcherTarget::ISpElementListGetNextEvent
+        | PpcImportDispatcherTarget::ISpElementListFlush
+        | PpcImportDispatcherTarget::ISpDevicesExtract
+        | PpcImportDispatcherTarget::ISpDevicesExtractByClass
+        | PpcImportDispatcherTarget::ISpDeviceGetDefinition
+        | PpcImportDispatcherTarget::ISpDeviceGetElementList
+        | PpcImportDispatcherTarget::ISpElementListExtract
+        | PpcImportDispatcherTarget::ISpElementGetInfo
+        | PpcImportDispatcherTarget::ISpElementGetSimpleState
+        | PpcImportDispatcherTarget::ISpGetVersion
+        | PpcImportDispatcherTarget::ISpStartup
+        | PpcImportDispatcherTarget::ISpShutdown
+        | PpcImportDispatcherTarget::ISpInit
+        | PpcImportDispatcherTarget::ISpStop
+        | PpcImportDispatcherTarget::ISpSuspend
+        | PpcImportDispatcherTarget::ISpResume
+        | PpcImportDispatcherTarget::ISpDevicesActivate
+        | PpcImportDispatcherTarget::ISpDevicesDeactivate
+        | PpcImportDispatcherTarget::ISpConfigure => {
+            unreachable!("inputsprocket imports return through dispatch_inputsprocket_import")
         }
         PpcImportDispatcherTarget::DrawGrowIcon => {
             ppc_draw_grow_icon(memory, gworlds, window_list, cpu.gpr[3]);
@@ -24412,118 +24453,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::QAEngineGestalt => {
             Some(PpcImportAction::Return(ppc_qa_engine_gestalt(cpu, memory)))
         }
-        PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_new_virtual_from_needs(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                input_sprocket,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpElementListNew => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_isp_element_list_new(
-                    cpu,
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    input_sprocket_virtual_elements,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::ISpElementListAddElements => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_add_elements(
-                cpu,
-                memory,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpElementListGetNextEvent => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_get_next_event(
-                cpu,
-                memory,
-                input,
-                *input_sprocket,
-                input_sprocket_virtual_elements,
-                *tick_count,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpElementListFlush => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_flush(
-                cpu,
-                memory,
-                input,
-                *input_sprocket,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpDevicesExtract => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_extract(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpDevicesExtractByClass => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_extract_by_class(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpDeviceGetDefinition => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_device_get_definition(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpDeviceGetElementList => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_device_get_element_list(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpElementListExtract => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_extract(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpElementGetInfo => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_get_info(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpElementGetSimpleState => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_get_simple_state(
-                cpu,
-                memory,
-                input,
-                *input_sprocket,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        // Apple InputSprocket.h 1.7 (QuickTime 6.0.2 SDK) declares
-        // ISpGetVersion as returning the four-byte NumVersion structure.
-        // The CFM PowerPC structure-result pointer is passed in r3, matching
-        // SndSoundManagerVersion above. NumVersion 1.7 final is 01 70 80 00.
-        PpcImportDispatcherTarget::ISpGetVersion => {
-            if cpu.gpr[3] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
-                let _ = memory.write_u32_be(cpu.gpr[3], 0x0170_8000);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ISpStartup => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_init(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpShutdown => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_stop(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpInit => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_init(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpStop => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_stop(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpSuspend => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_suspend(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpResume => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_resume(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpDevicesActivate => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_activate(cpu, memory, input_sprocket)),
-        )),
-        PpcImportDispatcherTarget::ISpDevicesDeactivate => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_deactivate(cpu, memory, input_sprocket)),
-        )),
-        PpcImportDispatcherTarget::ISpConfigure => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_configure(input_sprocket),
-        ))),
         PpcImportDispatcherTarget::QtEnterMovies => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_qt_enter_movies(quicktime),
         ))),
