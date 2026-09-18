@@ -7850,7 +7850,12 @@ impl PpcLoadedApp {
     ) -> Vec<PpcVblCallbackProbe> {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
         let mut probes = Vec::new();
-        if elapsed_ticks == 0 || self.vbl_tasks.is_empty() || max_callbacks == 0 {
+        let has_dsp_vbl = self.draw_sprocket.vbl_proc.is_some()
+            && self.draw_sprocket.context_state == PpcDspContextPlayState::Active;
+        if elapsed_ticks == 0
+            || (self.vbl_tasks.is_empty() && !has_dsp_vbl)
+            || max_callbacks == 0
+        {
             return probes;
         }
         for tick_offset in 0..elapsed_ticks {
@@ -7860,6 +7865,26 @@ impl PpcLoadedApp {
             self.callback_scheduling.with_mut(|scheduling| {
                 scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
             });
+            if let (Some(context), Some(vbl_proc)) = (
+                self.draw_sprocket.active_context,
+                self.draw_sprocket.vbl_proc,
+            ) {
+                if self.draw_sprocket.context_state == PpcDspContextPlayState::Active {
+                    let refcon = self.draw_sprocket.vbl_refcon.unwrap_or(0);
+                    if probes.len() < max_callbacks {
+                        probes.push(self.run_draw_sprocket_vbl_callback(
+                            context,
+                            refcon,
+                            vbl_proc,
+                            max_cycles,
+                            trace_imports,
+                            trace_fetches,
+                            process_memory_manager.as_deref_mut(),
+                            process_cfm.as_deref_mut(),
+                        ));
+                    }
+                }
+            }
             let tasks = (*self.vbl_tasks).clone();
             for task in tasks {
                 if task.architecture != CallbackTaskArchitecture::PowerPc {
@@ -7967,6 +7992,79 @@ impl PpcLoadedApp {
         PpcVblCallbackProbe {
             invocation: PpcVblCallbackInvocationRecord {
                 task_ptr,
+                callback,
+                callback_entry: target.entry,
+                callback_rtoc: target.rtoc,
+                tick: self.current_tick(),
+                cycles,
+                end_pc,
+                end_sp,
+                end_r3,
+                result: probe.result,
+                unsupported_import_index: probe.unsupported_import_index,
+            },
+            import_trace: probe.import_trace,
+            fetch_histogram: probe.fetch_histogram,
+        }
+    }
+
+    fn run_draw_sprocket_vbl_callback(
+        &mut self,
+        context: u32,
+        refcon: u32,
+        callback: u32,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
+    ) -> PpcVblCallbackProbe {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
+        let saved_context = self.cpu.capture_execution_context();
+        let saved_current_resource_refnum = self.current_resource_refnum();
+        let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
+            saved_context.architectural().gpr[2]
+        } else {
+            self.rtoc
+        };
+        let target = ppc_resolve_callback_target(&mut self.memory, callback, default_rtoc, None)
+            .unwrap_or(PpcCallbackTarget {
+                entry: callback,
+                rtoc: default_rtoc,
+                proc_info: 0,
+                routine_flags: 0,
+            });
+        let mut entered = false;
+        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.invalidate_reservation();
+            entered = true;
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            let _ = install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, &[context, refcon]);
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                process_memory_manager,
+                process_cfm.as_deref_mut(),
+            )
+        } else {
+            self.interrupt_callback_stack_fault()
+        };
+        let end_pc = self.cpu.pc;
+        let end_sp = self.cpu.gpr[1];
+        let end_r3 = self.cpu.gpr[3];
+        let cycles = ppc_run_result_cycles(probe.result);
+        if entered {
+            self.cpu.install_execution_context(saved_context);
+        }
+        self.set_current_resource_refnum(saved_current_resource_refnum);
+
+        PpcVblCallbackProbe {
+            invocation: PpcVblCallbackInvocationRecord {
+                task_ptr: 0,
                 callback,
                 callback_entry: target.entry,
                 callback_rtoc: target.rtoc,
