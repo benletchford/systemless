@@ -49,6 +49,11 @@ contributed code.
 - Keep issues and pull requests scoped to the standalone Systemless repository
   and its public interfaces.
 
+Catalogue entries live under `catalogue/`; browser code lives under `www/`.
+See `www/README.md` for catalogue validation, local browser development, and
+asset-promotion commands. Large pending assets belong under
+`catalogue/incoming/<entry-id>/` and must not be committed.
+
 ## Issue and pull-request evidence
 
 - Attach screenshots and other media used only by an issue or pull request to

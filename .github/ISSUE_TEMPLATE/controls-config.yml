@@ -1,0 +1,40 @@
+name: Suggest controls or configuration
+description: Propose and document a tested runtime or control improvement.
+title: "[entry-id] Controls/config: "
+body:
+  - type: input
+    id: entry
+    attributes:
+      label: Catalogue entry ID
+      description: Keep [id] in the title so the title's open-reports link finds this suggestion.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Keyboard mapping
+        - Mobile controls
+        - Runtime configuration
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change and reason
+      description: Include the current behavior and the proposed YAML where possible.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Systemless version, architecture, OS and browser
+    validations:
+      required: true
+  - type: textarea
+    id: testing
+    attributes:
+      label: Test results and evidence
+    validations:
+      required: true

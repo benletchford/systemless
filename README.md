@@ -37,6 +37,12 @@ while the guest application name and icon integrate with the Dock.
 Play these and more classic Macintosh games in your browser at
 [systemless.org](https://systemless.org/).
 
+The browser frontend and its community catalogue are developed in this
+repository alongside the runtime. Website sources live in [`www/`](www/),
+catalogue entries live in [`catalogue/`](catalogue/), and catalogue maintenance
+tools live in [`tools/catalogue/`](tools/catalogue/). See
+[`www/README.md`](www/README.md) for local browser and catalogue workflows.
+
 ## Quick Start
 
 Install with Homebrew on macOS:

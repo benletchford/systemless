@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Contribution guide
+    url: https://github.com/benletchford/systemless/blob/master/CONTRIBUTING.md
+    about: Entry format, asset submissions, verification and promotion.

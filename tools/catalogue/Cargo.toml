@@ -1,0 +1,36 @@
+[package]
+name = "systemless-catalogue-tools"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+description = "Catalogue validation, page generation, and asset tooling for Systemless"
+license = "MIT"
+repository = "https://github.com/benletchford/systemless"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "catalogue"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+fs2 = "0.4"
+hex = "0.4"
+hmac = "0.13"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+jiff = "0.2"
+percent-encoding = "2.3"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+quick-xml = { version = "0.42", features = ["serialize"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "cookies"] }
+scraper = { version = "0.27", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-saphyr = { version = "1.2", default-features = false, features = ["serialize", "deserialize"] }
+sha2 = "0.11"
+tempfile = "3.27"
+url = "2.5"
