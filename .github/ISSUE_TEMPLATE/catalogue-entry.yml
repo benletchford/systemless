@@ -1,0 +1,22 @@
+name: Add or correct a title
+description: Suggest a new game/application or correct metadata and provenance.
+body:
+  - type: input
+    id: entry
+    attributes:
+      label: Existing or proposed stable entry ID
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Title, correction or addition
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources and redistribution evidence
+      description: Link primary sources. Availability online does not establish permission to redistribute.
+    validations:
+      required: true

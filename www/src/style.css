@@ -1,0 +1,2052 @@
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("/assets/fonts/ibm-plex-sans-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/assets/fonts/ibm-plex-mono-regular-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/assets/fonts/ibm-plex-mono-medium-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("/assets/fonts/instrument-serif-regular-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("/assets/fonts/instrument-serif-italic-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --bg: #f2efe9;
+  --surface: #fbf9f5;
+  --ink: #15130f;
+  --body: #443f37;
+  --muted: #7c766d;
+  --faint: #a09889;
+  --rule: #dfd9ce;
+  --rule-2: #eae5db;
+  --rule-strong: #c9c2b6;
+  --accent: #c7381f;
+  --on-accent: #f7f4ee;
+  --footer-bg: #ede9e1;
+  --bg-blur: rgba(242, 239, 233, 0.88);
+  --screen: #15130f;
+  --content-width: 640px;
+  --game-width: 800px;
+  --library-width: 1280px;
+  --pixel-detail: #15130f;
+  --mark: 112px;
+  --mark-gap: 28px;
+  --pad-x: 32px;
+  --top-pad: 42px;
+  --gap-lg: 30px;
+  --four: repeat(4, minmax(0, 1fr));
+}
+
+html[data-theme="dark"] {
+  --bg: #131211;
+  --surface: #1a1816;
+  --ink: #efebe3;
+  --body: #c4beb4;
+  --muted: #948d82;
+  --faint: #6e685f;
+  --rule: #2c2924;
+  --rule-2: #221f1b;
+  --rule-strong: #3a3630;
+  --accent: #e4653f;
+  --on-accent: #17150f;
+  --footer-bg: #191715;
+  --bg-blur: rgba(19, 18, 17, 0.9);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  min-height: 100vh;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.app__main {
+  flex: 1;
+  width: 100%;
+}
+
+/* Site chrome */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding-top: var(--safe-area-top);
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg-blur);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.site-header__inner {
+  display: flex;
+  align-items: center;
+  gap: 34px;
+  width: 100%;
+  max-width: calc(var(--library-width) + var(--pad-x) + var(--pad-x));
+  height: 62px;
+  margin: 0 auto;
+  padding: 0 var(--pad-x);
+}
+
+.wordmark {
+  color: var(--ink);
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 23px;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+
+.wordmark:hover,
+.site-footer a:hover {
+  color: var(--accent);
+}
+
+.site-header__nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.theme-toggle,
+.github-link {
+  min-height: 32px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.theme-toggle {
+  padding: 7px 11px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.github-link {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.github-link__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+}
+
+.github-link__star {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: currentColor;
+}
+
+.github-link__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 0 9px;
+  border-left: 1px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.theme-toggle:hover {
+  border-color: var(--ink);
+  color: var(--accent);
+}
+
+.github-link:hover {
+  border-color: var(--ink);
+  background: var(--rule-2);
+  color: var(--ink);
+}
+
+.github-link:hover .github-link__count {
+  color: var(--ink);
+}
+
+.theme-toggle:focus-visible,
+.github-link:focus-visible,
+.wordmark:focus-visible,
+.library-card:focus-visible,
+.back:focus-visible,
+.related-card:focus-visible,
+.site-footer a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* Library */
+
+.library-hero {
+  max-width: calc(var(--library-width) + var(--pad-x) + var(--pad-x));
+  margin: 0 auto;
+  padding: var(--top-pad) var(--pad-x) 0;
+}
+
+.library-hero__content {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--mark-gap);
+  text-align: left;
+}
+
+.pixel-mac {
+  display: block;
+  flex: none;
+  width: var(--mark);
+  height: var(--mark);
+  margin: 0;
+}
+
+.library-hero__copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.library-hero h1 {
+  max-width: 760px;
+  margin: 0;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: clamp(34px, 3.4vw, 46px);
+  font-weight: 400;
+  letter-spacing: -0.025em;
+  line-height: 1.06;
+  text-wrap: balance;
+}
+
+.library-hero h1 em {
+  color: var(--accent);
+  font-style: italic;
+}
+
+.library-hero p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+.cli-hint {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 48px;
+  max-width: calc(var(--library-width) + var(--pad-x) + var(--pad-x));
+  margin: 38px auto 0;
+  padding: 28px var(--pad-x);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.cli-hint__intro {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.cli-hint__intro h2 {
+  margin: 0;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 30px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.cli-hint__intro p {
+  max-width: 470px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.cli-hint__setup {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 18px;
+  align-items: center;
+}
+
+.cli-platform {
+  display: inline-flex;
+  align-self: start;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  padding: 3px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--rule-2);
+}
+
+.cli-platform__option {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.cli-platform__option--active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(21, 19, 15, 0.1);
+}
+
+.cli-platform__option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cli-command {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.cli-command > span {
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.cli-command code {
+  display: block;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 9px 11px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--body);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.eyebrow {
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.library-catalogue {
+  max-width: calc(var(--library-width) + var(--pad-x) + var(--pad-x));
+  margin: 0 auto;
+  padding: var(--gap-lg) var(--pad-x) 120px;
+}
+
+.library-tools {
+  border-bottom: 1px solid var(--ink);
+}
+
+.library-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.library-search__label,
+.library-search__count {
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.library-search__label {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.library-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.library-search input::placeholder {
+  color: var(--faint);
+}
+
+.library-search:focus-within {
+  border-bottom-color: var(--accent);
+}
+
+.library-filters {
+  display: flex;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 12px 0 14px;
+}
+
+.library-filter-group,
+.library-filter-group__tags {
+  display: flex;
+  align-items: center;
+}
+
+.library-filter-group {
+  gap: 8px;
+}
+
+.library-filter-group__tags {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.library-filter-group__label {
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.library-filter-tag,
+.library-filter-clear {
+  border: 1px solid var(--rule-strong);
+  background: transparent;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.library-filter-tag {
+  padding: 6px 9px;
+  border-radius: 999px;
+}
+
+.library-filter-tag:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.library-filter-tag--active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.library-filter-tag--active:hover {
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.library-filter-tag:focus-visible,
+.library-filter-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.library-filter-clear {
+  display: none;
+  margin-left: auto;
+  padding: 5px 0;
+  border-color: transparent;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.library-filter-clear:disabled {
+  cursor: default;
+}
+
+.library-filter-clear--visible {
+  display: block;
+}
+
+.library-filter-clear:hover {
+  color: var(--accent);
+}
+
+.library-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 28px 24px;
+  padding-top: 24px;
+}
+
+.library-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  align-content: start;
+  gap: 8px 12px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.library-card:hover {
+  color: var(--accent);
+}
+
+.library-card__thumb,
+.related-card__thumb {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  border-radius: 2px;
+  background: var(--screen);
+}
+
+.library-card__thumb {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-bottom: 6px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  transition: border-color 140ms ease;
+}
+
+.library-card:hover .library-card__thumb {
+  border-color: var(--ink);
+}
+
+.game-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+  image-rendering: pixelated;
+}
+
+.library-card__title {
+  grid-column: 1;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 24px;
+  letter-spacing: -0.015em;
+  line-height: 1.14;
+}
+
+.library-card__description {
+  display: -webkit-box;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+  text-wrap: pretty;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.library-card__tags {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.game-tag {
+  padding: 4px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.game-tag--architecture {
+  border-color: var(--rule-strong);
+  color: var(--body);
+}
+
+.library-card__arrow {
+  grid-column: 2;
+  grid-row: 2;
+  padding-top: 5px;
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 13px;
+  text-align: right;
+}
+
+.library-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 12px 0 36px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+/* Game page */
+
+.game-page {
+  width: 100%;
+  max-width: calc(var(--game-width) + var(--pad-x) + var(--pad-x));
+  margin: 0 auto;
+  padding: 36px var(--pad-x) 96px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.back:hover {
+  color: var(--accent);
+}
+
+.game-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 22px 0 26px;
+}
+
+.game-heading__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.game-title,
+.game-about h2,
+.site-footer__brand > span {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-weight: 400;
+}
+
+.game-title {
+  margin: 0;
+  font-size: clamp(40px, 5vw, 64px);
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+
+.game-byline {
+  margin: 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.game-description {
+  margin: 0;
+}
+
+.game-details {
+  margin-top: 52px;
+}
+
+.game-about {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  max-width: 660px;
+}
+
+.game-about h2 {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: -0.02em;
+}
+
+.game-about p {
+  margin: 0;
+  color: var(--body);
+  font-size: 16.5px;
+  line-height: 1.68;
+  text-wrap: pretty;
+}
+
+.related-games > h2 {
+  margin: 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.related-games {
+  margin-top: 80px;
+  padding-top: 26px;
+  border-top: 1px solid var(--rule);
+}
+
+.related-games > h2 {
+  margin-bottom: 24px;
+}
+
+.related-games__grid {
+  display: grid;
+  grid-template-columns: var(--four);
+  gap: 22px;
+}
+
+.related-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--ink);
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 21px;
+  line-height: 1.1;
+  text-decoration: none;
+}
+
+.related-card:hover {
+  color: var(--accent);
+}
+
+.related-card__thumb {
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+}
+
+.related-card:hover .related-card__thumb {
+  border-color: var(--ink);
+}
+
+.game-screen-wrap {
+  --game-aspect-ratio: 4 / 3;
+  --game-aspect-width: 4;
+  --game-aspect-height: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.game-architecture {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: min(100%, var(--game-width));
+  margin-inline: auto;
+}
+
+.game-architecture__label {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.game-canvas-wrap {
+  --game-aspect-ratio: inherit;
+  --game-aspect-width: inherit;
+  --game-aspect-height: inherit;
+  position: relative;
+  background: #000;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  overflow: hidden;
+  aspect-ratio: var(--game-aspect-ratio);
+  width: min(100%, var(--game-width));
+  margin-inline: auto;
+}
+
+.game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: var(--game-aspect-ratio);
+  image-rendering: pixelated;
+  outline: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.game-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #a39b90;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.game-status.hidden {
+  display: none;
+}
+
+.mobile-controls {
+  display: none;
+}
+
+.mobile-rotate-hint {
+  display: none;
+}
+
+.game-files-dialog {
+  display: grid;
+  gap: 20px;
+  padding: 0 20px 20px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.game-files-dialog.hidden {
+  display: none;
+}
+
+.game-files-dialog__tabs {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-width: 0;
+  min-height: 48px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.game-files-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  margin-bottom: -1px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.game-files-tab:hover,
+.game-files-tab:focus {
+  color: var(--ink);
+  outline: none;
+}
+
+.game-files-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.game-files-tab--active {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.game-files-tab__count {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--rule-2);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.game-files-panel {
+  min-width: 0;
+}
+
+.game-files-panel.hidden {
+  display: none;
+}
+
+.plugin-panel {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.plugin-panel__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.plugin-panel__count {
+  min-width: 0;
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.plugin-clear.hidden,
+.plugin-selected.hidden {
+  display: none;
+}
+
+.plugin-selected {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plugin-section-title {
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.plugin-selected-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.plugin-selected-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 9px 10px 9px 13px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--bg);
+}
+
+.plugin-selected-row__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 17px;
+  line-height: 1.1;
+}
+
+.plugin-selected-row__meta {
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.plugin-list {
+  display: grid;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--bg);
+  scrollbar-color: var(--rule-strong) transparent;
+}
+
+.plugin-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.plugin-row:last-child {
+  border-bottom: 0;
+}
+
+.plugin-row--disabled .plugin-choice {
+  opacity: 0.62;
+}
+
+.plugin-choice {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+
+.plugin-checkbox {
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.plugin-row__body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plugin-row__title {
+  color: var(--ink);
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 17px;
+  line-height: 1.1;
+}
+
+.plugin-row--disabled .plugin-row__title {
+  color: var(--muted);
+}
+
+.plugin-row__meta {
+  color: var(--faint);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.plugin-row__description {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.save-panel {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.save-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.save-panel__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.save-panel__hint {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.plugin-clear,
+.plugin-disable,
+.plugin-download,
+.game-download,
+.save-import,
+.save-file__action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-decoration: none;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.plugin-clear,
+.plugin-disable,
+.save-file__action--delete {
+  color: var(--accent);
+}
+
+.plugin-clear:hover,
+.plugin-disable:hover,
+.plugin-download:hover,
+.game-download:hover,
+.save-import:hover:not(:disabled),
+.save-file__action:hover {
+  border-color: var(--ink);
+  background: var(--rule-2);
+  color: var(--accent);
+}
+
+.plugin-clear:focus-visible,
+.plugin-disable:focus-visible,
+.plugin-download:focus-visible,
+.game-download:focus-visible,
+.save-import:focus-visible,
+.save-file__action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.save-import:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.save-import__input {
+  display: none;
+}
+
+.save-panel__message {
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.save-empty {
+  display: flex;
+  align-items: center;
+  min-height: 62px;
+  padding: 16px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--muted);
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 17px;
+}
+
+.save-panel__message.hidden,
+.save-empty.hidden,
+.save-list.hidden {
+  display: none;
+}
+
+.save-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.save-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+}
+
+.save-file:hover,
+.save-file:focus-within {
+  border-color: var(--rule-strong);
+  background: var(--rule-2);
+}
+
+.save-file__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.save-file__actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Static fallback shown before the WebAssembly app mounts. */
+
+.seo-fallback {
+  max-width: calc(var(--content-width) + var(--pad-x) + var(--pad-x));
+  margin: 0 auto;
+  padding: 72px var(--pad-x);
+  color: var(--ink);
+  line-height: 1.6;
+}
+
+.seo-fallback h1 {
+  margin: 0 0 16px;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 48px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.seo-fallback p {
+  margin: 0 0 24px;
+  color: var(--body);
+}
+
+.seo-cli-hint {
+  margin: 28px 0;
+  padding: 20px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.seo-cli-hint h2 {
+  margin: 0 0 14px;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 28px;
+  font-weight: 400;
+}
+
+.seo-cli-hint p {
+  margin-bottom: 10px;
+}
+
+.seo-cli-hint p:last-child {
+  margin-bottom: 0;
+}
+
+.seo-cli-hint code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.88em;
+}
+
+.seo-fallback ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.seo-fallback li {
+  margin: 8px 0;
+}
+
+.seo-fallback li span {
+  display: block;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.seo-fallback a {
+  color: var(--accent);
+}
+
+.seo-fallback img {
+  display: block;
+  width: min(100%, 640px);
+  margin: 20px 0 0;
+  image-rendering: pixelated;
+  border-radius: 8px;
+}
+
+/* Site footer */
+
+.site-footer {
+  width: 100%;
+  border-top: 1px solid var(--rule);
+  background: var(--footer-bg);
+  color: var(--ink);
+}
+
+.site-footer__main,
+.site-footer__legal {
+  width: 100%;
+  max-width: calc(var(--library-width) + var(--pad-x) + var(--pad-x));
+  margin: 0 auto;
+  padding-right: var(--pad-x);
+  padding-left: var(--pad-x);
+}
+
+.site-footer__main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-top: 44px;
+  padding-bottom: 44px;
+}
+
+.site-footer__brand {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.site-footer__brand > span {
+  font-size: 21px;
+}
+
+.site-footer__brand p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.site-footer__nav {
+  display: flex;
+  gap: 26px;
+  font-size: 13.5px;
+}
+
+.site-footer__nav a {
+  color: var(--ink);
+}
+
+.site-footer__legal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--rule);
+  padding-top: 24px;
+  padding-bottom: calc(40px + var(--safe-area-bottom));
+}
+
+.site-footer__disclaimer {
+  max-width: var(--content-width);
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.powered-by {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 4px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.powered-by__label,
+.powered-by__separator {
+  opacity: 0.72;
+}
+
+.build-crate {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.build-crate__name {
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.build-crate__name:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.build-crate__version {
+  color: var(--faint);
+}
+
+.build-crate__sha {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  text-decoration: none;
+}
+
+.build-crate__sha:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.build-crate__sha--unknown {
+  color: var(--faint);
+}
+
+@media (max-width: 1100px) {
+  .library-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --mark: 84px;
+    --mark-gap: 14px;
+    --pad-x: 20px;
+    --top-pad: 30px;
+    --gap-lg: 24px;
+    --four: repeat(2, minmax(0, 1fr));
+  }
+
+  .library-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px 18px;
+  }
+
+  .library-hero__content {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .library-hero__copy {
+    align-items: center;
+  }
+
+  .library-hero h1 {
+    font-size: clamp(29px, 8vw, 38px);
+  }
+
+  .cli-hint {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+    margin-top: 30px;
+  }
+
+  .library-card__title {
+    font-size: 22px;
+  }
+
+  .library-filters {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-filter-clear {
+    margin-left: 0;
+  }
+
+  .game-page {
+    padding-top: 28px;
+  }
+}
+
+@media (max-width: 520px) {
+  :root {
+    --mark: 72px;
+  }
+
+  .game-files-dialog {
+    gap: 16px;
+    padding: 0 14px 14px;
+  }
+
+  .game-files-dialog__tabs {
+    gap: 18px;
+    overflow-x: auto;
+  }
+
+  .plugin-panel__summary,
+  .save-panel__header {
+    align-items: flex-start;
+  }
+
+  .plugin-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .plugin-download {
+    justify-self: start;
+    margin-left: 30px;
+  }
+
+  .cli-hint__setup {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cli-platform {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: start;
+  }
+
+  .cli-command {
+    grid-template-columns: 46px minmax(0, 1fr);
+  }
+
+  .plugin-selected-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .plugin-selected-row__meta {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .plugin-disable {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .save-file {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .site-header__inner {
+    gap: 14px;
+  }
+
+  .wordmark {
+    font-size: 21px;
+  }
+
+  .site-header__nav {
+    gap: 8px;
+  }
+
+  .github-link__on-github {
+    display: none;
+  }
+
+  .theme-toggle {
+    padding-right: 9px;
+    padding-left: 9px;
+  }
+
+  .library-search__count {
+    display: none;
+  }
+
+  .library-filter-group {
+    align-items: flex-start;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .library-catalogue {
+    padding-bottom: 80px;
+  }
+
+  .game-heading {
+    margin-bottom: 20px;
+  }
+
+  .game-heading__meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .game-details {
+    margin-top: 36px;
+  }
+
+  .related-games {
+    margin-top: 56px;
+  }
+
+  .site-footer__main {
+    align-items: flex-start;
+    padding-top: 34px;
+    padding-bottom: 34px;
+  }
+
+  .site-footer__nav {
+    flex-wrap: wrap;
+    gap: 16px 22px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) {
+  .mobile-rotate-hint {
+    position: absolute;
+    left: 50%;
+    bottom: calc(12px + var(--safe-area-bottom));
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    min-height: 34px;
+    padding: 7px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.68);
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    pointer-events: none;
+    transform: translateX(-50%);
+  }
+
+  .mobile-rotate-hint__icon {
+    position: relative;
+    display: inline-block;
+    width: 15px;
+    height: 22px;
+    flex: 0 0 auto;
+    border: 2px solid currentColor;
+    border-radius: 4px;
+    transform: rotate(-18deg);
+    opacity: 0.92;
+  }
+
+  .mobile-rotate-hint__icon::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 2px;
+    width: 3px;
+    height: 3px;
+    border-radius: 999px;
+    background: currentColor;
+    transform: translateX(-50%);
+  }
+}
+
+@media (hover: none) and (pointer: coarse) and (orientation: landscape),
+  (orientation: landscape) and (max-height: 520px) {
+  .app[data-view="playing"]:has(.game-page--focused) {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
+    min-height: 0;
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: #000;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .app__main,
+  .app[data-view="playing"]:has(.game-page--focused) .game-page {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .site-header,
+  .app[data-view="playing"]:has(.game-page--focused) .site-footer,
+  .app[data-view="playing"]:has(.game-page--focused) .back,
+  .app[data-view="playing"]:has(.game-page--focused) .game-heading,
+  .app[data-view="playing"]:has(.game-page--focused) .game-architecture,
+  .app[data-view="playing"]:has(.game-page--focused) .game-details,
+  .app[data-view="playing"]:has(.game-page--focused) .related-games {
+    display: none;
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .game-page {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .game-screen-wrap {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    width: 100vw;
+    height: 100vh;
+    width: 100dvw;
+    height: 100dvh;
+    aspect-ratio: auto;
+    border-radius: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    background: #000;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .game-canvas-wrap {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
+    border-radius: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--safe-area-top) var(--safe-area-right)
+      var(--safe-area-bottom) var(--safe-area-left);
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .game-files-dialog {
+    display: none;
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .game-canvas {
+    flex: 0 0 auto;
+    width: min(
+      calc(100vw - var(--safe-area-left) - var(--safe-area-right)),
+      calc(
+        (100vh - var(--safe-area-top) - var(--safe-area-bottom))
+          * var(--game-aspect-width) / var(--game-aspect-height)
+      )
+    );
+    height: min(
+      calc(100vh - var(--safe-area-top) - var(--safe-area-bottom)),
+      calc(
+        (100vw - var(--safe-area-left) - var(--safe-area-right))
+          * var(--game-aspect-height) / var(--game-aspect-width)
+      )
+    );
+    width: min(
+      calc(100dvw - var(--safe-area-left) - var(--safe-area-right)),
+      calc(
+        (100dvh - var(--safe-area-top) - var(--safe-area-bottom))
+          * var(--game-aspect-width) / var(--game-aspect-height)
+      )
+    );
+    height: min(
+      calc(100dvh - var(--safe-area-top) - var(--safe-area-bottom)),
+      calc(
+        (100dvw - var(--safe-area-left) - var(--safe-area-right))
+          * var(--game-aspect-height) / var(--game-aspect-width)
+      )
+    );
+    max-width: 100%;
+    max-height: 100%;
+  }
+
+  .app[data-view="playing"]:has(.game-page--focused) .mobile-controls {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: block;
+    pointer-events: none;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  .mobile-joystick {
+    --stick-x: 0;
+    --stick-y: 0;
+    position: absolute;
+    left: calc(18px + var(--safe-area-left));
+    bottom: calc(18px + var(--safe-area-bottom));
+    width: 118px;
+    height: 118px;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  .mobile-joystick__ring {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border: 2px solid rgba(255, 255, 255, 0.32);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.24);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+  }
+
+  .mobile-joystick__thumb {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 48px;
+    height: 48px;
+    border-radius: 999px;
+    background: rgba(246, 248, 252, 0.38);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    transform: translate(
+      calc(-50% + var(--stick-x) * 35px),
+      calc(-50% + var(--stick-y) * 35px)
+    );
+  }
+
+  .mobile-joystick.is-active .mobile-joystick__ring,
+  .mobile-button.is-active {
+    border-color: rgba(255, 255, 255, 0.62);
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .mobile-button-panel {
+    position: absolute;
+    right: calc(18px + var(--safe-area-right));
+    bottom: calc(18px + var(--safe-area-bottom));
+    display: grid;
+    gap: 8px;
+    pointer-events: none;
+  }
+
+  .mobile-button-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    width: 128px;
+    justify-self: end;
+    pointer-events: none;
+  }
+
+  .mobile-button-tab {
+    height: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 6px;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.34);
+    color: rgba(255, 255, 255, 0.7);
+    font: 700 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    text-align: center;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-button-tab.is-active {
+    border-color: rgba(255, 255, 255, 0.58);
+    background: rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  .mobile-button-group-stack {
+    display: block;
+  }
+
+  .mobile-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, 58px);
+    grid-auto-rows: 58px;
+    gap: 12px;
+    align-items: center;
+    justify-items: center;
+    pointer-events: none;
+  }
+
+  .mobile-buttons:not(.is-active) {
+    display: none;
+  }
+
+  .mobile-button {
+    width: 58px;
+    height: 58px;
+    border: 2px solid rgba(255, 255, 255, 0.34);
+    border-radius: 999px;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.26);
+    color: rgba(255, 255, 255, 0.74);
+    font: 700 18px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    text-align: center;
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-button:nth-child(1):last-child,
+  .mobile-button:nth-child(3):last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+/* The catalogue wiki shares the gameplay shelf with plugins and saved files. */
+.game-files-dialog__tabs {
+  flex-wrap: wrap;
+  column-gap: 20px;
+  row-gap: 0;
+}
+.game-files-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.game-wiki {
+  max-width: 80ch;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.game-wiki h2, .game-wiki h3 { margin: 1em 0 .5em; }
+.game-wiki p { margin: 0 0 1em; }
+.game-wiki a { color: var(--accent); text-decoration: underline; }
+.game-wiki img { display: block; max-width: 100%; height: auto; }
+.game-wiki pre { max-width: 100%; overflow-x: auto; }
+.game-wiki table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
+.game-wiki th, .game-wiki td { text-align: left; padding: .5em; border-bottom: 1px solid var(--rule); }
+.game-wiki__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.game-wiki__actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 9px 15px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-decoration: none;
+}
+.game-wiki__actions a:first-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.game-wiki__actions a:hover {
+  box-shadow: 0 0 0 2px var(--rule-strong);
+}
+.game-wiki__actions a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 4px;
+}
+.game-wiki__hint { color: var(--muted); font-size: .9em; }
+
+.game-focus-toggle { display: none; }
+@media (hover: none) and (pointer: coarse) and (orientation: landscape), (orientation: landscape) and (max-height: 520px) {
+  .game-focus-toggle { display: block; padding: 8px 12px; margin-bottom: 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; }
+  .game-page--focused .game-focus-toggle { position: fixed; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); z-index: 100; }
+}

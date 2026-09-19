@@ -1,0 +1,25 @@
+name: Correct title metadata
+description: Suggest a sourced correction to a title's Markdown entry.
+title: "[entry-id] Metadata: "
+body:
+  - type: input
+    id: entry
+    attributes:
+      label: Catalogue entry ID
+      description: Keep [id] in the title so the entry's issues link finds this report.
+    validations:
+      required: true
+  - type: textarea
+    id: correction
+    attributes:
+      label: Proposed correction
+      description: Identify the field or passage in catalogue/<id>.md and its replacement.
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Supporting sources
+      description: Link independent evidence for the proposed correction.
+    validations:
+      required: true

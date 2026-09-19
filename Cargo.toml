@@ -15,6 +15,7 @@ documentation = "https://docs.rs/systemless"
 # `cargo run` (no `--bin`) routes to the GUI runner for local checkouts.
 default-run = "systemless"
 autobins = false
+
 # Ship runtime sources and documentation, not the repository's visual oracle
 # suite. The native PCM fixtures are embedded by library unit tests.
 include = [
@@ -26,6 +27,11 @@ include = [
     "/.github/assets/**",
     "/tests/toolbox-showcase/reference/native-audio/*.u8",
 ]
+
+[workspace]
+members = ["tools/catalogue", "www"]
+default-members = ["."]
+resolver = "2"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
