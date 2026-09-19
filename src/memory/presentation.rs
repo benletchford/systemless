@@ -1393,18 +1393,40 @@ impl MacMemoryBus {
         offset: usize,
         len: usize,
     ) {
-        if self.presentation.is_none() {
-            let end = offset.saturating_add(len).min(pixels.len());
-            if offset < end {
-                let bytes: Vec<u8> = pixels[offset..end]
-                    .iter()
-                    .map(|value| (*value).into() as u8)
-                    .collect();
-                self.write_bytes(address, &bytes);
-            }
+        let end = offset.saturating_add(len).min(pixels.len());
+        if offset >= end {
             return;
         }
-        for i in offset..offset.saturating_add(len).min(pixels.len()) {
+        if self.presentation.is_none() {
+            let bytes: Vec<u8> = pixels[offset..end]
+                .iter()
+                .map(|value| (*value).into() as u8)
+                .collect();
+            self.write_bytes(address, &bytes);
+            return;
+        }
+        // Unchanged chrome often restores the same entire row every frame.
+        // Check its RAM with one route/tracing gate and borrow presentation
+        // once. Equal guest bytes alone cannot establish equal outline ink.
+        if self
+            .untraced_ram_slice(address, end - offset)
+            .is_some_and(|bytes| {
+                bytes
+                    .iter()
+                    .zip(&pixels[offset..end])
+                    .all(|(&byte, &value)| byte == value.into() as u8)
+                    && self.presentation.as_ref().is_some_and(|p| {
+                        (offset..end).all(|i| {
+                            let value = pixels[i].into() as u8;
+                            let detail = pixels.detail.get(&i).filter(|cell| cell.value == value);
+                            p.matches_detail(address + (i - offset) as u32, detail)
+                        })
+                    })
+            })
+        {
+            return;
+        }
+        for i in offset..end {
             let dst = address + (i - offset) as u32;
             let value = pixels[i].into() as u8;
             let detail = pixels.detail.get(&i).filter(|cell| cell.value == value);
@@ -2543,6 +2565,35 @@ mod tests {
             .2
             .iter()
             .all(|&v| v == 255));
+    }
+
+    #[test]
+    fn snapshot_restore_checks_the_whole_span_and_same_byte_ink_changes() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x101d);
+        let saved = bus.save_pixel_bytes(0x1000, 32);
+        let expected = bus.outline_presentation_rgb().unwrap().2;
+        let epoch = bus.presentation_epoch();
+        bus.begin_uncapped_write_probe();
+        bus.restore_saved_pixels(0x1003, &saved, 3, usize::MAX);
+        assert!(bus.finish_write_probe_ranges().is_empty());
+        assert_eq!(bus.presentation_epoch(), epoch);
+
+        // An equal framebuffer byte can have lost its retained outline.
+        bus.write_byte(0x101d, bus.read_byte(0x101d));
+        assert_ne!(bus.outline_presentation_rgb().unwrap().2, expected);
+        bus.restore_saved_pixels(0x1003, &saved, 3, usize::MAX);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
+
+        // A long matching prefix must not hide a changed final byte, and a
+        // subrange restoration must leave the preceding bytes alone.
+        bus.write_byte(0x1002, 17);
+        bus.write_byte(0x101f, 42);
+        bus.restore_saved_pixels(0x1003, &saved, 3, usize::MAX);
+        assert_eq!(bus.read_byte(0x1002), 17);
+        assert_eq!(bus.read_bytes(0x1003, 29), saved[3..32]);
+        bus.write_byte(0x1002, saved[2]);
+        assert_eq!(bus.outline_presentation_rgb().unwrap().2, expected);
     }
 
     #[test]

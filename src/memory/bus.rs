@@ -2071,6 +2071,17 @@ impl MacMemoryBus {
         }
     }
 
+    /// Borrow a complete flat RAM range only when no read observer needs the
+    /// individual bus accesses. Routed, wrapping, and unmapped spans must use
+    /// the normal reads instead. This grants no permission to skip writes.
+    pub(crate) fn untraced_ram_slice(&self, address: u32, len: usize) -> Option<&[u8]> {
+        if mem_read_trace_active() || self.route(address, len) != GuestMemoryRoute::Flat {
+            return None;
+        }
+        let start = self.range_translates_contiguously(address, len)?;
+        Some(self.ram_slice(start, u32::try_from(len).ok()?))
+    }
+
     /// Copy a RAM range to another RAM range with one bounds/tracing gate.
     /// Falls back to byte writes when debug watchpoints or framebuffer-write
     /// tracing are active so diagnostics still observe each destination byte.
@@ -3037,6 +3048,30 @@ impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untraced_ram_slice_rejects_nonflat_and_wrapping_ranges() {
+        let mut bus = MacMemoryBus::new(0x0200_0000);
+        bus.write_bytes(0x1000, &[1, 2, 3, 4]);
+        assert_eq!(bus.untraced_ram_slice(0x1000, 4), Some(&[1, 2, 3, 4][..]));
+        assert!(bus.untraced_ram_slice(0x01ff_ffff, 2).is_none());
+        assert!(bus.untraced_ram_slice(u32::MAX, 2).is_none());
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1002, vec![8, 9]);
+        bus.attach_guest_address_space(memory.shared_view());
+        assert_eq!(bus.read_bytes(0x1000, 4), [1, 2, 8, 9]);
+        assert!(bus.untraced_ram_slice(0x1000, 4).is_none());
+        assert!(bus.untraced_ram_slice(0x1002, 2).is_none());
+        bus.detach_guest_address_space();
+
+        bus.set_addressing_32_bit(false);
+        assert_eq!(
+            bus.untraced_ram_slice(0x0100_1000, 4),
+            Some(&[1, 2, 3, 4][..])
+        );
+        assert!(bus.untraced_ram_slice(0x00ff_ffff, 2).is_none());
+    }
 
     #[test]
     fn drawing_write_ranges_include_same_value_and_unaligned_writes() {
