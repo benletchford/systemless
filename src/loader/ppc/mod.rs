@@ -137,6 +137,7 @@ mod dispatch_apple_events;
 use dispatch_apple_events::*;
 mod dispatch_control;
 mod dispatch_cursor;
+mod dispatch_desk;
 mod dispatch_devices;
 mod dispatch_dialog;
 mod dispatch_drawsprocket;
@@ -17205,6 +17206,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_desk::dispatch_desk_import(
+        dispatch_desk::PpcDeskDispatchContext { binding },
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_cursor::dispatch_cursor_import(
         dispatch_cursor::PpcCursorDispatchContext {
             binding,
@@ -19652,18 +19659,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::InitDialogs => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
-        PpcImportDispatcherTarget::SystemTask | PpcImportDispatcherTarget::SystemClick => {
-            // Macintosh Toolbox Essentials (1992), pp. 2-94--2-95: these
-            // routines service desk-accessory windows and periodic driver
-            // actions. Native HLE exposes neither class; device timing is
-            // advanced by the runner, so the observable call is quiescent.
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::OpenDeskAcc => {
-            // Inside Macintosh: Devices (1994), p. 1-65: callers must ignore
-            // this result unless a desk accessory was successfully opened.
-            // There are no classic DRVR desk accessories in the PPC process.
-            Some(PpcImportAction::Return(0))
+        PpcImportDispatcherTarget::SystemTask
+        | PpcImportDispatcherTarget::SystemClick
+        | PpcImportDispatcherTarget::OpenDeskAcc => {
+            unreachable!("Desk Manager imports return through dispatch_desk_import")
         }
         PpcImportDispatcherTarget::AEInstallEventHandler
         | PpcImportDispatcherTarget::AEProcessAppleEvent => {
