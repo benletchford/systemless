@@ -144,6 +144,7 @@ mod dispatch_drawsprocket;
 mod dispatch_event;
 mod dispatch_files;
 mod dispatch_fonts;
+mod dispatch_gestalt;
 mod dispatch_inputsprocket;
 mod dispatch_list;
 mod dispatch_low_memory;
@@ -17212,6 +17213,16 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_gestalt::dispatch_gestalt_import(
+        dispatch_gestalt::PpcGestaltDispatchContext {
+            binding,
+            cpu,
+            memory,
+        },
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_cursor::dispatch_cursor_import(
         dispatch_cursor::PpcCursorDispatchContext {
             binding,
@@ -19593,9 +19604,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::PBStatus => {
             unreachable!("Device Manager imports return through dispatch_device_import")
         }
-        PpcImportDispatcherTarget::Gestalt => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_gestalt(cpu, memory),
-        ))),
+        PpcImportDispatcherTarget::Gestalt => {
+            unreachable!("Gestalt imports return through dispatch_gestalt_import")
+        }
         PpcImportDispatcherTarget::GetSharedLibrary
         | PpcImportDispatcherTarget::FindSymbol
         | PpcImportDispatcherTarget::CountSymbols
